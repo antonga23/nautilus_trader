@@ -1,0 +1,341 @@
+# -------------------------------------------------------------------------------------------------
+#  Copyright (C) 2015-2023 . All rights reserved.
+#  https://nautechsystems.io
+#
+#  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
+#  You may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at https://www.gnu.org/licenses/lgpl-3.0.en.html
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
+# -------------------------------------------------------------------------------------------------
+
+import asyncio
+import datetime
+import time
+import pathlib
+import ssl
+import json
+from typing import Optional, List
+
+import msgspec
+from aiohttp import ClientResponse
+from aiohttp import ClientResponseError
+
+from nautilus_trader.adapters.betfair.client.enums import MarketProjection
+from nautilus_trader.adapters.betfair.client.enums import MarketSort
+from nautilus_trader.adapters.cloudbet.client.exceptions import CloudbetAPIError
+from nautilus_trader.adapters.cloudbet.client.exceptions import CloudbetError
+from nautilus_trader.adapters.betfair.client.spec import ClearedOrder
+from nautilus_trader.adapters.betfair.client.spec import ClearedOrdersResponse
+from nautilus_trader.adapters.betfair.client.util import parse_params
+from nautilus_trader.common.logging import Logger
+from nautilus_trader.common.clock import LiveClock
+from nautilus_trader.network.http import HttpClient
+from nautilus_trader.model.identifiers import Venue
+
+from pathlib import Path
+from dotenv import dotenv_values
+
+from nautilus_trader.adapters.cloudbet.client.schema import GetSportsResponse, GetEventsForSportResponse, \
+    GetSportsResponseSport, GetEventForSportResponseEvent, Selection, GetAccountInfoResponse, default_team_factory
+
+# load environment variables from .cloudbet_env file
+env_path = str(Path().cwd() / '../.cloudbet_env')
+cloudbet_secrets = dotenv_values(env_path)
+
+# It's recommended to have one constant for the venue
+VENUE = Venue("CLOUDBET")
+
+
+class CloudbetClient(HttpClient):
+    """
+    Provides a HTTP client for `Cloudbet`.
+
+    Parameters
+    ----------
+    loop : asyncio.AbstractEventLoop
+        The event loop to use for asynchronous operations.
+    logger : Logger
+        The logger for the provider.
+
+    Attributes
+    ----------
+    _api_key : Optional[str]
+        The API key for the provider.
+    _api_url : Optional[str]
+        The API URL for the provider.
+    """
+
+    def __init__(self,
+                 loop: asyncio.AbstractEventLoop,
+                 logger: Logger,
+                 api_key: Optional[str] = None,
+                 api_url: Optional[str] = None,
+                 ):
+        super().__init__(loop=loop,
+                         logger=logger,
+                         connector_kwargs={"enable_cleanup_closed": True, "force_close": True}
+                         )
+        _api_key_default = cloudbet_secrets['CLOUDBET_API_KEY'] if 'CLOUDBET_API_KEY' in cloudbet_secrets else None
+        _api_url_default = cloudbet_secrets['CLOUDBET_API_URL'] if 'CLOUDBET_API_URL' in cloudbet_secrets else None
+
+        self._api_key = api_key if api_key is not None else _api_key_default
+        self._api_url = api_url if api_url is not None else _api_url_default
+
+    @property
+    def headers(self):
+        return {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Connection": "keep-alive",
+            "X-API-Key": self._api_key
+        }
+
+    # @property
+    # def query_paramters(self, query_param: Optional[dict]):
+    # # collect all key-value pairs from the query_param dict
+    #     query_paramters = {}
+    #     for key, value in query_param.items():
+    #         query_paramters[key] = value
+    #     return query_paramters
+
+    async def request(self, method, url, **kwargs) -> ClientResponse:
+        return await super().request(method=method, url=url, **kwargs)
+
+    async def connect(self) -> None:
+        self._log.info("Connecting..")
+        await super().connect()
+        self._log.info("Connected.")
+
+    async def login(self) -> GetAccountInfoResponse:
+        """
+        We simulate a login by sending a GET request to the account/info endpoint from the Cloudbet Account API.
+        Login to the Cloudbet API.
+
+        https://www.cloudbet.com/api/?urls.primaryName=Account#/PlayerAccount/accountInfo
+
+        """
+
+        resp = await self.get(url=f"{self._api_url}/v1/account/info", headers=self.headers)
+        if resp.status != 200:
+            self._log.error(f"Failed to retrieve account details from the Cloudbet API. Response: {resp.text}")
+            raise CloudbetAPIError(f"Failed to login to Cloudbet API. Response: {resp.text}")
+        # resp_content = await resp.read()
+        return msgspec.json.decode(resp.data, type=GetAccountInfoResponse)
+
+    async def disconnect(self) -> None:
+        self._log.info("Disconnecting..")
+        await super().disconnect()
+        self._log.info("Disconnected.")
+
+    async def get_sports(self) -> GetSportsResponse:
+        """
+        Get a list of sports available for betting.
+
+        https://www.cloudbet.com/api/?urls.primaryName=Feed#/API-Version-2.0/GetSports
+
+        Parameters
+        ----------
+        """
+
+        resp = await self.get(url=f"{self._api_url}/v2/odds/sports", headers=self.headers)
+        if resp.status != 200:
+            self._log.error(f"Failed to retrieve sports from the Cloudbet API. Response: {resp.text}")
+            raise CloudbetAPIError(message=f"Failed to retrieve sports from the Cloudbet API.", code=resp.status)
+        return msgspec.json.decode(resp.data, type=GetSportsResponse)
+
+    async def get_events_for_sport(self,
+                                   sport_key: str,
+                                   from_timestamp: int,
+                                   to_timestamp: int,
+                                   live: str = "false",
+                                   limit: Optional[int] = 1000) -> GetEventsForSportResponse:
+        # ToDo: implement fetching live events
+        # ToDo: create a helper function to convert Python bool to string so the server can understand it
+        """
+        Get a list of events for a specific sport.
+
+        https://www.cloudbet.com/api/?urls.primaryName=Feed#/API-Version-2.0/GetEvents
+
+        Parameters
+        ----------
+        sport_key : str
+            The key of the sport to retrieve events for.
+        from_timestamp: int
+            time range for upcoming events, Unix epoch time
+            e.g. 1618997973
+        Either live or from + to query params are REQUIRED in your request to specify a valid time-range.
+        from can't be sent together with live. Also, from + to must be sent together
+        to_timestamp: int
+            time range for upcoming events, Unix epoch time
+        live: bool
+            If true, return all TRADING_LIVE events
+        If false, return TRADING + PRE_TRADING event false by default live can't be sent together with from or to query params
+        limit: int
+            The maximum number of events to return. Default is 1000
+        """
+        query_params = {
+            'sport': sport_key,
+            'live': live,
+            'from': from_timestamp,
+            'to': to_timestamp,
+            'limit': limit,
+        }
+        resp = await self.get(url=f"{self._api_url}/v2/odds/events", params=query_params, headers=self.headers)
+        if resp.status != 200:
+            self._log.error(
+                f"Failed to retrieve events for sport {sport_key} from the Cloudbet API. Response: {resp.text}")
+            raise CloudbetAPIError(
+                f"Failed to retrieve events for sport {sport_key} from the Cloudbet API. Response: {resp.text}")
+        # NB: Cloudbet returns a list of events, in the future we may want to parse this into a list of Event objects and perform some validation
+        # Save raw response data to JSON file for debugging
+        raw_data = resp.data.decode('utf-8')  # Convert binary data to text
+        with open('raw_response.json', 'w') as f:
+            json.dump(raw_data, f)
+        return msgspec.json.decode(resp.data, type=GetEventsForSportResponse)
+
+    async def load_selection(self, filters: Optional[dict] = None) -> List[List[Selection]]:
+        """
+        Load all selections for filtered set of  events. This is a helper function to normalise, flatten and extract
+        selection related data. Implementing this function on the Cloudbet client allows us to abstract away the API
+
+        Parameters
+        ----------
+        filters : dict
+
+        example filter structure and types:
+        filters = {
+        sport_key: List,
+        from_timestamp: int,
+        to_timestamp: int,
+        live: bool,
+        limit: int
+        }
+
+        By default, we load all selections for all events for all sports. This is a very expensive operation and should
+        be used with caution. We can filter the data by sport, time range, live events and limit the number of events
+
+        """
+
+        # Default filter values
+        if filters is None:
+            filters = {
+                'from_timestamp': int(time.time()),
+                'to_timestamp': int(time.time()) + 172800,
+                'live': 'false',
+                'limit': 10
+            }
+
+        filtered_sports: List[GetSportsResponseSport] = []
+        self._log.info(f"Loading selections for {filters}")
+        get_sports_response_list: GetSportsResponse = await self.get_sports()
+        if 'sport_key' in filters and filters['sport_key'] is not None:
+            # GetSportsResponse is a list of dicts, we need to iterate over the list and check if the sport key is in the
+            # index is the key/number of the list and the value is the dict/sport
+            for sport in get_sports_response_list.sports:
+                if sport.key in filters['sport_key']:
+                    self._log.info(f"Found {sport.key}")
+                    filtered_sports.append(sport.key)
+        else:
+            # We want all sports
+            filtered_sports = [sport.key for sport in get_sports_response_list.sports]
+
+
+        # We now have a static list of sports and we need to make a request for each sport to get the events in parallel
+        tasks = [self.get_events_for_sport(sport_key,
+                                           from_timestamp=filters['from_timestamp'],
+                                           to_timestamp=filters['to_timestamp'],
+                                           live=filters['live'],
+                                           limit=filters['limit']
+                                           ) for sport_key in filtered_sports]
+        # We now have a list of tasks that we can run in parallel
+        self._log.info(f"Running {len(tasks)} tasks in parallel")
+        events = await asyncio.gather(*tasks)
+        # Now we have the events we can extract the selections
+        selections = []
+        for event in events:
+            selections.append(self.event_to_selection(event))
+        return selections
+
+    @staticmethod
+    # ToDo: Use multithreading to speed up this function, we can extract the data in parallel otherwise we have to
+    #  wait for each event to be processed
+    def event_to_selection(event: GetEventsForSportResponse) -> List[Selection]:
+        selections_list: List = []
+        for competition in event.competitions:
+            competition_name = competition.name
+            competition_key = competition.key
+            sport_name = competition.sport.name
+            sport_key = competition.sport.key
+            for event in competition.events:
+                # Default value if home/away team is None
+                if event.home is None:
+                    event.home = default_team_factory()
+                if event.away is None:
+                    event.away = default_team_factory()
+                event_id = event.id
+                home_name = event.home.name
+                home_key = event.home.key
+                away_name = event.away.name
+                away_key = event.away.key
+                status = event.status
+                event_name = event.name
+                cutoff_time = event.cutoff_time
+                # Iterate over all the markets
+                for market_name, market_value in event.markets.items():
+                    # Iterate over all the submarkets in the current market
+                    for submarket_period, submarket_value in market_value.submarkets.items():
+                        # Iterate over all the selections in the current submarket
+                        for selection in submarket_value.selections:
+                            # Add a dictionary with the market name, submarket period and selection data to the extracted data list
+                            selections_list.append(Selection(
+                                competition_name=competition_name,
+                                competition_key=competition_key,
+                                sport_name=sport_name,
+                                sport_key=sport_key,
+                                event_id=event_id,
+                                home_name=home_name,
+                                home_key=home_key,
+                                away_name=away_name,
+                                away_key=away_key,
+                                status=status,
+                                market_name=market_name,
+                                submarket_name=market_name + "_" + submarket_period,
+                                submarket_period=submarket_period,
+                                sequence=submarket_value.sequence,
+                                outcome=selection.outcome,
+                                price=selection.price,
+                                min_stake=selection.minStake,
+                                max_stake=selection.maxStake,
+                                probability=selection.probability,
+                                selection_status=selection.status,
+                                side=selection.side,
+                                cutoff_time=cutoff_time,
+                                event_name=event_name))
+        return selections_list
+
+
+# # # write a main function to test the client
+# async def main():
+#     logger = Logger(clock=LiveClock())
+#     loop = asyncio.get_event_loop()
+#     # create a Cloudbet client
+#     client = CloudbetClient(loop, logger)
+#     client._log.info("Starting Cloudbet client")
+#     await client.connect()
+#     resp = await client.get_events_for_sport(
+#         sport_key='soccer',
+#         from_timestamp=1618997973,
+#         to_timestamp=1618997973,
+#         live=False,
+#         limit=1000
+#     )
+#     return resp
+#
+#
+# if __name__ == "__main__":
+#     asyncio.run(main())

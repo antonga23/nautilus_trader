@@ -1,0 +1,11 @@
+{
+  "method": "GET",
+  "url": "https://sports-api.cloudbet.com/pub/v2/odds/sports",
+  "headers": {
+    "Accept-Encoding": "gzip, deflate",
+    "Accept": "*/*",
+    "Connection": "keep-alive",
+    "content-type": "application/json",
+    "X-API-KEY": ""
+  }
+}
