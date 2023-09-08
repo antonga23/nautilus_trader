@@ -155,27 +155,30 @@ class InstrumentProvider:
 
         If `initialize()` then will immediately return.
         """
-        if self._loaded:
-            return  # Already loaded
+        try:
+            if self._loaded:
+                return  # Already loaded
 
-        if not self._loading:
-            # Set async loading flag
-            self._loading = True
-            if self._load_all_on_start:
-                await self.load_all_async(self._filters)
-            elif self._load_ids_on_start:
-                instrument_ids = [InstrumentId.from_str(i) for i in self._load_ids_on_start]
-                await self.load_ids_async(instrument_ids, self._filters)
-            self._log.info(f"Loaded {self.count} instruments.")
-        else:
-            self._log.debug("Awaiting loading...")
-            while self._loading:
-                # Wait 100ms
-                await asyncio.sleep(0.1)
+            if not self._loading:
+                # Set async loading flag
+                self._loading = True
+                if self._load_all_on_start:
+                    await self.load_all_async(self._filters)
+                elif self._load_ids_on_start:
+                    instrument_ids = [InstrumentId.from_str(i) for i in self._load_ids_on_start]
+                    await self.load_ids_async(instrument_ids, self._filters)
+                self._log.info(f"Loaded {self.count} instruments.")
+            else:
+                self._log.debug("Awaiting loading...")
+                while self._loading:
+                    # Wait 100ms
+                    await asyncio.sleep(0.1)
 
-        # Set async loading flags
-        self._loading = False
-        self._loaded = True
+            # Set async loading flags
+            self._loading = False
+            self._loaded = True
+        except Exception as e:
+            print(e)
 
     def load_all(self, filters: Optional[dict] = None) -> None:
         """

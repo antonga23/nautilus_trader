@@ -1,51 +1,23 @@
-import bz2
-import contextlib
-import gzip
+import json
+import json
 import pathlib
+import random
 from asyncio import Future
-from ssl import SSLContext
-from typing import Optional, Union
+from typing import List
 from unittest.mock import MagicMock
-from unittest.mock import patch
 
 import msgspec
-import numpy as np
-import pandas as pd
 from aiohttp import ClientResponse
-from betfair_parser.spec.streaming import MCM
-from betfair_parser.spec.streaming import STREAM_DECODER
-from betfair_parser.spec.streaming.ocm import OCM
-from betfair_parser.spec.streaming.ocm import MatchedOrder
-from betfair_parser.spec.streaming.ocm import OrderAccountChange
-from betfair_parser.spec.streaming.ocm import OrderChanges
-from betfair_parser.spec.streaming.ocm import UnmatchedOrder
 
-from nautilus_trader.adapters.betfair.client.core import BetfairClient
 from nautilus_trader.adapters.cloudbet.client.core import CloudbetClient
-from nautilus_trader.adapters.betfair.common import BETFAIR_VENUE
-from nautilus_trader.adapters.betfair.data import BetfairParser
-from nautilus_trader.adapters.betfair.historic import make_betfair_reader
-from nautilus_trader.adapters.betfair.providers import BetfairInstrumentProvider
-from nautilus_trader.adapters.betfair.providers import market_definition_to_instruments
 from nautilus_trader.adapters.cloudbet.client.schema import GetAccountInfoResponse, GetSportsResponse, \
-    GetEventsForSportResponse, Selection
+    GetEventsForSportResponse
+from nautilus_trader.adapters.cloudbet.client.util import extract_cloudbet_symbol, cloudbet_instrument_id
+from nautilus_trader.adapters.cloudbet.common import CLOUDBET_VENUE
 from nautilus_trader.adapters.cloudbet.providers import CloudbetInstrumentProvider
-from nautilus_trader.common.providers import InstrumentProvider
-from nautilus_trader.config import BacktestDataConfig
-from nautilus_trader.config import BacktestEngineConfig
-from nautilus_trader.config import BacktestRunConfig
-from nautilus_trader.config import BacktestVenueConfig
-from nautilus_trader.config import ImportableStrategyConfig
-from nautilus_trader.config import LoggingConfig
-from nautilus_trader.config import RiskEngineConfig
-from nautilus_trader.config import StreamingConfig
-from nautilus_trader.model.data.book import OrderBookDelta
-from nautilus_trader.model.data.tick import TradeTick
-from nautilus_trader.model.instruments.betting import BettingInstrument
-from nautilus_trader.persistence.external.readers import LinePreprocessor
+from nautilus_trader.model.identifiers import InstrumentId, Symbol
+from nautilus_trader.model.instruments.crypto_betting import CryptoBettingInstrument
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
-import random
-
 from tests import TESTS_PACKAGE_ROOT
 
 TEST_PATH = pathlib.Path(TESTS_PACKAGE_ROOT + "/integration_tests/adapters/cloudbet/resources/")
@@ -58,6 +30,7 @@ test_api_url = "https://sports-api.cloudbet.com/pub"
 # monkey patch MagicMock
 async def async_magic():
     pass
+
 
 MagicMock.__await__ = lambda x: async_magic().__await__()
 
@@ -106,6 +79,52 @@ class CloudbetTestStubs:
         # client.request.side_effect = request
         return client
 
+    @staticmethod
+    def get_instrument_id(filename: str = "instrument_id_data.json") -> InstrumentId:
+        # read the instrument ids from the file
+        with open(TEST_PATH / filename) as json_file:
+            instrument_ids = json.load(json_file)
+        # randomly select an instrument id from the array
+        instrument_id_symbol = Symbol(random.sample(instrument_ids, k=1)[0])
+        instrument_id = InstrumentId(instrument_id_symbol,CLOUDBET_VENUE)
+        # event_id, market_name, outcome, params = extract_cloudbet_symbol(instrument_id)
+        # instrument_id = cloudbet_instrument_id(event_id, market_name, outcome, params)
+        return instrument_id
+
+    @staticmethod
+    def get_instrument_ids(count: int = 100, filename: str = "instrument_id_data.json"):
+        with open(TEST_PATH / filename) as json_file:
+            instrument_ids = json.load(json_file)
+        # randomly select an instrument id from the array
+        instrument_ids = random.sample(instrument_ids, k=count)
+        instrument_ids = [InstrumentId(**instrument_id) for instrument_id in instrument_ids]
+        return instrument_ids
+
+    # TODO: remove this method => TestInstrumentProvider::get_instrument
+    @staticmethod
+    def get_instrument(filename: str = "instrument.json") -> CryptoBettingInstrument:
+        with open(TEST_PATH / filename) as json_file:
+            instrument = json.load(json_file)
+        instrument = random.choice(instrument)
+        instrument = CryptoBettingInstrument(**instrument)
+        return instrument
+
+
+    #TODO: remove this method => TestInstrumentProvider::get_instruments
+    # @staticmethod
+    # def get_instruments(count=100, filename: str = "instruments.json", **kwargs) -> List[CryptoBettingInstrument]:
+    #     """
+    #     Returns a list of instruments from the test data file.
+    #     """
+    #     with open(TEST_PATH / filename) as json_file:
+    #         instruments = json.load(json_file)
+    #     instruments = random.sample(instruments, k=count)
+    #     instruments : List[CryptoBettingInstrument] = [CryptoBettingInstrument(**instrument) for instrument in instruments]
+    #     if "sport" in kwargs:
+    #         venue = kwargs["sport"]
+    #         instruments = [instrument for instrument in instruments if instrument.venue == venue]
+    #     return instruments
+
 
 class CloudbetResponses:
     @staticmethod
@@ -135,6 +154,11 @@ class DataGenerator:
     def generate_sport():
         sports = ["soccer", "tennis", "baseball", "basketball"]
         return random.choice(sports)
+
+    # @staticmethod
+    # def generate_instrument_ids():
+    #     instrument_ids = ["soccer", "tennis", "baseball", "basketball"]
+    #     return random.choice(instrument_ids)
 
 # @contextlib.contextmanager
 # def mock_client_request(response):

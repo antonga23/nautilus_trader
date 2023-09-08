@@ -1,0 +1,2027 @@
+{
+    "sequence": "975",
+    "id": 18008795,
+    "sport": {
+        "name": "Soccer",
+        "key": "soccer"
+    },
+    "competition": {
+        "name": "Liga Profesional",
+        "key": "soccer-argentina-superliga",
+        "category": {
+            "name": "Argentina",
+            "key": "argentina"
+        }
+    },
+    "home": {
+        "name": "CA Platense",
+        "key": "c2054-ca-platense",
+        "abbreviation": "PLA",
+        "nationality": "ARG",
+        "researchId": ""
+    },
+    "away": {
+        "name": "CA Huracan",
+        "key": "c2053-ca-huracan",
+        "abbreviation": "HUR",
+        "nationality": "ARG",
+        "researchId": ""
+    },
+    "status": "TRADING",
+    "markets": {
+        "soccer.asian_handicap": {
+            "submarkets": {
+                "period=ft": {
+                    "sequence": "972",
+                    "selections": [
+                        {
+                            "outcome": "home",
+                            "params": "handicap=-0.25",
+                            "price": 1.97,
+                            "minStake": 0.1,
+                            "maxStake": 194.17524,
+                            "probability": 0.484,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "away",
+                            "params": "handicap=-0.25",
+                            "price": 1.848,
+                            "minStake": 0.1,
+                            "maxStake": 219.65524,
+                            "probability": 0.516,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "home",
+                            "params": "handicap=-0.5",
+                            "price": 2.344,
+                            "minStake": 0.1,
+                            "maxStake": 194.17524,
+                            "probability": 0.405,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "away",
+                            "params": "handicap=-0.5",
+                            "price": 1.594,
+                            "minStake": 0.1,
+                            "maxStake": 310.68058,
+                            "probability": 0.595,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "home",
+                            "params": "handicap=-0.75",
+                            "price": 2.913,
+                            "minStake": 0.1,
+                            "maxStake": 194.17524,
+                            "probability": 0.326,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "away",
+                            "params": "handicap=-0.75",
+                            "price": 1.406,
+                            "minStake": 0.1,
+                            "maxStake": 447.40822,
+                            "probability": 0.674,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "home",
+                            "params": "handicap=-1",
+                            "price": 4.189,
+                            "minStake": 0.1,
+                            "maxStake": 194.17524,
+                            "probability": 0.226,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "away",
+                            "params": "handicap=-1",
+                            "price": 1.22,
+                            "minStake": 0.1,
+                            "maxStake": 795.80018,
+                            "probability": 0.774,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "home",
+                            "params": "handicap=-1.25",
+                            "price": 4.797,
+                            "minStake": 0.1,
+                            "maxStake": 194.17524,
+                            "probability": 0.197,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "away",
+                            "params": "handicap=-1.25",
+                            "price": 1.178,
+                            "minStake": 0.1,
+                            "maxStake": 966.04676,
+                            "probability": 0.803,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "home",
+                            "params": "handicap=0",
+                            "price": 1.567,
+                            "minStake": 0.1,
+                            "maxStake": 324.70732,
+                            "probability": 0.604,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "away",
+                            "params": "handicap=0",
+                            "price": 2.393,
+                            "minStake": 0.1,
+                            "maxStake": 194.17524,
+                            "probability": 0.396,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "home",
+                            "params": "handicap=0.25",
+                            "price": 1.391,
+                            "minStake": 0.1,
+                            "maxStake": 464.53372,
+                            "probability": 0.682,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "away",
+                            "params": "handicap=0.25",
+                            "price": 2.982,
+                            "minStake": 0.1,
+                            "maxStake": 194.17524,
+                            "probability": 0.318,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "home",
+                            "params": "handicap=0.5",
+                            "price": 1.289,
+                            "minStake": 0.1,
+                            "maxStake": 618.39274,
+                            "probability": 0.733,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "away",
+                            "params": "handicap=0.5",
+                            "price": 3.531,
+                            "minStake": 0.1,
+                            "maxStake": 194.17524,
+                            "probability": 0.267,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "home",
+                            "params": "handicap=0.75",
+                            "price": 1.18,
+                            "minStake": 0.1,
+                            "maxStake": 956.529,
+                            "probability": 0.802,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "away",
+                            "params": "handicap=0.75",
+                            "price": 4.768,
+                            "minStake": 0.1,
+                            "maxStake": 194.17524,
+                            "probability": 0.198,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        }
+                    ]
+                }
+            }
+        },
+        "soccer.asian_handicap_period_first_half": {
+            "submarkets": {
+                "period=1h": {
+                    "sequence": "972",
+                    "selections": [
+                        {
+                            "outcome": "home",
+                            "params": "handicap=0",
+                            "price": 1.613,
+                            "minStake": 0.1,
+                            "maxStake": 99.67972,
+                            "probability": 0.588,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "away",
+                            "params": "handicap=0",
+                            "price": 2.305,
+                            "minStake": 0.1,
+                            "maxStake": 64.2929,
+                            "probability": 0.412,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "home",
+                            "params": "handicap=-0.25",
+                            "price": 2.413,
+                            "minStake": 0.1,
+                            "maxStake": 64.2929,
+                            "probability": 0.391,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "away",
+                            "params": "handicap=-0.25",
+                            "price": 1.551,
+                            "minStake": 0.1,
+                            "maxStake": 110.65964,
+                            "probability": 0.609,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "home",
+                            "params": "handicap=-0.5",
+                            "price": 3.198,
+                            "minStake": 0.1,
+                            "maxStake": 64.2929,
+                            "probability": 0.295,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "away",
+                            "params": "handicap=-0.5",
+                            "price": 1.34,
+                            "minStake": 0.1,
+                            "maxStake": 175.665,
+                            "probability": 0.705,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "home",
+                            "params": "handicap=0.25",
+                            "price": 1.305,
+                            "minStake": 0.1,
+                            "maxStake": 194.23992,
+                            "probability": 0.724,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "away",
+                            "params": "handicap=0.25",
+                            "price": 3.424,
+                            "minStake": 0.1,
+                            "maxStake": 64.2929,
+                            "probability": 0.276,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "home",
+                            "params": "handicap=0.5",
+                            "price": 1.196,
+                            "minStake": 0.1,
+                            "maxStake": 292.24384,
+                            "probability": 0.79,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "away",
+                            "params": "handicap=0.5",
+                            "price": 4.503,
+                            "minStake": 0.1,
+                            "maxStake": 64.2929,
+                            "probability": 0.21,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        }
+                    ]
+                }
+            }
+        },
+        "soccer.asian_handicap_period_second_half": {
+            "submarkets": {
+                "period=2h&period=ft&period=1h": {
+                    "sequence": "968",
+                    "selections": [
+                        {
+                            "outcome": "home",
+                            "params": "handicap=-0.25",
+                            "price": 2.12,
+                            "minStake": 0.1,
+                            "maxStake": 128.625,
+                            "probability": 0.432,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "away",
+                            "params": "handicap=-0.25",
+                            "price": 1.61,
+                            "minStake": 0.1,
+                            "maxStake": 236.16334,
+                            "probability": 0.568,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "home",
+                            "params": "handicap=-0.5",
+                            "price": 2.64,
+                            "minStake": 0.1,
+                            "maxStake": 87.84132,
+                            "probability": 0.348,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "away",
+                            "params": "handicap=-0.5",
+                            "price": 1.41,
+                            "minStake": 0.1,
+                            "maxStake": 351.36528,
+                            "probability": 0.652,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "home",
+                            "params": "handicap=0",
+                            "price": 1.58,
+                            "minStake": 0.1,
+                            "maxStake": 248.37904,
+                            "probability": 0.58,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "away",
+                            "params": "handicap=0",
+                            "price": 2.18,
+                            "minStake": 0.1,
+                            "maxStake": 122.08448,
+                            "probability": 0.42,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        }
+                    ]
+                }
+            }
+        },
+        "soccer.both_teams_to_score": {
+            "submarkets": {
+                "period=ft": {
+                    "sequence": "968",
+                    "selections": [
+                        {
+                            "outcome": "yes",
+                            "params": "",
+                            "price": 2.35,
+                            "minStake": 0.1,
+                            "maxStake": 85.36878,
+                            "probability": 0.391,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "no",
+                            "params": "",
+                            "price": 1.51,
+                            "minStake": 0.1,
+                            "maxStake": 225.97624,
+                            "probability": 0.609,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        }
+                    ]
+                }
+            }
+        },
+        "soccer.correct_score": {
+            "submarkets": {
+                "period=ft": {
+                    "sequence": "968",
+                    "selections": [
+                        {
+                            "outcome": "score=1:0",
+                            "params": "",
+                            "price": 5.1,
+                            "minStake": 0.1,
+                            "maxStake": 35.13594,
+                            "probability": 0.153,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "score=2:0",
+                            "params": "",
+                            "price": 9.01,
+                            "minStake": 0.1,
+                            "maxStake": 17.98496,
+                            "probability": 0.086,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "score=2:1",
+                            "params": "",
+                            "price": 10.88,
+                            "minStake": 0.1,
+                            "maxStake": 14.58044,
+                            "probability": 0.072,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "score=3:0",
+                            "params": "",
+                            "price": 24.01,
+                            "minStake": 0.1,
+                            "maxStake": 6.26024,
+                            "probability": 0.032,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "score=3:1",
+                            "params": "",
+                            "price": 29.06,
+                            "minStake": 0.1,
+                            "maxStake": 5.13324,
+                            "probability": 0.027,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "score=3:2",
+                            "params": "",
+                            "price": 70.1,
+                            "minStake": 0.1,
+                            "maxStake": 2.08446,
+                            "probability": 0.011,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "score=4:0",
+                            "params": "",
+                            "price": 86.1,
+                            "minStake": 0.1,
+                            "maxStake": 1.69246,
+                            "probability": 0.009,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "score=4:1",
+                            "params": "",
+                            "price": 104,
+                            "minStake": 0.1,
+                            "maxStake": 1.39846,
+                            "probability": 0.007,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "score=4:2",
+                            "params": "",
+                            "price": 253,
+                            "minStake": 0.1,
+                            "maxStake": 0.57134,
+                            "probability": 0.003,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "score=0:0",
+                            "params": "",
+                            "price": 5.16,
+                            "minStake": 0.1,
+                            "maxStake": 34.62928,
+                            "probability": 0.151,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "score=1:1",
+                            "params": "",
+                            "price": 5.63,
+                            "minStake": 0.1,
+                            "maxStake": 31.11402,
+                            "probability": 0.138,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "score=2:2",
+                            "params": "",
+                            "price": 23.83,
+                            "minStake": 0.1,
+                            "maxStake": 6.30924,
+                            "probability": 0.033,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "score=3:3",
+                            "params": "",
+                            "price": 233,
+                            "minStake": 0.1,
+                            "maxStake": 0.62034,
+                            "probability": 0.003,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "score=0:1",
+                            "params": "",
+                            "price": 6.76,
+                            "minStake": 0.1,
+                            "maxStake": 25.0096,
+                            "probability": 0.115,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "score=0:2",
+                            "params": "",
+                            "price": 16.04,
+                            "minStake": 0.1,
+                            "maxStake": 9.57754,
+                            "probability": 0.049,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "score=1:2",
+                            "params": "",
+                            "price": 14.52,
+                            "minStake": 0.1,
+                            "maxStake": 10.65456,
+                            "probability": 0.054,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "score=0:3",
+                            "params": "",
+                            "price": 57.7,
+                            "minStake": 0.1,
+                            "maxStake": 2.54016,
+                            "probability": 0.014,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "score=1:3",
+                            "params": "",
+                            "price": 52.2,
+                            "minStake": 0.1,
+                            "maxStake": 2.81358,
+                            "probability": 0.015,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "score=2:3",
+                            "params": "",
+                            "price": 94.1,
+                            "minStake": 0.1,
+                            "maxStake": 1.54644,
+                            "probability": 0.008,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "score=0:4",
+                            "params": "",
+                            "price": 279,
+                            "minStake": 0.1,
+                            "maxStake": 0.51744,
+                            "probability": 0.003,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "score=1:4",
+                            "params": "",
+                            "price": 252,
+                            "minStake": 0.1,
+                            "maxStake": 0.5733,
+                            "probability": 0.003,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "score=2:4",
+                            "params": "",
+                            "price": 456,
+                            "minStake": 0.1,
+                            "maxStake": 0.31654,
+                            "probability": 0.002,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "score=3:4",
+                            "params": "",
+                            "price": 501,
+                            "minStake": 0.1,
+                            "maxStake": 0.28812,
+                            "probability": 0.002,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "score=4:3",
+                            "params": "",
+                            "price": 501,
+                            "minStake": 0.1,
+                            "maxStake": 0.28812,
+                            "probability": 0.002,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "score=4:4",
+                            "params": "",
+                            "price": 501,
+                            "minStake": 0.1,
+                            "maxStake": 0.28812,
+                            "probability": 0.002,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "other",
+                            "params": "",
+                            "price": 109,
+                            "minStake": 0.1,
+                            "maxStake": 1.33378,
+                            "probability": 0.007,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        }
+                    ]
+                }
+            }
+        },
+        "soccer.correct_score_period_1st_half": {
+            "submarkets": {
+                "period=ft&period=1h&period=2h": {
+                    "sequence": "968",
+                    "selections": [
+                        {
+                            "outcome": "other",
+                            "params": "",
+                            "price": 38.17,
+                            "minStake": 0.1,
+                            "maxStake": 2.58328,
+                            "probability": 0.02,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "score=1:0",
+                            "params": "",
+                            "price": 3.77,
+                            "minStake": 0.1,
+                            "maxStake": 34.67142,
+                            "probability": 0.207,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "score=2:0",
+                            "params": "",
+                            "price": 14.66,
+                            "minStake": 0.1,
+                            "maxStake": 7.03052,
+                            "probability": 0.053,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "score=2:1",
+                            "params": "",
+                            "price": 40.14,
+                            "minStake": 0.1,
+                            "maxStake": 2.45294,
+                            "probability": 0.019,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "score=0:0",
+                            "params": "",
+                            "price": 1.88,
+                            "minStake": 0.1,
+                            "maxStake": 109.13574,
+                            "probability": 0.416,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "score=1:1",
+                            "params": "",
+                            "price": 9.93,
+                            "minStake": 0.1,
+                            "maxStake": 10.75452,
+                            "probability": 0.079,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "score=2:2",
+                            "params": "",
+                            "price": 221,
+                            "minStake": 0.1,
+                            "maxStake": 0.4361,
+                            "probability": 0.004,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "score=0:1",
+                            "params": "",
+                            "price": 4.96,
+                            "minStake": 0.1,
+                            "maxStake": 24.25206,
+                            "probability": 0.157,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "score=0:2",
+                            "params": "",
+                            "price": 26.18,
+                            "minStake": 0.1,
+                            "maxStake": 3.81318,
+                            "probability": 0.03,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "score=1:2",
+                            "params": "",
+                            "price": 53.8,
+                            "minStake": 0.1,
+                            "maxStake": 1.81888,
+                            "probability": 0.015,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        }
+                    ]
+                }
+            }
+        },
+        "soccer.correct_score_period_2nd_half": {
+            "submarkets": {
+                "period=ft&period=1h&period=2h": {
+                    "sequence": "968",
+                    "selections": [
+                        {
+                            "outcome": "score=1:0",
+                            "params": "",
+                            "price": 3.73,
+                            "minStake": 0.1,
+                            "maxStake": 35.17906,
+                            "probability": 0.21,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "score=2:0",
+                            "params": "",
+                            "price": 10.99,
+                            "minStake": 0.1,
+                            "maxStake": 9.61282,
+                            "probability": 0.071,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "score=2:1",
+                            "params": "",
+                            "price": 25.54,
+                            "minStake": 0.1,
+                            "maxStake": 3.91314,
+                            "probability": 0.031,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "score=0:0",
+                            "params": "",
+                            "price": 2.48,
+                            "minStake": 0.1,
+                            "maxStake": 64.89168,
+                            "probability": 0.315,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "score=1:1",
+                            "params": "",
+                            "price": 7.78,
+                            "minStake": 0.1,
+                            "maxStake": 14.16492,
+                            "probability": 0.1,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "score=2:2",
+                            "params": "",
+                            "price": 113,
+                            "minStake": 0.1,
+                            "maxStake": 0.8575,
+                            "probability": 0.007,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "score=0:1",
+                            "params": "",
+                            "price": 4.81,
+                            "minStake": 0.1,
+                            "maxStake": 25.20658,
+                            "probability": 0.163,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "score=0:2",
+                            "params": "",
+                            "price": 18.98,
+                            "minStake": 0.1,
+                            "maxStake": 5.341,
+                            "probability": 0.041,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "score=1:2",
+                            "params": "",
+                            "price": 33.57,
+                            "minStake": 0.1,
+                            "maxStake": 2.94784,
+                            "probability": 0.023,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "other",
+                            "params": "",
+                            "price": 19.94,
+                            "minStake": 0.1,
+                            "maxStake": 5.07052,
+                            "probability": 0.039,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        }
+                    ]
+                }
+            }
+        },
+        "soccer.double_chance": {
+            "submarkets": {
+                "period=ft": {
+                    "sequence": "968",
+                    "selections": [
+                        {
+                            "outcome": "home_draw",
+                            "params": "",
+                            "price": 1.29,
+                            "minStake": 0.1,
+                            "maxStake": 496.75808,
+                            "probability": 0.365,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "home_away",
+                            "params": "",
+                            "price": 1.41,
+                            "minStake": 0.1,
+                            "maxStake": 351.36528,
+                            "probability": 0.334,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "draw_away",
+                            "params": "",
+                            "price": 1.57,
+                            "minStake": 0.1,
+                            "maxStake": 252.73612,
+                            "probability": 0.3,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        }
+                    ]
+                }
+            }
+        },
+        "soccer.draw_no_bet": {
+            "submarkets": {
+                "period=ft": {
+                    "sequence": "968",
+                    "selections": [
+                        {
+                            "outcome": "home",
+                            "params": "",
+                            "price": 1.51,
+                            "minStake": 0.1,
+                            "maxStake": 263.63862,
+                            "probability": 0.596,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "away",
+                            "params": "",
+                            "price": 2.23,
+                            "minStake": 0.1,
+                            "maxStake": 109.31312,
+                            "probability": 0.404,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        }
+                    ]
+                }
+            }
+        },
+        "soccer.exact_total_goals_period_first_half": {
+            "submarkets": {
+                "period=1h": {
+                    "sequence": "968",
+                    "selections": [
+                        {
+                            "outcome": "goals=0",
+                            "params": "",
+                            "price": 1.98,
+                            "minStake": 0.1,
+                            "maxStake": 78.4,
+                            "probability": 0.435,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "goals=1",
+                            "params": "",
+                            "price": 2.43,
+                            "minStake": 0.1,
+                            "maxStake": 53.7285,
+                            "probability": 0.355,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "goals=2%2B",
+                            "params": "",
+                            "price": 4.1,
+                            "minStake": 0.1,
+                            "maxStake": 24.7842,
+                            "probability": 0.21,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        }
+                    ]
+                }
+            }
+        },
+        "soccer.exact_total_goals_period_second_half": {
+            "submarkets": {
+                "period=2h&period=ft&period=1h": {
+                    "sequence": "968",
+                    "selections": [
+                        {
+                            "outcome": "goals=0",
+                            "params": "",
+                            "price": 2.61,
+                            "minStake": 0.1,
+                            "maxStake": 47.7211,
+                            "probability": 0.33,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "goals=1",
+                            "params": "",
+                            "price": 2.34,
+                            "minStake": 0.1,
+                            "maxStake": 57.33686,
+                            "probability": 0.368,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "goals=2%2B",
+                            "params": "",
+                            "price": 2.86,
+                            "minStake": 0.1,
+                            "maxStake": 41.307,
+                            "probability": 0.301,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        }
+                    ]
+                }
+            }
+        },
+        "soccer.halftime_fulltime_result": {
+            "submarkets": {
+                "period=1h&period=ft": {
+                    "sequence": "968",
+                    "selections": [
+                        {
+                            "outcome": "home_home",
+                            "params": "",
+                            "price": 3.82,
+                            "minStake": 0.1,
+                            "maxStake": 40.86796,
+                            "probability": 0.218,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "draw_home",
+                            "params": "",
+                            "price": 4.95,
+                            "minStake": 0.1,
+                            "maxStake": 29.17656,
+                            "probability": 0.168,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "away_home",
+                            "params": "",
+                            "price": 43.36,
+                            "minStake": 0.1,
+                            "maxStake": 2.72048,
+                            "probability": 0.019,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "home_draw",
+                            "params": "",
+                            "price": 16.89,
+                            "minStake": 0.1,
+                            "maxStake": 7.252,
+                            "probability": 0.049,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "draw_draw",
+                            "params": "",
+                            "price": 3.59,
+                            "minStake": 0.1,
+                            "maxStake": 44.4969,
+                            "probability": 0.232,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "away_draw",
+                            "params": "",
+                            "price": 17.4,
+                            "minStake": 0.1,
+                            "maxStake": 7.0266,
+                            "probability": 0.048,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "home_away",
+                            "params": "",
+                            "price": 59.2,
+                            "minStake": 0.1,
+                            "maxStake": 1.9796,
+                            "probability": 0.014,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "draw_away",
+                            "params": "",
+                            "price": 7.05,
+                            "minStake": 0.1,
+                            "maxStake": 19.04924,
+                            "probability": 0.118,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "away_away",
+                            "params": "",
+                            "price": 6.26,
+                            "minStake": 0.1,
+                            "maxStake": 21.90986,
+                            "probability": 0.133,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        }
+                    ]
+                }
+            }
+        },
+        "soccer.match_odds": {
+            "submarkets": {
+                "period=ft": {
+                    "sequence": "972",
+                    "selections": [
+                        {
+                            "outcome": "home",
+                            "params": "",
+                            "price": 2.354,
+                            "minStake": 0.1,
+                            "maxStake": 194.17524,
+                            "probability": 0.403,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "draw",
+                            "params": "",
+                            "price": 2.864,
+                            "minStake": 0.1,
+                            "maxStake": 194.17524,
+                            "probability": 0.331,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "away",
+                            "params": "",
+                            "price": 3.58,
+                            "minStake": 0.1,
+                            "maxStake": 194.17524,
+                            "probability": 0.265,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        }
+                    ]
+                }
+            }
+        },
+        "soccer.match_odds_period_first_half": {
+            "submarkets": {
+                "period=1h": {
+                    "sequence": "972",
+                    "selections": [
+                        {
+                            "outcome": "home",
+                            "params": "",
+                            "price": 3.218,
+                            "minStake": 0.1,
+                            "maxStake": 64.72508,
+                            "probability": 0.293,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "draw",
+                            "params": "",
+                            "price": 1.888,
+                            "minStake": 0.1,
+                            "maxStake": 69.97298,
+                            "probability": 0.499,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "away",
+                            "params": "",
+                            "price": 4.542,
+                            "minStake": 0.1,
+                            "maxStake": 64.72508,
+                            "probability": 0.208,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        }
+                    ]
+                }
+            }
+        },
+        "soccer.match_odds_period_second_half": {
+            "submarkets": {
+                "period=ft&period=2h&period=1h": {
+                    "sequence": "968",
+                    "selections": [
+                        {
+                            "outcome": "home",
+                            "params": "",
+                            "price": 2.7,
+                            "minStake": 0.1,
+                            "maxStake": 79.0909,
+                            "probability": 0.334,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "draw",
+                            "params": "",
+                            "price": 2.1,
+                            "minStake": 0.1,
+                            "maxStake": 122.23246,
+                            "probability": 0.429,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "away",
+                            "params": "",
+                            "price": 3.79,
+                            "minStake": 0.1,
+                            "maxStake": 48.1915,
+                            "probability": 0.238,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        }
+                    ]
+                }
+            }
+        },
+        "soccer.team_clean_sheet": {
+            "submarkets": {
+                "period=ft&team=away": {
+                    "sequence": "968",
+                    "selections": [
+                        {
+                            "outcome": "yes",
+                            "params": "team=away",
+                            "price": 2.66,
+                            "minStake": 0.1,
+                            "maxStake": 57.85528,
+                            "probability": 0.348,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "no",
+                            "params": "team=away",
+                            "price": 1.42,
+                            "minStake": 0.1,
+                            "maxStake": 228.66634,
+                            "probability": 0.652,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        }
+                    ]
+                },
+                "period=ft&team=home": {
+                    "sequence": "968",
+                    "selections": [
+                        {
+                            "outcome": "yes",
+                            "params": "team=home",
+                            "price": 2.08,
+                            "minStake": 0.1,
+                            "maxStake": 88.9252,
+                            "probability": 0.445,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "no",
+                            "params": "team=home",
+                            "price": 1.67,
+                            "minStake": 0.1,
+                            "maxStake": 143.34264,
+                            "probability": 0.555,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        }
+                    ]
+                }
+            }
+        },
+        "soccer.team_total_goals": {
+            "submarkets": {
+                "period=ft&team=away": {
+                    "sequence": "972",
+                    "selections": [
+                        {
+                            "outcome": "over",
+                            "params": "team=away&total=0.5",
+                            "price": 1.666,
+                            "minStake": 0.1,
+                            "maxStake": 61.11378,
+                            "probability": 0.566,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "under",
+                            "params": "team=away&total=0.5",
+                            "price": 2.178,
+                            "minStake": 0.1,
+                            "maxStake": 42.7182,
+                            "probability": 0.434,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        }
+                    ]
+                },
+                "period=ft&team=home": {
+                    "sequence": "972",
+                    "selections": [
+                        {
+                            "outcome": "over",
+                            "params": "team=home&total=0.5",
+                            "price": 1.422,
+                            "minStake": 0.1,
+                            "maxStake": 94.92966,
+                            "probability": 0.664,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "under",
+                            "params": "team=home&total=0.5",
+                            "price": 2.806,
+                            "minStake": 0.1,
+                            "maxStake": 42.7182,
+                            "probability": 0.336,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        }
+                    ]
+                }
+            }
+        },
+        "soccer.team_total_goals_period_first_half": {
+            "submarkets": {
+                "period=1h&team=away": {
+                    "sequence": "972",
+                    "selections": [
+                        {
+                            "outcome": "over",
+                            "params": "team=away&total=0.5",
+                            "price": 3.041,
+                            "minStake": 0.1,
+                            "maxStake": 43.1494,
+                            "probability": 0.309,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "under",
+                            "params": "team=away&total=0.5",
+                            "price": 1.36,
+                            "minStake": 0.1,
+                            "maxStake": 111.49852,
+                            "probability": 0.691,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        }
+                    ]
+                },
+                "period=1h&team=home": {
+                    "sequence": "972",
+                    "selections": [
+                        {
+                            "outcome": "over",
+                            "params": "team=home&total=0.5",
+                            "price": 2.413,
+                            "minStake": 0.1,
+                            "maxStake": 43.1494,
+                            "probability": 0.39,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "under",
+                            "params": "team=home&total=0.5",
+                            "price": 1.541,
+                            "minStake": 0.1,
+                            "maxStake": 75.56878,
+                            "probability": 0.61,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        }
+                    ]
+                }
+            }
+        },
+        "soccer.team_total_goals_period_second_half": {
+            "submarkets": {
+                "period=2h&team=away": {
+                    "sequence": "968",
+                    "selections": [
+                        {
+                            "outcome": "over",
+                            "params": "team=away&total=0.5",
+                            "price": 2.35,
+                            "minStake": 0.1,
+                            "maxStake": 42.6839,
+                            "probability": 0.386,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "under",
+                            "params": "team=away&total=0.5",
+                            "price": 1.48,
+                            "minStake": 0.1,
+                            "maxStake": 120.05,
+                            "probability": 0.614,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "over",
+                            "params": "team=away&total=1.5",
+                            "price": 6.95,
+                            "minStake": 0.1,
+                            "maxStake": 9.68436,
+                            "probability": 0.131,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "under",
+                            "params": "team=away&total=1.5",
+                            "price": 1.05,
+                            "minStake": 0.1,
+                            "maxStake": 1152.48,
+                            "probability": 0.869,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "over",
+                            "params": "team=away&total=2.5",
+                            "price": 9.85,
+                            "minStake": 0.1,
+                            "maxStake": 6.51112,
+                            "probability": 0.093,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "under",
+                            "params": "team=away&total=2.5",
+                            "price": 1.01,
+                            "minStake": 0.1,
+                            "maxStake": 5762.4,
+                            "probability": 0.907,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        }
+                    ]
+                },
+                "period=2h&team=home": {
+                    "sequence": "968",
+                    "selections": [
+                        {
+                            "outcome": "over",
+                            "params": "team=home&total=0.5",
+                            "price": 1.95,
+                            "minStake": 0.1,
+                            "maxStake": 60.65612,
+                            "probability": 0.467,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "under",
+                            "params": "team=home&total=0.5",
+                            "price": 1.71,
+                            "minStake": 0.1,
+                            "maxStake": 81.15968,
+                            "probability": 0.533,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "over",
+                            "params": "team=home&total=1.5",
+                            "price": 5.33,
+                            "minStake": 0.1,
+                            "maxStake": 13.30742,
+                            "probability": 0.171,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "under",
+                            "params": "team=home&total=1.5",
+                            "price": 1.1,
+                            "minStake": 0.1,
+                            "maxStake": 576.24,
+                            "probability": 0.829,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "over",
+                            "params": "team=home&total=2.5",
+                            "price": 9.47,
+                            "minStake": 0.1,
+                            "maxStake": 6.80316,
+                            "probability": 0.096,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "under",
+                            "params": "team=home&total=2.5",
+                            "price": 1.01,
+                            "minStake": 0.1,
+                            "maxStake": 5762.4,
+                            "probability": 0.904,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        }
+                    ]
+                }
+            }
+        },
+        "soccer.team_win_to_nil": {
+            "submarkets": {
+                "period=ft&team=away": {
+                    "sequence": "968",
+                    "selections": [
+                        {
+                            "outcome": "yes",
+                            "params": "team=away",
+                            "price": 4.13,
+                            "minStake": 0.1,
+                            "maxStake": 30.68282,
+                            "probability": 0.218,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "no",
+                            "params": "team=away",
+                            "price": 1.15,
+                            "minStake": 0.1,
+                            "maxStake": 640.26634,
+                            "probability": 0.782,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        }
+                    ]
+                },
+                "period=ft&team=home": {
+                    "sequence": "968",
+                    "selections": [
+                        {
+                            "outcome": "yes",
+                            "params": "team=home",
+                            "price": 2.91,
+                            "minStake": 0.1,
+                            "maxStake": 50.28184,
+                            "probability": 0.309,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "no",
+                            "params": "team=home",
+                            "price": 1.3,
+                            "minStake": 0.1,
+                            "maxStake": 320.13268,
+                            "probability": 0.691,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        }
+                    ]
+                }
+            }
+        },
+        "soccer.total_goals": {
+            "submarkets": {
+                "period=ft": {
+                    "sequence": "972",
+                    "selections": [
+                        {
+                            "outcome": "over",
+                            "params": "total=1.75",
+                            "price": 1.863,
+                            "minStake": 0.1,
+                            "maxStake": 107.87448,
+                            "probability": 0.509,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "under",
+                            "params": "total=1.75",
+                            "price": 1.932,
+                            "minStake": 0.1,
+                            "maxStake": 100.09034,
+                            "probability": 0.491,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "over",
+                            "params": "total=0.5",
+                            "price": 1.131,
+                            "minStake": 0.1,
+                            "maxStake": 634.5598,
+                            "probability": 0.832,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "under",
+                            "params": "total=0.5",
+                            "price": 5.602,
+                            "minStake": 0.1,
+                            "maxStake": 97.08762,
+                            "probability": 0.168,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "over",
+                            "params": "total=1.25",
+                            "price": 1.428,
+                            "minStake": 0.1,
+                            "maxStake": 212.91088,
+                            "probability": 0.661,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "under",
+                            "params": "total=1.25",
+                            "price": 2.786,
+                            "minStake": 0.1,
+                            "maxStake": 97.08762,
+                            "probability": 0.339,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "over",
+                            "params": "total=1.5",
+                            "price": 1.643,
+                            "minStake": 0.1,
+                            "maxStake": 143.83362,
+                            "probability": 0.574,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "under",
+                            "params": "total=1.5",
+                            "price": 2.217,
+                            "minStake": 0.1,
+                            "maxStake": 97.08762,
+                            "probability": 0.426,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "over",
+                            "params": "total=2",
+                            "price": 2.266,
+                            "minStake": 0.1,
+                            "maxStake": 97.08762,
+                            "probability": 0.417,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "under",
+                            "params": "total=2",
+                            "price": 1.621,
+                            "minStake": 0.1,
+                            "maxStake": 148.67874,
+                            "probability": 0.583,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "over",
+                            "params": "total=2.25",
+                            "price": 2.678,
+                            "minStake": 0.1,
+                            "maxStake": 97.08762,
+                            "probability": 0.353,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "under",
+                            "params": "total=2.25",
+                            "price": 1.458,
+                            "minStake": 0.1,
+                            "maxStake": 199.35846,
+                            "probability": 0.647,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "over",
+                            "params": "total=2.5",
+                            "price": 3.061,
+                            "minStake": 0.1,
+                            "maxStake": 97.08762,
+                            "probability": 0.307,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "under",
+                            "params": "total=2.5",
+                            "price": 1.356,
+                            "minStake": 0.1,
+                            "maxStake": 253.49268,
+                            "probability": 0.693,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "over",
+                            "params": "total=3.5",
+                            "price": 6.573,
+                            "minStake": 0.1,
+                            "maxStake": 97.08762,
+                            "probability": 0.143,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "under",
+                            "params": "total=3.5",
+                            "price": 1.099,
+                            "minStake": 0.1,
+                            "maxStake": 802.37696,
+                            "probability": 0.857,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        }
+                    ]
+                }
+            }
+        },
+        "soccer.total_goals_period_first_half": {
+            "submarkets": {
+                "period=1h": {
+                    "sequence": "972",
+                    "selections": [
+                        {
+                            "outcome": "over",
+                            "params": "total=0.75",
+                            "price": 1.97,
+                            "minStake": 0.1,
+                            "maxStake": 64.72508,
+                            "probability": 0.482,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "under",
+                            "params": "total=0.75",
+                            "price": 1.833,
+                            "minStake": 0.1,
+                            "maxStake": 74.48196,
+                            "probability": 0.518,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "over",
+                            "params": "total=0.5",
+                            "price": 1.634,
+                            "minStake": 0.1,
+                            "maxStake": 97.18464,
+                            "probability": 0.578,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "under",
+                            "params": "total=0.5",
+                            "price": 2.236,
+                            "minStake": 0.1,
+                            "maxStake": 64.72508,
+                            "probability": 0.422,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "over",
+                            "params": "total=1",
+                            "price": 2.845,
+                            "minStake": 0.1,
+                            "maxStake": 64.72508,
+                            "probability": 0.332,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "under",
+                            "params": "total=1",
+                            "price": 1.414,
+                            "minStake": 0.1,
+                            "maxStake": 146.4365,
+                            "probability": 0.668,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "over",
+                            "params": "total=1.25",
+                            "price": 3.639,
+                            "minStake": 0.1,
+                            "maxStake": 64.72508,
+                            "probability": 0.26,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "under",
+                            "params": "total=1.25",
+                            "price": 1.276,
+                            "minStake": 0.1,
+                            "maxStake": 215.03356,
+                            "probability": 0.74,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        }
+                    ]
+                }
+            }
+        },
+        "soccer.total_goals_period_second_half": {
+            "submarkets": {
+                "period=2h&period=ft&period=1h": {
+                    "sequence": "968",
+                    "selections": [
+                        {
+                            "outcome": "over",
+                            "params": "total=1",
+                            "price": 1.92,
+                            "minStake": 0.1,
+                            "maxStake": 104.39058,
+                            "probability": 0.477,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "under",
+                            "params": "total=1",
+                            "price": 1.75,
+                            "minStake": 0.1,
+                            "maxStake": 128.05268,
+                            "probability": 0.523,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "over",
+                            "params": "total=0.5",
+                            "price": 1.4,
+                            "minStake": 0.1,
+                            "maxStake": 240.1,
+                            "probability": 0.654,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "under",
+                            "params": "total=0.5",
+                            "price": 2.65,
+                            "minStake": 0.1,
+                            "maxStake": 58.20514,
+                            "probability": 0.346,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "over",
+                            "params": "total=0.75",
+                            "price": 1.57,
+                            "minStake": 0.1,
+                            "maxStake": 168.49042,
+                            "probability": 0.585,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "under",
+                            "params": "total=0.75",
+                            "price": 2.21,
+                            "minStake": 0.1,
+                            "maxStake": 79.37118,
+                            "probability": 0.415,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "over",
+                            "params": "total=1.25",
+                            "price": 2.43,
+                            "minStake": 0.1,
+                            "maxStake": 67.16038,
+                            "probability": 0.379,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "under",
+                            "params": "total=1.25",
+                            "price": 1.48,
+                            "minStake": 0.1,
+                            "maxStake": 200.08268,
+                            "probability": 0.621,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "over",
+                            "params": "total=1.5",
+                            "price": 2.9,
+                            "minStake": 0.1,
+                            "maxStake": 50.54644,
+                            "probability": 0.316,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "under",
+                            "params": "total=1.5",
+                            "price": 1.34,
+                            "minStake": 0.1,
+                            "maxStake": 282.4703,
+                            "probability": 0.684,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "over",
+                            "params": "total=1.75",
+                            "price": 3.75,
+                            "minStake": 0.1,
+                            "maxStake": 34.92328,
+                            "probability": 0.244,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        },
+                        {
+                            "outcome": "under",
+                            "params": "total=1.75",
+                            "price": 1.21,
+                            "minStake": 0.1,
+                            "maxStake": 457.33268,
+                            "probability": 0.756,
+                            "status": "SELECTION_ENABLED",
+                            "side": "BACK"
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    "name": "CA Platense V CA Huracan",
+    "key": "c2054-ca-platense-v-c2053-ca-huracan",
+    "cutoffTime": "2023-07-22T23:30:00Z",
+    "metadata": {
+        "opinions": {},
+        "opinion": []
+    },
+    "type": "EVENT_TYPE_EVENT",
+    "settlement": {},
+    "resultedTime": "",
+    "gradingDuration": 15,
+    "endTime": ""
+}

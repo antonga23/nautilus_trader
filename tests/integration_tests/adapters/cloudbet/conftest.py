@@ -16,10 +16,15 @@
 import pytest
 
 from nautilus_trader.model.events.account import AccountState
-from nautilus_trader.model.identifiers import Venue
+from nautilus_trader.model.identifiers import Venue, AccountId
 
 from nautilus_trader.adapters.cloudbet.client.core import CloudbetClient
 from nautilus_trader.adapters.cloudbet.common import VENUE
+from nautilus_trader.adapters.cloudbet.config import CloudbetDataClientConfig
+from nautilus_trader.adapters.cloudbet.data_client import CloudbetDataClient
+from nautilus_trader.adapters.cloudbet.factories import CloudbetLiveDataClientFactory
+from nautilus_trader.test_kit.providers import TestInstrumentProvider
+from nautilus_trader.test_kit.stubs.events import TestEventStubs
 from tests.integration_tests.adapters.cloudbet.test_kit import CloudbetTestStubs
 
 
@@ -32,26 +37,56 @@ def venue() -> Venue:
 def cloudbet_client(event_loop, logger):
     return CloudbetTestStubs.cloudbet_client(event_loop, logger)
 
+@pytest.fixture(autouse=True)
+def instrument():
+    return TestInstrumentProvider.crypto_betting_instrument()
+
+
+@pytest.fixture(autouse=False)
+# request object is a special fixture injected by pytest
+def instruments(request):
+    venue = request.param[0]
+    count = request.param[1]
+    return TestInstrumentProvider.crypto_betting_instruments(venue, count)
+
 @pytest.fixture()
 def instrument_provider(cloudbet_client):
     return CloudbetTestStubs.instrument_provider(cloudbet_client=cloudbet_client)
 
 
 @pytest.fixture()
-def data_client():
-    pass  # pragma: no cover
+def data_client(
+    mocker,
+    event_loop,
+    cloudbet_client,
+    instrument_provider,
+    instrument,
+    venue,
+    msgbus,
+    cache,
+    clock,
+    logger) -> CloudbetDataClient:
+    mocker.patch("nautilus_trader.adapters.cloudbet.factories.get_cached_cloudbet_client",
+                 return_value=cloudbet_client)
+    mocker.patch("nautilus_trader.adapters.cloudbet.factories.get_cached_cloudbet_instrument_provider",
+                 return_value=instrument_provider)
+    instrument_provider.add(instrument)
+    data_client = CloudbetLiveDataClientFactory.create(
+        loop=event_loop,
+        name=venue.value,
+        config=CloudbetDataClientConfig(),
+        msgbus=msgbus,
+        cache=cache,
+        clock=clock,
+        logger=logger,
+    )
+    return data_client
 
 
 @pytest.fixture()
 def exec_client():
     pass  # pragma: no cover
 
-
-@pytest.fixture()
-def instrument():
-    pass  # pragma: no cover
-
-
 @pytest.fixture()
 def account_state() -> AccountState:
-    pass  # pragma: no cover
+    return TestEventStubs.betting_account_state(account_id=AccountId("CLOUDBET-001"))

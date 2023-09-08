@@ -21,3 +21,5 @@ from nautilus_trader.model.tick_scheme.implementations.tiered import TieredTickS
 
 
 VENUE = Venue("CLOUDBET")
+
+CLOUDBET_VENUE = Venue("CLOUDBET")

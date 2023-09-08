@@ -14,63 +14,61 @@
 # -------------------------------------------------------------------------------------------------
 
 
-def parse_market_filter(market_filter):
-    string_keys = ("textQuery",)
-    bool_keys = ("bspOnly", "turnInPlayEnabled", "inPlayOnly")
-    list_string_keys = (
-        "exchangeIds",
-        "eventTypeIds",
-        "eventIds",
-        "competitionIds",
-        "marketIds",
-        "venues",
-        "marketBettingTypes",
-        "marketCountries",
-        "marketTypeCodes",
-        "withOrders",
-        "raceTypes",
+from functools import lru_cache
+from typing import Optional
+
+from nautilus_trader.core.correctness import PyCondition
+from nautilus_trader.model.identifiers import InstrumentId
+from nautilus_trader.model.identifiers import Symbol
+from nautilus_trader.adapters.cloudbet.common import VENUE
+
+
+def make_symbol(event_id: int, submarket_name: str, outcome: str, params: Optional[str] = "") -> Symbol:
+    """
+    Make symbol with arbitrary number of arguments.
+    Each argument will be converted to a string, cleaned, and joined with "|" to form the symbol.
+
+    Arguments are provided as keyword arguments, and order does not matter.
+
+    Example:
+    >>> make_symbol(event_id=2135245, submarket_name="1st_half_1x2_period=1h", outcome="home", params="")
+    Symbol('2135245|1st_half_1x2_period=1h|home')
+    Note: The generated symbol must be no longer than 32 characters.
+    """
+
+    def _clean(s):
+        return str(s).replace(" ", "").replace(":", "")
+
+    value: str = "|".join(
+        [_clean(k) for k in (event_id, submarket_name, outcome, params)],
     )
-    for key in string_keys:
-        if key not in market_filter:
-            continue
-        # Condition.type(market_filter[key], str, key)
-        assert isinstance(market_filter[key], str), f"{key} should be type `str` not {type(key)}"
-    for key in bool_keys:
-        if key not in market_filter:
-            continue
-        # Condition.type(market_filter[key], bool, key)
-        assert isinstance(market_filter[key], bool), f"{key} should be type `bool` not {type(key)}"
-    for key in list_string_keys:
-        if key not in market_filter:
-            continue
-        # Condition.list_type(market_filter[key], str, key)
-        assert isinstance(market_filter[key], list), f"{key} should be type `list` not {type(key)}"
-        for v in market_filter[key]:
-            assert isinstance(v, str), f"{v} should be type `str` not {type(v)}"
-    return market_filter
+    # ToDo: add some sanity checks here eg order of arguments, length of arguments, etc
+    # assert len(value) <= 32, f"Symbol too long ({len(value)}): '{value}'"
+    return Symbol(value)
 
 
-def snake_to_camel_case(s):
+@lru_cache
+def extract_cloudbet_symbol(symbol: Symbol) -> tuple[int, str, str, str]:
     """
-    Convert a snakecase string to camel case.
-
-    Examples
-    --------
-    >>> snake_to_camel_case('bet_status')
-    'betStatus'
-
-    >>> snake_to_camel_case("customer_strategy_refs")
-    'customerStrategyRefs'
-
-    >>> snake_to_camel_case("filter_")
-    'filter'
-
+    Extract the event_id, market_name, outcome and params from a symbol
     """
-    components = s.split("_")
-    return components[0] + "".join(x.title() for x in components[1:])
+    # TODO: test this handles when params = "" or None
+    event_id, market_name, outcome, params = symbol.value.split("|")
+    return int(event_id), market_name, outcome, params
 
 
-def parse_params(**kw):
-    return {
-        snake_to_camel_case(k): v for k, v in kw.items() if v is not None and k not in ("self",)
-    }
+
+# TODO: test CryptoBettingInstrument with new cloudbet_instrument_id generator
+@lru_cache
+def cloudbet_instrument_id(
+    event_id: int,
+    market_name: str,
+    outcome: str,
+    params: Optional[str] = "",
+) -> InstrumentId:
+    """
+    Create an instrument ID from CLOUDBET fields
+    """
+
+    symbol = make_symbol(event_id=event_id, submarket_name=market_name, outcome=outcome, params=params)
+    return InstrumentId(symbol=symbol, venue=VENUE)
