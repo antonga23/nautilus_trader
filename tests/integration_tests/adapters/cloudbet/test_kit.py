@@ -11,7 +11,7 @@ from aiohttp import ClientResponse
 
 from nautilus_trader.adapters.cloudbet.client.core import CloudbetClient
 from nautilus_trader.adapters.cloudbet.client.schema import GetAccountInfoResponse, GetSportsResponse, \
-    GetEventsForSportResponse
+    GetEventsForSportResponse, GetBetResponse, GetBetHistoryResponse
 from nautilus_trader.adapters.cloudbet.client.util import extract_cloudbet_symbol, cloudbet_instrument_id
 from nautilus_trader.adapters.cloudbet.common import CLOUDBET_VENUE
 from nautilus_trader.adapters.cloudbet.providers import CloudbetInstrumentProvider
@@ -147,6 +147,29 @@ class CloudbetResponses:
     @staticmethod
     def get_events_for_sport() -> GetEventsForSportResponse:
         return CloudbetResponses.load("get_events_for_sport.json", response_type=GetEventsForSportResponse)
+
+    @staticmethod
+    def place_bet_success() -> GetBetResponse:
+        return CloudbetResponses.load('place_bet_success.json', response_type=GetBetResponse)
+
+    @staticmethod
+    def place_bet_failure(**kwargs) -> GetBetResponse:
+        return CloudbetResponses.load('place_bet_failure.json', response_type=GetBetResponse)
+
+    @staticmethod
+    def place_bet_invalid_event_id() -> GetBetResponse:
+        return CloudbetResponses.load('place_bet_invalid_event.json', response_type=GetBetResponse)
+
+    @staticmethod
+    def get_bet_history_success() -> GetBetHistoryResponse:
+        return CloudbetResponses.load('get_bet_history.json', response_type=GetBetHistoryResponse)
+
+    @staticmethod
+    def get_bet_status_success() -> GetBetResponse:
+        return CloudbetResponses.load('get_bet_status.json', response_type=GetBetResponse)
+
+
+
 
 
 class DataGenerator:

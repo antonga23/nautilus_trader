@@ -1,0 +1,18 @@
+{
+    "referenceId": "fa2d12c8-cdc2-4d21-95fb-3f0615317f45",
+    "price": "1.72",
+    "eventId": "20054836asdf",
+    "marketUrl": "basketball.handicap_period_first_half/away?handicap=1.5",
+    "side": "BACK",
+    "currency": "PLAY_EUR",
+    "stake": "0.1",
+    "createTime": "",
+    "status": "MALFORMED_REQUEST",
+    "returnAmount": "",
+    "eventName": "",
+    "sportsKey": "",
+    "competitionId": "0",
+    "categoryKey": "",
+    "customerReference": "",
+    "error": "invalid event ID"
+}

@@ -24,6 +24,7 @@ from typing import Optional, List, Union
 import msgspec
 from aiohttp import ClientResponse
 from aiohttp import ClientResponseError
+from nautilus_trader.core.correctness import PyCondition
 from nautilus_trader.core.nautilus_pyo3.network import HttpResponse
 from nautilus_trader.model.currency import Currency
 
@@ -85,7 +86,7 @@ class CloudbetClient(HttpClient):
         _api_key_default = cloudbet_secrets['CLOUDBET_API_KEY'] if 'CLOUDBET_API_KEY' in cloudbet_secrets else None
         _api_url_default = cloudbet_secrets['CLOUDBET_API_URL'] if 'CLOUDBET_API_URL' in cloudbet_secrets else None
         # ToDo: chose a default currency, for now we use the selection currency EUR
-        _currency = EUR
+        _currency = cloudbet_secrets['CLOUDBET_CURRENCY'] if 'CLOUDBET_CURRENCY' in cloudbet_secrets else None # in test, generaly PLAY_EUR
 
         self._api_key = api_key if api_key is not None else _api_key_default
         self._api_url = api_url if api_url is not None else _api_url_default
@@ -417,7 +418,7 @@ class CloudbetClient(HttpClient):
             raise CloudbetAPIError(message=f"Failed to retrieve fixtures from the Cloudbet API.", code=resp.status)
         return msgspec.json.decode(resp.data, type=GetFixturesResponse)
 
-    async def get_bet(self, reference_id):
+    async def get_bet_status(self, reference_id: str) -> GetBetResponse:
         """
         Obtain the bet data for a given reference id.
 
@@ -430,12 +431,12 @@ class CloudbetClient(HttpClient):
         """
         resp = await self.get(url=f"{self._api_url}/v3/bets/{reference_id}/status", headers=self.headers)
         if resp.status != 200:
-            self._log.error(f"Failed to retrieve bet from the Cloudbet API. Response: {resp.text}")
+            self._log.error(f"Failed to retrieve bet from the Cloudbet API. Response: {resp}")
             raise CloudbetAPIError(message=f"Failed to retrieve bet from the Cloudbet API.", code=resp.status)
         return msgspec.json.decode(resp.data, type=GetBetResponse)
 
-    async def get_bet_history(self, from_date: str, to_date: int, limit: Optional[int] = 100,
-                              offset: Optional[int] = 0):
+    async def get_bet_history(self, from_date: str, to_date: str, limit: Optional[int] = 100,
+                              offset: Optional[int] = 0) -> GetBetHistoryResponse:
         """
         Obtain the bet history for a given date range.
 
@@ -444,14 +445,19 @@ class CloudbetClient(HttpClient):
         Parameters
         ----------
         from_date : str
-            The start date for the bet history in ISO format eg. 2023-07-25T14:02:00.541766+00:00
-        to_date : int
-            The end date for the bet history in ISO format eg. 2023-07-25
-        limit : int
-            The maximum number of bets to return
-        offset : int
+            The start date for the bet history in ISO RFC3339 format eg. "2023-09-11T00:00:00Z"
+            cutoff time in string format "2006-01-02T15:04:05Z"
+        to_date : str
+            The end date for the bet history in ISO RFC3339 format eg. "2023-09-11T00:00:00Z"
+        limit : int, Default is 100
+            The maximum number of bets to return in one request, equal or less than 1000
+        offset : int, Default is 0
             The offset for the bet history (starting number for latest records)
         """
+
+        PyCondition.in_range_int(limit, 1, 1000, 'limit')
+        PyCondition.not_negative_int(offset, 'offset')
+        # TODO: check if from_date and to_date are valid dates and start date is before end date
         query_params = {
             'fromDate': from_date,
             'toDate': to_date,
@@ -460,14 +466,14 @@ class CloudbetClient(HttpClient):
         }
         resp = await self.get(url=f"{self._api_url}/v4/bets/history", params=query_params, headers=self.headers)
         if resp.status != 200:
-            self._log.error(f"Failed to retrieve bet history from the Cloudbet API. Response: {resp.text}")
+            self._log.error(f"Failed to retrieve bet history from the Cloudbet API. Response: {resp}")
             raise CloudbetAPIError(message=f"Failed to retrieve bet history from the Cloudbet API.", code=resp.status)
         return msgspec.json.decode(resp.data, type=GetBetHistoryResponse)
 
     async def place_bets(self, event_id: int, market_url: str, price: Union[str, float],
                          side: SelectionSide, stake: Union[str, float], reference_id: Optional[str] = None,
-                         currency: Optional[Currency] = None,
-                         accept_price_change: AcceptPriceChange = AcceptPriceChange.NONE):
+                         currency: Optional[str] = None,
+                         accept_price_change: AcceptPriceChange = AcceptPriceChange.NONE) -> GetBetResponse:
         """
         Place a bet on a given event id and market url.
 
@@ -481,37 +487,36 @@ class CloudbetClient(HttpClient):
         price : Union[str, float]
             The price for the bet
         side : SelectionSide
-            The side for the bet eg back or lay; yes or no
+            The side for the bet eg BACK or LAY; yes or no
         stake : Union[str, float]
             The stake for the bet (in Currency)
-        reference_id : str
+        reference_id : str, optional
             Reference ID, randomly generated request id to allow idempotent calls. Required to be in the UUID format.
             NB: only pass this parameter to retry a failed request.
-        currency : Currency
+        currency : Currency, optional
             The currency for the bet
             NB!: only pass this parameter when betting a different currency than the one set in the client.
+        accept_price_change : AcceptPriceChange , Default is AcceptPriceChange.NONE
+            Accept price change for the bet. ENUM values: NONE, ALL, BETTER
         """
-        if currency is None:
-            currency = self.currency
         if reference_id is None:
             reference_id = str(uuid.uuid4())
-        data = {
+        if currency is None:
+            currency = self._currency
+        # TODO: replace with BetRequest Type
+        json_data = msgspec.json.encode({
             'acceptPriceChange': accept_price_change.value,
-            'eventId': event_id,
+            'eventId': str(event_id),  # have to explictly cast to str
             'marketUrl': market_url,
-            'price': price,
+            'price': str(price),  # have to explictly cast to str
             'side': side,
-            'stake': stake,
+            'stake': str(stake),  # have to explictly cast to str
             'currency': currency,
             'referenceId': reference_id
-        }
-        resp = await self.post(url=f"{self._api_url}/v3/bets/place", headers=self.headers, data=data)
+        })
+        resp = await self.post(url=f"{self._api_url}/v3/bets/place", headers=self.headers, data=json_data)
+        # TODO: modify so 400 requests are handled gracefully and data is decoded rather than throwing an exception
         if resp.status != 200:
-            self._log.error(f"Failed to retrieve latests odds from the Cloudbet API. Response: {resp.text}")
+            self._log.error(f"Failed to retrieve latests odds from the Cloudbet API. Response: {resp}")
             raise CloudbetAPIError(message=f"Failed to retrieve latests from the Cloudbet API.", code=resp.status)
-        return msgspec.json.decode(resp.data, type=GetLatestOddsResponse)
-        # resp = await self.post(url=f"{self._api_url}/v2/odds/lines", headers=self.headers, data=data)
-        # if resp.status != 200:
-        #     self._log.error(f"Failed to retrieve latests odds from the Cloudbet API. Response: {resp.text}")
-        #     raise CloudbetAPIError(message=f"Failed to retrieve latests from the Cloudbet API.", code=resp.status)
-        # return msgspec.json.decode(resp.data, type=GetLatestOddsResponse)
+        return msgspec.json.decode(resp.data, type=GetBetResponse)

@@ -86,6 +86,28 @@ class AcceptPriceChange(Enum):
 
 
 class BetStatus(Enum):
+    INTERNAL_SERVER_ERROR = "INTERNAL_SERVER_ERROR"
+    DUPLICATE_REQUEST = "DUPLICATE_REQUEST"
+    MALFORMED_REQUEST = "MALFORMED_REQUEST"
+    PRICE_ABOVE_MARKET = "PRICE_ABOVE_MARKET"
+    INSUFFICIENT_FUNDS = "INSUFFICIENT_FUNDS"
+    STAKE_ABOVE_MAX = "STAKE_ABOVE_MAX"
+    STAKE_BELOW_MIN = "STAKE_BELOW_MIN"
+    LIABILITY_LIMIT_EXCEEDED = "LIABILITY_LIMIT_EXCEEDED"
+    MARKET_SUSPENDED = "MARKET_SUSPENDED"
+    ACCEPTED = "ACCEPTED"
+    PENDING_ACCEPTANCE = "PENDING_ACCEPTANCE"
+    RESTRICTED = "RESTRICTED"
+    VERIFICATION_REQUIRED = "VERIFICATION_REQUIRED"
+    WIN = "WIN"
+    LOSS = "LOSS"
+    PUSH = "PUSH"
+    HALF_WIN = "HALF_WIN"
+    HALF_LOSS = "HALF_LOSS"
+    PARTIAL = "PARTIAL"
+
+
+class BetStatusTranslation(Enum):
     INTERNAL_SERVER_ERROR = "unexpected error at server side. Our engineering team is informed of the issue. Please try again or contact our customer support if this problem persists"
     DUPLICATE_REQUEST = "duplicated request with same Reference ID was posted, this is due to idempotent request handling. If you want to resubmit this bet. Please add a new Reference ID"
     MALFORMED_REQUEST = "the request was not sent as per the expected request structure"
@@ -158,7 +180,7 @@ class Identifier(msgspec.Struct):
 
 class FixtureListEntry(msgspec.Struct):
     away: TeamIdentifier
-    # event cutoff time in string format "2006-01-02T15:04:05Z07:00" (RFC3339)
+    # event cutoff time in string format "2006-01-02T15:04:05Z" (RFC3339)
     cutoff_time: str = msgspec.field(name="cutoffTime")
     home: TeamIdentifier
     # event_id => unqiue identifier for the event
@@ -227,7 +249,7 @@ class GetEventForSportResponseTeam(msgspec.Struct):
     researchId: str
 
 
-class  GetEventResponse(msgspec.Struct):
+class GetEventResponse(msgspec.Struct):
     """ A python class that represents the response from the get_event endpoint
     """
     sequence: str
@@ -254,30 +276,86 @@ class GetFixturesResponse(msgspec.Struct):
     competition: List[CompetitionWithCategory] = msgspec.field(name="competitions")
 
 
-class GetBetResponse(msgspec.Struct):
+class BetRequest(msgspec.Struct):
+    accept_price_change: AcceptPriceChange = msgspec.field(name="acceptPriceChange")
+    # TODO: repalce with Currency types from Cloudbet API
+    currency: str = msgspec.field(name="currency")
+    event_id: str = msgspec.field(name="eventId")
+    market_url: str = msgspec.field(name="marketUrl")
+    price: str = msgspec.field(name="price")
+    reference_id: str = msgspec.field(name="referenceId")
+    side: str = msgspec.field(name="side")
+    stake: str = msgspec.field(name="stake")
+
+
+class GetBetResponse(msgspec.Struct, kw_only=True):
     """ BetResponse presents response upon place bet request"""
-    category_key: str = msgspec.field(name="categoryKey")
-    competition_id: int = msgspec.field(name="competitionId")
+    category_key: Optional[str] = msgspec.field(name="categoryKey", default=None)
+    competition_id: Union[str, int, None] = msgspec.field(name="competitionId", default=None)
     create_time: str = msgspec.field(name="createTime")
     currency: str = msgspec.field(name="currency")
     customer_reference: str = msgspec.field(name="customerReference")
-    error: str = msgspec.field(name="error")
-    event_id: int = msgspec.field(name="eventId")
-    event_name: str = msgspec.field(name="eventName")
+    error: Optional[str] = msgspec.field(name="error", default=None)
+    event_id: str = msgspec.field(name="eventId")
+    event_name: Optional[str] = msgspec.field(name="eventName", default=None)
     market_url: str = msgspec.field(name="marketUrl")
     price: Union[float, str] = msgspec.field(name="price")
     reference_id: str = msgspec.field(name="referenceId")
-    return_amount: Union[float, str] = msgspec.field(name="returnAmount")
+    return_amount: Union[float, str, None] = msgspec.field(name="returnAmount", default=None)
     side: SelectionSide = msgspec.field(name="side")
-    sport_key: str = msgspec.field(name="sportsKey")
+    sport_key: Optional[str] = msgspec.field(name="sportsKey", default=None)
     stake: Union[float, str] = msgspec.field(name="stake")
     status: BetStatus = msgspec.field(name="status")
+
+    def to_dict(self) -> dict:
+        """
+        Converts a `GetBetResponse` to a dictionary.
+
+        Returns
+        -------
+        dict[str, object]
+        """
+        return {
+            "referenceId": self.reference_id,
+            "price": self.price,
+            "eventId": self.event_id,
+            "marketUrl": self.market_url,
+            "side": self.side.value,
+            "currency": self.currency,
+            "stake": self.stake,
+            "createTime": self.create_time,
+            "status": self.status.value,
+            "returnAmount": self.return_amount,
+            "eventName": self.event_name,
+            "sportsKey": self.sport_key,
+            "competitionId": self.sport_key,
+            "categoryKey": self.category_key,
+            "customerReference": self.customer_reference,
+            "error": self.error
+        }
+
+    @classmethod
+    def from_dict(cls, data):
+        return cls(**data)
 
 
 class GetBetHistoryResponse(msgspec.Struct):
     """ BetHistoryResponse presents response upon get bet history request"""
     bets: List[GetBetResponse] = msgspec.field(name="bets")
-    total_bets: int = msgspec.field(name="totalBets")
+    total_bets: str = msgspec.field(name="totalBets")
+
+    def to_dict(self) -> dict:
+        """
+        Converts a `GetBetHistoryResponse` to a dictionary.
+
+        Returns
+        -------
+        dict[str, object]
+        """
+        return {
+            "bets": [single_bet.to_dict() for single_bet in self.bets],
+            "totalBets": self.total_bets
+        }
 
 
 def default_team_factory():
