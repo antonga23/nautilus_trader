@@ -1,0 +1,18 @@
+{
+    "referenceId": "bb0693b9-c5dd-4efd-af84-00874e916616",
+    "price": "1.01",
+    "eventId": "19701304",
+    "marketUrl": "soccer.team_total_goals_period_second_half/under?team=home&total=2.5",
+    "side": "BACK",
+    "currency": "PLAY_EUR",
+    "stake": "0.1",
+    "createTime": "2023-09-19T09:16:45Z",
+    "status": "WIN",
+    "returnAmount": "0.001",
+    "eventName": "",
+    "sportsKey": "soccer",
+    "competitionId": "696",
+    "categoryKey": "international_clubs",
+    "customerReference": "8f58ab50-8de2-47a0-91f6-043385ac1917",
+    "error": ""
+}

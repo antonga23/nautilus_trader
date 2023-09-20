@@ -17,20 +17,32 @@ import asyncio
 import json
 import os
 import random
+from collections import namedtuple
 from typing import List
+from unittest.mock import patch
 
+import msgspec
 import pytest
 from nautilus_trader.common.clock import LiveClock
 from nautilus_trader.common.logging import Logger
+from nautilus_trader.network.http import ClientResponse
+
+from nautilus_trader.adapters.cloudbet.client.exceptions import CloudbetAPIError
+from nautilus_trader.core import uuid
+
 from nautilus_trader.adapters.cloudbet.client.core import CloudbetClient
 from nautilus_trader.adapters.cloudbet.client.schema import Selection, GetEventsForSportResponse, GetEventResponse, \
-    GetFixturesResponse, GetLatestOddsResponse
+    GetFixturesResponse, GetLatestOddsResponse, SelectionSide, BetStatus, AcceptPriceChange, GetBetResponse, \
+    GetBetHistoryResponse
+from nautilus_trader.model.instruments.crypto_betting import CryptoBettingInstrument
 from tests.integration_tests.adapters.cloudbet.conftest import cloudbet_client
 # /home/alatha/Desktop/nautilus_trader/tests/integration_tests/adapters/cloudbet/test_kit.py
 from tests.integration_tests.adapters.cloudbet.test_kit import CloudbetTestStubs, test_api_key, test_api_url, \
     CloudbetResponses, DataGenerator
 from asyncmock import AsyncMock
 import asynctest
+
+
 
 
 class TestCloudbetClient:
@@ -170,8 +182,6 @@ class TestCloudbetClient:
         expected = CloudbetResponses.get_events_for_sport()
         assert type(result) == type(expected)
 
-
-
     @pytest.mark.asyncio()
     async def test_load_selection(self):
         await self.client.connect()
@@ -231,7 +241,6 @@ class TestCloudbetClient:
             else:
                 continue
 
-
     @pytest.mark.asyncio()
     async def test_get_fixture_success(self):
         await self.client.connect()
@@ -244,6 +253,7 @@ class TestCloudbetClient:
         result = await self.client.get_fixtures(sport_key, current_timestamp, timestamp_48h, limit=100)
         # Check that the response is a GetFixtureResponse instance
         assert isinstance(result, GetFixturesResponse)
+
     @pytest.mark.asyncio()
     async def test_get_event_success(self):
         await self.client.connect()
@@ -254,7 +264,8 @@ class TestCloudbetClient:
         # sports = ["soccer", "tennis", "baseball", "basketball"]
         sports = ["soccer"]
         sport_key = random.choice(sports)
-        fixtures: GetFixturesResponse = await self.client.get_fixtures(sport_key, current_timestamp, timestamp_48h, limit=100)
+        fixtures: GetFixturesResponse = await self.client.get_fixtures(sport_key, current_timestamp, timestamp_48h,
+                                                                       limit=100)
         if len(fixtures.competition) > 0:
             current_competition = random.choice(fixtures.competition)
             if len(current_competition.events) > 0:
@@ -264,6 +275,7 @@ class TestCloudbetClient:
                 assert isinstance(result, GetEventResponse)
             else:
                 print("No events found for competition:", fixtures)
+
     @pytest.mark.asyncio()
     async def test_get_event_market_filter(self):
         await self.client.connect()
@@ -324,6 +336,211 @@ class TestCloudbetClient:
         # Check that the response is a GetLatestOddsResponse instance
         assert isinstance(result, GetLatestOddsResponse)
 
+    @pytest.mark.asyncio
+    async def test_place_bet_accepted(self, cloudbet_client):
+        await cloudbet_client.connect()
+        # we need to get a tradeable event in the future to place a bet
+        #   get the current unix timestamp
+        current_timestamp = int(self.clock.timestamp()) + 86400
+        #  get the unixtime 48 hours in the future
+        timestamp_48h = current_timestamp + 172800
+        sports = ["soccer", "tennis", "basketball"]
+        sport_key = random.choice(sports)
+        event = await cloudbet_client.get_events_for_sport(
+            sport_key,
+            current_timestamp,
+            timestamp_48h,
+            limit=5
+        )
+        selections: List[Selection] = cloudbet_client.event_to_selection(event)
+        selection = random.choice(selections)
+        assert isinstance(selection, Selection), f"Expected object of type Selection. received {selection} "
+        market_url = selection.market_name + '/' + selection.outcome + '?' + selection.params if selection.params is not None else selection.market_name + '/' + selection.outcome
+        result = await cloudbet_client.place_bets(selection.event_id, market_url, selection.price, selection.side,
+                                                  selection.min_stake, currency='PLAY_EUR')  # use PLAY_EUR for testing
+        assert isinstance(result, GetBetResponse)
+        assert result.status is BetStatus.ACCEPTED, f"Expected ACCEPTED BetStatus, instead got: {result.status}"
+
+
+    @pytest.mark.asyncio
+    @patch.object(CloudbetClient, 'post')
+    # ToDO: test why patch fails when explicitly using a co-routine mock
+    #  @patch.object(CloudbetClient, 'post', new_callable=AsyncMock)
+    async def test_place_bet_mock_required_parameters(self, mock_cloudbet_post, cloudbet_client):
+        await cloudbet_client.connect()
+
+        # Set up the mock responses
+        success_bet : GetBetResponse = CloudbetResponses.place_bet_success()
+        response_data : bytes = json.dumps(success_bet.to_dict()).encode('utf-8') # encode to binary
+        GenericObject = namedtuple('GenericObject', ['status', 'data'])
+        mock_cloudbet_post.return_value = GenericObject(status=200, data=response_data)
+
+        # prepare data for place_bet
+        json_data = msgspec.json.encode({
+            'acceptPriceChange': AcceptPriceChange.NONE,
+            'eventId': str(success_bet.event_id),  # have to explictly cast to str
+            'marketUrl': success_bet.market_url,
+            'price': str(success_bet.price),  # have to explictly cast to str
+            'side': str(success_bet.side.value),
+            'stake': str(success_bet.stake), # have to explictly cast to str
+            'currency': success_bet.currency,
+            'referenceId': success_bet.reference_id
+        })
+        result = await cloudbet_client.place_bets(success_bet.event_id, market_url=success_bet.market_url, price=success_bet.price, side=success_bet.side.value,
+                                         stake=success_bet.stake, reference_id=success_bet.reference_id, currency=success_bet.currency)
+        # check post method was intercepted, and method successfully serialised mock-return value (response_data)
+        assert isinstance(result, GetBetResponse)
+        mock_cloudbet_post.assert_called_once()
+        mock_cloudbet_post.assert_called_once_with(url=f"{cloudbet_client._api_url}/v3/bets/place", headers=cloudbet_client.headers,
+                                          data=json_data)
+
+    @pytest.mark.asyncio
+    @patch.object(CloudbetClient, 'post')
+    async def test_fail_to_place_bet_raises_exception(self, mock_cloudbet_post, cloudbet_client):
+        """ Test exception is thrown with invalid event_id"""
+        # # TODO: replace all calls to connect with a async mock method with app. side effects
+        await cloudbet_client.connect()
+        # we need to get a tradeable event in the future to place a bet
+        #   get the current unix timestamp
+        current_timestamp = int(self.clock.timestamp()) + 86400
+        #  get the unixtime 48 hours in the future
+        timestamp_48h = current_timestamp + 172800
+        sports = ["soccer", "tennis", "basketball"]
+        sport_key = random.choice(sports)
+        event = await cloudbet_client.get_events_for_sport(
+            sport_key,
+            current_timestamp,
+            timestamp_48h,
+            limit=5
+        )
+        selections: List[Selection] = cloudbet_client.event_to_selection(event)
+        # TODO: refactor the above to a live selection fixture to avoid random failures
+        selection = random.choice(selections)
+        assert isinstance(selection, Selection), f"Expected object of type Selection. received {selection} "
+        market_url = selection.market_name + '/' + selection.outcome + '?' + selection.params if selection.params is not None else selection.market_name + '/' + selection.outcome
+
+        # Mock the post method
+        # cloudbet_client.post = asynctest.CoroutineMock(return_value=CloudbetResponses.place_bet_invalid_event_id())
+        mock_cloudbet_post.return_value = CloudbetResponses.place_bet_invalid_event_id()
+
+        # Define the invalid event_id
+        event_id = str(selection.event_id) + "random"
+
+        # Call the place_bets method and expect an exception to be raised
+        with pytest.raises(CloudbetAPIError):
+            await cloudbet_client.place_bets(event_id, market_url, selection.price, selection.side,
+                                                  selection.min_stake, currency='PLAY_EUR')
+
+        # test to check offset is a positive integer and limitn is within the correct range
+
+    @pytest.mark.asyncio
+    @patch.object(CloudbetClient, 'get')
+    async def test_retrieve_bet_history_required_params(self, mock_cloudbet_get, cloudbet_client):
+        # Set up the mock responses
+        bet_history: GetBetHistoryResponse = CloudbetResponses.get_bet_history_success()
+
+        from_date = "2023-09-11T00:00:00Z" # hardcoded since we know these dates have bets placed
+        to_date = "2023-09-20T23:59:59Z" # hardcoded since we know these dates have bets placed
+        limit = 100
+        offset = 0
+        query_params = {
+            'fromDate': from_date,
+            'toDate': to_date,
+            'limit': limit,
+            'offset': offset
+        }
+        response_data : bytes = json.dumps(bet_history.to_dict()).encode('utf-8') # encode to binary
+        GenericObject = namedtuple('GenericObject', ['status', 'data'])
+        mock_cloudbet_get.return_value = GenericObject(status=200, data=response_data)
+        # result : GetBetHistoryResponse  = await cloudbet_client.get_bet_history()
+
+        # Call the method under test
+        result = await cloudbet_client.get_bet_history(from_date=from_date, to_date=to_date)
+
+        # Check the result
+        assert isinstance(result, GetBetHistoryResponse)
+        mock_cloudbet_get.assert_called_once()
+        mock_cloudbet_get.assert_called_once_with(url=f"{cloudbet_client._api_url}/v4/bets/history", params=query_params, headers=cloudbet_client.headers)
+
+    @pytest.mark.asyncio
+    @patch.object(CloudbetClient, 'get')
+    async def test_retrieve_bet_history_offset_or_limit_invalid(self, mock_cloudbet_get, cloudbet_client):
+        # Arrange
+        from_date = "2023-09-11T00:00:00Z" # hardcoded since we know these dates have bets placed
+        to_date = "2023-09-20T23:59:59Z" # hardcoded since we know these dates have bets placed
+        limit = 1001
+        offset = -1
+
+        query_params = {
+            'fromDate': from_date,
+            'toDate': to_date,
+            'limit': limit,
+            'offset': offset
+        }
+
+
+        # Act and Assert
+        with pytest.raises(ValueError):
+            await cloudbet_client.get_bet_history(from_date, to_date, limit, offset)
+            mock_cloudbet_get.assert_called_once_with(url=f"{cloudbet_client._api_url}/v4/bets/history",
+                                                      params=query_params, headers=cloudbet_client.headers) # important sanity check otherwise Error could be thrown for multiple reasons
+
+    @pytest.mark.asyncio
+    @patch.object(CloudbetClient, 'get')
+    async def test_retrieve_bet_history_exception_malformed_date(self, mock_cloudbet_get, cloudbet_client):
+        # Arrange
+        response_data : bytes = json.dumps("parsing time 2023/09/11 as 2006-01-02T15:04:05Z07:00: cannot parse /09/11 as -").encode('utf-8') # encode to binary
+        GenericObject = namedtuple('GenericObject', ['status', 'data'])
+        mock_cloudbet_get.return_value = GenericObject(status=400, data=response_data)
+        from_date = "2023/09/11"
+        to_date = "2023/09/20"
+        limit = 100
+        offset = 0
+        query_params = {
+            'fromDate': from_date,
+            'toDate': to_date,
+            'limit': limit,
+            'offset': offset
+        }
+
+        # Act and Assert
+        with pytest.raises(CloudbetAPIError):
+            await cloudbet_client.get_bet_history(from_date="2023/09/11", to_date="2023/09/20")
+        mock_cloudbet_get.assert_called_once_with(url=f"{cloudbet_client._api_url}/v4/bets/history",
+                                                  params=query_params,
+                                                  headers=cloudbet_client.headers)  # important sanity check otherwise Error could be thrown for multiple reasons
+
+    @pytest.mark.asyncio
+    @patch.object(CloudbetClient, 'get')
+    async def test_get_bet_status_valid_reference_id(self, mock_cloudbet_get, cloudbet_client):
+        # Set up the mock response
+        bet_status: GetBetResponse = CloudbetResponses.get_bet_status_success()
+        response_data : bytes = json.dumps(bet_status.to_dict()).encode('utf-8') # encode to binary
+        GenericObject = namedtuple('GenericObject', ['status', 'data'])
+        mock_cloudbet_get.return_value = GenericObject(status=200, data=response_data)
+
+        # Call the method under test
+        result = await cloudbet_client.get_bet_status(bet_status.reference_id)
+
+        # Assert the result
+        assert isinstance(result, GetBetResponse)
+        mock_cloudbet_get.assert_called_once_with(url=f"{cloudbet_client._api_url}/v3/bets/{bet_status.reference_id}/status", headers=cloudbet_client.headers)
+
+    @pytest.mark.asyncio
+    @patch.object(CloudbetClient, 'get')
+    async def test_raises_cloudbet_api_error_for_invalid_reference_id(self, mock_cloudbet_get, cloudbet_client):
+        # Set up the mock response
+        response_data : bytes = json.dumps(" ").encode('utf-8') # encode to binary
+        GenericObject = namedtuple('GenericObject', ['status', 'data'])
+        mock_cloudbet_get.return_value = GenericObject(status=404, data=response_data)
+        reference_id = "ba319119-cf00-4acb-a4d0-728b3f7234d2" # invalid_reference_id
+        # Call the method under test
+        with pytest.raises(CloudbetAPIError):
+            await cloudbet_client.get_bet_status(reference_id)
+
+        mock_cloudbet_get.assert_called_once_with(url=f"{cloudbet_client._api_url}/v3/bets/{reference_id}/status", headers=cloudbet_client.headers)
+
+    # TODO: test this!! - first add a selections fixture
     # @pytest.mark.asyncio()
     # async def test_selections_to_json(self):
     #     await self.client.connect()
@@ -358,7 +575,6 @@ class TestCloudbetClient:
     #         json.dump(normalised_selections, outfile)
     #     assert os.path.exists('basketball_selections.json')
 
-
     # @pytest.mark.asyncio()
     # # NB this test will fail if the client is not initialized correctly
     # async def test_client_disconnect(self):
@@ -370,15 +586,3 @@ class TestCloudbetClient:
     #     self.client._api_url = self.test_api_url
     #     # await self.client.disconnect()
     #     assert self.client.connected is False
-
-# class TimedAsyncMock(AsyncMock):
-#     def __init__(self, *args, **kwargs):
-#         super().__init__(*args, **kwargs)
-#         self.total_call_time = 0
-#
-#     async def __call__(self, *args, **kwargs):
-#         start_time = time.perf_counter()
-#         result = await super().__call__(*args, **kwargs)
-#         end_time = time.perf_counter()
-#         self.total_call_time += end_time - start_time
-#         return result

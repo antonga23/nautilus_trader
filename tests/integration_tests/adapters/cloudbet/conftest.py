@@ -26,6 +26,7 @@ from nautilus_trader.adapters.cloudbet.factories import CloudbetLiveDataClientFa
 from nautilus_trader.test_kit.providers import TestInstrumentProvider
 from nautilus_trader.test_kit.stubs.events import TestEventStubs
 from tests.integration_tests.adapters.cloudbet.test_kit import CloudbetTestStubs
+from nautilus_trader.common.clock import LiveClock
 
 
 @pytest.fixture()
@@ -36,6 +37,32 @@ def venue() -> Venue:
 @pytest.fixture(autouse=False)
 def cloudbet_client(event_loop, logger):
     return CloudbetTestStubs.cloudbet_client(event_loop, logger)
+
+
+# # live instrument fixture
+# @pytest.fixture()
+# @pytest.mark.asyncio(autouse=False)
+# async def live_instrument(cloudbet_client, clock):
+#     await cloudbet_client.connect()
+#     # get the current unix timestamp
+#
+#     clock = LiveClock()
+#     current_timestamp = int(clock.timestamp())
+#     # get the unixtime 48 hours in the future
+#     timestamp_48h = current_timestamp + 172800
+#     # sports = ["soccer", "tennis", "baseball", "basketball"]
+#     sports = ["basketball"]
+#     sport_key = random.choice(sports)
+#     event = await cloudbet_client.get_events_for_sport(
+#         sport_key,
+#         current_timestamp,
+#         timestamp_48h,
+#         limit=5
+#     )
+#     selections: List[Selection] = self.client.event_to_selection(event)
+#     selection = Selection(**random.choice(selections))
+#     instrument = self.provider.selection_to_instrument(selection)
+#     return instrument
 
 @pytest.fixture(autouse=True)
 def instrument():
