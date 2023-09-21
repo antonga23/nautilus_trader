@@ -463,6 +463,22 @@ class GetSportsResponse(msgspec.Struct):
     sports: List[GetSportsResponseSport] = msgspec.field(name="sports")
 
 
+class GetAccountCurrencies(msgspec.Struct):
+    """GetAccountCurrencies
+
+    This is the response from the API when calling the /v1/account/currencies endpoint
+    """
+    currencies: List[str] = msgspec.field(name="currencies")
+
+
+class GetAccountBalance(msgspec.Struct):
+    """GetAccountBalance
+
+    This is the response from the API when calling the /v1/account/currencies/{currency}/balance endpoint
+    """
+    amount: Union[str, float] = msgspec.field(name="amount")
+
+
 class CloudbetSide(Enum):
     """CloudbetSide"""
 

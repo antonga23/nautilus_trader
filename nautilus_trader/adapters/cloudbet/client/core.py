@@ -19,6 +19,7 @@ import time
 import pathlib
 import ssl
 import uuid
+from functools import lru_cache
 from typing import Optional, List, Union
 
 import msgspec
@@ -41,7 +42,7 @@ from dotenv import dotenv_values
 from nautilus_trader.adapters.cloudbet.client.schema import GetSportsResponse, GetEventsForSportResponse, \
     GetSportsResponseSport, GetEventForSportResponseEvent, Selection, GetAccountInfoResponse, default_team_factory, \
     GetLatestOddsResponse, GetEventResponse, GetFixturesResponse, GetBetResponse, GetBetHistoryResponse, SelectionSide, \
-    AcceptPriceChange
+    AcceptPriceChange, GetAccountCurrencies, GetAccountBalance
 from nautilus_trader.model.currencies import EUR
 import json
 
@@ -86,10 +87,14 @@ class CloudbetClient(HttpClient):
         _api_key_default = cloudbet_secrets['CLOUDBET_API_KEY'] if 'CLOUDBET_API_KEY' in cloudbet_secrets else None
         _api_url_default = cloudbet_secrets['CLOUDBET_API_URL'] if 'CLOUDBET_API_URL' in cloudbet_secrets else None
         # ToDo: chose a default currency, for now we use the selection currency EUR
-        _currency = cloudbet_secrets['CLOUDBET_CURRENCY'] if 'CLOUDBET_CURRENCY' in cloudbet_secrets else None # in test, generaly PLAY_EUR
+        _currency = cloudbet_secrets[
+            'CLOUDBET_CURRENCY'] if 'CLOUDBET_CURRENCY' in cloudbet_secrets else None  # in test, generaly PLAY_EUR
 
         self._api_key = api_key if api_key is not None else _api_key_default
         self._api_url = api_url if api_url is not None else _api_url_default
+        self._account_uuid : Optional[str, uuid, None] = cloudbet_secrets['CLOUDBET_UUID'] if 'CLOUDBET_UUID' in cloudbet_secrets else None
+        self._currency = _currency
+        # TODO: add  test for secrets. should be impossible to initalise an Client without key, url or uuid
 
     @property
     def headers(self):
@@ -107,6 +112,10 @@ class CloudbetClient(HttpClient):
     #     for key, value in query_param.items():
     #         query_paramters[key] = value
     #     return query_paramters
+
+    @property
+    def currency(self) -> Union[str, Currency, None]:
+        return self._currency
 
     async def request(self, method, url, **kwargs) -> ClientResponse:
         return await super().request(method=method, url=url, **kwargs)
@@ -127,9 +136,8 @@ class CloudbetClient(HttpClient):
 
         resp = await self.get(url=f"{self._api_url}/v1/account/info", headers=self.headers)
         if resp.status != 200:
-            self._log.error(f"Failed to retrieve account details from the Cloudbet API. Response: {resp.text}")
-            raise CloudbetAPIError(f"Failed to login to Cloudbet API. Response: {resp.text}")
-        # resp_content = await resp.read()
+            self._log.error(f"Failed to retrieve account details from the Cloudbet API. Response: {resp}")
+            raise CloudbetAPIError(f"Failed to login to Cloudbet API. Response: {resp}")
         return msgspec.json.decode(resp.data, type=GetAccountInfoResponse)
 
     async def disconnect(self) -> None:
@@ -268,64 +276,6 @@ class CloudbetClient(HttpClient):
             selections.append(self.event_to_selection(event))
         return selections
 
-    @staticmethod
-    # @lru_cache(maxsize=128)
-    # ToDo: Use multithreading to speed up this function, we can extract the data in parallel otherwise we have to
-    #  wait for each event to be processed
-    def event_to_selection(event: GetEventsForSportResponse) -> List[Selection]:
-        selections_list: List = []
-        for competition in event.competitions:
-            competition_name = competition.name
-            competition_key = competition.key
-            sport_name = competition.sport.name
-            sport_key = competition.sport.key
-            for event in competition.events:
-                # Default value if home/away team is None
-                if event.home is None:
-                    event.home = default_team_factory()
-                if event.away is None:
-                    event.away = default_team_factory()
-                event_id = event.id
-                home_name = event.home.name
-                home_key = event.home.key
-                away_name = event.away.name
-                away_key = event.away.key
-                status = event.status
-                event_name = event.name
-                cutoff_time = event.cutoff_time
-                # Iterate over all the markets
-                for market_name, market_value in event.markets.items():
-                    # Iterate over all the submarkets in the current market
-                    for submarket_period, submarket_value in market_value.submarkets.items():
-                        # Iterate over all the selections in the current submarket
-                        for selection in submarket_value.selections:
-                            # Add a dictionary with the market name, submarket period and selection data to the extracted data list
-                            selections_list.append(Selection(
-                                competition_name=competition_name,
-                                competition_key=competition_key,
-                                sport_name=sport_name,
-                                sport_key=sport_key,
-                                event_id=event_id,
-                                home_name=home_name,
-                                home_key=home_key,
-                                away_name=away_name,
-                                away_key=away_key,
-                                status=status,
-                                market_name=market_name,
-                                submarket_name=market_name + "_" + submarket_period,
-                                submarket_period=submarket_period,
-                                sequence=submarket_value.sequence,
-                                outcome=selection.outcome,
-                                price=selection.price,
-                                min_stake=selection.minStake,
-                                max_stake=selection.maxStake,
-                                probability=selection.probability,
-                                selection_status=selection.status,
-                                side=selection.side,
-                                cutoff_time=cutoff_time,
-                                event_name=event_name,
-                                params=selection.params))
-        return selections_list
 
     async def get_latest_odds(self, event_id: str, market_url: str) -> GetLatestOddsResponse:
         """
@@ -470,7 +420,7 @@ class CloudbetClient(HttpClient):
             raise CloudbetAPIError(message=f"Failed to retrieve bet history from the Cloudbet API.", code=resp.status)
         return msgspec.json.decode(resp.data, type=GetBetHistoryResponse)
 
-    async def place_bets(self, event_id: int, market_url: str, price: Union[str, float],
+    async def place_bets(self, event_id: Union[int, str], market_url: str, price: Union[str, float],
                          side: SelectionSide, stake: Union[str, float], reference_id: Optional[str] = None,
                          currency: Optional[str] = None,
                          accept_price_change: AcceptPriceChange = AcceptPriceChange.NONE) -> GetBetResponse:
@@ -478,7 +428,7 @@ class CloudbetClient(HttpClient):
         Place a bet on a given event id and market url.
 
         https://www.cloudbet.com/api/?urls.primaryName=Trading#/Trading/PlaceBet
-                Parameters
+        Parameters
         ----------
         event_id : int
             The event id for the bet
@@ -520,3 +470,130 @@ class CloudbetClient(HttpClient):
             self._log.error(f"Failed to retrieve latests odds from the Cloudbet API. Response: {resp}")
             raise CloudbetAPIError(message=f"Failed to retrieve latests from the Cloudbet API.", code=resp.status)
         return msgspec.json.decode(resp.data, type=GetBetResponse)
+
+    async def get_account_currencies(self) -> GetAccountCurrencies:
+        """
+        Get a list of enabled currencies on the account.
+
+        https://www.cloudbet.com/api/?urls.primaryName=Account#/PlayerAccount/accountCurrencies
+        """
+
+        resp = await self.get(url=f"{self._api_url}/v1/account/currencies", headers=self.headers)
+        if resp.status != 200:
+            self._log.error(f"Failed to retrieve sports from the Cloudbet API. Response: {resp}")
+            raise CloudbetAPIError(message=f"Failed to retrieve currencies from the Cloudbet API.", code=resp.status)
+        return msgspec.json.decode(resp.data, type=GetAccountCurrencies)
+
+
+    async def get_balances(self, currency: Union[str, Currency]): # TODO: replace str type with a "native" CloudbetCurrencyType
+        """
+        Get the balance for a requested currency..
+
+        https://www.cloudbet.com/api/?urls.primaryName=Account#/PlayerAccount/accountBalance
+
+
+        Parameters
+        ----------
+
+        currency: Union[str, Currency]
+        """
+
+        resp = await self.get(url=f"{self._api_url}/v1/account/currencies/{currency}/balance", headers=self.headers)
+        if resp.status != 200:
+            self._log.error(f"Failed to retrieve sports from the Cloudbet API. Response: {resp}")
+            raise CloudbetAPIError(message=f"Failed to retrieve currencies from the Cloudbet API.", code=resp.status)
+        return msgspec.json.decode(resp.data, type=GetAccountBalance)
+
+
+    ############################################################################
+    # HELPER METHODS
+    ############################################################################
+
+
+    @staticmethod
+    # @lru_cache(maxsize=128)
+    # ToDo: Use multithreading to speed up this function, we can extract the data in parallel otherwise we have to
+    #  wait for each event to be processed
+    def event_to_selection(event: GetEventsForSportResponse) -> List[Selection]:
+        selections_list: List = []
+        for competition in event.competitions:
+            competition_name = competition.name
+            competition_key = competition.key
+            sport_name = competition.sport.name
+            sport_key = competition.sport.key
+            for event in competition.events:
+                # Default value if home/away team is None
+                if event.home is None:
+                    event.home = default_team_factory()
+                if event.away is None:
+                    event.away = default_team_factory()
+                event_id = event.id
+                home_name = event.home.name
+                home_key = event.home.key
+                away_name = event.away.name
+                away_key = event.away.key
+                status = event.status
+                event_name = event.name
+                cutoff_time = event.cutoff_time
+                # Iterate over all the markets
+                for market_name, market_value in event.markets.items():
+                    # Iterate over all the submarkets in the current market
+                    for submarket_period, submarket_value in market_value.submarkets.items():
+                        # Iterate over all the selections in the current submarket
+                        for selection in submarket_value.selections:
+                            # Add a dictionary with the market name, submarket period and selection data to the extracted data list
+                            selections_list.append(Selection(
+                                competition_name=competition_name,
+                                competition_key=competition_key,
+                                sport_name=sport_name,
+                                sport_key=sport_key,
+                                event_id=event_id,
+                                home_name=home_name,
+                                home_key=home_key,
+                                away_name=away_name,
+                                away_key=away_key,
+                                status=status,
+                                market_name=market_name,
+                                submarket_name=market_name + "_" + submarket_period,
+                                submarket_period=submarket_period,
+                                sequence=submarket_value.sequence,
+                                outcome=selection.outcome,
+                                price=selection.price,
+                                min_stake=selection.minStake,
+                                max_stake=selection.maxStake,
+                                probability=selection.probability,
+                                selection_status=selection.status,
+                                side=selection.side,
+                                cutoff_time=cutoff_time,
+                                event_name=event_name,
+                                params=selection.params))
+        return selections_list
+
+    # @staticmethod
+    # def cloudbet_account_to_account_state(
+    #     currency: str,
+    #     balance: Union[None, str, float], # str preferred
+    # ) -> AccountState:
+    #     currency = Currency.from_str(account_detail["currencyCode"])
+    #     balance = float(account_funds["availableToBetBalance"])
+    #     locked = -float(account_funds["exposure"]) if account_funds["exposure"] else 0.0
+    #     free = balance - locked
+    #     return AccountState(
+    #         account_id=AccountId(f"{BETFAIR_VENUE.value}-{account_id}"),
+    #         account_type=AccountType.BETTING,
+    #         base_currency=currency,
+    #         reported=False,
+    #         balances=[
+    #             AccountBalance(
+    #                 total=Money(balance, currency),
+    #                 locked=Money(locked, currency),
+    #                 free=Money(free, currency),
+    #             ),
+    #         ],
+    #         margins=[],
+    #         info={"funds": account_funds, "detail": account_detail},
+    #         event_id=event_id,
+    #         ts_event=ts_event,
+    #         ts_init=ts_init,
+    #     )
+

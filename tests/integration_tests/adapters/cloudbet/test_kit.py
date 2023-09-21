@@ -11,7 +11,7 @@ from aiohttp import ClientResponse
 
 from nautilus_trader.adapters.cloudbet.client.core import CloudbetClient
 from nautilus_trader.adapters.cloudbet.client.schema import GetAccountInfoResponse, GetSportsResponse, \
-    GetEventsForSportResponse, GetBetResponse, GetBetHistoryResponse
+    GetEventsForSportResponse, GetBetResponse, GetBetHistoryResponse, GetAccountCurrencies
 from nautilus_trader.adapters.cloudbet.client.util import extract_cloudbet_symbol, cloudbet_instrument_id
 from nautilus_trader.adapters.cloudbet.common import CLOUDBET_VENUE
 from nautilus_trader.adapters.cloudbet.providers import CloudbetInstrumentProvider
@@ -167,6 +167,11 @@ class CloudbetResponses:
     @staticmethod
     def get_bet_status_success() -> GetBetResponse:
         return CloudbetResponses.load('get_bet_status.json', response_type=GetBetResponse)
+
+    @staticmethod
+    def get_account_currencies_success() -> GetAccountCurrencies:
+        return CloudbetResponses.load('get_account_currencies.json', response_type=GetAccountCurrencies)
+
 
 
 
