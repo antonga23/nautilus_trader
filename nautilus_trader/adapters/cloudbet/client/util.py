@@ -15,11 +15,20 @@
 
 
 from functools import lru_cache
-from typing import Optional
+from typing import Optional, Union
+from datetime import datetime
 
 from nautilus_trader.core.correctness import PyCondition
-from nautilus_trader.model.identifiers import InstrumentId
+from nautilus_trader.core.rust.model import ContingencyType, OrderStatus
+from nautilus_trader.core.uuid import UUID4
+from nautilus_trader.execution.reports import OrderStatusReport
+from nautilus_trader.model.identifiers import InstrumentId, ClientOrderId, VenueOrderId, AccountId
 from nautilus_trader.model.identifiers import Symbol
+from nautilus_trader.model.objects import Price, Quantity
+
+from nautilus_trader.adapters.cloudbet.client.schema import GetBetResponse, BetStatus
+from nautilus_trader.model.orders import Order
+
 from nautilus_trader.adapters.cloudbet.common import VENUE
 
 
@@ -72,3 +81,68 @@ def cloudbet_instrument_id(
 
     symbol = make_symbol(event_id=event_id, submarket_name=market_name, outcome=outcome, params=params)
     return InstrumentId(symbol=symbol, venue=VENUE)
+
+
+def bet_to_order_status_report(
+    order: Order,
+    account_id: AccountId,
+    instrument_id: InstrumentId,
+    bet_response: GetBetResponse,
+    ts_init: int,
+    client_order_id: ClientOrderId,
+    venue_order_id: VenueOrderId,
+    report_id: Union[UUID4, str]
+   ) -> OrderStatusReport: # TODO: add lru_cache ?
+    """
+    Convert a cloudbet bet response to an order status report
+    """
+
+    bet_status : BetStatus = bet_response.status
+    order_status: OrderStatus = bet_status.get_order_status(bet_status)
+
+    bet_price : str = str(bet_response.price) #  cast from float to str
+    order_price : Price = Price.from_str(bet_price)
+
+    bet_quantity : str = str(bet_response.stake) #  cast from float to str
+    filled_qty : Quantity = Quantity.from_str(bet_quantity)
+    order_quantity: Quantity = order.quantity if order.quantity else filled_qty
+
+    bet_accepted : str = bet_status.create_time # optimistically assume order accepted at same time as bet placed
+    order_accepted : int = cloudbet_timestamp_to_unix_nanos(bet_accepted)
+
+    report: OrderStatusReport = OrderStatusReport(
+        account_id=account_id,
+        instrument_id=instrument_id,
+        venue_order_id=venue_order_id,
+        client_order_id=client_order_id,
+        order_side=order.side,  # change to selection Side type
+        order_type=order.order_type,  # change to Cloudbet OrderType to Nautilius OrderType
+        contingency_type=ContingencyType.NO_CONTINGENCY,
+        time_in_force=order.time_in_force,
+        order_status=order_status,
+        price=order_price,
+        quantity=order_quantity,
+        filled_qty=filled_qty,
+        report_id=report_id,
+        ts_init=ts_init,
+        ts_accepted=order_accepted,  # cast to unix_nanos
+        ts_last=order.ts_last if order.ts_last else order_accepted
+        # ts_triggered=0, # optional
+    )
+    return report
+
+
+@lru_cache(maxsize=255)
+def cloudbet_timestamp_to_unix_nanos(cloudbet_timestamp: str) -> int:
+    """
+    Convert a cloudbet timestamp to unix nanoseconds
+
+    Parameters
+    ----------
+    cloudbet_timestamp : str
+        A timestamp in the format "2023-09-19T12:51:11Z"
+    """
+    # Parse the string to datetime
+    dt = datetime.strptime(cloudbet_timestamp, "%Y-%m-%dT%H:%M:%SZ")
+    # Convert to unix nanoseconds
+    return int(dt.timestamp() * 1e9) # we need to add 1e9 for nanosecond precision

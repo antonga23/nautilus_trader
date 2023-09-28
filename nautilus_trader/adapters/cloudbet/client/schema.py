@@ -16,6 +16,7 @@ from enum import Enum
 from typing import Optional, List, Dict, Any, Union
 
 import msgspec
+from nautilus_trader.core.rust.model import OrderStatus
 from nautilus_trader.model.currency import Currency
 from nautilus_trader.model.currencies import EUR
 
@@ -85,6 +86,33 @@ class AcceptPriceChange(Enum):
     NONE, ALL, BETTER = "NONE", "ALL", "BETTER"
 
 
+class NautiliusOrderStatus(Enum): # for reference, and not direct in class use (use OrderStatus from nautilus_trader.core.rust.model instead)
+    # The order is initialized (instantiated) within the Nautilus system.
+    INITIALIZED = 1
+    # The order was denied by the Nautilus system, either for being invalid, unprocessable or exceeding a risk limit.
+    DENIED = 2
+    # The order was submitted by the Nautilus system to the external service or trading venue (closed/done).
+    SUBMITTED = 3
+    # The order was acknowledged by the trading venue as being received and valid (may now be working).
+    ACCEPTED = 4
+    # The order was rejected by the trading venue.
+    REJECTED = 5
+    # The order was canceled (closed/done).
+    CANCELED = 6
+    # The order reached a GTD expiration (closed/done).
+    EXPIRED = 7
+    # The order STOP price was triggered (closed/done).
+    TRIGGERED = 8
+    # The order is currently pending a request to modify at the trading venue.
+    PENDING_UPDATE = 9
+    # The order is currently pending a request to cancel at the trading venue.
+    PENDING_CANCEL = 10
+    # The order has been partially filled at the trading venue.
+    PARTIALLY_FILLED = 11
+    # The order has been completely filled at the trading venue (closed/done).
+    FILLED = 12
+
+
 class BetStatus(Enum):
     INTERNAL_SERVER_ERROR = "INTERNAL_SERVER_ERROR"
     DUPLICATE_REQUEST = "DUPLICATE_REQUEST"
@@ -105,6 +133,30 @@ class BetStatus(Enum):
     HALF_WIN = "HALF_WIN"
     HALF_LOSS = "HALF_LOSS"
     PARTIAL = "PARTIAL"
+    def get_order_status(self):
+        return BETSTATUS_ORDERSTATUS_MAP.get(self, None)
+
+
+BETSTATUS_ORDERSTATUS_MAP = {
+    BetStatus.INTERNAL_SERVER_ERROR: OrderStatus.REJECTED, # change to OrderStatus.DENIED ?
+    BetStatus.DUPLICATE_REQUEST: OrderStatus.REJECTED, #  change to OrderStatus.DENIED ?
+    BetStatus.MALFORMED_REQUEST: OrderStatus.REJECTED, # change to OrderStatus.DENIED ?
+    BetStatus.PRICE_ABOVE_MARKET: OrderStatus.REJECTED,
+    BetStatus.STAKE_ABOVE_MAX: OrderStatus.REJECTED,
+    BetStatus.STAKE_BELOW_MIN: OrderStatus.REJECTED,
+    BetStatus.LIABILITY_LIMIT_EXCEEDED: OrderStatus.REJECTED,
+    BetStatus.MARKET_SUSPENDED: OrderStatus.REJECTED,
+    BetStatus.ACCEPTED: OrderStatus.ACCEPTED, # optimistaically assume an order was filled ??? and change to OrderStatus.FILLED ?
+    BetStatus.PENDING_ACCEPTANCE: OrderStatus.SUBMITTED,
+    BetStatus.RESTRICTED: OrderStatus.REJECTED,
+    BetStatus.VERIFICATION_REQUIRED: OrderStatus.REJECTED,
+    BetStatus.WIN: OrderStatus.ACCEPTED, # change to OrderStatus.FILLED ?
+    BetStatus.LOSS: OrderStatus.ACCEPTED,
+    BetStatus.PUSH: OrderStatus.REJECTED,
+    BetStatus.HALF_WIN: OrderStatus.ACCEPTED,
+    BetStatus.HALF_LOSS: OrderStatus.ACCEPTED,
+    BetStatus.PARTIAL: OrderStatus.ACCEPTED,
+}
 
 
 class BetStatusTranslation(Enum):

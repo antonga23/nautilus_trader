@@ -1,9 +1,10 @@
 import asyncio
 import hashlib
 from collections import defaultdict
-from typing import Optional, Any, List
+from typing import Optional, Any, List, Union
 
 import pandas as pd
+from nautilus_trader.core.rust.model import ContingencyType, OrderStatus
 from nautilus_trader.model.orders.base import Decimal
 
 from nautilus_trader.adapters.cloudbet.client.exceptions import CloudbetAPIError
@@ -78,7 +79,7 @@ from nautilus_trader.model.identifiers import ClientOrderId
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import TradeId
 from nautilus_trader.model.identifiers import VenueOrderId
-from nautilus_trader.model.objects import Money, AccountBalance
+from nautilus_trader.model.objects import Money, AccountBalance, Quantity
 
 from nautilus_trader.model.instruments.crypto_betting import CryptoBettingInstrument
 from nautilus_trader.model.orders import Order
@@ -273,7 +274,58 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
         client_order_id: Optional[ClientOrderId] = None,
         venue_order_id: Optional[VenueOrderId] = None,
     ) -> Optional[OrderStatusReport]:
-        raise NotImplementedError("method must be implemented in the subclass")  # pragma: no cover
+        """
+        Generate an `OrderStatusReport` for the given order identifier parameter(s).
+
+        If the order is not found, or an error occurs, then logs and returns ``None``.
+
+        Parameters
+        ----------
+        instrument_id : InstrumentId
+            The instrument ID for the report.
+        client_order_id : ClientOrderId, optional
+            The client order ID for the report.
+        venue_order_id : VenueOrderId, optional
+            The venue order ID for the report.
+
+        Returns
+        -------
+        OrderStatusReport or ``None``
+
+        Raises
+        ------
+        ValueError
+            If both the `client_order_id` and `venue_order_id` are ``None``.
+
+        """
+        PyCondition.not_none(client_order_id, "client_order_id") # tres important
+        PyCondition.not_none(venue_order_id, "venue_order_id")
+        existing_order : Order = self._cache.order(client_order_id)
+        self._log.debug(f"Found order in the cache. Client Order id: {client_order_id}")
+
+        if existing_order is None:
+            self._log.warning(
+                f"Attempting to query order that does not exist in the cache, Client Order ID: {client_order_id}",
+            )
+            return None
+        # check cloudbet for order and bet response
+        try:
+            bet_status_response : GetBetResponse = await self._client.get_bet_status(venue_order_id)
+        except Exception as e: # TODO: handle exceptions gracefully
+            self._log.error(f"Could not fetch bet status from Cloudbet:", bet_status_response)
+            return None
+        self._log.debug(f"Generating Order Status Report for order {client_order_id}")
+        report = bet_to_order_status_report(
+            order=existing_order,
+            account_id=self._account_id,
+            instrument_id=instrument_id,
+            bet_response=bet_status_response,
+            ts_init=self._clock.timestamp_ns(),
+            client_order_id=client_order_id,
+            venue_order_id=venue_order_id,
+            report_id=UUID4(),
+        )
+        return report
 
     async def generate_order_status_reports(
         self,
@@ -371,19 +423,21 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
             )
 
     async def _submit_order_list(self, command: SubmitOrderList) -> None:
-        raise NotImplementedError("method must be implemented in the subclass")  # pragma: no cover
+        raise NotImplementedError("submitting multiple orders simulataneously isn't supported on Cloubet")  # pragma: no cover
 
     async def _modify_order(self, command: ModifyOrder) -> None:
-        raise NotImplementedError("method must be implemented in the subclass")  # pragma: no cover
+        # TODO : message the cloudbet team about resending a BetRequest with the same referenceID
+        raise NotImplementedError("submitting multiple orders simulataneously isn't supported on Cloubet")  # pragma: no cover
+
 
     async def _cancel_order(self, command: CancelOrder) -> None:
-        raise NotImplementedError("method must be implemented in the subclass")  # pragma: no cover
+        # TODO : message the cloudbet team about cancelling a Bet that hasn't been accepted yet or is only partially fileld
+        raise NotImplementedError("Cloudbet doesn't support cancelling an order")  # pragma: no cover
 
     async def _cancel_all_orders(self, command: CancelAllOrders) -> None:
-        raise NotImplementedError("method must be implemented in the subclass")  # pragma: no cover
+        # TODO : message the cloudbet team about cancelling a Bet that hasn't been accepted yet or is only partially fileld
+        raise NotImplementedError("Cloudbet doesn't support bulk cancelling orders")  # pragma: no cover
 
-    async def _query_order(self, command: QueryOrder) -> None:
-        raise NotImplementedError("method must be implemented in the subclass")  # pragma: no cover
 
     # -- ORDER STREAM API -------------------------------------------------------------------------
 
