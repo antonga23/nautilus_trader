@@ -16,7 +16,7 @@ from enum import Enum
 from typing import Optional, List, Dict, Any, Union
 
 import msgspec
-from nautilus_trader.core.rust.model import OrderStatus
+from nautilus_trader.core.rust.model import OrderStatus, OrderSide
 from nautilus_trader.model.currency import Currency
 from nautilus_trader.model.currencies import EUR
 
@@ -72,6 +72,11 @@ class SelectionStatus(Enum):
     ENABLED = "SELECTION_ENABLED"
 
 
+class NautilusOrderSide(Enum): # for reference, and not direct in class use (use OrderSide from nautilus_trader.core.rust.model instead)
+    BUY = "BUY"
+    SELL = "SELL"
+    NO_ORDER_SIDE = "NO_ORDER_SIDE"
+
 class SelectionSide(Enum):
     BACK = "BACK"
     LAY = "LAY"
@@ -81,6 +86,18 @@ class SelectionSide(Enum):
     EVEN = "Even"
     ODD = "Odd"
 
+    def get_order_side(self):
+        return SELECTIONSIDE_ORDERSIDE_MAP.get(self, None)
+
+SELECTIONSIDE_ORDERSIDE_MAP = {
+    SelectionSide.BACK: OrderSide.BUY,
+    SelectionSide.LAY: OrderSide.SELL, # we're purchasing a 'NO' result bet
+    SelectionSide.YES: OrderSide.BUY,
+    SelectionSide.NO: OrderSide.BUY, # we're purchasing a 'NO' result bet
+    SelectionSide.UNDEFINED: OrderSide.NO_ORDER_SIDE,
+    SelectionSide.EVEN: OrderSide.BUY,
+    SelectionSide.ODD: OrderSide.BUY,
+}
 
 class AcceptPriceChange(Enum):
     NONE, ALL, BETTER = "NONE", "ALL", "BETTER"
@@ -133,27 +150,29 @@ class BetStatus(Enum):
     HALF_WIN = "HALF_WIN"
     HALF_LOSS = "HALF_LOSS"
     PARTIAL = "PARTIAL"
+
     def get_order_status(self):
         return BETSTATUS_ORDERSTATUS_MAP.get(self, None)
 
 
 BETSTATUS_ORDERSTATUS_MAP = {
-    BetStatus.INTERNAL_SERVER_ERROR: OrderStatus.REJECTED, # change to OrderStatus.DENIED ?
-    BetStatus.DUPLICATE_REQUEST: OrderStatus.REJECTED, #  change to OrderStatus.DENIED ?
-    BetStatus.MALFORMED_REQUEST: OrderStatus.REJECTED, # change to OrderStatus.DENIED ?
+    BetStatus.INTERNAL_SERVER_ERROR: OrderStatus.REJECTED,  # change to OrderStatus.DENIED ?
+    BetStatus.DUPLICATE_REQUEST: OrderStatus.REJECTED,  # change to OrderStatus.DENIED ?
+    BetStatus.MALFORMED_REQUEST: OrderStatus.REJECTED,  # change to OrderStatus.DENIED ?
     BetStatus.PRICE_ABOVE_MARKET: OrderStatus.REJECTED,
     BetStatus.STAKE_ABOVE_MAX: OrderStatus.REJECTED,
     BetStatus.STAKE_BELOW_MIN: OrderStatus.REJECTED,
     BetStatus.LIABILITY_LIMIT_EXCEEDED: OrderStatus.REJECTED,
     BetStatus.MARKET_SUSPENDED: OrderStatus.REJECTED,
-    BetStatus.ACCEPTED: OrderStatus.ACCEPTED, # optimistaically assume an order was filled ??? and change to OrderStatus.FILLED ?
+    BetStatus.ACCEPTED: OrderStatus.ACCEPTED,
+    # optimistaically assume an order was filled ??? and change to OrderStatus.FILLED ?
     BetStatus.PENDING_ACCEPTANCE: OrderStatus.SUBMITTED,
     BetStatus.RESTRICTED: OrderStatus.REJECTED,
     BetStatus.VERIFICATION_REQUIRED: OrderStatus.REJECTED,
-    BetStatus.WIN: OrderStatus.ACCEPTED, # change to OrderStatus.FILLED ?
-    BetStatus.LOSS: OrderStatus.ACCEPTED,
-    BetStatus.PUSH: OrderStatus.REJECTED,
-    BetStatus.HALF_WIN: OrderStatus.ACCEPTED,
+    BetStatus.WIN: OrderStatus.ACCEPTED,  # TODO: change this to FILLED otherwise order is marked as open.....
+    BetStatus.LOSS: OrderStatus.ACCEPTED,  # TODO: change this to FILLED otherwise order is marked as open.....
+    BetStatus.PUSH: OrderStatus.REJECTED,  # TODO: change this to FILLED otherwise order is marked as open.....
+    BetStatus.HALF_WIN: OrderStatus.ACCEPTED,  # TODO: change this to FILLED otherwise order is marked as open.....
     BetStatus.HALF_LOSS: OrderStatus.ACCEPTED,
     BetStatus.PARTIAL: OrderStatus.ACCEPTED,
 }

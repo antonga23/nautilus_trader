@@ -1,100 +1,46 @@
 import asyncio
-import hashlib
-from collections import defaultdict
-from typing import Optional, Any, List, Union
+from typing import Optional, Any, List
 
 import pandas as pd
-from nautilus_trader.core.rust.model import ContingencyType, OrderStatus
-from nautilus_trader.model.orders.base import Decimal
-
-from nautilus_trader.adapters.cloudbet.client.exceptions import CloudbetAPIError
-from nautilus_trader.core import uuid
-
-from nautilus_trader.execution.messages import CancelAllOrders
-from nautilus_trader.execution.messages import CancelOrder
-from nautilus_trader.execution.messages import ModifyOrder
-from nautilus_trader.execution.messages import QueryOrder
-from nautilus_trader.execution.messages import SubmitOrder
-from nautilus_trader.execution.messages import SubmitOrderList
-from nautilus_trader.execution.reports import OrderStatusReport
-from nautilus_trader.execution.reports import PositionStatusReport
-from nautilus_trader.execution.reports import TradeReport
-
-from nautilus_trader.adapters.cloudbet.client.core import CloudbetClient
-from nautilus_trader.adapters.cloudbet.client.schema import GetAccountCurrencies, GetAccountBalance, SelectionSide, \
-    GetBetResponse, BetStatus
-from nautilus_trader.adapters.cloudbet.common import CLOUDBET_VENUE
-from nautilus_trader.adapters.cloudbet.providers import CloudbetInstrumentProvider
-from nautilus_trader.adapters.cloudbet.sockets import CloudbetStreamClient
-from nautilus_trader.live.execution_client import LiveExecutionClient
-from nautilus_trader.model.identifiers import ClientOrderId
-from nautilus_trader.model.identifiers import InstrumentId
-from nautilus_trader.model.identifiers import VenueOrderId
-
-from nautilus_trader.accounting.factory import AccountFactory
-from nautilus_trader.adapters.betfair.client.core import BetfairClient
-from nautilus_trader.adapters.betfair.client.exceptions import BetfairAPIError
-from nautilus_trader.adapters.betfair.common import B2N_ORDER_STREAM_SIDE
-from nautilus_trader.adapters.betfair.common import BETFAIR_VENUE
-from nautilus_trader.adapters.betfair.orderbook import betfair_float_to_price
-from nautilus_trader.adapters.betfair.orderbook import betfair_float_to_quantity
-from nautilus_trader.adapters.betfair.parsing.common import betfair_instrument_id
-from nautilus_trader.adapters.betfair.parsing.requests import bet_to_order_status_report
-from nautilus_trader.adapters.betfair.parsing.requests import betfair_account_to_account_state
-from nautilus_trader.adapters.betfair.parsing.requests import order_cancel_all_to_betfair
-from nautilus_trader.adapters.betfair.parsing.requests import order_cancel_to_betfair
-from nautilus_trader.adapters.betfair.parsing.requests import order_submit_to_betfair
-from nautilus_trader.adapters.betfair.parsing.requests import order_update_to_betfair
-from nautilus_trader.adapters.betfair.parsing.requests import parse_handicap
-from nautilus_trader.adapters.betfair.providers import BetfairInstrumentProvider
-from nautilus_trader.adapters.betfair.sockets import BetfairOrderStreamClient
 from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.clock import LiveClock
 from nautilus_trader.common.enums import LogColor
 from nautilus_trader.common.logging import Logger
 from nautilus_trader.core.correctness import PyCondition
-from nautilus_trader.core.datetime import millis_to_nanos
-from nautilus_trader.core.datetime import nanos_to_secs
-from nautilus_trader.core.datetime import secs_to_nanos
 from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.execution.messages import CancelAllOrders
 from nautilus_trader.execution.messages import CancelOrder
 from nautilus_trader.execution.messages import ModifyOrder
 from nautilus_trader.execution.messages import SubmitOrder
+from nautilus_trader.execution.messages import SubmitOrderList
 from nautilus_trader.execution.reports import OrderStatusReport
 from nautilus_trader.execution.reports import PositionStatusReport
 from nautilus_trader.execution.reports import TradeReport
-from nautilus_trader.live.execution_client import LiveExecutionClient
 from nautilus_trader.model.currency import Currency
 from nautilus_trader.model.enums import AccountType
-from nautilus_trader.model.enums import LiquiditySide
 from nautilus_trader.model.enums import OmsType
-from nautilus_trader.model.enums import OrderSide
-from nautilus_trader.model.enums import OrderType
-from nautilus_trader.model.events import AccountState
-from nautilus_trader.model.events import OrderFilled
 from nautilus_trader.model.identifiers import AccountId
 from nautilus_trader.model.identifiers import ClientId
 from nautilus_trader.model.identifiers import ClientOrderId
 from nautilus_trader.model.identifiers import InstrumentId
-from nautilus_trader.model.identifiers import TradeId
 from nautilus_trader.model.identifiers import VenueOrderId
-from nautilus_trader.model.objects import Money, AccountBalance, Quantity
-
-from nautilus_trader.model.instruments.crypto_betting import CryptoBettingInstrument
-from nautilus_trader.model.orders import Order
+from nautilus_trader.model.objects import Money, AccountBalance
 from nautilus_trader.msgbus.bus import MessageBus
 
-
-# The 'pragma: no cover' comment excludes a method from test coverage.
-# https://coverage.readthedocs.io/en/coverage-4.3.3/excluding.html
-# The reason for their use is to reduce redundant/needless tests which simply
-# assert that a `NotImplementedError` is raised when calling abstract methods.
-# These tests are expensive to maintain (as they must be kept in line with any
-# refactorings), and offer little to no benefit in return. However, the intention
-# is for all method implementations to be fully covered by tests.
-
-# *** THESE PRAGMA: NO COVER COMMENTS MUST BE REMOVED IN ANY IMPLEMENTATION. ***
+from nautilus_trader.adapters.betfair.client.exceptions import BetfairAPIError
+from nautilus_trader.adapters.cloudbet.client.core import CloudbetClient
+from nautilus_trader.adapters.cloudbet.client.exceptions import CloudbetAPIError
+from nautilus_trader.adapters.cloudbet.client.schema import GetAccountCurrencies, GetAccountBalance, SelectionSide, \
+    GetBetResponse, BetStatus, GetBetHistoryResponse, GetAccountInfoResponse
+from nautilus_trader.adapters.cloudbet.client.util import bet_to_trade_report, cb_bet_to_order_status_report, \
+    datetime_to_cloudbet_timestamp
+from nautilus_trader.adapters.cloudbet.common import CLOUDBET_VENUE
+from nautilus_trader.adapters.cloudbet.providers import CloudbetInstrumentProvider
+from nautilus_trader.adapters.cloudbet.sockets import CloudbetStreamClient
+from nautilus_trader.live.execution_client import LiveExecutionClient
+from nautilus_trader.model.events import AccountState
+from nautilus_trader.model.instruments.crypto_betting import CryptoBettingInstrument
+from nautilus_trader.model.orders import Order
 
 
 class CloudbetLiveExecutionClient(LiveExecutionClient):
@@ -171,7 +117,7 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
         # AccountFactory.register_calculated_account(BETFAIR_VENUE.value)
 
     @property
-    def instrument_provider(self) -> BetfairInstrumentProvider:
+    def instrument_provider(self) -> CloudbetInstrumentProvider:
         return self._instrument_provider
 
     # -- CONNECTION HANDLERS ----------------------------------------------------------------------
@@ -199,12 +145,12 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
     def reset(self) -> None:
         # TODO: implement some clean up logic, eg reset/recalculate states
         # pass
-        raise NotImplementedError("method must be implemented in the subclass")  # pragma: no cover
+        raise NotImplementedError("method not currentyly implemented")  # pragma: no cover
 
     def dispose(self) -> None:
         # TODO: implement some clean up logic, eg release resources like stream client
         # pass
-        raise NotImplementedError("method must be implemented in the subclass")  # pragma: no cover
+        raise NotImplementedError("method not currentyly implemented")  # pragma: no cover
 
     async def watch_stream(self) -> None:
         """Ensure socket stream is connected"""
@@ -228,14 +174,14 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
 
     async def connection_account_state(self) -> None:
         # TODO: add a method to calculate "virtual" balance on initilisation
-        account_uuid: uuid = await self._client.login().uuid  # acces  the uuid field from the GetAccountInfoResponse
+        account_response:  GetAccountInfoResponse = await self._client.login() # acces  the uuid field from the GetAccountInfoResponse
         account_details: GetAccountCurrencies = await self._client.get_account_currencies()  # iterable string
         account_balances: List[AccountBalance] = []
         timestamp = self._clock.timestamp_ns()
         for currency in account_details:
             currency_balance: GetAccountBalance = await self._client.get_balances(currency)
             # strict, will attempt to create a new currency if "currency" is not present in nautilius currency listtyped_currency
-            typed_currency: Currency = Currency.from_str(currency, strict=False)
+            typed_currency: Currency = Currency.from_str(currency, bool_strict=False)
             account_balances.append(
                 AccountBalance(
                     total=Money(currency_balance.amount, typed_currency),
@@ -244,7 +190,7 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
                 )
             )
         account_state = AccountState(
-            account_id=AccountId(f"{CLOUDBET_VENUE.value}-{account_uuid}"),
+            account_id=AccountId(f"{CLOUDBET_VENUE.value}-{account_response.uuid}"),
             account_type=AccountType.BETTING,
             base_currency=self._client.currency,
             # in general, base currency is the only currency that we should use to trade.
@@ -296,11 +242,10 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
         ------
         ValueError
             If both the `client_order_id` and `venue_order_id` are ``None``.
-
         """
-        PyCondition.not_none(client_order_id, "client_order_id") # tres important
+        PyCondition.not_none(client_order_id, "client_order_id")  # tres important
         PyCondition.not_none(venue_order_id, "venue_order_id")
-        existing_order : Order = self._cache.order(client_order_id)
+        existing_order: Order = self._cache.order(client_order_id)
         self._log.debug(f"Found order in the cache. Client Order id: {client_order_id}")
 
         if existing_order is None:
@@ -310,12 +255,12 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
             return None
         # check cloudbet for order and bet response
         try:
-            bet_status_response : GetBetResponse = await self._client.get_bet_status(venue_order_id)
-        except Exception as e: # TODO: handle exceptions gracefully
+            bet_status_response: GetBetResponse = await self._client.get_bet_status(venue_order_id)
+        except Exception as e:  # TODO: handle exceptions gracefully
             self._log.error(f"Could not fetch bet status from Cloudbet:", bet_status_response)
             return None
         self._log.debug(f"Generating Order Status Report for order {client_order_id}")
-        report = bet_to_order_status_report(
+        report = cb_bet_to_order_status_report(
             order=existing_order,
             account_id=self._account_id,
             instrument_id=instrument_id,
@@ -334,7 +279,119 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
         end: Optional[pd.Timestamp] = None,
         open_only: bool = False,
     ) -> list[OrderStatusReport]:
-        raise NotImplementedError("method must be implemented in the subclass")  # pragma: no cover
+        """
+        Generate a list of `OrderStatusReport` for the given parameters.
+
+        Parameters
+        ----------
+        instrument_id : InstrumentId
+            The instrument ID for the report.
+        start : pd.Timestamp, optional
+            The start time for the report. If specified, `end` must also be specified.
+        end : pd.Timestamp, optional
+            The end time for the report. If specified, `start` must also be specified.
+        open_only : bool, optional
+            If True, only open orders will be returned. If False, all orders will be returned.
+
+        Returns
+        -------
+        list[OrderStatusReport]
+            A list of OrderStatusReports for the given parameters
+
+        Raises
+        ------
+        ValueError
+            If both the `instrument_id` and `venue_order_id` are ``None`` ,or, if both `start` and `end` are ``None``.
+        """
+        self._log.info(f"Generating OrderStatusReports for {self.id}...")
+        PyCondition.not_none(instrument_id, "instrument_id") \
+        or PyCondition.not_none(start, "start") and PyCondition.not_none(end, "end")  # either specify a time range or an instrument_id
+        report_list: List[OrderStatusReport] = []
+        # if a time-range is specified, we explicitly rely on the venue bet_history endpoint
+        if start and end:
+            start_date: str = datetime_to_cloudbet_timestamp(start)
+            end_date: str = datetime_to_cloudbet_timestamp(end)
+            try:
+                bet_history: GetBetHistoryResponse = await self._client.get_bet_history(start_date, end_date)
+                self._log.info(f"Received bet history: {bet_history}")
+            except Exception as e:  # TODO: handle exceptions gracefully
+                self._log.error(f"Could not fetch bet history from Cloudbet:", bet_history)
+                return []
+            for bet in bet_history.bets:
+                self._log.info(f"Processing bet: {bet}")
+                venue_order_id: VenueOrderId = VenueOrderId(bet.reference_id)
+                client_order_id: ClientOrderId = self._cache.client_order_id(venue_order_id)
+                if client_order_id is None:
+                    self._log.warning(
+                        f"Attempting to query order that does not exist in the cache, Venue Order ID: {venue_order_id}",
+                    )
+                    continue
+                if instrument_id is None:  # no instrument_id specified, we must query the cache
+                    cached_order: Order = self._cache.order(
+                        client_order_id)  # no need to assert not None, an Order must have a client_order_id on init
+                    instrument_id: InstrumentId = cached_order.instrument_id
+
+                if open_only is False:  # we don't care about the order status
+                    report = self.generate_order_status_report(
+                        instrument_id=instrument_id,
+                        client_order_id=client_order_id,
+                        venue_order_id=venue_order_id,
+                    )
+                else:
+                    cached_order: Order = self._cache.order(
+                        client_order_id)
+                    if cached_order.is_open:
+                        report = cb_bet_to_order_status_report(
+                            order=cached_order,
+                            account_id=self._account_id,
+                            instrument_id=instrument_id,
+                            bet_response=bet,
+                            ts_init=self._clock.timestamp_ns(),
+                            client_order_id=client_order_id,
+                            venue_order_id=venue_order_id,
+                            report_id=UUID4(),
+                        )
+                if report is not None:
+                    report_list.append(report)
+        else:
+            # no time-range is specified, we must construct the report from the cache
+            # we're interested in getting all the orders for a given instrument_id regardless of time
+            unique_client_ids: set[ClientOrderId] = self._cache.client_order_ids(venue=CLOUDBET_VENUE,
+                                                                                 instrument_id=instrument_id)
+            for client_order_id in unique_client_ids:
+                cached_order: Order = self._cache.order(
+                    client_order_id)
+                venue_order_id: VenueOrderId = cached_order.venue_order_id
+                # use the venue_order_id to query the bet_status endpoint
+                bet_status: GetBetResponse = await self._client.get_bet_status(venue_order_id.value)
+                if open_only is True:
+                    if cached_order.is_open:
+                        report: OrderStatusReport = cb_bet_to_order_status_report(
+                            order=cached_order,
+                            account_id=self._account_id,
+                            instrument_id=instrument_id,
+                            bet_response=bet_status,
+                            ts_init=self._clock.timestamp_ns(),
+                            client_order_id=client_order_id,
+                            venue_order_id=venue_order_id,
+                            report_id=UUID4(),
+                        )
+                    else:
+                        # skip closed orders
+                        continue
+                else:
+                    report: OrderStatusReport = cb_bet_to_order_status_report(
+                        order=cached_order,
+                        account_id=self._account_id,
+                        instrument_id=instrument_id,
+                        bet_response=bet_status,
+                        ts_init=self._clock.timestamp_ns(),
+                        client_order_id=client_order_id,
+                        venue_order_id=venue_order_id,
+                        report_id=UUID4(),
+                    )
+        if report is not None:
+            report_list.append(report)
 
     async def generate_trade_reports(
         self,
@@ -343,7 +400,129 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
         start: Optional[pd.Timestamp] = None,
         end: Optional[pd.Timestamp] = None,
     ) -> list[TradeReport]:
-        raise NotImplementedError("method must be implemented in the subclass")  # pragma: no cover
+        """ Generate a list of TradeReports for the given parameters
+
+        Parameters
+        ----------
+        instrument_id : InstrumentId
+            The instrument ID for the report. If venue_order_id is specified, all Trades associated with the InstruemntID will be returned
+        venue_order_id : VenueOrderId, optional
+            The venue order ID for the report.  If specified, only a single TradeReport will be returned
+        start : pd.Timestamp, optional
+            The start time for the report. If specified, `end` must also be specified.
+        end : pd.Timestamp, optional
+            The end time for the report. If specified, `start` must also be specified.
+
+        Returns
+        -------
+        list[TradeReport]
+            A list of TradeReports for the given parameters
+
+        Raises
+        ------
+        ValueError
+            If both the `instrument_id` and `venue_order_id` are ``None`` ,or, if both `start` and `end` are ``None``.
+        Notes
+        ------
+            A Trade corresponds to an order that has a final result (WIN, LOSS, etc )or has been processed by the exchange. (ACCEPTED)
+        """
+        # either specify a time range or an instrument_id or a venue order id
+        PyCondition.not_none(instrument_id, "instrument_id") or PyCondition.not_none(venue_order_id, 'venue_order_id') \
+        or PyCondition.not_none(start, "start") and PyCondition.not_none(end, "end")
+        self._log.info(f"Generating TradeReports for {self.id}...")
+        report_list: List[TradeReport] = []
+        # if a time-range is specified, we explicitly rely on the venue bet_history endpoint
+        if start and end:
+            start_date: str = datetime_to_cloudbet_timestamp(start)
+            end_date: str = datetime_to_cloudbet_timestamp(end)
+            try:
+                bet_history: GetBetHistoryResponse = await self._client.get_bet_history(start_date, end_date)
+                self._log.info(f"Received bet history: {bet_history}")
+            except Exception as e:  # TODO: handle exceptions gracefully
+                self._log.error(f"Could not fetch bet history from Cloudbet:", bet_history)
+                return []
+            for bet in bet_history.bets:
+                self._log.info(f"Processing bet: {bet}")
+                if bet.status not in [BetStatus.ACCEPTED, BetStatus.WIN, BetStatus.LOSS, BetStatus.HALF_WIN,
+                                      BetStatus.HALF_LOSS, BetStatus.PARTIAL, BetStatus.PUSH]:
+                    # if bet is not settled, skip
+                    continue
+                self._log.info(f"Processing bet: {bet}")
+                venue_order_id: VenueOrderId = VenueOrderId(bet.reference_id)
+                client_order_id: ClientOrderId = self._cache.client_order_id(venue_order_id)
+                if client_order_id is None:
+                    self._log.warning(
+                        f"Attempting to query order that does not exist in the cache, Venue Order ID: {venue_order_id}",
+                    )
+                    continue
+                cached_order: Order = self._cache.order(
+                    client_order_id)  # no need to assert not None, an Order must have a client_order_id on init
+                if instrument_id is None:  # no instrument_id specified, we must query the cache
+                    instrument_id: InstrumentId = cached_order.instrument_id
+                report = bet_to_trade_report(
+                    order=cached_order,
+                    account_id=self._account_id,
+                    instrument_id=instrument_id,
+                    bet_response=bet,
+                    ts_init=self._clock.timestamp_ns(),
+                    venue_order_id=venue_order_id,
+                    report_id=UUID4(),
+                    client_order_id=client_order_id,
+                )
+                if report is not None:
+                    self._log.debug(f"Received {report}.")
+                    report_list.append(report)
+        else:  # no time-range is specified, we must construct the report from the cache
+            # we're interested in getting all the trades for a given instrument_id regardless of time
+            # TODO: check if instrument_id is None or venue_order_id is None, then use the cache to extract the missing parameter
+            if venue_order_id is None:
+                # use the instrument_id to query the cache for client_order_ids
+                unique_client_ids: set[ClientOrderId] = self._cache.client_order_ids(venue=CLOUDBET_VENUE,
+                                                                                     instrument_id=instrument_id)
+
+                for client_order_id in unique_client_ids:
+                    cached_order: Order = self._cache.order(
+                        client_order_id)
+                    venue_order_id: VenueOrderId = cached_order.venue_order_id
+                    # use the venue_order_id to query the bet_status endpoint
+                    bet_status: GetBetResponse = await self._client.get_bet_status(venue_order_id.value)  # pass str
+                    report: TradeReport = bet_to_trade_report(
+                        order=cached_order,
+                        account_id=self._account_id,
+                        instrument_id=instrument_id,
+                        bet_response=bet_status,
+                        ts_init=self._clock.timestamp_ns(),
+                        venue_order_id=venue_order_id,
+                        report_id=UUID4(),
+                        client_order_id=client_order_id,
+                    )
+                    if report is not None:
+                        report_list.append(report)
+            else:
+                # a Trade ~= Order on cloudbet, so we can use the venue_order_id to query the bet_status endpoint, as a Trade is guranteed to only have one order
+                bet_response: GetBetResponse = await self._client.get_bet_status(venue_order_id.value)  # pass str
+                # check bet has been settled
+                if bet_response.status not in [BetStatus.ACCEPTED, BetStatus.WIN, BetStatus.LOSS, BetStatus.HALF_WIN,
+                                               BetStatus.HALF_LOSS, BetStatus.PARTIAL, BetStatus.PUSH]:
+                    # if bet is not settled, skip
+                    return []
+                client_order_id: ClientOrderId = self._cache.client_order_id(venue_order_id)
+                cached_order: Order = self._cache.order(client_order_id)
+                report: TradeReport = bet_to_trade_report(
+                    order=cached_order,
+                    account_id=self._account_id,
+                    instrument_id=instrument_id,
+                    bet_response=bet_response,
+                    ts_init=self._clock.timestamp_ns(),
+                    venue_order_id=venue_order_id,
+                    report_id=UUID4(),
+                    client_order_id=client_order_id,
+                )
+                if report is not None:
+                    report_list.append(report)
+
+        self._log.info(f"Generated {len(report_list)} TradeReports.")
+        return report_list
 
     async def generate_position_status_reports(
         self,
@@ -351,7 +530,25 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
         start: Optional[pd.Timestamp] = None,
         end: Optional[pd.Timestamp] = None,
     ) -> list[PositionStatusReport]:
-        raise NotImplementedError("method must be implemented in the subclass")  # pragma: no cover
+        """
+        Generate a list of `PositionStatusReport`s with optional query filters.
+        The returned list may be empty if no positions match the given parameters.
+
+        Parameters
+        ----------
+        instrument_id : InstrumentId, optional
+            The instrument ID query filter.
+        start : pd.Timestamp, optional
+            The start datetime query filter.
+        end : pd.Timestamp, optional
+            The end datetime query filter.
+
+        Returns
+        -------
+        list[PositionStatusReport]
+
+        Note: A Position corresponds to an order that has been accepted but hasn't resulted
+        """
 
     # -- COMMAND HANDLERS -------------------------------------------------------------------------
 
@@ -367,7 +564,7 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
 
         instrument: CryptoBettingInstrument = self._cache.instrument(command.instrument_id)
         PyCondition.not_none(instrument, "instrument")
-        PyCondition.true(command.order.has_price()) # check OrderType has price, else we can't trade
+        PyCondition.true(command.order.has_price())  # check OrderType has price, else we can't trade
         # PyCondition.type(command, LimitOrder) possible replacement for has price check and validates parametre type
         client_order_id = command.order.client_order_id
 
@@ -378,7 +575,7 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
         side = SelectionSide.BACK if command.order.is_buy else SelectionSide.LAY  # for now optimistically assume we only trade BACK/LAY markets
         stake: float = Order.quantity.as_double()  # test if as_decimal or to_str if more reliable than as_double
         try:
-            place_bet_response : GetBetResponse = await self._client.place_bets(
+            place_bet_response: GetBetResponse = await self._client.place_bets(
                 event_id=instrument.event_id,
                 market_url=market_url,
                 price=price,  # assumes Order has price eg. Limit Order
@@ -396,7 +593,7 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
                 reason=place_bet_response.status.value if place_bet_response.status else "client error/exception",
                 ts_event=self._clock.timestamp_ns(),
             )
-            return # end execution
+            return  # end execution
         self._log.debug(f"result={place_bet_response}")
         # using the message bus, notify relevant components of results eg. RiskEngine, DataEngine, etc
         if place_bet_response.status is BetStatus.ACCEPTED:
@@ -423,12 +620,13 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
             )
 
     async def _submit_order_list(self, command: SubmitOrderList) -> None:
-        raise NotImplementedError("submitting multiple orders simulataneously isn't supported on Cloubet")  # pragma: no cover
+        raise NotImplementedError(
+            "submitting multiple orders simulataneously isn't supported on Cloubet")  # pragma: no cover
 
     async def _modify_order(self, command: ModifyOrder) -> None:
         # TODO : message the cloudbet team about resending a BetRequest with the same referenceID
-        raise NotImplementedError("submitting multiple orders simulataneously isn't supported on Cloubet")  # pragma: no cover
-
+        raise NotImplementedError(
+            "submitting multiple orders simulataneously isn't supported on Cloubet")  # pragma: no cover
 
     async def _cancel_order(self, command: CancelOrder) -> None:
         # TODO : message the cloudbet team about cancelling a Bet that hasn't been accepted yet or is only partially fileld
@@ -437,7 +635,6 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
     async def _cancel_all_orders(self, command: CancelAllOrders) -> None:
         # TODO : message the cloudbet team about cancelling a Bet that hasn't been accepted yet or is only partially fileld
         raise NotImplementedError("Cloudbet doesn't support bulk cancelling orders")  # pragma: no cover
-
 
     # -- ORDER STREAM API -------------------------------------------------------------------------
 
