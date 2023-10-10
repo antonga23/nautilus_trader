@@ -15,14 +15,15 @@
 
 
 from functools import lru_cache
-from typing import Optional, Union
+from typing import Optional, Union, List
 from datetime import datetime
 import pandas
 
 from nautilus_trader.core.correctness import PyCondition
-from nautilus_trader.core.rust.model import ContingencyType, OrderStatus, OrderSide, OrderType, LiquiditySide
+from nautilus_trader.core.rust.model import ContingencyType, OrderStatus, OrderSide, OrderType, LiquiditySide, \
+    PositionSide
 from nautilus_trader.core.uuid import UUID4
-from nautilus_trader.execution.reports import OrderStatusReport, TradeReport
+from nautilus_trader.execution.reports import OrderStatusReport, TradeReport, PositionStatusReport
 from nautilus_trader.model.identifiers import InstrumentId, ClientOrderId, VenueOrderId, AccountId
 from nautilus_trader.model.identifiers import Symbol
 from nautilus_trader.model.objects import Price, Quantity
@@ -182,6 +183,39 @@ def bet_to_trade_report(
     )# TODO: commission is fixed. Check value on cloudbet and add here
     return report
 
+def cb_bet_to_position_report(
+    order: List[Order],
+    account_id: AccountId,
+    instrument_id: InstrumentId,
+    bet_response: GetBetResponse,
+    ts_init: int,
+    venue_order_id: VenueOrderId,
+    report_id: Union[UUID4, str],
+    client_order_id: Optional[ClientOrderId] = None,  # (None if external order)
+) -> PositionStatusReport:
+    """
+    Convert a cloudbet bet response to a Position status report
+    """
+    bet_side : SelectionSide = bet_response.side
+    position_side : PositionSide = bet_side.get_position_side(bet_side)
+
+    bet_quantity : str = str(bet_response.stake) #  cast from float to str
+    position_quantity: Quantity = Quantity.from_str(bet_quantity)
+
+    bet_time : str = bet_response.create_time # optimistically assume order accepted at same time as bet placed
+    position_accepted : int = cloudbet_timestamp_to_unix_nanos(bet_time)
+
+    report: PositionStatusReport = PositionStatusReport(
+        account_id=account_id,
+        instrument_id=instrument_id,
+        position_side=position_side, # cast to PositionSide
+        quantity=position_quantity,
+        report_id=report_id,
+        ts_last=position_accepted,
+        ts_init=ts_init,
+        venue_position_id=venue_order_id, # cast to PostionID, optional
+    )
+    return report
 
 #TODO: test function
 @lru_cache(maxsize=255)

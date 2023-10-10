@@ -19,12 +19,13 @@ from nautilus_trader.execution.reports import TradeReport
 from nautilus_trader.model.currency import Currency
 from nautilus_trader.model.enums import AccountType
 from nautilus_trader.model.enums import OmsType
-from nautilus_trader.model.identifiers import AccountId
+from nautilus_trader.model.identifiers import AccountId, PositionId
 from nautilus_trader.model.identifiers import ClientId
 from nautilus_trader.model.identifiers import ClientOrderId
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import VenueOrderId
 from nautilus_trader.model.objects import Money, AccountBalance
+from nautilus_trader.model.position import Position
 from nautilus_trader.msgbus.bus import MessageBus
 
 from nautilus_trader.adapters.betfair.client.exceptions import BetfairAPIError
@@ -33,7 +34,7 @@ from nautilus_trader.adapters.cloudbet.client.exceptions import CloudbetAPIError
 from nautilus_trader.adapters.cloudbet.client.schema import GetAccountCurrencies, GetAccountBalance, SelectionSide, \
     GetBetResponse, BetStatus, GetBetHistoryResponse, GetAccountInfoResponse
 from nautilus_trader.adapters.cloudbet.client.util import bet_to_trade_report, cb_bet_to_order_status_report, \
-    datetime_to_cloudbet_timestamp
+    datetime_to_cloudbet_timestamp, cb_bet_to_position_report
 from nautilus_trader.adapters.cloudbet.common import CLOUDBET_VENUE
 from nautilus_trader.adapters.cloudbet.providers import CloudbetInstrumentProvider
 from nautilus_trader.adapters.cloudbet.sockets import CloudbetStreamClient
@@ -301,7 +302,7 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
         Raises
         ------
         ValueError
-            If both the `instrument_id` and `venue_order_id` are ``None`` ,or, if both `start` and `end` are ``None``.
+            If both the `instrument_id` and `venue_order_id` are ``None`` ,or, if either `start` and `end` are ``None``.
         """
         self._log.info(f"Generating OrderStatusReports for {self.id}...")
         PyCondition.not_none(instrument_id, "instrument_id") \
@@ -442,7 +443,6 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
                 self._log.error(f"Could not fetch bet history from Cloudbet:", bet_history)
                 return []
             for bet in bet_history.bets:
-                self._log.info(f"Processing bet: {bet}")
                 if bet.status not in [BetStatus.ACCEPTED, BetStatus.WIN, BetStatus.LOSS, BetStatus.HALF_WIN,
                                       BetStatus.HALF_LOSS, BetStatus.PARTIAL, BetStatus.PUSH]:
                     # if bet is not settled, skip
@@ -547,8 +547,96 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
         -------
         list[PositionStatusReport]
 
-        Note: A Position corresponds to an order that has been accepted but hasn't resulted
+        Raises
+        ------
+        ValueError
+            If the `instrument_id` is ``None`` ,or, if either `start` and `end` are ``None``.
+        Note: A Position corresponds to an order that has been accepted by the venue but hasn't resulted
         """
+        # either specify a time range or an instrument_id or a venue order id
+        PyCondition.not_none(instrument_id, "instrument_id") or PyCondition.not_none(start, "start") and PyCondition.not_none(end, "end")
+        self._log.info(f"Generating PositionStatusReport for {self.id}...")
+        report_list: List[TradeReport] = []
+        # if a time-range is specified, we explicitly rely on the venue bet_history endpoint
+        if start and end:
+            start_date: str = datetime_to_cloudbet_timestamp(start)
+            end_date: str = datetime_to_cloudbet_timestamp(end)
+            try:
+                bet_history: GetBetHistoryResponse = await self._client.get_bet_history(start_date, end_date)
+                self._log.info(f"Received bet history: {bet_history}")
+            except Exception as e:  # TODO: handle exceptions gracefully
+                self._log.error(f"Could not fetch bet history from Cloudbet:", bet_history)
+                return []
+            for bet in bet_history.bets:
+                if bet.status not in [BetStatus.ACCEPTED]:
+                    # if bet is not settled, skip
+                    continue
+                self._log.info(f"Processing bet: {bet}")
+                venue_order_id: VenueOrderId = VenueOrderId(bet.reference_id)
+                # if instrument_id is None:  # no instrument_id specified, we must query the cache
+                client_order_id : ClientOrderId = self._cache.client_order_id(venue_order_id)
+                # we can query the positions, using the client_order_id derived from the venue_order_id
+                if client_order_id is None:
+                    self._log.warning(
+                        f"Attempting to query order that does not exist in the cache, Venue Order ID: {venue_order_id}",
+                    )
+                    continue
+                # TODO: decide if we want to use the cache to query the position or dynamically query the endpoint to generate PositionStatusReport
+
+                # position: Position = self._cache.position_for_order(client_order_id)
+                # if position is None:
+                #     self._log.warning(
+                #         f"Attempting to query position that does not exist in the cache, Client Order ID: {client_order_id}",
+                #     )
+                #     continue
+                cached_order = self._cache.order(client_order_id)
+                report = cb_bet_to_position_report(
+                    order=cached_order,
+                    account_id=self._account_id,
+                    instrument_id=instrument_id,
+                    bet_response=bet,
+                    ts_init=self._clock.timestamp_ns(),
+                    venue_order_id=venue_order_id,
+                    report_id=UUID4(),
+                    client_order_id=client_order_id,
+                )
+                if report is not None:
+                    self._log.debug(f"Received {report}.")
+                    report_list.append(report)
+        else:
+            # no time-range is specified, we must construct the report from the bet_status and/or cache
+            # we're interested in getting all the positions for a given instrument_id regardless of time
+            # use the instrument_id to query the cache for client_order_ids
+            unique_client_ids: set[ClientOrderId] = self._cache.client_order_ids(venue=CLOUDBET_VENUE,
+                                                                                 instrument_id=instrument_id)
+
+            for client_order_id in unique_client_ids:
+                cached_order: Order = self._cache.order(
+                    client_order_id)
+                venue_order_id: VenueOrderId = cached_order.venue_order_id
+                # use the venue_order_id to query the bet_status endpoint
+                bet_status: GetBetResponse = await self._client.get_bet_status(venue_order_id.value)  # pass str
+
+                # TODO: decide if we want to use the cache to query the position or dynamically query the endpoint to generate PositionStatusReport
+
+                # position: Position = self._cache.position_for_order(client_order_id)
+                # if position is None:
+                #     self._log.warning(
+                #         f"Attempting to query position that does not exist in the cache, Client Order ID: {client_order_id}",
+                #     )
+                #     continue
+                report: TradeReport = bet_to_trade_report(
+                    order=cached_order,
+                    account_id=self._account_id,
+                    instrument_id=instrument_id,
+                    bet_response=bet_status,
+                    ts_init=self._clock.timestamp_ns(),
+                    venue_order_id=venue_order_id,
+                    report_id=UUID4(),
+                    client_order_id=client_order_id,
+                )
+                if report is not None:
+                    report_list.append(report)
 
     # -- COMMAND HANDLERS -------------------------------------------------------------------------
 

@@ -16,7 +16,7 @@ from enum import Enum
 from typing import Optional, List, Dict, Any, Union
 
 import msgspec
-from nautilus_trader.core.rust.model import OrderStatus, OrderSide
+from nautilus_trader.core.rust.model import OrderStatus, OrderSide, PositionSide
 from nautilus_trader.model.currency import Currency
 from nautilus_trader.model.currencies import EUR
 
@@ -72,10 +72,20 @@ class SelectionStatus(Enum):
     ENABLED = "SELECTION_ENABLED"
 
 
-class NautilusOrderSide(Enum): # for reference, and not direct in class use (use OrderSide from nautilus_trader.core.rust.model instead)
+class NautilusOrderSide(Enum):  # for reference, and not direct in class use (use OrderSide from nautilus_trader.core.rust.model instead)
     BUY = "BUY"
     SELL = "SELL"
     NO_ORDER_SIDE = "NO_ORDER_SIDE"
+
+class NautilusPositionSide(Enum):  # for reference, and not direct in class use (use PositionSide from nautilus_trader.core.rust.model instead)
+        # No position side is specified (only valid in the context of a filter for actions involving positions).
+        NO_POSITION_SIDE  = 0,
+        # A neural/flat position, where no position is currently held in the market.
+        FLAT  = 1,
+        # A long position in the market, typically acquired through one or many BUY orders.
+        LONG = 2,
+        # A short position in the market, typically acquired through one or many SELL orders.
+        SHORT = 3,
 
 class SelectionSide(Enum):
     BACK = "BACK"
@@ -86,8 +96,11 @@ class SelectionSide(Enum):
     EVEN = "Even"
     ODD = "Odd"
 
-    def get_order_side(self):
+    def get_order_side(self): # TODO: change to static
         return SELECTIONSIDE_ORDERSIDE_MAP.get(self, None)
+
+    def get_position_side(self): # TODO: change to static
+        return POSITIONSIDE_ORDERSIDE_MAP.get(self, None)
 
 SELECTIONSIDE_ORDERSIDE_MAP = {
     SelectionSide.BACK: OrderSide.BUY,
@@ -97,6 +110,16 @@ SELECTIONSIDE_ORDERSIDE_MAP = {
     SelectionSide.UNDEFINED: OrderSide.NO_ORDER_SIDE,
     SelectionSide.EVEN: OrderSide.BUY,
     SelectionSide.ODD: OrderSide.BUY,
+}
+
+POSITIONSIDE_ORDERSIDE_MAP = {
+    SelectionSide.BACK: PositionSide.LONG,
+    SelectionSide.LAY: PositionSide.SHORT, # we're purchasing a 'NO' result bet
+    SelectionSide.YES: PositionSide.LONG,
+    SelectionSide.NO: PositionSide.LONG, # we're purchasing a 'NO' result bet
+    SelectionSide.UNDEFINED: PositionSide.NO_POSITION_SIDE,
+    SelectionSide.EVEN: OrderSide.LONG,
+    SelectionSide.ODD: OrderSide.LONG,
 }
 
 class AcceptPriceChange(Enum):
