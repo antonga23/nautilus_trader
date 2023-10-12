@@ -1,3 +1,4 @@
+import re
 # -------------------------------------------------------------------------------------------------
 #  Copyright (C) 2015-2023 . All rights reserved.
 #  https://nautechsystems.io
@@ -16,7 +17,7 @@
 
 from functools import lru_cache
 from typing import Optional, Union, List
-from datetime import datetime
+from datetime import datetime, timezone
 import pandas
 
 from nautilus_trader.core.correctness import PyCondition
@@ -31,9 +32,9 @@ from nautilus_trader.model.objects import Price, Quantity
 from nautilus_trader.adapters.cloudbet.client.schema import GetBetResponse, BetStatus, SelectionSide
 from nautilus_trader.model.orders import Order
 
-from nautilus_trader.adapters.cloudbet.common import VENUE
+from nautilus_trader.adapters.cloudbet.common import VENUE, CLOUDBET_VENUE
 
-
+@lru_cache(maxsize=1024)
 def make_symbol(event_id: int, submarket_name: str, outcome: str, params: Optional[str] = "") -> Symbol:
     """
     Make symbol with arbitrary number of arguments.
@@ -47,30 +48,32 @@ def make_symbol(event_id: int, submarket_name: str, outcome: str, params: Option
     Note: The generated symbol must be no longer than 32 characters.
     """
 
+    PyCondition.type(event_id, int, "event_id")
+    PyCondition.not_none(submarket_name, "submarket_name")
+    PyCondition.not_none(outcome, "outcome")
+    PyCondition.type_or_none(params, str, "params")
     def _clean(s):
-        return str(s).replace(" ", "").replace(":", "")
+        return re.sub(r"[ :]", "", str(s))
 
     value: str = "|".join(
         [_clean(k) for k in (event_id, submarket_name, outcome, params)],
     )
-    # ToDo: add some sanity checks here eg order of arguments, length of arguments, etc
-    # assert len(value) <= 32, f"Symbol too long ({len(value)}): '{value}'"
     return Symbol(value)
 
 
-@lru_cache
-def extract_cloudbet_symbol(symbol: Symbol) -> tuple[int, str, str, str]:
+@lru_cache(maxsize=512)
+def extract_cloudbet_symbol(symbol: Symbol) -> tuple[int, str, str, Optional[str]]:
     """
     Extract the event_id, market_name, outcome and params from a symbol
     """
     # TODO: test this handles when params = "" or None
+    PyCondition.type(symbol, Symbol, "symbol")
     event_id, market_name, outcome, params = symbol.value.split("|")
     return int(event_id), market_name, outcome, params
 
 
 
-# TODO: test CryptoBettingInstrument with new cloudbet_instrument_id generator
-@lru_cache
+@lru_cache(maxsize=1024)
 def cloudbet_instrument_id(
     event_id: int,
     market_name: str,
@@ -80,9 +83,12 @@ def cloudbet_instrument_id(
     """
     Create an instrument ID from CLOUDBET fields
     """
-
+    PyCondition.type(event_id, int, "event_id")
+    PyCondition.not_none(market_name, "market_name")
+    PyCondition.not_none(outcome, "outcome")
+    PyCondition.type_or_none(params, str, "params")
     symbol = make_symbol(event_id=event_id, submarket_name=market_name, outcome=outcome, params=params)
-    return InstrumentId(symbol=symbol, venue=VENUE)
+    return InstrumentId(symbol=symbol, venue=CLOUDBET_VENUE)
 
 #TODO: test function
 def cb_bet_to_order_status_report(
@@ -217,7 +223,7 @@ def cb_bet_to_position_report(
     )
     return report
 
-#TODO: test function
+CLOUDBET_TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 @lru_cache(maxsize=255)
 def cloudbet_timestamp_to_unix_nanos(cloudbet_timestamp: str) -> int:
     """
@@ -232,11 +238,24 @@ def cloudbet_timestamp_to_unix_nanos(cloudbet_timestamp: str) -> int:
     -------
     int
         A unix timestamp in nanoseconds
+
+    Raises
+    ------
+    ValueError
+        If the cloudbet_timestamp is not in the correct format
+    TypeError
+        If the provided argument is not a string
     """
-    # Parse the string to datetime
-    dt = datetime.strptime(cloudbet_timestamp, "%Y-%m-%dT%H:%M:%SZ")
-    # Convert to unix nanoseconds
-    return int(dt.timestamp() * 1e9) # we need to add 1e9 for nanosecond precision
+    PyCondition.type(cloudbet_timestamp, str, "cloudbet_timestamp")
+    try:
+        # Parse the string to datetime
+        dt = datetime.strptime(cloudbet_timestamp, CLOUDBET_TIMESTAMP_FORMAT)
+        # dt = dt.replace(tzinfo=timezone.utc)  # make the datetime object timezone-aware
+        # Convert to unix nanoseconds
+        return int(dt.timestamp() * 1e9) # we need to add 1e9 for nanosecond precision
+    except ValueError:
+        raise ValueError("Invalid timestamp format")
+
 
 @lru_cache(maxsize=255)
 def datetime_to_cloudbet_timestamp(ts: pandas.Timestamp) -> str:

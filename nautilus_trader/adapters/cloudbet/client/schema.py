@@ -118,8 +118,8 @@ POSITIONSIDE_ORDERSIDE_MAP = {
     SelectionSide.YES: PositionSide.LONG,
     SelectionSide.NO: PositionSide.LONG, # we're purchasing a 'NO' result bet
     SelectionSide.UNDEFINED: PositionSide.NO_POSITION_SIDE,
-    SelectionSide.EVEN: OrderSide.LONG,
-    SelectionSide.ODD: OrderSide.LONG,
+    SelectionSide.EVEN: PositionSide.LONG,
+    SelectionSide.ODD: PositionSide.LONG,
 }
 
 class AcceptPriceChange(Enum):
