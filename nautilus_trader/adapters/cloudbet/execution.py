@@ -38,6 +38,7 @@ from nautilus_trader.adapters.cloudbet.client.util import bet_to_trade_report, c
 from nautilus_trader.adapters.cloudbet.common import CLOUDBET_VENUE
 from nautilus_trader.adapters.cloudbet.providers import CloudbetInstrumentProvider
 from nautilus_trader.adapters.cloudbet.sockets import CloudbetStreamClient
+from nautilus_trader.config import LiveExecClientConfig
 from nautilus_trader.live.execution_client import LiveExecutionClient
 from nautilus_trader.model.events import AccountState
 from nautilus_trader.model.instruments.crypto_betting import CryptoBettingInstrument
@@ -103,6 +104,8 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
         )
 
         self._instrument_provider: CloudbetInstrumentProvider = instrument_provider
+        # an asyncio Task to watch the stream
+        self._watch_stream_task : Optional[asyncio.Task] = None
         self._client: CloudbetClient = client
         self.stream: CloudbetStreamClient = CloudbetStreamClient(
             client=self._client,
@@ -123,18 +126,29 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
 
     # -- CONNECTION HANDLERS ----------------------------------------------------------------------
     async def _connect(self) -> None:
-        if self._client.connected is False:
-            await self._client.connect()
-            self._log.info("Creating a new session...")
-            self._log.info("Cloudbet connect successful.", LogColor.GREEN)
-        aws = [
-            self.stream.connect(),
-            self.connection_account_state(),
-        ]
-        await asyncio.gather(*aws)
-        self.create_task(self.watch_stream())
+        try:
+            if self._client.connected is False:
+                await self._client.connect()
+                self._log.debug("Creating a new session...")
+                self._log.debug("Cloudbet connect successful.", LogColor.GREEN)
+            if self.stream.is_connected is False:
+                aws = [
+                    asyncio.create_task(self.stream.connect()),
+                    asyncio.create_task(self.connection_account_state()),
+                ]
+            elif self.stream.is_connected:
+                aws = [
+                    asyncio.create_task(self.connection_account_state()),
+                ]
+            await asyncio.gather(*aws)
+            #TODO: check if stream watch task is already running...if not self.stream.is_running_task(self.watch_stream):
+            if self._watch_stream_task is None:
+                self._log.info("Starting stream watch task...")
+                self._watch_stream_task = asyncio.create_task(self.watch_stream())
+        except Exception as e:
+            self._log.error("An error occurred during the connection process:", str(e))
 
-    def _disconnect(self) -> None:
+    async def _disconnect(self) -> None:
         # Close socket
         self._log.info("Closing streaming socket...")
         await self.stream.disconnect()

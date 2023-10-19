@@ -52,8 +52,12 @@ def make_symbol(event_id: int, submarket_name: str, outcome: str, params: Option
     PyCondition.not_none(submarket_name, "submarket_name")
     PyCondition.not_none(outcome, "outcome")
     PyCondition.type_or_none(params, str, "params")
-    def _clean(s):
-        return re.sub(r"[ :]", "", str(s))
+    def _clean(input_string):
+        # TODO: Consider using a more efficient regular expression pattern in the _clean function. The current
+        #  pattern "[ :]" matches any single space or colon character, which might not be the intended behavior. If
+        #  you want to match both space and colon characters, you should use the pattern "\s|:".
+        # return re.sub(r"\s|:", "", str(s))
+        return re.sub(r"[ :]", "", str(input_string))
 
     value: str = "|".join(
         [_clean(k) for k in (event_id, submarket_name, outcome, params)],

@@ -22,7 +22,10 @@ from nautilus_trader.adapters.cloudbet.client.core import CloudbetClient
 from nautilus_trader.adapters.cloudbet.common import VENUE
 from nautilus_trader.adapters.cloudbet.config import CloudbetDataClientConfig
 from nautilus_trader.adapters.cloudbet.data_client import CloudbetDataClient
-from nautilus_trader.adapters.cloudbet.factories import CloudbetLiveDataClientFactory
+from nautilus_trader.adapters.cloudbet.execution import CloudbetLiveExecutionClient
+from nautilus_trader.adapters.cloudbet.factories import CloudbetLiveDataClientFactory, CloudbetLiveExecClientFactory
+from nautilus_trader.adapters.cloudbet.sockets import CloudbetStreamClient
+from nautilus_trader.config import LiveExecClientConfig
 from nautilus_trader.test_kit.providers import TestInstrumentProvider
 from nautilus_trader.test_kit.stubs.events import TestEventStubs
 from tests.integration_tests.adapters.cloudbet.test_kit import CloudbetTestStubs
@@ -76,6 +79,7 @@ def instruments(request):
     count = request.param[1]
     return TestInstrumentProvider.crypto_betting_instruments(venue, count)
 
+
 @pytest.fixture()
 def instrument_provider(cloudbet_client):
     return CloudbetTestStubs.instrument_provider(cloudbet_client=cloudbet_client)
@@ -92,7 +96,8 @@ def data_client(
     msgbus,
     cache,
     clock,
-    logger) -> CloudbetDataClient:
+    logger
+) -> CloudbetDataClient:
     mocker.patch("nautilus_trader.adapters.cloudbet.factories.get_cached_cloudbet_client",
                  return_value=cloudbet_client)
     mocker.patch("nautilus_trader.adapters.cloudbet.factories.get_cached_cloudbet_instrument_provider",
@@ -111,8 +116,57 @@ def data_client(
 
 
 @pytest.fixture()
-def exec_client():
-    pass  # pragma: no cover
+def exec_client(
+    mocker,
+    event_loop,
+    cloudbet_client,
+    instrument_provider,
+    instrument,
+    venue,
+    msgbus,
+    cache,
+    clock,
+    logger,
+) -> CloudbetLiveExecutionClient:
+    mocker.patch("nautilus_trader.adapters.cloudbet.factories.get_cached_cloudbet_client",
+                 return_value=cloudbet_client)
+    mocker.patch("nautilus_trader.adapters.cloudbet.factories.get_cached_cloudbet_instrument_provider",
+                 return_value=instrument_provider)
+    instrument_provider.add(instrument)
+    exec_client = CloudbetLiveExecClientFactory.create(
+        loop=event_loop,
+        name=venue.value,
+        config=None,
+        msgbus=msgbus,
+        cache=cache,
+        clock=clock,
+        logger=logger,
+        base_currency=None,
+    )
+    return exec_client
+
+
+# @pytest.fixture()
+# def cloudbet_stream_client(
+#     mocker,
+#     event_loop,
+#     cloudbet_client,
+#     instrument_provider,
+#     instrument,
+#     venue,
+#     msgbus,
+#     cache,
+#     clock,
+#     logger,
+# ) -> CloudbetStreamClient:
+#     mocker.patch("nautilus_trader.adapters.cloudbet.factories.get_cached_cloudbet_client",
+#                  return_value=cloudbet_client)
+#     mocker.patch("nautilus_trader.adapters.cloudbet.factories.get_cached_cloudbet_instrument_provider",
+#                  return_value=instrument_provider)
+#     cloudbet_stream_client = CloudbetStreamClient(
+#         client=cloudbet_client,
+#         logger=logger,
+#         message_handler="some callable"
 
 @pytest.fixture()
 def account_state() -> AccountState:
