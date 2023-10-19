@@ -57,26 +57,33 @@ class CloudbetTestStubs:
         client = CloudbetClient(
             loop=loop,
             logger=logger,
-            api_key=test_api_key,
-            api_url=test_api_url,
+            api_key=test_api_key, # TODO: replace test key with an empty string
+            api_url=test_api_url,# TODO: replace test key with an empty string
         )
 
-        # async def request(method, url, **kwargs):
-        #     assert method  # required to stop mocks from breaking
-        #     rpc_method = kwargs.get("json", {}).get("method") or url
+        # TODO: finish implementing this method and re-run Cloubet Client test suite, handle cases where enpoitn returns Exceptions, failure, success, etc for each endpoint
+        # async def request(function_name): # method, url, **kwargs
+        #     assert function_name  # required to stop mocks from breaking
         #     responses = {
-        #         "https://api.betfair.com/exchange/betting/rest/v1/en/navigation/menu.json": BetfairResponses.navigation_list_navigation_response,
-        #         "AccountAPING/v1.0/getAccountDetails": BetfairResponses.account_details,
-        #         "AccountAPING/v1.0/getAccountFunds": BetfairResponses.account_funds_no_exposure,
+        #         "login": CloudbetResponses.login(),
+        #         "get_sports": CloudbetResponses.get_sports(),
+        #         "get_events_for_sport": CloudbetResponses.get_events_for_sport(),
+        #         "place_bet_success": CloudbetResponses.place_bet_success(),
+        #         "place_bet_failure": CloudbetResponses.place_bet_failure(),
+        #         "place_bet_invalid_event_id": CloudbetResponses.place_bet_invalid_event_id(),
+        #         "get_bet_history_success": CloudbetResponses.get_bet_history_success(),
+        #         "get_bet_status_success": CloudbetResponses.get_bet_status_success(),
+        #         "get_account_currencies_success": CloudbetResponses.get_account_currencies_success(),
         #     }
-        #     if rpc_method in responses:
+        #     if function_name in responses:
         #         resp = MagicMock(spec=ClientResponse)
-        #         resp.data = msgspec.json.encode(responses[rpc_method](**kw))
+        #         resp.data = responses[function_name] # response type => CloudbetResponses.function_name
         #         return resp
-        #     raise KeyError(rpc_method)
+        #     raise KeyError(function_name)
         #
         # client.request = MagicMock()  # type: ignore
         # client.request.side_effect = request
+
         return client
 
     @staticmethod

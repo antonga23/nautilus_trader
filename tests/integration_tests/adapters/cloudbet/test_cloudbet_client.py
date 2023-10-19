@@ -326,6 +326,7 @@ class TestCloudbetClient:
             timestamp_48h,
             limit=5
         )
+        # TODO: replace with a mock as this may fail if there are no events for the sport
         selections: List[Selection] = self.client.event_to_selection(event)
         selection = random.choice(selections)
         # Replace these with valid event_id and market_url for testing
