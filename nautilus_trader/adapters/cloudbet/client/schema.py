@@ -174,7 +174,7 @@ class BetStatus(Enum):
     HALF_LOSS = "HALF_LOSS"
     PARTIAL = "PARTIAL"
 
-    def get_order_status(self):
+    def get_order_status(self): #TODO: change to static so can be called without an instance of BetStatus
         return BETSTATUS_ORDERSTATUS_MAP.get(self, None)
 
 

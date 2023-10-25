@@ -517,7 +517,7 @@ class TestCloudbetClient:
     @patch.object(CloudbetClient, 'get')
     async def test_get_bet_status_valid_reference_id(self, mock_cloudbet_get, cloudbet_client):
         # Set up the mock response
-        bet_status: GetBetResponse = CloudbetResponses.get_bet_status_success()
+        bet_status: GetBetResponse = CloudbetResponses.get_bet_status_win()
         response_data: bytes = json.dumps(bet_status.to_dict()).encode('utf-8')  # encode to binary
         GenericObject = namedtuple('GenericObject', ['status', 'data'])
         mock_cloudbet_get.return_value = GenericObject(status=200, data=response_data)
@@ -585,7 +585,7 @@ class TestCloudbetClient:
         response_data = {"amount": 998.6449}
 
         # Set up the mock response
-        response_data : bytes = msgspec.json.encode({"amount": 998.6449})
+        response_data : bytes = msgspec.json.encode({"amount": "998.6449"})
         mock_cloudbet_get.return_value.status = 200
         mock_cloudbet_get.return_value.data = response_data
 

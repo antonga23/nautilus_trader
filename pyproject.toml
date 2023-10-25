@@ -71,6 +71,7 @@ pytest-asyncio = "^0.21.0"
 asyncmock = "^0.4.2"
 asynctest = "^0.13.0"
 websockets = "^11.0.3"
+nautilus-ibapi = "^1019.1"
 
 [tool.poetry.extras]
 betfair = ["betfair_parser"]

@@ -12,11 +12,12 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
+from typing import Optional
 
 import pytest
 
 from nautilus_trader.model.events.account import AccountState
-from nautilus_trader.model.identifiers import Venue, AccountId
+from nautilus_trader.model.identifiers import Venue, AccountId, TradeId, StrategyId, ClientOrderId
 
 from nautilus_trader.adapters.cloudbet.client.core import CloudbetClient
 from nautilus_trader.adapters.cloudbet.common import VENUE
@@ -26,8 +27,10 @@ from nautilus_trader.adapters.cloudbet.execution import CloudbetLiveExecutionCli
 from nautilus_trader.adapters.cloudbet.factories import CloudbetLiveDataClientFactory, CloudbetLiveExecClientFactory
 from nautilus_trader.adapters.cloudbet.sockets import CloudbetStreamClient
 from nautilus_trader.config import LiveExecClientConfig
+from nautilus_trader.model.orders import Order, LimitOrder, MarketOrder
 from nautilus_trader.test_kit.providers import TestInstrumentProvider
 from nautilus_trader.test_kit.stubs.events import TestEventStubs
+from nautilus_trader.test_kit.stubs.execution import TestExecStubs
 from tests.integration_tests.adapters.cloudbet.test_kit import CloudbetTestStubs
 from nautilus_trader.common.clock import LiveClock
 
@@ -171,3 +174,45 @@ def exec_client(
 @pytest.fixture()
 def account_state() -> AccountState:
     return TestEventStubs.betting_account_state(account_id=AccountId("CLOUDBET-001"))
+
+
+@pytest.fixture(autouse=False)
+def limit_order(instrument_id=None,
+                order_side=None,
+                price=None,
+                quantity=None,
+                time_in_force=None,
+                trader_id: Optional[TradeId] = None,
+                strategy_id: Optional[StrategyId] = None,
+                client_order_id: Optional[ClientOrderId] = None,
+                expire_time=None,
+                tags=None) -> LimitOrder:
+    limit_order = TestExecStubs.limit_order(instrument_id=instrument_id,
+                                            order_side=order_side,
+                                            price=price,
+                                            quantity=quantity,
+                                            time_in_force=time_in_force,
+                                            trader_id=trader_id,
+                                            strategy_id=strategy_id,
+                                            client_order_id=client_order_id,
+                                            expire_time=expire_time,
+                                            tags=tags)
+    return limit_order
+
+
+@pytest.fixture(autouse=False)
+def market_order(instrument_id=None,
+                 order_side=None,
+                 quantity=None,
+                 trader_id: Optional[TradeId] = None,
+                 strategy_id: Optional[StrategyId] = None,
+                 client_order_id: Optional[ClientOrderId] = None,
+                 time_in_force=None) -> MarketOrder:
+    market_order = TestExecStubs.market_order(instrument_id=instrument_id,
+                                              order_side=order_side,
+                                              quantity=quantity,
+                                              trader_id=trader_id,
+                                              strategy_id=strategy_id,
+                                              client_order_id=client_order_id,
+                                              time_in_force=time_in_force)
+    return market_order

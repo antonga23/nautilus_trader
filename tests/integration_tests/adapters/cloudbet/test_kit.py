@@ -3,7 +3,7 @@ import json
 import pathlib
 import random
 from asyncio import Future
-from typing import List
+from typing import List, Optional
 from unittest.mock import MagicMock
 
 import msgspec
@@ -11,7 +11,7 @@ from aiohttp import ClientResponse
 
 from nautilus_trader.adapters.cloudbet.client.core import CloudbetClient
 from nautilus_trader.adapters.cloudbet.client.schema import GetAccountInfoResponse, GetSportsResponse, \
-    GetEventsForSportResponse, GetBetResponse, GetBetHistoryResponse, GetAccountCurrencies
+    GetEventsForSportResponse, GetBetResponse, GetBetHistoryResponse, GetAccountCurrencies, GetAccountBalance
 from nautilus_trader.adapters.cloudbet.client.util import extract_cloudbet_symbol, cloudbet_instrument_id
 from nautilus_trader.adapters.cloudbet.common import CLOUDBET_VENUE
 from nautilus_trader.adapters.cloudbet.providers import CloudbetInstrumentProvider
@@ -165,13 +165,21 @@ class CloudbetResponses:
         return CloudbetResponses.load('get_bet_history.json', response_type=GetBetHistoryResponse)
 
     @staticmethod
-    def get_bet_status_success() -> GetBetResponse:
+    def get_bet_status_win() -> GetBetResponse:
         return CloudbetResponses.load('get_bet_status.json', response_type=GetBetResponse)
+
+    @staticmethod
+    def get_bet_status_accepted() -> GetBetResponse:
+        return CloudbetResponses.load('get_bet_status_accepted.json', response_type=GetBetResponse)
 
     @staticmethod
     def get_account_currencies_success() -> GetAccountCurrencies:
         return CloudbetResponses.load('get_account_currencies.json', response_type=GetAccountCurrencies)
 
+    @staticmethod
+    # TODO: handle currencies with different precision eg. BTC
+    def get_account_balances(currency: Optional[str] = None) -> GetAccountBalance: # we optionally pass a currency in case a mock is needed
+        return CloudbetResponses.load('get_account_balances.json', response_type=GetAccountBalance)
 
 
 

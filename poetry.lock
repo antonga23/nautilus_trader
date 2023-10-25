@@ -1615,6 +1615,17 @@ rtd = ["ipython", "sphinx-book-theme", "sphinx-design", "sphinxcontrib.mermaid (
 testing = ["beautifulsoup4", "coverage[toml]", "pytest (>=6,<7)", "pytest-cov", "pytest-param-files (>=0.3.4,<0.4.0)", "pytest-regressions", "sphinx (<5.2)", "sphinx-pytest"]
 
 [[package]]
+name = "nautilus-ibapi"
+version = "1019.1"
+description = "Python IB API"
+optional = false
+python-versions = ">=3.9,<3.12"
+files = [
+    {file = "nautilus_ibapi-1019.1-py3-none-any.whl", hash = "sha256:00a521ee8a7870f6a2430d9f5145e42cfc48aae5791d3c54fc0d5d54b099f615"},
+    {file = "nautilus_ibapi-1019.1.tar.gz", hash = "sha256:dae539d667d7f06d953ccd5353ff4f5315c9f4d1fe448ef71704fae1daa95585"},
+]
+
+[[package]]
 name = "nest-asyncio"
 version = "1.5.6"
 description = "Patch asyncio to allow nested event loops"
@@ -3061,4 +3072,4 @@ redis = ["hiredis", "redis"]
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.9,<3.12"
-content-hash = "17ff5731b486384967b39c9458c6b6d33db78a8a5561b2dc5899898579a1ac45"
+content-hash = "02b02f3ec0d248b3146f820ae1f150649d275f69baa9eadb09740512e176340d"
