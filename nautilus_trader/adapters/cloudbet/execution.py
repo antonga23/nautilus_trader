@@ -310,7 +310,8 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
             try:
                 bet_status_response: GetBetResponse = await self._client.get_bet_status(venue_order_id)
             except Exception as e:  # TODO: handle exceptions gracefully
-                self._log.error(f"Could not fetch bet status from Cloudbet:", bet_status_response)
+
+                self._log.error(f"Could not fetch bet status from Cloudbet: {str(e)}")
                 # we must query the cache => as the order may not have reached the exchange yet or exchange is down
                 if client_order_id is not None:
                     self._log.debug(f"Attempting to query the cache for order {client_order_id}")
@@ -331,18 +332,18 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
                         )
                         return report
                     else:
-                        self._log.warning(
-                            f"Attempting to query order that does not exist in the cache, Client Order ID: {client_order_id}",
-                        )
+                        self._log.warning(f"Attempting to query order that does not exist in the cache, Client Order ID: {client_order_id}")
                         return None
                 else:
                     self._log.debug(
                         f"Unable to fetch Order details from the venue {self.venue} and no Client Order ID was provided",
                     )
                     return None
+
             report = cb_bet_to_order_status_report(
                 order=existing_order,
-                account_id=self.account_id if self.account_id is not None else await self.set_account_id(account_id=None),
+                account_id=self.account_id if self.account_id is not None else await self.set_account_id(
+                    account_id=None),
                 instrument_id=instrument_id,
                 bet_response=bet_status_response,
                 ts_init=self._clock.timestamp_ns(),
@@ -361,7 +362,7 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
             else:
                 self._log.debug(f"Found order in the cache. Client Order id: {client_order_id}")
                 cached_venue_order_id: Optional[VenueOrderId] = existing_order.venue_order_id
-                if venue_order_id is None:
+                if cached_venue_order_id is None:
                     self._log.warning(
                         f"Unable to generate a report for Order without a valid VenueOrderID, Client Order ID: {client_order_id}",
                     )
@@ -374,7 +375,7 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
                 bet_response=None, # for cached Orders we don't need to query the venue
                 ts_init=self._clock.timestamp_ns(),
                 client_order_id=client_order_id,
-                venue_order_id=cached_venue_order_id,
+                venue_order_id=cached_venue_order_id, #TODO: this should cause a runtime error as cached_venue_order_id is None
                 report_id=UUID4(),
             )
         else:
@@ -521,7 +522,7 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
         Parameters
         ----------
         instrument_id : InstrumentId
-            The instrument ID for the report. If venue_order_id is specified, all Trades associated with the InstruemntID will be returned
+            The instrument ID for the report. If venue_order_id is specified, all Trades associated with the InstrumentID will be returned
         venue_order_id : VenueOrderId, optional
             The venue order ID for the report.  If specified, only a single TradeReport will be returned
         start : pd.Timestamp, optional
@@ -829,12 +830,12 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
 
     async def _submit_order_list(self, command: SubmitOrderList) -> None:
         raise NotImplementedError(
-            "submitting multiple orders simulataneously isn't supported on Cloubet")  # pragma: no cover
+            "submitting multiple orders simultaneously isn't supported on Cloudbet")  # pragma: no cover
 
     async def _modify_order(self, command: ModifyOrder) -> None:
         # TODO : message the cloudbet team about resending a BetRequest with the same referenceID
         raise NotImplementedError(
-            "submitting multiple orders simulataneously isn't supported on Cloubet")  # pragma: no cover
+            "submitting multiple orders simultaneously isn't supported on Cloudbet")  # pragma: no cover
 
     async def _cancel_order(self, command: CancelOrder) -> None:
         # TODO : message the cloudbet team about cancelling a Bet that hasn't been accepted yet or is only partially fileld

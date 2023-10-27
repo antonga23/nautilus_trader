@@ -13,7 +13,7 @@ from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.accounting.accounts.base import Account
 
 from nautilus_trader.adapters.cloudbet.client.util import cb_bet_to_order_status_report, \
-    cloudbet_timestamp_to_unix_nanos
+    cloudbet_timestamp_to_unix_nanos, make_symbol, cloudbet_instrument_id
 from nautilus_trader.adapters.cloudbet.execution import CloudbetLiveExecutionClient
 from nautilus_trader.model.currency import Currency
 
@@ -48,10 +48,11 @@ from nautilus_trader.model.enums import BookType
 from nautilus_trader.model.enums import InstrumentCloseType
 from nautilus_trader.model.enums import MarketStatus
 from nautilus_trader.model.enums import OrderSide
-from nautilus_trader.model.identifiers import InstrumentId, AccountId, VenueOrderId, ClientOrderId
+from nautilus_trader.model.identifiers import InstrumentId, AccountId, VenueOrderId, ClientOrderId, PositionId
 from nautilus_trader.model.identifiers import Symbol
 from nautilus_trader.model.objects import Price, Money, AccountBalance, Quantity
 from nautilus_trader.model.orderbook import OrderBook
+from nautilus_trader.model.orders import Order
 from nautilus_trader.test_kit.providers import TestInstrumentProvider
 from nautilus_trader.test_kit.stubs.data import TestDataStubs
 from nautilus_trader.test_kit.stubs.events import TestEventStubs
@@ -389,99 +390,230 @@ class TestCloudbetExecutionReports:
 
         # Assert an Assertion Error was raised
         assert e.type == AssertionError
+
+    # -- HAPPY PATH GENERATE ORDER STATUS REPORTS ------------------------------------------------------------------------
+
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("cached_order, get_bet_status_result, param_client_order_id, param_venue_order_id",[
-        (None, CloudbetResponses.get_bet_status_accepted(), None, TestIdStubs.venue_order_id()),
-        (TestExecStubs.limit_order(instrument_id=TestInstrumentProvider.crypto_betting_instrument().id), None, TestIdStubs.client_order_id(), TestIdStubs.venue_order_id()),
-    ])
+    @pytest.mark.parametrize(
+        "get_bet_status_result, is_exception, client_order_id_is_none, cached_order, venue_order_id", [
+            (CloudbetResponses.get_bet_status_accepted(), False, True, None, "some_venue_id"),  # Test 1
+            (CloudbetResponses.get_bet_status_accepted(), False, False, None, "some_venue_id"),  # Test 2
+            ("No bet status response received from Cloudbet", True, False, "valid_order", "some_venue_id"),  # Test 3
+            (None, False, False, "valid_order", "None"),  # Test 4
+        ])
     @patch.object(CloudbetClient, 'login', new_callable=AsyncMock, return_value=CloudbetResponses.login())
     @patch.object(CloudbetClient, 'get_bet_status', new_callable=AsyncMock)
-    @patch.object(CloudbetLiveExecutionClient, '_cache')
-    # TODO: patch the cached order object to get tests passing
-    async def test_generate_order_status_report_success(self, mock_cache, get_bet_status, login, cached_order, get_bet_status_result, param_client_order_id, param_venue_order_id, exec_client, instrument, limit_order, market_order, mocker):
-        pass
-        # get_bet_status.return_value = get_bet_status_result
-        # # exec_client._cache.order = cached_order
-        # mocker.patch.object(
-        #     exec_client._cache,
-        #     "load_order",
-        #     return_value=cached_order,
-        # )
-        # mock_cache.order.return_value = cached_order
-        # print("mock order:", mock_cache)
-        # # exec_client._cache.order = cached_order
-        # print("asdas", exec_client._cache.order.return_value == cached_order)
-        # print(get_bet_status.return_value)
-        # print(limit_order)
-        # print(login.return_value)
-        # accepted_limit_order = TestExecStubs.make_accepted_order(cached_order)
-        # print(accepted_limit_order)
-        # # # Invoke the generate_order_status_report  function
-        # order_status_report : OrderStatusReport = await exec_client.generate_order_status_report(
-        #     instrument_id=instrument.id,
-        #     client_order_id=param_client_order_id,
-        #     venue_order_id=param_venue_order_id
-        # )
-        # #
-        # # # # Assert the generated order status report
-        # assert isinstance(order_status_report, OrderStatusReport)
+    async def test_successful_order_status_reports(self,
+                                                   get_bet_status, login,
+                                                   get_bet_status_result, is_exception, client_order_id_is_none,
+                                                   cached_order, venue_order_id,
+                                                   exec_client, instrument,
+                                                   limit_order):  # Replace exec_client, instrument, and limit_order with your actual fixtures or objects
+        """
+        General Overview:
+        -----------------
+        Test case for generating Order Status Reports using various scenarios encapsulated by the parametrized inputs.
+        This test aims to cover multiple edge cases in a single function using different combinations of patched data
+        and assumptions.
 
-    # -- ORDER STATUS REPORTS ------------------------------------------------------------------------
+        Parameters:
+        ---------------------
+            - get_bet_status (AsyncMock): A patched version of the 'get_bet_status' method.
+            - login (AsyncMock): A patched version of the 'login' method.
+            - get_bet_status_result: Mock result for 'get_bet_status'.
+            - is_exception (bool): If 'get_bet_status' should raise an exception.
+            - client_order_id_is_none (bool): If the client_order_id should be None.
+            - cached_order (str): Specifies if a valid order should be cached.
+            - venue_order_id (str): The venue_order_id to use in the test.
+            - exec_client: The CloudbetLiveExecutionClient fixture.
+            - instrument: The instrument fixture.
 
-    # @pytest.mark.asyncio
-    # @patch.object(CloudbetClient, 'get_bet_status', new_callable=AsyncMock,
-    #               return_value=CloudbetResponses.get_bet_status_accepted())
-    # @patch.object(CloudbetClient, 'login', new_callable=AsyncMock, return_value=CloudbetResponses.login())
-    # async def test_generate_order_status_report_valid_instrument_id_and_venue_order_id(self, login, get_bet_status,
-    #                                                                                    exec_client, instrument):
-    #     # Mock the necessary dependencies
-    #     venue_order_id = VenueOrderId("12345")
-    #     instrument_id = instrument.id
-    #     # existing_order = Order(...)
-    #     # report = OrderStatusReport(...)
-    #
-    #     # Mock the necessary methods and attributes
-    #     # exec_client._cache.order.return_value = existing_order
-    #
-    #     # Call the method under test
-    #     report = await exec_client.generate_order_status_report(
-    #         instrument_id=instrument_id,
-    #         venue_order_id=venue_order_id
-    #     )
-    #     print(exec_client.account_id)
-    #     # await exec_client.set_account_id(None)
-    #     print(exec_client.account_id)
-        # assert exec_client.set_account_id(None
-        # Assertions
-        # get_bet_status.assert_called_once_with(venue_order_id)
-        # CloudbetLiveExecutionClient._cache.order.assert_called_once_with(client_order_id)
-        # CloudbetLiveExecutionClient._clock.timestamp_ns.assert_called_once()
-        #
-        # assert result == report
-    #     mock_get_bet_status = mocker.patch.object(CloudbetClient, 'get_bet_status')
-    #     mock_get_bet_status.return_value = CloudbetResponses.get_bet_status_accepted()
-    #     # Mock the cache.order method to return an existing order
-    #     existing_order = mocker.Mock()
-    #     cache.order.return_value = existing_order
-    #
-    #     # Mock the CloudbetClient.get_bet_status method to return a bet status response
-    #     bet_status_response = mocker.Mock()
-    #     client.get_bet_status.return_value = bet_status_response
-    #
-    #     # Invoke the generate_order_status_report method
-    #     instrument_id = InstrumentId("BTCUSD.BINANCE")
-    #     client_order_id = ClientOrderId("12345")
-    #     venue_order_id = VenueOrderId("67890")
-    #
-    #     report = await exec_client.generate_order_status_report(
-    #         instrument_id=instrument_id,
-    #         client_order_id=client_order_id,
-    #         venue_order_id=venue_order_id
-    #     )
-    #
-    #     # Check if the report was generated successfully
-    #     assert report is not None
-    #     assert isinstance(report, OrderStatusReport)
+        Test Cases Explained:
+        ---------------------
+        Test 1/Param set 1:
+            - Tests when 'get_bet_status' returns a valid response.
+            - No client ID is provided.
+            - Assumes successful login and valid instrument.
+            - Assertions: Expect an OrderStatusReport.
+
+        Test 2/Param set 2:
+            - Tests when 'get_bet_status' returns a valid response.
+            - A valid client ID is provided.
+            - Assumes successful login and valid instrument.
+            - Assertions: Expect an OrderStatusReport.
+
+        Test 3/Param set 3:
+            - Tests when 'get_bet_status' raises an exception.
+            - A valid client ID is derived from a cached order.
+            - Assumes successful login and valid instrument.
+            - Assertions: Expect an OrderStatusReport.
+
+        Test 4/Param set 4:
+            - Tests when 'get_bet_status' returns None.
+            - A valid client ID is provided, but venue_order_id is None.
+            - Assumes successful login and valid instrument.
+            - Assertions: Expect an OrderStatusReport.
+
+        Returns:
+            None
+        """
+
+        if is_exception:
+            get_bet_status.side_effect = Exception(get_bet_status_result)
+        else:
+            get_bet_status.return_value = get_bet_status_result
+
+        # Common setup code
+        instrument_id = cloudbet_instrument_id(event_id=20254973, market_name="soccer.team_win_to_nil", outcome="yes",
+                                               params="team=away")  # Replace with your actual method to create an InstrumentId
+
+        client_order_id = None if client_order_id_is_none else ClientOrderId(
+            "some_id")  # Replace with your actual method to create a ClientOrderId
+
+        if cached_order == "valid_order":
+            order = self.order_factory.limit(
+                instrument_id,
+                OrderSide.BUY,
+                Quantity.from_int(10),
+                Price.from_str("8.835"),
+            )
+            cached_venue_order_id = VenueOrderId("some_venue_order_id")
+            order.apply(TestEventStubs.order_accepted(order=order,
+                                                      venue_order_id=cached_venue_order_id))  # Replace with your actual method to apply an order accepted event
+
+            position_id = PositionId(
+                f"{instrument.id}-{CLOUDBET_VENUE.value}")
+            exec_client._cache.add_order(order=order, position_id=position_id)
+
+            client_order_id = order.client_order_id
+        else:
+            order = None
+
+        # Dynamically determine the venue_order_id to use in the function call
+        if venue_order_id == "cached_venue_order_id":
+            actual_venue_order_id = cached_venue_order_id
+        elif venue_order_id == "None":
+            actual_venue_order_id = None
+        else:
+            actual_venue_order_id = VenueOrderId(venue_order_id)
+
+        # Call the function under test
+        order_status_report = await exec_client.generate_order_status_report(
+            instrument_id=instrument_id,
+            client_order_id=client_order_id,
+            venue_order_id=actual_venue_order_id
+        )
+
+        # Common assertions
+        assert isinstance(order_status_report, OrderStatusReport)
+        # TODO: add additional assertion depending on params
+    # -- HAPPY PATH GENERATE ORDER STATUS REPORTS ------------------------------------------------------------------------
+
+    # -- UNHAPPY PATH GENERATE ORDER STATUS REPORTS ------------------------------------------------------------------------
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "get_bet_status_result, is_exception, client_order_id_is_none, cached_order, venue_order_id", [
+            # ("ExceptionMessage", True, True, None, "some_venue_id"),
+            # # Test 1: get_bet_status raises an exception, no client ID, no cached order
+            # ("ExceptionMessage", True, True, "valid_order", "some_venue_id"),
+            # # Test 2: get_bet_status raises an exception, client ID from cached order, no venue_order_id
+            # (CloudbetResponses.get_bet_status_accepted(), True, False, "valid_order_no_venue_id", None),
+            # Test 3: get_bet_status raises an exception, client ID from cached order, venue_order_id is None
+            (CloudbetResponses.get_bet_status_accepted(), False, False, None , None),
+            # Test 4: order with client ID is not found in cached. venue_order_id is None
+        ])
+    @patch.object(CloudbetClient, 'login', new_callable=AsyncMock, return_value=CloudbetResponses.login())
+    @patch.object(CloudbetClient, 'get_bet_status', new_callable=AsyncMock)
+    async def test_unsuccessful_order_status_reports(self,
+                                                     get_bet_status, login,
+                                                     get_bet_status_result, is_exception, client_order_id_is_none,
+                                                     cached_order, venue_order_id,
+                                                     exec_client,
+                                                     instrument):  # Replace exec_client, instrument with your actual fixtures or objects
+        """
+        General Overview:
+        -----------------
+        Test case for unsuccessful scenarios in generating Order Status Reports.
+        This test focuses on edge cases where exceptions are raised, or `None` is expected to be returned.
+
+        Parameters Explained:
+        ---------------------
+        Refer to the previous docstring for similar parameters.
+
+        Test Cases Explained:
+        ---------------------
+        Test 1/Param set 1:
+            - 'get_bet_status' raises an exception.
+            - No client ID or cached order is provided.
+            - Expect None or appropriate exception handling.
+
+        Test 2/Param set 2:
+            - 'get_bet_status' raises an exception.
+            - A client ID is derived from a cached order, but no venue_order_id is provided.
+            - Expect None or appropriate exception handling.
+
+        Test 3/Param set 3:
+            - 'get_bet_status' raises an exception.
+            - A client ID is derived from a cached order, but venue_order_id is None.
+            - Expect None or appropriate exception handling.
+
+        Test 4/Param set 4:
+            - 'get_bet_status' returns a valid response.
+            - A client ID is derived from a cached order, but venue_order_id is None.
+            - Expect None or appropriate exception handling.
+
+        Returns:
+            None
+        """
+        if is_exception:
+            get_bet_status.side_effect = Exception(get_bet_status_result)
+        else:
+            get_bet_status.return_value = get_bet_status_result
+
+        # Common setup code similar to the happy path test
+        instrument_id = cloudbet_instrument_id(event_id=20254973, market_name="soccer.team_win_to_nil", outcome="yes",
+                                               params="team=away")  # Replace with your actual method to create an InstrumentId
+        client_order_id = None if client_order_id_is_none else ClientOrderId("some_client_order_id")
+
+        if cached_order == "valid_order" or cached_order == "valid_order_no_venue_id":
+            order = self.order_factory.limit(
+                instrument_id,
+                OrderSide.BUY,
+                Quantity.from_int(10),
+                Price.from_str("8.835"),
+            )
+
+            if cached_order == "valid_order_no_venue_id":
+                # Apply the order_submitted event, which should not have a venue_order_id
+                order.apply(TestEventStubs.order_submitted(order=order))  # No venue_order_id here
+            else:
+                # Apply the order_accepted event, which should have a venue_order_id
+                cached_venue_order_id = VenueOrderId("some_venue_order_id")
+                order.apply(TestEventStubs.order_accepted(order=order, venue_order_id=cached_venue_order_id))
+
+            position_id = PositionId(f"{instrument.id}-{CLOUDBET_VENUE.value}")
+            exec_client._cache.add_order(order=order, position_id=position_id)
+
+            # Override the client_order_id to None, to simulate the user not providing it
+            if client_order_id_is_none:
+                client_order_id = None
+            else:
+                client_order_id = order.client_order_id  # Ensure client_order_id is set to a valid value
+
+        actual_venue_order_id = VenueOrderId(venue_order_id) if venue_order_id is not None else None
+        # Call the function under test
+        order_status_report = await exec_client.generate_order_status_report(
+            instrument_id=instrument_id,
+            client_order_id=client_order_id,
+            venue_order_id=actual_venue_order_id
+        )
+
+        # Assertions for unsuccessful scenarios
+        assert order_status_report is None
+
+    # -- UNHAPPY PATH GENERATE ORDER STATUS REPORTS ------------------------------------------------------------------------
+
+
 
 # class TestCloudbetExecutionClientConnect:
 #     @pytest.mark.asyncio()

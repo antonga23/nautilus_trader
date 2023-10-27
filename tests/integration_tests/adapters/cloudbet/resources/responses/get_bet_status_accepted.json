@@ -5,7 +5,7 @@
     "marketUrl": "soccer.team_win_to_nil/yes?team=away",
     "side": "BACK",
     "currency": "PLAY_EUR",
-    "stake": "0.1",
+    "stake": "10",
     "createTime": "2023-09-19T09:16:45Z",
     "status": "ACCEPTED",
     "returnAmount": "",
