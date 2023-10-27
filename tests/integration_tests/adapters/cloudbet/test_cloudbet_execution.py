@@ -513,11 +513,11 @@ class TestCloudbetExecutionReports:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "get_bet_status_result, is_exception, client_order_id_is_none, cached_order, venue_order_id", [
-            # ("ExceptionMessage", True, True, None, "some_venue_id"),
+            ("ExceptionMessage", True, True, None, "some_venue_id"),
             # # Test 1: get_bet_status raises an exception, no client ID, no cached order
-            # ("ExceptionMessage", True, True, "valid_order", "some_venue_id"),
+            ("ExceptionMessage", True, True, "valid_order", "some_venue_id"),
             # # Test 2: get_bet_status raises an exception, client ID from cached order, no venue_order_id
-            # (CloudbetResponses.get_bet_status_accepted(), True, False, "valid_order_no_venue_id", None),
+            (CloudbetResponses.get_bet_status_accepted(), True, False, "valid_order_no_venue_id", None),
             # Test 3: get_bet_status raises an exception, client ID from cached order, venue_order_id is None
             (CloudbetResponses.get_bet_status_accepted(), False, False, None , None),
             # Test 4: order with client ID is not found in cached. venue_order_id is None
