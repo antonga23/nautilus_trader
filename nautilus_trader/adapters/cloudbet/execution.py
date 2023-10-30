@@ -417,9 +417,8 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
             If both the `instrument_id` and `venue_order_id` are ``None`` ,or, if either `start` and `end` are ``None``.
         """
         self._log.info(f"Generating OrderStatusReports for {self.id}...")
-        PyCondition.not_none(instrument_id, "instrument_id") \
-        or PyCondition.not_none(start, "start") and PyCondition.not_none(end,
-                                                                         "end")  # either specify a time range or an instrument_id
+        # assert instrument_id is not None or (start is not None and end is not None)
+        assert instrument_id is not None or (start is not None and end is not None)
         report_list: List[OrderStatusReport] = []
         # if a time-range is specified, we explicitly rely on the venue bet_history endpoint
         if start and end:
@@ -429,9 +428,10 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
                 bet_history: GetBetHistoryResponse = await self._client.get_bet_history(start_date, end_date)
                 self._log.info(f"Received bet history: {bet_history}")
             except Exception as e:  # TODO: handle exceptions gracefully
-                self._log.error(f"Could not fetch bet history from Cloudbet:", bet_history)
-                return []
+                self._log.error(f"Could not fetch bet history from Cloudbet: {e}")
+                return None
             for bet in bet_history.bets:
+                report : Optional[OrderStatusReport] = None
                 self._log.info(f"Processing bet: {bet}")
                 venue_order_id: VenueOrderId = VenueOrderId(bet.reference_id)
                 client_order_id: ClientOrderId = self._cache.client_order_id(venue_order_id)
@@ -454,7 +454,7 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
                 else:
                     cached_order: Order = self._cache.order(
                         client_order_id)
-                    if cached_order.is_open:
+                    if cached_order.is_open or bet.status == bet.status.PENDING_ACCEPTANCE:
                         report = cb_bet_to_order_status_report(
                             order=cached_order,
                             account_id=self.account_id if self.account_id is not None
@@ -473,14 +473,19 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
             # we're interested in getting all the orders for a given instrument_id regardless of time
             unique_client_ids: set[ClientOrderId] = self._cache.client_order_ids(venue=CLOUDBET_VENUE,
                                                                                  instrument_id=instrument_id)
+            report: Optional[OrderStatusReport] = None
             for client_order_id in unique_client_ids:
                 cached_order: Order = self._cache.order(
                     client_order_id)
                 venue_order_id: VenueOrderId = cached_order.venue_order_id
                 # use the venue_order_id to query the bet_status endpoint
-                bet_status: GetBetResponse = await self._client.get_bet_status(venue_order_id.value)
+                try:
+                    bet_status: GetBetResponse = await self._client.get_bet_status(venue_order_id.value)
+                except Exception as e:
+                    self._log.error(f"Could not fetch bet status from Cloudbet: {e}")
+                    continue
                 if open_only is True:
-                    if cached_order.is_open:
+                    if cached_order.is_open or bet_status.status == bet_status.status.PENDING_ACCEPTANCE:
                         report: OrderStatusReport = cb_bet_to_order_status_report(
                             order=cached_order,
                             account_id=self.account_id if self.account_id is not None
@@ -509,6 +514,7 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
                     )
         if report is not None:
             report_list.append(report)
+        return report_list
 
     async def generate_trade_reports(
         self,

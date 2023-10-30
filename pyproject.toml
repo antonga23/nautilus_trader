@@ -72,6 +72,7 @@ asyncmock = "^0.4.2"
 asynctest = "^0.13.0"
 websockets = "^11.0.3"
 nautilus-ibapi = "^1019.1"
+coverage = "^7.3.2"
 
 [tool.poetry.extras]
 betfair = ["betfair_parser"]

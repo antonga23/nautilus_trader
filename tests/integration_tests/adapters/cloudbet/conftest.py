@@ -12,7 +12,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
-from typing import Optional
+from typing import Optional, Union, List
 
 import pytest
 
@@ -27,6 +27,7 @@ from nautilus_trader.adapters.cloudbet.execution import CloudbetLiveExecutionCli
 from nautilus_trader.adapters.cloudbet.factories import CloudbetLiveDataClientFactory, CloudbetLiveExecClientFactory
 from nautilus_trader.adapters.cloudbet.sockets import CloudbetStreamClient
 from nautilus_trader.config import LiveExecClientConfig
+from nautilus_trader.model.instruments.crypto_betting import CryptoBettingInstrument
 from nautilus_trader.model.orders import Order, LimitOrder, MarketOrder
 from nautilus_trader.test_kit.providers import TestInstrumentProvider
 from nautilus_trader.test_kit.stubs.events import TestEventStubs
@@ -77,9 +78,10 @@ def instrument():
 
 @pytest.fixture(autouse=False)
 # request object is a special fixture injected by pytest
-def instruments(request):
+def instruments(request) -> list[CryptoBettingInstrument]:
     venue = request.param[0]
     count = request.param[1]
+    assert count < 674, f"Can only return a max of  674, got {count}"
     return TestInstrumentProvider.crypto_betting_instruments(venue, count)
 
 
