@@ -25,7 +25,7 @@ from nautilus_trader.core.rust.model import ContingencyType, OrderStatus, OrderS
     PositionSide, TimeInForce
 from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.execution.reports import OrderStatusReport, TradeReport, PositionStatusReport
-from nautilus_trader.model.identifiers import InstrumentId, ClientOrderId, VenueOrderId, AccountId
+from nautilus_trader.model.identifiers import InstrumentId, ClientOrderId, VenueOrderId, AccountId, TradeId
 from nautilus_trader.model.identifiers import Symbol
 from nautilus_trader.model.objects import Price, Quantity
 
@@ -105,7 +105,7 @@ def cb_bet_to_order_status_report(
     client_order_id: Optional[ClientOrderId] = None,
     order: Optional[Order] = None,
     bet_response: Optional[GetBetResponse] = None
-) -> OrderStatusReport:
+) -> Optional[OrderStatusReport]:
     """
     Generates the order status report based on the provided bet response or order.
 
@@ -166,7 +166,7 @@ def cb_bet_to_order_status_report(
         PyCondition.type(order, Order, "order")  # we should never get here without an order
         venue_order_id: Optional[VenueOrderId] = order.venue_order_id if order.venue_order_id is not None else None
         if venue_order_id is None:
-            return
+            return None
         if order.has_price:
             order_price = order.price
         else:
@@ -196,49 +196,71 @@ def cb_bet_to_order_status_report(
 
 # TODO: test function
 def bet_to_trade_report(
-    order: Order,
     account_id: AccountId,
     instrument_id: InstrumentId,
-    bet_response: GetBetResponse,
     ts_init: int,
     venue_order_id: VenueOrderId,
     report_id: Union[UUID4, str],
-    client_order_id: Optional[ClientOrderId] = None,  # (None if external order)
-) -> TradeReport:
+    order: Optional[Order] = None,
+    bet_response: Optional[GetBetResponse] = None,
+    client_order_id: Optional[ClientOrderId] = None  # (None if external order)
+) -> Optional[TradeReport]:
     """
-    Convert a cloudbet bet response to a trade report
+    Convert a cloudbet bet response or Order object to a trade report.
+
+    Args:
+        account_id (AccountId): The ID of the account.
+        instrument_id (InstrumentId): The ID of the instrument.
+        ts_init (int): The initialization timestamp.
+        venue_order_id (VenueOrderId): The venue order ID.
+        report_id (Union[UUID4, str]): The ID of the report.
+        client_order_id (Optional[ClientOrderId], optional): The client order ID. Defaults to None.
+        order (Optional[Order], optional): The order object. Defaults to None.
+        bet_response (Optional[GetBetResponse], optional): The bet response object. Defaults to None.
+
+    Returns:
+        Optional[TradeReport]: The generated trade report.
     """
-    # TradeId ~= VenueOrderId for cloudbet, so check if order has a trade_id generated internally else use venue_order_id
-    trade_id = order.last_trade_id if order.last_trade_id else venue_order_id
-    bet_side: SelectionSide = bet_response.side
-    trade_side: OrderSide = bet_side.get_order_side()
-    bet_price: str = str(bet_response.price)  # cast from float to str
-    trade_price: Price = Price.from_str(bet_price)
-    #
-    bet_quantity: str = str(bet_response.stake)  # cast from float to str
-    # filled_qty : Quantity = Quantity.from_str(bet_quantity)
-    trade_quantity: Quantity = Quantity.from_str(bet_quantity)
-    #
-    bet_time: str = bet_response.create_time  # optimistically assume order accepted at same time as bet placed
-    trade_accepted: int = cloudbet_timestamp_to_unix_nanos(bet_time)
+    assert order is not None or bet_response is not None, "Either order or bet_response must be provided"
 
-    order_liquidity_side: LiquiditySide = LiquiditySide.MAKER if trade_side == OrderSide.BUY else LiquiditySide.TAKER  # TODO: handle OderSide undefined case?
+    trade_id : Optional[TradeId] = TradeId(venue_order_id.value) if order is None else order.last_trade_id if order.last_trade_id else TradeId(venue_order_id.value)
 
-    report: TradeReport = TradeReport(
+    if bet_response is not None:
+        bet_side = bet_response.side
+        trade_side = bet_side.get_order_side()
+        bet_price = str(bet_response.price)
+        trade_price = Price.from_str(bet_price)
+        bet_quantity = str(bet_response.stake)
+        trade_quantity = Quantity.from_str(bet_quantity)
+        bet_time = bet_response.create_time
+        trade_accepted = cloudbet_timestamp_to_unix_nanos(bet_time)
+        order_liquidity_side = LiquiditySide.MAKER if trade_side == OrderSide.BUY else LiquiditySide.TAKER
+
+    else:  # We have an order but no bet_response
+        trade_side = order.side
+        trade_price = order.price if order.has_price else Price(0, precision=2)
+        if trade_price == Price(0, precision=2):
+            print(f"Could not convert order {order} to trade report")
+            return None
+        trade_quantity = order.quantity
+        trade_accepted = order.ts_last if order.ts_last else 0
+        order_liquidity_side = LiquiditySide.MAKER if trade_side == OrderSide.BUY else LiquiditySide.TAKER
+
+    report = TradeReport(
         account_id=account_id,
         instrument_id=instrument_id,
         venue_order_id=venue_order_id,
-        client_order_id=client_order_id,  # (None if external order)
+        client_order_id=client_order_id,
         trade_id=trade_id,
         order_side=trade_side,
-        last_qty=trade_quantity,  # cloudbet doesn't track fills, so use order_quantity
+        last_qty=trade_quantity,
         last_px=trade_price,
         liquidity_side=order_liquidity_side,
         report_id=report_id,
         ts_init=ts_init,
         ts_event=trade_accepted,
-        commission=None
-    )  # TODO: commission is fixed. Check value on cloudbet and add here
+        commission=None  # TODO: Add commission. Commission if fixed, check on Cloudbet and add the value here
+    )
     return report
 
 

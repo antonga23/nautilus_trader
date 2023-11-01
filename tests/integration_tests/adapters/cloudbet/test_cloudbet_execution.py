@@ -14,11 +14,11 @@ from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.accounting.accounts.base import Account
 
 from nautilus_trader.adapters.cloudbet.client.util import cb_bet_to_order_status_report, \
-    cloudbet_timestamp_to_unix_nanos, make_symbol, cloudbet_instrument_id
+    cloudbet_timestamp_to_unix_nanos, make_symbol, cloudbet_instrument_id, bet_to_trade_report
 from nautilus_trader.adapters.cloudbet.execution import CloudbetLiveExecutionClient
 from nautilus_trader.model.currency import Currency
 
-from nautilus_trader.execution.reports import OrderStatusReport
+from nautilus_trader.execution.reports import OrderStatusReport, TradeReport
 
 from nautilus_trader.common.factories import OrderFactory
 
@@ -795,7 +795,220 @@ class TestCloudbetExecutionReports:
         # Assertions for unsuccessful scenarios
         assert order_status_report is None
 
-    # -- UNHAPPY PATH GENERATE ORDER STATUS REPORTS ------------------------------------------------------------------------
+    # ---------------------------- UNHAPPY PATH GENERATE ORDER STATUS REPORTS ------------------------------------------
+
+
+    #------------------------------------------ TRADE REPORT----------------------------------------------------
+    @pytest.mark.parametrize(
+        "bet_response, cached_order, is_exception, client_order_id, venue_order_id, report_id, ts_init", [
+            (CloudbetResponses.get_bet_status_win(), None, False, None, "some_venue_id", UUID4(), 123456789),
+            # Test 1
+            (None, "valid_order", False, "client_order_1", "some_venue_id", UUID4(), 123456789),  # Test 2
+            ("No bet status response received from Cloudbet", None, True, "client_order_1", "some_venue_id", UUID4(),
+             123456789),  # Test 3
+            (CloudbetResponses.get_bet_status_win(), "valid_order", False, "client_order_1", "some_venue_id",
+             UUID4(), 123456789)  # Test 4
+        ])
+    @patch.object(CloudbetClient, 'get_bet_status', new_callable=AsyncMock)
+    def test_bet_to_trade_report(self,
+        get_bet_status,
+        bet_response, cached_order, is_exception, client_order_id, venue_order_id, report_id, ts_init,
+        account_id, instrument, exec_client):  # Replace account_id, instrument_id with your actual fixtures or objects
+        """
+        General Overview:
+        -----------------
+        Test case for converting various bet responses and orders into Trade Reports.
+        This test aims to cover multiple edge cases in a single function using different combinations of patched data and assumptions.
+
+        Parameters:
+        -----------
+        get_bet_status (AsyncMock): A patched version of the 'get_bet_status' method.
+        bet_response: Mock result for 'bet_response'.
+        order: Mock result for 'order'.
+        is_exception (bool): If 'get_bet_status' should raise an exception.
+        client_order_id (str): The client_order_id to use in the test.
+        venue_order_id (str): The venue_order_id to use in the test.
+        report_id (UUID4): The report_id to use in the test.
+        ts_init (int): The timestamp for initialization.
+        account_id: The account_id fixture.
+        instrument_id: The instrument_id fixture.
+
+        Test Cases Explained:
+        ---------------------
+        Test 1/Param set 1:
+            - Tests when 'bet_response' is valid, and no 'order' is provided.
+            - Assertions: Expect a TradeReport.
+
+        Test 2/Param set 2:
+            - Tests when no 'bet_response' is provided, but a valid 'order' is.
+            - Assertions: Expect a TradeReport.
+
+        Test 3/Param set 3:
+            - Tests when 'bet_response' is invalid and no 'order' is provided.
+            - Assertions: Expect an exception to be raised.
+
+        Test 4/Param set 4:
+            - Tests when both 'bet_response' and 'order' are provided.
+            - Assertions: Expect a TradeReport.
+
+        Returns:
+            None
+        """
+        if is_exception:
+            get_bet_status.side_effect = Exception("Failed to fetch bet status")
+        else:
+            get_bet_status.return_value = bet_response
+
+        # Create an instrument_id if it is not supposed to be None
+        instrument_id = instrument.id
+        cached_venue_order_id : Optional[VenueOrderId] = None
+        if cached_order in ["valid_order", "valid_order_no_venue_id"]:
+            order = self.order_factory.limit(
+                instrument_id,
+                OrderSide.BUY,
+                Quantity.from_int(10),
+                Price.from_str("8.835"),
+            )
+
+            if cached_order == "valid_order_no_venue_id":
+                order.apply(TestEventStubs.order_submitted(order=order))
+            else:
+                # Use the reference_id from the bet as the VenueOrderId
+                cached_venue_order_id = VenueOrderId(CloudbetResponses.get_bet_status_win().reference_id) #have to patch this even if it's not used
+                order.apply(TestEventStubs.order_accepted(order=order, venue_order_id=cached_venue_order_id))
+
+            position_id = PositionId(f"{instrument_id}-{CLOUDBET_VENUE.value}")
+            exec_client._cache.add_order(order=order, position_id=position_id)
+            cached_order = order
+
+        typed_venue_order_id = VenueOrderId(venue_order_id) if cached_venue_order_id is None else cached_venue_order_id
+        typed_client_order_id = ClientOrderId(client_order_id) if client_order_id is not None else None
+
+        # Invoke the bet_to_trade_report function
+        try:
+            trade_report = bet_to_trade_report(
+                order=cached_order,
+                account_id=account_id,
+                instrument_id=instrument_id,
+                bet_response=bet_response,
+                ts_init=ts_init,
+                venue_order_id=typed_venue_order_id,
+                report_id=report_id,
+                client_order_id=typed_client_order_id
+            )
+            assert isinstance(trade_report, TradeReport)
+            # TODO: Replace with more specific assertions for a valid bet response or cached order
+
+        except Exception as e:
+            if is_exception:
+                assert isinstance(e, Exception)  # Replace with the expected exception type
+            else:
+                assert False, f"Unexpected exception: {e}"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "instrument_id, venue_order_id, start, end, get_bet_status_response, get_bet_history_response, cached_order, is_exception, expected_reports_count",
+        [
+            # ("some_instrument_id", None, "20-10-01", "2021-10-02", None, CloudbetResponses.get_bet_history_success(), "valid_order", False, 2),  # Test 1
+            # (None, "some_venue_order_id", None, None, CloudbetResponses.get_bet_status_win(), CloudbetResponses.get_bet_history_success(), "valid_order", False, 1),  # Test 2
+            # (None, None, "20-10-01", "2021-10-02", None, CloudbetResponses.get_bet_history_success(), "valid_order", False, 1),  # Test 3
+            # (None, None, "20-10-01", "2021-10-02", None, CloudbetResponses.get_bet_history_success(), "invalid_order",
+            #  False, 0),  # Test 3.2 # invalid order # TODO: test again and see which paths are traversed
+            ("some_instrument_id", None, None, None, None, None, None, True, 0),  # Test 4 : Exception case
+            ("some_instrument_id", None, None, None, None, CloudbetResponses.get_bet_history_success(), "valid_order", True, 10),  # Test 4.2
+            ("some_instrument_id", "some_venue_order_id", None, None, CloudbetResponses.get_bet_status_win(), CloudbetResponses.get_bet_history_success(), "valid_order", False, 1),  # Test 5
+            ("some_instrument_id", "some_venue_order_id", None, None, None, None, None, True, 0)  # Test 6: Exception case
+        ]
+    )
+    @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 10)], indirect=["instruments"])  # return 10 instruments
+    @patch.object(CloudbetClient, 'get_bet_status', new_callable=AsyncMock)
+    @patch.object(CloudbetClient, 'get_bet_history', new_callable=AsyncMock, return_value=CloudbetResponses.get_bet_history_success())
+    async def test_generate_trade_reports(self, get_bet_history, get_bet_status, instrument_id, venue_order_id, start,
+                                          end, get_bet_status_response, get_bet_history_response, cached_order, is_exception,
+                                          expected_reports_count, account_id, instrument, instruments, exec_client):
+        """
+        General Overview:
+        -----------------
+        Test case for generating trade reports under various conditions.
+        This test aims to cover multiple edge cases using different combinations of patched data and assumptions.
+
+        Parameters:
+        -----------
+        get_bet_history (AsyncMock): A patched version of the 'get_bet_history' method.
+        get_bet_status (AsyncMock): A patched version of the 'get_bet_status' method.
+        instrument_id: Mock value for 'instrument_id'.
+        venue_order_id: Mock value for 'venue_order_id'.
+        start: Mock value for 'start' time.
+        end: Mock value for 'end' time.
+        get_bet_history_response: Mock result for 'get_bet_history'.
+        get_bet_status_response: Mock result for 'get_bet_status'.
+        is_exception (bool): If the test should expect an exception to be raised.
+        expected_reports_count: The expected number of trade reports.
+        account_id: The account_id fixture.
+        instrument: The instrument fixture.
+        exec_client: The execution client fixture.
+
+        Test Cases Explained:
+        ---------------------
+        Test 1/Param set 1:
+            - Tests when 'instrument_id' and a valid time range are provided.
+            - Assertions: Expect 2 TradeReports.
+
+        Test 2/Param set 2:
+            - Tests when only 'venue_order_id' is provided.
+            - Assertions: Expect 1 TradeReport.
+
+        Test 3/Param set 3:
+            - Tests when only a time range is provided.
+            - Assertions: Expect 2 TradeReports.
+
+        Test 4/Param set 4:
+            - Tests when only 'instrument_id' is provided without a time range.
+            - Order is cached
+            - Assertions: Expect an exception to be raised.
+
+        Test 5/Param set 5:
+            - Tests when both 'instrument_id' and 'venue_order_id' are provided.
+            - Assertions: Expect an exception to be raised.
+
+        Returns:
+            None
+        """
+        if is_exception:
+            get_bet_status.side_effect = Exception("Failed to fetch bet status")
+            get_bet_history.side_effect = Exception("Failed to fetch bet history")
+        else:
+            get_bet_status.return_value = get_bet_status_response
+            get_bet_history.return_value = get_bet_history_response
+        # start = pd.Timestamp(start) if start else None
+        # end = pd.Timestamp(end) if end else None
+        start_ts = pd.Timestamp(start) if start else None
+        end_ts = pd.Timestamp(end) if end else None
+
+        instrument_id = instrument.id if instrument_id is not None else None
+
+        if cached_order is not None:
+            await self.cache_valid_order(exec_client, instruments, instrument_id, cached_order, CloudbetResponses.get_bet_history_success())
+        typed_venue_order_id = VenueOrderId(venue_order_id) if venue_order_id is not None else None
+        try:
+            # Invoke the generate_trade_reports function
+            trade_reports = await exec_client.generate_trade_reports(
+                instrument_id=instrument_id,
+                venue_order_id=typed_venue_order_id,
+                start=start_ts,
+                end=end_ts
+            )
+            assert len(
+                trade_reports) == expected_reports_count  # Replace with more specific assertions based on your needs
+
+        except Exception as e:
+            if is_exception:
+                assert isinstance(e, Exception("Failed to fetch bet status"))
+            else:
+                print(f"Unexpected exception: {e}")
+                assert False, f"Unexpected exception: {e}"
+
+    #------------------------------------------ TRADE REPORT----------------------------------------------------
 
 # class TestCloudbetExecutionClientConnect:
 #     @pytest.mark.asyncio()
