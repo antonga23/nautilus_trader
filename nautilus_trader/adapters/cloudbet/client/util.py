@@ -25,7 +25,7 @@ from nautilus_trader.core.rust.model import ContingencyType, OrderStatus, OrderS
     PositionSide, TimeInForce
 from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.execution.reports import OrderStatusReport, TradeReport, PositionStatusReport
-from nautilus_trader.model.identifiers import InstrumentId, ClientOrderId, VenueOrderId, AccountId, TradeId
+from nautilus_trader.model.identifiers import InstrumentId, ClientOrderId, VenueOrderId, AccountId, TradeId, PositionId
 from nautilus_trader.model.identifiers import Symbol
 from nautilus_trader.model.objects import Price, Quantity
 
@@ -33,6 +33,7 @@ from nautilus_trader.adapters.cloudbet.client.schema import GetBetResponse, BetS
 from nautilus_trader.model.orders import Order
 
 from nautilus_trader.adapters.cloudbet.common import VENUE, CLOUDBET_VENUE
+from nautilus_trader.model.position import Position
 
 
 @lru_cache(maxsize=1024)
@@ -265,36 +266,100 @@ def bet_to_trade_report(
 
 
 def cb_bet_to_position_report(
-    order: List[Order],
     account_id: AccountId,
     instrument_id: InstrumentId,
-    bet_response: GetBetResponse,
     ts_init: int,
     venue_order_id: VenueOrderId,
     report_id: Union[UUID4, str],
-    client_order_id: Optional[ClientOrderId] = None,  # (None if external order)
+    order: Optional[Order] = None,
+    bet_response: Optional[GetBetResponse] = None,
+    client_order_id: Optional[ClientOrderId] = None,
+    position: Optional[Position] = None
 ) -> PositionStatusReport:
     """
-    Convert a cloudbet bet response to a Position status report
+        Generate a PositionStatusReport based on a Cloudbet bet response or an Order object.
+
+        This function converts the information from either a Cloudbet bet response or an Order
+        object into a standardized PositionStatusReport. It takes into account the different
+        attributes from both the bet response and the order to create a comprehensive report.
+
+        Parameters:
+        -----------
+        account_id : AccountId
+            The ID of the account associated with the position.
+        instrument_id : InstrumentId
+            The ID of the instrument associated with the position.
+        ts_init : int
+            The initialization timestamp.
+        venue_order_id : VenueOrderId
+            The venue order ID associated with the position.
+        report_id : Union[UUID4, str]
+            The ID of the report.
+        order : Optional[List[Order]] (default: None)
+            The order object. If provided, the function will extract relevant information from it.
+        bet_response : Optional[GetBetResponse] (default: None)
+            The bet response object. If provided, the function will extract relevant information from it.
+        client_order_id : Optional[ClientOrderId] (default: None)
+            The client order ID associated with the position.
+        position : Optional[Position] (default: None)
+            The position object. If provided, the function will extract relevant information from it.
+
+        Returns:
+        --------
+        PositionStatusReport
+            A comprehensive report detailing the status of the position based on the input data.
+
+        Raises:
+        -------
+        AssertionError
+            If neither order, bet_response nor Position  is provided.
+
+        Notes:
+        ------
+        At least one of 'order' or 'bet_response' must be provided. The function is designed to
+        handle either or both inputs and generate a comprehensive PositionStatusReport accordingly.
     """
-    bet_side: SelectionSide = bet_response.side
-    position_side: PositionSide = bet_side.get_position_side(bet_side)
+    assert order is not None or bet_response is not None or position is not None, "Either order or bet_response or Position must be provided"
+    if position is not None:
+        position_side: PositionSide = position.side
+        position_quantity: Quantity = position.quantity
+        position_accepted: int = position.ts_last if position.ts_last else 0
 
-    bet_quantity: str = str(bet_response.stake)  # cast from float to str
-    position_quantity: Quantity = Quantity.from_str(bet_quantity)
+    elif position is None and bet_response is not None:
+        bet_side: SelectionSide = bet_response.side
+        position_side: PositionSide = bet_side.get_position_side()
+        bet_quantity: str = str(bet_response.stake)  # cast from float to str
+        position_quantity: Quantity = Quantity.from_str(bet_quantity)
+        bet_time: str = bet_response.create_time  # assume order accepted at same time as bet placed
+        position_accepted: int = cloudbet_timestamp_to_unix_nanos(bet_time)
 
-    bet_time: str = bet_response.create_time  # optimistically assume order accepted at same time as bet placed
-    position_accepted: int = cloudbet_timestamp_to_unix_nanos(bet_time)
+    else:  # We have an order but no bet_response nor position
+        position_quantity: Quantity = order.quantity
+        if order.side == OrderSide.BUY:
+            position_side: PositionSide = PositionSide.LONG
+        elif order.side == OrderSide.SELL:
+            position_side: PositionSide = PositionSide.SHORT
+        else:
+            position_side = PositionSide.NO_POSITION_SIDE
+
+        if order.ts_last is not None:
+            position_accepted = order.ts_last
+        elif order.last_event:
+            position_accepted = order.last_event.ts_event
+        else:
+            position_accepted = 0
+    # concatenate the last 12 chars of the bet referenceId with a hyphen and the CLOUDBET_VENUE
+    venue_position_id = PositionId(f"{venue_order_id.value.split('-')[-1]}-{CLOUDBET_VENUE}")
 
     report: PositionStatusReport = PositionStatusReport(
         account_id=account_id,
         instrument_id=instrument_id,
-        position_side=position_side,  # cast to PositionSide
+        position_side=position_side,
         quantity=position_quantity,
         report_id=report_id,
         ts_last=position_accepted,
         ts_init=ts_init,
-        venue_position_id=venue_order_id,  # cast to PostionID, optional
+        venue_position_id=venue_position_id
     )
     return report
 
@@ -333,6 +398,12 @@ def cloudbet_timestamp_to_unix_nanos(cloudbet_timestamp: str) -> int:
         return int(dt.timestamp() * 1e9)  # we need to add 1e9 for nanosecond precision
     except ValueError:
         raise ValueError("Invalid timestamp format")
+    except TypeError:
+        raise TypeError("cloudbet_timestamp must be a string")
+    except OverflowError:
+        raise OverflowError("cloudbet_timestamp is too large")
+    except Exception as e:
+        raise e(f"Encountered unknown error: {e}")
 
 
 @lru_cache(maxsize=255)

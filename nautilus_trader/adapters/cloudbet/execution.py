@@ -1,5 +1,5 @@
 import asyncio
-from typing import Optional, Any, List, Union
+from typing import Optional, Any, List, Union, Set
 
 import pandas as pd
 from nautilus_trader.cache.cache import Cache
@@ -168,7 +168,8 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
                 aws = [
                     asyncio.create_task(self.connection_account_state()),
                 ]
-            await asyncio.gather(*aws)
+            if aws:
+                await asyncio.gather(*aws)
             # TODO: check if stream watch task is already running...if not self.stream.is_running_task(self.watch_stream):
             if self._watch_stream_task is None:
                 self._log.info("Starting stream watch task...")
@@ -589,19 +590,15 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
                     )
                     report_list.append(report)
                     continue
-                elif client_order_id is None:
-                    self._log.warning(
-                        f"Attempting to query order that does not exist in the cache, Venue Order ID: {venue_order_id}",
-                    )
-                    continue
-                else:
+                elif client_order_id is not None:
                     cached_order: Order = self._cache.order(
                         client_order_id)  # no need to assert not None, an Order must have a client_order_id on init
                     if instrument_id is None:  # no instrument_id passed in, we must query the cache for the instrument id
                         instrument_id: InstrumentId = cached_order.instrument_id
                     report = bet_to_trade_report(
                         order=cached_order,
-                        account_id=self.account_id if self.account_id is not None else await self.set_account_id(account_id=None),
+                        account_id=self.account_id if self.account_id is not None else await self.set_account_id(
+                            account_id=None),
                         instrument_id=instrument_id,
                         bet_response=bet,
                         ts_init=self._clock.timestamp_ns(),
@@ -611,6 +608,12 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
                     )
                     if report is None:
                         self._log.warning("Did not received `TradeReport` from request.")
+
+                else:
+                    self._log.warning(
+                        f"Attempting to query order that does not exist in the cache, Venue Order ID: {venue_order_id}",
+                    )
+                    continue
                 report_list.append(report)
         else:  # no time-range is specified, we must construct the report from the cache
             # we're interested in getting all the trades for a given instrument_id regardless of time
@@ -673,6 +676,7 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
                     client_order_id: ClientOrderId = self._cache.client_order_id(venue_order_id)
                     if client_order_id is not None:
                         cached_order: Order = self._cache.order(client_order_id)
+                        instrument_id: InstrumentId = cached_order.instrument_id
                         if cached_order.status in [OrderStatus.ACCEPTED, OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED]:
                             report: TradeReport = bet_to_trade_report(
                                 order=cached_order,
@@ -697,17 +701,7 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
                     self._log.warning(
                         f"Attempting to query order that does not exist in the cache, Venue Order ID: {venue_order_id}",
                     )
-                    report: TradeReport = bet_to_trade_report(
-                        order=None,
-                        account_id=self.account_id if self.account_id is not None else await self.set_account_id(
-                            account_id=None),
-                        instrument_id=instrument_id,
-                        bet_response=bet_response,
-                        ts_init=self._clock.timestamp_ns(),
-                        venue_order_id=venue_order_id,
-                        report_id=UUID4(),
-                        client_order_id=client_order_id,
-                    )
+                    return []
                 else:
                     cached_order: Order = self._cache.order(client_order_id)
                     report: TradeReport = bet_to_trade_report(
@@ -756,11 +750,9 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
         Note: A Position corresponds to an order that has been accepted by the venue but hasn't resulted
         """
         # either specify a time range or an instrument_id or a venue order id
-        PyCondition.not_none(instrument_id, "instrument_id") or PyCondition.not_none(start,
-                                                                                     "start") and PyCondition.not_none(
-            end, "end")
+        assert instrument_id is not None or (start is not None and end is not None)
         self._log.info(f"Generating PositionStatusReport for {self.id}...")
-        report_list: List[TradeReport] = []
+        report_list: List[PositionStatusReport] = []
         # if a time-range is specified, we explicitly rely on the venue bet_history endpoint
         if start and end:
             start_date: str = datetime_to_cloudbet_timestamp(start)
@@ -771,78 +763,132 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
             except Exception as e:  # TODO: handle exceptions gracefully
                 self._log.error(f"Could not fetch bet history from Cloudbet:", bet_history)
                 return []
-            for bet in bet_history.bets:
-                if bet.status not in [BetStatus.ACCEPTED]:
-                    # if bet is not settled, skip
-                    continue
-                self._log.info(f"Processing bet: {bet}")
-                venue_order_id: VenueOrderId = VenueOrderId(bet.reference_id)
-                # if instrument_id is None:  # no instrument_id specified, we must query the cache
-                client_order_id: ClientOrderId = self._cache.client_order_id(venue_order_id)
-                # we can query the positions, using the client_order_id derived from the venue_order_id
-                if client_order_id is None:
-                    self._log.warning(
-                        f"Attempting to query order that does not exist in the cache, Venue Order ID: {venue_order_id}",
-                    )
-                    continue
-                # TODO: decide if we want to use the cache to query the position or dynamically query the endpoint to generate PositionStatusReport
+            if not bet_history.bets:
+                # log no bets were found
+                self._log.info(f"No bets were found in the bet history for start date: {start_date} and end date: {end_date}.")
+                return []
+            list_bet_reference_id: List[str] = [
+                bet.reference_id  # Extract reference_id from the bet
+                for bet in bet_history.bets  # Iterate over each bet in bet_history
+                if bet.status in [BetStatus.PARTIAL, BetStatus.HALF_LOSS, BetStatus.HALF_WIN,
+                                  BetStatus.PUSH, BetStatus.LOSS, BetStatus.WIN, BetStatus.ACCEPTED]
+                # Check if bet status is one of the specified statuses
+            ]
+            if not list_bet_reference_id:
+                self._log.info(f"No bets were found in the bet history that meet the bet status criteria for valid positions.")
+                return []
+            if instrument_id is not None:
+                # a valid instrument_id has been passed in, we will query the cache for all positions for this instrument
+                # we can optimistically assume venue_order_id ~= VenueOrderId(bet.reference_id) for Cloudbet
+                positions: list[Position] = self._cache.positions(venue=CLOUDBET_VENUE, instrument_id=instrument_id)
+                if not positions:
+                    return []
+                # Convert each bet_reference_id to a VenueOrderId object and store them in a set for faster lookups.
+                cb_venue_order_ids: Set[VenueOrderId] = {VenueOrderId(bet_reference_id) for bet_reference_id in list_bet_reference_id}
 
-                # position: Position = self._cache.position_for_order(client_order_id)
-                # if position is None:
-                #     self._log.warning(
-                #         f"Attempting to query position that does not exist in the cache, Client Order ID: {client_order_id}",
-                #     )
-                #     continue
-                cached_order = self._cache.order(client_order_id)
+                # Filter the positions:
+                # For each position in positions, check if any of its venue_order_ids is present in cb_venue_order_ids.
+                # If at least one venue_order_id is found in cb_venue_order_ids, include the position in the filtered list.
+                filtered_positions: List[Position] = [
+                    position  # Include this position in the filtered list
+                    for position in positions  # Iterate over each position in the original list
+                    if any(
+                        # The 'any' function checks if at least one of the conditions (venue_order_id in cb_venue_order_ids) is True.
+                        # If at least one True condition is found, 'any' returns True, causing the current position to be included in the filtered list.
+                        venue_order_id in cb_venue_order_ids  # Check if this venue_order_id is in cb_venue_order_ids
+                        for venue_order_id in position.venue_order_ids
+                        # Iterate over each venue_order_id of the current position
+                    )
+                ]
+                # A Position for an Instrument may have  multiple venue_order_ids (Unqiue Orders),
+                # we want to extract only the relevant Orders for that Position
+                # .i.e only Orders that strictly match the venue_order_ids in cb_venue_order_ids
+                # Now extract the orders for each venue_order_id in the filtered positions
+                filtered_orders: list[Order] = [
+                    self._cache.order(client_order_id)
+                    for position in filtered_positions
+                    for venue_order_id in position.venue_order_ids
+                    if venue_order_id in cb_venue_order_ids
+                    # Include only orders with venue_order_ids present in cb_venue_order_ids
+                    if (client_order_id := self._cache.client_order_id(venue_order_id)) is not None # :=  available in Python >= 3.8
+                    # Proceed to get the order only if client_order_id is not None
+                ]
+
+                for order in filtered_orders:
+                    report = cb_bet_to_position_report(
+                        order=order,
+                        account_id=self.account_id if self.account_id is not None
+                        else await self.set_account_id(account_id=None),
+                        instrument_id=instrument_id,
+                        bet_response=None,
+                        ts_init=self._clock.timestamp_ns(),
+                        venue_order_id=order.venue_order_id,
+                        report_id=UUID4(),
+                        client_order_id=order.client_order_id,
+                        position=None,
+                    )
+                    report_list.append(report)
+                return report_list
+            else: # no instrument_id passed in, we must query the cache
+                # TODO: if instrument_id is not provided, we must query the cache else return an empty list
+                for bet in bet_history.bets:
+                    venue_order_id: VenueOrderId = VenueOrderId(bet.reference_id) # NB: the reference_id is the venue_order_id on cloudbet
+                    cached_client_order_id = self._cache.client_order_id(venue_order_id)
+                    if cached_client_order_id  is None:
+                        self._log.warning(
+                            f"Unable to determine instrument ID for the bet response. Venue Order ID: {bet.reference_id}",
+                        )
+                        continue
+                    cached_order: Order = self._cache.order(cached_client_order_id)
+                    if cached_order is None: # this should never be true, if client_order_id exists then the Order must exist
+                        self._log.warning(
+                            f"Unable to determine instrument ID from the bet response. Venue Order ID: {bet.reference_id}",
+                        )
+                        continue
+                # we should have a cached order at this point if we're querying the cache
+                # TODO: add this report to the report list
                 report = cb_bet_to_position_report(
-                    order=cached_order,
+                    order=None,
                     account_id=self.account_id if self.account_id is not None
                     else await self.set_account_id(account_id=None),
-                    instrument_id=instrument_id,
+                    instrument_id=cached_order.instrument_id,
                     bet_response=bet,
                     ts_init=self._clock.timestamp_ns(),
-                    venue_order_id=venue_order_id,
+                    venue_order_id=cached_order.venue_order_id if cached_order.venue_order_id else VenueOrderId(bet.reference_id),
                     report_id=UUID4(),
-                    client_order_id=client_order_id,
+                    client_order_id=cached_order.client_order_id,
                 )
-                if report is not None:
-                    self._log.debug(f"Received {report}.")
-                    report_list.append(report)
+                report_list.append(report)
+            return report_list
         else:
             # no time-range is specified, we must construct the report from the bet_status and/or cache
             # we're interested in getting all the positions for a given instrument_id regardless of time
-            # use the instrument_id to query the cache for client_order_ids
-            unique_client_ids: set[ClientOrderId] = self._cache.client_order_ids(venue=CLOUDBET_VENUE,
-                                                                                 instrument_id=instrument_id)
+            # use the instrument_id to query the cache for all positions for this instrument
+            # we can optimistically assume venue_order_id ~= VenueOrderId(bet.reference_id) for Cloudbet
+            positions: list[Position] = self._cache.positions(venue=CLOUDBET_VENUE, instrument_id=instrument_id)
+            if not positions:
+                self._log.warning(
+                    f"No positions were found for instrument_id: {instrument_id}."
+                )
+                return []
 
-            for client_order_id in unique_client_ids:
-                cached_order: Order = self._cache.order(
-                    client_order_id)
-                venue_order_id: VenueOrderId = cached_order.venue_order_id
-                # use the venue_order_id to query the bet_status endpoint
-                bet_status: GetBetResponse = await self._client.get_bet_status(venue_order_id.value)  # pass str
-
-                # TODO: decide if we want to use the cache to query the position or dynamically query the endpoint to generate PositionStatusReport
-
-                # position: Position = self._cache.position_for_order(client_order_id)
-                # if position is None:
-                #     self._log.warning(
-                #         f"Attempting to query position that does not exist in the cache, Client Order ID: {client_order_id}",
-                #     )
-                #     continue
-                report: TradeReport = bet_to_trade_report(
-                    order=cached_order,
+            # # A Position for an Instrument may have  multiple venue_order_ids (unqiue Orders),
+            # ideally we want to extract each Order for that Position and use that to build the report
+            for position in positions:
+                report = cb_bet_to_position_report(
+                    order=None,
                     account_id=self.account_id if self.account_id is not None
                     else await self.set_account_id(account_id=None),
                     instrument_id=instrument_id,
-                    bet_response=bet_status,
+                    bet_response=None,
                     ts_init=self._clock.timestamp_ns(),
-                    venue_order_id=venue_order_id,
+                    venue_order_id=position.venue_order_ids[-1], # use only the last venue_order_id
                     report_id=UUID4(),
-                    client_order_id=client_order_id,
+                    client_order_id=position.client_order_ids[-1],
+                    position=position,
                 )
-                if report is not None:
-                    report_list.append(report)
+                report_list.append(report)
+        return report_list
 
     # -- COMMAND HANDLERS -------------------------------------------------------------------------
 
@@ -866,6 +912,7 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
         market_url = instrument.market_name + '/' + instrument.outcome + '?' + instrument.params if instrument.params is not None else instrument.market_name + '/' + instrument.outcome
         price: float = command.order.price.as_double()
         # TODO: handle other types of SelectionSide eg.yes/no; odd/even market
+        # check market name, outcome, etc and if it has yes/no use that to extract the side
         side = SelectionSide.BACK if command.order.is_buy else SelectionSide.LAY  # for now optimistically assume we only trade BACK/LAY markets
         stake: float = Order.quantity.as_double()  # test if as_decimal or to_str if more reliable than as_double
         try:
@@ -877,18 +924,18 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
                 stake=stake,
             )
         except Exception as e:
-            if isinstance(CloudbetAPIError):
-                await self.on_api_exception(error=e)
+            # if isinstance(CloudbetAPIError):
+            #     await self.on_api_exception(error=e)
             self._log.warning(f"Submit failed: {e}")
             self.generate_order_rejected(
                 strategy_id=command.strategy_id,
                 instrument_id=command.instrument_id,
                 client_order_id=client_order_id,
-                reason=place_bet_response.status.value if place_bet_response.status else "client error/exception",
+                reason=f"client error/exception",
                 ts_event=self._clock.timestamp_ns(),
             )
             return  # end execution
-        self._log.debug(f"result={place_bet_response}")
+        self._log.debug(f"result={place_bet_response.status.value}")
         # using the message bus, notify relevant components of results eg. RiskEngine, DataEngine, etc
         if place_bet_response.status is BetStatus.ACCEPTED:
             venue_order_id = VenueOrderId(place_bet_response.reference_id)
