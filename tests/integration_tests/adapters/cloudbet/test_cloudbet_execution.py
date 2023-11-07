@@ -1,6 +1,8 @@
 import asyncio
+import random
 from collections import Counter
 from datetime import datetime
+from random import choice
 from typing import Optional, Union
 from unittest import mock
 from unittest.mock import patch, AsyncMock, PropertyMock
@@ -8,7 +10,7 @@ from collections import Counter
 import pandas as pd
 import msgspec
 import pytest
-from nautilus_trader.core.rust.model import OrderType, ContingencyType, TimeInForce
+from nautilus_trader.core.rust.model import OrderType, ContingencyType, TimeInForce, OmsType
 from nautilus_trader.core.uuid import UUID4
 
 from nautilus_trader.accounting.accounts.base import Account
@@ -29,7 +31,8 @@ from nautilus_trader.model.instruments import Instrument
 
 from nautilus_trader.adapters.cloudbet.client.core import CloudbetClient
 from nautilus_trader.adapters.cloudbet.client.schema import GetLatestOddsResponse, SelectionStatus, GetEventResponse, \
-    EventStatus, GetAccountInfoResponse, GetAccountCurrencies, GetAccountBalance, GetBetResponse, GetBetHistoryResponse
+    EventStatus, GetAccountInfoResponse, GetAccountCurrencies, GetAccountBalance, GetBetResponse, GetBetHistoryResponse, \
+    BetStatus
 from nautilus_trader.adapters.cloudbet.common import CLOUDBET_VENUE
 from nautilus_trader.model.enums import AccountType
 from nautilus_trader.adapters.cloudbet.data_client import CloudbetDataClient
@@ -306,12 +309,8 @@ class TestCloudbetExecutionReports:
 
                 position_id = PositionId(f"{instr.id}-{CLOUDBET_VENUE.value}")
                 exec_client._cache.add_order(order=order, position_id=position_id, override=True)
-        #         print("venue_order_id", order.venue_order_id)
-        #         print("client_order_id", order.client_order_id)
-        #         print("cached_venue_order_id", exec_client._cache.client_order_id(order.venue_order_id))
-        #         print("cached_client_order_id", exec_client._cache.venue_order_id(order.client_order_id))
-        # print("all orders", exec_client._cache.orders(venue=CLOUDBET_VENUE))
-        # print("all orders", exec_client._cache._orders)
+                exec_client._cache.update_order(order=order)
+
 
     @pytest.fixture()
     def account_id(self) -> AccountId:
@@ -949,9 +948,9 @@ class TestCloudbetExecutionReports:
             ("some_instrument_id", None, "20-10-01", "2021-10-02", None, CloudbetResponses.get_bet_history_success(),
              "invalid_order", False, 21),  # Test 1, uses bet history exclusively
             (None, "some_venue_order_id", None, None, CloudbetResponses.get_bet_status_win(),
-             CloudbetResponses.get_bet_history_success(), "valid_order", False, 0),  # Test 2
-            (None, None, "20-10-01", "2021-10-02", None, CloudbetResponses.get_bet_history_success(), "valid_order",
-             False, 1),  # Test 3
+             CloudbetResponses.get_bet_history_success(), "valid_order", False, 1),  # Test 2
+            (None, None, "20-10-01", "2021-10-02", None, CloudbetResponses.get_bet_history_mixed_status(), "valid_order",
+             False, 9),  # Test 3
             (None, None, "20-10-01", "2021-10-02", None, CloudbetResponses.get_bet_history_success(), "invalid_order",
              False, 0),  # Test 4 # no valid orders, no instruments so can't construct Trade Report
             ("some_instrument_id", None, None, None, None, None, None, True, 0),  # Test 5 : Exception case
@@ -967,7 +966,6 @@ class TestCloudbetExecutionReports:
     @patch.object(CloudbetClient, 'get_bet_status', new_callable=AsyncMock)
     @patch.object(CloudbetClient, 'get_bet_history', new_callable=AsyncMock,
                   return_value=CloudbetResponses.get_bet_history_success())
-    # TODO: test 3 and test 7 are not passsing, because orders aren't being added to the cache for some reason
     # TODO: refactor docstring as per the test cases
     async def test_generate_trade_reports(self, get_bet_history, get_bet_status, instrument_id, venue_order_id, start,
                                           end, get_bet_status_response, get_bet_history_response, cached_order,
@@ -997,27 +995,45 @@ class TestCloudbetExecutionReports:
 
         Test Cases Explained:
         ---------------------
-        Test 1/Param set 1:
-            - Tests when 'instrument_id' and a valid time range are provided.
-            - Assertions: Expect 2 TradeReports.
+        Test 1/Case 1: Instrument ID Specified, Bet History Used Exclusively
+            - Parameters: Valid `instrument_id`, no `venue_order_id`, `start` and `end` times specified, bet history response successful, cached order is invalid.
+            - Code Path: Fetches bet history based on time range, processes bets with successful history response.
+            - Assertions: Expects a list of 21 TradeReport objects, as the bet history is used exclusively without considering venue order ID.
 
-        Test 2/Param set 2:
-            - Tests when only 'venue_order_id' is provided.
-            - Assertions: Expect 1 TradeReport.
+        Test 2/Case 2: Venue Order ID Specified, Single TradeReport Expected
+            - Parameters: No `instrument_id`, valid `venue_order_id`, no `start` or `end` times, bet status is WIN, valid cached order.
+            - Code Path: Fetches single bet status based on venue order ID, generates a single TradeReport.
+            - Assertions: Expects a single TradeReport object, as only one venue order ID is processed with a WIN status.
 
-        Test 3/Param set 3:
-            - Tests when only a time range is provided.
-            - Assertions: Expect 2 TradeReports.
+        Test 3/Case 3: Time Range Specified, Mixed Bet Statuses in History
+            - Parameters: No `instrument_id`, no `venue_order_id`, valid `start` and `end` times, bet history has mixed statuses, valid cached order.
+            - Code Path: Fetches bet history based on time range, processes bets with various statuses.
+            - Assertions: Expects a list of 9 TradeReport objects that match the status criteria for processing.
 
-        Test 4/Param set 4:
-            - Tests when only 'instrument_id' is provided without a time range.
-            - Order is cached
-            - Assertions: Expect an exception to be raised.
+        Test 4/Case 4: Time Range Specified, No Valid Orders or Instruments
+            - Parameters: No `instrument_id`, no `venue_order_id`, valid `start` and `end` times, successful bet history response, invalid cached order.
+            - Code Path: Attempts to fetch bet history and process bets, but fails due to invalid orders and lack of instrument ID.
+            - Assertions: Expects an empty list of TradeReports due to the inability to construct any reports without valid orders or instrument IDs.
 
-        Test 5/Param set 5:
-            - Tests when both 'instrument_id' and 'venue_order_id' are provided.
-            - Assertions: Expect an exception to be raised.
+        Test 5/Case 5: Exception Case, No Parameters Specified
+            - Parameters: Valid `instrument_id`, all other parameters omitted, testing exception handling.
+            - Code Path: Tests the exception pathway where insufficient parameters are provided.
+            - Assertions: Expects an empty list of TradeReports and potentially an exception to be logged or handled.
 
+        Test 6/Case 6: Instrument ID Specified, Exception Expected
+            - Parameters: Valid `instrument_id`, all other parameters omitted, exception flag set to true, successful bet history response, valid cached order.
+            - Code Path: Tests the exception pathway for generating trade reports with only an instrument ID.
+            - Assertions: Expects an empty list of TradeReports due to the exception flag being true, regardless of the bet history response or valid orders.
+
+        Test 7/Case 7: Instrument ID and Venue Order ID Specified, Single Report from Cache
+            - Parameters: Valid `instrument_id` and `venue_order_id`, no `start` or `end` times, bet status is WIN, successful bet history response, valid cached order.
+            - Code Path: Fetches bet status based on venue order ID and uses the cache to generate a single TradeReport.
+            - Assertions: Expects a single TradeReport object, leveraging both a specific venue order ID and instrument ID for report generation.
+
+        Test 8/Case 8: Exception Case with Instrument and Venue Order ID Specified
+            - Parameters: Valid `instrument_id` and `venue_order_id`, no `start` or `end` times, no responses provided, exception flag set to true.
+            - Code Path: Tests the exception pathway when both `instrument_id` and `venue_order_id` are specified but no further data is available.
+            - Assertions: Expects an empty list of TradeReports, as the exception flag indicates a failure in the report generation process.
         Returns:
             None
         """
@@ -1035,14 +1051,17 @@ class TestCloudbetExecutionReports:
         instrument_id = instrument.id if instrument_id is not None else None
 
         if cached_order is not None:
-            await self.cache_valid_order(exec_client, instruments, instrument_id, cached_order,
-                                         CloudbetResponses.get_bet_history_success(), kwargs=venue_order_id)
+            try:
+                await self.cache_valid_order(exec_client, instruments, instrument_id, cached_order,
+                                             CloudbetResponses.get_bet_history_success(), kwargs=venue_order_id)
+            except Exception as e:
+                print(e)
         # random_bet_ref = CloudbetResponses.get_bet_history_success().bets[0].reference_id
         typed_venue_order_id = VenueOrderId(
             CloudbetResponses.get_bet_history_success().bets[0].reference_id) if venue_order_id is not None else None
         try:
             # Invoke the generate_trade_reports function
-            trade_reports = await exec_client.generate_trade_reports(
+            trade_reports : list[TradeReport] = await exec_client.generate_trade_reports(
                 instrument_id=instrument_id,
                 venue_order_id=typed_venue_order_id,
                 start=start_ts,
@@ -1197,7 +1216,6 @@ class TestCloudbetExecutionReports:
             assert report.venue_position_id == PositionId(
                 f"{typed_venue_order_id.value.split('-')[-1]}-{CLOUDBET_VENUE}")
             assert instrument_id == report.instrument_id
-            print("Posiiton report:", report)
 
 
         except Exception as e:
@@ -1205,6 +1223,178 @@ class TestCloudbetExecutionReports:
                 assert isinstance(e, Exception), f"Unexpected exception type: {type(e)}"
             else:
                 assert False, f"Unexpected exception: {e}"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "get_bet_history_result, expected_exception, instrument_id, start, end, valid_position, expected_result_length",
+        [
+            # Case 1: Valid response with bets matching the criteria
+            (CloudbetResponses.get_bet_history_mixed_status(), None, 'instrument_id_1', '2021-10-01', '2021-10-02', True, 9),
+            # get_bet_history_mixed_status has 9 valid "accepted" bets => expected_result_length = 9
+
+            # Case 2: Valid response but no bets match the criteria
+            (CloudbetResponses.get_bet_history_no_bets(), None, 'instrument_id_1', '2021-10-01', '2021-10-02', True, 0),
+
+            # Case 3: Exception raised when fetching bet history
+            (Exception("Failed to fetch bet history"), Exception, 'instrument_id_1', '2021-10-01', '2021-10-02', False,
+             None),
+
+            # Case 4: Instrument ID provided, relevant positions found in the cache
+            (CloudbetResponses.get_bet_history_mixed_status(), None, 'instrument_id_1', None, None, True, 9),  # fail
+
+            # Case 5: Instrument ID provided, no relevant positions in cache
+            (CloudbetResponses.get_bet_history_success(), None, 'instrument_id_2', None, None, False, 0),
+
+            # Case 6: Time range provided, successful fetch and process
+            (CloudbetResponses.get_bet_history_mixed_status(), None, None, '2021-10-01', '2021-10-02', True, 9),
+
+            # Case 7: Time range provided, no bets in the range
+            (CloudbetResponses.get_bet_history_success(), None, None, '2023-01-01', '2023-01-02', False, 0),
+
+            # Case 8: Neither instrument ID nor time range provided
+            (None, AssertionError, None, None, None, False, None),
+        ]
+    )
+    @patch.object(CloudbetClient, 'get_bet_history', new_callable=AsyncMock)
+    async def test_generate_position_status_reports(self,
+        get_bet_history,
+        get_bet_history_result,
+        expected_exception,
+        instrument_id,
+        start,
+        end,
+        valid_position,
+        expected_result_length,
+        account_id, instrument, exec_client):
+        """
+        General Overview:
+        -----------------
+        Test cases for generating position status reports from bet histories and/or cached data within the Cloudbet execution client.
+        This test suite aims to verify the functionality under various conditions, including valid and empty responses, exceptions during data retrieval, and different parameter combinations.
+
+        Parameters:
+        -----------
+        get_bet_history (AsyncMock): A mock of the 'get_bet_history' method from the CloudbetClient, used to simulate fetching bet history.
+        get_bet_history_result: The result (or exception) to be returned by the 'get_bet_history' mock.
+        expected_exception (Exception or None): Specifies the type of exception expected to be raised, if any.
+        instrument_id (str or None): The instrument ID to be used for fetching position status reports, can be None to simulate absence.
+        start (str or None): The start datetime as a string, can be None to simulate absence.
+        end (str or None): The end datetime as a string, can be None to simulate absence.
+        expected_result_length (int or None): The expected length of the result list if no exception is raised, or None if an exception is expected.
+
+        Test Cases Explained:
+        ---------------------
+        Test 1/Case 1: Instrument ID and Time Range Specified, Bet History Success, Matching Bets
+            - Parameters: Valid `instrument_id`, valid `start` and `end` dates, bet_history with bets that match status criteria.
+            - Code Path: Fetches bet history, filters by bet status, queries cache for positions, generates reports.
+            - Assertions: A list of PositionStatusReport objects corresponding to the valid bets and positions is expected.
+
+        Test 2/Case 2: Instrument ID Specified, Time Range Omitted, Bet History Success, No Matching Bets
+            - Parameters: Valid `instrument_id`, no `start` or `end` dates, bet_history with no bets matching status criteria.
+            - Code Path: Fetches bet history, no matching bets found, attempts to find cached positions.
+            - Assertions: An empty list due to no matching bets and no relevant cached positions is expected.
+
+        Test 3/Case 3: Exception on Fetching Bet History, Instrument ID and Time Range Specified
+            - Parameters: Valid `instrument_id`, valid `start` and `end` dates, fetching bet history raises an exception.
+            - Code Path: Attempts to fetch bet history, exception encountered and handled.
+            - Assertions: An exception to be raised, no PositionStatusReport generated is expected.
+
+        Test 4/Case 4: Instrument ID Provided, No Time Range, Cache Has Relevant Positions
+            - Parameters: Valid `instrument_id`, no `start` or `end` dates, cache contains relevant positions.
+            - Code Path: No bet history fetched, relies on cached positions for the specified `instrument_id`.
+            - Assertions: A list of PositionStatusReport objects from the cached positions is expected.
+
+        Test 5/Case 5: Instrument ID Provided, No Time Range, No Relevant Positions in Cache
+            - Parameters: Another valid `instrument_id`, no `start` or `end` dates, cache does not contain relevant positions.
+            - Code Path: No bet history fetched, no relevant cached positions found for the specified `instrument_id`.
+            - Assertions: An empty list of PositionStatusReport objects due to lack of relevant positions is expected.
+
+        Test 6/Case 6: Time Range Provided, No Instrument ID, Successful Fetch and Process
+            - Parameters: No `instrument_id`, valid `start` and `end` dates, bet_history fetch is successful.
+            - Code Path: Fetches bet history for the given time range, filters by bet status, generates reports for all instruments.
+            - Assertions: A list of PositionStatusReport objects corresponding to the valid bets within the specified time range is expected.
+
+        Test 7/Case 7: Time Range Provided, No Instrument ID, No Bets in the Range
+            - Parameters: No `instrument_id`, a future `start` and `end` date with no bets present.
+            - Code Path: Fetches bet history for the given time range, finds no bets.
+            - Assertions: An empty list of PositionStatusReport objects due to no bets in the specified time range is expected.
+
+        Test 8/Case 8: Neither Instrument ID Nor Time Range Provided
+            - Parameters: No `instrument_id`, no `start` or `end` dates, no bet_history available.
+            - Code Path: Fails to proceed due to missing required parameters for fetching bet history or querying cached positions.
+            - Assertions: An AssertionError due to improper function call is expected.
+
+        Returns:
+            None
+        """
+        if isinstance(get_bet_history_result, Exception):
+            get_bet_history.side_effect = get_bet_history_result
+        else:
+            get_bet_history.return_value = get_bet_history_result
+
+        # Mock any other dependencies here if necessary
+
+        # Convert string date to pandas Timestamp if start and end are not None
+        start_ts = pd.Timestamp(start) if start else None
+        end_ts = pd.Timestamp(end) if end else None
+
+        instrument_id = instrument.id if instrument_id is not None else None
+
+        if valid_position:
+            for bet in get_bet_history_result.bets:
+                if bet.status in [BetStatus.PARTIAL, BetStatus.HALF_LOSS, BetStatus.HALF_WIN,
+                                  BetStatus.PUSH, BetStatus.LOSS, BetStatus.WIN, BetStatus.ACCEPTED]:
+                    order_side = choice([OrderSide.BUY, OrderSide.SELL])
+                    position_id = PositionId(f"{bet.reference_id.split('-')[-1]}-{CLOUDBET_VENUE.value}")
+                    cached_venue_order_id = VenueOrderId(str(bet.reference_id))
+                    limit_order: LimitOrder = self.order_factory.limit(
+                        instrument_id if instrument_id else instrument.id,
+                        order_side,
+                        Quantity.from_str(str(bet.stake)),
+                        Price.from_str(bet.price),
+                    )
+
+                    fill: OrderFilled = TestEventStubs.order_filled(
+                        limit_order,
+                        instrument=instrument,
+                        position_id=position_id,
+                        strategy_id=self.strategy_id,
+                        last_px=limit_order.price,
+                        account_id=account_id,
+                        venue_order_id=cached_venue_order_id
+                    )
+                    exec_client._cache.add_order(order=limit_order, position_id=position_id)
+                    position: Position = Position(instrument=instrument, fill=fill)
+                    exec_client._cache.add_position(position=position, oms_type=OmsType.HEDGING) # OmsType.HEDGING => multiple positions per instrument
+                    limit_order.apply(TestEventStubs.order_accepted(order=limit_order,
+                                                              venue_order_id=cached_venue_order_id))  # Replace with your actual method to apply an order accepted event
+                    exec_client._cache.update_order(order=limit_order) # Tres important!! => if we don't udpate the Order the Cache's mapping between Client Order ID and Venue Order ID will be broken
+                    # print("Cached Client Order ID:", exec_client._cache.client_order_id(cached_venue_order_id))
+                    # print("Cached Client Order ID:", exec_client._cache.client_order_id(limit_order.venue_order_id)) # self._index_order_ids.get(venue_order_id)
+                    # exec_client._cache.update_order(order=limit_order)
+                    # print("Final Cached Client Order ID:", exec_client._cache.client_order_id(limit_order.venue_order_id))
+
+
+
+        # Call the function under test
+        if expected_exception:
+            with pytest.raises(expected_exception):
+                await exec_client.generate_position_status_reports(
+                    instrument_id=instrument_id,
+                    start=start_ts,
+                    end=end_ts
+                )
+        else:
+            position_status_reports = await exec_client.generate_position_status_reports(
+                instrument_id=instrument_id,
+                start=start_ts,
+                end=end_ts
+            )
+
+            # Assertions
+            assert len(position_status_reports) == expected_result_length
+            if expected_result_length > 0:
+                assert all(isinstance(report, PositionStatusReport) for report in position_status_reports)
 
     # ------------------------------------------ PositionStatusReport----------------------------------------------------
 

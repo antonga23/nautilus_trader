@@ -174,6 +174,13 @@ class CloudbetResponses:
     def get_account_balances(currency: Optional[str] = None) -> GetAccountBalance: # we optionally pass a currency in case a mock is needed
         return CloudbetResponses.load('get_account_balances.json', response_type=GetAccountBalance)
 
+    @staticmethod
+    def get_bet_history_no_bets() -> GetBetHistoryResponse:
+        return CloudbetResponses.load('get_bet_history_no_bets.json', response_type=GetBetHistoryResponse)
+
+    @staticmethod
+    def get_bet_history_mixed_status() -> GetBetHistoryResponse:
+        return CloudbetResponses.load('get_bet_history_mixed_status.json', response_type=GetBetHistoryResponse)
 
 
 

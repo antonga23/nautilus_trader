@@ -707,7 +707,7 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
                     report: TradeReport = bet_to_trade_report(
                         order=cached_order,
                         account_id=self.account_id if self.account_id is not None else await self.set_account_id(account_id=None),
-                        instrument_id=instrument_id,
+                        instrument_id=cached_order.instrument_id,
                         bet_response=bet_response,
                         ts_init=self._clock.timestamp_ns(),
                         venue_order_id=venue_order_id,
@@ -830,7 +830,6 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
                     report_list.append(report)
                 return report_list
             else: # no instrument_id passed in, we must query the cache
-                # TODO: if instrument_id is not provided, we must query the cache else return an empty list
                 for bet in bet_history.bets:
                     venue_order_id: VenueOrderId = VenueOrderId(bet.reference_id) # NB: the reference_id is the venue_order_id on cloudbet
                     cached_client_order_id = self._cache.client_order_id(venue_order_id)
@@ -845,20 +844,20 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
                             f"Unable to determine instrument ID from the bet response. Venue Order ID: {bet.reference_id}",
                         )
                         continue
-                # we should have a cached order at this point if we're querying the cache
-                # TODO: add this report to the report list
-                report = cb_bet_to_position_report(
-                    order=None,
-                    account_id=self.account_id if self.account_id is not None
-                    else await self.set_account_id(account_id=None),
-                    instrument_id=cached_order.instrument_id,
-                    bet_response=bet,
-                    ts_init=self._clock.timestamp_ns(),
-                    venue_order_id=cached_order.venue_order_id if cached_order.venue_order_id else VenueOrderId(bet.reference_id),
-                    report_id=UUID4(),
-                    client_order_id=cached_order.client_order_id,
-                )
-                report_list.append(report)
+                    # we should have a cached order at this point if we're querying the cache
+                    # TODO: add this report to the report list
+                    report = cb_bet_to_position_report(
+                        order=None,
+                        account_id=self.account_id if self.account_id is not None
+                        else await self.set_account_id(account_id=None),
+                        instrument_id=cached_order.instrument_id,
+                        bet_response=bet,
+                        ts_init=self._clock.timestamp_ns(),
+                        venue_order_id=cached_order.venue_order_id if cached_order.venue_order_id else VenueOrderId(bet.reference_id),
+                        report_id=UUID4(),
+                        client_order_id=cached_order.client_order_id,
+                    )
+                    report_list.append(report)
             return report_list
         else:
             # no time-range is specified, we must construct the report from the bet_status and/or cache
