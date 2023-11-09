@@ -25,7 +25,7 @@ from nautilus_trader.model.identifiers import ClientId
 from nautilus_trader.model.identifiers import ClientOrderId
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import VenueOrderId
-from nautilus_trader.model.objects import Money, AccountBalance
+from nautilus_trader.model.objects import Money, AccountBalance, Quantity
 from nautilus_trader.model.position import Position
 from nautilus_trader.msgbus.bus import MessageBus
 
@@ -107,7 +107,7 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
 
         self._instrument_provider: CloudbetInstrumentProvider = instrument_provider
         # an asyncio Task to watch the stream
-        self._watch_stream_task: Optional[asyncio.Task] = None
+        # self._watch_stream_task: Optional[asyncio.Task] = None
         self._client: CloudbetClient = client
         self.stream: CloudbetStreamClient = CloudbetStreamClient(
             client=self._client,
@@ -154,8 +154,21 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
 
     # -- CONNECTION HANDLERS ----------------------------------------------------------------------
     async def _connect(self) -> None:
+        """
+        Connects to the client and starts the necessary tasks for streaming data.
+
+        This function checks if the client is already connected. If not, it creates an HTTP session and establishes a connection. It also checks if the stream is already connected. If not, it creates a task to connect to the stream and another task to retrieve the account state. If the stream is already connected, it only creates a task to retrieve the account state.
+
+        If the stream watch task is not already running, it starts the task to watch the stream.
+
+        Parameters:
+            None
+
+        Returns:
+            None
+        """
         try:
-            if self._client.connected is False:
+            if self._client.connected is False: # create HTTP sessions to allow networking calls
                 await self._client.connect()
                 self._log.debug("Creating a new session...")
                 self._log.debug("Cloudbet connect successful.", LogColor.GREEN)
@@ -169,11 +182,16 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
                     asyncio.create_task(self.connection_account_state()),
                 ]
             if aws:
-                await asyncio.gather(*aws)
-            # TODO: check if stream watch task is already running...if not self.stream.is_running_task(self.watch_stream):
-            if self._watch_stream_task is None:
-                self._log.info("Starting stream watch task...")
-                self._watch_stream_task = asyncio.create_task(self.watch_stream())
+                results: List[Union[None, Exception]] = await asyncio.gather(*aws, return_exceptions=True)
+                for result in results:
+                    if isinstance(result, Exception):
+                        self._log.error(f"Task encountered an exception: {result}")
+                    else:
+                        self._log.debug(f"Connection initialisation tasks completed successfully: {result}")
+            # TODO: replace _watch_stream_task with an attribute that is set on successful StreamClient connection
+            # if self._watch_stream_task is None:
+            #     self._log.info("Starting stream watch task...")
+            #     self._watch_stream_task = asyncio.create_task(self.watch_stream())
         except Exception as e:
             self._log.error(f"An error occurred during the connection process: { str(e)}")
 
@@ -183,7 +201,7 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
         await self.stream.disconnect()
 
         # Ensure client closed
-        self._log.info("Closing CloudbetClient...")
+        self._log.info("Closing CloudbetClient sessions...")
         await self._client.disconnect()
 
     def reset(self) -> None:
@@ -199,9 +217,12 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
     async def watch_stream(self) -> None:
         """Ensure socket stream is connected"""
         while not self.stream.is_stopping:
-            if not self.stream.is_connected:
-                await self.stream.connect()
-            await asyncio.sleep(1)
+            try:
+                if not self.stream.is_connected:
+                    await self.stream.connect()
+                await asyncio.sleep(1)
+            except Exception as e:
+                self._log.error(f"Encountered an error while watching the stream: {e}")
 
     # -- ERROR HANDLING ---------------------------------------------------------------------------
     async def on_api_exception(self, error: BetfairAPIError) -> None:
@@ -892,18 +913,20 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
     # -- COMMAND HANDLERS -------------------------------------------------------------------------
 
     async def _submit_order(self, command: SubmitOrder) -> None:
+        """
+        Submits an order to the system.
+
+        Args:
+            command (SubmitOrder): The command object containing the order information.
+
+        Returns:
+            None
+        """
         self._log.debug(f"Received submit_order {command}")
-        self.generate_order_submitted(
-            instrument_id=command.instrument_id,
-            strategy_id=command.strategy_id,
-            client_order_id=command.order.client_order_id,
-            ts_event=self._clock.timestamp_ns(),
-        )
-        self._log.debug("Generated _generate_order_submitted")
 
         instrument: CryptoBettingInstrument = self._cache.instrument(command.instrument_id)
         PyCondition.not_none(instrument, "instrument")
-        PyCondition.true(command.order.has_price)  # check OrderType has price, else we can't trade
+        PyCondition.true(command.order.has_price, fail_msg="Order must have a price")  # check OrderType has price, else we can't trade
         # PyCondition.type(command, LimitOrder) possible replacement for has price check and validates parametre type
         client_order_id = command.order.client_order_id
 
@@ -913,8 +936,15 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
         # TODO: handle other types of SelectionSide eg.yes/no; odd/even market
         # check market name, outcome, etc and if it has yes/no use that to extract the side
         side = SelectionSide.BACK if command.order.is_buy else SelectionSide.LAY  # for now optimistically assume we only trade BACK/LAY markets
-        stake: float = Order.quantity.as_double()  # test if as_decimal or to_str if more reliable than as_double
+        stake: float = command.order.quantity.as_double() # test if as_decimal or to_str if more reliable than as_double
         try:
+            self.generate_order_submitted(
+                instrument_id=command.instrument_id,
+                strategy_id=command.strategy_id,
+                client_order_id=command.order.client_order_id,
+                ts_event=self._clock.timestamp_ns(),
+            )
+            self._log.debug("Generated _generate_order_submitted")
             place_bet_response: GetBetResponse = await self._client.place_bets(
                 event_id=instrument.event_id,
                 market_url=market_url,
