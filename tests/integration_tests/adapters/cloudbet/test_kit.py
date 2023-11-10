@@ -3,7 +3,7 @@ import json
 import pathlib
 import random
 from asyncio import Future
-from typing import List
+from typing import List, Optional
 from unittest.mock import MagicMock
 
 import msgspec
@@ -11,7 +11,7 @@ from aiohttp import ClientResponse
 
 from nautilus_trader.adapters.cloudbet.client.core import CloudbetClient
 from nautilus_trader.adapters.cloudbet.client.schema import GetAccountInfoResponse, GetSportsResponse, \
-    GetEventsForSportResponse, GetBetResponse, GetBetHistoryResponse
+    GetEventsForSportResponse, GetBetResponse, GetBetHistoryResponse, GetAccountCurrencies, GetAccountBalance
 from nautilus_trader.adapters.cloudbet.client.util import extract_cloudbet_symbol, cloudbet_instrument_id
 from nautilus_trader.adapters.cloudbet.common import CLOUDBET_VENUE
 from nautilus_trader.adapters.cloudbet.providers import CloudbetInstrumentProvider
@@ -86,8 +86,16 @@ class CloudbetTestStubs:
 
         return client
 
-    @staticmethod
+    @staticmethod # TODO: move to test_kit_providers or create a util function for calling those methods
     def get_instrument_id(filename: str = "instrument_id_data.json") -> InstrumentId:
+        """
+        Retrieves an instrument ID from a JSON file.
+
+        Params:
+            - filename : Optional[str] The name of the JSON file to read the instrument IDs from. Defaults to "instrument_id_data.json".
+        Returns: The randomly selected instrument ID.
+            - InstrumentId
+        """
         # read the instrument ids from the file
         with open(TEST_PATH / filename) as json_file:
             instrument_ids = json.load(json_file)
@@ -98,39 +106,24 @@ class CloudbetTestStubs:
         # instrument_id = cloudbet_instrument_id(event_id, market_name, outcome, params)
         return instrument_id
 
-    @staticmethod
+    @staticmethod # TODO: move to test_kit_providers or create a util function for calling those methods
     def get_instrument_ids(count: int = 100, filename: str = "instrument_id_data.json"):
+        """
+        Retrieves a specified number of instrument IDs from a JSON file.
+
+        Args:
+            count (int, optional): The number of instrument IDs to retrieve. Defaults to 100.
+            filename (str, optional): The name of the JSON file to retrieve the instrument IDs from. Defaults to "instrument_id_data.json".
+
+        Returns:
+            List[InstrumentId]: A list of instrument IDs retrieved from the JSON file.
+        """
         with open(TEST_PATH / filename) as json_file:
             instrument_ids = json.load(json_file)
         # randomly select an instrument id from the array
         instrument_ids = random.sample(instrument_ids, k=count)
         instrument_ids = [InstrumentId(**instrument_id) for instrument_id in instrument_ids]
         return instrument_ids
-
-    # TODO: remove this method => TestInstrumentProvider::get_instrument
-    @staticmethod
-    def get_instrument(filename: str = "instrument.json") -> CryptoBettingInstrument:
-        with open(TEST_PATH / filename) as json_file:
-            instrument = json.load(json_file)
-        instrument = random.choice(instrument)
-        instrument = CryptoBettingInstrument(**instrument)
-        return instrument
-
-
-    #TODO: remove this method => TestInstrumentProvider::get_instruments
-    # @staticmethod
-    # def get_instruments(count=100, filename: str = "instruments.json", **kwargs) -> List[CryptoBettingInstrument]:
-    #     """
-    #     Returns a list of instruments from the test data file.
-    #     """
-    #     with open(TEST_PATH / filename) as json_file:
-    #         instruments = json.load(json_file)
-    #     instruments = random.sample(instruments, k=count)
-    #     instruments : List[CryptoBettingInstrument] = [CryptoBettingInstrument(**instrument) for instrument in instruments]
-    #     if "sport" in kwargs:
-    #         venue = kwargs["sport"]
-    #         instruments = [instrument for instrument in instruments if instrument.venue == venue]
-    #     return instruments
 
 
 class CloudbetResponses:
@@ -168,13 +161,33 @@ class CloudbetResponses:
         return CloudbetResponses.load('place_bet_invalid_event.json', response_type=GetBetResponse)
 
     @staticmethod
-    def get_bet_history_success() -> GetBetHistoryResponse:
+    def get_bet_history_success() -> GetBetHistoryResponse: #TODO: rename to get_bet_history
         return CloudbetResponses.load('get_bet_history.json', response_type=GetBetHistoryResponse)
 
     @staticmethod
-    def get_bet_status_success() -> GetBetResponse:
+    def get_bet_status_win() -> GetBetResponse:
         return CloudbetResponses.load('get_bet_status.json', response_type=GetBetResponse)
 
+    @staticmethod
+    def get_bet_status_accepted() -> GetBetResponse:
+        return CloudbetResponses.load('get_bet_status_accepted.json', response_type=GetBetResponse)
+
+    @staticmethod
+    def get_account_currencies_success() -> GetAccountCurrencies:
+        return CloudbetResponses.load('get_account_currencies.json', response_type=GetAccountCurrencies)
+
+    @staticmethod
+    # TODO: handle currencies with different precision eg. BTC
+    def get_account_balances(currency: Optional[str] = None) -> GetAccountBalance: # we optionally pass a currency in case a mock is needed
+        return CloudbetResponses.load('get_account_balances.json', response_type=GetAccountBalance)
+
+    @staticmethod
+    def get_bet_history_no_bets() -> GetBetHistoryResponse:
+        return CloudbetResponses.load('get_bet_history_no_bets.json', response_type=GetBetHistoryResponse)
+
+    @staticmethod
+    def get_bet_history_mixed_status() -> GetBetHistoryResponse:
+        return CloudbetResponses.load('get_bet_history_mixed_status.json', response_type=GetBetHistoryResponse)
 
 
 
@@ -184,11 +197,6 @@ class DataGenerator:
     def generate_sport():
         sports = ["soccer", "tennis", "baseball", "basketball"]
         return random.choice(sports)
-
-    # @staticmethod
-    # def generate_instrument_ids():
-    #     instrument_ids = ["soccer", "tennis", "baseball", "basketball"]
-    #     return random.choice(instrument_ids)
 
 # @contextlib.contextmanager
 # def mock_client_request(response):
