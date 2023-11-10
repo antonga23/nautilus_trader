@@ -16,6 +16,7 @@ from enum import Enum
 from typing import Optional, List, Dict, Any, Union
 
 import msgspec
+from nautilus_trader.core.rust.model import OrderStatus, OrderSide, PositionSide
 from nautilus_trader.model.currency import Currency
 from nautilus_trader.model.currencies import EUR
 
@@ -71,6 +72,21 @@ class SelectionStatus(Enum):
     ENABLED = "SELECTION_ENABLED"
 
 
+class NautilusOrderSide(Enum):  # for reference, and not direct in class use (use OrderSide from nautilus_trader.core.rust.model instead)
+    BUY = "BUY"
+    SELL = "SELL"
+    NO_ORDER_SIDE = "NO_ORDER_SIDE"
+
+class NautilusPositionSide(Enum):  # for reference, and not direct in class use (use PositionSide from nautilus_trader.core.rust.model instead)
+        # No position side is specified (only valid in the context of a filter for actions involving positions).
+        NO_POSITION_SIDE  = 0,
+        # A neural/flat position, where no position is currently held in the market.
+        FLAT  = 1,
+        # A long position in the market, typically acquired through one or many BUY orders.
+        LONG = 2,
+        # A short position in the market, typically acquired through one or many SELL orders.
+        SHORT = 3,
+
 class SelectionSide(Enum):
     BACK = "BACK"
     LAY = "LAY"
@@ -80,9 +96,61 @@ class SelectionSide(Enum):
     EVEN = "Even"
     ODD = "Odd"
 
+    def get_order_side(self): # TODO: change to static
+        return SELECTIONSIDE_ORDERSIDE_MAP.get(self, None)
+
+    def get_position_side(self): # TODO: change to static
+        return POSITIONSIDE_ORDERSIDE_MAP.get(self, None)
+
+SELECTIONSIDE_ORDERSIDE_MAP = {
+    SelectionSide.BACK: OrderSide.BUY,
+    SelectionSide.LAY: OrderSide.SELL, # we're purchasing a 'NO' result bet
+    SelectionSide.YES: OrderSide.BUY,
+    SelectionSide.NO: OrderSide.BUY, # we're purchasing a 'NO' result bet
+    SelectionSide.UNDEFINED: OrderSide.NO_ORDER_SIDE,
+    SelectionSide.EVEN: OrderSide.BUY,
+    SelectionSide.ODD: OrderSide.BUY,
+}
+
+POSITIONSIDE_ORDERSIDE_MAP = {
+    SelectionSide.BACK: PositionSide.LONG,
+    SelectionSide.LAY: PositionSide.SHORT, # we're purchasing a 'NO' result bet
+    SelectionSide.YES: PositionSide.LONG,
+    SelectionSide.NO: PositionSide.LONG, # we're purchasing a 'NO' result bet
+    SelectionSide.UNDEFINED: PositionSide.NO_POSITION_SIDE,
+    SelectionSide.EVEN: PositionSide.LONG,
+    SelectionSide.ODD: PositionSide.LONG,
+}
 
 class AcceptPriceChange(Enum):
     NONE, ALL, BETTER = "NONE", "ALL", "BETTER"
+
+
+class NautiliusOrderStatus(Enum): # for reference, and not direct in class use (use OrderStatus from nautilus_trader.core.rust.model instead)
+    # The order is initialized (instantiated) within the Nautilus system.
+    INITIALIZED = 1
+    # The order was denied by the Nautilus system, either for being invalid, unprocessable or exceeding a risk limit.
+    DENIED = 2
+    # The order was submitted by the Nautilus system to the external service or trading venue (closed/done).
+    SUBMITTED = 3
+    # The order was acknowledged by the trading venue as being received and valid (may now be working).
+    ACCEPTED = 4
+    # The order was rejected by the trading venue.
+    REJECTED = 5
+    # The order was canceled (closed/done).
+    CANCELED = 6
+    # The order reached a GTD expiration (closed/done).
+    EXPIRED = 7
+    # The order STOP price was triggered (closed/done).
+    TRIGGERED = 8
+    # The order is currently pending a request to modify at the trading venue.
+    PENDING_UPDATE = 9
+    # The order is currently pending a request to cancel at the trading venue.
+    PENDING_CANCEL = 10
+    # The order has been partially filled at the trading venue.
+    PARTIALLY_FILLED = 11
+    # The order has been completely filled at the trading venue (closed/done).
+    FILLED = 12
 
 
 class BetStatus(Enum):
@@ -105,6 +173,32 @@ class BetStatus(Enum):
     HALF_WIN = "HALF_WIN"
     HALF_LOSS = "HALF_LOSS"
     PARTIAL = "PARTIAL"
+
+    def get_order_status(self): #TODO: change to static so can be called without an instance of BetStatus
+        return BETSTATUS_ORDERSTATUS_MAP.get(self, None)
+
+
+BETSTATUS_ORDERSTATUS_MAP = {
+    BetStatus.INTERNAL_SERVER_ERROR: OrderStatus.REJECTED,  # change to OrderStatus.DENIED ?
+    BetStatus.DUPLICATE_REQUEST: OrderStatus.REJECTED,  # change to OrderStatus.DENIED ?
+    BetStatus.MALFORMED_REQUEST: OrderStatus.REJECTED,  # change to OrderStatus.DENIED ?
+    BetStatus.PRICE_ABOVE_MARKET: OrderStatus.REJECTED,
+    BetStatus.STAKE_ABOVE_MAX: OrderStatus.REJECTED,
+    BetStatus.STAKE_BELOW_MIN: OrderStatus.REJECTED,
+    BetStatus.LIABILITY_LIMIT_EXCEEDED: OrderStatus.REJECTED,
+    BetStatus.MARKET_SUSPENDED: OrderStatus.REJECTED,
+    BetStatus.ACCEPTED: OrderStatus.ACCEPTED,
+    # optimistaically assume an order was filled ??? and change to OrderStatus.FILLED ?
+    BetStatus.PENDING_ACCEPTANCE: OrderStatus.SUBMITTED,
+    BetStatus.RESTRICTED: OrderStatus.REJECTED,
+    BetStatus.VERIFICATION_REQUIRED: OrderStatus.REJECTED,
+    BetStatus.WIN: OrderStatus.ACCEPTED,  # TODO: change this to FILLED otherwise order is marked as open.....
+    BetStatus.LOSS: OrderStatus.ACCEPTED,  # TODO: change this to FILLED otherwise order is marked as open.....
+    BetStatus.PUSH: OrderStatus.REJECTED,  # TODO: change this to FILLED otherwise order is marked as open.....
+    BetStatus.HALF_WIN: OrderStatus.ACCEPTED,  # TODO: change this to FILLED otherwise order is marked as open.....
+    BetStatus.HALF_LOSS: OrderStatus.ACCEPTED,
+    BetStatus.PARTIAL: OrderStatus.ACCEPTED,
+}
 
 
 class BetStatusTranslation(Enum):
@@ -461,6 +555,22 @@ class GetSportsResponse(msgspec.Struct):
     """
     # the field can be optional
     sports: List[GetSportsResponseSport] = msgspec.field(name="sports")
+
+
+class GetAccountCurrencies(msgspec.Struct):
+    """GetAccountCurrencies
+
+    This is the response from the API when calling the /v1/account/currencies endpoint
+    """
+    currencies: List[str] = msgspec.field(name="currencies")
+
+
+class GetAccountBalance(msgspec.Struct):
+    """GetAccountBalance
+
+    This is the response from the API when calling the /v1/account/currencies/{currency}/balance endpoint
+    """
+    amount: Union[str, float] = msgspec.field(name="amount")
 
 
 class CloudbetSide(Enum):

@@ -1,7 +1,7 @@
 import asyncio
 import os
 from functools import lru_cache
-from typing import Optional
+from typing import Optional, Any, Union
 
 from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.clock import LiveClock
@@ -11,11 +11,14 @@ from nautilus_trader.common.logging import LoggerAdapter
 from nautilus_trader.adapters.cloudbet.client.core import CloudbetClient
 from nautilus_trader.adapters.cloudbet.config import CloudbetDataClientConfig
 from nautilus_trader.adapters.cloudbet.data_client import CloudbetDataClient
+from nautilus_trader.adapters.cloudbet.execution import CloudbetLiveExecutionClient
 from nautilus_trader.adapters.cloudbet.providers import CloudbetInstrumentProvider
+from nautilus_trader.config import LiveExecClientConfig
 from nautilus_trader.live.factories import LiveDataClientFactory
 from nautilus_trader.live.factories import LiveExecClientFactory
 from nautilus_trader.msgbus.bus import MessageBus
 
+from nautilus_trader.model.currency import Currency
 
 CLIENTS: dict[str, CloudbetClient] = {}
 INSTRUMENT_PROVIDER = None
@@ -115,7 +118,7 @@ class CloudbetLiveDataClientFactory(LiveDataClientFactory):
         cache: Cache,
         clock: LiveClock,
         logger: Logger,
-    ):
+    ) -> CloudbetDataClient:
         """
         Create a new Cloudbet data client.
 
@@ -167,72 +170,71 @@ class CloudbetLiveDataClientFactory(LiveDataClientFactory):
         return data_client
 
 
-# class CloudbetLiveExecClientFactory(LiveExecClientFactory):
-#     """
-#     Provides data and execution clients for Cloudbet.
-#     """
-#
-#     @staticmethod
-#     def create(  # type: ignore
-#         loop: asyncio.AbstractEventLoop,
-#         name: str,
-#         config: CloudbetExecClientConfig,
-#         msgbus: MessageBus,
-#         cache: Cache,
-#         clock: LiveClock,
-#         logger: Logger,
-#     ):
-#         """
-#         Create a new Betfair execution client.
-#
-#         Parameters
-#         ----------
-#         loop : asyncio.AbstractEventLoop
-#             The event loop for the client.
-#         name : str
-#             The client name.
-#         config : dict[str, Any]
-#             The configuration for the client.
-#         msgbus : MessageBus
-#             The message bus for the client.
-#         cache : Cache
-#             The cache for the client.
-#         clock : LiveClock
-#             The clock for the client.
-#         logger : Logger
-#             The logger for the client.
-#
-#         Returns
-#         -------
-#         BetfairExecutionClient
-#
-#         """
-#         market_filter: tuple = config.market_filter or ()
-#
-#         client = get_cached_cloudbet_client(
-#             username=config.username,
-#             password=config.password,
-#             app_key=config.app_key,
-#             cert_dir=config.cert_dir,
-#             loop=loop,
-#             logger=logger,
-#         )
-#         provider = get_cached_cloudbet_instrument_provider(
-#             client=client,
-#             logger=logger,
-#             market_filter=market_filter,
-#         )
-#
-#         # Create client
-#         exec_client = BetfairExecutionClient(
-#             loop=loop,
-#             client=client,
-#             base_currency=Currency.from_str(config.base_currency),
-#             msgbus=msgbus,
-#             cache=cache,
-#             clock=clock,
-#             logger=logger,
-#             market_filter=dict(market_filter),
-#             instrument_provider=provider,
-#         )
-#         return exec_client
+class CloudbetLiveExecClientFactory(LiveExecClientFactory):
+    """
+    Provides data and execution clients for Cloudbet.
+    """
+    @staticmethod
+    def create(  # type: ignore
+        loop: asyncio.AbstractEventLoop,
+        name: str,
+        config: LiveExecClientConfig,
+        msgbus: MessageBus,
+        cache: Cache,
+        clock: LiveClock,
+        logger: Logger,
+        base_currency: Union[Currency, None] # explicitly pass None for multi-currency exec clients
+    ) -> CloudbetLiveExecutionClient:
+        """
+        Create a new Cloudbet execution client.
+
+        Parameters
+        ----------
+        loop : asyncio.AbstractEventLoop
+            The event loop for the client.
+        name : str
+            The client name.
+        config : LiveExecClientConfig
+            The configuration for the client.
+        msgbus : MessageBus
+            The message bus for the client.
+        cache : Cache
+            The cache for the client.
+        clock : LiveClock
+            The clock for the client.
+        logger : Logger
+            The logger for the client.
+        base_currency : Union[Currency, None]
+            The base currency for the client. Explicitly pass None for multi-currency exec clients.
+        Returns
+        -------
+        CloudbetLiveExecutionClient
+
+        """
+        market_filter: tuple = dict or ()
+
+        client = get_cached_cloudbet_client(
+            loop=loop,
+            logger=logger,
+        )
+
+        provider = get_cached_cloudbet_instrument_provider(
+            client=client,
+            logger=logger,
+            market_filter=market_filter,
+        )
+
+        # Create client
+        exec_client = CloudbetLiveExecutionClient(
+            loop=loop,
+            client=client,
+            base_currency=base_currency,
+            msgbus=msgbus,
+            cache=cache,
+            clock=clock,
+            logger=logger,
+            market_filter=market_filter,
+            instrument_provider=provider,
+            config=config,
+        )
+        return exec_client
