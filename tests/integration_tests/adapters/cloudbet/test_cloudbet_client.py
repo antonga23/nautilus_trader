@@ -306,8 +306,10 @@ class TestCloudbetClient:
                 print("No events found for competition:", fixtures)
 
     @pytest.mark.asyncio()
-    async def test_get_latest_odds(self):
-
+    @patch.object(CloudbetClient, 'get_events_for_sport', new_callable=AsyncMock)
+    @patch.object(CloudbetClient, 'get_latest_odds', new_callable=AsyncMock)
+    async def test_get_latest_odds(self, mock_get_latest_odds, mock_get_events_for_sport):
+        # Arrange
         # TODO: refactor this to a fixture
         # live instrument_id setup >>>
         await self.client.connect()
@@ -315,41 +317,51 @@ class TestCloudbetClient:
         current_timestamp = int(self.clock.timestamp())
         # get the unixtime 48 hours in the future
         timestamp_48h = current_timestamp + 172800
-        # sports = ["soccer", "tennis", "baseball", "basketball"]
-        sports = ["basketball"]
-        sport_key = random.choice(sports)
+        sport_key = random.choice(["soccer", "tennis", "baseball", "basketball"])
+        mock_get_events_for_sport.return_value = CloudbetResponses.get_events_for_sport(sport_key=sport_key)
+        mock_get_latest_odds.return_value = CloudbetResponses.get_latest_odds()
+        ## Act
         event = await self.client.get_events_for_sport(
             sport_key,
             current_timestamp,
             timestamp_48h,
             limit=5
         )
-        # TODO: replace with a mock as this may fail if there are no events for the sport
         selections: List[Selection] = self.client.event_to_selection(event)
         selection = random.choice(selections)
         # Replace these with valid event_id and market_url for testing
         event_id = selection.event_id
         market_url = selection.market_name + '/' + selection.outcome + '?' + selection.params if selection.params is not None else selection.market_name + '/' + selection.outcome
         # await self.client.connect()
-        result = await self.client.get_latest_odds(event_id, market_url)
+        result : GetLatestOddsResponse = await self.client.get_latest_odds(event_id, market_url)
         # Check that the response is a GetLatestOddsResponse instance
         assert isinstance(result, GetLatestOddsResponse)
 
     @pytest.mark.asyncio
-    async def test_place_bet_accepted(self, cloudbet_client):
+    @patch.object(CloudbetClient, 'get_events_for_sport', new_callable=AsyncMock)
+    @patch.object(CloudbetClient, 'place_bets', new_callable=AsyncMock)
+    async def test_place_bet_accepted(self, mock_place_bet, mock_get_events_for_sport,  cloudbet_client):
+        """
+        Test the scenario where a bet is successfully placed and the bet status is accepted.
+        :param cloudbet_client: An instance of the CloudbetClient class.
+
+        :return: None
+
+        NB: This is a live test and will attempt to connect to Cloudbet to place the bet
+        """
         await cloudbet_client.connect()
         # we need to get a tradeable event in the future to place a bet
         #   get the current unix timestamp
         current_timestamp = int(self.clock.timestamp()) + 86400
         #  get the unixtime 48 hours in the future
         timestamp_48h = current_timestamp + 172800
-        sports = ["soccer", "tennis", "basketball"]
-        sport_key = random.choice(sports)
-        event = await cloudbet_client.get_events_for_sport(
+        sport_key = random.choice(["soccer", "tennis", "baseball", "basketball"])
+        mock_place_bet.return_value: GetBetResponse= CloudbetResponses.place_bet_success()
+        mock_get_events_for_sport.return_value = CloudbetResponses.get_events_for_sport(
+            sport_key=sport_key
+        )
+        event: GetEventsForSportResponse = await cloudbet_client.get_events_for_sport(
             sport_key,
-            current_timestamp,
-            timestamp_48h,
-            limit=5
         )
         selections: List[Selection] = cloudbet_client.event_to_selection(event)
         selection = random.choice(selections)
@@ -397,7 +409,9 @@ class TestCloudbetClient:
 
     @pytest.mark.asyncio
     @patch.object(CloudbetClient, 'post')
-    async def test_fail_to_place_bet_raises_exception(self, mock_cloudbet_post, cloudbet_client):
+    @patch.object(CloudbetClient, 'get_events_for_sport', new_callable=AsyncMock)
+    # @patch.object(CloudbetClient, 'place_bets', new_callable=AsyncMock)
+    async def test_fail_to_place_bet_raises_exception(self, mock_get_events_for_sport, mock_cloudbet_post, cloudbet_client):
         """ Test exception is thrown with invalid event_id"""
         # # TODO: replace all calls to connect with a async mock method with app. side effects
         await cloudbet_client.connect()
@@ -406,8 +420,8 @@ class TestCloudbetClient:
         current_timestamp = int(self.clock.timestamp()) + 86400
         #  get the unixtime 48 hours in the future
         timestamp_48h = current_timestamp + 172800
-        sports = ["soccer", "tennis", "basketball"]
-        sport_key = random.choice(sports)
+        sport_key = random.choice(["soccer", "tennis", "basketball"])
+        mock_get_events_for_sport.return_value = CloudbetResponses.get_events_for_sport(sport_key=sport_key)
         event = await cloudbet_client.get_events_for_sport(
             sport_key,
             current_timestamp,
@@ -415,7 +429,6 @@ class TestCloudbetClient:
             limit=5
         )
         selections: List[Selection] = cloudbet_client.event_to_selection(event)
-        # TODO: refactor the above to a live selection fixture to avoid random failures
         selection = random.choice(selections)
         assert isinstance(selection, Selection), f"Expected object of type Selection. received {selection} "
         market_url = selection.market_name + '/' + selection.outcome + '?' + selection.params if selection.params is not None else selection.market_name + '/' + selection.outcome

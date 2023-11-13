@@ -11,7 +11,8 @@ from aiohttp import ClientResponse
 
 from nautilus_trader.adapters.cloudbet.client.core import CloudbetClient
 from nautilus_trader.adapters.cloudbet.client.schema import GetAccountInfoResponse, GetSportsResponse, \
-    GetEventsForSportResponse, GetBetResponse, GetBetHistoryResponse, GetAccountCurrencies, GetAccountBalance
+    GetEventsForSportResponse, GetBetResponse, GetBetHistoryResponse, GetAccountCurrencies, GetAccountBalance, \
+    GetLatestOddsResponse
 from nautilus_trader.adapters.cloudbet.client.util import extract_cloudbet_symbol, cloudbet_instrument_id
 from nautilus_trader.adapters.cloudbet.common import CLOUDBET_VENUE
 from nautilus_trader.adapters.cloudbet.providers import CloudbetInstrumentProvider
@@ -145,8 +146,28 @@ class CloudbetResponses:
         return CloudbetResponses.load("get_sports.json", response_type=GetSportsResponse)
 
     @staticmethod
-    def get_events_for_sport() -> GetEventsForSportResponse:
-        return CloudbetResponses.load("get_events_for_sport.json", response_type=GetEventsForSportResponse)
+    def get_events_for_sport(**sport) -> GetEventsForSportResponse:
+        # check if a sport key was passed
+        if 'sport_key' in sport:
+            if sport['sport_key'] is 'soccer':
+                return CloudbetResponses.load("get_events_for_sport_soccer.json", response_type=GetEventsForSportResponse)
+            elif sport['sport_key'] is 'soccer':
+                return CloudbetResponses.load("get_events_for_sport_soccer.json", response_type=GetEventsForSportResponse)
+            elif sport['sport_key'] is 'tennis':
+                return CloudbetResponses.load("get_events_for_sport_tennis.json", response_type=GetEventsForSportResponse)
+            elif sport['sport_key'] is 'baseball':
+                return CloudbetResponses.load("get_events_for_sport_baseball.json", response_type=GetEventsForSportResponse)
+            elif sport['sport_key'] is 'basketball':
+                return CloudbetResponses.load("get_events_for_sport_basketball.json", response_type=GetEventsForSportResponse)
+            else:
+                return CloudbetResponses.load("get_events_for_sport_no_events.json", response_type=GetEventsForSportResponse)
+        else:
+            return CloudbetResponses.load("get_events_for_sport.json", response_type=GetEventsForSportResponse)
+
+    @staticmethod
+    def get_latest_odds():
+        return CloudbetResponses.load("get_latest_odds.json", response_type=GetLatestOddsResponse)
+
 
     @staticmethod
     def place_bet_success() -> GetBetResponse:
