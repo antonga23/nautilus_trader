@@ -11,7 +11,8 @@ from aiohttp import ClientResponse
 
 from nautilus_trader.adapters.cloudbet.client.core import CloudbetClient
 from nautilus_trader.adapters.cloudbet.client.schema import GetAccountInfoResponse, GetSportsResponse, \
-    GetEventsForSportResponse, GetBetResponse, GetBetHistoryResponse, GetAccountCurrencies, GetAccountBalance
+    GetEventsForSportResponse, GetBetResponse, GetBetHistoryResponse, GetAccountCurrencies, GetAccountBalance, \
+    GetLatestOddsResponse
 from nautilus_trader.adapters.cloudbet.client.util import extract_cloudbet_symbol, cloudbet_instrument_id
 from nautilus_trader.adapters.cloudbet.common import CLOUDBET_VENUE
 from nautilus_trader.adapters.cloudbet.providers import CloudbetInstrumentProvider
@@ -57,26 +58,33 @@ class CloudbetTestStubs:
         client = CloudbetClient(
             loop=loop,
             logger=logger,
-            api_key=test_api_key,
-            api_url=test_api_url,
+            api_key=test_api_key, # TODO: replace test key with an empty string
+            api_url=test_api_url,# TODO: replace test key with an empty string
         )
 
-        # async def request(method, url, **kwargs):
-        #     assert method  # required to stop mocks from breaking
-        #     rpc_method = kwargs.get("json", {}).get("method") or url
+        # TODO: finish implementing this method and re-run Cloubet Client test suite, handle cases where enpoitn returns Exceptions, failure, success, etc for each endpoint
+        # async def request(function_name): # method, url, **kwargs
+        #     assert function_name  # required to stop mocks from breaking
         #     responses = {
-        #         "https://api.betfair.com/exchange/betting/rest/v1/en/navigation/menu.json": BetfairResponses.navigation_list_navigation_response,
-        #         "AccountAPING/v1.0/getAccountDetails": BetfairResponses.account_details,
-        #         "AccountAPING/v1.0/getAccountFunds": BetfairResponses.account_funds_no_exposure,
+        #         "login": CloudbetResponses.login(),
+        #         "get_sports": CloudbetResponses.get_sports(),
+        #         "get_events_for_sport": CloudbetResponses.get_events_for_sport(),
+        #         "place_bet_success": CloudbetResponses.place_bet_success(),
+        #         "place_bet_failure": CloudbetResponses.place_bet_failure(),
+        #         "place_bet_invalid_event_id": CloudbetResponses.place_bet_invalid_event_id(),
+        #         "get_bet_history_success": CloudbetResponses.get_bet_history_success(),
+        #         "get_bet_status_success": CloudbetResponses.get_bet_status_success(),
+        #         "get_account_currencies_success": CloudbetResponses.get_account_currencies_success(),
         #     }
-        #     if rpc_method in responses:
+        #     if function_name in responses:
         #         resp = MagicMock(spec=ClientResponse)
-        #         resp.data = msgspec.json.encode(responses[rpc_method](**kw))
+        #         resp.data = responses[function_name] # response type => CloudbetResponses.function_name
         #         return resp
-        #     raise KeyError(rpc_method)
+        #     raise KeyError(function_name)
         #
         # client.request = MagicMock()  # type: ignore
         # client.request.side_effect = request
+
         return client
 
     @staticmethod # TODO: move to test_kit_providers or create a util function for calling those methods
@@ -138,8 +146,28 @@ class CloudbetResponses:
         return CloudbetResponses.load("get_sports.json", response_type=GetSportsResponse)
 
     @staticmethod
-    def get_events_for_sport() -> GetEventsForSportResponse:
-        return CloudbetResponses.load("get_events_for_sport.json", response_type=GetEventsForSportResponse)
+    def get_events_for_sport(**sport) -> GetEventsForSportResponse:
+        # check if a sport key was passed
+        if 'sport_key' in sport:
+            if sport['sport_key'] is 'soccer':
+                return CloudbetResponses.load("get_events_for_sport_soccer.json", response_type=GetEventsForSportResponse)
+            elif sport['sport_key'] is 'soccer':
+                return CloudbetResponses.load("get_events_for_sport_soccer.json", response_type=GetEventsForSportResponse)
+            elif sport['sport_key'] is 'tennis':
+                return CloudbetResponses.load("get_events_for_sport_tennis.json", response_type=GetEventsForSportResponse)
+            elif sport['sport_key'] is 'baseball':
+                return CloudbetResponses.load("get_events_for_sport_baseball.json", response_type=GetEventsForSportResponse)
+            elif sport['sport_key'] is 'basketball':
+                return CloudbetResponses.load("get_events_for_sport_basketball.json", response_type=GetEventsForSportResponse)
+            else:
+                return CloudbetResponses.load("get_events_for_sport_no_events.json", response_type=GetEventsForSportResponse)
+        else:
+            return CloudbetResponses.load("get_events_for_sport.json", response_type=GetEventsForSportResponse)
+
+    @staticmethod
+    def get_latest_odds():
+        return CloudbetResponses.load("get_latest_odds.json", response_type=GetLatestOddsResponse)
+
 
     @staticmethod
     def place_bet_success() -> GetBetResponse:
