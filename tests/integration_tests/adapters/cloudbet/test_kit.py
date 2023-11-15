@@ -12,7 +12,7 @@ from aiohttp import ClientResponse
 from nautilus_trader.adapters.cloudbet.client.core import CloudbetClient
 from nautilus_trader.adapters.cloudbet.client.schema import GetAccountInfoResponse, GetSportsResponse, \
     GetEventsForSportResponse, GetBetResponse, GetBetHistoryResponse, GetAccountCurrencies, GetAccountBalance, \
-    GetLatestOddsResponse
+    GetLatestOddsResponse, Selection, GetEventResponse
 from nautilus_trader.adapters.cloudbet.client.util import extract_cloudbet_symbol, cloudbet_instrument_id
 from nautilus_trader.adapters.cloudbet.common import CLOUDBET_VENUE
 from nautilus_trader.adapters.cloudbet.providers import CloudbetInstrumentProvider
@@ -52,6 +52,15 @@ class CloudbetTestStubs:
             client=cloudbet_client,
             logger=TestComponentStubs.logger(),
         )
+
+    @staticmethod
+    def load(filename, **kwargs):
+        # optionally pass the response type as a keyword argument
+        if "response_type" in kwargs:
+            response_type = kwargs["response_type"]
+            return msgspec.json.decode((TEST_PATH / filename).read_bytes(), type=response_type)
+        else:
+            return msgspec.json.decode((TEST_PATH / filename).read_bytes())
 
     @staticmethod
     def cloudbet_client(loop, logger) -> CloudbetClient:
@@ -126,6 +135,35 @@ class CloudbetTestStubs:
         instrument_ids = [InstrumentId(**instrument_id) for instrument_id in instrument_ids]
         return instrument_ids
 
+    @staticmethod
+    # TODO: test the method
+    def get_selections(**kwargs) -> List[Selection]:
+        """
+        Get selections based on the provided kwargs.
+
+        :param kwargs: A dictionary containing the arguments.
+            - sport (str): The sport for which selections are needed.
+            - count (int): The number of selections to return.
+
+        :return: A list of Selection objects based on the provided kwargs.
+        :rtype: List[Selection]
+        """
+        if kwargs.get('sport'):
+            try:
+                selections: List[Selection] = CloudbetTestStubs.load(f"{kwargs['sport']}_selections.json", response_type=List[Selection])
+            # if a file not found, use the default selections
+            except FileNotFoundError:
+                selections: List[Selection] = CloudbetTestStubs.load("default_selections.json", response_type=List[Selection])
+            except KeyError:
+                selections: List[Selection] = CloudbetTestStubs.load("default_selections.json", response_type=List[Selection])
+            except Exception:
+                selections: List[Selection] = CloudbetTestStubs.load("default_selections.json", response_type=List[Selection])
+        else:
+            selections: List[Selection] = CloudbetTestStubs.load("default_selections.json", response_type=List[Selection])
+        if kwargs.get('count'):
+            return selections[:kwargs['count']]
+        else:
+            return selections
 
 class CloudbetResponses:
     @staticmethod
@@ -165,8 +203,11 @@ class CloudbetResponses:
             return CloudbetResponses.load("get_events_for_sport.json", response_type=GetEventsForSportResponse)
 
     @staticmethod
-    def get_latest_odds():
-        return CloudbetResponses.load("get_latest_odds.json", response_type=GetLatestOddsResponse)
+    def get_latest_odds(**kwargs) -> GetLatestOddsResponse:
+        if kwargs.get('event_id'):
+            return CloudbetResponses.load("get_latest_odds.json", response_type=GetLatestOddsResponse)
+        else:
+            return CloudbetResponses.load("get_latest_odds.json", response_type=GetLatestOddsResponse)
 
 
     @staticmethod
@@ -210,6 +251,14 @@ class CloudbetResponses:
     def get_bet_history_mixed_status() -> GetBetHistoryResponse:
         return CloudbetResponses.load('get_bet_history_mixed_status.json', response_type=GetBetHistoryResponse)
 
+    @staticmethod
+    def get_event(**kwargs) -> GetEventResponse:
+        if kwargs.get('event_id'):
+            event = CloudbetResponses.load('get_event.json', response_type=GetEventResponse)
+            event.event_id = int(kwargs['event_id'])
+            return event
+        else:
+            return CloudbetResponses.load('get_event.json', response_type=GetEventResponse)
 
 
 

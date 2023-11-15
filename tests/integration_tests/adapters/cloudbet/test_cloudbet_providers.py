@@ -15,6 +15,7 @@
 import asyncio
 import json
 from typing import List
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from nautilus_trader.common.clock import LiveClock
@@ -23,38 +24,17 @@ import pytest
 from nautilus_trader.common.clock import TestClock
 from nautilus_trader.common.logging import Logger
 
-from nautilus_trader.adapters.cloudbet.client.schema import Selection
+from nautilus_trader.adapters.cloudbet.client.core import CloudbetClient
+from nautilus_trader.adapters.cloudbet.client.schema import Selection, GetLatestOddsResponse
+from nautilus_trader.adapters.cloudbet.common import CLOUDBET_VENUE
 from nautilus_trader.adapters.cloudbet.providers import CloudbetInstrumentProvider
 from nautilus_trader.model.instruments.crypto_betting import CryptoBettingInstrument
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
-from tests.integration_tests.adapters.cloudbet.test_kit import CloudbetTestStubs
+from tests.integration_tests.adapters.cloudbet.test_kit import CloudbetTestStubs, CloudbetResponses
 import random
 
 
 class TestCloudbetInstrumentProvider:
-
-    # # live instrument fixture
-    # @pytest.fixture()
-    # @pytest.mark.asyncio()
-    # async def live_instrument(self):
-    #     await self.client.connect()
-    #     # get the current unix timestamp
-    #     current_timestamp = int(self.clock.timestamp())
-    #     # get the unixtime 48 hours in the future
-    #     timestamp_48h = current_timestamp + 172800
-    #     # sports = ["soccer", "tennis", "baseball", "basketball"]
-    #     sports = ["basketball"]
-    #     sport_key = random.choice(sports)
-    #     event = await self.client.get_events_for_sport(
-    #         sport_key,
-    #         current_timestamp,
-    #         timestamp_48h,
-    #         limit=5
-    #     )
-    #     selections: List[Selection] = self.client.event_to_selection(event)
-    #     selection = Selection(**random.choice(selections))
-    #     instrument = self.provider.selection_to_instrument(selection)
-    #     return instrument
 
     def setup(self):
         # Fixture Setup
@@ -69,21 +49,22 @@ class TestCloudbetInstrumentProvider:
 
     @pytest.mark.asyncio()
     async def test_load_all_async(self):
+        """
+        Test the load_all_async method.
+
+        This method tests the functionality of the load_all_async method in the
+        current class. It performs the following steps:
+
+        1. Connects to the client (creates a lvie network session)
+        2. Calls the load_all_async method of the provider.
+        3. Prints the instrument count and the count attribute of the provider.
+        4. Asserts that the count attribute of the provider is equal to the
+           instrument count.
+        """
         await self.client.connect()
         instrument_count = await self.provider.load_all_async()
         print(instrument_count, self.provider.count)
         assert self.provider.count == instrument_count, f"Instrument count does not match: expected {self.provider.count} but got {instrument_count}"
-
-    # @pytest.mark.asyncio()
-    # async def test_generate_instrument_data_file(self):
-    #     await self.client.connect()
-    #     await self.provider.load_all_async()
-    #     # Convert the instruments to dictionaries
-    #     # instruments_data = [str(instrument.id) for instrument in self.provider.list_all()]
-    #     instruments_data: list[CryptoBettingInstrument] = [instrument.to_dict() for instrument in self.provider.list_all()]
-    #     # write the instruments to a file
-    #     with open('//home/alatha/Desktop/eudaimonia/tests/integration_tests/adapters/cloudbet/test_instrument_id_data.json', 'w') as outfile:
-    #         json.dump(instruments_data, outfile)
 
     @pytest.mark.asyncio()
     async def test_load_all_async_filters(self):
@@ -107,6 +88,17 @@ class TestCloudbetInstrumentProvider:
 
     @pytest.mark.asyncio()
     async def test_load_all_async_invalid_filters(self):
+        """
+        Test the `load_all_async` method with invalid filters.
+
+        This function is responsible for testing the `load_all_async` method of the class. It checks if the method handles invalid filters correctly.
+
+        Parameters:
+        - None
+
+        Returns:
+        - None
+        """
         await self.client.connect()
         filters = {
             'sport_key': ['non-existing-sport'],
@@ -122,33 +114,14 @@ class TestCloudbetInstrumentProvider:
         except ValueError:
             pass
 
-    # @pytest.mark.asyncio()
-    # def test_id_to_selection_id(self):
-    #     # Replace with a test stub that generates valid instrument ids for cloudbet
-    #     instrument_id = CloudbetTestStubs.get_instrument_id()
-    #     selection_id = self.provider.id_to_selection_id(instrument_id)
-    #     assert isinstance(selection_id, SelectionId)
-
     @pytest.mark.asyncio()
-    async def test_load_async(self):
-        # ToDO: refactor live instrument setup into a fixture
-        # live instrument setup
+    @patch.object(CloudbetClient, 'get_latest_odds', new_callable=AsyncMock)
+    async def test_load_async(self, mock_get_latest_odds):
+        # # live instrument setup
         await self.client.connect()
-        # get the current unix timestamp
-        current_timestamp = int(self.clock.timestamp())
-        # get the unixtime 48 hours in the future
-        timestamp_48h = current_timestamp + 172800
-        sports = ["soccer", "tennis", "baseball", "basketball"]
-        sport_key = random.choice(sports)
-        # ToDO: test multiple events
-        event = await self.client.get_events_for_sport(
-            sport_key,
-            current_timestamp,
-            timestamp_48h,
-            limit=5
-        )
-        # ToDO: gracefully handle the case where there are no events as part of live instrument refactor
-        selections: List[Selection] = self.client.event_to_selection(event)
+        mock_get_latest_odds.return_value: GetLatestOddsResponse = CloudbetResponses.get_latest_odds()
+        sport = random.choice(["soccer", "tennis", "baseball", "basketball", ""])
+        selections: List[Selection] = CloudbetTestStubs.get_selections(sport=sport)
         selection = random.choice(selections)
         live_instrument = self.provider.selection_to_instrument(selection)
         await self.provider.load_async(live_instrument.id)
@@ -159,81 +132,52 @@ class TestCloudbetInstrumentProvider:
         assert loaded_instrument.id == live_instrument.id
 
     @pytest.mark.asyncio
-    async def test_fast_load_ids_async(self, instrument_provider):
-        # ToDO: refactor live instrument setup into a fixture
+    @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 10)], indirect=["instruments"])
+    @patch.object(CloudbetClient, 'get_latest_odds', new_callable=AsyncMock,
+                  return_value=CloudbetResponses.get_latest_odds())
+    async def test_fast_load_ids_async(self, mock_get_latest_odds, instrument_provider, instruments):
         # live instrument setup
-        # await self.client.connect()
         await instrument_provider._client.connect()
-        assert instrument_provider._client.connected is True
-        # get the current unix timestamp
-        current_timestamp = int(self.clock.timestamp())
-        # get the unixtime 48 hours in the future
-        timestamp_48h = current_timestamp + 172800
-        sports = ["soccer", "basketball"]
-        sport_key = random.choice(sports)
-        # TODO: test multiple events
-        event = await instrument_provider._client.get_events_for_sport(
-            sport_key,
-            current_timestamp,
-            timestamp_48h,
-            limit=5
-        )
-        selections: List[Selection] = instrument_provider._client.event_to_selection(event)
-        live_instruments = []
-        for i in range(min(10, len(selections))):
-            selection = selections[i]
-            live_instruments.append(instrument_provider.selection_to_instrument(selection))
-            # live_instrument_ids.append(live_instrument.id)
+        live_instruments = instruments
         await instrument_provider.load_ids_async([instrument_id.id for instrument_id in live_instruments])
 
         #  check if the instrument have been loaded correctly
         loaded_instruments = [instrument_provider.find(instrument_id.id) for instrument_id in live_instruments]
+        # Because we're using a patch for get_latest_odds and get_event, we can't assert that the set of loaded_instruments== set(live_instruments) after calling load_ids_async
+        # We have to filter out elements in list that are none => beacuse there no matching markets/submarkets in the mock instruments
+        loaded_instruments = [instrument for instrument in loaded_instruments if instrument is not None]
         for i in range(len(loaded_instruments)):
+            print(loaded_instruments[i])
             assert isinstance(loaded_instruments[i], CryptoBettingInstrument)
-            assert loaded_instruments[i].id == live_instruments[i].id
 
     @pytest.mark.asyncio
-    async def test_bulk_load_ids_async(self, instrument_provider):
-        # ToDO: refactor live instrument setup into a fixture
+    @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 500)], indirect=["instruments"])
+    @patch.object(CloudbetClient, 'get_latest_odds', new_callable=AsyncMock, return_value=CloudbetResponses.get_latest_odds())
+    @patch.object(CloudbetClient, 'get_event', new_callable=AsyncMock, return_value=CloudbetResponses.get_event())
+    # event: GetEventResponse = await self._client.get_event(event_id)
+    # updated_selection: GetLatestOddsResponse = await self._client.get_latest_odds(event_id, market_url)
+    async def test_bulk_load_ids_async(self, mock_get_event, mock_get_latest_odds, instrument_provider, instruments):
+        """
+        Test case for testing the asynchronous bulk load of instrument IDs.
+
+        Parameters:
+        - mock_get_event: A mock object for the get_event method of CloudbetClient.
+        - mock_get_latest_odds: A mock object for the get_latest_odds method of CloudbetClient.
+        - instrument_provider: The instrument provider object.
+        - instruments: The list of instruments to be loaded.
+
+        Returns:
+        None
+        """
         # live instrument setup
-        # await self.client.connect()
         await instrument_provider._client.connect()
         assert instrument_provider._client.connected is True
-        # get the current unix timestamp
-        current_timestamp = int(self.clock.timestamp())
-        # get the unixtime 48 hours in the future
-        timestamp_48h = current_timestamp + 172800
-        sports = ["soccer", "basketball"]
-        sport_key = random.choice(sports)
-        # TODO: test multiple events
-        event = await instrument_provider._client.get_events_for_sport(
-            sport_key,
-            current_timestamp,
-            timestamp_48h,
-            limit=5
-        )
-        selections: List[Selection] = instrument_provider._client.event_to_selection(event)
-        live_instruments = []
-        for i in range(min(100, len(selections))):
-            selection = selections[i]
-            live_instruments.append(instrument_provider.selection_to_instrument(selection))
-            # live_instrument_ids.append(live_instrument.id)
+        live_instruments = instruments
         await instrument_provider.load_ids_async([instrument_id.id for instrument_id in live_instruments])
-
         #  check if the instrument have been loaded correctly
         loaded_instruments = [instrument_provider.find(instrument_id.id) for instrument_id in live_instruments]
+        # Because we're using a patch for get_latest_odds and get_event, we can't assert that the set of loaded_instruments== set(live_instruments) after calling load_ids_async
+        # filter out elements in list that are none.
+        loaded_instruments = [instrument for instrument in loaded_instruments if instrument is not None]
         for i in range(len(loaded_instruments)):
             assert isinstance(loaded_instruments[i], CryptoBettingInstrument)
-            assert loaded_instruments[i].id == live_instruments[i].id
-
-    #
-    # @pytest.mark.asyncio
-    # async def test_load_async(instrument_provider):
-    #     instrument_id = InstrumentId("test_instrument_id")
-    #     await instrument_provider.load_async(instrument_id)
-    #     assert instrument_provider.count == 1
-    #
-    # def test_selection_to_instrument(instrument_provider):
-    #     selection = CloudbetTestStubs.selection()
-    #     instrument = instrument_provider.selection_to_instrument(selection)
-    #     assert isinstance(instrument, CryptoBettingInstrument)

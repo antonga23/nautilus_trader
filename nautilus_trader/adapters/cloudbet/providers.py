@@ -113,6 +113,7 @@ class CloudbetInstrumentProvider(InstrumentProvider):
         if len(instrument_ids) <= 10:
             for instrument_id in instrument_ids:
                 event_id, market_name, outcome, params = instrument_id.symbol.value.split("|")
+                event_id = int(event_id)  # necessary type conversion
                 # TODO: Check if event is already in cache/instrument_provider, if so, load event and prepend to selection data. check if selection idupdate it
                 # event: GetEventResponse = await self._client.get_event(selection_id.event_id)
                 market_url = market_name + '/' + outcome + '?' + params if params is not None else market_name + '/' + outcome
@@ -200,7 +201,8 @@ class CloudbetInstrumentProvider(InstrumentProvider):
         filters_str = "..." if not filters else f" with filters {filters}..."
         self._log.debug(f"Loading instrument {instrument_id}{filters_str}.")
         # Symbol format >>>> 19490102|basketball.totals|over|total=164
-        event_id, market_name, outcome, params = instrument_id.symbol.value.split("|")
+        event_id , market_name , outcome , params = instrument_id.symbol.value.split("|")
+        event_id = int(event_id) # necessary type conversion
         # TODO: Check if event is already in cache/instrument_provider, if so, load event and prepend to selection data. check if selection idupdate it
         # event: GetEventResponse = await self._client.get_event(selection_id.event_id)
         market_url = market_name + '/' + outcome + '?' + params if params is not None else market_name + '/' + outcome
