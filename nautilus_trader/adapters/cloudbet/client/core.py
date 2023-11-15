@@ -277,7 +277,7 @@ class CloudbetClient(HttpClient):
         return selections
 
 
-    async def get_latest_odds(self, event_id: str, market_url: str) -> GetLatestOddsResponse:
+    async def get_latest_odds(self, event_id: Union[str, int], market_url: str) -> GetLatestOddsResponse:
         """
         Obtain the latest odds for a selection based on market key, outcome and params.
 
@@ -287,7 +287,7 @@ class CloudbetClient(HttpClient):
 
         Parameters
         ----------
-        event_id : str
+        event_id : Union[str, int]
             The event id for the selection
         market_url : str
             The market url  is composed of the marketKey/outcome and where applicable the params
