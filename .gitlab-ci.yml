@@ -25,6 +25,11 @@ build-job:
   stage: build
   image: python:3.9  # Default Python version
   before_script:
+    - apt-get update && apt-get install -y make build-essential libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev wget curl llvm libncurses5-dev libncursesw5-dev xz-utils tk-dev libffi-dev liblzma-dev python-openssl git
+    - curl https://pyenv.run | bash
+    - export PATH="/root/.pyenv/bin:$PATH"
+    - eval "$(pyenv init -)"
+    - eval "$(pyenv virtualenv-init -)"
     - pyenv install $PYTHON_VERSION
     - pyenv global $PYTHON_VERSION
     - python --version  # To check the Python version
