@@ -1,0 +1,59 @@
+stages:
+  - lint
+  - build
+
+variables:
+  RUST_BACKTRACE: 1
+
+lint-job:
+  stage: lint
+  image: python:3.9
+  before_script:
+    - pip install pre-commit
+    - pre-commit install
+  script:
+    - pre-commit run --all-files
+  only:
+    - master
+    - develop
+  cache:
+    key: ${CI_COMMIT_REF_SLUG}-pre-commit-${CI_COMMIT_REF_SLUG}
+    paths:
+      - ~/.cache/pre-commit
+
+build-job:
+  stage: build
+  image: python:3.9  # Default Python version
+  before_script:
+    - pyenv install $PYTHON_VERSION
+    - pyenv global $PYTHON_VERSION
+    - python --version  # To check the Python version
+  script:
+    - echo "Setting up Rust tool-chain..."
+    - curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+    - source $HOME/.cargo/env
+    - rustup default stable
+    - rustup component add rustfmt clippy
+
+    - echo "Installing build dependencies for Python..."
+    - pip install --upgrade pip setuptools wheel pre-commit poetry==1.5.1
+
+    - echo "Installing and running Redis..."
+    - sudo apt-get install redis-server
+    - redis-server --daemonize yes
+
+    - echo "Running cargo tests..."
+    - make cargo-test
+
+    - echo "Running Python tests..."
+    - make pytest
+    - make test-examples
+
+  only:
+    - master
+    - develop
+    - cloudbet
+
+  parallel:
+    matrix:
+      - PYTHON_VERSION: ["3.9", "3.10", "3.11"]
