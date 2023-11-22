@@ -26,7 +26,9 @@ build-job:
   image: ubuntu:focal  # Use ubuntu as base image
   before_script:
     - export DEBIAN_FRONTEND=noninteractive
-    - apt-get update && apt-get install -y make build-essential libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev wget curl llvm libncurses5-dev libncursesw5-dev xz-utils tk-dev libffi-dev liblzma-dev python-openssl git
+    - apt-get update && apt-get install -y make build-essential libssl-dev zlib1g-dev libbz2-dev libreadline-dev
+      libsqlite3-dev wget curl llvm libncurses5-dev libncursesw5-dev xz-utils tk-dev libffi-dev liblzma-dev
+      python-openssl git clang
     - curl https://pyenv.run | bash
     - export PATH="/root/.pyenv/bin:$PATH"
     - eval "$(pyenv init -)"
@@ -36,7 +38,7 @@ build-job:
     - python --version  # To check the Python version
   script:
     - echo "Setting up Rust tool-chain..."
-    - curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+    - curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
     - source $HOME/.cargo/env
     - rustup default stable
     - rustup component add rustfmt clippy
@@ -44,11 +46,17 @@ build-job:
     - echo "Installing build dependencies for Python..."
     - pip install --upgrade pip setuptools wheel pre-commit poetry==1.5.1
 
+    - echo " Installing Python dependencies using Poetry..."
+    - poetry install --only main --all-extras
+
     - echo "Installing and running Redis..."
-    - sudo apt-get install redis-server
+    - apt-get install redis-server -y
     - redis-server --daemonize yes
 
     - echo "Running cargo tests..."
+    # Dynamically set LD_LIBRARY_PATH for the installed Python version
+    - PYTHON_LIB_PATH=$(pyenv prefix)/lib
+    - export LD_LIBRARY_PATH=$PYTHON_LIB_PATH:$LD_LIBRARY_PATH
     - make cargo-test
 
     - echo "Running Python tests..."
@@ -62,4 +70,4 @@ build-job:
 
   parallel:
     matrix:
-      - PYTHON_VERSION: ["3.9", "3.10", "3.11"]
+      - PYTHON_VERSION: ["3.10", "3.11", "3.12"]
