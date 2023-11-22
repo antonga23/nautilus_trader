@@ -1,9 +1,21 @@
+#  TODO: Seperate the test and build jobs
 stages:
   - lint
   - build
+#  - test
+
 
 variables:
   RUST_BACKTRACE: 1
+  BUILD_MODE: debug
+
+## Define common cache, used across jobs
+#cache:
+#  key: ${CI_COMMIT_REF_SLUG}-common-cache
+#  paths:
+#    - ~/.cache/pre-commit
+#    - ~/.cargo
+#    - nautilus_core/target
 
 lint-job:
   stage: lint
@@ -60,8 +72,17 @@ build-job:
     - make cargo-test
 
     - echo "Running Python tests..."
-    - make pytest
-    - make test-examples
+    # Conditional execution based on branch
+    - |
+      if [ "$CI_COMMIT_REF_NAME" = "cloudbet" ]; then
+        echo "Running Python tests for cloudbet branch..."
+        make pytest-cloudbet
+        exit 0  # Exit the script after running make pytest-cloudbet
+      else
+        echo "Running standard Python tests..."
+        make pytest
+        make test-examples
+      fi
 
   only:
     - master
@@ -70,4 +91,20 @@ build-job:
 
   parallel:
     matrix:
-      - PYTHON_VERSION: ["3.10", "3.11", "3.12"]
+      - PYTHON_VERSION: ["3.9.18", "3.10", "3.11"]
+
+## Test job
+#test-job:
+#  stage: test
+#  image: ubuntu:focal
+#  dependencies:
+#    - build-job
+#  script:
+#    - echo "Testing the project..."
+#  only:
+#    - master
+#    - develop
+#    - cloudbet
+#  parallel:
+#    matrix:
+#      - PYTHON_VERSION: [ "3.9.18", "3.10", "3.11" ]

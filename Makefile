@@ -114,6 +114,10 @@ pytest:
 pytest-coverage:
 	bash scripts/test-coverage.sh
 
+.PHONY: pytest-cloudbet
+pytest-cloudbet:
+	bash scripts/test-cloudbet.sh
+
 .PHONY: test-examples
 test-examples:
 	bash scripts/test-examples.sh
