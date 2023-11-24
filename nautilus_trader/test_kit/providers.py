@@ -509,7 +509,20 @@ class TestInstrumentProvider:
             return instrument
 
     @staticmethod
-    def crypto_betting_instruments(venue: Venue = CLOUDBET_VENUE, count=100) -> list[CryptoBettingInstrument]:
+    def crypto_betting_instruments(venue: Venue = CLOUDBET_VENUE, count=100, sports=None) -> list[CryptoBettingInstrument]:
+        """
+        Retrieves a list of crypto betting instruments from the specified venue.
+
+        Args:
+            venue (Venue, optional): The venue from which to retrieve the instruments. Defaults to CLOUDBET_VENUE.
+            count (int, optional): The number of instruments to retrieve. Defaults to 100.
+            sports (list[str], optional): A list of sports to filter the instruments by. Defaults to None.
+
+        Returns:
+            list[CryptoBettingInstrument]: A list of CryptoBettingInstrument objects representing the retrieved instruments.
+        NB: Currently only supports Cloudbet. Max instrument count is 553
+        """
+        assert count < 553, "count should be less than 554"
         if venue != CLOUDBET_VENUE:
             raise NotImplementedError("Getting instruments for venues other than Cloudbet is not yet implemented")
         else:
@@ -518,52 +531,14 @@ class TestInstrumentProvider:
             # read the instrument ids from the file
             with open(TEST_PATH / "instrument_data.json") as json_file:
                 instruments = json.load(json_file)
+            # Filter by sports if sports list is provided
+            if sports is not None:
+                instruments = [inst for inst in instruments if inst.get('sport_name') in sports]
+            # type cast the instrument to a CryptoBettingInstrument
             # randomly select an instrument from the array
-            instruments = random.sample(instruments, k=count)
+            instruments = random.sample(instruments, k=min(count, len(instruments)))
             instruments: list[CryptoBettingInstrument] = [CryptoBettingInstrument(**instrument) for instrument in instruments]
         return instruments
-
-    # @staticmethod
-    # def crypto_betting_instrument(
-    #     event_id: int = 326266,
-    #     submarket_name: str = "handicap",
-    #     outcome: str = "home",
-    #     params: str = "handicap=-5.5"
-    # ) -> CryptoBettingInstrument:
-    #
-    #     instrument = CryptoBettingInstrument(
-    #         home_name="Winnipeg Blue Bombers",
-    #         away_name="Hamilton Tiger-Cats",
-    #         currency=Currency.from_str("EUR"),
-    #         event_id=event_id,
-    #         outcome=outcome,
-    #         params=params,
-    #         sport_name="American Football",
-    #         competition_name="CFL",
-    #         price=float(2.01),
-    #         max_size=1788.95276,
-    #         min_size=0.1,
-    #         event_name="Winnipeg Blue Bombers v Hamilton Tiger-Cats",
-    #         market_name="american_football.handicap",
-    #         market_type=submarket_name,
-    #         venue="Cloudbet",
-    #         live=False,
-    #         enabled=True,
-    #         side="away",
-    #         trading_status="TRADING",
-    #         handicap="-5.5",
-    #         market_id=None,
-    #         home_id=None,
-    #         away_id=None,
-    #         sport_id=None,
-    #         competition_id=None,
-    #         start_time=None,
-    #         end_time=None,
-    #         fees=None
-    #     )
-    #
-    #     return instrument
-
 
 class TestDataProvider:
     """

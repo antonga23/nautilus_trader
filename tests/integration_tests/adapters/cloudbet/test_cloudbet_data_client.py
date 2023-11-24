@@ -162,9 +162,9 @@ class TestCloudbetDataClient:
         assert instruments[0] == loaded_instrument, f"Unable to load or find instrument {instruments[0].id}"
         # Create a mock response
         mock_response = GetLatestOddsResponse(
-            max_stake=loaded_instrument.max_size - 1,
+            max_stake=loaded_instrument.max_size - 1 if loaded_instrument.max_size is not None else 0, # selection may be DISBALED => NO max stake even if the event is trading
             # subtract 1 from the max stake to ensure the max stake is different
-            min_stake=loaded_instrument.min_size + 1,  # add 1 to the min stake to ensure the min stake is different
+            min_stake=loaded_instrument.min_size + 1 if loaded_instrument.min_size is not None else 0,  # add 1 to the min stake to ensure the min stake is different, selection may be DISBALED => NO max stake even if the event is trading
             price=loaded_instrument.price + 1,  # add 1 to the price to ensure the price is different
             status=SelectionStatus.ENABLED,
             outcome=loaded_instrument.outcome,
