@@ -2,23 +2,24 @@ stages:
   - lint
   - build
   - test
+  - mirror
 
 
 variables:
   RUST_BACKTRACE: 1
   BUILD_MODE: debug
 
-# Define common cache, used across jobs
-cache:
-  key: ${CI_COMMIT_REF_SLUG}-common-cache
-  paths:
-    - ~/.cache/pre-commit
-    - ~/.cargo
-    - nautilus_core/target
-    - .venv/
-    - build/annotated/
-    - build/optimized/
-    - .pyenv/
+## Define common cache, used across jobs
+#cache:
+#  key: ${CI_COMMIT_REF_SLUG}-common-cache
+#  paths:
+#    - ~/.cache/pre-commit
+#    - ~/.cargo
+#    - nautilus_core/target
+#    - .venv/
+#    - build/annotated/
+#    - build/optimized/
+#    - .pyenv/
 
 
 lint-job:
@@ -123,6 +124,41 @@ build-job:
   parallel:
     matrix:
       - PYTHON_VERSION: ["3.9.18"]
+
+mirror-job:
+  stage: mirror
+  image: ubuntu:focal
+  script:
+    - |
+      # Your mirroring script here
+      # Add the remote GitHub repository if not already added
+      git remote add github https://github.com/nautechsystems/nautilus_trader.git || git remote set-url github https://github.com/nautechsystems/nautilus_trader.git
+      # Fetch all branches from GitHub
+      git fetch github
+      # Loop through all branches from the GitHub repo
+      for branch in `git branch -r | grep 'github/' | sed 's/github\///'`; do
+          mirrored_branch="mirror_$branch"
+          # Check if the mirrored branch already exists
+          if git rev-parse --verify --quiet $mirrored_branch; then
+              # Checkout and pull the latest changes if the branch already exists
+              git checkout $mirrored_branch
+              git pull github $branch
+          else
+              # Create a new mirrored branch if it doesn't exist
+              git checkout -b $mirrored_branch github/$branch
+          fi
+          # Push updates to GitLab
+          git push gitlab $mirrored_branch
+      done
+  when: manual
+  only:
+    - master
+    - develop
+    - cloudbet
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+    - if: '$CI_COMMIT_BRANCH == "develop" || $CI_COMMIT_BRANCH == "master"'
+    - when: manual
 
 ## Test job
 #test-job:
