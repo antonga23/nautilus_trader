@@ -18,7 +18,6 @@ cache:
     - .venv/
     - build/annotated/
     - build/optimized/
-  expire_in: 26 hours
 
 lint-job:
   stage: lint
