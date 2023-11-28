@@ -34,7 +34,6 @@ lint-job:
     key: ${CI_COMMIT_REF_SLUG}-pre-commit-cache-${PYTHON_VERSION}
     paths:
       - ~/.cache/pre-commit
-    expire_in: 12 hours
   parallel:
     matrix:
       - PYTHON_VERSION: [ "3.9.18", "3.10", "3.11" ]
