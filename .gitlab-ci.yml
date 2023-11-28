@@ -80,48 +80,12 @@ build-job:
     - echo "Installing and running Redis..."
     - apt-get install redis-server -y
     - redis-server --daemonize yes
-
-#    - echo "Running cargo tests..."
-#    # Dynamically set LD_LIBRARY_PATH for the installed Python version
-#    - PYTHON_LIB_PATH=$(pyenv prefix)/lib
-#    - export LD_LIBRARY_PATH=$PYTHON_LIB_PATH:$LD_LIBRARY_PATH
-#    - make cargo-test
-
-#    - echo "Running Python tests..."
-#    # Conditional execution based on branch
-#    - |
-#      if [ "$CI_COMMIT_REF_NAME" = "cloudbet" ]; then
-#        echo "Running Python tests for cloudbet branch..."
-#        make pytest-cloudbet
-#        exit 0  # Exit the script after running make pytest-cloudbet
-#      else
-#        echo "Running standard Python tests..."
-#        make pytest
-#        make test-examples
-#      fi
-
-  only:
-    - master
-    - develop
-    - cloudbet
-
-  parallel:
-    matrix:
-      - PYTHON_VERSION: ["3.9.18", "3.10"]
-
-# Test job
-test-job:
-  stage: test
-#  image: ubuntu:focal
-  dependencies:
-    - build-job
-  script:
     - echo "Running cargo tests..."
     # Dynamically set LD_LIBRARY_PATH for the installed Python version
     - PYTHON_LIB_PATH=$(pyenv prefix)/lib
     - export LD_LIBRARY_PATH=$PYTHON_LIB_PATH:$LD_LIBRARY_PATH
-    - make cargo-test`
-    - echo "Running python tests in the project..."
+    - make cargo-test
+    - echo "Running Python tests..."
     # Conditional execution based on branch
     - |
       if [ "$CI_COMMIT_REF_NAME" = "cloudbet" ]; then
@@ -133,6 +97,17 @@ test-job:
         make pytest
         make test-examples
       fi
+    - echo "Running Coverage tests..."
+    # Conditional execution based on branch
+    - |
+      if [ "$CI_COMMIT_REF_NAME" = "cloudbet" ]; then
+        echo "Running coverage tests for cloudbet branch..."
+        make pytest-cloudbet-coverage
+        exit 0  # Exit the script after running make pytest-cloudbet-coverage
+      else
+        echo "Running coverage tests for Nautilus project..."
+        make pytest-cloudbet
+      fi
   artifacts:
     when: always
     reports:
@@ -141,6 +116,43 @@ test-job:
     - master
     - develop
     - cloudbet
+
   parallel:
     matrix:
       - PYTHON_VERSION: ["3.9.18", "3.10"]
+
+## Test job
+#test-job:
+#  stage: test
+##  image: ubuntu:focal
+#  dependencies:
+#    - build-job
+#  script:
+#    - echo "Running cargo tests..."
+#    # Dynamically set LD_LIBRARY_PATH for the installed Python version
+#    - PYTHON_LIB_PATH=$(pyenv prefix)/lib
+#    - export LD_LIBRARY_PATH=$PYTHON_LIB_PATH:$LD_LIBRARY_PATH
+#    - make cargo-test`
+#    - echo "Running python tests in the project..."
+#    # Conditional execution based on branch
+#    - |
+#      if [ "$CI_COMMIT_REF_NAME" = "cloudbet" ]; then
+#        echo "Running Python tests for cloudbet branch..."
+#        make pytest-cloudbet
+#        exit 0  # Exit the script after running make pytest-cloudbet
+#      else
+#        echo "Running standard Python tests..."
+#        make pytest
+#        make test-examples
+#      fi
+#  artifacts:
+#    when: always
+#    reports:
+#      junit: report.xml
+#  only:
+#    - master
+#    - develop
+#    - cloudbet
+#  parallel:
+#    matrix:
+#      - PYTHON_VERSION: ["3.9.18", "3.10"]
