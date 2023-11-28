@@ -112,6 +112,9 @@ build-job:
     when: always
     reports:
       junit: report.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: cov.xml
   only:
     - master
     - develop
@@ -119,7 +122,7 @@ build-job:
 
   parallel:
     matrix:
-      - PYTHON_VERSION: ["3.9.18", "3.10"]
+      - PYTHON_VERSION: ["3.9.18"]
 
 ## Test job
 #test-job:
@@ -132,6 +135,7 @@ build-job:
 #    # Dynamically set LD_LIBRARY_PATH for the installed Python version
 #    - PYTHON_LIB_PATH=$(pyenv prefix)/lib
 #    - export LD_LIBRARY_PATH=$PYTHON_LIB_PATH:$LD_LIBRARY_PATH
+#    - make cargo-test`
 #    - make cargo-test`
 #    - echo "Running python tests in the project..."
 #    # Conditional execution based on branch
