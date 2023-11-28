@@ -151,10 +151,10 @@ mirror-job:
           git push gitlab $mirrored_branch
       done
   when: manual
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-    - if: '$CI_COMMIT_BRANCH == "develop" || $CI_COMMIT_BRANCH == "master"'
-    - when: manual
+#  rules:
+#    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+#    - if: '$CI_COMMIT_BRANCH == "develop" || $CI_COMMIT_BRANCH == "master"'
+#    - when: manual
 
 ## Test job
 #test-job:
