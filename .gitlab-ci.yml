@@ -18,6 +18,8 @@ cache:
     - .venv/
     - build/annotated/
     - build/optimized/
+    - .pyenv/
+
 
 lint-job:
   stage: lint
@@ -43,23 +45,32 @@ build-job:
   image: ubuntu:focal  # Use ubuntu as base image
   before_script:
     - export DEBIAN_FRONTEND=noninteractive
-    - apt-get update && apt-get install -y make build-essential libssl-dev zlib1g-dev libbz2-dev libreadline-dev
+    # Check if the Python version is already installed
+    - if [ ! -d "$(pyenv root)/versions/$PYTHON_VERSION" ]; then
+      apt-get update && apt-get install -y make build-essential libssl-dev zlib1g-dev libbz2-dev libreadline-dev
       libsqlite3-dev wget curl llvm libncurses5-dev libncursesw5-dev xz-utils tk-dev libffi-dev liblzma-dev
-      python-openssl git clang
-    - curl https://pyenv.run | bash
-    - export PATH="/root/.pyenv/bin:$PATH"
-    - eval "$(pyenv init -)"
-    - eval "$(pyenv virtualenv-init -)"
-    - pyenv install $PYTHON_VERSION
+      python-openssl git clang;
+      curl https://pyenv.run | bash;
+      export PATH="/root/.pyenv/bin:$PATH";
+      eval "$(pyenv init -)";
+      eval "$(pyenv virtualenv-init -)";
+      pyenv install $PYTHON_VERSION;
+      fi
     - pyenv global $PYTHON_VERSION
     - python --version  # To check the Python version
+    # Check if the Rust version is already installed
+    - |
+      if ! rustup show; then
+        echo "Setting up Rust tool-chain..."
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+        source $HOME/.cargo/env
+        rustup default stable
+        rustup component add rustfmt clippy
+      else
+        echo "Rust is already installed."
+        source $HOME/.cargo/env
+      fi
   script:
-    - echo "Setting up Rust tool-chain..."
-    - curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-    - source $HOME/.cargo/env
-    - rustup default stable
-    - rustup component add rustfmt clippy
-
     - echo "Installing build dependencies for Python..."
     - pip install --upgrade pip setuptools wheel pre-commit poetry==1.5.1
 

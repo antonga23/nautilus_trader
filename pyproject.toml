@@ -280,10 +280,13 @@ filterwarnings = [
 [tool.coverage.run]
 plugins = ["Cython.Coverage"]
 source = ["nautilus_trader"]
+#omit = [
+#    "nautilus_trader/adapters/*",
+#    "nautilus_trader/examples/*",
+#    "nautilus_trader/test_kit/*",
+#]
 omit = [
-    "nautilus_trader/adapters/*",
     "nautilus_trader/examples/*",
-    "nautilus_trader/test_kit/*",
 ]
 
 [tool.coverage.report]
