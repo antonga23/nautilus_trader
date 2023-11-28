@@ -1,25 +1,28 @@
-#  TODO: Seperate the test and build jobs
 stages:
   - lint
   - build
-#  - test
+  - test
 
 
 variables:
   RUST_BACKTRACE: 1
   BUILD_MODE: debug
 
-## Define common cache, used across jobs
-#cache:
-#  key: ${CI_COMMIT_REF_SLUG}-common-cache
-#  paths:
-#    - ~/.cache/pre-commit
-#    - ~/.cargo
-#    - nautilus_core/target
+# Define common cache, used across jobs
+cache:
+  key: ${CI_COMMIT_REF_SLUG}-common-cache
+  paths:
+    - ~/.cache/pre-commit
+    - ~/.cargo
+    - nautilus_core/target
+    - .venv/
+    - build/annotated/
+    - build/optimized/
+  expire_in: 26 hours
 
 lint-job:
   stage: lint
-  image: ubuntu:focal
+  image: python:${PYTHON_VERSION}
   before_script:
     - pip install pre-commit
     - pre-commit install
@@ -29,9 +32,13 @@ lint-job:
     - master
     - develop
   cache:
-    key: ${CI_COMMIT_REF_SLUG}-pre-commit-${CI_COMMIT_REF_SLUG}
+    key: ${CI_COMMIT_REF_SLUG}-pre-commit-cache-${PYTHON_VERSION}
     paths:
       - ~/.cache/pre-commit
+    expire_in: 12 hours
+  parallel:
+    matrix:
+      - PYTHON_VERSION: [ "3.9.18", "3.10", "3.11" ]
 
 build-job:
   stage: build
@@ -65,13 +72,47 @@ build-job:
     - apt-get install redis-server -y
     - redis-server --daemonize yes
 
+#    - echo "Running cargo tests..."
+#    # Dynamically set LD_LIBRARY_PATH for the installed Python version
+#    - PYTHON_LIB_PATH=$(pyenv prefix)/lib
+#    - export LD_LIBRARY_PATH=$PYTHON_LIB_PATH:$LD_LIBRARY_PATH
+#    - make cargo-test
+
+#    - echo "Running Python tests..."
+#    # Conditional execution based on branch
+#    - |
+#      if [ "$CI_COMMIT_REF_NAME" = "cloudbet" ]; then
+#        echo "Running Python tests for cloudbet branch..."
+#        make pytest-cloudbet
+#        exit 0  # Exit the script after running make pytest-cloudbet
+#      else
+#        echo "Running standard Python tests..."
+#        make pytest
+#        make test-examples
+#      fi
+
+  only:
+    - master
+    - develop
+    - cloudbet
+
+  parallel:
+    matrix:
+      - PYTHON_VERSION: ["3.9.18", "3.10"]
+
+# Test job
+test-job:
+  stage: test
+#  image: ubuntu:focal
+  dependencies:
+    - build-job
+  script:
     - echo "Running cargo tests..."
     # Dynamically set LD_LIBRARY_PATH for the installed Python version
     - PYTHON_LIB_PATH=$(pyenv prefix)/lib
     - export LD_LIBRARY_PATH=$PYTHON_LIB_PATH:$LD_LIBRARY_PATH
-    - make cargo-test
-
-    - echo "Running Python tests..."
+    - make cargo-test`
+    - echo "Running python tests in the project..."
     # Conditional execution based on branch
     - |
       if [ "$CI_COMMIT_REF_NAME" = "cloudbet" ]; then
@@ -83,28 +124,14 @@ build-job:
         make pytest
         make test-examples
       fi
-
+  artifacts:
+    when: always
+    reports:
+      junit: report.xml
   only:
     - master
     - develop
     - cloudbet
-
   parallel:
     matrix:
-      - PYTHON_VERSION: ["3.9.18", "3.10", "3.11"]
-
-## Test job
-#test-job:
-#  stage: test
-#  image: ubuntu:focal
-#  dependencies:
-#    - build-job
-#  script:
-#    - echo "Testing the project..."
-#  only:
-#    - master
-#    - develop
-#    - cloudbet
-#  parallel:
-#    matrix:
-#      - PYTHON_VERSION: [ "3.9.18", "3.10", "3.11" ]
+      - PYTHON_VERSION: ["3.9.18", "3.10"]
