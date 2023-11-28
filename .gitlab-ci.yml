@@ -151,10 +151,6 @@ mirror-job:
           git push gitlab $mirrored_branch
       done
   when: manual
-  only:
-    - master
-    - develop
-    - cloudbet
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
     - if: '$CI_COMMIT_BRANCH == "develop" || $CI_COMMIT_BRANCH == "master"'
