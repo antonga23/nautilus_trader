@@ -128,6 +128,9 @@ build-job:
 mirror-job:
   stage: mirror
   image: ubuntu:focal
+  before_script:
+    - export DEBIAN_FRONTEND=noninteractive
+    - apt-get update && apt-get install -y git
   script:
     - |
       # Your mirroring script here
