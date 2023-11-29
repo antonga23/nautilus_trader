@@ -8,6 +8,7 @@ stages:
 variables:
   RUST_BACKTRACE: 1
   BUILD_MODE: debug
+  GITLAB_REMOTE_URL: git@gitlab.stompy.net:alatha/nautilus.git
 
 ## Define common cache, used across jobs
 #cache:
@@ -30,6 +31,8 @@ lint-job:
     - pre-commit install
   script:
     - pre-commit run --all-files
+  rules:
+    - if: '$CI_PIPELINE_SOURCE != "web"'
   only:
     - master
     - develop
@@ -116,6 +119,8 @@ build-job:
       coverage_report:
         coverage_format: cobertura
         path: cov.xml
+  rules:
+    - if: '$CI_PIPELINE_SOURCE != "web"'
   only:
     - master
     - develop
@@ -151,9 +156,12 @@ mirror-job:
               git checkout -b $mirrored_branch github/$branch
           fi
           # Push updates to GitLab
-          git push gitlab $mirrored_branch
+          git push $GITLAB_REMOTE_URL $mirrored_branch
       done
-  when: manual
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+    - when: manual
+      allow_failure: true
 #  rules:
 #    - if: '$CI_PIPELINE_SOURCE == "schedule"'
 #    - if: '$CI_COMMIT_BRANCH == "develop" || $CI_COMMIT_BRANCH == "master"'
