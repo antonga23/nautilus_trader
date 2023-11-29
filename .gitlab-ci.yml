@@ -32,7 +32,6 @@ lint-job:
   script:
     - pre-commit run --all-files
   rules:
-    - if: '$CI_PIPELINE_SOURCE != "web"'
     - if: '$CI_COMMIT_BRANCH == "develop" || $CI_COMMIT_BRANCH == "master"'
   cache:
     key: ${CI_COMMIT_REF_SLUG}-pre-commit-cache-${PYTHON_VERSION}
