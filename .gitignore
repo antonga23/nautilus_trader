@@ -52,3 +52,7 @@ nautilus_trader/test_kit/mocks/.nautilus/
 tests/test_data/catalog/
 
 !tests/integration_tests/adapters/betfair/responses/*.log
+
+
+# ignore all env files
+nautilus_trader/adapters/cloudbet/.cloudbet_env

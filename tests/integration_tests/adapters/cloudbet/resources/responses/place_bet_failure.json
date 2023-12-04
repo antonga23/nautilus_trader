@@ -1,0 +1,18 @@
+{
+    "referenceId": "",
+    "price": "",
+    "eventId": "",
+    "marketUrl": "",
+    "side": "BACK",
+    "currency": "",
+    "stake": "",
+    "createTime": "",
+    "status": "MALFORMED_REQUEST",
+    "returnAmount": "",
+    "eventName": "",
+    "sportsKey": "",
+    "competitionId": "0",
+    "categoryKey": "",
+    "customerReference": "",
+    "error": "invalid body payload"
+}

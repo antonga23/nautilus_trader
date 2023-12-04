@@ -1,0 +1,18 @@
+{
+    "referenceId": "5ec1f1ee-1f54-462a-9e3f-ff6c9f568d63",
+    "price": "8.835",
+    "eventId": "20254973",
+    "marketUrl": "soccer.team_win_to_nil/yes?team=away",
+    "side": "BACK",
+    "currency": "PLAY_EUR",
+    "stake": "10",
+    "createTime": "2023-09-19T09:16:45Z",
+    "status": "ACCEPTED",
+    "returnAmount": "",
+    "eventName": "",
+    "sportsKey": "soccer",
+    "competitionId": "",
+    "categoryKey": "",
+    "customerReference": "8f58ab50-8de2-47a0-91f6-043385ac1917",
+    "error": ""
+}

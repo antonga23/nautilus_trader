@@ -1,0 +1,590 @@
+{
+    "competitions": [
+        {
+            "name": "CFL",
+            "key": "american-football-international-cfl",
+            "sport": {
+                "name": "American Football",
+                "key": "american-football"
+            },
+            "events": [
+                {
+                    "id": 18508533,
+                    "home": {
+                        "name": "Winnipeg Blue Bombers",
+                        "key": "cc4cd6-winnipeg-blue-bombers",
+                        "abbreviation": "",
+                        "nationality": "",
+                        "researchId": ""
+                    },
+                    "away": {
+                        "name": "Hamilton Tiger-Cats",
+                        "key": "cc4cd8-hamilton-tiger-cats",
+                        "abbreviation": "",
+                        "nationality": "",
+                        "researchId": ""
+                    },
+                    "status": "TRADING",
+                    "markets": {
+                        "american_football.halftime_fulltime_result": {
+                            "submarkets": {
+                                "period=ot&period=ft": {
+                                    "sequence": "239",
+                                    "selections": [
+                                        {
+                                            "outcome": "home_home",
+                                            "params": "",
+                                            "price": 1.74,
+                                            "minStake": 0.1,
+                                            "maxStake": 233.61044,
+                                            "probability": 0.47,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "draw_home",
+                                            "params": "",
+                                            "price": 28.94,
+                                            "minStake": 0.1,
+                                            "maxStake": 6.18576,
+                                            "probability": 0.028,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "away_home",
+                                            "params": "",
+                                            "price": 7,
+                                            "minStake": 0.1,
+                                            "maxStake": 28.812,
+                                            "probability": 0.117,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "home_draw",
+                                            "params": "",
+                                            "price": 50,
+                                            "minStake": 0.1,
+                                            "maxStake": 3.528,
+                                            "probability": 0.016,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "draw_draw",
+                                            "params": "",
+                                            "price": 50,
+                                            "minStake": 0.1,
+                                            "maxStake": 3.528,
+                                            "probability": 0.016,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "away_draw",
+                                            "params": "",
+                                            "price": 39.16,
+                                            "minStake": 0.1,
+                                            "maxStake": 4.52956,
+                                            "probability": 0.021,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "home_away",
+                                            "params": "",
+                                            "price": 7.79,
+                                            "minStake": 0.1,
+                                            "maxStake": 25.45844,
+                                            "probability": 0.105,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "draw_away",
+                                            "params": "",
+                                            "price": 41.43,
+                                            "minStake": 0.1,
+                                            "maxStake": 4.27476,
+                                            "probability": 0.02,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "away_away",
+                                            "params": "",
+                                            "price": 3.97,
+                                            "minStake": 0.1,
+                                            "maxStake": 58.20416,
+                                            "probability": 0.206,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        }
+                                    ]
+                                }
+                            }
+                        },
+                        "american_football.handicap": {
+                            "submarkets": {
+                                "period=ot&period=ft": {
+                                    "sequence": "236",
+                                    "selections": [
+                                        {
+                                            "outcome": "home",
+                                            "params": "handicap=-5.5",
+                                            "price": 2.02,
+                                            "minStake": 0.1,
+                                            "maxStake": 2683.43012,
+                                            "probability": 0.474,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "away",
+                                            "params": "handicap=-5.5",
+                                            "price": 1.822,
+                                            "minStake": 0.1,
+                                            "maxStake": 3194.55892,
+                                            "probability": 0.526,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        }
+                                    ]
+                                }
+                            }
+                        },
+                        "american_football.handicap_period_first_half": {
+                            "submarkets": {
+                                "period=1h&period=q1&period=q2": {
+                                    "sequence": "237",
+                                    "selections": [
+                                        {
+                                            "outcome": "home",
+                                            "params": "handicap=-2.5",
+                                            "price": 1.795,
+                                            "minStake": 0.1,
+                                            "maxStake": 1100.2166,
+                                            "probability": 0.531,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "away",
+                                            "params": "handicap=-2.5",
+                                            "price": 2.03,
+                                            "minStake": 0.1,
+                                            "maxStake": 894.4754,
+                                            "probability": 0.469,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        }
+                                    ]
+                                }
+                            }
+                        },
+                        "american_football.moneyline": {
+                            "submarkets": {
+                                "period=ot&period=ft": {
+                                    "sequence": "236",
+                                    "selections": [
+                                        {
+                                            "outcome": "home",
+                                            "params": "",
+                                            "price": 1.482,
+                                            "minStake": 0.1,
+                                            "maxStake": 3599.50472,
+                                            "probability": 0.646,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "away",
+                                            "params": "",
+                                            "price": 2.703,
+                                            "minStake": 0.1,
+                                            "maxStake": 1788.95276,
+                                            "probability": 0.354,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        }
+                                    ]
+                                }
+                            }
+                        },
+                        "american_football.odd_even": {
+                            "submarkets": {
+                                "period=ot&period=ft": {
+                                    "sequence": "239",
+                                    "selections": [
+                                        {
+                                            "outcome": "odd",
+                                            "params": "",
+                                            "price": 1.77,
+                                            "minStake": 0.1,
+                                            "maxStake": 224.5082,
+                                            "probability": 0.543,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "even",
+                                            "params": "",
+                                            "price": 2.1,
+                                            "minStake": 0.1,
+                                            "maxStake": 157.15476,
+                                            "probability": 0.457,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        }
+                                    ]
+                                }
+                            }
+                        },
+                        "american_football.quarter_handicap": {
+                            "submarkets": {
+                                "period=q1": {
+                                    "sequence": "238",
+                                    "selections": [
+                                        {
+                                            "outcome": "home",
+                                            "params": "handicap=-0.5&quarter=1",
+                                            "price": 1.866,
+                                            "minStake": 0.1,
+                                            "maxStake": 505.925,
+                                            "probability": 0.51,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "away",
+                                            "params": "handicap=-0.5&quarter=1",
+                                            "price": 1.942,
+                                            "minStake": 0.1,
+                                            "maxStake": 465.38828,
+                                            "probability": 0.49,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        }
+                                    ]
+                                }
+                            }
+                        },
+                        "american_football.quarter_total": {
+                            "submarkets": {
+                                "period=q1": {
+                                    "sequence": "238",
+                                    "selections": [
+                                        {
+                                            "outcome": "over",
+                                            "params": "quarter=1&total=9.5",
+                                            "price": 1.873,
+                                            "minStake": 0.1,
+                                            "maxStake": 501.3876,
+                                            "probability": 0.509,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "under",
+                                            "params": "quarter=1&total=9.5",
+                                            "price": 1.942,
+                                            "minStake": 0.1,
+                                            "maxStake": 465.38828,
+                                            "probability": 0.491,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        }
+                                    ]
+                                }
+                            }
+                        },
+                        "american_football.team_total_period_first_half": {
+                            "submarkets": {
+                                "period=1h&team=away": {
+                                    "sequence": "237",
+                                    "selections": [
+                                        {
+                                            "outcome": "over",
+                                            "params": "team=away&total=9.5",
+                                            "price": 1.89,
+                                            "minStake": 0.1,
+                                            "maxStake": 492.01096,
+                                            "probability": 0.5,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "under",
+                                            "params": "team=away&total=9.5",
+                                            "price": 1.89,
+                                            "minStake": 0.1,
+                                            "maxStake": 492.01096,
+                                            "probability": 0.5,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        }
+                                    ]
+                                },
+                                "period=1h&team=home": {
+                                    "sequence": "237",
+                                    "selections": [
+                                        {
+                                            "outcome": "over",
+                                            "params": "team=home&total=12.5",
+                                            "price": 1.829,
+                                            "minStake": 0.1,
+                                            "maxStake": 528.02596,
+                                            "probability": 0.516,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "under",
+                                            "params": "team=home&total=12.5",
+                                            "price": 1.951,
+                                            "minStake": 0.1,
+                                            "maxStake": 461.0704,
+                                            "probability": 0.484,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        }
+                                    ]
+                                }
+                            }
+                        },
+                        "american_football.team_totals": {
+                            "submarkets": {
+                                "period=ot&period=ft&team=away": {
+                                    "sequence": "239",
+                                    "selections": [
+                                        {
+                                            "outcome": "over",
+                                            "params": "team=away&total=19.5",
+                                            "price": 1.83,
+                                            "minStake": 0.1,
+                                            "maxStake": 242.991,
+                                            "probability": 0.52,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "under",
+                                            "params": "team=away&total=19.5",
+                                            "price": 1.98,
+                                            "minStake": 0.1,
+                                            "maxStake": 205.8,
+                                            "probability": 0.48,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        }
+                                    ]
+                                },
+                                "period=ot&period=ft&team=home": {
+                                    "sequence": "239",
+                                    "selections": [
+                                        {
+                                            "outcome": "over",
+                                            "params": "team=home&total=26.5",
+                                            "price": 1.94,
+                                            "minStake": 0.1,
+                                            "maxStake": 214.55728,
+                                            "probability": 0.491,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "under",
+                                            "params": "team=home&total=26.5",
+                                            "price": 1.87,
+                                            "minStake": 0.1,
+                                            "maxStake": 231.819,
+                                            "probability": 0.509,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        }
+                                    ]
+                                }
+                            }
+                        },
+                        "american_football.totals": {
+                            "submarkets": {
+                                "period=ot&period=ft": {
+                                    "sequence": "236",
+                                    "selections": [
+                                        {
+                                            "outcome": "over",
+                                            "params": "total=46.5",
+                                            "price": 1.89,
+                                            "minStake": 0.1,
+                                            "maxStake": 1968.0458,
+                                            "probability": 0.504,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "under",
+                                            "params": "total=46.5",
+                                            "price": 1.924,
+                                            "minStake": 0.1,
+                                            "maxStake": 1897.08792,
+                                            "probability": 0.496,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        }
+                                    ]
+                                }
+                            }
+                        },
+                        "american_football.totals_period_first_half": {
+                            "submarkets": {
+                                "period=1h": {
+                                    "sequence": "237",
+                                    "selections": [
+                                        {
+                                            "outcome": "over",
+                                            "params": "total=23.5",
+                                            "price": 2.01,
+                                            "minStake": 0.1,
+                                            "maxStake": 894.4754,
+                                            "probability": 0.474,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "under",
+                                            "params": "total=23.5",
+                                            "price": 1.808,
+                                            "minStake": 0.1,
+                                            "maxStake": 1082.90196,
+                                            "probability": 0.526,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        }
+                                    ]
+                                }
+                            }
+                        },
+                        "american_football.totals_period_second_half": {
+                            "submarkets": {
+                                "period=2h&period=1h&period=ot&period=q1&period=q2": {
+                                    "sequence": "239",
+                                    "selections": [
+                                        {
+                                            "outcome": "over",
+                                            "params": "total=23.5",
+                                            "price": 1.95,
+                                            "minStake": 0.1,
+                                            "maxStake": 121.31224,
+                                            "probability": 0.484,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "under",
+                                            "params": "total=23.5",
+                                            "price": 1.83,
+                                            "minStake": 0.1,
+                                            "maxStake": 138.85228,
+                                            "probability": 0.516,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "over",
+                                            "params": "total=17.5",
+                                            "price": 1.36,
+                                            "minStake": 0.1,
+                                            "maxStake": 320.13268,
+                                            "probability": 0.694,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "under",
+                                            "params": "total=17.5",
+                                            "price": 3.08,
+                                            "minStake": 0.1,
+                                            "maxStake": 55.40724,
+                                            "probability": 0.306,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "over",
+                                            "params": "total=20.5",
+                                            "price": 1.6,
+                                            "minStake": 0.1,
+                                            "maxStake": 192.08,
+                                            "probability": 0.59,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "under",
+                                            "params": "total=20.5",
+                                            "price": 2.3,
+                                            "minStake": 0.1,
+                                            "maxStake": 88.6508,
+                                            "probability": 0.41,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "over",
+                                            "params": "total=26.5",
+                                            "price": 2.47,
+                                            "minStake": 0.1,
+                                            "maxStake": 78.4,
+                                            "probability": 0.383,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "under",
+                                            "params": "total=26.5",
+                                            "price": 1.53,
+                                            "minStake": 0.1,
+                                            "maxStake": 217.44828,
+                                            "probability": 0.618,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "over",
+                                            "params": "total=29.5",
+                                            "price": 3.25,
+                                            "minStake": 0.1,
+                                            "maxStake": 51.22068,
+                                            "probability": 0.29,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "under",
+                                            "params": "total=29.5",
+                                            "price": 1.33,
+                                            "minStake": 0.1,
+                                            "maxStake": 349.23476,
+                                            "probability": 0.71,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        }
+                                    ]
+                                }
+                            }
+                        }
+                    },
+                    "name": "Winnipeg Blue Bombers V Hamilton Tiger-Cats",
+                    "key": "cc4cd6-winnipeg-blue-bombers-v-cc4cd8-hamilton-tiger-cats",
+                    "cutoffTime": "2023-06-10T00:30:00Z",
+                    "type": "EVENT_TYPE_EVENT"
+                }
+            ],
+            "category": {
+                "name": "International",
+                "key": "international"
+            }
+        }
+    ]
+}
