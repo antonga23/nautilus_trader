@@ -90,6 +90,7 @@ build-job:
     - make cargo-test
     - echo "Running Python tests..."
     # Conditional execution based on branch
+    # Cloudbet branch
     - |
       if [ "$CI_COMMIT_REF_NAME" = "cloudbet" ]; then
         echo "Running Python tests for cloudbet branch..."
@@ -101,6 +102,7 @@ build-job:
       fi
     - echo "Running Coverage tests..."
     # Conditional execution based on branch
+    # master or develop branch
     - |
       if [ "$CI_COMMIT_REF_NAME" = "cloudbet" ]; then
         echo "Running coverage tests for cloudbet branch..."
