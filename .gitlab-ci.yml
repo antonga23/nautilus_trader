@@ -117,7 +117,10 @@ build-job:
       - coverage-report.xml   # Path to the coverage report
     reports:
       junit: report.xml
-      cobertura: coverage-report.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage-report.xml
+
   rules:
     - if: '$CI_PIPELINE_SOURCE != "web" && ($CI_COMMIT_BRANCH == "develop" || $CI_COMMIT_BRANCH == "master" || $CI_COMMIT_BRANCH == "cloudbet")'
   parallel:
