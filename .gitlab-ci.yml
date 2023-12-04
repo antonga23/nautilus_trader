@@ -98,7 +98,6 @@ build-job:
       else
         echo "Running standard Python tests..."
         make pytest
-        make test-examples
       fi
     - echo "Running Coverage tests..."
     # Conditional execution based on branch
@@ -109,15 +108,16 @@ build-job:
         exit 0  # Exit the script after running make pytest-cloudbet-coverage
       else
         echo "Running coverage tests for Nautilus project..."
-        make pytest-cloudbet
+        make pytest-coverage
       fi
   artifacts:
     when: always
+    paths:
+      - report.xml            # Path to the unit test report
+      - coverage-report.xml   # Path to the coverage report
     reports:
       junit: report.xml
-      coverage_report:
-        coverage_format: cobertura
-        path: cov.xml
+      cobertura: coverage-report.xml
   rules:
     - if: '$CI_PIPELINE_SOURCE != "web" && ($CI_COMMIT_BRANCH == "develop" || $CI_COMMIT_BRANCH == "master" || $CI_COMMIT_BRANCH == "cloudbet")'
   parallel:

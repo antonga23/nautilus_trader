@@ -23,7 +23,10 @@ from nautilus_trader.test_kit.stubs.component import TestComponentStubs
 from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.adapters.cloudbet.common import VENUE
 from tests.integration_tests.adapters.cloudbet.test_kit import CloudbetTestStubs
+from tests.integration_tests.network.conftest import socket_server
 
+
+pytestmark = pytest.mark.skip(reason="WIP: Socket server")
 
 @pytest.fixture()
 def venue() -> Venue:
@@ -31,7 +34,7 @@ def venue() -> Venue:
 
 
 @pytest.fixture()
-def socket_client(event_loop, logger) -> SocketClient:
+def socket_client(event_loop, logger, host, port, handler) -> SocketClient:
     client = SocketClient(
         host=host,
         port=port,

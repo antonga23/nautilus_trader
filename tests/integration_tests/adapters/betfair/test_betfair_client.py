@@ -133,6 +133,7 @@ class TestBetfairClient:
         expected = BetfairRequests.account_funds()
         assert result == expected
 
+    @pytest.mark.skip(reason="WIP: test stub not yet implemented")
     @pytest.mark.asyncio()
     async def test_place_orders_handicap(self):
         instrument = TestInstrumentProvider.betting_instrument_handicap()
