@@ -1,0 +1,1175 @@
+{
+    "competitions": [
+        {
+            "name": "NBA",
+            "key": "basketball-usa-nba",
+            "sport": {
+                "name": "Basketball",
+                "key": "basketball"
+            },
+            "events": [
+                {
+                    "id": 20570210,
+                    "home": {
+                        "name": "Charlotte Hornets",
+                        "key": "c9e1-charlotte-hornets",
+                        "abbreviation": "CHA",
+                        "nationality": "USA",
+                        "researchId": ""
+                    },
+                    "away": {
+                        "name": "Miami Heat",
+                        "key": "c672-miami-heat",
+                        "abbreviation": "MIA",
+                        "nationality": "USA",
+                        "researchId": ""
+                    },
+                    "status": "PRE_TRADING",
+                    "markets": {},
+                    "name": "Charlotte Hornets V Miami Heat",
+                    "key": "c9e1-charlotte-hornets-v-c672-miami-heat",
+                    "cutoffTime": "2023-11-15T00:10:00Z",
+                    "type": "EVENT_TYPE_EVENT"
+                },
+                {
+                    "id": 20570209,
+                    "home": {
+                        "name": "Detroit Pistons",
+                        "key": "c595-detroit-pistons",
+                        "abbreviation": "DET",
+                        "nationality": "USA",
+                        "researchId": ""
+                    },
+                    "away": {
+                        "name": "Atlanta Hawks",
+                        "key": "c9dc-atlanta-hawks",
+                        "abbreviation": "ATL",
+                        "nationality": "USA",
+                        "researchId": ""
+                    },
+                    "status": "PRE_TRADING",
+                    "markets": {},
+                    "name": "Detroit Pistons V Atlanta Hawks",
+                    "key": "c595-detroit-pistons-v-c9dc-atlanta-hawks",
+                    "cutoffTime": "2023-11-15T00:10:00Z",
+                    "type": "EVENT_TYPE_EVENT"
+                },
+                {
+                    "id": 20570211,
+                    "home": {
+                        "name": "Philadelphia 76ers",
+                        "key": "c6c3-philadelphia-76ers",
+                        "abbreviation": "PHI",
+                        "nationality": "USA",
+                        "researchId": ""
+                    },
+                    "away": {
+                        "name": "Indiana Pacers",
+                        "key": "c5f9-indiana-pacers",
+                        "abbreviation": "IND",
+                        "nationality": "USA",
+                        "researchId": ""
+                    },
+                    "status": "PRE_TRADING",
+                    "markets": {},
+                    "name": "Philadelphia 76ers V Indiana Pacers",
+                    "key": "c6c3-philadelphia-76ers-v-c5f9-indiana-pacers",
+                    "cutoffTime": "2023-11-15T00:10:00Z",
+                    "type": "EVENT_TYPE_EVENT"
+                },
+                {
+                    "id": 20570215,
+                    "home": {
+                        "name": "Brooklyn Nets",
+                        "key": "c554-brooklyn-nets",
+                        "abbreviation": "BKN",
+                        "nationality": "USA",
+                        "researchId": ""
+                    },
+                    "away": {
+                        "name": "Orlando Magic",
+                        "key": "ca0a-orlando-magic",
+                        "abbreviation": "ORL",
+                        "nationality": "USA",
+                        "researchId": ""
+                    },
+                    "status": "PRE_TRADING",
+                    "markets": {},
+                    "name": "Brooklyn Nets V Orlando Magic",
+                    "key": "c554-brooklyn-nets-v-ca0a-orlando-magic",
+                    "cutoffTime": "2023-11-15T00:40:00Z",
+                    "type": "EVENT_TYPE_EVENT"
+                },
+                {
+                    "id": 20570214,
+                    "home": {
+                        "name": "Oklahoma City Thunder",
+                        "key": "c68e-oklahoma-city-thunder",
+                        "abbreviation": "OKC",
+                        "nationality": "USA",
+                        "researchId": ""
+                    },
+                    "away": {
+                        "name": "San Antonio Spurs",
+                        "key": "c6f7-san-antonio-spurs",
+                        "abbreviation": "SAS",
+                        "nationality": "USA",
+                        "researchId": ""
+                    },
+                    "status": "PRE_TRADING",
+                    "markets": {},
+                    "name": "Oklahoma City Thunder V San Antonio Spurs",
+                    "key": "c68e-oklahoma-city-thunder-v-c6f7-san-antonio-spurs",
+                    "cutoffTime": "2023-11-15T00:40:00Z",
+                    "type": "EVENT_TYPE_EVENT"
+                },
+                {
+                    "id": 20570213,
+                    "home": {
+                        "name": "New Orleans Pelicans",
+                        "key": "c682-new-orleans-pelicans",
+                        "abbreviation": "NOP",
+                        "nationality": "USA",
+                        "researchId": ""
+                    },
+                    "away": {
+                        "name": "Dallas Mavericks",
+                        "key": "c58d-dallas-mavericks",
+                        "abbreviation": "DAL",
+                        "nationality": "USA",
+                        "researchId": ""
+                    },
+                    "status": "PRE_TRADING",
+                    "markets": {},
+                    "name": "New Orleans Pelicans V Dallas Mavericks",
+                    "key": "c682-new-orleans-pelicans-v-c58d-dallas-mavericks",
+                    "cutoffTime": "2023-11-15T01:10:00Z",
+                    "type": "EVENT_TYPE_EVENT"
+                },
+                {
+                    "id": 20570212,
+                    "home": {
+                        "name": "Utah Jazz",
+                        "key": "ca15-utah-jazz",
+                        "abbreviation": "UTA",
+                        "nationality": "USA",
+                        "researchId": ""
+                    },
+                    "away": {
+                        "name": "Portland Trail Blazers",
+                        "key": "ca03-portland-trail-blazers",
+                        "abbreviation": "POR",
+                        "nationality": "USA",
+                        "researchId": ""
+                    },
+                    "status": "PRE_TRADING",
+                    "markets": {},
+                    "name": "Utah Jazz V Portland Trail Blazers",
+                    "key": "ca15-utah-jazz-v-ca03-portland-trail-blazers",
+                    "cutoffTime": "2023-11-15T02:10:00Z",
+                    "type": "EVENT_TYPE_EVENT"
+                },
+                {
+                    "id": 20570216,
+                    "home": {
+                        "name": "Denver Nuggets",
+                        "key": "c9ea-denver-nuggets",
+                        "abbreviation": "DEN",
+                        "nationality": "USA",
+                        "researchId": ""
+                    },
+                    "away": {
+                        "name": "LA Clippers",
+                        "key": "c1aa773-la-clippers",
+                        "abbreviation": "LAC",
+                        "nationality": "USA",
+                        "researchId": ""
+                    },
+                    "status": "PRE_TRADING",
+                    "markets": {},
+                    "name": "Denver Nuggets V LA Clippers",
+                    "key": "c9ea-denver-nuggets-v-c1aa773-la-clippers",
+                    "cutoffTime": "2023-11-15T03:10:00Z",
+                    "type": "EVENT_TYPE_EVENT"
+                },
+                {
+                    "id": 20570217,
+                    "home": {
+                        "name": "Golden State Warriors",
+                        "key": "c5dd-golden-state-warriors",
+                        "abbreviation": "GSW",
+                        "nationality": "USA",
+                        "researchId": ""
+                    },
+                    "away": {
+                        "name": "Minnesota Timberwolves",
+                        "key": "c673-minnesota-timberwolves",
+                        "abbreviation": "MIN",
+                        "nationality": "USA",
+                        "researchId": ""
+                    },
+                    "status": "PRE_TRADING",
+                    "markets": {},
+                    "name": "Golden State Warriors V Minnesota Timberwolves",
+                    "key": "c5dd-golden-state-warriors-v-c673-minnesota-timberwolves",
+                    "cutoffTime": "2023-11-15T03:10:00Z",
+                    "type": "EVENT_TYPE_EVENT"
+                },
+                {
+                    "id": 20570218,
+                    "home": {
+                        "name": "LA Lakers",
+                        "key": "c655-los-angeles-lakers",
+                        "abbreviation": "LAL",
+                        "nationality": "USA",
+                        "researchId": ""
+                    },
+                    "away": {
+                        "name": "Memphis Grizzlies",
+                        "key": "c66a-memphis-grizzlies",
+                        "abbreviation": "MEM",
+                        "nationality": "USA",
+                        "researchId": ""
+                    },
+                    "status": "PRE_TRADING",
+                    "markets": {},
+                    "name": "LA Lakers V Memphis Grizzlies",
+                    "key": "c655-los-angeles-lakers-v-c66a-memphis-grizzlies",
+                    "cutoffTime": "2023-11-15T03:30:00Z",
+                    "type": "EVENT_TYPE_EVENT"
+                },
+                {
+                    "id": 20570237,
+                    "home": {
+                        "name": "Washington Wizards",
+                        "key": "ca0e-washington-wizards",
+                        "abbreviation": "WAS",
+                        "nationality": "USA",
+                        "researchId": ""
+                    },
+                    "away": {
+                        "name": "Dallas Mavericks",
+                        "key": "c58d-dallas-mavericks",
+                        "abbreviation": "DAL",
+                        "nationality": "USA",
+                        "researchId": ""
+                    },
+                    "status": "PRE_TRADING",
+                    "markets": {},
+                    "name": "Washington Wizards V Dallas Mavericks",
+                    "key": "ca0e-washington-wizards-v-c58d-dallas-mavericks",
+                    "cutoffTime": "2023-11-16T00:00:00Z",
+                    "type": "EVENT_TYPE_EVENT"
+                },
+                {
+                    "id": 20570231,
+                    "home": {
+                        "name": "Atlanta Hawks",
+                        "key": "c9dc-atlanta-hawks",
+                        "abbreviation": "ATL",
+                        "nationality": "USA",
+                        "researchId": ""
+                    },
+                    "away": {
+                        "name": "New York Knicks",
+                        "key": "c683-new-york-knicks",
+                        "abbreviation": "NYK",
+                        "nationality": "USA",
+                        "researchId": ""
+                    },
+                    "status": "PRE_TRADING",
+                    "markets": {},
+                    "name": "Atlanta Hawks V New York Knicks",
+                    "key": "c9dc-atlanta-hawks-v-c683-new-york-knicks",
+                    "cutoffTime": "2023-11-16T00:30:00Z",
+                    "type": "EVENT_TYPE_EVENT"
+                },
+                {
+                    "id": 20570238,
+                    "home": {
+                        "name": "Philadelphia 76ers",
+                        "key": "c6c3-philadelphia-76ers",
+                        "abbreviation": "PHI",
+                        "nationality": "USA",
+                        "researchId": ""
+                    },
+                    "away": {
+                        "name": "Boston Celtics",
+                        "key": "c552-boston-celtics",
+                        "abbreviation": "BOS",
+                        "nationality": "USA",
+                        "researchId": ""
+                    },
+                    "status": "PRE_TRADING",
+                    "markets": {},
+                    "name": "Philadelphia 76ers V Boston Celtics",
+                    "key": "c6c3-philadelphia-76ers-v-c552-boston-celtics",
+                    "cutoffTime": "2023-11-16T00:30:00Z",
+                    "type": "EVENT_TYPE_EVENT"
+                },
+                {
+                    "id": 20570239,
+                    "home": {
+                        "name": "Toronto Raptors",
+                        "key": "c73c-toronto-raptors",
+                        "abbreviation": "TOR",
+                        "nationality": "CAN",
+                        "researchId": ""
+                    },
+                    "away": {
+                        "name": "Milwaukee Bucks",
+                        "key": "c9fb-milwaukee-bucks",
+                        "abbreviation": "MIL",
+                        "nationality": "USA",
+                        "researchId": ""
+                    },
+                    "status": "PRE_TRADING",
+                    "markets": {},
+                    "name": "Toronto Raptors V Milwaukee Bucks",
+                    "key": "c73c-toronto-raptors-v-c9fb-milwaukee-bucks",
+                    "cutoffTime": "2023-11-16T00:30:00Z",
+                    "type": "EVENT_TYPE_EVENT"
+                },
+                {
+                    "id": 20570241,
+                    "home": {
+                        "name": "Chicago Bulls",
+                        "key": "c9e3-chicago-bulls",
+                        "abbreviation": "CHI",
+                        "nationality": "USA",
+                        "researchId": ""
+                    },
+                    "away": {
+                        "name": "Orlando Magic",
+                        "key": "ca0a-orlando-magic",
+                        "abbreviation": "ORL",
+                        "nationality": "USA",
+                        "researchId": ""
+                    },
+                    "status": "PRE_TRADING",
+                    "markets": {},
+                    "name": "Chicago Bulls V Orlando Magic",
+                    "key": "c9e3-chicago-bulls-v-ca0a-orlando-magic",
+                    "cutoffTime": "2023-11-16T01:00:00Z",
+                    "type": "EVENT_TYPE_EVENT"
+                },
+                {
+                    "id": 20570240,
+                    "home": {
+                        "name": "Phoenix Suns",
+                        "key": "c6cc-phoenix-suns",
+                        "abbreviation": "PHX",
+                        "nationality": "USA",
+                        "researchId": ""
+                    },
+                    "away": {
+                        "name": "Minnesota Timberwolves",
+                        "key": "c673-minnesota-timberwolves",
+                        "abbreviation": "MIN",
+                        "nationality": "USA",
+                        "researchId": ""
+                    },
+                    "status": "PRE_TRADING",
+                    "markets": {},
+                    "name": "Phoenix Suns V Minnesota Timberwolves",
+                    "key": "c6cc-phoenix-suns-v-c673-minnesota-timberwolves",
+                    "cutoffTime": "2023-11-16T02:00:00Z",
+                    "type": "EVENT_TYPE_EVENT"
+                },
+                {
+                    "id": 20570286,
+                    "home": {
+                        "name": "LA Lakers",
+                        "key": "c655-los-angeles-lakers",
+                        "abbreviation": "LAL",
+                        "nationality": "USA",
+                        "researchId": ""
+                    },
+                    "away": {
+                        "name": "Sacramento Kings",
+                        "key": "ca12-sacramento-kings",
+                        "abbreviation": "SAC",
+                        "nationality": "USA",
+                        "researchId": ""
+                    },
+                    "status": "PRE_TRADING",
+                    "markets": {},
+                    "name": "LA Lakers V Sacramento Kings",
+                    "key": "c655-los-angeles-lakers-v-ca12-sacramento-kings",
+                    "cutoffTime": "2023-11-16T03:00:00Z",
+                    "type": "EVENT_TYPE_EVENT"
+                },
+                {
+                    "id": 20570289,
+                    "home": {
+                        "name": "Portland Trail Blazers",
+                        "key": "ca03-portland-trail-blazers",
+                        "abbreviation": "POR",
+                        "nationality": "USA",
+                        "researchId": ""
+                    },
+                    "away": {
+                        "name": "Cleveland Cavaliers",
+                        "key": "c579-cleveland-cavaliers",
+                        "abbreviation": "CLE",
+                        "nationality": "USA",
+                        "researchId": ""
+                    },
+                    "status": "PRE_TRADING",
+                    "markets": {},
+                    "name": "Portland Trail Blazers V Cleveland Cavaliers",
+                    "key": "ca03-portland-trail-blazers-v-c579-cleveland-cavaliers",
+                    "cutoffTime": "2023-11-16T03:00:00Z",
+                    "type": "EVENT_TYPE_EVENT"
+                }
+            ],
+            "category": {
+                "name": "USA",
+                "key": "usa"
+            }
+        },
+        {
+            "name": "NBL",
+            "key": "basketball-australia-nbl",
+            "sport": {
+                "name": "Basketball",
+                "key": "basketball"
+            },
+            "events": [
+                {
+                    "id": 19697985,
+                    "home": {
+                        "name": "Tasmania Jackjumpers",
+                        "key": "ccbebf-tasmania-jackjumpers",
+                        "abbreviation": "TAS",
+                        "nationality": "AUS",
+                        "researchId": ""
+                    },
+                    "away": {
+                        "name": "New Zealand Breakers",
+                        "key": "c20b-new-zealand-breakers",
+                        "abbreviation": "NZB",
+                        "nationality": "NZL",
+                        "researchId": ""
+                    },
+                    "status": "TRADING",
+                    "markets": {
+                        "basketball.handicap": {
+                            "submarkets": {
+                                "period=ot&period=ft": {
+                                    "sequence": "1202",
+                                    "selections": [
+                                        {
+                                            "outcome": "home",
+                                            "params": "handicap=-6.5",
+                                            "price": 1.851,
+                                            "minStake": 0.1,
+                                            "maxStake": 465.53332,
+                                            "probability": 0.509,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "away",
+                                            "params": "handicap=-6.5",
+                                            "price": 1.915,
+                                            "minStake": 0.1,
+                                            "maxStake": 433.1355,
+                                            "probability": 0.491,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "home",
+                                            "params": "handicap=-4",
+                                            "price": 1.566,
+                                            "minStake": 0.1,
+                                            "maxStake": 696.29784,
+                                            "probability": 0.601,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "away",
+                                            "params": "handicap=-4",
+                                            "price": 2.357,
+                                            "minStake": 0.1,
+                                            "maxStake": 404.5489,
+                                            "probability": 0.399,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "home",
+                                            "params": "handicap=-4.5",
+                                            "price": 1.605,
+                                            "minStake": 0.1,
+                                            "maxStake": 651.44716,
+                                            "probability": 0.587,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "away",
+                                            "params": "handicap=-4.5",
+                                            "price": 2.278,
+                                            "minStake": 0.1,
+                                            "maxStake": 404.5489,
+                                            "probability": 0.413,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "home",
+                                            "params": "handicap=-5",
+                                            "price": 1.65,
+                                            "minStake": 0.1,
+                                            "maxStake": 607.43046,
+                                            "probability": 0.57,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "away",
+                                            "params": "handicap=-5",
+                                            "price": 2.189,
+                                            "minStake": 0.1,
+                                            "maxStake": 404.5489,
+                                            "probability": 0.43,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "home",
+                                            "params": "handicap=-5.5",
+                                            "price": 1.707,
+                                            "minStake": 0.1,
+                                            "maxStake": 558.76954,
+                                            "probability": 0.552,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "away",
+                                            "params": "handicap=-5.5",
+                                            "price": 2.1,
+                                            "minStake": 0.1,
+                                            "maxStake": 404.5489,
+                                            "probability": 0.448,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "home",
+                                            "params": "handicap=-6",
+                                            "price": 1.77,
+                                            "minStake": 0.1,
+                                            "maxStake": 514.0394,
+                                            "probability": 0.532,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "away",
+                                            "params": "handicap=-6",
+                                            "price": 2.01,
+                                            "minStake": 0.1,
+                                            "maxStake": 404.5489,
+                                            "probability": 0.468,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "home",
+                                            "params": "handicap=-7",
+                                            "price": 1.915,
+                                            "minStake": 0.1,
+                                            "maxStake": 433.1355,
+                                            "probability": 0.491,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "away",
+                                            "params": "handicap=-7",
+                                            "price": 1.851,
+                                            "minStake": 0.1,
+                                            "maxStake": 465.53332,
+                                            "probability": 0.509,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "home",
+                                            "params": "handicap=-7.5",
+                                            "price": 1.991,
+                                            "minStake": 0.1,
+                                            "maxStake": 404.5489,
+                                            "probability": 0.472,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "away",
+                                            "params": "handicap=-7.5",
+                                            "price": 1.783,
+                                            "minStake": 0.1,
+                                            "maxStake": 505.68588,
+                                            "probability": 0.528,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "home",
+                                            "params": "handicap=-8",
+                                            "price": 2.06,
+                                            "minStake": 0.1,
+                                            "maxStake": 404.5489,
+                                            "probability": 0.456,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "away",
+                                            "params": "handicap=-8",
+                                            "price": 1.729,
+                                            "minStake": 0.1,
+                                            "maxStake": 542.29084,
+                                            "probability": 0.544,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "home",
+                                            "params": "handicap=-8.5",
+                                            "price": 2.139,
+                                            "minStake": 0.1,
+                                            "maxStake": 404.5489,
+                                            "probability": 0.44,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "away",
+                                            "params": "handicap=-8.5",
+                                            "price": 1.678,
+                                            "minStake": 0.1,
+                                            "maxStake": 582.9236,
+                                            "probability": 0.56,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "home",
+                                            "params": "handicap=-9",
+                                            "price": 2.218,
+                                            "minStake": 0.1,
+                                            "maxStake": 404.5489,
+                                            "probability": 0.424,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "away",
+                                            "params": "handicap=-9",
+                                            "price": 1.633,
+                                            "minStake": 0.1,
+                                            "maxStake": 623.34174,
+                                            "probability": 0.576,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        }
+                                    ]
+                                }
+                            }
+                        },
+                        "basketball.handicap_period_first_half": {
+                            "submarkets": {
+                                "period=q1&period=q2&period=1h": {
+                                    "sequence": "1202",
+                                    "selections": [
+                                        {
+                                            "outcome": "home",
+                                            "params": "handicap=-3.5",
+                                            "price": 1.866,
+                                            "minStake": 0.1,
+                                            "maxStake": 152.54484,
+                                            "probability": 0.504,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "away",
+                                            "params": "handicap=-3.5",
+                                            "price": 1.898,
+                                            "minStake": 0.1,
+                                            "maxStake": 147.05488,
+                                            "probability": 0.496,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "home",
+                                            "params": "handicap=-2.5",
+                                            "price": 1.702,
+                                            "minStake": 0.1,
+                                            "maxStake": 187.55142,
+                                            "probability": 0.553,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "away",
+                                            "params": "handicap=-2.5",
+                                            "price": 2.109,
+                                            "minStake": 0.1,
+                                            "maxStake": 134.84898,
+                                            "probability": 0.447,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "home",
+                                            "params": "handicap=-3",
+                                            "price": 1.776,
+                                            "minStake": 0.1,
+                                            "maxStake": 170.0496,
+                                            "probability": 0.53,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "away",
+                                            "params": "handicap=-3",
+                                            "price": 2,
+                                            "minStake": 0.1,
+                                            "maxStake": 134.84898,
+                                            "probability": 0.47,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "home",
+                                            "params": "handicap=-4",
+                                            "price": 1.933,
+                                            "minStake": 0.1,
+                                            "maxStake": 141.64822,
+                                            "probability": 0.486,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "away",
+                                            "params": "handicap=-4",
+                                            "price": 1.829,
+                                            "minStake": 0.1,
+                                            "maxStake": 159.20786,
+                                            "probability": 0.514,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "home",
+                                            "params": "handicap=-4.5",
+                                            "price": 1.991,
+                                            "minStake": 0.1,
+                                            "maxStake": 134.84898,
+                                            "probability": 0.472,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "away",
+                                            "params": "handicap=-4.5",
+                                            "price": 1.783,
+                                            "minStake": 0.1,
+                                            "maxStake": 168.56196,
+                                            "probability": 0.528,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        }
+                                    ]
+                                }
+                            }
+                        },
+                        "basketball.moneyline": {
+                            "submarkets": {
+                                "period=ot&period=ft": {
+                                    "sequence": "1202",
+                                    "selections": [
+                                        {
+                                            "outcome": "home",
+                                            "params": "",
+                                            "price": 1.33,
+                                            "minStake": 0.1,
+                                            "maxStake": 655.24662,
+                                            "probability": 0.705,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "away",
+                                            "params": "",
+                                            "price": 3.179,
+                                            "minStake": 0.1,
+                                            "maxStake": 224.74928,
+                                            "probability": 0.295,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        }
+                                    ]
+                                }
+                            }
+                        },
+                        "basketball.total_period_first_half": {
+                            "submarkets": {
+                                "period=1h&period=q1&period=q2": {
+                                    "sequence": "1202",
+                                    "selections": [
+                                        {
+                                            "outcome": "over",
+                                            "params": "total=87",
+                                            "price": 1.851,
+                                            "minStake": 0.1,
+                                            "maxStake": 155.17712,
+                                            "probability": 0.509,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "under",
+                                            "params": "total=87",
+                                            "price": 1.915,
+                                            "minStake": 0.1,
+                                            "maxStake": 144.3785,
+                                            "probability": 0.491,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "over",
+                                            "params": "total=86",
+                                            "price": 1.712,
+                                            "minStake": 0.1,
+                                            "maxStake": 184.97892,
+                                            "probability": 0.55,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "under",
+                                            "params": "total=86",
+                                            "price": 2.09,
+                                            "minStake": 0.1,
+                                            "maxStake": 134.84898,
+                                            "probability": 0.45,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "over",
+                                            "params": "total=86.5",
+                                            "price": 1.776,
+                                            "minStake": 0.1,
+                                            "maxStake": 170.0496,
+                                            "probability": 0.53,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "under",
+                                            "params": "total=86.5",
+                                            "price": 2,
+                                            "minStake": 0.1,
+                                            "maxStake": 134.84898,
+                                            "probability": 0.47,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "over",
+                                            "params": "total=87.5",
+                                            "price": 1.915,
+                                            "minStake": 0.1,
+                                            "maxStake": 144.3785,
+                                            "probability": 0.491,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "under",
+                                            "params": "total=87.5",
+                                            "price": 1.851,
+                                            "minStake": 0.1,
+                                            "maxStake": 155.17712,
+                                            "probability": 0.509,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "over",
+                                            "params": "total=88",
+                                            "price": 2,
+                                            "minStake": 0.1,
+                                            "maxStake": 134.84898,
+                                            "probability": 0.47,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "under",
+                                            "params": "total=88",
+                                            "price": 1.776,
+                                            "minStake": 0.1,
+                                            "maxStake": 170.0496,
+                                            "probability": 0.53,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        }
+                                    ]
+                                }
+                            }
+                        },
+                        "basketball.totals": {
+                            "submarkets": {
+                                "period=ot&period=ft": {
+                                    "sequence": "1202",
+                                    "selections": [
+                                        {
+                                            "outcome": "over",
+                                            "params": "total=171.5",
+                                            "price": 1.859,
+                                            "minStake": 0.1,
+                                            "maxStake": 461.28698,
+                                            "probability": 0.506,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "under",
+                                            "params": "total=171.5",
+                                            "price": 1.906,
+                                            "minStake": 0.1,
+                                            "maxStake": 437.35048,
+                                            "probability": 0.494,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "over",
+                                            "params": "total=169",
+                                            "price": 1.655,
+                                            "minStake": 0.1,
+                                            "maxStake": 602.90482,
+                                            "probability": 0.568,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "under",
+                                            "params": "total=169",
+                                            "price": 2.179,
+                                            "minStake": 0.1,
+                                            "maxStake": 404.5489,
+                                            "probability": 0.432,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "over",
+                                            "params": "total=169.5",
+                                            "price": 1.692,
+                                            "minStake": 0.1,
+                                            "maxStake": 570.59128,
+                                            "probability": 0.556,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "under",
+                                            "params": "total=169.5",
+                                            "price": 2.119,
+                                            "minStake": 0.1,
+                                            "maxStake": 404.5489,
+                                            "probability": 0.444,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "over",
+                                            "params": "total=170",
+                                            "price": 1.723,
+                                            "minStake": 0.1,
+                                            "maxStake": 546.6881,
+                                            "probability": 0.546,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "under",
+                                            "params": "total=170",
+                                            "price": 2.07,
+                                            "minStake": 0.1,
+                                            "maxStake": 404.5489,
+                                            "probability": 0.454,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "over",
+                                            "params": "total=170.5",
+                                            "price": 1.764,
+                                            "minStake": 0.1,
+                                            "maxStake": 517.9888,
+                                            "probability": 0.534,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "under",
+                                            "params": "total=170.5",
+                                            "price": 2.02,
+                                            "minStake": 0.1,
+                                            "maxStake": 404.5489,
+                                            "probability": 0.466,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "over",
+                                            "params": "total=171",
+                                            "price": 1.815,
+                                            "minStake": 0.1,
+                                            "maxStake": 485.65272,
+                                            "probability": 0.519,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "under",
+                                            "params": "total=171",
+                                            "price": 1.961,
+                                            "minStake": 0.1,
+                                            "maxStake": 412.80442,
+                                            "probability": 0.481,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "over",
+                                            "params": "total=172",
+                                            "price": 1.915,
+                                            "minStake": 0.1,
+                                            "maxStake": 433.1355,
+                                            "probability": 0.491,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "under",
+                                            "params": "total=172",
+                                            "price": 1.851,
+                                            "minStake": 0.1,
+                                            "maxStake": 465.53332,
+                                            "probability": 0.509,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "over",
+                                            "params": "total=172.5",
+                                            "price": 1.971,
+                                            "minStake": 0.1,
+                                            "maxStake": 408.6355,
+                                            "probability": 0.477,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "under",
+                                            "params": "total=172.5",
+                                            "price": 1.795,
+                                            "minStake": 0.1,
+                                            "maxStake": 497.5999,
+                                            "probability": 0.523,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "over",
+                                            "params": "total=173",
+                                            "price": 2.03,
+                                            "minStake": 0.1,
+                                            "maxStake": 404.5489,
+                                            "probability": 0.463,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "under",
+                                            "params": "total=173",
+                                            "price": 1.752,
+                                            "minStake": 0.1,
+                                            "maxStake": 526.07184,
+                                            "probability": 0.537,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "over",
+                                            "params": "total=173.5",
+                                            "price": 2.08,
+                                            "minStake": 0.1,
+                                            "maxStake": 404.5489,
+                                            "probability": 0.452,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "under",
+                                            "params": "total=173.5",
+                                            "price": 1.718,
+                                            "minStake": 0.1,
+                                            "maxStake": 550.40622,
+                                            "probability": 0.548,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "over",
+                                            "params": "total=174",
+                                            "price": 2.139,
+                                            "minStake": 0.1,
+                                            "maxStake": 404.5489,
+                                            "probability": 0.44,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        },
+                                        {
+                                            "outcome": "under",
+                                            "params": "total=174",
+                                            "price": 1.678,
+                                            "minStake": 0.1,
+                                            "maxStake": 582.9236,
+                                            "probability": 0.56,
+                                            "status": "SELECTION_ENABLED",
+                                            "side": "BACK"
+                                        }
+                                    ]
+                                }
+                            }
+                        }
+                    },
+                    "name": "Tasmania Jackjumpers V New Zealand Breakers",
+                    "key": "ccbebf-tasmania-jackjumpers-v-c20b-new-zealand-breakers",
+                    "cutoffTime": "2023-11-16T08:30:00Z",
+                    "type": "EVENT_TYPE_EVENT"
+                }
+            ],
+            "category": {
+                "name": "Australia",
+                "key": "australia"
+            }
+        }
+    ]
+}

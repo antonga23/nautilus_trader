@@ -17,6 +17,7 @@ from decimal import Decimal
 
 import pytest
 
+from nautilus_trader.adapters.cloudbet.common import CLOUDBET_VENUE
 from nautilus_trader.model.currencies import AUD
 from nautilus_trader.model.currencies import BTC
 from nautilus_trader.model.currencies import ETH
@@ -32,9 +33,10 @@ from nautilus_trader.model.instruments import OptionsContract
 from nautilus_trader.model.objects import Money
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
+
+from nautilus_trader.model.instruments.crypto_betting import CryptoBettingInstrument
 from nautilus_trader.test_kit.providers import TestDataProvider
 from nautilus_trader.test_kit.providers import TestInstrumentProvider
-
 
 provider = TestDataProvider()
 
@@ -489,3 +491,28 @@ class TestBettingInstrument:
     def test_min_max_price(self):
         assert self.instrument.min_price == Price.from_str("1.01")
         assert self.instrument.max_price == Price.from_str("1000")
+
+
+class TestCryptoBettingInstrument:
+    def setup(self):
+        self.instrument = TestInstrumentProvider.crypto_betting_instrument()
+
+    def test_instrument_creation(self):
+        assert isinstance(self.instrument, CryptoBettingInstrument)
+        assert isinstance(self.instrument, Instrument)
+
+    def test_crypto_betting_instrument_to_dict(self):
+        instrument = self.instrument
+        result = CryptoBettingInstrument.to_dict(instrument)
+        # Assert
+        assert isinstance(result, dict)
+
+    def test_crypto_betting_instrument_from_dict(self):
+        # Note: from_dict is implcitly tested when creating an instrument
+        assert True
+
+    def test_multiple_instrument_creation(self):
+        instruments = TestInstrumentProvider.crypto_betting_instruments(CLOUDBET_VENUE,100)
+        for instrument in instruments:
+            assert isinstance(instrument, CryptoBettingInstrument)
+

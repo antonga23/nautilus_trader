@@ -1,0 +1,197 @@
+stages:
+  - lint
+  - build
+  - test
+  - mirror
+
+
+variables:
+  RUST_BACKTRACE: 1
+  BUILD_MODE: debug
+  GITLAB_REMOTE_URL: git@gitlab.stompy.net:alatha/nautilus.git
+
+## Define common cache, used across jobs
+#cache:
+#  key: ${CI_COMMIT_REF_SLUG}-common-cache
+#  paths:
+#    - ~/.cache/pre-commit
+#    - ~/.cargo
+#    - nautilus_core/target
+#    - .venv/
+#    - build/annotated/
+#    - build/optimized/
+#    - .pyenv/
+
+
+lint-job:
+  stage: lint
+  image: python:${PYTHON_VERSION}
+  before_script:
+    - pip install pre-commit
+    - pre-commit install
+  script:
+    - pre-commit run --all-files
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "develop" || $CI_COMMIT_BRANCH == "master"'
+  cache:
+    key: ${CI_COMMIT_REF_SLUG}-pre-commit-cache-${PYTHON_VERSION}
+    paths:
+      - ~/.cache/pre-commit
+  parallel:
+    matrix:
+      - PYTHON_VERSION: [ "3.9.18", "3.10", "3.11" ]
+
+build-job:
+  stage: build
+  image: ubuntu:focal  # Use ubuntu as base image
+  before_script:
+    - export DEBIAN_FRONTEND=noninteractive
+    # Check if the Python version is already installed
+    - if [ ! -d "$(pyenv root)/versions/$PYTHON_VERSION" ]; then
+      apt-get update && apt-get install -y make build-essential libssl-dev zlib1g-dev libbz2-dev libreadline-dev
+      libsqlite3-dev wget curl llvm libncurses5-dev libncursesw5-dev xz-utils tk-dev libffi-dev liblzma-dev
+      python-openssl git clang;
+      curl https://pyenv.run | bash;
+      export PATH="/root/.pyenv/bin:$PATH";
+      eval "$(pyenv init -)";
+      eval "$(pyenv virtualenv-init -)";
+      pyenv install $PYTHON_VERSION;
+      fi
+    - pyenv global $PYTHON_VERSION
+    - python --version  # To check the Python version
+    # Check if the Rust version is already installed
+    - |
+      if ! rustup show; then
+        echo "Setting up Rust tool-chain..."
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+        source $HOME/.cargo/env
+        rustup default stable
+        rustup component add rustfmt clippy
+      else
+        echo "Rust is already installed."
+        source $HOME/.cargo/env
+      fi
+  script:
+    - echo "Installing build dependencies for Python..."
+    - pip install --upgrade pip setuptools wheel pre-commit poetry==1.5.1
+
+    - echo " Installing Python dependencies using Poetry..."
+    - poetry install --only main --all-extras
+
+    - echo "Installing and running Redis..."
+    - apt-get install redis-server -y
+    - redis-server --daemonize yes
+    - echo "Running cargo tests..."
+    # Dynamically set LD_LIBRARY_PATH for the installed Python version
+    - PYTHON_LIB_PATH=$(pyenv prefix)/lib
+    - export LD_LIBRARY_PATH=$PYTHON_LIB_PATH:$LD_LIBRARY_PATH
+    - make cargo-test
+    - echo "Running Python tests..."
+    # Conditional execution based on branch
+    - |
+      if [ "$CI_COMMIT_REF_NAME" = "cloudbet" ]; then
+        echo "Running Python tests for cloudbet branch..."
+        make pytest-cloudbet
+        exit 0  # Exit the script after running make pytest-cloudbet
+      else
+        echo "Running standard Python tests..."
+        make pytest
+        make test-examples
+      fi
+    - echo "Running Coverage tests..."
+    # Conditional execution based on branch
+    - |
+      if [ "$CI_COMMIT_REF_NAME" = "cloudbet" ]; then
+        echo "Running coverage tests for cloudbet branch..."
+        make pytest-cloudbet-coverage
+        exit 0  # Exit the script after running make pytest-cloudbet-coverage
+      else
+        echo "Running coverage tests for Nautilus project..."
+        make pytest-cloudbet
+      fi
+  artifacts:
+    when: always
+    reports:
+      junit: report.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: cov.xml
+  rules:
+    - if: '$CI_PIPELINE_SOURCE != "web" && ($CI_COMMIT_BRANCH == "develop" || $CI_COMMIT_BRANCH == "master" || $CI_COMMIT_BRANCH == "cloudbet")'
+  parallel:
+    matrix:
+      - PYTHON_VERSION: ["3.9.18"]
+
+mirror-job:
+  stage: mirror
+  image: ubuntu:focal
+  before_script:
+    - export DEBIAN_FRONTEND=noninteractive
+    - apt-get update && apt-get install -y git
+  script:
+    - |
+      # Your mirroring script here
+      # Add the remote GitHub repository if not already added
+      git remote add github https://github.com/nautechsystems/nautilus_trader.git || git remote set-url github https://github.com/nautechsystems/nautilus_trader.git
+      # Fetch all branches from GitHub
+      git fetch github
+      # Loop through all branches from the GitHub repo
+      for branch in `git branch -r | grep 'github/' | sed 's/github\///'`; do
+          mirrored_branch="mirror_$branch"
+          # Check if the mirrored branch already exists
+          if git rev-parse --verify --quiet $mirrored_branch; then
+              # Checkout and pull the latest changes if the branch already exists
+              git checkout $mirrored_branch
+              git pull github $branch
+          else
+              # Create a new mirrored branch if it doesn't exist
+              git checkout -b $mirrored_branch github/$branch
+          fi
+          # Push updates to GitLab
+          git push $GITLAB_REMOTE_URL $mirrored_branch
+      done
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+    - when: manual
+      allow_failure: true
+#  rules:
+#    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+#    - if: '$CI_COMMIT_BRANCH == "develop" || $CI_COMMIT_BRANCH == "master"'
+#    - when: manual
+
+## Test job
+#test-job:
+#  stage: test
+##  image: ubuntu:focal
+#  dependencies:
+#    - build-job
+#  script:
+#    - echo "Running cargo tests..."
+#    # Dynamically set LD_LIBRARY_PATH for the installed Python version
+#    - PYTHON_LIB_PATH=$(pyenv prefix)/lib
+#    - export LD_LIBRARY_PATH=$PYTHON_LIB_PATH:$LD_LIBRARY_PATH
+#    - make cargo-test`
+#    - make cargo-test`
+#    - echo "Running python tests in the project..."
+#    # Conditional execution based on branch
+#    - |
+#      if [ "$CI_COMMIT_REF_NAME" = "cloudbet" ]; then
+#        echo "Running Python tests for cloudbet branch..."
+#        make pytest-cloudbet
+#        exit 0  # Exit the script after running make pytest-cloudbet
+#      else
+#        echo "Running standard Python tests..."
+#        make pytest
+#        make test-examples
+#      fi
+#  artifacts:
+#    when: always
+#    reports:
+#      junit: report.xml
+#  only:
+#    - master
+#    - develop
+#    - cloudbet
+#  parallel:
+#    matrix:
+#      - PYTHON_VERSION: ["3.9.18", "3.10"]

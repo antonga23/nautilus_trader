@@ -1,0 +1,454 @@
+{
+    "sports": [
+        {
+            "name": "American Football",
+            "key": "american-football",
+            "competitionCount": 4,
+            "eventCount": 217
+        },
+        {
+            "name": "Archery",
+            "key": "archery",
+            "competitionCount": 0,
+            "eventCount": 0
+        },
+        {
+            "name": "Athletics",
+            "key": "athletics",
+            "competitionCount": 0,
+            "eventCount": 0
+        },
+        {
+            "name": "Aussie Rules",
+            "key": "aussie-rules",
+            "competitionCount": 1,
+            "eventCount": 106
+        },
+        {
+            "name": "Badminton",
+            "key": "badminton",
+            "competitionCount": 8,
+            "eventCount": 37
+        },
+        {
+            "name": "Bandy",
+            "key": "bandy",
+            "competitionCount": 0,
+            "eventCount": 0
+        },
+        {
+            "name": "Baseball",
+            "key": "baseball",
+            "competitionCount": 9,
+            "eventCount": 1307
+        },
+        {
+            "name": "Basketball",
+            "key": "basketball",
+            "competitionCount": 62,
+            "eventCount": 315
+        },
+        {
+            "name": "Beach Soccer",
+            "key": "beach-soccer",
+            "competitionCount": 0,
+            "eventCount": 0
+        },
+        {
+            "name": "Beach Volleyball",
+            "key": "beach-volleyball",
+            "competitionCount": 3,
+            "eventCount": 0
+        },
+        {
+            "name": "Bowls",
+            "key": "bowls",
+            "competitionCount": 1,
+            "eventCount": 67
+        },
+        {
+            "name": "Boxing",
+            "key": "boxing",
+            "competitionCount": 1,
+            "eventCount": 13
+        },
+        {
+            "name": "Call Of Duty",
+            "key": "call-of-duty",
+            "competitionCount": 1,
+            "eventCount": 4
+        },
+        {
+            "name": "Chess",
+            "key": "chess",
+            "competitionCount": 0,
+            "eventCount": 0
+        },
+        {
+            "name": "Counter-Strike",
+            "key": "counter-strike",
+            "competitionCount": 21,
+            "eventCount": 32
+        },
+        {
+            "name": "Cricket",
+            "key": "cricket",
+            "competitionCount": 20,
+            "eventCount": 57
+        },
+        {
+            "name": "Crossfire",
+            "key": "crossfire",
+            "competitionCount": 2,
+            "eventCount": 14
+        },
+        {
+            "name": "Curling",
+            "key": "curling",
+            "competitionCount": 0,
+            "eventCount": 0
+        },
+        {
+            "name": "Cycling",
+            "key": "cycling",
+            "competitionCount": 2,
+            "eventCount": 13
+        },
+        {
+            "name": "Darts",
+            "key": "darts",
+            "competitionCount": 5,
+            "eventCount": 68
+        },
+        {
+            "name": "Dota 2",
+            "key": "dota-2",
+            "competitionCount": 8,
+            "eventCount": 136
+        },
+        {
+            "name": "Entertainment",
+            "key": "entertainment",
+            "competitionCount": 1,
+            "eventCount": 0
+        },
+        {
+            "name": "Age Of Empires",
+            "key": "esport-aoe",
+            "competitionCount": 0,
+            "eventCount": 0
+        },
+        {
+            "name": "Arena Of Valor",
+            "key": "esport-arena-of-valor",
+            "competitionCount": 0,
+            "eventCount": 0
+        },
+        {
+            "name": "BGA",
+            "key": "esport-bga",
+            "competitionCount": 0,
+            "eventCount": 0
+        },
+        {
+            "name": "Brawl Stars",
+            "key": "esport-brawl-stars",
+            "competitionCount": 0,
+            "eventCount": 0
+        },
+        {
+            "name": "FIFA",
+            "key": "esport-fifa",
+            "competitionCount": 2,
+            "eventCount": 274
+        },
+        {
+            "name": "Free Fire",
+            "key": "esport-free-fire",
+            "competitionCount": 1,
+            "eventCount": 6
+        },
+        {
+            "name": "EIce Hockey",
+            "key": "esport-ice-hockey",
+            "competitionCount": 0,
+            "eventCount": 0
+        },
+        {
+            "name": "King Of Glory",
+            "key": "esport-king-of-glory",
+            "competitionCount": 0,
+            "eventCount": 0
+        },
+        {
+            "name": "Madden",
+            "key": "esport-madden",
+            "competitionCount": 0,
+            "eventCount": 0
+        },
+        {
+            "name": "NBA2K",
+            "key": "esport-nba2k",
+            "competitionCount": 0,
+            "eventCount": 1
+        },
+        {
+            "name": "Valorant",
+            "key": "esport-valorant",
+            "competitionCount": 4,
+            "eventCount": 3
+        },
+        {
+            "name": "Warcraft",
+            "key": "esport-warcraft",
+            "competitionCount": 2,
+            "eventCount": 10
+        },
+        {
+            "name": "Field Hockey",
+            "key": "field-hockey",
+            "competitionCount": 2,
+            "eventCount": 50
+        },
+        {
+            "name": "Floorball",
+            "key": "floorball",
+            "competitionCount": 0,
+            "eventCount": 0
+        },
+        {
+            "name": "Formula 1",
+            "key": "formula-1",
+            "competitionCount": 0,
+            "eventCount": 0
+        },
+        {
+            "name": "Formula E",
+            "key": "formula-e",
+            "competitionCount": 0,
+            "eventCount": 0
+        },
+        {
+            "name": "Futsal",
+            "key": "futsal",
+            "competitionCount": 3,
+            "eventCount": 4
+        },
+        {
+            "name": "Golf",
+            "key": "golf",
+            "competitionCount": 19,
+            "eventCount": 5
+        },
+        {
+            "name": "Greyhound",
+            "key": "greyhound",
+            "competitionCount": 0,
+            "eventCount": 0
+        },
+        {
+            "name": "Greyhounds",
+            "key": "greyhounds",
+            "competitionCount": 5,
+            "eventCount": 54
+        },
+        {
+            "name": "Handball",
+            "key": "handball",
+            "competitionCount": 7,
+            "eventCount": 31
+        },
+        {
+            "name": "Hearthstone",
+            "key": "hearthstone",
+            "competitionCount": 0,
+            "eventCount": 0
+        },
+        {
+            "name": "Heroes Of The Storm",
+            "key": "heroes-of-the-storm",
+            "competitionCount": 0,
+            "eventCount": 0
+        },
+        {
+            "name": "Horse Racing",
+            "key": "horse-racing",
+            "competitionCount": 17,
+            "eventCount": 88
+        },
+        {
+            "name": "Ice Hockey",
+            "key": "ice-hockey",
+            "competitionCount": 9,
+            "eventCount": 63
+        },
+        {
+            "name": "Kabaddi",
+            "key": "kabaddi",
+            "competitionCount": 0,
+            "eventCount": 0
+        },
+        {
+            "name": "League Of Legends",
+            "key": "league-of-legends",
+            "competitionCount": 35,
+            "eventCount": 595
+        },
+        {
+            "name": "MMA",
+            "key": "mma",
+            "competitionCount": 3,
+            "eventCount": 54
+        },
+        {
+            "name": "Motorsport",
+            "key": "motorsport",
+            "competitionCount": 0,
+            "eventCount": 0
+        },
+        {
+            "name": "Olympics",
+            "key": "olympics",
+            "competitionCount": 69,
+            "eventCount": 0
+        },
+        {
+            "name": "Overwatch",
+            "key": "overwatch",
+            "competitionCount": 2,
+            "eventCount": 5
+        },
+        {
+            "name": "Pesapallo",
+            "key": "pesapallo",
+            "competitionCount": 1,
+            "eventCount": 1
+        },
+        {
+            "name": "Politics",
+            "key": "politics",
+            "competitionCount": 6,
+            "eventCount": 11
+        },
+        {
+            "name": "Rainbow Six",
+            "key": "rainbow-six",
+            "competitionCount": 1,
+            "eventCount": 5
+        },
+        {
+            "name": "Rocket League",
+            "key": "rocket-league",
+            "competitionCount": 0,
+            "eventCount": 0
+        },
+        {
+            "name": "Rugby League",
+            "key": "rugby-league",
+            "competitionCount": 4,
+            "eventCount": 98
+        },
+        {
+            "name": "Rugby Union",
+            "key": "rugby-union",
+            "competitionCount": 8,
+            "eventCount": 22
+        },
+        {
+            "name": "Sailing",
+            "key": "sailing",
+            "competitionCount": 0,
+            "eventCount": 0
+        },
+        {
+            "name": "Snooker",
+            "key": "snooker",
+            "competitionCount": 3,
+            "eventCount": 3
+        },
+        {
+            "name": "Soccer",
+            "key": "soccer",
+            "competitionCount": 220,
+            "eventCount": 2050
+        },
+        {
+            "name": "Specials",
+            "key": "specials",
+            "competitionCount": 0,
+            "eventCount": 1
+        },
+        {
+            "name": "Squash",
+            "key": "squash",
+            "competitionCount": 4,
+            "eventCount": 1
+        },
+        {
+            "name": "Starcraft",
+            "key": "starcraft",
+            "competitionCount": 6,
+            "eventCount": 39
+        },
+        {
+            "name": "Street Fighter V",
+            "key": "street-fighter-v",
+            "competitionCount": 0,
+            "eventCount": 0
+        },
+        {
+            "name": "Sumo",
+            "key": "sumo",
+            "competitionCount": 0,
+            "eventCount": 0
+        },
+        {
+            "name": "Swimming",
+            "key": "swimming",
+            "competitionCount": 0,
+            "eventCount": 0
+        },
+        {
+            "name": "Table Tennis",
+            "key": "table-tennis",
+            "competitionCount": 8,
+            "eventCount": 286
+        },
+        {
+            "name": "Tennis",
+            "key": "tennis",
+            "competitionCount": 58,
+            "eventCount": 500
+        },
+        {
+            "name": "Volleyball",
+            "key": "volleyball",
+            "competitionCount": 15,
+            "eventCount": 88
+        },
+        {
+            "name": "Waterpolo",
+            "key": "waterpolo",
+            "competitionCount": 1,
+            "eventCount": 6
+        },
+        {
+            "name": "Wild Rift",
+            "key": "wild-rift",
+            "competitionCount": 1,
+            "eventCount": 3
+        },
+        {
+            "name": "Winter Sports",
+            "key": "winter-sports",
+            "competitionCount": 0,
+            "eventCount": 0
+        },
+        {
+            "name": "World Lottery",
+            "key": "world-lottery",
+            "competitionCount": 0,
+            "eventCount": 0
+        }
+    ]
+}

@@ -1,0 +1,17 @@
+{
+    "competitions": [
+        {
+            "name": "NBA",
+            "key": "basketball-usa-nba",
+            "sport": {
+                "name": "Basketball",
+                "key": "basketball"
+            },
+            "events": [],
+            "category": {
+                "name": "USA",
+                "key": "usa"
+            }
+        }
+    ]
+}

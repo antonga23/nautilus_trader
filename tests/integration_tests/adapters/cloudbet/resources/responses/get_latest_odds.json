@@ -1,0 +1,10 @@
+{
+    "outcome": "over",
+    "params": "total=1",
+    "price": 2.11,
+    "minStake": 0.1,
+    "maxStake": 118.96808,
+    "probability": 0.431,
+    "status": "SELECTION_ENABLED",
+    "side": "BACK"
+}

@@ -12,7 +12,8 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
-
+import json
+import random
 import pathlib
 from datetime import date
 from decimal import Decimal
@@ -25,7 +26,9 @@ from pandas.io.parsers.readers import TextFileReader
 
 from nautilus_trader.adapters.betfair.common import BETFAIR_VENUE
 from nautilus_trader.core.correctness import PyCondition
-from nautilus_trader.model.currencies import ADA
+
+from nautilus_trader.adapters.cloudbet.common import CLOUDBET_VENUE
+from nautilus_trader.model.currencies import ADA, EUR
 from nautilus_trader.model.currencies import BTC
 from nautilus_trader.model.currencies import ETH
 from nautilus_trader.model.currencies import USD
@@ -46,10 +49,18 @@ from nautilus_trader.model.instruments import OptionsContract
 from nautilus_trader.model.objects import Money
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
+
+from nautilus_trader.model.instruments.crypto_betting import CryptoBettingInstrument
 from nautilus_trader.persistence.loaders import CSVBarDataLoader
 from nautilus_trader.persistence.loaders import CSVTickDataLoader
 from nautilus_trader.persistence.loaders import ParquetBarDataLoader
 from nautilus_trader.persistence.loaders import ParquetTickDataLoader
+
+# from tests.integration_tests.adapters.cloudbet.test_kit import CloudbetTestStubs
+from tests import TESTS_PACKAGE_ROOT
+
+TEST_PATH = pathlib.Path(TESTS_PACKAGE_ROOT + "/integration_tests/adapters/cloudbet/resources/")
+DATA_PATH = pathlib.Path(TESTS_PACKAGE_ROOT + "/test_data/cloudbet")
 
 
 class TestInstrumentProvider:
@@ -377,7 +388,7 @@ class TestInstrumentProvider:
             quote_currency=Currency.from_str(quote_currency),
             price_precision=price_precision,
             size_precision=0,
-            price_increment=Price(1 / 10**price_precision, price_precision),
+            price_increment=Price(1 / 10 ** price_precision, price_precision),
             size_increment=Quantity.from_int(1),
             lot_size=Quantity.from_str("1000"),
             max_quantity=Quantity.from_str("1e7"),
@@ -480,32 +491,54 @@ class TestInstrumentProvider:
         )
 
     @staticmethod
-    def betting_instrument_handicap() -> BettingInstrument:
-        return BettingInstrument.from_dict(
-            {
-                "venue_name": "BETFAIR",
-                "event_type_id": "61420",
-                "event_type_name": "Australian Rules",
-                "competition_id": "11897406",
-                "competition_name": "AFL",
-                "event_id": "30777079",
-                "event_name": "GWS v Richmond",
-                "event_country_code": "AU",
-                "event_open_date": "2021-08-13T09:50:00+00:00",
-                "betting_type": "ASIAN_HANDICAP_DOUBLE_LINE",
-                "market_id": "1.186249896",
-                "market_name": "Handicap",
-                "market_start_time": "2021-08-13T09:50:00+00:00",
-                "market_type": "HANDICAP",
-                "selection_id": "5304641",
-                "selection_name": "GWS",
-                "selection_handicap": "-5.5",
-                "currency": "AUD",
-                "ts_event": 0,
-                "ts_init": 0,
-            },
-        )
+    def crypto_betting_instrument(venue: Venue = CLOUDBET_VENUE) -> CryptoBettingInstrument:
+        if venue != CLOUDBET_VENUE:
+            # TODO: Implement other venues
+            raise NotImplementedError("Getting instruments for venues other than Cloudbet is not yet implemented")
+        else:
+            # instrument = CloudbetTestStubs.get_instrument()
+            # TODO: fix circular import issue when import from another test kit.
+            # for now we duplicate the code here
+            # read the instrument ids from the file
+            # get the working directory
+            with open(TEST_PATH / "instrument_data.json") as json_file:
+                instruments = json.load(json_file)
+            # type cast the instrument to a CryptoBettingInstrument
+            instrument = random.sample(instruments, k=1)[0]
+            instrument: CryptoBettingInstrument = CryptoBettingInstrument.from_dict(instrument)
+            return instrument
 
+    @staticmethod
+    def crypto_betting_instruments(venue: Venue = CLOUDBET_VENUE, count=100, sports=None) -> list[CryptoBettingInstrument]:
+        """
+        Retrieves a list of crypto betting instruments from the specified venue.
+
+        Args:
+            venue (Venue, optional): The venue from which to retrieve the instruments. Defaults to CLOUDBET_VENUE.
+            count (int, optional): The number of instruments to retrieve. Defaults to 100.
+            sports (list[str], optional): A list of sports to filter the instruments by. Defaults to None.
+
+        Returns:
+            list[CryptoBettingInstrument]: A list of CryptoBettingInstrument objects representing the retrieved instruments.
+        NB: Currently only supports Cloudbet. Max instrument count is 553
+        """
+        assert count < 553, "count should be less than 554"
+        if venue != CLOUDBET_VENUE:
+            raise NotImplementedError("Getting instruments for venues other than Cloudbet is not yet implemented")
+        else:
+            # instrument = CloudbetTestStubs.get_instruments()
+            # for now we duplicate the code here
+            # read the instrument ids from the file
+            with open(TEST_PATH / "instrument_data.json") as json_file:
+                instruments = json.load(json_file)
+            # Filter by sports if sports list is provided
+            if sports is not None:
+                instruments = [inst for inst in instruments if inst.get('sport_name') in sports]
+            # type cast the instrument to a CryptoBettingInstrument
+            # randomly select an instrument from the array
+            instruments = random.sample(instruments, k=min(count, len(instruments)))
+            instruments: list[CryptoBettingInstrument] = [CryptoBettingInstrument(**instrument) for instrument in instruments]
+        return instruments
 
 class TestDataProvider:
     """
