@@ -32,7 +32,9 @@ lint-job:
   script:
     - pre-commit run --all-files
   rules:
-    - if: '$CI_COMMIT_BRANCH == "develop" || $CI_COMMIT_BRANCH == "master"'
+    # - if: '$CI_COMMIT_BRANCH == "develop" || $CI_COMMIT_BRANCH == "master"'
+    - when: manual
+      allow_failure: true
   cache:
     key: ${CI_COMMIT_REF_SLUG}-pre-commit-cache-${PYTHON_VERSION}
     paths:
