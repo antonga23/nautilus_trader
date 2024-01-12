@@ -15,6 +15,8 @@
 
 from typing import Optional
 
+from nautilus_trader.model.currency import Currency
+
 from nautilus_trader.config import LiveDataClientConfig, InstrumentProviderConfig
 from nautilus_trader.config import LiveExecClientConfig
 
@@ -27,7 +29,9 @@ class CloudbetDataClientConfig(LiveDataClientConfig, frozen=True):
     ----------
     api_key : str, optional
         The cloudbet api key.
-
+    api_url : str, optional
+        The cloudbet api url.
+    market_filter : tuple, optional
     """
 
     api_key: Optional[str] = None
@@ -65,26 +69,24 @@ class CloudbetInstrumentProviderConfig(InstrumentProviderConfig, frozen=True):
     filter_callable = None
     log_warnings = True
 
+# TODO: pass this typed config to LiveCloudbetExecClient constructor
+class CloudbetExecClientConfig(LiveExecClientConfig, kw_only=True, frozen=True):
+    """
+    Configuration for `CloudbetExecClient` instances.
 
-# class BetfairExecClientConfig(LiveExecClientConfig, kw_only=True, frozen=True):
-#     """
-#     Configuration for ``BetfairExecClient`` instances.
-#
-#     Parameters
-#     ----------
-#     username : str, optional
-#         The Betfair account username.
-#     password : str, optional
-#         The Betfair account password.
-#     app_key : str, optional
-#         The betfair application key.
-#     cert_dir : str, optional
-#         The local directory that contains the betfair certificates
-#     """
-#
-#     base_currency: str
-#     username: Optional[str] = None
-#     password: Optional[str] = None
-#     app_key: Optional[str] = None
-#     cert_dir: Optional[str] = None
-#     market_filter: Optional[tuple] = None
+    Parameters
+    ----------
+    base_currency : str
+        The base currency of the account.
+    market_filter : tuple
+        The market filter to use.
+    api_key : str
+        The cloudbet api key.
+    api_url : str
+        The cloudbet api url.
+    """
+
+    base_currency: str
+    market_filter: Optional[dict] = None
+    api_key: Optional[str] = None
+    api_url: Optional[str] = None

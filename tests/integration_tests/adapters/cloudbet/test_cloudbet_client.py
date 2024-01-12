@@ -153,12 +153,7 @@ class TestCloudbetClient:
             asynctest.call('tennis', from_timestamp=filters['from_timestamp'], to_timestamp=filters['to_timestamp'],
                            live=filters['live'], limit=filters['limit'])
         ], any_order=True)  # any_order=True means we don't care about the order of the calls
-
-        # Verify get_events_for_sport function was called concurrently We assume get_events_for_sport function will
-        # take more than 0.1 second to complete Therefore if they were called concurrently, the total time should be
-        # less than the number of sports * 0.1 second
         assert self.client.get_events_for_sport.call_count == len(filters['sport_key'])
-        # assert self.client.get_events_for_sport.total_call_time < len(filters['sport_key']) * 0.1
 
     @pytest.mark.asyncio()
     async def test_get_events_for_sport_market_filter(self):
@@ -238,6 +233,28 @@ class TestCloudbetClient:
                     assert type(selection) == Selection
             else:
                 continue
+
+    @pytest.mark.asyncio()
+    @patch.object(CloudbetClient, 'get_events_for_sport', new_callable=AsyncMock)
+    async def test_load_selection_with_market_filters(self, mock_get_events_for_sport):
+        # Arrange
+        await self.client.connect()
+        sport_key = 'baseball'
+        filters = {
+            'sport_key': sport_key,
+            'from_timestamp': 0,
+            'to_timestamp': 0,
+            'live': 'false',
+            'limit': 0,
+            'market_name': ['moneyline', 'totals'],
+        }
+        mock_get_events_for_sport.return_value = CloudbetResponses.get_events_for_sport(sport_key=sport_key)
+        # Act
+        result: List[List[Selection]] = await self.client.load_selection(filters)
+        # assert that result only contains the filtered selections for the specified sport and market name
+        for selections in result:
+                for selection in selections:
+                    assert selection.market_name.split('.')[-1] in filters['market_name']
 
     @pytest.mark.asyncio()
     async def test_get_fixture_success(self):
@@ -434,8 +451,8 @@ class TestCloudbetClient:
         market_url = selection.market_name + '/' + selection.outcome + '?' + selection.params if selection.params is not None else selection.market_name + '/' + selection.outcome
 
         # Mock the post method
-        # cloudbet_client.post = asynctest.CoroutineMock(return_value=CloudbetResponses.place_bet_invalid_event_id())
-        mock_cloudbet_post.return_value = CloudbetResponses.place_bet_invalid_event_id()
+        ClientResponse = namedtuple('ClientResponse', ['status', 'data'])
+        mock_cloudbet_post.return_value = ClientResponse(status=500, data=b'')
 
         # Define the invalid event_id
         event_id = str(selection.event_id) + "random"

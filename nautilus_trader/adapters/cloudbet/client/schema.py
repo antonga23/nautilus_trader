@@ -21,18 +21,22 @@ from nautilus_trader.model.currency import Currency
 from nautilus_trader.model.currencies import EUR
 
 
-# ToDO: use selectionFilters data type/model to filter selections in cloudbet adapter
 class SelectionFilters(msgspec.Struct):
     """ Filters to apply to the selection """
     sport_key: Optional[str]
-    competition_key: Optional[str]
-    event_id: Optional[str]
-    market_name: Optional[str]
-    submarket_name: Optional[str]
-    submarket_period: Optional[str]
-    sequence: Optional[str]
-    outcome: Optional[str]
+    from_timestamp: Optional[int]
+    to_timestamp: Optional[int]
+    live: Optional[str] = "false"
+    limit: Optional[int] = 100
 
+class InstrumentProviderFilters(msgspec.Struct):
+    """ Filters to apply to the Cloudbet Instrument Provider"""
+    sport_key: Optional[str]
+    from_timestamp: Optional[int]
+    to_timestamp: Optional[int]
+    market_name: Optional[List[str]]
+    live: Optional[str] = "false"
+    limit: Optional[int] = 100
 
 class EventId(msgspec.Struct):
     home_team: str
