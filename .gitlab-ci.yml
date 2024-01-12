@@ -116,8 +116,8 @@ build-job:
       coverage_report:
         coverage_format: cobertura
         path: cov.xml
-  rules:
-    - if: '$CI_PIPELINE_SOURCE != "web" && ($CI_COMMIT_BRANCH == "develop" || $CI_COMMIT_BRANCH == "master" || $CI_COMMIT_BRANCH == "cloudbet")'
+  # rules:
+  #   - if: '$CI_PIPELINE_SOURCE != "web" && ($CI_COMMIT_BRANCH == "develop" || $CI_COMMIT_BRANCH == "master" || $CI_COMMIT_BRANCH == "cloudbet")'
   parallel:
     matrix:
       - PYTHON_VERSION: ["3.9.18"]
