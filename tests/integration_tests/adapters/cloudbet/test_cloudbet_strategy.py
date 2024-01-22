@@ -1,0 +1,307 @@
+import os
+from decimal import Decimal
+from itertools import count
+from typing import List
+from nautilus_trader.common.factories import OrderFactory
+import pandas as pd
+import random
+from unittest.mock import AsyncMock, patch
+from nautilus_trader.backtest.engine import BacktestEngine
+from nautilus_trader.backtest.engine import BacktestEngineConfig
+from nautilus_trader.backtest.engine import ExecEngineConfig
+from nautilus_trader.backtest.engine import RiskEngineConfig
+from nautilus_trader.backtest.modules import FXRolloverInterestConfig
+from nautilus_trader.backtest.modules import FXRolloverInterestModule
+from nautilus_trader.model.currency import Currency
+
+from nautilus_trader.config import LoggingConfig
+from nautilus_trader.examples.algorithms.twap import TWAPExecAlgorithm
+from nautilus_trader.examples.strategies.betting_market_maker import BettingMarketMaker
+from nautilus_trader.examples.strategies.ema_cross import EMACross
+from nautilus_trader.examples.strategies.ema_cross import EMACrossConfig
+from nautilus_trader.examples.strategies.ema_cross_stop_entry import EMACrossStopEntry
+from nautilus_trader.examples.strategies.ema_cross_stop_entry import EMACrossStopEntryConfig
+from nautilus_trader.examples.strategies.ema_cross_trailing_stop import EMACrossTrailingStop
+from nautilus_trader.examples.strategies.ema_cross_trailing_stop import EMACrossTrailingStopConfig
+from nautilus_trader.examples.strategies.ema_cross_twap import EMACrossTWAP
+from nautilus_trader.examples.strategies.ema_cross_twap import EMACrossTWAPConfig
+from nautilus_trader.examples.strategies.market_maker import MarketMaker
+from nautilus_trader.examples.strategies.orderbook_imbalance import OrderBookImbalance
+from nautilus_trader.examples.strategies.orderbook_imbalance import OrderBookImbalanceConfig
+from nautilus_trader.model.currencies import AUD
+from nautilus_trader.model.currencies import BTC
+from nautilus_trader.model.currencies import GBP
+from nautilus_trader.model.currencies import USD
+from nautilus_trader.model.currencies import USDT
+from nautilus_trader.model.data import BarType
+from nautilus_trader.model.data import OrderBookDelta
+from nautilus_trader.model.data import OrderBookDeltas
+from nautilus_trader.model.data import TradeTick
+from nautilus_trader.model.enums import AccountType
+from nautilus_trader.model.enums import BookType
+from nautilus_trader.model.enums import OmsType
+from nautilus_trader.model.identifiers import Venue
+from nautilus_trader.model.instruments.betting import BettingInstrument
+from nautilus_trader.model.objects import Money
+from nautilus_trader.persistence.wranglers import BarDataWrangler
+from nautilus_trader.persistence.wranglers import QuoteTickDataWrangler
+from nautilus_trader.persistence.wranglers import TradeTickDataWrangler
+
+from nautilus_trader.model.instruments.crypto_betting import CryptoBettingInstrument
+from nautilus_trader.model.orderbook.book import OrderBook
+from nautilus_trader.test_kit.mocks.data import data_catalog_setup
+from nautilus_trader.test_kit.providers import TestDataProvider
+from nautilus_trader.test_kit.providers import TestInstrumentProvider
+from tests import TEST_DATA_DIR
+from tests.integration_tests.adapters.betfair.test_kit import BetfairDataProvider
+
+from datetime import datetime
+from datetime import timedelta
+from decimal import Decimal
+
+import pytest
+import pytz
+
+from nautilus_trader.backtest.data_client import BacktestMarketDataClient
+from nautilus_trader.backtest.exchange import SimulatedExchange
+from nautilus_trader.backtest.execution_client import BacktestExecClient
+from nautilus_trader.backtest.models import FillModel
+from nautilus_trader.backtest.models import LatencyModel
+from nautilus_trader.common.clock import TestClock
+from nautilus_trader.common.enums import ComponentState
+from nautilus_trader.common.enums import LogLevel
+from nautilus_trader.common.logging import Logger
+from nautilus_trader.config import ImportableStrategyConfig
+from nautilus_trader.config import StrategyConfig
+from nautilus_trader.core.uuid import UUID4
+from nautilus_trader.data.engine import DataEngine
+from nautilus_trader.execution.engine import ExecutionEngine
+from nautilus_trader.indicators.average.ema import ExponentialMovingAverage
+from nautilus_trader.model.currencies import USD
+from nautilus_trader.model.data import Bar
+from nautilus_trader.model.enums import AccountType
+from nautilus_trader.model.enums import OmsType
+from nautilus_trader.model.enums import OrderSide
+from nautilus_trader.model.enums import OrderStatus
+from nautilus_trader.model.enums import OrderType
+from nautilus_trader.model.enums import PriceType
+from nautilus_trader.model.enums import TimeInForce
+from nautilus_trader.model.enums import TriggerType
+from nautilus_trader.model.identifiers import ClientId
+from nautilus_trader.model.identifiers import StrategyId
+from nautilus_trader.model.identifiers import Venue
+from nautilus_trader.model.objects import Money
+from nautilus_trader.model.objects import Price
+from nautilus_trader.model.objects import Quantity
+from nautilus_trader.model.orders import MarketOrder
+from nautilus_trader.model.orders import OrderList
+from nautilus_trader.msgbus.bus import MessageBus
+from nautilus_trader.portfolio.portfolio import Portfolio
+from nautilus_trader.risk.engine import RiskEngine
+from nautilus_trader.test_kit.mocks.strategies import KaboomStrategy
+from nautilus_trader.test_kit.mocks.strategies import MockStrategy
+from nautilus_trader.test_kit.providers import TestInstrumentProvider
+from nautilus_trader.test_kit.stubs.component import TestComponentStubs
+from nautilus_trader.test_kit.stubs.data import UNIX_EPOCH
+from nautilus_trader.test_kit.stubs.data import TestDataStubs
+from nautilus_trader.test_kit.stubs.events import TestEventStubs
+from nautilus_trader.test_kit.stubs.identifiers import TestIdStubs
+from nautilus_trader.trading.strategy import Strategy
+
+
+class TestBettingMarketMaking:
+    def setup(self):
+        # Fixture Setup
+        self.clock = TestClock()
+        self.logger = Logger(
+            clock=self.clock,
+            level_stdout=LogLevel.DEBUG,
+            bypass=True,
+        )
+
+        self.trader_id = TestIdStubs.trader_id()
+
+        self.msgbus = MessageBus(
+            trader_id=self.trader_id,
+            clock=self.clock,
+            logger=self.logger,
+        )
+
+        self.cache = TestComponentStubs.cache()
+
+        self.portfolio = Portfolio(
+            msgbus=self.msgbus,
+            cache=self.cache,
+            clock=self.clock,
+            logger=self.logger,
+        )
+
+        self.data_engine = DataEngine(
+            msgbus=self.msgbus,
+            cache=self.cache,
+            clock=self.clock,
+            logger=self.logger,
+        )
+
+        self.exec_engine = ExecutionEngine(
+            msgbus=self.msgbus,
+            cache=self.cache,
+            clock=self.clock,
+            logger=self.logger,
+        )
+
+        self.risk_engine = RiskEngine(
+            portfolio=self.portfolio,
+            msgbus=self.msgbus,
+            cache=self.cache,
+            clock=self.clock,
+            logger=self.logger,
+        )
+
+        self.instruments: List[CryptoBettingInstrument] = TestInstrumentProvider.crypto_betting_instruments(count=500,
+                                                                                                            sports='Soccer')
+        self.exchange = SimulatedExchange(
+            venue=Venue("CLOUDBET"),
+            oms_type=OmsType.HEDGING,
+            account_type=AccountType.MARGIN,
+            base_currency=USD,
+            starting_balances=[Money(1_000_000, USD)],
+            default_leverage=Decimal(1),
+            leverages={},
+            msgbus=self.msgbus,
+            cache=self.cache,
+            instruments=self.instruments,
+            modules=[],
+            fill_model=FillModel(),
+            clock=self.clock,
+            logger=self.logger,
+            latency_model=LatencyModel(0),
+        )
+
+        self.data_client = BacktestMarketDataClient(
+            client_id=ClientId("SIM"),
+            msgbus=self.msgbus,
+            cache=self.cache,
+            clock=self.clock,
+            logger=self.logger,
+        )
+
+        self.exec_client = BacktestExecClient(
+            exchange=self.exchange,
+            msgbus=self.msgbus,
+            cache=self.cache,
+            clock=self.clock,
+            logger=self.logger,
+        )
+
+        # Wire up components
+        self.exchange.register_client(self.exec_client)
+        self.data_engine.register_client(self.data_client)
+        self.exec_engine.register_client(self.exec_client)
+        self.exchange.reset()
+
+        for instrument in self.instruments:
+            # Add instruments
+            self.data_engine.process(instrument)
+            self.data_engine.process(instrument)
+            self.data_engine.process(instrument)
+            self.cache.add_instrument(instrument)
+            self.cache.add_instrument(instrument)
+            self.cache.add_instrument(instrument)
+
+            # Prepare market
+            self.exchange.process_quote_tick(
+                TestDataStubs.quote_tick(
+                    instrument=instrument,
+                    bid=90.001,
+                    ask=90.002,
+                ),
+            )
+
+        self.data_engine.start()
+        self.exec_engine.start()
+
+    def test_initialization(self, instrument):
+        # Arrange
+        strategy = BettingMarketMaker(instrument_id=instrument, max_size=Decimal(1), trigger_min_size=Decimal(1),
+                                      trigger_min_profit=float(1), config=StrategyConfig(order_id_tag="001"))
+        strategy.register(
+            trader_id=self.trader_id,
+            portfolio=self.portfolio,
+            msgbus=self.msgbus,
+            cache=self.cache,
+            clock=self.clock,
+            logger=self.logger,
+        )
+
+        # Act, Assert
+        assert strategy.state == ComponentState.READY
+
+    @patch.object(BettingMarketMaker, 'selection_matcher')
+    #NB: Greyhound and Ice-Hockey are not supported; test will fail when passed an Instrument of that sport
+    #TODO: fix "instrument" fixture
+    def test_on_start(self, patch_selection_matcher, instrument):
+        # Arrange
+        # add instrument to cache in case it has not been added
+        self.cache.add_instrument(instrument)
+        matched_instruments = random.sample(self.instruments, 100)
+        patch_selection_matcher.return_value = matched_instruments
+        strategy: BettingMarketMaker = BettingMarketMaker(instrument_id=instrument.id, max_size=Decimal(1), trigger_min_size=Decimal(1),
+                                      trigger_min_profit=float(1), config=StrategyConfig(order_id_tag="001"))
+        strategy.register(
+            trader_id=self.trader_id,
+            portfolio=self.portfolio,
+            msgbus=self.msgbus,
+            cache=self.cache,
+            clock=self.clock,
+            logger=self.logger,
+        )
+        # Act
+        strategy._start()
+        # Assert
+        # check book for instrument has been created
+        assert strategy._book.instrument_id == instrument.id
+        # check book order has been added to instruments orderbook
+        assert strategy._book.best_ask_price() == instrument.min_price
+        # sort and filter matched_instruments by price, return first instrument
+        matched_instruments = filter(lambda x: x.max_quantity is not None, matched_instruments)
+        matched_instruments = list(matched_instruments)
+        matched_instruments.sort(key=lambda x: x.min_price, reverse=True)
+        assert strategy._book.best_bid_price() == matched_instruments[0].min_price
+        for instrument in matched_instruments:
+            if instrument.max_quantity is None:
+                continue
+            assert instrument.id in strategy._instrument_to_book
+
+    @pytest.mark.parametrize("param_market_filter", [
+        ("match_odds"),
+        # ("total_goals"),
+        # ("asian_handicap")
+        # ("asian_handicap_period_first_half")
+    ]) # TODO: add a param_sport_filter instead of filtering self.instruments in setUp()
+    # @pytest.mark.skipif(reason=" selection_matcher() WIP ")
+    def test_strategy_selection_matcher(self, param_market_filter, instrument_provider):
+        # Arrange
+        # filter the self.instruments by the param_market_filter
+        filterd_instruments : List[CryptoBettingInstrument]= list(filter(lambda x: x.market_name.split(".")[-1] == param_market_filter, self.instruments))
+        # pick a random instrument to pass to strategy based on the filtered market filter
+        instrument: CryptoBettingInstrument = random.choice(filterd_instruments)
+        instrument_provider.add_bulk(self.instruments)
+        # add mock instrument to cache in case it has not been added
+        self.cache.add_instrument(instrument)
+        strategy = BettingMarketMaker(instrument_id=instrument.id, instrument=instrument, max_size=Decimal(100),
+                                      trigger_min_size=Decimal(1), trigger_min_profit=float(1),
+                                      config=StrategyConfig(order_id_tag="001"),
+                                      instrument_provider=instrument_provider)
+        strategy.register(
+            trader_id=self.trader_id,
+            portfolio=self.portfolio,
+            msgbus=self.msgbus,
+            cache=self.cache,
+            clock=self.clock,
+            logger=self.logger,
+        )
+        # Act
+        strategy.selection_matcher()
+        # Assert
+
