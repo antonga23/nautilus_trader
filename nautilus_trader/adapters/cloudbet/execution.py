@@ -270,7 +270,7 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
             account_state = AccountState(
                 account_id=account_id,
                 account_type=AccountType.BETTING,
-                base_currency=self._client.currency,
+                base_currency=self.base_currency,
                 reported=True,
                 balances=account_balances,
                 margins=[],

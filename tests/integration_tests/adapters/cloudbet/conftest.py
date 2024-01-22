@@ -1,27 +1,14 @@
-# -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 . All rights reserved.
-#  https://nautechsystems.io
-#
-#  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
-#  You may not use this file except in compliance with the License.
-#  You may obtain a copy of the License at https://www.gnu.org/licenses/lgpl-3.0.en.html
-#
-#  Unless required by applicable law or agreed to in writing, software
-#  distributed under the License is distributed on an "AS IS" BASIS,
-#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#  See the License for the specific language governing permissions and
-#  limitations under the License.
-# -------------------------------------------------------------------------------------------------
 from typing import Optional, Union, List
 
 import pytest
+from nautilus_trader.model.currency import Currency
 
 from nautilus_trader.model.events.account import AccountState
 from nautilus_trader.model.identifiers import Venue, AccountId, TradeId, StrategyId, ClientOrderId
 
 from nautilus_trader.adapters.cloudbet.client.core import CloudbetClient
 from nautilus_trader.adapters.cloudbet.common import VENUE
-from nautilus_trader.adapters.cloudbet.config import CloudbetDataClientConfig
+from nautilus_trader.adapters.cloudbet.config import CloudbetDataClientConfig, CloudbetExecClientConfig
 from nautilus_trader.adapters.cloudbet.data_client import CloudbetDataClient
 from nautilus_trader.adapters.cloudbet.execution import CloudbetLiveExecutionClient
 from nautilus_trader.adapters.cloudbet.factories import CloudbetLiveDataClientFactory, CloudbetLiveExecClientFactory
@@ -34,7 +21,30 @@ from nautilus_trader.test_kit.stubs.events import TestEventStubs
 from nautilus_trader.test_kit.stubs.execution import TestExecStubs
 from tests.integration_tests.adapters.cloudbet.test_kit import CloudbetTestStubs
 from nautilus_trader.common.clock import LiveClock
+from dotenv import dotenv_values, load_dotenv
+from pathlib import Path
 
+project_root = Path(__file__).parents[5]
+env_path = project_root / 'nautilus_trader/adapters/cloudbet/.cloudbet_env'
+
+env_path = Path(__file__).parents[4] / '.cloudbet_env'
+
+# Loading the environment variables from .cloudbet_env
+# load_dotenv(dotenv_path=env_path)
+
+cloudbet_secrets = dotenv_values(env_path)
+
+
+@pytest.fixture()
+def exec_client_config(api_key=None, api_url=None, base_currency: Currency = None,
+                       market_filter: Optional[dict] = None) -> CloudbetExecClientConfig:
+    config = CloudbetExecClientConfig(
+        api_key=api_key or cloudbet_secrets.get('CLOUDBET_API_KEY'),  # read from secrets
+        api_url=api_url or cloudbet_secrets.get('CLOUDBET_API_URL'),
+        base_currency=base_currency,
+        market_filter=market_filter
+    )
+    return config
 
 @pytest.fixture()
 def venue() -> Venue:
@@ -132,6 +142,7 @@ def exec_client(
     cache,
     clock,
     logger,
+    exec_client_config
 ) -> CloudbetLiveExecutionClient:
     mocker.patch("nautilus_trader.adapters.cloudbet.factories.get_cached_cloudbet_client",
                  return_value=cloudbet_client)
@@ -141,12 +152,11 @@ def exec_client(
     exec_client = CloudbetLiveExecClientFactory.create(
         loop=event_loop,
         name=venue.value,
-        config=None,
+        config=exec_client_config,
         msgbus=msgbus,
         cache=cache,
         clock=clock,
         logger=logger,
-        base_currency=None,
     )
     return exec_client
 
