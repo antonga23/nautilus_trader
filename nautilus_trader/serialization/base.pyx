@@ -59,6 +59,7 @@ from nautilus_trader.model.instruments.equity cimport Equity
 from nautilus_trader.model.instruments.futures_contract cimport FuturesContract
 from nautilus_trader.model.instruments.options_contract cimport OptionsContract
 
+from nautilus_trader.model.instruments.crypto_betting import CryptoBettingInstrument
 
 # Default mappings for Nautilus objects
 _OBJECT_TO_DICT_MAP: dict[str, Callable[[None], dict]] = {
@@ -103,6 +104,7 @@ _OBJECT_TO_DICT_MAP: dict[str, Callable[[None], dict]] = {
     InstrumentClose.__name__: InstrumentClose.to_dict_c,
     BinanceBar.__name__: BinanceBar.to_dict,
     BinanceTicker.__name__: BinanceTicker.to_dict,
+    CryptoBettingInstrument.__name__: CryptoBettingInstrument.to_dict
 }
 
 
@@ -149,6 +151,7 @@ _OBJECT_FROM_DICT_MAP: dict[str, Callable[[dict], Any]] = {
     InstrumentClose.__name__: InstrumentClose.from_dict_c,
     BinanceBar.__name__: BinanceBar.from_dict,
     BinanceTicker.__name__: BinanceTicker.from_dict,
+    CryptoBettingInstrument.__name__: CryptoBettingInstrument.from_dict
 }
 
 

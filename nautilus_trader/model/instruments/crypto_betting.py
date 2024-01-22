@@ -126,7 +126,7 @@ class CryptoBettingInstrument(Instrument):
         start_time: Optional[str] = None,
         end_time: Optional[str] = None,
         fees: Optional[Any] = None,
-        handicap: Optional[Any] = None,
+        handicap: Optional[Any] = None, #TODO: Fix a handicap type...eg. tuple[outcome, handicap_value, etc]
         trading_status: Optional[str] = None,
         # NB: event_id should be a unique per event but the same across all venues
         event_id: Optional[str] = None,
@@ -167,7 +167,7 @@ class CryptoBettingInstrument(Instrument):
         self.trading_status = trading_status
         self.fees = fees
         self.handicap = handicap
-        self._typed_currency = self.currency if isinstance(self.currency, Currency) else Currency.from_internal_map(currency)
+        self._typed_currency = self.currency if isinstance(self.currency, Currency) else Currency.from_internal_map(currency) #TODO: redundant => currency is already typed as Currency
         instrument_id = cloudbet_instrument_id(event_id=event_id, market_name=market_name, outcome=outcome, params=params)
 
         super().__init__(
@@ -199,7 +199,7 @@ class CryptoBettingInstrument(Instrument):
 
 
     @staticmethod
-    def from_dict(values: dict) -> 'CryptoBettingInstrument':
+    def from_dict(values: dict[str, Any]) -> 'CryptoBettingInstrument':
         """
         Creates a new `CryptoBettingInstrument` from a dictionary.
 
@@ -225,10 +225,11 @@ class CryptoBettingInstrument(Instrument):
         if values.get('side'):
             values['side'] = SelectionSide(values['side'])
         data = values.copy()
-        return CryptoBettingInstrument(**{k: v for k, v in data.items() if k not in ('id',)})
+        return CryptoBettingInstrument(**{k: v for k, v in data.items() if k not in ('id', 'type')})
 
     # ToDO: add test
-    def to_dict(self) -> dict:
+    @staticmethod
+    def to_dict(obj: "CryptoBettingInstrument") -> dict[str, Any]: # to allow serialization for Cython use explict type "obj : 'CryptoBettingInstrument'" instead of self
         """
         Converts a `CryptoBettingInstrument` to a dictionary.
 
@@ -237,34 +238,35 @@ class CryptoBettingInstrument(Instrument):
         dict[str, object]
         """
         return {
-            "home_name": self.home_name,
-            "away_name": self.away_name,
-            "sport_name": self.sport_name,
-            "competition_name": self.competition_name,
-            "price": self.price,
-            "quote_currency": self.quote_currency.code if self.quote_currency else None,
-            "event_name": self.event_name,
-            "market_name": self.market_name,
-            "market_type": self.market_type,
-            "venue": self.venue.value if self.venue else None,
-            "live": self.live,
-            "enabled": self.enabled,
-            "event_id": self.event_id,
-            "side": self.side.value if self.side else SelectionSide.UNDEFINED.value,
-            "outcome": self.outcome,
-            "params": self.params,
-            "market_id": self.market_id,
-            "home_id": self.home_id,
-            "away_id": self.away_id,
-            "sport_id": self.sport_id,
-            "competition_id": self.competition_id,
-            "max_size": str(self.max_size) if self.max_size else None,
-            "min_size": str(self.min_size) if self.min_size else None,
-            "start_time": self.start_time,
-            "end_time": self.end_time,
-            "fees": self.fees,
-            "handicap": self.handicap,
-            "trading_status": self.trading_status,
+            "type": CryptoBettingInstrument.__name__, # necessary for serialization to cache see: nautilus_trader/serialization/base.pyx
+            "home_name": obj.home_name,
+            "away_name": obj.away_name,
+            "sport_name": obj.sport_name,
+            "competition_name": obj.competition_name,
+            "price": obj.price,
+            "currency": obj.currency.code if obj.currency else None,
+            "event_name": obj.event_name,
+            "market_name": obj.market_name,
+            "market_type": obj.market_type,
+            "venue": obj.venue.value if obj.venue else None,
+            "live": obj.live,
+            "enabled": obj.enabled,
+            "event_id": obj.event_id,
+            "side": obj.side if obj.side else SelectionSide.UNDEFINED.value,
+            "outcome": obj.outcome,
+            "params": obj.params,
+            "market_id": obj.market_id,
+            "home_id": obj.home_id,
+            "away_id": obj.away_id,
+            "sport_id": obj.sport_id,
+            "competition_id": obj.competition_id,
+            "max_size": str(obj.max_size) if obj.max_size else None,
+            "min_size": str(obj.min_size) if obj.min_size else None,
+            "start_time": obj.start_time,
+            "end_time": obj.end_time,
+            "fees": obj.fees,
+            "handicap": obj.handicap,
+            "trading_status": obj.trading_status,
         }
 
     @staticmethod

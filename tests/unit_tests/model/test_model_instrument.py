@@ -12,11 +12,13 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
-
+import json
 from decimal import Decimal
+from typing import List, Any
 
 import pytest
 
+from nautilus_trader.adapters.cloudbet.client.schema import SelectionSide
 from nautilus_trader.adapters.cloudbet.common import CLOUDBET_VENUE
 from nautilus_trader.model.currencies import AUD
 from nautilus_trader.model.currencies import BTC
@@ -35,6 +37,7 @@ from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
 
 from nautilus_trader.model.instruments.crypto_betting import CryptoBettingInstrument
+from tests.integration_tests.adapters.cloudbet.conftest import instruments
 from nautilus_trader.test_kit.providers import TestDataProvider
 from nautilus_trader.test_kit.providers import TestInstrumentProvider
 
@@ -501,15 +504,67 @@ class TestCryptoBettingInstrument:
         assert isinstance(self.instrument, CryptoBettingInstrument)
         assert isinstance(self.instrument, Instrument)
 
-    def test_crypto_betting_instrument_to_dict(self):
-        instrument = self.instrument
-        result = CryptoBettingInstrument.to_dict(instrument)
-        # Assert
-        assert isinstance(result, dict)
+    @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 500)], indirect=["instruments"])
+    def test_crypto_betting_instrument_to_dict(self, instruments):
+        results: List[dict[str, Any]] = []
+        for instrument in instruments:
+            result = CryptoBettingInstrument.to_dict(instrument)
+            results.append(result)
+            # Assert
+            assert isinstance(result, dict)
+            # check only these keys are in the dict else test fails
+            assert set(result.keys()) == {
+                    "type", "home_name", "away_name", "sport_name", "competition_name", "price",
+                    "currency", "event_name", "market_name", "market_type", "venue", "live",
+                    "enabled", "event_id", "side", "outcome", "params", "market_id", "home_id",
+                    "away_id", "sport_id", "competition_id", "max_size", "min_size", "start_time",
+                    "end_time", "fees", "handicap", "trading_status"
+            }
+    @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 500)], indirect=["instruments"])
+    def test_crypto_betting_instrument_from_dict(self, instruments):
+        # read saved JSON from file
+        json_instruments = None
+        try:
+            with open("/home/alatha/Desktop/eudaimonia/tests/integration_tests/adapters/cloudbet/resources/CryptoBettingInstrument.json") as f:
+                json_instruments = json.load(f)
+        except:
+            raise Exception("Could not read JSON from file")
+        if json_instruments:
+            for instrument in json_instruments:
+                cb_instrument = CryptoBettingInstrument.from_dict(instrument)
+                assert isinstance(cb_instrument, CryptoBettingInstrument)
+        # # Note: This is probably not a good pattern, but it works for now
+        #
+        # JSON_INSTRUMENTS : list[dict[str, Any]] = [(CryptoBettingInstrument.to_dict(instrument)) for instrument in instruments]
+        # for instrument in JSON_INSTRUMENTS:
+        #     cb_instrument = CryptoBettingInstrument.from_dict(instrument)
+        #     assert isinstance(cb_instrument, CryptoBettingInstrument)
 
-    def test_crypto_betting_instrument_from_dict(self):
-        # Note: from_dict is implcitly tested when creating an instrument
-        assert True
+
+        # for instrument in instruments:
+        #     JSON_INSTRUMENT = [(CryptoBettingInstrument.to_dict(instrument))]
+        #     result = CryptoBettingInstrument.from_dict
+        #     results.append(result)
+        #     # Assert
+        #     assert isinstance(result, CryptoBettingInstrument)
+
+
+
+
+        # # Note: from_dict is implcitly tested when creating an instrument
+        # # Arrange
+        # results: List[dict[str, Any]] = []
+        # # Note: This is probably not a good pattern, but it works for now
+        # for instrument in instruments:
+        #     results.append(CryptoBettingInstrument.to_dict(instrument))
+        # for result in results:
+        #     try:
+        #         CryptoBettingInstrument.from_dict(result)
+        #     except Exception as e:
+        #         raise e
+        # assert isinstance(instrument, CryptoBettingInstrument)
+
+        # assert True
 
     def test_multiple_instrument_creation(self):
         instruments = TestInstrumentProvider.crypto_betting_instruments(CLOUDBET_VENUE,100)

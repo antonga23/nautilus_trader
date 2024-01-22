@@ -17,7 +17,7 @@ import random
 import pathlib
 from datetime import date
 from decimal import Decimal
-from typing import Optional
+from typing import Optional, List
 
 import fsspec
 import pandas as pd
@@ -490,7 +490,7 @@ class TestInstrumentProvider:
             ts_init=0,
         )
 
-    @staticmethod
+    @staticmethod  # TODO: replace all usages of this method with crypto_betting_instrument(s). shoulld not call from_dict method
     def crypto_betting_instrument(venue: Venue = CLOUDBET_VENUE) -> CryptoBettingInstrument:
         if venue != CLOUDBET_VENUE:
             # TODO: Implement other venues
@@ -509,7 +509,8 @@ class TestInstrumentProvider:
             return instrument
 
     @staticmethod
-    def crypto_betting_instruments(venue: Venue = CLOUDBET_VENUE, count=100, sports=None) -> list[CryptoBettingInstrument]:
+    def crypto_betting_instruments(venue: Venue = CLOUDBET_VENUE, count=100, sports=None) -> list[
+        CryptoBettingInstrument]:
         """
         Retrieves a list of crypto betting instruments from the specified venue.
 
@@ -537,8 +538,10 @@ class TestInstrumentProvider:
             # type cast the instrument to a CryptoBettingInstrument
             # randomly select an instrument from the array
             instruments = random.sample(instruments, k=min(count, len(instruments)))
-            instruments: list[CryptoBettingInstrument] = [CryptoBettingInstrument(**instrument) for instrument in instruments]
+            instruments: List[CryptoBettingInstrument] = [CryptoBettingInstrument.from_dict(instrument) for instrument
+                                                          in instruments]
         return instruments
+
 
 class TestDataProvider:
     """
