@@ -29,6 +29,7 @@ from nautilus_trader.adapters.cloudbet.client.schema import Selection, GetLatest
 from nautilus_trader.adapters.cloudbet.common import CLOUDBET_VENUE
 from nautilus_trader.adapters.cloudbet.providers import CloudbetInstrumentProvider
 from nautilus_trader.model.instruments.crypto_betting import CryptoBettingInstrument
+from nautilus_trader.test_kit.providers import TestInstrumentProvider
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
 from tests.integration_tests.adapters.cloudbet.test_kit import CloudbetTestStubs, CloudbetResponses
 import random
@@ -64,6 +65,11 @@ class TestCloudbetInstrumentProvider:
         await self.client.connect()
         instrument_count = await self.provider.load_all_async()
         print(instrument_count, self.provider.count)
+        # # we want to save the instruments to a json for later use as a mock
+        instruments: List[CryptoBettingInstrument] = self.provider.list_all()
+        instruments = [CryptoBettingInstrument.to_dict(i) for i in instruments]
+        # with open("CryptoBettingInstrument.json", "w") as f:
+        #     json.dump(instruments, f)
         assert self.provider.count == instrument_count, f"Instrument count does not match: expected {self.provider.count} but got {instrument_count}"
 
     @pytest.mark.asyncio()
@@ -152,10 +158,9 @@ class TestCloudbetInstrumentProvider:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 500)], indirect=["instruments"])
-    @patch.object(CloudbetClient, 'get_latest_odds', new_callable=AsyncMock, return_value=CloudbetResponses.get_latest_odds())
+    @patch.object(CloudbetClient, 'get_latest_odds', new_callable=AsyncMock,
+                  return_value=CloudbetResponses.get_latest_odds())
     @patch.object(CloudbetClient, 'get_event', new_callable=AsyncMock, return_value=CloudbetResponses.get_event())
-    # event: GetEventResponse = await self._client.get_event(event_id)
-    # updated_selection: GetLatestOddsResponse = await self._client.get_latest_odds(event_id, market_url)
     async def test_bulk_load_ids_async(self, mock_get_event, mock_get_latest_odds, instrument_provider, instruments):
         """
         Test case for testing the asynchronous bulk load of instrument IDs.
@@ -181,3 +186,53 @@ class TestCloudbetInstrumentProvider:
         loaded_instruments = [instrument for instrument in loaded_instruments if instrument is not None]
         for i in range(len(loaded_instruments)):
             assert isinstance(loaded_instruments[i], CryptoBettingInstrument)
+
+    @pytest.mark.parametrize(("param_instrument_filter", "param_search_result"), [
+        ({"sport_name": "Soccer"}, True),  # successful single k,v filter
+        ({"sport_name": "Invalid Sport Name"}, False),  # unsuccesful single k,v
+        ({"sport_name": "Soccer", "market_name": "invalid_market_name"}, False),  # unsuccesful single k,v
+        ({"sport_name": "Soccer", "market_name": "soccer.asian_handicap", "event_name": "Torreense U23 V FC Famalicao"},
+         True),  # succesful single k,v
+    ])
+    @patch.object(CloudbetInstrumentProvider, 'list_all')
+    @pytest.mark.asyncio()
+    async def test_search_instruments(self, mock_provider_list_all, param_instrument_filter, param_search_result):
+        # Arrange
+        await self.client.connect()
+        mock_provider_list_all.return_value = TestInstrumentProvider.crypto_betting_instruments(
+            count=552)
+        # Act
+        filtered_instruments = self.provider.search_instruments(
+            instrument_filter=param_instrument_filter,
+        )  # NB. for more robustness we could construct the instrument filter based on a random instrument from mock_provider_list_all
+        # Assert
+        if param_search_result:
+            assert len(filtered_instruments) > 0
+            for instrument in filtered_instruments:
+                for key, value in param_instrument_filter.items():
+                    assert getattr(instrument, key) == value
+        else:
+            assert len(filtered_instruments) == 0
+
+    @pytest.mark.asyncio()
+    @patch.object(CloudbetClient, 'get_latest_odds', new_callable=AsyncMock,
+                  return_value=CloudbetResponses.get_latest_odds())
+    @pytest.mark.skipif(reason="get_betting_instrument() never called so we can skip the test")
+    async def test_get_betting_instrument(self):
+        await self.provider.load_all_async()
+        kw = {
+            "market_id": "1.180678317",
+            "selection_id": "11313157",
+            "handicap": 0.0,
+        }
+        instrument = self.provider.get_betting_instrument(**kw)
+        assert instrument.market_id == "1.180678317"
+
+        # Test throwing warning
+        kw["handicap"] = "-1000"
+        instrument = self.provider.get_betting_instrument(**kw)
+        assert instrument is None
+
+        # Test already in self._subscribed_instruments
+        instrument = self.provider.get_betting_instrument(**kw)
+        assert instrument is None

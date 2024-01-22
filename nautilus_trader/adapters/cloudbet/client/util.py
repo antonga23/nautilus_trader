@@ -14,12 +14,13 @@ import re
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
-
+import time
+import random
 from functools import lru_cache
 from typing import Optional, Union, List
 from datetime import datetime, timezone
 import pandas
-
+import uuid
 from nautilus_trader.core.correctness import PyCondition
 from nautilus_trader.core.rust.model import ContingencyType, OrderStatus, OrderSide, OrderType, LiquiditySide, \
     PositionSide, TimeInForce
@@ -124,7 +125,7 @@ def cb_bet_to_order_status_report(
         OrderStatusReport: The generated order status report.
     """
     # PyCondition.not_none(order, "order") or PyCondition.not_none(bet_response, "bet_response")
-    PyCondition.type(venue_order_id, VenueOrderId, "venue_order_id") # cannot generate report without venue_order_id
+    PyCondition.type(venue_order_id, VenueOrderId, "venue_order_id")  # cannot generate report without venue_order_id
     assert order is not None or bet_response is not None, "Either order or bet_response must be provided"
     report: OrderStatusReport = None
     if bet_response is not None:
@@ -172,7 +173,8 @@ def cb_bet_to_order_status_report(
             order_price = order.price
         else:
             order_price = Price(0)
-        filled_qty = order.filled_qty if order.filled_qty is not None else Quantity(0) # optional Order fields so we need to check for None
+        filled_qty = order.filled_qty if order.filled_qty is not None else Quantity(
+            0)  # optional Order fields so we need to check for None
         order_accepted = order.ts_last  # if 0, then order has not been accepted yet
         report: OrderStatusReport = OrderStatusReport(
             account_id=account_id,
@@ -180,8 +182,9 @@ def cb_bet_to_order_status_report(
             venue_order_id=venue_order_id,
             client_order_id=client_order_id,
             order_side=order.side,
-            order_type=order.order_type if order.order_type is not None else OrderType.LIMIT,  # cloudbet only supports limit orders
-            contingency_type= order.contingency_type,
+            order_type=order.order_type if order.order_type is not None else OrderType.LIMIT,
+            # cloudbet only supports limit orders
+            contingency_type=order.contingency_type,
             time_in_force=order.time_in_force,  # created on Order init
             order_status=order.status,
             price=order_price,
@@ -224,7 +227,9 @@ def bet_to_trade_report(
     """
     assert order is not None or bet_response is not None, "Either order or bet_response must be provided"
 
-    trade_id : Optional[TradeId] = TradeId(venue_order_id.value) if order is None else order.last_trade_id if order.last_trade_id else TradeId(venue_order_id.value)
+    trade_id: Optional[TradeId] = TradeId(
+        venue_order_id.value) if order is None else order.last_trade_id if order.last_trade_id else TradeId(
+        venue_order_id.value)
 
     if bet_response is not None:
         bet_side = bet_response.side
@@ -429,3 +434,23 @@ def datetime_to_cloudbet_timestamp(ts: pandas.Timestamp) -> str:
     PyCondition.not_none(ts, "ts")
     PyCondition.type(ts, pandas.Timestamp, "ts")
     return ts.strftime('%Y-%m-%dT%H:%M:%SZ')
+
+
+def generate_64bit_uuid():
+    """
+    Generate a 64-bit unique identifier.
+
+    This function creates a UUID (Universally Unique Identifier) using Python's
+    uuid library and then converts it to a 64-bit integer. It does this by generating
+    a standard 128-bit UUID, converting it to its integer representation, and then
+    applying a bitmask to retain only the lower 64 bits of the integer. This results
+    in a unique identifier that fits within a 64-bit integer range.
+
+    Returns:
+        int: A 64-bit unique identifier.
+    """
+    return uuid.uuid4().int & (2**64 - 1) # Apply a bitmask to retain only the lower 64 bits & (1<<64)-1
+
+
+def generate_smaller_unique_id():
+    return int(time.time() * random.randint(1, 1000)) % 2 ** 32

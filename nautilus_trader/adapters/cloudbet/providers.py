@@ -303,7 +303,8 @@ class CloudbetInstrumentProvider(InstrumentProvider):
             params=selection.params,
             max_size=int(selection.max_stake),
             min_size=selection.min_stake,
-            end_time=selection.cutoff_time
+            end_time=selection.cutoff_time,
+            # handicap=
         )
         return instrument
 
@@ -324,7 +325,7 @@ class CloudbetInstrumentProvider(InstrumentProvider):
         """
         raise NotImplementedError("get_instruments_update_async is not supported for Cloudbet")
 
-    def search_instruments(self, instrument_filter: Optional[dict] = None):
+    def search_instruments(self, instrument_filter: Optional[dict] = None) -> Optional[List[CryptoBettingInstrument]]:
         """Search for instruments within the cache. Useful for debugging / interactive use"""
         instruments = self.list_all()
         if instrument_filter:
