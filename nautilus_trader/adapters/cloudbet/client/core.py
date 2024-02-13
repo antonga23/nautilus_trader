@@ -44,7 +44,7 @@ from nautilus_trader.adapters.cloudbet.client.schema import GetSportsResponse, G
     GetSportsResponseSport, GetEventForSportResponseEvent, Selection, GetAccountInfoResponse, default_team_factory, \
     GetLatestOddsResponse, GetEventResponse, GetFixturesResponse, GetBetResponse, GetBetHistoryResponse, SelectionSide, \
     AcceptPriceChange, GetAccountCurrencies, GetAccountBalance
-from nautilus_trader.model.currencies import EUR
+from nautilus_trader.model.currencies import EUR, PLAY_EUR
 import json
 
 # load environment variables from .cloudbet_env file
@@ -260,7 +260,6 @@ class CloudbetClient(HttpClient):
             # index is the key/number of the list and the value is the dict/sport
             for sport in get_sports_response_list.sports:
                 if sport.key in filters['sport_key']:
-                    self._log.info(f"Found {sport.key}")
                     filtered_sports.append(sport.key)
         else:
             # We want all sports
@@ -472,7 +471,8 @@ class CloudbetClient(HttpClient):
         if reference_id is None:
             reference_id = str(uuid.uuid4())
         if currency is None:
-            currency = self.currency
+            # currency = self.currency
+            currency = PLAY_EUR
         # TODO: replace with BetRequest Type
         json_data = msgspec.json.encode({
             'acceptPriceChange': accept_price_change.value,

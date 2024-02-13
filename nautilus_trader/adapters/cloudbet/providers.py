@@ -58,8 +58,6 @@ class CloudbetInstrumentProvider(InstrumentProvider):
         self,
         client: CloudbetClient,
         logger: Logger,
-        # TODO: pass filters tyo config object config.filters
-        filters: Optional[dict] = None,
         config: Optional[InstrumentProviderConfig] = None,
     ):
 
@@ -100,7 +98,6 @@ class CloudbetInstrumentProvider(InstrumentProvider):
         if not instrument_ids:
             self._log.info("No instrument IDs given for loading.")
             return
-        # TODO: is this neccesary? all instruments passed to the adapter specific provider should be for the same venue definitionally
         # Check all instrument IDs
         for instrument_id in instrument_ids:
             PyCondition.equal(instrument_id.venue, self.venue, "instrument_id.venue", "self.venue")
@@ -131,7 +128,7 @@ class CloudbetInstrumentProvider(InstrumentProvider):
                                   side=updated_selection.side.value,
                                   params=params if params is not None else None)
                 instruments.append(self.selection_to_instrument(selection))
-        else:
+        elif len(instrument_ids) <= 10 and filters is None:
         # for a larger number of instruments, we should get the events first, then filter out the selections based on the selection ids
             selection_ids = [
                 SelectionId(
@@ -171,6 +168,36 @@ class CloudbetInstrumentProvider(InstrumentProvider):
                                         params=selection.params
                                     )
                                     instruments.append(self.selection_to_instrument(selection))
+        else:
+            if filters and filters.get("selection_id") is not None:
+                selection_ids: List[SelectionId] = filters.get("selection_id")
+                event_ids = list(set([selection_id.event_id for selection_id in selection_ids]))
+                market_names = list(set([selection_id.market_name for selection_id in selection_ids]))
+                for event_id in event_ids:
+                    event: GetEventResponse = await self._client.get_event(event_id)
+                    for market_name, market_value in event.markets.items():
+                        if market_name in market_names:
+                            for submarket_period, submarket_value in market_value.submarkets.items():
+                                # Iterate over all the selections in the current submarket
+                                for selection in submarket_value.selections:
+                                    selection_id = SelectionId(event_id=event_id, market_name=market_name,
+                                                               outcome=selection.outcome, params=selection.params)
+                                    # we're only interested in creating/loading instruments that have selection ids which are contained in the selection_id list
+                                    if selection_id in selection_ids:
+                                        selection = Selection(
+                                            event_id=event_id,
+                                            status=event.status,
+                                            market_name=market_name,
+                                            outcome=selection.outcome,
+                                            price=selection.price,
+                                            min_stake=selection.minStake,
+                                            max_stake=selection.maxStake,
+                                            probability=selection.probability,
+                                            selection_status=SelectionStatus(selection.status),
+                                            side=selection.side,
+                                            params=selection.params
+                                        )
+                                        instruments.append(self.selection_to_instrument(selection))
         self.add_bulk(instruments)
 
     async def load_async(

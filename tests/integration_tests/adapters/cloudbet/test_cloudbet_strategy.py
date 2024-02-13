@@ -1,7 +1,8 @@
 import os
+import time
 from decimal import Decimal
 from itertools import count
-from typing import List
+from typing import List, Any, Optional
 from nautilus_trader.common.factories import OrderFactory
 import pandas as pd
 import random
@@ -13,7 +14,13 @@ from nautilus_trader.backtest.engine import RiskEngineConfig
 from nautilus_trader.backtest.modules import FXRolloverInterestConfig
 from nautilus_trader.backtest.modules import FXRolloverInterestModule
 from nautilus_trader.model.currency import Currency
+import os
+import json
 
+import pathlib
+
+from nautilus_trader.adapters.cloudbet.client.util import generate_64bit_uuid
+from nautilus_trader.adapters.cloudbet.providers import CloudbetInstrumentProvider
 from nautilus_trader.config import LoggingConfig
 from nautilus_trader.examples.algorithms.twap import TWAPExecAlgorithm
 from nautilus_trader.examples.strategies.betting_market_maker import BettingMarketMaker
@@ -40,13 +47,14 @@ from nautilus_trader.model.data import TradeTick
 from nautilus_trader.model.enums import AccountType
 from nautilus_trader.model.enums import BookType
 from nautilus_trader.model.enums import OmsType
-from nautilus_trader.model.identifiers import Venue
+from nautilus_trader.model.identifiers import Venue, InstrumentId
 from nautilus_trader.model.instruments.betting import BettingInstrument
 from nautilus_trader.model.objects import Money
 from nautilus_trader.persistence.wranglers import BarDataWrangler
 from nautilus_trader.persistence.wranglers import QuoteTickDataWrangler
 from nautilus_trader.persistence.wranglers import TradeTickDataWrangler
 
+from nautilus_trader.model.data.book import BookOrder
 from nautilus_trader.model.instruments.crypto_betting import CryptoBettingInstrument
 from nautilus_trader.model.orderbook.book import OrderBook
 from nautilus_trader.test_kit.mocks.data import data_catalog_setup
@@ -107,6 +115,10 @@ from nautilus_trader.test_kit.stubs.data import TestDataStubs
 from nautilus_trader.test_kit.stubs.events import TestEventStubs
 from nautilus_trader.test_kit.stubs.identifiers import TestIdStubs
 from nautilus_trader.trading.strategy import Strategy
+
+CURRENT_PATH = os.path.dirname(os.path.abspath(__file__))
+TEST_DATA_PATH = os.path.join(CURRENT_PATH, "resources/StrategyCryptoBettingInstruments.json")
+TEST_MARKETS_PATH = os.path.join(CURRENT_PATH, "resources/cb_markets.json")
 
 
 class TestBettingMarketMaking:
@@ -238,16 +250,18 @@ class TestBettingMarketMaking:
         assert strategy.state == ComponentState.READY
 
     @patch.object(BettingMarketMaker, 'selection_matcher')
-    #NB: Greyhound and Ice-Hockey are not supported; test will fail when passed an Instrument of that sport
-    #TODO: fix "instrument" fixture
+    # NB: Greyhound and Ice-Hockey are not supported; test will fail when passed an Instrument of that sport
+    # TODO: fix "instrument" fixture
     def test_on_start(self, patch_selection_matcher, instrument):
         # Arrange
         # add instrument to cache in case it has not been added
         self.cache.add_instrument(instrument)
         matched_instruments = random.sample(self.instruments, 100)
         patch_selection_matcher.return_value = matched_instruments
-        strategy: BettingMarketMaker = BettingMarketMaker(instrument_id=instrument.id, max_size=Decimal(1), trigger_min_size=Decimal(1),
-                                      trigger_min_profit=float(1), config=StrategyConfig(order_id_tag="001"))
+        strategy: BettingMarketMaker = BettingMarketMaker(instrument_id=instrument.id, max_size=Decimal(1),
+                                                          trigger_min_size=Decimal(1),
+                                                          trigger_min_profit=float(1),
+                                                          config=StrategyConfig(order_id_tag="001"))
         strategy.register(
             trader_id=self.trader_id,
             portfolio=self.portfolio,
@@ -273,35 +287,156 @@ class TestBettingMarketMaking:
                 continue
             assert instrument.id in strategy._instrument_to_book
 
-    @pytest.mark.parametrize("param_market_filter", [
-        ("match_odds"),
-        # ("total_goals"),
-        # ("asian_handicap")
-        # ("asian_handicap_period_first_half")
-    ]) # TODO: add a param_sport_filter instead of filtering self.instruments in setUp()
-    # @pytest.mark.skipif(reason=" selection_matcher() WIP ")
-    def test_strategy_selection_matcher(self, param_market_filter, instrument_provider):
-        # Arrange
-        # filter the self.instruments by the param_market_filter
-        filterd_instruments : List[CryptoBettingInstrument]= list(filter(lambda x: x.market_name.split(".")[-1] == param_market_filter, self.instruments))
-        # pick a random instrument to pass to strategy based on the filtered market filter
-        instrument: CryptoBettingInstrument = random.choice(filterd_instruments)
-        instrument_provider.add_bulk(self.instruments)
-        # add mock instrument to cache in case it has not been added
-        self.cache.add_instrument(instrument)
-        strategy = BettingMarketMaker(instrument_id=instrument.id, instrument=instrument, max_size=Decimal(100),
-                                      trigger_min_size=Decimal(1), trigger_min_profit=float(1),
-                                      config=StrategyConfig(order_id_tag="001"),
-                                      instrument_provider=instrument_provider)
-        strategy.register(
-            trader_id=self.trader_id,
-            portfolio=self.portfolio,
-            msgbus=self.msgbus,
-            cache=self.cache,
-            clock=self.clock,
-            logger=self.logger,
-        )
-        # Act
-        strategy.selection_matcher()
-        # Assert
+    # @pytest.mark.parametrize("param_market_filter", [
+    #     ("match_odds"),
+    #     # ("total_goals"),
+    #     # ("asian_handicap")
+    #     # ("asian_handicap_period_first_half")
+    # ]) # TODO: add a param_sport_filter instead of filtering self.instruments in setUp()
+    # # @pytest.mark.skipif(reason=" selection_matcher() WIP ")
+    def test_strategy_selection_matcher(self, instrument_provider):
+        """
+        Test the strategy selection matcher for intra market matches
 
+        Args:
+            instrument_provider (InstrumentProvider): The instrument provider.
+
+        Returns:
+            None
+        """
+        # Arrange
+        markets_list: List[str] = ["both_teams_to_score", "asian_handicap", "asian_handicap_period_first_half",
+                                   "total_goals", "draw_no_bet", "asian_handicap_period_second_half",
+                                   "asian_handicap_period_extratime", "match_odds", 'double_chance']
+        try:
+            with open(TEST_DATA_PATH) as json_file:
+                instrument_data = json.load(json_file)
+        except FileNotFoundError:
+            raise Exception("Test data not found")
+        instruments = [CryptoBettingInstrument.from_dict(instrument) for instrument in instrument_data if
+                       instrument['sport_name'] not in ['Greyhounds', 'Ice Hockey']]
+        instruments = instruments[:1000]  # do the first 1000 instruments
+        instrument_provider.add_bulk(instruments)
+        matched_count = 0
+        final_json = []
+        for instrument in instruments:
+            if instrument.market_name.split(".")[-1] not in markets_list:
+                continue
+            strategy = BettingMarketMaker(instrument_id=instrument.id, instrument=instrument, max_size=Decimal(100),
+                                          trigger_min_size=Decimal(1), trigger_min_profit=float(1),
+                                          config=StrategyConfig(oms_type='Hedging'),
+                                          instrument_provider=instrument_provider)
+            strategy.register(
+                trader_id=self.trader_id,
+                portfolio=self.portfolio,
+                msgbus=self.msgbus,
+                cache=self.cache,
+                clock=self.clock,
+                logger=self.logger,
+            )
+            # Act
+            matching_instruments = strategy.selection_matcher()
+
+            json_matching_instruments: dict[str, Optional[List[CryptoBettingInstrument]]] = {}
+            if len(matching_instruments) > 0:
+                matched_count += 1
+                try:
+                    if instrument.market_name.split(".")[-1] in markets_list:
+                        # In general, these instruments come in pairs
+                        assert len(
+                            matching_instruments) >= 1, f"Expected at least 1 matching instrument for market {instrument.market_name} Instrument ID: " + instrument.id.value + f" got {len(matching_instruments)}"
+                        print(f"Success! InstrumentID:{instrument.id} ")
+
+                        instrument_dict = CryptoBettingInstrument.to_dict(instrument)
+                        instrument_dict.update({"side": instrument.side.value})
+                        instrument_dict.update({"currency": instrument.currency.code})
+                        instrument_dict_list = []
+                        for ins in matching_instruments:
+                            matching_instrument_dict = CryptoBettingInstrument.to_dict(ins)
+                            matching_instrument_dict.update({"side": ins.side.value})
+                            matching_instrument_dict.update({"currency": ins.currency.code})
+                            instrument_dict_list.append(matching_instrument_dict)
+                        json_matching_instruments[instrument.id.value] = [instrument_dict]
+                        # add_instruments = [ins.to_dict(ins) for ins in matching_instruments]
+                        # Extend the list at the existing key with the new instruments
+                        json_matching_instruments[instrument.id.value].extend(instrument_dict_list)
+                        final_json.append(json_matching_instruments)
+
+                except AssertionError:
+                    instrument_filter = {
+                        "event_name": instrument.event_name,  # TODO: use event_id instead
+                        "market_name": instrument.market_name,
+                        "sport_name": instrument.sport_name
+                    }
+                    search_provider_results = instrument_provider.search_instruments(instrument_filter=instrument_filter)
+
+                    for search_result in search_provider_results:
+                        if search_result == instrument:
+                            search_provider_results.remove(instrument)
+                            continue
+                    if len(search_provider_results) > 0:
+                        assert False, f"Expected {len(search_provider_results)} matching instrument for asian_handicap: Instrument ID: " + instrument.id.value + f" got {len(matching_instruments)}"
+                    else:
+                        assert True, f"Found 0 instruments in provider that match search criteria.  Instrument ID: " + instrument.id.value
+            else:
+                print(f"no matching instruments found")
+        print(f"Total matches: {matched_count}")
+        # # save the json_matching_instruments to json
+        # with open('matching_instruments.json', 'a') as outfile:
+        #     json.dump(final_json, outfile)
+
+    # @pytest.mark.parametrize("param_market_filter", [
+    #     ("match_odds"),
+    #     # ("total_goals"),
+    #     # ("asian_handicap")
+    #     # ("asian_handicap_period_first_half")
+    # ])
+    @patch.object(BettingMarketMaker, 'on_start')
+    def test_check_trigger(self, patch_on_start, instrument_provider):
+        def on_start_side_effect(strategy: BettingMarketMaker, instrument: CryptoBettingInstrument, matching_instruments: Optional[List[CryptoBettingInstrument]] = None):
+            def add_book_order(strategy, instrument: CryptoBettingInstrument, side: OrderSide = OrderSide.SELL):
+                if instrument.max_quantity is not None and instrument.min_price is not None:
+                    book_order = BookOrder(
+                        side=side,  # By definition, this is a sell
+                        price=instrument.min_price,
+                        size=instrument.max_quantity,
+                        order_id=generate_64bit_uuid()
+                    )
+                    book_event_time = instrument.ts_event or self.clock.timestamp_ns()
+                    strategy._book.add(book_order, book_event_time)
+                    strategy._instrument_to_book[instrument.id] = book_order
+            book = OrderBook(
+                instrument_id=instrument.id,
+                book_type=BookType.L2_MBP,
+            )
+            strategy._book = book
+
+            # Add book order for the primary instrument
+            add_book_order(strategy, instrument)
+
+            # Add book orders for each matching instrument
+            if matching_instruments:
+                for ins in matching_instruments:
+                    add_book_order(strategy, ins, OrderSide.BUY)
+        matched_crypto_betting_instruments: List[List[CryptoBettingInstrument]] = TestInstrumentProvider.matched_crypto_betting_instruments()
+        for pair in matched_crypto_betting_instruments:
+            for ins in pair:
+                self.cache.add_instrument(ins)
+        for instrument_pair in matched_crypto_betting_instruments:
+            instrument = instrument_pair.pop(0)
+            matched_instrument_list = instrument_pair
+            strategy = BettingMarketMaker(instrument_id=instrument.id, instrument=instrument, max_size=Decimal(1000),
+                                      trigger_min_size=Quantity(10, 2), trigger_min_profit=Decimal(0.30),
+                                      config=StrategyConfig(oms_type='Hedging'),
+                                      instrument_provider=instrument_provider)
+            strategy.register(
+                trader_id=self.trader_id,
+                portfolio=self.portfolio,
+                msgbus=self.msgbus,
+                cache=self.cache,
+                clock=self.clock,
+                logger=self.logger,
+            )
+            patch_on_start.side_effect = on_start_side_effect(strategy, instrument, matched_instrument_list)
+            # Act
+            strategy.check_trigger()

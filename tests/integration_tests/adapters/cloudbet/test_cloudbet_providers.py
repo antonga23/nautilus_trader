@@ -14,6 +14,7 @@
 # -------------------------------------------------------------------------------------------------
 import asyncio
 import json
+import time
 from typing import List
 from unittest.mock import AsyncMock, patch
 
@@ -67,7 +68,7 @@ class TestCloudbetInstrumentProvider:
         print(instrument_count, self.provider.count)
         # # we want to save the instruments to a json for later use as a mock
         instruments: List[CryptoBettingInstrument] = self.provider.list_all()
-        instruments = [CryptoBettingInstrument.to_dict(i) for i in instruments]
+        # instruments = [CryptoBettingInstrument.to_dict(i) for i in instruments]
         # with open("CryptoBettingInstrument.json", "w") as f:
         #     json.dump(instruments, f)
         assert self.provider.count == instrument_count, f"Instrument count does not match: expected {self.provider.count} but got {instrument_count}"

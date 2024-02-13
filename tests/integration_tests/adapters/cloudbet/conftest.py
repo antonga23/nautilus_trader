@@ -91,7 +91,7 @@ def instrument():
 def instruments(request) -> list[CryptoBettingInstrument]:
     venue = request.param[0]
     count = request.param[1]
-    assert count < 674, f"Can only return a max of  674, got {count}"
+    assert count < 553, f"Can only return a max of  553, got {count}"
     return TestInstrumentProvider.crypto_betting_instruments(venue, count)
 
 
@@ -117,7 +117,7 @@ def data_client(
                  return_value=cloudbet_client)
     mocker.patch("nautilus_trader.adapters.cloudbet.factories.get_cached_cloudbet_instrument_provider",
                  return_value=instrument_provider)
-    instrument_provider.add(instrument)
+    # instrument_provider.add(instrument)
     data_client = CloudbetLiveDataClientFactory.create(
         loop=event_loop,
         name=venue.value,

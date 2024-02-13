@@ -408,7 +408,7 @@ def cloudbet_timestamp_to_unix_nanos(cloudbet_timestamp: str) -> int:
     except OverflowError:
         raise OverflowError("cloudbet_timestamp is too large")
     except Exception as e:
-        raise e(f"Encountered unknown error: {e}")
+        raise (f"Encountered unknown error: {e}")
 
 
 @lru_cache(maxsize=255)
@@ -436,7 +436,7 @@ def datetime_to_cloudbet_timestamp(ts: pandas.Timestamp) -> str:
     return ts.strftime('%Y-%m-%dT%H:%M:%SZ')
 
 
-def generate_64bit_uuid():
+def generate_64bit_uuid() -> int:
     """
     Generate a 64-bit unique identifier.
 

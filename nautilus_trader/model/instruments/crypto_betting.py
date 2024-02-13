@@ -187,8 +187,8 @@ class CryptoBettingInstrument(Instrument):
             min_quantity=Quantity(self.min_size, precision=2) if min_size else None, # or float(min_size) != 0 else None,
             max_notional=Money(self.max_size, self._typed_currency) if max_size else None, # or float(max_size) != 0 else None,
             min_notional=Money(self.min_size, self._typed_currency) if min_size else None, # and float(min_size) != 0 else None,
-            max_price=None,      # Can be None
-            min_price=Price(price, 2),      # Can be None
+            max_price=Price.from_int(100),      # Can be None
+            min_price=Price.from_str(str(price)),
             margin_init=Decimal(1),
             margin_maint=Decimal(1),
             maker_fee=Decimal(0),

@@ -571,3 +571,9 @@ class TestCryptoBettingInstrument:
         for instrument in instruments:
             assert isinstance(instrument, CryptoBettingInstrument)
 
+    def test_matched_crypto_betting_instruments(self):
+        instruments: List[List[CryptoBettingInstrument]] = TestInstrumentProvider.matched_crypto_betting_instruments()
+        for instrument_pair in instruments:
+            assert len(instrument_pair) >= 2, f"Instrument pair should have at least two elements {instrument_pair}"
+            for instrument in instrument_pair:
+                assert isinstance(instrument, CryptoBettingInstrument)

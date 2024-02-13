@@ -13,7 +13,7 @@ from nautilus_trader.adapters.cloudbet.config import CloudbetDataClientConfig, C
 from nautilus_trader.adapters.cloudbet.data_client import CloudbetDataClient
 from nautilus_trader.adapters.cloudbet.execution import CloudbetLiveExecutionClient
 from nautilus_trader.adapters.cloudbet.providers import CloudbetInstrumentProvider
-from nautilus_trader.config import LiveExecClientConfig
+from nautilus_trader.config import LiveExecClientConfig, InstrumentProviderConfig
 from nautilus_trader.live.factories import LiveDataClientFactory
 from nautilus_trader.live.factories import LiveExecClientFactory
 from nautilus_trader.msgbus.bus import MessageBus
@@ -69,7 +69,7 @@ def get_cached_cloudbet_client(
 def get_cached_cloudbet_instrument_provider(
     client: CloudbetClient,
     logger: Logger,
-    market_filter: tuple,
+    config: Optional[InstrumentProviderConfig] = None,
 ) -> CloudbetInstrumentProvider:
     """
     Cache and return a CloudbetInstrumentProvider.
@@ -98,7 +98,7 @@ def get_cached_cloudbet_instrument_provider(
         INSTRUMENT_PROVIDER = CloudbetInstrumentProvider(
             client=client,
             logger=logger,
-            filters=market_filter,
+            config=config,
         )
     return INSTRUMENT_PROVIDER
 
@@ -155,7 +155,6 @@ class CloudbetLiveDataClientFactory(LiveDataClientFactory):
         provider = get_cached_cloudbet_instrument_provider(
             client=client,
             logger=logger,
-            market_filter=market_filter,
         )
 
         data_client = CloudbetDataClient(
@@ -223,8 +222,7 @@ class CloudbetLiveExecClientFactory(LiveExecClientFactory):
 
         provider = get_cached_cloudbet_instrument_provider(
             client=client,
-            logger=logger,
-            market_filter=market_filter,
+            logger=logger
         )
 
         # Create client

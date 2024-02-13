@@ -17,7 +17,7 @@ import random
 import pathlib
 from datetime import date
 from decimal import Decimal
-from typing import Optional, List
+from typing import Optional, List, Any
 
 import fsspec
 import pandas as pd
@@ -541,6 +541,40 @@ class TestInstrumentProvider:
             instruments: List[CryptoBettingInstrument] = [CryptoBettingInstrument.from_dict(instrument) for instrument
                                                           in instruments]
         return instruments
+
+    @staticmethod
+    def matched_crypto_betting_instruments(venue: Venue = CLOUDBET_VENUE, count=5469, sports=None) -> List[List[CryptoBettingInstrument]]:
+        """
+        Retrieves a list of "matched" crypto betting instruments from the specified venue.
+
+        Args:
+            venue (Venue, optional): The venue from which to retrieve the instruments. Defaults to CLOUDBET_VENUE.
+            count (int, optional): The number of instruments to retrieve. Defaults to 100.
+            sports (list[str], optional): A list of sports to filter the instruments by. Defaults to None.
+
+        Returns:
+            List[List[CryptoBettingInstrument]]: A list of pairs of CryptoBettingInstrument objects
+        NB: Currently only supports Cloudbet. Max instrument count is 5470
+        """
+        assert count < 5470, "count should be less than 5470"
+        if venue != CLOUDBET_VENUE:
+            raise NotImplementedError("Getting instruments for venues other than Cloudbet is not yet implemented")
+        else:
+            with open(TEST_PATH / "matching_instruments.json") as json_file:
+                json_instruments = json.load(json_file)
+            matched_instrument_list : List[List[CryptoBettingInstrument]] = []
+            for k in json_instruments:
+                matched_instruments: List[dict[CryptoBettingInstrument]] = k.get(list(k.keys())[0])
+                matched_instruments: List[CryptoBettingInstrument] = [CryptoBettingInstrument.from_dict(matched_instrument) for matched_instrument in matched_instruments]
+                matched_instrument_list.append(matched_instruments)
+            # Filter by sports if sports list is provided
+            if sports is not None:
+                # instruments = [inst for inst in instruments if inst.get('sport_name') in sports]
+                raise NotImplementedError("Filtering instruments by sport is not yet implemented")
+            # type cast the instrument to a CryptoBettingInstrument
+            # randomly select an instrument from the array
+            matched_instrument_list = random.sample(matched_instrument_list, k=min(count, len(matched_instrument_list)))
+        return matched_instrument_list
 
 
 class TestDataProvider:
