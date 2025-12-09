@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -12,9 +12,9 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
-
 """
-The `execution` subpackage groups components relating to the execution stack for the platform.
+The `execution` subpackage groups components relating to the execution stack for the
+platform.
 
 The layered architecture of the execution stack somewhat mirrors the
 data stack with a central engine, cache layer beneath, database layer
@@ -23,4 +23,5 @@ beneath, with alternative implementations able to be written on top.
 Due to the high-performance, the core components are reusable between both
 backtest and live implementations - helping to ensure consistent logic for
 trading operations.
+
 """

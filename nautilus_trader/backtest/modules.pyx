@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,30 +13,30 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
+import msgspec
 import pandas as pd
 import pytz
 
-from nautilus_trader.config import ActorConfig
+from nautilus_trader.backtest.config import FXRolloverInterestConfig
+from nautilus_trader.backtest.config import SimulationModuleConfig
+from nautilus_trader.common.config import ActorConfig
 
 from cpython.datetime cimport datetime
 from libc.stdint cimport uint64_t
 
 from nautilus_trader.accounting.calculators cimport RolloverInterestCalculator
-from nautilus_trader.backtest.exchange cimport SimulatedExchange
+from nautilus_trader.backtest.engine cimport SimulatedExchange
 from nautilus_trader.core.correctness cimport Condition
-from nautilus_trader.model.currency cimport Currency
-from nautilus_trader.model.enums_c cimport AssetClass
-from nautilus_trader.model.enums_c cimport PriceType
+from nautilus_trader.core.data cimport Data
+from nautilus_trader.core.rust.model cimport AssetClass
+from nautilus_trader.core.rust.model cimport PriceType
+from nautilus_trader.model.book cimport OrderBook
 from nautilus_trader.model.identifiers cimport InstrumentId
 from nautilus_trader.model.instruments.base cimport Instrument
+from nautilus_trader.model.objects cimport Currency
 from nautilus_trader.model.objects cimport Money
 from nautilus_trader.model.objects cimport Price
-from nautilus_trader.model.orderbook.book cimport OrderBook
 from nautilus_trader.model.position cimport Position
-
-
-class SimulationModuleConfig(ActorConfig):
-    pass
 
 
 cdef class SimulationModule(Actor):
@@ -69,33 +69,24 @@ cdef class SimulationModule(Actor):
 
         self.exchange = exchange
 
+    cpdef void pre_process(self, Data data):
+        """Abstract method `pre_process` (implement in subclass)."""
+        pass
+
     cpdef void process(self, uint64_t ts_now):
         """Abstract method (implement in subclass)."""
-        raise NotImplementedError("method must be implemented in the subclass")  # pragma: no cover
+        raise NotImplementedError("method `process` must be implemented in the subclass")  # pragma: no cover
 
-    cpdef void log_diagnostics(self, LoggerAdapter log):
+    cpdef void log_diagnostics(self, Logger logger):
         """Abstract method (implement in subclass)."""
-        raise NotImplementedError("method must be implemented in the subclass")  # pragma: no cover
+        raise NotImplementedError("method `log_diagnostics` must be implemented in the subclass")  # pragma: no cover
 
     cpdef void reset(self):
         """Abstract method (implement in subclass)."""
-        raise NotImplementedError("method must be implemented in the subclass")  # pragma: no cover
+        raise NotImplementedError("method `reset` must be implemented in the subclass")  # pragma: no cover
 
 
 _TZ_US_EAST = pytz.timezone("US/Eastern")
-
-
-class FXRolloverInterestConfig(ActorConfig):
-    """
-    Provides an FX rollover interest simulation module.
-
-    Parameters
-    ----------
-    rate_data : pd.DataFrame
-        The interest rate data for the internal rollover interest calculator.
-
-    """
-    rate_data: pd.DataFrame
 
 
 cdef class FXRolloverInterestModule(SimulationModule):
@@ -110,6 +101,10 @@ cdef class FXRolloverInterestModule(SimulationModule):
     def __init__(self, config: FXRolloverInterestConfig):
         super().__init__(config)
 
+        rate_data = config.rate_data
+        if not isinstance(rate_data, pd.DataFrame):
+            rate_data = pd.read_json(msgspec.json.decode(rate_data))
+
         self._calculator = RolloverInterestCalculator(data=config.rate_data)
         self._rollover_time = None  # Initialized at first rollover
         self._rollover_applied = False
@@ -123,7 +118,7 @@ cdef class FXRolloverInterestModule(SimulationModule):
         Parameters
         ----------
         ts_now : uint64_t
-            The current UNIX time (nanoseconds) in the simulated exchange.
+            The current UNIX timestamp (nanoseconds) in the simulated exchange.
 
         """
         cdef datetime now = pd.Timestamp(ts_now, tz="UTC")
@@ -194,7 +189,7 @@ cdef class FXRolloverInterestModule(SimulationModule):
                     from_currency=instrument.quote_currency,
                     to_currency=currency,
                     price_type=PriceType.MID,
-                )
+                ) or 0.0  # Retain original behavior of returning zero for now
                 rollover *= xrate
             else:
                 currency = instrument.quote_currency
@@ -204,20 +199,20 @@ cdef class FXRolloverInterestModule(SimulationModule):
 
             self.exchange.adjust_account(Money(-rollover, currency))
 
-    cpdef void log_diagnostics(self, LoggerAdapter log):
+    cpdef void log_diagnostics(self, Logger logger):
         """
         Log diagnostics out to the `BacktestEngine` logger.
 
         Parameters
         ----------
-        log : LoggerAdapter
+        logger : Logger
             The logger to log to.
 
         """
-        account_balances_starting = ', '.join([b.to_str() for b in self.exchange.starting_balances])
+        account_balances_starting = ', '.join([b.to_formatted_str() for b in self.exchange.starting_balances])
         account_starting_length = len(account_balances_starting)
-        rollover_totals = ', '.join([b.to_str() for b in self._rollover_totals.values()])
-        log.info(f"Rollover interest (totals): {rollover_totals}")
+        rollover_totals = ', '.join([b.to_formatted_str() for b in self._rollover_totals.values()])
+        logger.info(f"Rollover interest (totals): {rollover_totals}")
 
     cpdef void reset(self):
         self._rollover_time = None  # Initialized at first rollover

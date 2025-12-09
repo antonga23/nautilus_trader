@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -18,23 +18,24 @@ import asyncio
 import pytest
 
 from nautilus_trader.adapters.binance.websocket.client import BinanceWebSocketClient
-from nautilus_trader.common.clock import LiveClock
-from nautilus_trader.common.logging import Logger
+from nautilus_trader.common.component import LiveClock
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_binance_websocket_client():
     clock = LiveClock()
 
+    loop = asyncio.get_running_loop()
+
     client = BinanceWebSocketClient(
         clock=clock,
-        logger=Logger(clock=clock),
         handler=print,
         base_url="wss://fstream.binance.com",
+        loop=loop,
     )
 
-    client.subscribe_book_ticker("BTCUSDT-PERP")
-
     await client.connect()
+    await client.subscribe_book_ticker("BTCUSDT-PERP")
+
     await asyncio.sleep(4)
     await client.disconnect()

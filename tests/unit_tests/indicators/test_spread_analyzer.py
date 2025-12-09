@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -15,7 +15,7 @@
 
 import pytest
 
-from nautilus_trader.indicators.spread_analyzer import SpreadAnalyzer
+from nautilus_trader.indicators import SpreadAnalyzer
 from nautilus_trader.model.data import QuoteTick
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
@@ -55,8 +55,8 @@ class TestSpreadAnalyzer:
         analyzer = SpreadAnalyzer(AUDUSD_SIM.id, 1000)
         tick = QuoteTick(
             instrument_id=USDJPY_SIM.id,
-            bid=Price.from_str("117.80000"),
-            ask=Price.from_str("117.80010"),
+            bid_price=Price.from_str("117.80000"),
+            ask_price=Price.from_str("117.80010"),
             bid_size=Quantity.from_int(1),
             ask_size=Quantity.from_int(1),
             ts_event=0,
@@ -71,8 +71,8 @@ class TestSpreadAnalyzer:
         analyzer = SpreadAnalyzer(AUDUSD_SIM.id, 1000)
         tick1 = QuoteTick(
             instrument_id=AUDUSD_SIM.id,
-            bid=Price.from_str("0.80000"),
-            ask=Price.from_str("0.80010"),
+            bid_price=Price.from_str("0.80000"),
+            ask_price=Price.from_str("0.80010"),
             bid_size=Quantity.from_int(1),
             ask_size=Quantity.from_int(1),
             ts_event=0,
@@ -81,8 +81,8 @@ class TestSpreadAnalyzer:
 
         tick2 = QuoteTick(
             instrument_id=AUDUSD_SIM.id,
-            bid=Price.from_str("0.80002"),
-            ask=Price.from_str("0.80008"),
+            bid_price=Price.from_str("0.80002"),
+            ask_price=Price.from_str("0.80008"),
             bid_size=Quantity.from_int(1),
             ask_size=Quantity.from_int(1),
             ts_event=0,

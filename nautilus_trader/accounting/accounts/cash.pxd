@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -14,7 +14,7 @@
 # -------------------------------------------------------------------------------------------------
 
 from nautilus_trader.accounting.accounts.base cimport Account
-from nautilus_trader.model.enums_c cimport OrderSide
+from nautilus_trader.core.rust.model cimport OrderSide
 from nautilus_trader.model.identifiers cimport InstrumentId
 from nautilus_trader.model.instruments.base cimport Instrument
 from nautilus_trader.model.objects cimport Money
@@ -24,6 +24,9 @@ from nautilus_trader.model.objects cimport Quantity
 
 cdef class CashAccount(Account):
     cdef dict _balances_locked
+
+    cdef readonly bint allow_borrowing
+    """If borrowing is allowed (negative balances).\n\n:returns: `bool`"""
 
 # -- COMMANDS -------------------------------------------------------------------------------------
 
@@ -40,3 +43,9 @@ cdef class CashAccount(Account):
         Price price,
         bint use_quote_for_inverse=*,
     )
+
+    @staticmethod
+    cdef dict to_dict_c(CashAccount obj)
+
+    @staticmethod
+    cdef CashAccount from_dict_c(dict values)

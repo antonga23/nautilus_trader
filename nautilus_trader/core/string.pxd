@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -57,20 +57,26 @@ cdef extern from "Python.h":
     char* PyBytes_AsString(object string) except NULL
 
 
-cdef inline str cstr_to_pystr(const char* ptr):
+cdef inline str cstr_to_pystr(const char* ptr, bint drop = True):
     cdef str obj = PyUnicode_FromString(ptr)
 
     # Assumes `ptr` was created from Rust `CString::from_raw`,
-    # otherwise will lead to undefined behaviour when passed to `cstr_drop`.
-    cstr_drop(ptr)
+    # otherwise will lead to undefined behavior when passed to `cstr_drop`.
+    if drop:
+        cstr_drop(ptr)
     return obj
+
+
+# Convert a Rust interned string to a Python string
+cdef inline str ustr_to_pystr(const char* ptr):
+    return PyUnicode_FromString(ptr)
 
 
 cdef inline bytes cstr_to_pybytes(const char* ptr):
     cdef bytes obj = PyBytes_FromString(ptr)
 
     # Assumes `ptr` was created from Rust `CString::from_raw`,
-    # otherwise will lead to undefined behaviour when passed to `cstr_drop`.
+    # otherwise will lead to undefined behavior when passed to `cstr_drop`.
     cstr_drop(ptr)
     return obj
 

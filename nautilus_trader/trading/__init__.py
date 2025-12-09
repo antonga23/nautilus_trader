@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -12,11 +12,22 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
-
 """
 The `trading` subpackage groups all trading domain specific components and tooling.
 
 This is a top-level package where the majority of users will interface with the
 framework. Custom trading strategies can be implemented by inheriting from the
 `Strategy` base class.
+
 """
+
+from nautilus_trader.trading.controller import Controller
+from nautilus_trader.trading.strategy import Strategy
+from nautilus_trader.trading.trader import Trader
+
+
+__all__ = [
+    "Controller",
+    "Strategy",
+    "Trader",
+]

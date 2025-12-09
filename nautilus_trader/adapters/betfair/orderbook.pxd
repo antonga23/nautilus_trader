@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,10 +13,10 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
+from nautilus_trader.model.book cimport OrderBook
 from nautilus_trader.model.identifiers cimport InstrumentId
 from nautilus_trader.model.objects cimport Price
 from nautilus_trader.model.objects cimport Quantity
-from nautilus_trader.model.orderbook.book cimport OrderBook
 
 
 cpdef OrderBook create_betfair_order_book(InstrumentId instrument_id)

@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,9 +13,10 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
-from datetime import datetime as dt
+import asyncio
 from decimal import Decimal
-from typing import Optional
+from enum import Enum
+from typing import Any
 
 import msgspec
 
@@ -23,23 +24,26 @@ from nautilus_trader.adapters.binance.common.constants import BINANCE_VENUE
 from nautilus_trader.adapters.binance.common.enums import BinanceAccountType
 from nautilus_trader.adapters.binance.common.enums import BinanceSymbolFilterType
 from nautilus_trader.adapters.binance.common.schemas.market import BinanceSymbolFilter
-from nautilus_trader.adapters.binance.common.schemas.symbol import BinanceSymbol
+from nautilus_trader.adapters.binance.common.symbol import BinanceSymbol
+from nautilus_trader.adapters.binance.config import BinanceInstrumentProviderConfig
 from nautilus_trader.adapters.binance.futures.enums import BinanceFuturesContractStatus
 from nautilus_trader.adapters.binance.futures.enums import BinanceFuturesContractType
+from nautilus_trader.adapters.binance.futures.http.account import BinanceFuturesAccountHttpAPI
 from nautilus_trader.adapters.binance.futures.http.market import BinanceFuturesMarketHttpAPI
 from nautilus_trader.adapters.binance.futures.http.wallet import BinanceFuturesWalletHttpAPI
+from nautilus_trader.adapters.binance.futures.schemas.account import BinanceFuturesFeeRates
+from nautilus_trader.adapters.binance.futures.schemas.account import BinanceFuturesPositionRisk
 from nautilus_trader.adapters.binance.futures.schemas.market import BinanceFuturesSymbolInfo
 from nautilus_trader.adapters.binance.futures.schemas.wallet import BinanceFuturesCommissionRate
 from nautilus_trader.adapters.binance.http.client import BinanceHttpClient
-from nautilus_trader.adapters.binance.http.error import BinanceClientError
-from nautilus_trader.common.clock import LiveClock
-from nautilus_trader.common.logging import Logger
+from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.providers import InstrumentProvider
 from nautilus_trader.config import InstrumentProviderConfig
 from nautilus_trader.core.correctness import PyCondition
 from nautilus_trader.core.datetime import millis_to_nanos
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import Symbol
+from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.instruments.crypto_future import CryptoFuture
 from nautilus_trader.model.instruments.crypto_perpetual import CryptoPerpetual
 from nautilus_trader.model.objects import PRICE_MAX
@@ -51,38 +55,66 @@ from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
 
 
+def _symbol_info_to_dict(symbol_info: BinanceFuturesSymbolInfo) -> dict:
+    """
+    Convert symbol info to dict with all enums and nested structs converted to
+    primitives.
+
+    This ensures the info dict contains only JSON-serializable primitives.
+
+    """
+
+    def _convert_value(value: Any) -> Any:
+        # Recursively convert enums and structs to primitives
+        if isinstance(value, Enum):
+            return value.value
+        elif hasattr(value, "__struct_fields__"):
+            return _convert_dict(msgspec.structs.asdict(value))
+        elif isinstance(value, list):
+            return [_convert_value(item) for item in value]
+        elif isinstance(value, dict):
+            return _convert_dict(value)
+        return value
+
+    def _convert_dict(d: dict) -> dict:
+        return {key: _convert_value(val) for key, val in d.items()}
+
+    return _convert_dict(msgspec.structs.asdict(symbol_info))
+
+
 class BinanceFuturesInstrumentProvider(InstrumentProvider):
     """
-    Provides a means of loading instruments from the `Binance Futures` exchange.
+    Provides a means of loading instruments from the Binance Futures exchange.
 
     Parameters
     ----------
     client : APIClient
         The client for the provider.
-    logger : Logger
-        The logger for the provider.
     config : InstrumentProviderConfig, optional
         The configuration for the provider.
+
     """
 
     def __init__(
         self,
         client: BinanceHttpClient,
-        logger: Logger,
         clock: LiveClock,
-        account_type: BinanceAccountType = BinanceAccountType.USDT_FUTURE,
-        config: Optional[InstrumentProviderConfig] = None,
-    ):
-        super().__init__(
-            venue=BINANCE_VENUE,
-            logger=logger,
-            config=config,
-        )
+        account_type: BinanceAccountType = BinanceAccountType.USDT_FUTURES,
+        config: InstrumentProviderConfig | BinanceInstrumentProviderConfig | None = None,
+        venue: Venue = BINANCE_VENUE,
+    ) -> None:
+        super().__init__(config=config)
 
+        self._clock = clock
         self._client = client
         self._account_type = account_type
-        self._clock = clock
+        self._venue = venue
 
+        self._http_account = BinanceFuturesAccountHttpAPI(
+            self._client,
+            clock=self._clock,
+            account_type=account_type,
+        )
         self._http_wallet = BinanceFuturesWalletHttpAPI(
             self._client,
             clock=self._clock,
@@ -95,53 +127,88 @@ class BinanceFuturesInstrumentProvider(InstrumentProvider):
         self._decoder = msgspec.json.Decoder()
         self._encoder = msgspec.json.Encoder()
 
-    async def load_all_async(self, filters: Optional[dict] = None) -> None:
+        # This fee rates map is only applicable for backtesting, as live trading will utilise
+        # real-time account update messages provided by Binance.
+        # These fee rates assume USD-M Futures Trading without the 10% off for using BNB.
+        # The next step is to enable users to pass their own fee rates map via the config.
+        # In the future, we aim to represent this fee model with greater accuracy for backtesting.
+        # https://www.binance.com/en/fee/futureFee
+        # Last verified: 2025-01-22
+        self._fee_rates = {
+            0: BinanceFuturesFeeRates(feeTier=0, maker="0.000200", taker="0.000500"),
+            1: BinanceFuturesFeeRates(feeTier=1, maker="0.000160", taker="0.000400"),
+            2: BinanceFuturesFeeRates(feeTier=2, maker="0.000140", taker="0.000350"),
+            3: BinanceFuturesFeeRates(feeTier=3, maker="0.000120", taker="0.000320"),
+            4: BinanceFuturesFeeRates(feeTier=4, maker="0.000100", taker="0.000300"),
+            5: BinanceFuturesFeeRates(feeTier=5, maker="0.000080", taker="0.000270"),
+            6: BinanceFuturesFeeRates(feeTier=6, maker="0.000060", taker="0.000250"),
+            7: BinanceFuturesFeeRates(feeTier=7, maker="0.000040", taker="0.000220"),
+            8: BinanceFuturesFeeRates(feeTier=8, maker="0.000020", taker="0.000200"),
+            9: BinanceFuturesFeeRates(feeTier=9, maker="0.000000", taker="0.000170"),
+        }
+
+    async def load_all_async(self, filters: dict | None = None) -> None:
         filters_str = "..." if not filters else f" with filters {filters}..."
         self._log.info(f"Loading all instruments{filters_str}")
 
         # Get exchange info for all assets
         exchange_info = await self._http_market.query_futures_exchange_info()
+        account_info = await self._http_account.query_futures_account_info()
+        fee_rates = self._fee_rates[account_info.feeTier]
 
-        self._log.warning(
-            "Currently not requesting actual trade fees. All instruments will have zero fees.",
-        )
-        for symbol_info in exchange_info.symbols:
-            fee: Optional[BinanceFuturesCommissionRate] = None
-            # TODO(cs): This won't work for 174 instruments, we'll have to pre-request these
-            #  in some other way.
-            # if not self._client.base_url.__contains__("testnet.binancefuture.com"):
-            #     try:
-            #         # Get current commission rates for the symbol
-            #         fee = await self._http_wallet.query_futures_commission_rate(symbol_info.symbol)
-            #         print(fee)
-            #     except BinanceClientError as e:
-            #         self._log.error(
-            #             "Cannot load instruments: API key authentication failed "
-            #             f"(this is needed to fetch the applicable account fee tier). {e.message}",
-            #         )
-            #         return
+        if (
+            isinstance(self._config, BinanceInstrumentProviderConfig)
+            and self._config.query_commission_rates
+        ):
+            self._log.info("Querying commission rates per symbol (parallel requests)")
 
-            self._parse_instrument(
-                symbol_info=symbol_info,
-                fee=fee,
-                ts_event=millis_to_nanos(exchange_info.serverTime),
-            )
+            async def _query_fee(symbol: str) -> BinanceFuturesCommissionRate:
+                try:
+                    return await self._http_wallet.query_futures_commission_rate(symbol=symbol)
+                except Exception as e:
+                    self._log.warning(
+                        f"Failed to query commission rate for {symbol}: {e}, falling back to fee tier table",
+                    )
+                    return BinanceFuturesCommissionRate(
+                        symbol=symbol,
+                        makerCommissionRate=fee_rates.maker,
+                        takerCommissionRate=fee_rates.taker,
+                    )
+
+            tasks = [_query_fee(symbol_info.symbol) for symbol_info in exchange_info.symbols]
+            fees = await asyncio.gather(*tasks)
+
+            for symbol_info, fee in zip(exchange_info.symbols, fees, strict=True):
+                self._parse_instrument(
+                    symbol_info=symbol_info,
+                    fee=fee,
+                    ts_event=millis_to_nanos(exchange_info.serverTime),
+                )
+        else:
+            for symbol_info in exchange_info.symbols:
+                fee = BinanceFuturesCommissionRate(
+                    symbol=symbol_info.symbol,
+                    makerCommissionRate=fee_rates.maker,
+                    takerCommissionRate=fee_rates.taker,
+                )
+                self._parse_instrument(
+                    symbol_info=symbol_info,
+                    fee=fee,
+                    ts_event=millis_to_nanos(exchange_info.serverTime),
+                )
 
     async def load_ids_async(
         self,
         instrument_ids: list[InstrumentId],
-        filters: Optional[dict] = None,
+        filters: dict | None = None,
     ) -> None:
         if not instrument_ids:
-            self._log.info("No instrument IDs given for loading.")
+            self._log.warning("No instrument IDs given for loading.")
             return
 
         # Check all instrument IDs
         for instrument_id in instrument_ids:
-            PyCondition.equal(instrument_id.venue, self.venue, "instrument_id.venue", "self.venue")
-
-        filters_str = "..." if not filters else f" with filters {filters}..."
-        self._log.info(f"Loading instruments {instrument_ids}{filters_str}.")
+            PyCondition.equal(instrument_id.venue, self._venue, "instrument_id.venue", "BINANCE")
 
         # Extract all symbol strings
         symbols = [
@@ -153,33 +220,57 @@ class BinanceFuturesInstrumentProvider(InstrumentProvider):
         symbol_info_dict: dict[str, BinanceFuturesSymbolInfo] = {
             info.symbol: info for info in exchange_info.symbols
         }
+        account_info = await self._http_account.query_futures_account_info()
+        fee_rates = self._fee_rates[account_info.feeTier]
 
-        self._log.warning(
-            "Currently not requesting actual trade fees. All instruments will have zero fees.",
-        )
-        for symbol in symbols:
-            fee: Optional[BinanceFuturesCommissionRate] = None
-            # TODO(cs): This won't work for 174 instruments, we'll have to pre-request these
-            #  in some other way.
-            # if not self._client.base_url.__contains__("testnet.binancefuture.com"):
-            #     try:
-            #         # Get current commission rates for the symbol
-            #         fee = await self._http_wallet.query_futures_commission_rate(symbol)
-            #     except BinanceClientError as e:
-            #         self._log.error(
-            #             "Cannot load instruments: API key authentication failed "
-            #             f"(this is needed to fetch the applicable account fee tier). {e.message}",
-            #         )
+        position_risk_resp = await self._http_account.query_futures_position_risk()
+        position_risk = {risk.symbol: risk for risk in position_risk_resp}
 
-            self._parse_instrument(
-                symbol_info=symbol_info_dict[symbol],
-                fee=fee,
-                ts_event=millis_to_nanos(exchange_info.serverTime),
-            )
+        if (
+            isinstance(self._config, BinanceInstrumentProviderConfig)
+            and self._config.query_commission_rates
+        ):
 
-    async def load_async(self, instrument_id: InstrumentId, filters: Optional[dict] = None) -> None:
+            async def _query_fee(symbol: str) -> BinanceFuturesCommissionRate:
+                try:
+                    return await self._http_wallet.query_futures_commission_rate(symbol=symbol)
+                except Exception as e:
+                    self._log.warning(
+                        f"Failed to query commission rate for {symbol}: {e}. Falling back to fee tier table.",
+                    )
+                    return BinanceFuturesCommissionRate(
+                        symbol=symbol,
+                        makerCommissionRate=fee_rates.maker,
+                        takerCommissionRate=fee_rates.taker,
+                    )
+
+            tasks = [_query_fee(symbol) for symbol in symbols]
+            fees = await asyncio.gather(*tasks)
+
+            for symbol, fee in zip(symbols, fees, strict=True):
+                self._parse_instrument(
+                    symbol_info=symbol_info_dict[symbol],
+                    fee=fee,
+                    ts_event=millis_to_nanos(exchange_info.serverTime),
+                    position_risk=position_risk.get(symbol),
+                )
+        else:
+            for symbol in symbols:
+                fee = BinanceFuturesCommissionRate(
+                    symbol=symbol,
+                    makerCommissionRate=fee_rates.maker,
+                    takerCommissionRate=fee_rates.taker,
+                )
+                self._parse_instrument(
+                    symbol_info=symbol_info_dict[symbol],
+                    fee=fee,
+                    ts_event=millis_to_nanos(exchange_info.serverTime),
+                    position_risk=position_risk.get(symbol),
+                )
+
+    async def load_async(self, instrument_id: InstrumentId, filters: dict | None = None) -> None:
         PyCondition.not_none(instrument_id, "instrument_id")
-        PyCondition.equal(instrument_id.venue, self.venue, "instrument_id.venue", "self.venue")
+        PyCondition.equal(instrument_id.venue, self._venue, "instrument_id.venue", "BINANCE")
 
         filters_str = "..." if not filters else f" with filters {filters}..."
         self._log.debug(f"Loading instrument {instrument_id}{filters_str}.")
@@ -192,16 +283,30 @@ class BinanceFuturesInstrumentProvider(InstrumentProvider):
             info.symbol: info for info in exchange_info.symbols
         }
 
-        fee: Optional[BinanceFuturesCommissionRate] = None
-        if not self._client.base_url.__contains__("testnet.binancefuture.com"):
+        account_info = await self._http_account.query_futures_account_info()
+        fee_rates = self._fee_rates[account_info.feeTier]
+
+        if (
+            isinstance(self._config, BinanceInstrumentProviderConfig)
+            and self._config.query_commission_rates
+        ):
             try:
-                # Get current commission rates for the symbol
-                fee = await self._http_wallet.query_futures_commission_rate(symbol)
-            except BinanceClientError as e:
-                self._log.error(
-                    "Cannot load instruments: API key authentication failed "
-                    f"(this is needed to fetch the applicable account fee tier). {e.message}",
+                fee = await self._http_wallet.query_futures_commission_rate(symbol=symbol)
+            except Exception as e:
+                self._log.warning(
+                    f"Failed to query commission rate for {symbol}: {e}. Falling back to fee tier table.",
                 )
+                fee = BinanceFuturesCommissionRate(
+                    symbol=symbol,
+                    makerCommissionRate=fee_rates.maker,
+                    takerCommissionRate=fee_rates.taker,
+                )
+        else:
+            fee = BinanceFuturesCommissionRate(
+                symbol=symbol,
+                makerCommissionRate=fee_rates.maker,
+                takerCommissionRate=fee_rates.taker,
+            )
 
         self._parse_instrument(
             symbol_info=symbol_info_dict[symbol],
@@ -213,7 +318,8 @@ class BinanceFuturesInstrumentProvider(InstrumentProvider):
         self,
         symbol_info: BinanceFuturesSymbolInfo,
         ts_event: int,
-        fee: Optional[BinanceFuturesCommissionRate] = None,
+        position_risk: BinanceFuturesPositionRisk | None = None,
+        fee: BinanceFuturesCommissionRate | None = None,
     ) -> None:
         contract_type_str = symbol_info.contractType
 
@@ -230,11 +336,12 @@ class BinanceFuturesInstrumentProvider(InstrumentProvider):
             base_currency = symbol_info.parse_to_base_currency()
             quote_currency = symbol_info.parse_to_quote_currency()
 
-            binance_symbol = BinanceSymbol(symbol_info.symbol).parse_binance_to_internal(
+            raw_symbol = Symbol(symbol_info.symbol)
+            parsed_symbol = BinanceSymbol(raw_symbol.value).parse_as_nautilus(
                 self._account_type,
             )
-            native_symbol = Symbol(binance_symbol)
-            instrument_id = InstrumentId(symbol=native_symbol, venue=BINANCE_VENUE)
+            nautilus_symbol = Symbol(parsed_symbol)
+            instrument_id = InstrumentId(symbol=nautilus_symbol, venue=self._venue)
 
             # Parse instrument filters
             filters: dict[BinanceSymbolFilterType, BinanceSymbolFilter] = {
@@ -246,8 +353,8 @@ class BinanceFuturesInstrumentProvider(InstrumentProvider):
                 BinanceSymbolFilterType.MIN_NOTIONAL,
             )
 
-            tick_size = price_filter.tickSize.rstrip("0")
-            step_size = lot_size_filter.stepSize.rstrip("0")
+            tick_size = price_filter.tickSize
+            step_size = lot_size_filter.stepSize
             PyCondition.in_range(float(tick_size), PRICE_MIN, PRICE_MAX, "tick_size")
             PyCondition.in_range(float(step_size), QUANTITY_MIN, QUANTITY_MAX, "step_size")
 
@@ -259,7 +366,12 @@ class BinanceFuturesInstrumentProvider(InstrumentProvider):
             min_quantity = Quantity(float(lot_size_filter.minQty), precision=size_precision)
             min_notional = None
             if filters.get(BinanceSymbolFilterType.MIN_NOTIONAL):
-                min_notional = Money(min_notional_filter.minNotional, currency=quote_currency)
+                min_notional = Money(min_notional_filter.notional, currency=quote_currency)
+            max_notional = (
+                Money(position_risk.maxNotionalValue, currency=quote_currency)
+                if position_risk and position_risk.maxNotionalValue is not None
+                else None
+            )
             max_price = Price(float(price_filter.maxPrice), precision=price_precision)
             min_price = Price(float(price_filter.minPrice), precision=price_precision)
 
@@ -282,7 +394,7 @@ class BinanceFuturesInstrumentProvider(InstrumentProvider):
             if contract_type == BinanceFuturesContractType.PERPETUAL:
                 instrument = CryptoPerpetual(
                     instrument_id=instrument_id,
-                    native_symbol=native_symbol,
+                    raw_symbol=raw_symbol,
                     base_currency=base_currency,
                     quote_currency=quote_currency,
                     settlement_currency=settlement_currency,
@@ -293,7 +405,7 @@ class BinanceFuturesInstrumentProvider(InstrumentProvider):
                     size_increment=size_increment,
                     max_quantity=max_quantity,
                     min_quantity=min_quantity,
-                    max_notional=None,
+                    max_notional=max_notional,
                     min_notional=min_notional,
                     max_price=max_price,
                     min_price=min_price,
@@ -303,22 +415,25 @@ class BinanceFuturesInstrumentProvider(InstrumentProvider):
                     taker_fee=taker_fee,
                     ts_event=ts_event,
                     ts_init=ts_init,
-                    info=self._decoder.decode(self._encoder.encode(symbol_info)),
+                    info=_symbol_info_to_dict(symbol_info),
                 )
                 self.add_currency(currency=instrument.base_currency)
             elif contract_type in (
                 BinanceFuturesContractType.CURRENT_MONTH,
                 BinanceFuturesContractType.CURRENT_QUARTER,
+                BinanceFuturesContractType.CURRENT_QUARTER_DELIVERING,
                 BinanceFuturesContractType.NEXT_MONTH,
                 BinanceFuturesContractType.NEXT_QUARTER,
             ):
                 instrument = CryptoFuture(
                     instrument_id=instrument_id,
-                    native_symbol=native_symbol,
+                    raw_symbol=raw_symbol,
                     underlying=base_currency,
                     quote_currency=quote_currency,
                     settlement_currency=settlement_currency,
-                    expiry_date=dt.strptime(symbol_info.symbol.partition("_")[2], "%y%m%d").date(),
+                    is_inverse=False,  # No inverse instruments trade on Binance
+                    activation_ns=millis_to_nanos(symbol_info.onboardDate),
+                    expiration_ns=millis_to_nanos(symbol_info.deliveryDate),
                     price_precision=price_precision,
                     size_precision=size_precision,
                     price_increment=price_increment,
@@ -335,7 +450,7 @@ class BinanceFuturesInstrumentProvider(InstrumentProvider):
                     taker_fee=taker_fee,
                     ts_event=ts_event,
                     ts_init=ts_init,
-                    info=self._decoder.decode(self._encoder.encode(symbol_info)),
+                    info=_symbol_info_to_dict(symbol_info),
                 )
                 self.add_currency(currency=instrument.underlying)
             else:
@@ -349,4 +464,4 @@ class BinanceFuturesInstrumentProvider(InstrumentProvider):
             self._log.debug(f"Added instrument {instrument.id}.")
         except ValueError as e:
             if self._log_warnings:
-                self._log.warning(f"Unable to parse instrument {symbol_info.symbol}, {e}.")
+                self._log.warning(f"Unable to parse instrument {symbol_info.symbol}: {e}.")

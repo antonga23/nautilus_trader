@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -19,14 +19,15 @@ from nautilus_trader.core.rust.model cimport AccountType  # type: ignore
 from nautilus_trader.core.rust.model cimport AggregationSource  # type: ignore
 from nautilus_trader.core.rust.model cimport AggressorSide  # type: ignore
 from nautilus_trader.core.rust.model cimport AssetClass  # type: ignore
-from nautilus_trader.core.rust.model cimport AssetType  # type: ignore
 from nautilus_trader.core.rust.model cimport BookAction  # type: ignore
 from nautilus_trader.core.rust.model cimport BookType  # type: ignore
 from nautilus_trader.core.rust.model cimport ContingencyType  # type: ignore
 from nautilus_trader.core.rust.model cimport CurrencyType  # type: ignore
+from nautilus_trader.core.rust.model cimport InstrumentClass  # type: ignore
 from nautilus_trader.core.rust.model cimport InstrumentCloseType  # type: ignore
 from nautilus_trader.core.rust.model cimport LiquiditySide  # type: ignore
 from nautilus_trader.core.rust.model cimport MarketStatus  # type: ignore
+from nautilus_trader.core.rust.model cimport MarketStatusAction  # type: ignore
 from nautilus_trader.core.rust.model cimport OmsType  # type: ignore
 from nautilus_trader.core.rust.model cimport OptionKind  # type: ignore
 from nautilus_trader.core.rust.model cimport OrderSide  # type: ignore

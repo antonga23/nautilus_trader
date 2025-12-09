@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -30,7 +30,10 @@ cdef class LimitOrder(Order):
     """The quantity of the order to display on the public book (iceberg).\n\n:returns: `Quantity` or ``None``"""
 
     @staticmethod
-    cdef LimitOrder create(OrderInitialized init)
+    cdef LimitOrder create_c(OrderInitialized init)
 
     @staticmethod
     cdef LimitOrder transform(Order order, uint64_t ts_init, Price price=*)
+
+    @staticmethod
+    cdef LimitOrder from_pyo3_c(pyo3_order)

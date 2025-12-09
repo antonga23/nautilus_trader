@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,10 +13,10 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
-from cpython.datetime cimport date
+from libc.stdint cimport uint64_t
 
-from nautilus_trader.model.currency cimport Currency
 from nautilus_trader.model.instruments.base cimport Instrument
+from nautilus_trader.model.objects cimport Currency
 
 
 cdef class CryptoFuture(Instrument):
@@ -24,11 +24,18 @@ cdef class CryptoFuture(Instrument):
     """The underlying asset for the contract.\n\n:returns: `Currency`"""
     cdef readonly Currency settlement_currency
     """The settlement currency for the contract.\n\n:returns: `Currency`"""
-    cdef readonly date expiry_date
-    """The expiry date for the contract.\n\n:returns: `date`"""
+    cdef readonly bint is_quanto
+    """If the instrument is quanto.\n\n:returns: `bool`"""
+    cdef readonly uint64_t activation_ns
+    """UNIX timestamp (nanoseconds) for contract activation.\n\n:returns: `unit64_t`"""
+    cdef readonly uint64_t expiration_ns
+    """UNIX timestamp (nanoseconds) for contract expiration.\n\n:returns: `unit64_t`"""
 
     @staticmethod
     cdef CryptoFuture from_dict_c(dict values)
 
     @staticmethod
     cdef dict to_dict_c(CryptoFuture obj)
+
+    @staticmethod
+    cdef CryptoFuture from_pyo3_c(pyo3_instrument)

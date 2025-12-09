@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -19,15 +19,17 @@ from decimal import Decimal
 
 import pandas as pd
 
+from nautilus_trader.adapters.binance import BINANCE_VENUE
+from nautilus_trader.backtest.config import BacktestEngineConfig
 from nautilus_trader.backtest.engine import BacktestEngine
-from nautilus_trader.backtest.engine import BacktestEngineConfig
 from nautilus_trader.examples.strategies.ema_cross_trailing_stop import EMACrossTrailingStop
 from nautilus_trader.examples.strategies.ema_cross_trailing_stop import EMACrossTrailingStopConfig
 from nautilus_trader.model.currencies import ETH
 from nautilus_trader.model.currencies import USDT
+from nautilus_trader.model.data import BarType
 from nautilus_trader.model.enums import AccountType
 from nautilus_trader.model.enums import OmsType
-from nautilus_trader.model.identifiers import Venue
+from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.objects import Money
 from nautilus_trader.persistence.wranglers import TradeTickDataWrangler
 from nautilus_trader.test_kit.providers import TestDataProvider
@@ -36,15 +38,14 @@ from nautilus_trader.test_kit.providers import TestInstrumentProvider
 
 if __name__ == "__main__":
     # Configure backtest engine
-    config = BacktestEngineConfig(trader_id="BACKTESTER-001")
+    config = BacktestEngineConfig(trader_id=TraderId("BACKTESTER-001"))
 
     # Build the backtest engine
     engine = BacktestEngine(config=config)
 
     # Add a trading venue (multiple venues possible)
-    BINANCE = Venue("BINANCE")
     engine.add_venue(
-        venue=BINANCE,
+        venue=BINANCE_VENUE,
         oms_type=OmsType.NETTING,
         account_type=AccountType.CASH,  # Spot CASH account (not for perpetuals or futures)
         base_currency=None,  # Multi-currency account
@@ -58,23 +59,23 @@ if __name__ == "__main__":
     # Add data
     provider = TestDataProvider()
     wrangler = TradeTickDataWrangler(instrument=ETHUSDT_BINANCE)
-    ticks = wrangler.process(provider.read_csv_ticks("binance-ethusdt-trades.csv"))
+    ticks = wrangler.process(provider.read_csv_ticks("binance/ethusdt-trades.csv"))
     engine.add_data(ticks)
 
     # Configure your strategy
-    config = EMACrossTrailingStopConfig(
-        instrument_id=str(ETHUSDT_BINANCE.id),
-        bar_type="ETHUSDT.BINANCE-100-TICK-LAST-INTERNAL",
-        trade_size=Decimal("0.05"),
+    strategy_config = EMACrossTrailingStopConfig(
+        instrument_id=ETHUSDT_BINANCE.id,
+        bar_type=BarType.from_str("ETHUSDT.BINANCE-100-TICK-LAST-INTERNAL"),
+        trade_size=Decimal("0.10"),
         fast_ema_period=10,
         slow_ema_period=20,
         atr_period=20,
         trailing_atr_multiple=3.0,
         trailing_offset_type="PRICE",
-        trigger_type="LAST_TRADE",
+        trigger_type="LAST_PRICE",
     )
     # Instantiate and add your strategy
-    strategy = EMACrossTrailingStop(config=config)
+    strategy = EMACrossTrailingStop(config=strategy_config)
     engine.add_strategy(strategy=strategy)
 
     time.sleep(0.1)
@@ -92,7 +93,7 @@ if __name__ == "__main__":
         "display.width",
         300,
     ):
-        print(engine.trader.generate_account_report(BINANCE))
+        print(engine.trader.generate_account_report(BINANCE_VENUE))
         print(engine.trader.generate_order_fills_report())
         print(engine.trader.generate_positions_report())
 

@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -15,15 +15,16 @@
 
 from datetime import timedelta
 from decimal import Decimal
-from typing import Optional
 
 from nautilus_trader.common.enums import LogColor
+from nautilus_trader.config import PositiveFloat
+from nautilus_trader.config import PositiveInt
 from nautilus_trader.config import StrategyConfig
 from nautilus_trader.core.correctness import PyCondition
 from nautilus_trader.core.data import Data
 from nautilus_trader.core.message import Event
-from nautilus_trader.indicators.atr import AverageTrueRange
-from nautilus_trader.indicators.average.ema import ExponentialMovingAverage
+from nautilus_trader.indicators import AverageTrueRange
+from nautilus_trader.indicators import ExponentialMovingAverage
 from nautilus_trader.model.data import Bar
 from nautilus_trader.model.data import BarType
 from nautilus_trader.model.data import QuoteTick
@@ -51,38 +52,30 @@ class EMACrossBracketConfig(StrategyConfig, frozen=True):
         The instrument ID for the strategy.
     bar_type : BarType
         The bar type for the strategy.
-    trade_size : str
-        The position size per trade (interpreted as Decimal).
-    atr_period : int, default 20
+    trade_size : Decimal
+        The position size per trade.
+    atr_period : PositiveInt, default 20
         The period for the ATR indicator.
-    fast_ema_period : int, default 10
+    fast_ema_period : PositiveInt, default 10
         The fast EMA period.
-    slow_ema_period : int, default 20
+    slow_ema_period : PositiveInt, default 20
         The slow EMA period.
-    bracket_distance_atr : float, default 3.0
+    bracket_distance_atr : PositiveFloat, default 3.0
         The SL and TP bracket distance from entry ATR multiple.
     emulation_trigger : str, default 'NO_TRIGGER'
         The emulation trigger for submitting emulated orders.
         If ``None`` then orders will not be emulated.
-    manage_gtd_expiry : bool, default True
-        If the expiry for orders with a time in force of 'GTD' will be managed by the strategy.
-    order_id_tag : str
-        The unique order ID tag for the strategy. Must be unique
-        amongst all running strategies for a particular trader ID.
-    oms_type : OmsType
-        The order management system type for the strategy. This will determine
-        how the `ExecutionEngine` handles position IDs (see docs).
+
     """
 
-    instrument_id: str
-    bar_type: str
+    instrument_id: InstrumentId
+    bar_type: BarType
     trade_size: Decimal
-    atr_period: int = 20
-    fast_ema_period: int = 10
-    slow_ema_period: int = 20
-    bracket_distance_atr: float = 3.0
+    atr_period: PositiveInt = 20
+    fast_ema_period: PositiveInt = 10
+    slow_ema_period: PositiveInt = 20
+    bracket_distance_atr: PositiveFloat = 3.0
     emulation_trigger: str = "NO_TRIGGER"
-    manage_gtd_expiry: bool = True
 
 
 class EMACrossBracket(Strategy):
@@ -103,48 +96,47 @@ class EMACrossBracket(Strategy):
     ------
     ValueError
         If `config.fast_ema_period` is not less than `config.slow_ema_period`.
+
     """
 
     def __init__(self, config: EMACrossBracketConfig) -> None:
-        PyCondition.true(
+        PyCondition.is_true(
             config.fast_ema_period < config.slow_ema_period,
             "{config.fast_ema_period=} must be less than {config.slow_ema_period=}",
         )
         super().__init__(config)
 
-        # Configuration
-        self.instrument_id = InstrumentId.from_str(config.instrument_id)
-        self.bar_type = BarType.from_str(config.bar_type)
-        self.bracket_distance_atr = config.bracket_distance_atr
-        self.trade_size = Decimal(config.trade_size)
-        self.emulation_trigger = TriggerType[config.emulation_trigger]
+        self.instrument: Instrument | None = None  # Initialized in on_start
 
         # Create the indicators for the strategy
         self.atr = AverageTrueRange(config.atr_period)
         self.fast_ema = ExponentialMovingAverage(config.fast_ema_period)
         self.slow_ema = ExponentialMovingAverage(config.slow_ema_period)
 
-        self.instrument: Optional[Instrument] = None  # Initialized in on_start
-
     def on_start(self) -> None:
-        """Actions to be performed on strategy start."""
-        self.instrument = self.cache.instrument(self.instrument_id)
+        """
+        Actions to be performed on strategy start.
+        """
+        self.instrument = self.cache.instrument(self.config.instrument_id)
         if self.instrument is None:
-            self.log.error(f"Could not find instrument for {self.instrument_id}")
+            self.log.error(f"Could not find instrument for {self.config.instrument_id}")
             self.stop()
             return
 
         # Register the indicators for updating
-        self.register_indicator_for_bars(self.bar_type, self.atr)
-        self.register_indicator_for_bars(self.bar_type, self.fast_ema)
-        self.register_indicator_for_bars(self.bar_type, self.slow_ema)
+        self.register_indicator_for_bars(self.config.bar_type, self.atr)
+        self.register_indicator_for_bars(self.config.bar_type, self.fast_ema)
+        self.register_indicator_for_bars(self.config.bar_type, self.slow_ema)
 
         # Get historical data
-        self.request_bars(self.bar_type)
+        self.request_bars(
+            self.config.bar_type,
+            start=self._clock.utc_now() - timedelta(days=1),
+        )
 
         # Subscribe to live data
-        self.subscribe_bars(self.bar_type)
-        self.subscribe_quote_ticks(self.instrument_id)
+        self.subscribe_bars(self.config.bar_type)
+        self.subscribe_quote_ticks(self.config.instrument_id)
 
     def on_quote_tick(self, tick: QuoteTick) -> None:
         """
@@ -174,7 +166,7 @@ class EMACrossBracket(Strategy):
         # Check if indicators ready
         if not self.indicators_initialized():
             self.log.info(
-                f"Waiting for indicators to warm up " f"[{self.cache.bar_count(self.bar_type)}]...",
+                f"Waiting for indicators to warm up [{self.cache.bar_count(self.config.bar_type)}]",
                 color=LogColor.BLUE,
             )
             return  # Wait for indicators to warm up...
@@ -185,21 +177,21 @@ class EMACrossBracket(Strategy):
 
         # BUY LOGIC
         if self.fast_ema.value >= self.slow_ema.value:
-            if self.portfolio.is_flat(self.instrument_id):
-                self.cancel_all_orders(self.instrument_id)
+            if self.portfolio.is_flat(self.config.instrument_id):
+                self.cancel_all_orders(self.config.instrument_id)
                 self.buy(bar)
-            elif self.portfolio.is_net_short(self.instrument_id):
-                self.close_all_positions(self.instrument_id)
-                self.cancel_all_orders(self.instrument_id)
+            elif self.portfolio.is_net_short(self.config.instrument_id):
+                self.close_all_positions(self.config.instrument_id)
+                self.cancel_all_orders(self.config.instrument_id)
                 self.buy(bar)
         # SELL LOGIC
         elif self.fast_ema.value < self.slow_ema.value:
-            if self.portfolio.is_flat(self.instrument_id):
-                self.cancel_all_orders(self.instrument_id)
+            if self.portfolio.is_flat(self.config.instrument_id):
+                self.cancel_all_orders(self.config.instrument_id)
                 self.sell(bar)
-            elif self.portfolio.is_net_long(self.instrument_id):
-                self.close_all_positions(self.instrument_id)
-                self.cancel_all_orders(self.instrument_id)
+            elif self.portfolio.is_net_long(self.config.instrument_id):
+                self.close_all_positions(self.config.instrument_id)
+                self.cancel_all_orders(self.config.instrument_id)
                 self.sell(bar)
 
     def buy(self, last_bar: Bar) -> None:
@@ -207,14 +199,14 @@ class EMACrossBracket(Strategy):
         Users bracket buy method (example).
         """
         if not self.instrument:
-            self.log.error("No instrument loaded.")
+            self.log.error("No instrument loaded")
             return
 
-        bracket_distance: float = self.bracket_distance_atr * self.atr.value
+        bracket_distance: float = self.config.bracket_distance_atr * self.atr.value
         order_list: OrderList = self.order_factory.bracket(
-            instrument_id=self.instrument_id,
+            instrument_id=self.config.instrument_id,
             order_side=OrderSide.BUY,
-            quantity=self.instrument.make_qty(self.trade_size),
+            quantity=self.instrument.make_qty(self.config.trade_size),
             time_in_force=TimeInForce.GTD,
             expire_time=self.clock.utc_now() + timedelta(seconds=30),
             entry_price=self.instrument.make_price(last_bar.close),  # TODO
@@ -222,24 +214,24 @@ class EMACrossBracket(Strategy):
             sl_trigger_price=self.instrument.make_price(last_bar.close - bracket_distance),
             tp_price=self.instrument.make_price(last_bar.close + bracket_distance),
             entry_order_type=OrderType.LIMIT_IF_TOUCHED,
-            emulation_trigger=self.emulation_trigger,
+            emulation_trigger=TriggerType[self.config.emulation_trigger],
         )
 
-        self.submit_order_list(order_list, manage_gtd_expiry=True)
+        self.submit_order_list(order_list)
 
     def sell(self, last_bar: Bar) -> None:
         """
         Users bracket sell method (example).
         """
         if not self.instrument:
-            self.log.error("No instrument loaded.")
+            self.log.error("No instrument loaded")
             return
 
-        bracket_distance: float = self.bracket_distance_atr * self.atr.value
+        bracket_distance: float = self.config.bracket_distance_atr * self.atr.value
         order_list: OrderList = self.order_factory.bracket(
-            instrument_id=self.instrument_id,
+            instrument_id=self.config.instrument_id,
             order_side=OrderSide.SELL,
-            quantity=self.instrument.make_qty(self.trade_size),
+            quantity=self.instrument.make_qty(self.config.trade_size),
             time_in_force=TimeInForce.GTD,
             expire_time=self.clock.utc_now() + timedelta(seconds=30),
             entry_price=self.instrument.make_price(last_bar.close),  # TODO
@@ -247,14 +239,14 @@ class EMACrossBracket(Strategy):
             sl_trigger_price=self.instrument.make_price(last_bar.close + bracket_distance),
             tp_price=self.instrument.make_price(last_bar.close - bracket_distance),
             entry_order_type=OrderType.LIMIT_IF_TOUCHED,
-            emulation_trigger=self.emulation_trigger,
+            emulation_trigger=TriggerType[self.config.emulation_trigger],
         )
 
-        self.submit_order_list(order_list, manage_gtd_expiry=True)
+        self.submit_order_list(order_list)
 
     def on_data(self, data: Data) -> None:
         """
-        Actions to be performed when the strategy is running and receives generic data.
+        Actions to be performed when the strategy is running and receives data.
 
         Parameters
         ----------
@@ -278,12 +270,12 @@ class EMACrossBracket(Strategy):
         """
         Actions to be performed when the strategy is stopped.
         """
-        self.cancel_all_orders(self.instrument_id)
-        self.close_all_positions(self.instrument_id)
+        self.cancel_all_orders(self.config.instrument_id)
+        self.close_all_positions(self.config.instrument_id)
 
         # Unsubscribe from data
-        self.unsubscribe_bars(self.bar_type)
-        self.unsubscribe_quote_ticks(self.instrument_id)
+        self.unsubscribe_bars(self.config.bar_type)
+        self.unsubscribe_quote_ticks(self.config.instrument_id)
 
     def on_reset(self) -> None:
         """

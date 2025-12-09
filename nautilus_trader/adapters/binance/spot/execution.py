@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -14,12 +14,12 @@
 # -------------------------------------------------------------------------------------------------
 
 import asyncio
-from typing import Optional
 
 import msgspec
 
 from nautilus_trader.adapters.binance.common.enums import BinanceAccountType
-from nautilus_trader.adapters.binance.common.execution import BinanceCommonExecutionClient
+from nautilus_trader.adapters.binance.config import BinanceExecClientConfig
+from nautilus_trader.adapters.binance.execution import BinanceCommonExecutionClient
 from nautilus_trader.adapters.binance.http.client import BinanceHttpClient
 from nautilus_trader.adapters.binance.spot.enums import BinanceSpotEnumParser
 from nautilus_trader.adapters.binance.spot.enums import BinanceSpotEventType
@@ -32,22 +32,22 @@ from nautilus_trader.adapters.binance.spot.schemas.user import BinanceSpotAccoun
 from nautilus_trader.adapters.binance.spot.schemas.user import BinanceSpotOrderUpdateWrapper
 from nautilus_trader.adapters.binance.spot.schemas.user import BinanceSpotUserMsgWrapper
 from nautilus_trader.cache.cache import Cache
-from nautilus_trader.common.clock import LiveClock
+from nautilus_trader.common.component import LiveClock
+from nautilus_trader.common.component import MessageBus
 from nautilus_trader.common.enums import LogColor
-from nautilus_trader.common.logging import Logger
 from nautilus_trader.core.correctness import PyCondition
 from nautilus_trader.core.datetime import millis_to_nanos
+from nautilus_trader.execution.messages import BatchCancelOrders
 from nautilus_trader.execution.reports import PositionStatusReport
 from nautilus_trader.model.enums import OrderType
 from nautilus_trader.model.enums import order_type_to_str
 from nautilus_trader.model.enums import time_in_force_to_str
 from nautilus_trader.model.orders import Order
-from nautilus_trader.msgbus.bus import MessageBus
 
 
 class BinanceSpotExecutionClient(BinanceCommonExecutionClient):
     """
-    Provides an execution client for the `Binance Spot/Margin` exchange.
+    Provides an execution client for the Binance Spot/Margin exchange.
 
     Parameters
     ----------
@@ -61,16 +61,17 @@ class BinanceSpotExecutionClient(BinanceCommonExecutionClient):
         The cache for the client.
     clock : LiveClock
         The clock for the client.
-    logger : Logger
-        The logger for the client.
     instrument_provider : BinanceSpotInstrumentProvider
         The instrument provider.
-    account_type : BinanceAccountType
-        The account type for the client.
-    base_url_ws : str, optional
+    base_url_ws : str
         The base URL for the WebSocket client.
-    warn_gtd_to_gtc : bool, default True
-        If log warning for GTD time in force transformed to GTC.
+    config : BinanceExecClientConfig
+        The configuration for the client.
+    account_type : BinanceAccountType, default 'SPOT'
+        The account type for the client.
+    name : str, optional
+        The custom client ID.
+
     """
 
     def __init__(
@@ -80,13 +81,13 @@ class BinanceSpotExecutionClient(BinanceCommonExecutionClient):
         msgbus: MessageBus,
         cache: Cache,
         clock: LiveClock,
-        logger: Logger,
         instrument_provider: BinanceSpotInstrumentProvider,
+        base_url_ws: str,
+        config: BinanceExecClientConfig,
         account_type: BinanceAccountType = BinanceAccountType.SPOT,
-        base_url_ws: Optional[str] = None,
-        warn_gtd_to_gtc: bool = True,
-    ):
-        PyCondition.true(
+        name: str | None = None,
+    ) -> None:
+        PyCondition.is_true(
             account_type.is_spot_or_margin,
             "account_type was not SPOT, MARGIN or ISOLATED_MARGIN",
         )
@@ -110,11 +111,11 @@ class BinanceSpotExecutionClient(BinanceCommonExecutionClient):
             msgbus=msgbus,
             cache=cache,
             clock=clock,
-            logger=logger,
             instrument_provider=instrument_provider,
             account_type=account_type,
             base_url_ws=base_url_ws,
-            warn_gtd_to_gtc=warn_gtd_to_gtc,
+            name=name,
+            config=config,
         )
 
         # Register spot websocket user data event handlers
@@ -142,70 +143,102 @@ class BinanceSpotExecutionClient(BinanceCommonExecutionClient):
         )
         if account_info.canTrade:
             self._log.info("Binance API key authenticated.", LogColor.GREEN)
-            self._log.info(f"API key {self._http_client.api_key} has trading permissions.")
+            self._log.info(f"API key {self._http_client.api_key_masked} has trading permissions")
         else:
-            self._log.error("Binance API key does not have trading permissions.")
+            self._log.error("Binance API key does not have trading permissions")
         self.generate_account_state(
             balances=account_info.parse_to_account_balances(),
             margins=[],
             reported=True,
             ts_event=millis_to_nanos(account_info.updateTime),
         )
-        while self.get_account() is None:
-            await asyncio.sleep(0.1)
+
+    async def _init_dual_side_position(self) -> None:
+        self._is_dual_side_position = False
+        self._log.info(f"Dual side position: {self._is_dual_side_position}", LogColor.BLUE)
 
     # -- EXECUTION REPORTS ------------------------------------------------------------------------
 
     async def _get_binance_position_status_reports(
         self,
-        symbol: Optional[str] = None,
+        symbol: str | None = None,
     ) -> list[PositionStatusReport]:
         # Never cash positions
         return []
 
     async def _get_binance_active_position_symbols(
         self,
-        symbol: Optional[str] = None,
-    ) -> list[str]:
+        symbol: str | None = None,
+    ) -> set[str]:
         # Never cash positions
-        return []
+        return set()
 
     # -- COMMAND HANDLERS -------------------------------------------------------------------------
 
-    def _check_order_validity(self, order: Order) -> None:
+    def _check_order_validity(self, order: Order) -> str | None:
         # Check order type valid
         if order.order_type not in self._spot_enum_parser.spot_valid_order_types:
-            self._log.error(
-                f"Cannot submit order: {order_type_to_str(order.order_type)} "
-                f"orders not supported by the Binance Spot/Margin exchange. "
-                f"Use any of {[order_type_to_str(t) for t in self._spot_enum_parser.spot_valid_order_types]}",
+            valid_types = [
+                order_type_to_str(t) for t in self._spot_enum_parser.spot_valid_order_types
+            ]
+            return (
+                f"UNSUPPORTED_ORDER_TYPE: {order_type_to_str(order.order_type)} "
+                f"not supported for SPOT/MARGIN accounts (valid: {valid_types})"
             )
-            return
+
         # Check time in force valid
         if order.time_in_force not in self._spot_enum_parser.spot_valid_time_in_force:
-            self._log.error(
-                f"Cannot submit order: "
-                f"{time_in_force_to_str(order.time_in_force)} "
-                f"not supported by the Binance Spot/Margin exchange. "
-                f"Use any of {[time_in_force_to_str(t) for t in self._spot_enum_parser.spot_valid_time_in_force]}.",
+            valid_tifs = [
+                time_in_force_to_str(t) for t in self._spot_enum_parser.spot_valid_time_in_force
+            ]
+            return (
+                f"UNSUPPORTED_TIME_IN_FORCE: {time_in_force_to_str(order.time_in_force)} "
+                f"not supported for SPOT/MARGIN accounts (valid: {valid_tifs})"
             )
-            return
+
         # Check post-only
         if order.order_type == OrderType.STOP_LIMIT and order.is_post_only:
-            self._log.error(
-                "Cannot submit order: "
-                "STOP_LIMIT `post_only` orders not supported by the Binance Spot/Margin exchange. "
-                "This order may become a liquidity TAKER.",
+            return (
+                "UNSUPPORTED_POST_ONLY: STOP_LIMIT post_only orders not supported for SPOT/MARGIN "
+                "accounts (order may become a liquidity TAKER)"
             )
-            return
+
+        return None
+
+    async def _batch_cancel_orders(self, command: BatchCancelOrders) -> None:
+        self._log.warning(
+            "Batch cancel orders not supported by Binance Spot/Margin exchange, "
+            f"falling back to individual cancellation of {len(command.cancels)} orders",
+        )
+
+        # Fallback to individual order cancellation
+        successful_cancels = 0
+        for cancel_command in command.cancels:
+            try:
+                await self._cancel_order(cancel_command)
+                successful_cancels += 1
+            except Exception as e:
+                self._log.error(
+                    f"Failed to cancel individual order {cancel_command.client_order_id}: {e}",
+                )
+                self.generate_order_cancel_rejected(
+                    cancel_command.strategy_id,
+                    cancel_command.instrument_id,
+                    cancel_command.client_order_id,
+                    cancel_command.venue_order_id,
+                    f"Individual cancel fallback failed: {e}",
+                    self._clock.timestamp_ns(),
+                )
+
+        self._log.info(
+            f"Batch cancel fallback completed: {successful_cancels}/{len(command.cancels)} orders cancelled",
+        )
 
     # -- WEBSOCKET EVENT HANDLERS --------------------------------------------------------------------
 
     def _handle_user_ws_message(self, raw: bytes) -> None:
-        # TODO(cs): Uncomment for development
-        # self._log.info(str(json.dumps(msgspec.json.decode(raw), indent=4)), color=LogColor.MAGENTA)
-        wrapper = self._decoder_spot_user_msg_wrapper.decode(raw)
         try:
+            wrapper = self._decoder_spot_user_msg_wrapper.decode(raw)
             self._spot_user_ws_handlers[wrapper.data.e](raw)
         except Exception as e:
             self._log.exception(f"Error on handling {raw!r}", e)
@@ -219,7 +252,7 @@ class BinanceSpotExecutionClient(BinanceCommonExecutionClient):
         order_msg.data.handle_execution_report(self)
 
     def _handle_list_status(self, raw: bytes) -> None:
-        self._log.warning("List status (OCO) received.")  # Implement
+        self._log.warning("List status (OCO) received")  # Implement
 
     def _handle_balance_update(self, raw: bytes) -> None:
-        self.create_task(self._update_account_state_async())
+        self.create_task(self._update_account_state())

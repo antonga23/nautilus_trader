@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -19,8 +19,8 @@ import numpy as np
 
 from nautilus_trader.core.correctness cimport Condition
 from nautilus_trader.core.stats cimport fast_mean_iterated
-from nautilus_trader.indicators.base.indicator cimport Indicator
-from nautilus_trader.model.data.tick cimport QuoteTick
+from nautilus_trader.indicators.base cimport Indicator
+from nautilus_trader.model.data cimport QuoteTick
 from nautilus_trader.model.identifiers cimport InstrumentId
 from nautilus_trader.model.objects cimport Price
 
@@ -77,8 +77,8 @@ cdef class SpreadAnalyzer(Indicator):
             if len(self._spreads) == self.capacity:
                 self._set_initialized(True)
 
-        cdef double ask = Price.raw_to_f64_c(tick._mem.ask.raw)
-        cdef double bid = Price.raw_to_f64_c(tick._mem.bid.raw)
+        cdef double bid = Price.raw_to_f64_c(tick._mem.bid_price.raw)
+        cdef double ask = Price.raw_to_f64_c(tick._mem.ask_price.raw)
         cdef double spread = ask - bid
 
         self.current = spread

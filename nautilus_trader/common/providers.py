@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -14,16 +14,15 @@
 # -------------------------------------------------------------------------------------------------
 
 import asyncio
-from typing import Optional
 
-from nautilus_trader.common.logging import Logger
-from nautilus_trader.common.logging import LoggerAdapter
+from nautilus_trader.common.component import Logger
+from nautilus_trader.common.functions import get_event_loop
 from nautilus_trader.config import InstrumentProviderConfig
 from nautilus_trader.core.correctness import PyCondition
-from nautilus_trader.model.currency import Currency
+from nautilus_trader.model.currencies import register_currency
 from nautilus_trader.model.identifiers import InstrumentId
-from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.instruments import Instrument
+from nautilus_trader.model.objects import Currency
 
 
 class InstrumentProvider:
@@ -32,55 +31,35 @@ class InstrumentProvider:
 
     Parameters
     ----------
-    venue : Venue
-        The venue for the provider.
-    logger : Logger
-        The logger for the provider.
     config :InstrumentProviderConfig, optional
         The instrument provider config.
 
     Warnings
     --------
     This class should not be used directly, but through a concrete subclass.
+
     """
 
-    def __init__(
-        self,
-        venue: Venue,
-        logger: Logger,
-        config: Optional[InstrumentProviderConfig] = None,
-    ) -> None:
-        PyCondition.not_none(venue, "venue")
-        PyCondition.not_none(logger, "logger")
-
+    def __init__(self, config: InstrumentProviderConfig | None = None) -> None:
         if config is None:
             config = InstrumentProviderConfig()
-        self._log = LoggerAdapter(type(self).__name__, logger)
-
-        self._venue = venue
+        self._log = Logger(name=type(self).__name__)
+        self._config = config
         self._instruments: dict[InstrumentId, Instrument] = {}
         self._currencies: dict[str, Currency] = {}
 
-        # Settings
+        # Configuration
         self._load_all_on_start = config.load_all
         self._load_ids_on_start = set(config.load_ids) if config.load_ids is not None else None
         self._filters = config.filters
 
         # Async loading flags
         self._loaded = False
-        self._loading = False
+        self._init_lock = asyncio.Lock()
 
-    @property
-    def venue(self) -> Venue:
-        """
-        Return the providers venue.
+        self._tasks: set[asyncio.Task] = set()
 
-        Returns
-        -------
-        Venue
-
-        """
-        return self._venue
+        self._log.info("READY")
 
     @property
     def count(self) -> int:
@@ -94,27 +73,32 @@ class InstrumentProvider:
         """
         return len(self._instruments)
 
-    async def load_all_async(self, filters: Optional[dict] = None) -> None:
+    async def load_all_async(
+        self,
+        filters: dict | None = None,
+    ) -> None:
         """
         Load the latest instruments into the provider asynchronously, optionally
         applying the given filters.
         """
-        raise NotImplementedError("method must be implemented in the subclass")  # pragma: no cover
+        raise NotImplementedError(
+            "method `load_all_async` must be implemented in the subclass",
+        )  # pragma: no cover
 
     async def load_ids_async(
         self,
         instrument_ids: list[InstrumentId],
-        filters: Optional[dict] = None,
+        filters: dict | None = None,
     ) -> None:
         """
-        Load the instruments for the given IDs into the provider, optionally
-        applying the given filters.
+        Load the instruments for the given IDs into the provider, optionally applying
+        the given filters.
 
         Parameters
         ----------
         instrument_ids : list[InstrumentId]
             The instrument IDs to load.
-        filters : dict, optional
+        filters : frozendict[str, Any] or dict[str, Any], optional
             The venue specific instrument loading filters to apply.
 
         Raises
@@ -123,22 +107,24 @@ class InstrumentProvider:
             If any `instrument_id.venue` is not equal to `self.venue`.
 
         """
-        raise NotImplementedError("method must be implemented in the subclass")  # pragma: no cover
+        raise NotImplementedError(
+            "method `load_ids_async` must be implemented in the subclass",
+        )  # pragma: no cover
 
     async def load_async(
         self,
         instrument_id: InstrumentId,
-        filters: Optional[dict] = None,
+        filters: dict | None = None,
     ) -> None:
         """
-        Load the instrument for the given ID into the provider asynchronously, optionally
-        applying the given filters.
+        Load the instrument for the given ID into the provider asynchronously,
+        optionally applying the given filters.
 
         Parameters
         ----------
         instrument_id : InstrumentId
             The instrument ID to load.
-        filters : dict, optional
+        filters : frozendict[str, Any] or dict[str, Any], optional
             The venue specific instrument loading filters to apply.
 
         Raises
@@ -147,103 +133,126 @@ class InstrumentProvider:
             If `instrument_id.venue` is not equal to `self.venue`.
 
         """
-        raise NotImplementedError("method must be implemented in the subclass")  # pragma: no cover
+        raise NotImplementedError(
+            "method `load_async` must be implemented in the subclass",
+        )  # pragma: no cover
 
-    async def initialize(self) -> None:
+    async def initialize(self, reload: bool = False) -> None:
         """
         Initialize the instrument provider.
 
-        If `initialize()` then will immediately return.
+        Parameters
+        ----------
+        reload : bool, default False
+            If True, then will always reload instruments.
+            If False, then will immediately return if already loaded.
+
         """
-        try:
-            if self._loaded:
+        async with self._init_lock:
+            if not reload and self._loaded:
                 return  # Already loaded
 
-            if not self._loading:
-                # Set async loading flag
-                self._loading = True
-                if self._load_all_on_start:
-                    await self.load_all_async(self._filters)
-                elif self._load_ids_on_start:
-                    instrument_ids = [InstrumentId.from_str(i) for i in self._load_ids_on_start]
-                    await self.load_ids_async(instrument_ids, self._filters)
-                self._log.info(f"Loaded {self.count} instruments.")
+            if not self._load_all_on_start and not self._load_ids_on_start:
+                self._log.warning(
+                    "No loading configured: ensure either `load_all=True` or there are `load_ids`",
+                )
+                return
+
+            self._log.info("Initializing instruments...")
+
+            if self._load_all_on_start:
+                await self.load_all_async(self._filters)
+            elif self._load_ids_on_start:
+                instrument_ids = [
+                    i if isinstance(i, InstrumentId) else InstrumentId.from_str(i)
+                    for i in self._load_ids_on_start
+                ]
+
+                instruments_str = ", ".join([i.value for i in instrument_ids])
+                filters_str = "..." if not self._filters else f" with filters {self._filters}..."
+                self._log.info(f"Loading instruments: {instruments_str}{filters_str}")
+
+                await self.load_ids_async(instrument_ids, self._filters)
+
+            if self._instruments:
+                self._log.info(f"Loaded {self.count} instruments")
             else:
-                self._log.debug("Awaiting loading...")
-                while self._loading:
-                    # Wait 100ms
-                    await asyncio.sleep(0.1)
+                self._log.warning("No instruments were loaded, verify config if this is unexpected")
 
-            # Set async loading flags
-            self._loading = False
             self._loaded = True
-        except Exception as e:
-            print(e)
 
-    def load_all(self, filters: Optional[dict] = None) -> None:
+            self._log.info("Initialized instruments")
+
+    def load_all(self, filters: dict | None = None) -> None:
         """
-        Load the latest instruments into the provider, optionally applying the
-        given filters.
+        Load the latest instruments into the provider, optionally applying the given
+        filters.
 
         Parameters
         ----------
-        filters : dict, optional
+        filters : frozendict[str, Any] or dict[str, Any], optional
             The venue specific instrument loading filters to apply.
 
         """
-        loop = asyncio.get_event_loop()
+        loop = get_event_loop()
+
         if loop.is_running():
-            loop.create_task(self.load_all_async(filters))
+            task = loop.create_task(self.load_all_async(filters))
+            self._tasks.add(task)
         else:
             loop.run_until_complete(self.load_all_async(filters))
 
     def load_ids(
         self,
         instrument_ids: list[InstrumentId],
-        filters: Optional[dict] = None,
+        filters: dict | None = None,
     ) -> None:
         """
-        Load the instruments for the given IDs into the provider, optionally
-        applying the given filters.
+        Load the instruments for the given IDs into the provider, optionally applying
+        the given filters.
 
         Parameters
         ----------
         instrument_ids : list[InstrumentId]
             The instrument IDs to load.
-        filters : dict, optional
+        filters : frozendict[str, Any] or dict[str, Any], optional
             The venue specific instrument loading filters to apply.
 
         """
         PyCondition.not_none(instrument_ids, "instrument_ids")
 
-        loop = asyncio.get_event_loop()
+        loop = get_event_loop()
+
         if loop.is_running():
-            loop.create_task(self.load_ids_async(instrument_ids, filters))
+            task = loop.create_task(self.load_ids_async(instrument_ids, filters))
+            self._tasks.add(task)
         else:
             loop.run_until_complete(self.load_ids_async(instrument_ids, filters))
 
     def load(
         self,
         instrument_id: InstrumentId,
-        filters: Optional[dict] = None,
+        filters: dict | None = None,
     ) -> None:
         """
-        Load the instrument for the given ID into the provider, optionally
-        applying the given filters.
+        Load the instrument for the given ID into the provider, optionally applying the
+        given filters.
 
         Parameters
         ----------
         instrument_id : InstrumentId
             The instrument ID to load.
-        filters : dict, optional
+        filters : frozendict[str, Any] or dict[str, Any], optional
             The venue specific instrument loading filters to apply.
 
         """
         PyCondition.not_none(instrument_id, "instrument_id")
 
-        loop = asyncio.get_event_loop()
+        loop = get_event_loop()
+
         if loop.is_running():
-            loop.create_task(self.load_async(instrument_id, filters))
+            task = loop.create_task(self.load_async(instrument_id, filters))
+            self._tasks.add(task)
         else:
             loop.run_until_complete(self.load_async(instrument_id, filters))
 
@@ -260,7 +269,7 @@ class InstrumentProvider:
         PyCondition.not_none(currency, "currency")
 
         self._currencies[currency.code] = currency
-        Currency.register(currency, overwrite=False)
+        register_currency(currency, overwrite=False)
 
     def add(self, instrument: Instrument) -> None:
         """
@@ -326,7 +335,7 @@ class InstrumentProvider:
         """
         return self._currencies.copy()
 
-    def currency(self, code: str) -> Optional[Currency]:
+    def currency(self, code: str) -> Currency | None:
         """
         Return the currency with the given code (if found).
 
@@ -352,7 +361,7 @@ class InstrumentProvider:
             ccy = Currency.from_str(code)
         return ccy
 
-    def find(self, instrument_id: InstrumentId) -> Optional[Instrument]:
+    def find(self, instrument_id: InstrumentId) -> Instrument | None:
         """
         Return the instrument for the given instrument ID (if found).
 

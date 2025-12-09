@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,9 +13,8 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
-from nautilus_trader.model.enums_c cimport OrderSide
-from nautilus_trader.model.enums_c cimport TrailingOffsetType
-from nautilus_trader.model.instruments.base cimport Instrument
+from nautilus_trader.core.rust.model cimport OrderSide
+from nautilus_trader.core.rust.model cimport TrailingOffsetType
 from nautilus_trader.model.objects cimport Price
 from nautilus_trader.model.orders.base cimport Order
 
@@ -24,7 +23,7 @@ cdef class TrailingStopCalculator:
 
     @staticmethod
     cdef tuple calculate(
-        Instrument instrument,
+        Price price_increment,
         Order order,
         Price bid,
         Price ask,
@@ -33,7 +32,7 @@ cdef class TrailingStopCalculator:
 
     @staticmethod
     cdef Price calculate_with_last(
-        Instrument instrument,
+        Price price_increment,
         TrailingOffsetType trailing_offset_type,
         OrderSide side,
         double offset,
@@ -42,7 +41,7 @@ cdef class TrailingStopCalculator:
 
     @staticmethod
     cdef Price calculate_with_bid_ask(
-        Instrument instrument,
+        Price price_increment,
         TrailingOffsetType trailing_offset_type,
         OrderSide side,
         double offset,

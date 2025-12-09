@@ -1,137 +1,107 @@
 # Concepts
 
-```{eval-rst}
-.. toctree::
-   :maxdepth: 1
-   :glob:
-   :titlesonly:
-   :hidden:
-   
-   architecture.md
-   strategies.md
-   instruments.md
-   adapters.md
-   orders.md
-   execution.md
-   logging.md
-   advanced/index.md
-```
+Concept guides introduce and explain the foundational ideas, components, and best practices that underpin the NautilusTrader platform.
+These guides are designed to provide both conceptual and practical insights, helping you navigate the system's architecture, strategies, data management, execution flow, and more.
+Explore the following guides to deepen your understanding and make the most of NautilusTrader.
 
-Welcome to NautilusTrader!
+## [Overview](overview.md)
 
-It's important to note that the [API Reference](../api_reference/index.md) documentation should be 
-considered the source of truth for the platform. If there are any discrepancies between concepts described here
-and the API Reference, then the API Reference should be considered the correct information. We are 
-working to ensure that concepts stay up-to-date with the API Reference and will be introducing 
-doc tests in the near future to help with this.
+The **Overview** guide covers the main features and intended use cases for the platform.
 
-```{note}
-The terms "NautilusTrader", "Nautilus" and "platform" are used interchageably throughout the documentation.
-```
+## [Architecture](architecture.md)
 
-There are three main use cases for this software package:
+The **Architecture** guide dives deep into the foundational principles, structures, and designs that underpin
+the platform. It is ideal for developers, system architects, or anyone curious about the inner workings of NautilusTrader.
 
-- Backtesting trading systems with historical data (`backtest`)
-- Testing trading systems with real-time data and simulated execution (`sandbox`)
-- Deploying trading systems with real-time data and executing on venues with real (or paper) accounts (`live`)
+## [Actors](actors.md)
 
-The projects codebase provides a framework for implementing the software layer of systems which achieve the above. You will find
-the default `backtest` and `live` system implementations in their respectively named subpackages. A `sandbox` environment can
-be built using the sandbox adapter.
+The `Actor` serves as the foundational component for interacting with the trading system.
+The **Actors** guide covers capabilities and implementation specifics.
 
-```{note}
-All examples will utilize these default system implementations.
-```
+## [Strategies](strategies.md)
 
-```{note}
-We consider trading strategies to be subcomponents of end-to-end trading systems, these systems
-include the application and infrastructure layers.
-```
+The `Strategy` is at the heart of the NautilusTrader user experience when writing and working with
+trading strategies. The **Strategies** guide covers how to implement strategies for the platform.
 
-## Distributed
-The platform is designed to be easily integrated into a larger distributed system. 
-To facilitate this, nearly all configuration and domain objects can be serialized using JSON, MessagePack or Apache Arrow (Feather) for communication over the network.
+## [Instruments](instruments.md)
 
-## Common core
-The common system core is utilized by both the backtest, sandbox, and live trading nodes. 
-User-defined Actor and Strategy components are managed consistently across these environment contexts.
+The **Instruments** guide covers the different instrument definition specifications for tradable assets and contracts.
 
-## Backtesting
-Backtesting can be achieved by first making data available to a `BacktestEngine` either directly or via
-a higher level `BacktestNode` and `ParquetDataCatalog`, and then running the data through the system with nanosecond resolution.
+## [Data](data.md)
 
-## Live trading
-A `TradingNode` can ingest data and events from multiple data and execution clients. 
-Live deployments can use both demo/paper trading accounts, or real accounts.
+The NautilusTrader platform defines a range of built-in data types crafted specifically to represent
+a trading domain. The **Data** guide covers working with both built-in and custom data.
 
-For live trading, a `TradingNode` can ingest data and events from multiple data and execution clients. 
-The system supports both demo/paper trading accounts and real accounts. High performance can be achieved by running 
-asynchronously on a single [event loop](https://docs.python.org/3/library/asyncio-eventloop.html), 
-with the potential to further boost performance by leveraging the [uvloop](https://github.com/MagicStack/uvloop) implementation (available for Linux and macOS).
+## [Execution](execution.md)
 
-## Domain model
-The platform features a comprehensive trading domain model that includes various value types such as 
-`Price` and `Quantity`, as well as more complex entities such as `Order` and `Position` objects, 
-which are used to aggregate multiple events to determine state.
+NautilusTrader can handle trade execution and order management for multiple strategies and venues
+simultaneously (per instance). The **Execution** guide covers components involved in execution, as
+well as the flow of execution messages (commands and events).
 
-### Data Types
-The following market data types can be requested historically, and also subscribed to as live streams when available from a data publisher, and implemented in an integrations adapter.
-- `OrderBookDelta`
-- `OrderBookDeltas` (L1/L2/L3)
-- `Ticker`
-- `QuoteTick`
-- `TradeTick`
-- `Bar`
-- `Instrument`
-- `VenueStatusUpdate`
-- `InstrumentStatusUpdate`
+## [Orders](orders.md)
 
-The following PriceType options can be used for bar aggregations;
-- `BID`
-- `ASK`
-- `MID`
-- `LAST`
+The **Orders** guide provides more details about the available order types for the platform, along with
+the execution instructions supported for each. Advanced order types and emulated orders are also covered.
 
-The following BarAggregation options are possible;
-- `MILLISECOND`
-- `SECOND`
-- `MINUTE`
-- `HOUR`
-- `DAY`
-- `WEEK`
-- `MONTH`
-- `TICK`
-- `VOLUME`
-- `VALUE` (a.k.a Dollar bars)
-- `TICK_IMBALANCE`
-- `TICK_RUNS`
-- `VOLUME_IMBALANCE`
-- `VOLUME_RUNS`
-- `VALUE_IMBALANCE`
-- `VALUE_RUNS`
+## [Positions](positions.md)
 
-The price types and bar aggregations can be combined with step sizes >= 1 in any way through a `BarSpecification`. 
-This enables maximum flexibility and now allows alternative bars to be aggregated for live trading.
+The **Positions** guide explains how positions work in NautilusTrader, including their lifecycle,
+aggregation from order fills, profit and loss calculations, and the important concept of position
+snapshotting for netting OMS configurations.
 
-### Account Types
-The following account types are available for both live and backtest environments;
+## [Cache](cache.md)
 
-- `Cash` single-currency (base currency)
-- `Cash` multi-currency
-- `Margin` single-currency (base currency)
-- `Margin` multi-currency
-- `Betting` single-currency
+The `Cache` is a central in-memory data store for managing all trading-related data.
+The **Cache** guide covers capabilities and best practices of the cache.
 
-### Order Types
-The following order types are available (when possible on an exchange);
+## [Message Bus](message_bus.md)
 
-- `MARKET`
-- `LIMIT`
-- `STOP_MARKET`
-- `STOP_LIMIT`
-- `MARKET_TO_LIMIT`
-- `MARKET_IF_TOUCHED`
-- `LIMIT_IF_TOUCHED`
-- `TRAILING_STOP_MARKET`
-- `TRAILING_STOP_LIMIT`
+The `MessageBus` is the core communication system enabling decoupled messaging patterns between components,
+including point-to-point, publish/subscribe, and request/response.
+The **Message Bus** guide covers capabilities and best practices of the `MessageBus`.
 
+## [Portfolio](portfolio.md)
+
+The `Portfolio` serves as the central hub for managing and tracking all positions across active strategies for the trading node or backtest.
+It consolidates position data from multiple instruments, providing a unified view of your holdings, risk exposure, and overall performance.
+Explore this section to understand how NautilusTrader aggregates and updates portfolio state to support effective trading and risk management.
+
+## [Reports](reports.md)
+
+The **Reports** guide covers the reporting capabilities in NautilusTrader, including execution reports,
+portfolio analysis reports, PnL accounting considerations, and how reports are used for backtest
+post-run analysis.
+
+## [Logging](logging.md)
+
+The platform provides logging for both backtesting and live trading using a high-performance logger implemented in Rust.
+
+## [Backtesting](backtesting.md)
+
+Backtesting with NautilusTrader is a methodical simulation process that replicates trading
+activities using a specific system implementation.
+
+## [Visualization](visualization.md)
+
+The **Visualization** guide covers the interactive tearsheet system for analyzing backtest
+results, including available charts, themes, customization options, and how to create
+custom visualizations using the extensible chart registry.
+
+## [Live Trading](live.md)
+
+Live trading in NautilusTrader enables traders to deploy their backtested strategies in real-time
+without any code changes. This seamless transition ensures consistency and reliability, though there
+are key differences between backtesting and live trading.
+
+## [Adapters](adapters.md)
+
+The NautilusTrader design allows for integrating data providers and/or trading venues through adapter implementations.
+The **Adapters** guide covers requirements and best practices for developing new integration adapters for the platform.
+
+:::note
+The [API Reference](../api_reference/index.md) documentation should be considered the source of truth
+for the platform. If there are any discrepancies between concepts described here and the API Reference,
+then the API Reference should be considered the correct information. We are working to ensure that
+concepts stay up-to-date with the API Reference and will be introducing doc tests in the near future
+to help with this.
+:::

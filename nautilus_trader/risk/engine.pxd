@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -17,16 +17,16 @@ from decimal import Decimal
 
 from nautilus_trader.cache.cache cimport Cache
 from nautilus_trader.common.component cimport Component
-from nautilus_trader.common.throttler cimport Throttler
+from nautilus_trader.common.component cimport Throttler
 from nautilus_trader.core.message cimport Command
 from nautilus_trader.core.message cimport Event
+from nautilus_trader.core.rust.model cimport TradingState
 from nautilus_trader.execution.messages cimport CancelAllOrders
 from nautilus_trader.execution.messages cimport CancelOrder
 from nautilus_trader.execution.messages cimport ModifyOrder
 from nautilus_trader.execution.messages cimport SubmitOrder
 from nautilus_trader.execution.messages cimport SubmitOrderList
 from nautilus_trader.execution.messages cimport TradingCommand
-from nautilus_trader.model.enums_c cimport TradingState
 from nautilus_trader.model.identifiers cimport InstrumentId
 from nautilus_trader.model.instruments.base cimport Instrument
 from nautilus_trader.model.objects cimport Price
@@ -80,8 +80,6 @@ cdef class RiskEngine(Component):
     cpdef void _handle_submit_order(self, SubmitOrder command)
     cpdef void _handle_submit_order_list(self, SubmitOrderList command)
     cpdef void _handle_modify_order(self, ModifyOrder command)
-    cpdef void _handle_cancel_order(self, CancelOrder command)
-    cpdef void _handle_cancel_all_orders(self, CancelAllOrders command)
 
 # -- PRE-TRADE CHECKS -----------------------------------------------------------------------------
 
@@ -90,16 +88,16 @@ cdef class RiskEngine(Component):
     cpdef bint _check_order_quantity(self, Instrument instrument, Order order)
     cpdef bint _check_orders_risk(self, Instrument instrument, list orders)
     cpdef str _check_price(self, Instrument instrument, Price price)
-    cpdef str _check_quantity(self, Instrument instrument, Quantity quantity)
+    cpdef str _check_quantity(self, Instrument instrument, Quantity quantity, bint is_quote_quantity=*)
 
 # -- DENIALS --------------------------------------------------------------------------------------
 
     cpdef void _deny_command(self, TradingCommand command, str reason)
     cpdef void _deny_new_order(self, TradingCommand command)
+    cpdef void _deny_modify_order(self, ModifyOrder command)
     cpdef void _deny_order(self, Order order, str reason)
     cpdef void _deny_order_list(self, OrderList order_list, str reason)
     cpdef void _reject_modify_order(self, Order order, str reason)
-    cpdef void _reject_cancel_order(self, Order order, str reason)
 
 # -- EGRESS ---------------------------------------------------------------------------------------
 

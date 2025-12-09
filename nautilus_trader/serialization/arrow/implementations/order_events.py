@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,66 +13,40 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
-import json
-
 import msgspec
+import pyarrow as pa
 
-from nautilus_trader.model.events import OrderEvent
 from nautilus_trader.model.events import OrderFilled
 from nautilus_trader.model.events import OrderInitialized
-from nautilus_trader.model.events import OrderUpdated
-from nautilus_trader.serialization.arrow.schema import NAUTILUS_PARQUET_SCHEMA
-from nautilus_trader.serialization.arrow.serializer import register_parquet
+from nautilus_trader.serialization.arrow.schema import NAUTILUS_ARROW_SCHEMA
 
 
-def serialize(event: OrderEvent):
-    caster = {
-        "last_qty": float,
-        "last_px": float,
-        "price": float,
-        "quantity": float,
-    }
-    data = {k: caster[k](v) if k in caster else v for k, v in event.to_dict(event).items()}
-    return data
-
-
-def serialize_order_initialized(event: OrderInitialized):
-    caster = {
-        "quantity": float,
-        "price": float,
-    }
+def serialize(event: OrderInitialized | OrderFilled) -> pa.RecordBatch:
     data = event.to_dict(event)
-    data.update(json.loads(data.pop("options", "{}")))
-    data = {k: caster[k](v) if (k in caster and v is not None) else v for k, v in data.items()}
-    return data
+    if isinstance(event, OrderInitialized):
+        data["options"] = msgspec.json.encode(data["options"])
+        data["linked_order_ids"] = msgspec.json.encode(data["linked_order_ids"])
+        data["exec_algorithm_params"] = msgspec.json.encode(data["exec_algorithm_params"])
+        data["tags"] = msgspec.json.encode(data["tags"])
+    elif isinstance(event, OrderFilled):
+        data["info"] = msgspec.json.encode(data["info"])
+    return pa.RecordBatch.from_pylist([data], schema=NAUTILUS_ARROW_SCHEMA[type(event)])
 
 
-def deserialize_order_filled(data: dict) -> OrderFilled:
-    for k in ("last_px", "last_qty"):
-        data[k] = str(data[k])
-    return OrderFilled.from_dict(data)
+def deserialize(cls):
+    def inner(batch: pa.RecordBatch) -> OrderInitialized | OrderFilled:
+        def parse(data):
+            if cls == OrderInitialized:
+                data["options"] = msgspec.json.decode(data["options"])
+                data["linked_order_ids"] = msgspec.json.decode(data["linked_order_ids"])
+                data["exec_algorithm_params"] = msgspec.json.decode(data["exec_algorithm_params"])
+                data["tags"] = msgspec.json.decode(data["tags"])
+            elif cls == OrderFilled:
+                data["info"] = msgspec.json.decode(data["info"])
+            else:
+                raise RuntimeError("Unsupported order event type for deserialization")
+            return data
 
+        return [cls.from_dict(parse(d)) for d in batch.to_pylist()]
 
-def deserialize_order_initialised(data: dict) -> OrderInitialized:
-    for k in ("price", "quantity"):
-        data[k] = str(data[k])
-    options_fields = msgspec.json.decode(
-        NAUTILUS_PARQUET_SCHEMA[OrderInitialized].metadata[b"options_fields"],
-    )
-    data["options"] = msgspec.json.encode({k: data.pop(k, None) for k in options_fields})
-    return OrderInitialized.from_dict(data)
-
-
-def deserialize_order_updated(data: dict) -> OrderUpdated:
-    for k in ("price", "quantity"):
-        data[k] = str(data[k])
-    return OrderUpdated.from_dict(data)
-
-
-register_parquet(OrderUpdated, serializer=serialize, deserializer=deserialize_order_updated)
-register_parquet(OrderFilled, serializer=serialize, deserializer=deserialize_order_filled)
-register_parquet(
-    OrderInitialized,
-    serializer=serialize_order_initialized,
-    deserializer=deserialize_order_initialised,
-)
+    return inner

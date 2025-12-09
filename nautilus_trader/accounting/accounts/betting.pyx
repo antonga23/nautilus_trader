@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -17,8 +17,8 @@ from decimal import Decimal
 
 from nautilus_trader.accounting.accounts.cash cimport CashAccount
 from nautilus_trader.core.correctness cimport Condition
-from nautilus_trader.model.enums_c cimport AccountType
-from nautilus_trader.model.enums_c cimport OrderSide
+from nautilus_trader.core.rust.model cimport AccountType
+from nautilus_trader.core.rust.model cimport OrderSide
 from nautilus_trader.model.instruments.base cimport Instrument
 from nautilus_trader.model.objects cimport Money
 from nautilus_trader.model.objects cimport Price
@@ -70,15 +70,32 @@ cdef class BettingAccount(CashAccount):
         locked: Decimal = liability(quantity, price, side)
         return Money(locked, instrument.quote_currency)
 
+    cpdef Money balance_impact(
+        self,
+        Instrument instrument,
+        Quantity quantity,
+        Price price,
+        OrderSide order_side,
+    ):
+        cdef Money notional
+        if order_side == OrderSide.SELL:
+            notional = instrument.notional_value(quantity, price)
+            return Money(-notional.as_f64_c(), notional.currency)
+        elif order_side == OrderSide.BUY:
+            notional = instrument.notional_value(quantity, price)
+            return Money(-notional.as_f64_c() * (price.as_f64_c() - 1.0), notional.currency)
+        else:
+            raise RuntimeError(f"invalid `OrderSide`, was {order_side}")  # pragma: no cover (design-time error)
+
 
 cpdef stake(Quantity quantity, Price price):
     return quantity * (price - 1)
 
 
 cpdef liability(Quantity quantity, Price price, OrderSide side):
-    if side == OrderSide.BUY:
+    if side == OrderSide.SELL:
         return quantity
-    elif side == OrderSide.SELL:
+    elif side == OrderSide.BUY:
         return stake(quantity, price)
 
 

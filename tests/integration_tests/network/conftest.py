@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -25,16 +25,22 @@ from aiohttp.test_utils import TestServer
 
 
 async def handle_echo(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+    tasks = set()
+
     async def write():
+        writer.write(b"connected\r\n")
         while True:
             writer.write(b"hello\r\n")
             await asyncio.sleep(0.1)
 
-    asyncio.get_event_loop().create_task(write())
+    loop = asyncio.get_running_loop()
+
+    task = loop.create_task(write())
+    tasks.add(task)
 
     while True:
         req = await reader.readline()
-        if req == b"CLOSE_STREAM":
+        if req.strip() == b"close":
             writer.close()
 
 
@@ -51,7 +57,7 @@ async def socket_server():
 async def fixture_closing_socket_server():
     async def handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         async def write():
-            writer.write(b"hello\r\n")
+            writer.write(b"connected\r\n")
             await asyncio.sleep(0.1)
             await writer.drain()
             writer.close()
@@ -67,7 +73,7 @@ async def fixture_closing_socket_server():
 
 
 @pytest_asyncio.fixture(name="websocket_server")
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def fixture_websocket_server(event_loop):
     async def handler(request):
         ws = web.WebSocketResponse()

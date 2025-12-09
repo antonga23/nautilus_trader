@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -14,12 +14,12 @@
 # -------------------------------------------------------------------------------------------------
 
 import asyncio
+from decimal import Decimal
 from functools import partial
 
 import pytest
 from ibapi.order_state import OrderState as IBOrderState
 
-# fmt: off
 from nautilus_trader.adapters.interactive_brokers.common import IBOrderTags
 from nautilus_trader.adapters.interactive_brokers.factories import InteractiveBrokersLiveExecClientFactory
 from nautilus_trader.adapters.interactive_brokers.parsing.instruments import instrument_id_to_ib_contract
@@ -31,30 +31,28 @@ from nautilus_trader.model.objects import Quantity
 from nautilus_trader.test_kit.stubs.commands import TestCommandStubs
 from nautilus_trader.test_kit.stubs.execution import TestExecStubs
 from nautilus_trader.test_kit.stubs.identifiers import TestIdStubs
+from tests.integration_tests.adapters.interactive_brokers.test_kit import IBTestContractStubs
 from tests.integration_tests.adapters.interactive_brokers.test_kit import IBTestDataStubs
 from tests.integration_tests.adapters.interactive_brokers.test_kit import IBTestExecStubs
-from tests.integration_tests.adapters.interactive_brokers.test_kit import IBTestProviderStubs
 
-
-# fmt: on
 
 pytestmark = pytest.mark.skip(reason="Skip due currently flaky mocks")
 
 
-@pytest.fixture()
+@pytest.fixture
 def contract_details():
-    return IBTestProviderStubs.aapl_equity_contract_details()
+    return IBTestContractStubs.aapl_equity_ib_contract_details()
 
 
-@pytest.fixture()
+@pytest.fixture
 def contract(contract_details):
-    return contract_details.contract
+    return IBTestContractStubs.aapl_equity_ib_contract()
 
 
 def instrument_setup(exec_client, cache, instrument=None, contract_details=None):
-    instrument = instrument or IBTestProviderStubs.aapl_instrument()
-    contract_details = contract_details or IBTestProviderStubs.aapl_equity_contract_details()
-    exec_client._instrument_provider.contract_details[instrument.id.value] = contract_details
+    instrument = instrument or IBTestContractStubs.aapl_instrument()
+    contract_details = contract_details or IBTestContractStubs.aapl_equity_contract_details()
+    exec_client._instrument_provider.contract_details[instrument.id] = contract_details
     exec_client._instrument_provider.contract_id_to_instrument_id[
         contract_details.contract.conId
     ] = instrument.id
@@ -70,7 +68,7 @@ def order_setup(
     status: OrderStatus = OrderStatus.SUBMITTED,
 ):
     order = TestExecStubs.limit_order(
-        instrument_id=instrument.id,
+        instrument=instrument,
         client_order_id=client_order_id,
     )
     if status == OrderStatus.SUBMITTED:
@@ -123,16 +121,15 @@ def on_cancel_order_setup(client, status, order_id, manual_cancel_order_time):
 
 
 @pytest.mark.asyncio
-async def test_factory(mocker, exec_client_config, venue, event_loop, msgbus, cache, clock, logger):
+async def test_factory(exec_client_config, venue, loop, msgbus, cache, clock):
     # Act
     exec_client = InteractiveBrokersLiveExecClientFactory.create(
-        loop=event_loop,
+        loop=loop,
         name=venue.value,
         config=exec_client_config,
         msgbus=msgbus,
         cache=cache,
         clock=clock,
-        logger=logger,
     )
 
     # Assert
@@ -143,7 +140,7 @@ async def test_factory(mocker, exec_client_config, venue, event_loop, msgbus, ca
 async def test_connect(mocker, exec_client):
     # Arrange
     mocker.patch.object(
-        exec_client._client._client,
+        exec_client._client._eclient,
         "reqAccountSummary",
         side_effect=partial(account_summary_setup, exec_client._client),
     )
@@ -160,7 +157,7 @@ async def test_connect(mocker, exec_client):
 async def test_disconnect(mocker, exec_client):
     # Arrange
     mocker.patch.object(
-        exec_client._client._client,
+        exec_client._client._eclient,
         "reqAccountSummary",
         side_effect=partial(account_summary_setup, exec_client._client),
     )
@@ -195,7 +192,7 @@ async def test_submit_order(
     exec_client.connect()
     await asyncio.sleep(0)
     mocker.patch.object(
-        exec_client._client._client,
+        exec_client._client._eclient,
         "placeOrder",
         side_effect=partial(on_open_order_setup, exec_client._client, "Submitted"),
     )
@@ -241,7 +238,7 @@ async def test_submit_order_what_if(
     exec_client.connect()
     await asyncio.sleep(0)
     mocker.patch.object(
-        exec_client._client._client,
+        exec_client._client._eclient,
         "placeOrder",
         side_effect=partial(on_open_order_setup, exec_client._client, "PreSubmitted"),
     )
@@ -293,7 +290,7 @@ async def test_submit_order_list(
     exec_client.connect()
     await asyncio.sleep(0)
     mocker.patch.object(
-        exec_client._client._client,
+        exec_client._client._eclient,
         "placeOrder",
         side_effect=partial(on_open_order_setup, exec_client._client, "Submitted"),
     )
@@ -344,7 +341,7 @@ async def test_modify_order(
     exec_client.connect()
     await asyncio.sleep(0)
     mocker.patch.object(
-        exec_client._client._client,
+        exec_client._client._eclient,
         "placeOrder",
         side_effect=partial(on_open_order_setup, exec_client._client, "Submitted"),
     )
@@ -393,7 +390,7 @@ async def test_modify_order_quantity(
     exec_client.connect()
     await asyncio.sleep(0)
     mocker.patch.object(
-        exec_client._client._client,
+        exec_client._client._eclient,
         "placeOrder",
         side_effect=partial(on_open_order_setup, exec_client._client, "Submitted"),
     )
@@ -440,7 +437,7 @@ async def test_modify_order_price(
     exec_client.connect()
     await asyncio.sleep(0)
     mocker.patch.object(
-        exec_client._client._client,
+        exec_client._client._eclient,
         "placeOrder",
         side_effect=partial(on_open_order_setup, exec_client._client, "Submitted"),
     )
@@ -486,12 +483,12 @@ async def test_cancel_order(
     exec_client.connect()
     await asyncio.sleep(0)
     mocker.patch.object(
-        exec_client._client._client,
+        exec_client._client._eclient,
         "placeOrder",
         side_effect=partial(on_open_order_setup, exec_client._client, "Submitted"),
     )
     mocker.patch.object(
-        exec_client._client._client,
+        exec_client._client._eclient,
         "cancelOrder",
         side_effect=partial(on_cancel_order_setup, exec_client._client, "Cancelled"),
     )
@@ -533,7 +530,7 @@ async def test_on_exec_details(
     exec_client.connect()
     await asyncio.sleep(0)
     mocker.patch.object(
-        exec_client._client._client,
+        exec_client._client._eclient,
         "placeOrder",
         side_effect=partial(on_open_order_setup, exec_client._client, "Submitted"),
     )
@@ -566,7 +563,112 @@ async def test_on_exec_details(
     assert cache.order(client_order_id).avg_px == Price(50, 0)
     assert cache.order(client_order_id).status == OrderStatus.FILLED
 
-    @pytest.mark.asyncio
-    async def test_on_account_update(mocker, exec_client):
-        # TODO:
-        pass
+
+@pytest.mark.asyncio
+async def test_on_order_status_with_avg_px(
+    mocker,
+    exec_client,
+    cache,
+    instrument,
+    contract_details,
+    client_order_id,
+):
+    # Arrange
+    instrument_setup(
+        exec_client=exec_client,
+        cache=cache,
+        instrument=instrument,
+        contract_details=contract_details,
+    )
+    exec_client.connect()
+    await asyncio.sleep(0)
+    mocker.patch.object(
+        exec_client._client._eclient,
+        "placeOrder",
+        side_effect=partial(on_open_order_setup, exec_client._client, "Submitted"),
+    )
+    order = TestExecStubs.limit_order(
+        instrument_id=instrument.id,
+        client_order_id=client_order_id,
+    )
+    cache.add_order(order, None)
+    command = TestCommandStubs.submit_order_command(order=order)
+    exec_client.submit_order(command=command)
+    await asyncio.sleep(0)
+
+    # Act - Simulate order status update with average fill price
+    exec_client._on_order_status(
+        order_ref=str(client_order_id),
+        order_status="Filled",
+        avg_fill_price=125.50,
+        filled=Decimal(100),
+        remaining=Decimal(0),
+    )
+
+    # Assert - Check that avg_px is stored correctly
+    assert client_order_id in exec_client._order_avg_prices
+    stored_avg_px = exec_client._order_avg_prices[client_order_id]
+    # Price magnifier for AAPL is 1.0, so 125.50 should be stored as Price(125.50)
+    assert stored_avg_px == Price.from_str("125.50")
+
+
+@pytest.mark.asyncio
+async def test_on_exec_details_uses_stored_avg_px(
+    mocker,
+    exec_client,
+    cache,
+    instrument,
+    contract_details,
+    client_order_id,
+):
+    # Arrange
+    instrument_setup(
+        exec_client=exec_client,
+        cache=cache,
+        instrument=instrument,
+        contract_details=contract_details,
+    )
+    exec_client.connect()
+    await asyncio.sleep(0)
+    mocker.patch.object(
+        exec_client._client._eclient,
+        "placeOrder",
+        side_effect=partial(on_open_order_setup, exec_client._client, "Submitted"),
+    )
+    order = TestExecStubs.limit_order(
+        instrument_id=instrument.id,
+        client_order_id=client_order_id,
+    )
+    cache.add_order(order, None)
+    command = TestCommandStubs.submit_order_command(order=order)
+    exec_client.submit_order(command=command)
+    await asyncio.sleep(0)
+
+    # First update order status with avg_fill_price
+    exec_client._on_order_status(
+        order_ref=str(client_order_id),
+        order_status="Filled",
+        avg_fill_price=99.75,
+        filled=Decimal(100),
+        remaining=Decimal(0),
+    )
+
+    # Act - Process execution details
+    exec_client._client.execDetails(
+        req_id=-1,
+        contract=instrument_id_to_ib_contract(instrument.id),
+        execution=IBTestExecStubs.execution(client_order_id=client_order_id),
+    )
+    exec_client._client.commissionReport(
+        commission_report=IBTestExecStubs.commission(),
+    )
+
+    # Assert - avg_px should be the one from order_status, not from execution
+    assert cache.order(client_order_id).avg_px == Price.from_str("99.75")
+    assert cache.order(client_order_id).status == OrderStatus.FILLED
+
+
+@pytest.mark.asyncio
+async def test_on_account_update(mocker, exec_client):
+    # TODO:
+    pass

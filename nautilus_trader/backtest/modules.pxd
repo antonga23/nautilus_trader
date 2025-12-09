@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -17,17 +17,19 @@ from cpython.datetime cimport datetime
 from libc.stdint cimport uint64_t
 
 from nautilus_trader.accounting.calculators cimport RolloverInterestCalculator
-from nautilus_trader.backtest.exchange cimport SimulatedExchange
+from nautilus_trader.backtest.engine cimport SimulatedExchange
 from nautilus_trader.common.actor cimport Actor
-from nautilus_trader.common.logging cimport LoggerAdapter
+from nautilus_trader.common.component cimport Logger
+from nautilus_trader.core.data cimport Data
 
 
 cdef class SimulationModule(Actor):
     cdef readonly SimulatedExchange exchange
 
     cpdef void register_venue(self, SimulatedExchange exchange)
+    cpdef void pre_process(self, Data data)
     cpdef void process(self, uint64_t ts_now)
-    cpdef void log_diagnostics(self, LoggerAdapter log)
+    cpdef void log_diagnostics(self, Logger logger)
     cpdef void reset(self)
 
 

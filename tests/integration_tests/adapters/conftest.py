@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,24 +13,26 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
-from typing import Optional
+from typing import Any
 
 import pytest
 from pytest_mock import MockerFixture
 
 from nautilus_trader.accounting.factory import AccountFactory
-from nautilus_trader.common.clock import TestClock
-from nautilus_trader.common.logging import Logger
-from nautilus_trader.common.logging import LoggerAdapter
+from nautilus_trader.common import Environment
+from nautilus_trader.common.component import LiveClock
+from nautilus_trader.common.component import MessageBus
+from nautilus_trader.common.component import TestClock
 from nautilus_trader.core.message import Event
+from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.data.engine import DataEngine
 from nautilus_trader.execution.engine import ExecutionEngine
+from nautilus_trader.live.execution_engine import LiveExecutionEngine
 from nautilus_trader.model.events import AccountState
 from nautilus_trader.model.events import OrderCanceled
 from nautilus_trader.model.events import OrderFilled
 from nautilus_trader.model.identifiers import AccountId
 from nautilus_trader.model.identifiers import Venue
-from nautilus_trader.msgbus.bus import MessageBus
 from nautilus_trader.portfolio.portfolio import Portfolio
 from nautilus_trader.risk.engine import RiskEngine
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
@@ -40,97 +42,109 @@ from nautilus_trader.trading.strategy import StrategyConfig
 from nautilus_trader.trading.trader import Trader
 
 
-@pytest.fixture()
+@pytest.fixture
 def account_id(venue):
     return AccountId(f"{venue.value}-001")
 
 
-@pytest.fixture()
-def clock():
-    clock = TestClock()
-    clock.set_time(0)
+def has_live_components_marker(request) -> bool:
+    marker_names = [mark.name for mark in request.node.iter_markers()]
+    return "live_components" in marker_names
+
+
+@pytest.fixture
+def clock(request):
+    if has_live_components_marker(request):
+        clock = LiveClock()
+    else:
+        clock = TestClock()
+        clock.set_time(0)
     return clock
 
 
-@pytest.fixture()
-def logger(clock):
-    return Logger(clock, bypass=True)
+@pytest.fixture
+def live_clock():
+    clock = LiveClock()
+    return clock
 
 
-@pytest.fixture()
-def log(logger):
-    return LoggerAdapter("test", logger)
-
-
-@pytest.fixture()
+@pytest.fixture
 def trader_id():
     return TestIdStubs.trader_id()
 
 
-@pytest.fixture()
-def msgbus(trader_id, clock, logger):
+@pytest.fixture
+def instance_id():
+    return UUID4()
+
+
+@pytest.fixture
+def msgbus(trader_id, clock):
     return MessageBus(
         trader_id,
         clock,
-        logger,
     )
 
 
-@pytest.fixture()
-def cache(logger, instrument):
-    cache = TestComponentStubs.cache(logger)
+@pytest.fixture
+def cache(instrument):
+    cache = TestComponentStubs.cache()
     if instrument is not None:
         cache.add_instrument(instrument)
     return cache
 
 
-@pytest.fixture()
-def portfolio(clock, logger, cache, msgbus, account_state):
+@pytest.fixture
+def portfolio(clock, cache, msgbus, account_state):
     portfolio = Portfolio(
         msgbus,
         cache,
         clock,
-        logger,
     )
     if account_state is not None:
         portfolio.update_account(account_state)
     return portfolio
 
 
-@pytest.fixture()
-def data_engine(msgbus, cache, clock, logger, data_client):
+@pytest.fixture
+def data_engine(msgbus, cache, clock, data_client):
     engine = DataEngine(
         msgbus,
         cache,
         clock,
-        logger,
     )
     if data_client is not None:
         engine.register_client(data_client)
     return engine
 
 
-@pytest.fixture()
-def exec_engine(msgbus, cache, clock, logger, exec_client):
-    engine = ExecutionEngine(
-        msgbus,
-        cache,
-        clock,
-        logger,
-    )
+@pytest.fixture
+def exec_engine(request, event_loop, msgbus, cache, clock, exec_client):
+    if has_live_components_marker(request):
+        engine = LiveExecutionEngine(
+            event_loop,
+            msgbus,
+            cache,
+            clock,
+        )
+    else:
+        engine = ExecutionEngine(
+            msgbus,
+            cache,
+            clock,
+        )
     if exec_client is not None:
         engine.register_client(exec_client)
     return engine
 
 
-@pytest.fixture()
-def risk_engine(portfolio, msgbus, cache, clock, logger):
+@pytest.fixture
+def risk_engine(portfolio, msgbus, cache, clock):
     risk_engine = RiskEngine(
         portfolio,
         msgbus,
         cache,
         clock,
-        logger,
     )
     return risk_engine
 
@@ -138,6 +152,7 @@ def risk_engine(portfolio, msgbus, cache, clock, logger):
 @pytest.fixture(autouse=True)
 def trader(
     trader_id,
+    instance_id,
     msgbus,
     cache,
     portfolio,
@@ -145,11 +160,11 @@ def trader(
     risk_engine,
     exec_engine,
     clock,
-    logger,
     event_loop,
 ):
     return Trader(
         trader_id=trader_id,
+        instance_id=instance_id,
         msgbus=msgbus,
         cache=cache,
         portfolio=portfolio,
@@ -157,12 +172,12 @@ def trader(
         risk_engine=risk_engine,
         exec_engine=exec_engine,
         clock=clock,
-        logger=logger,
+        environment=Environment.BACKTEST,
         loop=event_loop,
     )
 
 
-@pytest.fixture()
+@pytest.fixture
 def mock_data_engine_process(mocker: MockerFixture, msgbus, data_engine):
     mock = mocker.MagicMock()
     msgbus.deregister(endpoint="DataEngine.process", handler=data_engine.process)
@@ -173,7 +188,7 @@ def mock_data_engine_process(mocker: MockerFixture, msgbus, data_engine):
     return mock
 
 
-@pytest.fixture()
+@pytest.fixture
 def mock_exec_engine_process(mocker: MockerFixture, msgbus, exec_engine):
     mock = mocker.MagicMock()
     msgbus.deregister(endpoint="ExecEngine.process", handler=exec_engine.process)
@@ -184,8 +199,8 @@ def mock_exec_engine_process(mocker: MockerFixture, msgbus, exec_engine):
     return mock
 
 
-@pytest.fixture()
-def strategy(trader_id, portfolio, msgbus, cache, clock, logger):
+@pytest.fixture
+def strategy(trader_id, portfolio, msgbus, cache, clock):
     strategy = Strategy(config=StrategyConfig(strategy_id="S", order_id_tag="001"))
     strategy.register(
         trader_id,
@@ -193,27 +208,26 @@ def strategy(trader_id, portfolio, msgbus, cache, clock, logger):
         msgbus,
         cache,
         clock,
-        logger,
     )
     return strategy
 
 
-@pytest.fixture()
+@pytest.fixture
 def strategy_id(strategy):
     return strategy.id
 
 
-@pytest.fixture()
+@pytest.fixture
 def client_order_id(strategy):
     return TestIdStubs.client_order_id()
 
 
-@pytest.fixture()
+@pytest.fixture
 def venue_order_id(strategy):
     return TestIdStubs.venue_order_id()
 
 
-@pytest.fixture()
+@pytest.fixture
 def trade_id(strategy):
     return TestIdStubs.trade_id()
 
@@ -224,72 +238,73 @@ def components(data_engine, exec_engine, risk_engine, strategy):
     return
 
 
-def _collect_events(msgbus, filter_types: Optional[tuple[type, ...]] = None):
+def _collect_events(msgbus, filter_types: tuple[type, ...] | None = None):
     events = []
 
-    def handler(event: Event):
+    def handler(event: Event) -> None:
         if filter_types is None or isinstance(event, filter_types):
             events.append(event)
 
-    msgbus.subscribe("events.*", handler=handler)
+    msgbus.subscribe("events.order.*", handler=handler)
+    msgbus.subscribe("events.position.*", handler=handler)
     return events
 
 
-@pytest.fixture()
-def events(msgbus) -> list[Event]:
+@pytest.fixture
+def events(msgbus: MessageBus) -> list[Event]:
     return _collect_events(msgbus, filter_types=None)
 
 
-@pytest.fixture()
-def fill_events(msgbus):
+@pytest.fixture
+def fill_events(msgbus: MessageBus) -> list[Event]:
     return _collect_events(msgbus, filter_types=(OrderFilled,))
 
 
-@pytest.fixture()
-def cancel_events(msgbus):
+@pytest.fixture
+def cancel_events(msgbus: MessageBus) -> list[Event]:
     return _collect_events(msgbus, filter_types=(OrderCanceled,))
 
 
-@pytest.fixture()
-def messages(msgbus):
-    messages = []
+@pytest.fixture
+def messages(msgbus: MessageBus) -> list[Any]:
+    messages: list[Any] = []
     msgbus.subscribe("*", handler=messages.append)
     return messages
 
 
-@pytest.fixture()
+@pytest.fixture
 def account(account_state, cache):
     return AccountFactory.create(account_state)
 
 
 # TO BE IMPLEMENTED IN ADAPTER conftest.py
-@pytest.fixture()
+@pytest.fixture
 def venue() -> Venue:
     raise NotImplementedError("`venue` needs to be implemented in adapter `conftest.py`")
 
 
-@pytest.fixture()
+@pytest.fixture
 def instrument_provider():
     raise NotImplementedError(
         "`instrument_provider` needs to be implemented in adapter `conftest.py`",
     )
 
 
-@pytest.fixture()
+@pytest.fixture
 def data_client():
     raise NotImplementedError("`data_client` needs to be implemented in adapter `conftest.py`")
 
 
-@pytest.fixture()
+@pytest.fixture
 def exec_client():
     raise NotImplementedError("`exec_client` needs to be implemented in adapter `conftest.py`")
 
 
-@pytest.fixture()
+@pytest.fixture
 def instrument():
     raise NotImplementedError("`instrument` needs to be implemented in adapter `conftest.py`")
 
 
-@pytest.fixture()
+@pytest.fixture
 def account_state() -> AccountState:
     raise NotImplementedError("`account_state` needs to be implemented in adapter `conftest.py`")

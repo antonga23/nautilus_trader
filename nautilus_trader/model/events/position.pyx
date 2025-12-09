@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,24 +13,26 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
-from typing import Optional
+from decimal import Decimal
 
 from libc.stdint cimport uint64_t
 
 from nautilus_trader.core.correctness cimport Condition
 from nautilus_trader.core.message cimport Event
+from nautilus_trader.core.rust.model cimport OrderSide
+from nautilus_trader.core.rust.model cimport PositionSide
 from nautilus_trader.core.uuid cimport UUID4
-from nautilus_trader.model.currency cimport Currency
-from nautilus_trader.model.enums_c cimport OrderSide
-from nautilus_trader.model.enums_c cimport PositionSide
-from nautilus_trader.model.enums_c cimport order_side_from_str
-from nautilus_trader.model.enums_c cimport order_side_to_str
-from nautilus_trader.model.enums_c cimport position_side_from_str
-from nautilus_trader.model.enums_c cimport position_side_to_str
 from nautilus_trader.model.events.order cimport OrderFilled
+from nautilus_trader.model.functions cimport order_side_from_str
+from nautilus_trader.model.functions cimport order_side_to_str
+from nautilus_trader.model.functions cimport position_adjustment_type_from_str
+from nautilus_trader.model.functions cimport position_adjustment_type_to_str
+from nautilus_trader.model.functions cimport position_side_from_str
+from nautilus_trader.model.functions cimport position_side_to_str
 from nautilus_trader.model.identifiers cimport AccountId
 from nautilus_trader.model.identifiers cimport ClientOrderId
 from nautilus_trader.model.identifiers cimport PositionId
+from nautilus_trader.model.objects cimport Currency
 from nautilus_trader.model.objects cimport Money
 from nautilus_trader.model.objects cimport Price
 from nautilus_trader.model.objects cimport Quantity
@@ -86,15 +88,15 @@ cdef class PositionEvent(Event):
     event_id : UUID4
         The event ID.
     ts_opened : uint64_t
-        The UNIX timestamp (nanoseconds) when the position opened event occurred.
+        UNIX timestamp (nanoseconds) when the position opened event occurred.
     ts_closed : uint64_t
-        The UNIX timestamp (nanoseconds) when the position closed event occurred.
+        UNIX timestamp (nanoseconds) when the position closed event occurred.
     duration_ns : uint64_t
         The total open duration (nanoseconds), will be 0 if still open.
     ts_event : uint64_t
-        The UNIX timestamp (nanoseconds) when the event occurred.
+        UNIX timestamp (nanoseconds) when the event occurred.
     ts_init : uint64_t
-        The UNIX timestamp (nanoseconds) when the object was initialized.
+        UNIX timestamp (nanoseconds) when the object was initialized.
 
     Warnings
     --------
@@ -109,7 +111,7 @@ cdef class PositionEvent(Event):
         PositionId position_id not None,
         AccountId account_id not None,
         ClientOrderId opening_order_id not None,
-        ClientOrderId closing_order_id: Optional[ClientOrderId],
+        ClientOrderId closing_order_id: ClientOrderId | None,
         OrderSide entry,
         PositionSide side,
         double signed_qty,
@@ -130,8 +132,6 @@ cdef class PositionEvent(Event):
         uint64_t ts_event,
         uint64_t ts_init,
     ):
-        super().__init__(event_id, ts_event, ts_init)
-
         self.trader_id = trader_id
         self.strategy_id = strategy_id
         self.instrument_id = instrument_id
@@ -156,6 +156,18 @@ cdef class PositionEvent(Event):
         self.ts_closed = ts_closed
         self.duration_ns = duration_ns
 
+        self._event_id = event_id
+        self._ts_event = ts_event
+        self._ts_init = ts_init
+
+    def __eq__(self, Event other) -> bool:
+        if other is None:
+            return False
+        return self._event_id == other.id
+
+    def __hash__(self) -> int:
+        return hash(self._event_id)
+
     def __str__(self) -> str:
         return (
             f"{type(self).__name__}("
@@ -167,14 +179,14 @@ cdef class PositionEvent(Event):
             f"entry={order_side_to_str(self.entry)}, "
             f"side={position_side_to_str(self.side)}, "
             f"signed_qty={self.signed_qty}, "
-            f"quantity={self.quantity.to_str()}, "
-            f"peak_qty={self.peak_qty.to_str()}, "
+            f"quantity={self.quantity.to_formatted_str()}, "
+            f"peak_qty={self.peak_qty.to_formatted_str()}, "
             f"currency={self.currency.code}, "
             f"avg_px_open={self.avg_px_open}, "
             f"avg_px_close={self.avg_px_close}, "
             f"realized_return={self.realized_return:.5f}, "
-            f"realized_pnl={self.realized_pnl.to_str()}, "
-            f"unrealized_pnl={self.unrealized_pnl.to_str()}, "
+            f"realized_pnl={self.realized_pnl.to_formatted_str()}, "
+            f"unrealized_pnl={self.unrealized_pnl.to_formatted_str()}, "
             f"ts_opened={self.ts_opened}, "
             f"ts_last={self.ts_event}, "
             f"ts_closed={self.ts_closed}, "
@@ -194,20 +206,56 @@ cdef class PositionEvent(Event):
             f"entry={order_side_to_str(self.entry)}, "
             f"side={position_side_to_str(self.side)}, "
             f"signed_qty={self.signed_qty}, "
-            f"quantity={self.quantity.to_str()}, "
-            f"peak_qty={self.peak_qty.to_str()}, "
+            f"quantity={self.quantity.to_formatted_str()}, "
+            f"peak_qty={self.peak_qty.to_formatted_str()}, "
             f"currency={self.currency.code}, "
             f"avg_px_open={self.avg_px_open}, "
             f"avg_px_close={self.avg_px_close}, "
             f"realized_return={self.realized_return:.5f}, "
-            f"realized_pnl={self.realized_pnl.to_str()}, "
-            f"unrealized_pnl={self.unrealized_pnl.to_str()}, "
+            f"realized_pnl={self.realized_pnl.to_formatted_str()}, "
+            f"unrealized_pnl={self.unrealized_pnl.to_formatted_str()}, "
             f"ts_opened={self.ts_opened}, "
-            f"ts_last={self.ts_event}, "
+            f"ts_last={self._ts_event}, "
             f"ts_closed={self.ts_closed}, "
             f"duration_ns={self.duration_ns}, "
-            f"event_id={self.id.to_str()})"
+            f"event_id={self._event_id.to_str()})"
         )
+
+    @property
+    def id(self) -> UUID4:
+        """
+        The event message identifier.
+
+        Returns
+        -------
+        UUID4
+
+        """
+        return self._event_id
+
+    @property
+    def ts_event(self) -> int:
+        """
+        UNIX timestamp (nanoseconds) when the event occurred.
+
+        Returns
+        -------
+        int
+
+        """
+        return self._ts_event
+
+    @property
+    def ts_init(self) -> int:
+        """
+        UNIX timestamp (nanoseconds) when the object was initialized.
+
+        Returns
+        -------
+        int
+
+        """
+        return self._ts_init
 
 
 cdef class PositionOpened(PositionEvent):
@@ -253,9 +301,9 @@ cdef class PositionOpened(PositionEvent):
     event_id : UUID4
         The event ID.
     ts_event : uint64_t
-        The UNIX timestamp (nanoseconds) when the position opened event occurred.
+        UNIX timestamp (nanoseconds) when the position opened event occurred.
     ts_init : uint64_t
-        The UNIX timestamp (nanoseconds) when the object was initialized.
+        UNIX timestamp (nanoseconds) when the object was initialized.
     """
 
     def __init__(
@@ -363,7 +411,7 @@ cdef class PositionOpened(PositionEvent):
             currency=Currency.from_str_c(values["currency"]),
             avg_px_open=values["avg_px_open"],
             realized_pnl=Money.from_str_c(values["realized_pnl"]),
-            event_id=UUID4(values["event_id"]),
+            event_id=UUID4.from_str_c(values["event_id"]),
             ts_event=values["ts_event"],
             ts_init=values["ts_init"],
         )
@@ -388,11 +436,11 @@ cdef class PositionOpened(PositionEvent):
             "last_px": str(obj.last_px),
             "currency": obj.currency.code,
             "avg_px_open": obj.avg_px_open,
-            "realized_pnl": obj.realized_pnl.to_str(),
+            "realized_pnl": str(obj.realized_pnl),
             "duration_ns": obj.duration_ns,
-            "event_id": obj.id.to_str(),
-            "ts_event": obj.ts_event,
-            "ts_init": obj.ts_init,
+            "event_id": obj._event_id.to_str(),
+            "ts_event": obj._ts_event,
+            "ts_init": obj._ts_init,
         }
 
     @staticmethod
@@ -414,7 +462,7 @@ cdef class PositionOpened(PositionEvent):
         event_id : UUID4
             The event ID.
         ts_init : uint64_t
-            The UNIX timestamp (nanoseconds) when the object was initialized.
+            UNIX timestamp (nanoseconds) when the object was initialized.
 
         Returns
         -------
@@ -489,11 +537,11 @@ cdef class PositionChanged(PositionEvent):
         The last fill price for the position (not average price).
     currency : Currency
         The position quote currency.
-    avg_px_open : Decimal
+    avg_px_open : double
         The average open price.
-    avg_px_close : Decimal, optional
+    avg_px_close : double
         The average close price.
-    realized_return : Decimal
+    realized_return : double
         The realized return for the position.
     realized_pnl : Money
         The realized PnL for the position.
@@ -502,11 +550,11 @@ cdef class PositionChanged(PositionEvent):
     event_id : UUID4
         The event ID.
     ts_opened : uint64_t
-        The UNIX timestamp (nanoseconds) when the position opened event occurred.
+        UNIX timestamp (nanoseconds) when the position opened event occurred.
     ts_event : uint64_t
-        The UNIX timestamp (nanoseconds) when the position changed event occurred.
+        UNIX timestamp (nanoseconds) when the position changed event occurred.
     ts_init : uint64_t
-        The UNIX timestamp (nanoseconds) when the object was initialized.
+        UNIX timestamp (nanoseconds) when the object was initialized.
     """
 
     def __init__(
@@ -526,7 +574,7 @@ cdef class PositionChanged(PositionEvent):
         Price last_px not None,
         Currency currency not None,
         double avg_px_open,
-        double avg_px_close,  # TODO(cs): Is this needed?
+        double avg_px_close,
         double realized_return,
         Money realized_pnl not None,
         Money unrealized_pnl not None,
@@ -625,7 +673,7 @@ cdef class PositionChanged(PositionEvent):
             realized_return=values["realized_return"],
             realized_pnl=Money.from_str_c(values["realized_pnl"]),
             unrealized_pnl=Money.from_str_c(values["unrealized_pnl"]),
-            event_id=UUID4(values["event_id"]),
+            event_id=UUID4.from_str_c(values["event_id"]),
             ts_opened=values["ts_opened"],
             ts_event=values["ts_event"],
             ts_init=values["ts_init"],
@@ -653,12 +701,12 @@ cdef class PositionChanged(PositionEvent):
             "avg_px_open": obj.avg_px_open,
             "avg_px_close": obj.avg_px_close,
             "realized_return": obj.realized_return,
-            "realized_pnl": obj.realized_pnl.to_str(),
-            "unrealized_pnl": obj.unrealized_pnl.to_str(),
-            "event_id": obj.id.to_str(),
+            "realized_pnl": str(obj.realized_pnl),
+            "unrealized_pnl": str(obj.unrealized_pnl),
+            "event_id": obj._event_id.to_str(),
             "ts_opened": obj.ts_opened,
-            "ts_event": obj.ts_event,
-            "ts_init": obj.ts_init,
+            "ts_event": obj._ts_event,
+            "ts_init": obj._ts_init,
         }
 
     @staticmethod
@@ -680,7 +728,7 @@ cdef class PositionChanged(PositionEvent):
         event_id : UUID4
             The event ID.
         ts_init : uint64_t
-            The UNIX timestamp (nanoseconds) when the object was initialized.
+            UNIX timestamp (nanoseconds) when the object was initialized.
 
         Returns
         -------
@@ -768,13 +816,13 @@ cdef class PositionClosed(PositionEvent):
     event_id : UUID4
         The event ID.
     ts_opened : uint64_t
-        The UNIX timestamp (nanoseconds) when the position opened event occurred.
+        UNIX timestamp (nanoseconds) when the position opened event occurred.
     ts_closed : uint64_t
-        The UNIX timestamp (nanoseconds) when the position closed event occurred.
+        UNIX timestamp (nanoseconds) when the position closed event occurred.
     duration_ns : uint64_t
         The total open duration (nanoseconds).
     ts_init : uint64_t
-        The UNIX timestamp (nanoseconds) when the object was initialized.
+        UNIX timestamp (nanoseconds) when the object was initialized.
     """
 
     def __init__(
@@ -805,6 +853,7 @@ cdef class PositionClosed(PositionEvent):
         uint64_t ts_init,
     ):
         assert side == PositionSide.FLAT  # Design-time check: position side matches event
+
         super().__init__(
             trader_id,
             strategy_id,
@@ -895,7 +944,7 @@ cdef class PositionClosed(PositionEvent):
             avg_px_close=values["avg_px_close"],
             realized_return=values["realized_return"],
             realized_pnl=Money.from_str_c(values["realized_pnl"]),
-            event_id=UUID4(values["event_id"]),
+            event_id=UUID4.from_str_c(values["event_id"]),
             ts_opened=values["ts_opened"],
             ts_closed=values["ts_closed"],
             duration_ns=values["duration_ns"],
@@ -925,12 +974,12 @@ cdef class PositionClosed(PositionEvent):
             "avg_px_open": obj.avg_px_open,
             "avg_px_close": obj.avg_px_close,
             "realized_return": obj.realized_return,
-            "realized_pnl": obj.realized_pnl.to_str(),
-            "event_id": obj.id.to_str(),
+            "realized_pnl": str(obj.realized_pnl),
+            "event_id": obj._event_id.to_str(),
             "ts_opened": obj.ts_opened,
             "ts_closed": obj.ts_closed,
             "duration_ns": obj.duration_ns,
-            "ts_init": obj.ts_init,
+            "ts_init": obj._ts_init,
         }
 
     @staticmethod
@@ -952,7 +1001,7 @@ cdef class PositionClosed(PositionEvent):
         event_id : UUID4
             The event ID.
         ts_init : uint64_t
-            The UNIX timestamp (nanoseconds) when the object was initialized.
+            UNIX timestamp (nanoseconds) when the object was initialized.
 
         Returns
         -------
@@ -989,3 +1038,228 @@ cdef class PositionClosed(PositionEvent):
 
         """
         return PositionClosed.to_dict_c(obj)
+
+
+cdef class PositionAdjusted(Event):
+    """
+    Represents an adjustment to a position's quantity or realized PnL.
+
+    This event is used to track changes to positions that occur outside of normal
+    order fills, such as commission adjustments or funding payments.
+
+    Parameters
+    ----------
+    trader_id : TraderId
+        The trader ID.
+    strategy_id : StrategyId
+        The strategy ID.
+    instrument_id : InstrumentId
+        The instrument ID.
+    position_id : PositionId
+        The position ID.
+    account_id : AccountId
+        The account ID.
+    adjustment_type : PositionAdjustmentType
+        The type of adjustment.
+    quantity_change : Decimal | None
+        The quantity change (positive increases quantity, negative decreases).
+    pnl_change : Money | None
+        The PnL change.
+    reason : str | None
+        Optional reason or reference for the adjustment.
+    event_id : UUID4
+        The event ID.
+    ts_event : uint64_t
+        UNIX timestamp (nanoseconds) when the event occurred.
+    ts_init : uint64_t
+        UNIX timestamp (nanoseconds) when the object was initialized.
+    """
+
+    def __init__(
+        self,
+        TraderId trader_id not None,
+        StrategyId strategy_id not None,
+        InstrumentId instrument_id not None,
+        PositionId position_id not None,
+        AccountId account_id not None,
+        PositionAdjustmentType adjustment_type,
+        object quantity_change,
+        Money pnl_change: Money | None,
+        str reason: str | None,
+        UUID4 event_id not None,
+        uint64_t ts_event,
+        uint64_t ts_init,
+    ) -> None:
+        self.trader_id = trader_id
+        self.strategy_id = strategy_id
+        self.instrument_id = instrument_id
+        self.position_id = position_id
+        self.account_id = account_id
+        self.adjustment_type = adjustment_type
+        self.quantity_change = Decimal(str(quantity_change)) if quantity_change is not None else None
+        self.pnl_change = pnl_change
+        self.reason = reason
+
+        self._event_id = event_id
+        self._ts_event = ts_event
+        self._ts_init = ts_init
+
+    def __eq__(self, Event other) -> bool:
+        if other is None:
+            return False
+        return self._event_id == other.id
+
+    def __hash__(self) -> int:
+        return hash(self._event_id)
+
+    def __str__(self) -> str:
+        return (
+            f"{type(self).__name__}("
+            f"instrument_id={self.instrument_id.to_str()}, "
+            f"position_id={self.position_id.to_str()}, "
+            f"account_id={self.account_id.to_str()}, "
+            f"adjustment_type={self.adjustment_type}, "
+            f"quantity_change={self.quantity_change}, "
+            f"pnl_change={self.pnl_change}, "
+            f"reason={self.reason})"
+        )
+
+    def __repr__(self) -> str:
+        return (
+            f"{type(self).__name__}("
+            f"trader_id={self.trader_id.to_str()}, "
+            f"strategy_id={self.strategy_id.to_str()}, "
+            f"instrument_id={self.instrument_id.to_str()}, "
+            f"position_id={self.position_id.to_str()}, "
+            f"account_id={self.account_id.to_str()}, "
+            f"adjustment_type={self.adjustment_type}, "
+            f"quantity_change={self.quantity_change}, "
+            f"pnl_change={self.pnl_change}, "
+            f"reason={self.reason}, "
+            f"event_id={self._event_id.to_str()})"
+        )
+
+    @property
+    def id(self) -> UUID4:
+        """
+        The event message identifier.
+
+        Returns
+        -------
+        UUID4
+
+        """
+        return self._event_id
+
+    @property
+    def ts_event(self) -> int:
+        """
+        UNIX timestamp (nanoseconds) when the event occurred.
+
+        Returns
+        -------
+        int
+
+        """
+        return self._ts_event
+
+    @property
+    def ts_init(self) -> int:
+        """
+        UNIX timestamp (nanoseconds) when the object was initialized.
+
+        Returns
+        -------
+        int
+
+        """
+        return self._ts_init
+
+    @staticmethod
+    cdef PositionAdjusted from_dict_c(dict values):
+        Condition.not_none(values, "values")
+
+        cdef str reason = values.get("reason")
+
+        cdef object quantity_change = None
+        if values.get("quantity_change") is not None:
+            quantity_change = Decimal(values["quantity_change"])
+
+        cdef Money pnl_change = None
+        if values.get("pnl_change") is not None:
+            pnl_change = Money.from_str_c(values["pnl_change"])
+
+        cdef str adj_type_value = values["adjustment_type"]
+        cdef PositionAdjustmentType adjustment_type = position_adjustment_type_from_str(adj_type_value)
+
+        return PositionAdjusted(
+            trader_id=TraderId(values["trader_id"]),
+            strategy_id=StrategyId(values["strategy_id"]),
+            instrument_id=InstrumentId.from_str_c(values["instrument_id"]),
+            position_id=PositionId(values["position_id"]),
+            account_id=AccountId(values["account_id"]),
+            adjustment_type=adjustment_type,
+            quantity_change=quantity_change,
+            pnl_change=pnl_change,
+            reason=reason,
+            event_id=UUID4.from_str_c(values["event_id"]),
+            ts_event=values["ts_event"],
+            ts_init=values["ts_init"],
+        )
+
+    @staticmethod
+    cdef dict to_dict_c(PositionAdjusted obj):
+        Condition.not_none(obj, "obj")
+
+        cdef str adjustment_type_str
+        if obj.adjustment_type == PositionAdjustmentType.COMMISSION:
+            adjustment_type_str = "COMMISSION"
+        elif obj.adjustment_type == PositionAdjustmentType.FUNDING:
+            adjustment_type_str = "FUNDING"
+        else:
+            adjustment_type_str = "UNKNOWN"
+
+        return {
+            "type": type(obj).__name__,
+            "trader_id": obj.trader_id.to_str(),
+            "strategy_id": obj.strategy_id.to_str(),
+            "instrument_id": obj.instrument_id.to_str(),
+            "position_id": obj.position_id.to_str(),
+            "account_id": obj.account_id.to_str(),
+            "adjustment_type": adjustment_type_str,
+            "quantity_change": str(obj.quantity_change) if obj.quantity_change is not None else None,
+            "pnl_change": str(obj.pnl_change) if obj.pnl_change is not None else None,
+            "reason": obj.reason,
+            "event_id": obj._event_id.to_str(),
+            "ts_event": obj._ts_event,
+            "ts_init": obj._ts_init,
+        }
+
+    @staticmethod
+    def from_dict(dict values) -> PositionAdjusted:
+        """
+        Return a position adjustment event from the given dict values.
+
+        Parameters
+        ----------
+        values : dict[str, object]
+            The values for initialization.
+
+        Returns
+        -------
+        PositionAdjusted
+
+        """
+        return PositionAdjusted.from_dict_c(values)
+
+    @staticmethod
+    def to_dict(PositionAdjusted obj):
+        """
+        Return a dictionary representation of this object.
+
+        Returns
+        -------
+        dict[str, object]
+
+        """
+        return PositionAdjusted.to_dict_c(obj)

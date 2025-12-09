@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -15,7 +15,7 @@
 
 from decimal import Decimal
 
-from nautilus_trader.model.currency import Currency
+from nautilus_trader.model.objects import Currency
 
 
 class AccountError(Exception):
@@ -44,6 +44,7 @@ class AccountMarginExceeded(AccountError):
     Raised when the account margin for a currency is exceeded.
 
     In this scenario some form of liquidation event will occur.
+
     """
 
     def __init__(self, balance: Decimal, margin: Decimal, currency: Currency):

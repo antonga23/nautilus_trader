@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -30,4 +30,4 @@ cdef class MarketToLimitOrder(Order):
     """The quantity of the limit order to display on the public book (iceberg).\n\n:returns: `Quantity` or ``None``"""
 
     @staticmethod
-    cdef MarketToLimitOrder create(OrderInitialized init)
+    cdef MarketToLimitOrder create_c(OrderInitialized init)

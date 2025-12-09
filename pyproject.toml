@@ -1,281 +1,316 @@
-[tool.poetry]
+[project]
 name = "nautilus_trader"
-version = "1.175.0"
+version = "1.222.0"
 description = "A high-performance algorithmic trading platform and event-driven backtester"
-authors = ["Nautech Systems <info@nautechsystems.io>"]
-license = "LGPL-3.0-or-later"
-readme = "README.md"
-homepage = "https://nautilustrader.io"
-repository = "https://github.com/nautechsystems/nautilus_trader"
+authors = [{ name = "Nautech Systems", email = "info@nautechsystems.io" }]
 classifiers = [
-    "License :: OSI Approved :: GNU Lesser General Public License v3 or later (LGPLv3+)",
-    "Operating System :: OS Independent",
-    "Development Status :: 4 - Beta",
-    "Topic :: Software Development :: Libraries",
-    "Topic :: Software Development :: Libraries :: Python Modules",
-    "Topic :: Scientific/Engineering",
-    "Topic :: Office/Business :: Financial",
-    "Topic :: Office/Business :: Financial :: Investment",
-    "Intended Audience :: Developers",
-    "Intended Audience :: Financial and Insurance Industry",
-    "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: GNU Lesser General Public License v3 or later (LGPLv3+)",
+  "Operating System :: OS Independent",
+  "Development Status :: 4 - Beta",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Software Development :: Libraries",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Topic :: Scientific/Engineering",
+  "Topic :: Office/Business :: Financial",
+  "Topic :: Office/Business :: Financial :: Investment",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Financial and Insurance Industry",
+  "Intended Audience :: Science/Research",
 ]
-include = [
-    # Rust source must be included in the source distributions
-    { path = "nautilus_core/*", format = "sdist" },
-    { path = "nautilus_core/*[!target]*/*", format = "sdist" },
-    # Compiled extensions must be included in the wheel distributions
-    { path = "nautilus_trader/**/*.so", format = "wheel" },
-    { path = "nautilus_trader/**/*.pyd", format = "wheel" },
+license = { text = "LGPL-3.0-or-later" }
+readme = "README.md"
+requires-python = ">=3.12,<3.15"
+dependencies = [
+  "click>=8.0.0,<9.0.0",
+  "fsspec>=2025.2.0,<2026.0.0",
+  "msgspec>=0.20.0,<1.0.0",
+  "numpy>=1.26.4",
+  "pandas>=2.2.3,<3.0.0",
+  "portion>=2.6.1",
+  "pyarrow>=21.0.0",
+  "pytz>=2025.2.0",
+  "tqdm>=4.67.1,<5.0.0",
+  "uvloop==0.22.1,<1.0.0; sys_platform != \"win32\"", # Pinned to 0.22.1 for stability
 ]
 
+[project.urls]
+homepage = "https://nautilustrader.io"
+repository = "https://github.com/nautechsystems/nautilus_trader"
+docs = "https://nautilustrader.io/docs"
+
+# For now we use the poetry build backend until uv supports custom build scripts
 [build-system]
 requires = [
-    "setuptools",
-    "poetry-core>=1.6.1",
-    "numpy>=1.24.3",
-    "Cython==3.0.0b3",
+  "setuptools>=80",
+  "poetry-core==2.2.1", # Pinned to 2.2.1 for stability
+  "numpy>=1.26.4",
+  "cython==3.2.2", # Pinned to 3.2.2 for stability
 ]
 build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+include = [
+  # Rust source must be included in the source distributions
+  { path = "crates/*", format = "sdist" },
+  { path = "Cargo.lock", format = "sdist" },
+  { path = "Cargo.toml", format = "sdist" },
+  # Compiled extensions must be included in the wheel distributions
+  { path = "nautilus_trader/**/*.so", format = "wheel" },
+  { path = "nautilus_trader/**/*.pyd", format = "wheel" },
+  # Include the py.typed file for type checking support
+  { path = "nautilus_trader/py.typed", format = "sdist" },
+  { path = "nautilus_trader/py.typed", format = "wheel" },
+  # Include Python interface files for type checking support
+  { path = "nautilus_trader/**/*.pyi", format = "sdist" },
+  { path = "nautilus_trader/**/*.pyi", format = "wheel" },
+]
 
 [tool.poetry.build]
 script = "build.py"
 generate-setup-file = false
 
-[tool.poetry.dependencies]
-python = ">=3.9,<3.12"
-cython = "==3.0.0b3"
-aiodns = "^3.0.0"
-aiohttp = "^3.8.4"
-click = "^8.1.3"
-frozendict = "^2.3.8"
-fsspec = ">=2022.5.0"
-msgspec = "^0.15.1"
-numpy = "^1.24.3"
-pandas = "^2.0.2"
-psutil = "^5.9.5"
-pyarrow = "^12.0.1"
-pytz = "^2023.3.0"
-toml = "^0.10.2"
-tqdm = "^4.65.0"
-uvloop = {version = "^0.17.0", markers = "sys_platform != 'win32'"}
-hiredis = {version = "^2.2.3", optional = true}
-ibapi = {git = "https://github.com/nautechsystems/ibapi.git", optional = true}
-ib_insync = {version = "^0.9.85", optional = true}
-redis = {version = "^4.5.5", optional = true}
-docker = {version = "^6.1.3", optional = true}
-betfair_parser = {version = "0.2.6", optional = true}  # Pinned for stability
-pytest = "^7.4.0"
-pytest-mock = "^3.11.1"
-pytest-asyncio = "^0.21.0"
-asyncmock = "^0.4.2"
-asynctest = "^0.13.0"
-websockets = "^11.0.3"
-nautilus-ibapi = "^1019.1"
-coverage = "^7.3.2"
-python-dotenv = "^1.0.0"
+[project.optional-dependencies]
+betfair = ["betfair-parser==0.18.0"] # Pinned to 0.18.0 for stability
+ib = [
+  "defusedxml>=0.7.1,<1.0.0; python_version < '3.14'",
+  "nautilus-ibapi==10.30.1; python_version < '3.14'",
+]
+docker = ["docker>=7.1.0,<8.0.0"]
+dydx = [
+  "v4-proto==7.0.5; python_version < '3.14'",
+  "grpcio==1.68.1; python_version < '3.14'",
+  "protobuf==5.29.5; python_version < '3.14'", # Pinned to 5.29.5 (fixes GHSA-8qvm-5x2c-j2w7)
+  "bech32>=1.2.0,<2.0.0; python_version < '3.14'",
+  "ecdsa>=0.19.1,<1.0.0; python_version < '3.14'",
+  "bip-utils>=2.10.0,<3.0.0; python_version < '3.14'",
+  "pycryptodome>=3.20.0,<4.0.0; python_version < '3.14'",
+]
+polymarket = [
+  "py-clob-client==0.30.0,<1.0.0", # Pinned to 0.30.0 for stability
+]
+visualization = ["plotly>=6.3.1,<7.0.0"]
 
-[tool.poetry.extras]
-betfair = ["betfair_parser"]
-docker = ["docker"]
-ib = ["ibapi", "ib_insync"]
-redis = ["hiredis", "redis"]
+[dependency-groups]
+dev = [
+  "cython==3.2.2", # Pinned to 3.2.2 for stability
+  "setuptools>=80",
+  "mypy==1.19.0,<2.0.0", # Pinned to 1.19.0 (keep in line with pre-commit)
+  "pandas-stubs>=2.3.3,<3.0.0",
+  "pre-commit>=4.5.0,<5.0.0",
+  "ruff==0.14.8", # Pinned to 0.14.8 (keep in line with pre-commit)
+  "types-pytz>=2025.2,<2026.0",
+  "types-toml>=0.10.2,<1.0.0",
+]
+test = [
+  "aiohttp==3.12.14,<4.0.0", # Pinned to 3.12.14 (fixes GHSA-9548-qrrj-x5pj)
+  "coverage>=7.12.0,<8.0.0",
+  "pytest>=7.4.4,<8.0.0", # Intentionally held at 7.x
+  "pytest-aiohttp>=1.1.0,<2.0.0",
+  "pytest-asyncio==0.23.8", # Pinned to 0.23.8 for stability
+  "pytest-benchmark==5.0.1", # Pinned to 5.0.1 due pytest 8.x requirement
+  "pytest-codspeed==4.2.0", # Pinned to 4.2.0 for stability
+  "pytest-cov==6.3.0", # Pinned to 6.3.0 due pytest 8.x requirement
+  "pytest-mock>=3.15.1,<4.0.0",
+  "pytest-rerunfailures>=16.1,<17.0.0",
+  "pytest-xdist[psutil]>=3.8.0,<4.0.0",
+]
+docs = [
+  "numpydoc>=1.10.0,<2.0.0",
+  "linkify-it-py>=2.0.3,<3.0.0",
+  "myst-parser>=4.0.1,<5.0.0",
+  "sphinx-comments>=0.0.3,<1.0.0",
+  "sphinx-markdown-builder>=0.6.9,<1.0.0",
+]
 
-[tool.poetry.group.dev]
-optional = true
-
-[tool.poetry.group.dev.dependencies]
-black = "^23.3.0"
-mypy = "^1.3.0"
-pre-commit = "^3.3.3"
-ruff = "^0.0.272"
-types-pytz = "^2023.3.0"
-types-redis = "^4.5.5"
-types-requests = "^2.29.0"
-types-toml = "^0.10.2"
-
-[tool.poetry.group.test]
-optional = true
-
-[tool.poetry.group.test.dependencies]
-coverage = "^7.2.7"
-pytest = "^7.3.2"
-pytest-aiohttp = "^1.0.4"
-pytest-asyncio = "^0.21.0"
-pytest-benchmark = "^4.0.0"
-pytest-cov = "4.0.0"
-pytest-mock = "^3.11.1"
-pytest-xdist = { version = "^3.3.1", extras = ["psutil"] }
-
-[tool.poetry.group.docs]
-optional = true
-
-[tool.poetry.group.docs.dependencies]
-numpydoc = "^1.5.0"
-linkify-it-py = "^2.0.0"
-myst-parser = "^0.18.1"
-sphinx_comments = "^0.0.3"
-sphinx_copybutton = "^0.5.0"
-sphinx-external-toc = "^0.3.1"
-sphinx-material = "^0.0.35"
-sphinx_togglebutton = "^0.3.0"
-
-##########################################################
-# Formatter configs                                      #
-##########################################################
 [tool.isort]
-py_version = "39"
+py_version = "312"
 skip_glob = ["**/core/rust/*"]
-combine_as_imports = true
-line_length = 100
+line_length = 120
 ensure_newline_before_comments = true
 force_single_line = true
-single_line_exclusions = ["typing"]
 include_trailing_comma = true
-multi_line_output = 3
 lines_after_imports = 2
 use_parentheses = true
 filter_files = true
 
-[tool.black]
-target_version = ["py39", "py310", "py311"]
-line_length = 100
+[tool.docformatter]
+wrap-summaries = 88
+wrap-descriptions = 88
+make-summary-multi-line = true
+pre-summary-new-line = true
+blank = true
+recursive = true
+in-place = true
 
-##########################################################
-# Linter configs                                         #
-##########################################################
 [tool.ruff]
-target-version = "py39"
-line-length = 150  # Reduce to 100
+target-version = "py312"
+line-length = 100
+
+exclude = [
+  ".benchmarks",
+  ".eggs",
+  ".git",
+  ".mypy_cache",
+  ".pytest_cache",
+  ".ruff_cache",
+  ".venv",
+  "build",
+  "dist",
+  "venv",
+]
+
+[tool.ruff.lint]
 select = [
-    "C4",
-    "E",
-    "F",
-    "W",
-    "C90",
-    "D",
-    # "DTZ",
-    "UP",
-    "S",
-    "T10",
-    "ICN",
-    "PIE",
-    # "PT",
-    "PYI",
-    "Q",
-    "I",
-    "RSE",
-    "TID",
-    # "SIM",
-    # "ARG",
-    # "ERA",
-    # "PD",
-    # "PGH",
-    # "PLW",
-    "NPY",
-    "RUF",
+  "C4",
+  "E",
+  "F",
+  "W",
+  "C90",
+  "D",
+  "DTZ",
+  "UP",
+  "S",
+  "T10",
+  "ICN",
+  "PIE",
+  "PT",
+  "PYI",
+  "Q",
+  # "I",  # Disabled - using isort instead
+  "RSE",
+  "TID",
+  "SIM", # flake8-simplify
+  "B", # flake8-bugbear
+  "PERF", # Perflint
+  "FURB", # refurb
+  "ISC", # flake8-implicit-str-concat
+  "FLY", # flynt
+  "LOG", # flake8-logging
+  # "ARG",  # unused-arguments - 301 violations
+  # "ERA",  # eradicate - 165 violations
+  # "ASYNC",  # flake8-async - 15 violations (5 ASYNC110 busy-wait, 10 ASYNC109 timeout params)
+  "PD",
+  "PGH",
+  # "PLW",
+  "NPY",
+  "RUF",
 ]
 
 ignore = [
-    "E741",  # Ambiguous variable name (single char)
-    "D100",  # Missing docstring in public module  **fix**
-    "D101",
-    "D102",  # Missing docstring in public method  **fix**
-    "D103",  # Missing docstring in public function  **fix**
-    "D104",  # Missing docstring in public package  **fix**
-    "D107",
-    "D105",
-    "D200",  # One-line docstring should fit on one line with quotes (optional style)
-    "D203",  # 1 blank line required before class docstring (optional style)
-    "D205",  # 1 blank line required between summary line and description (optional style)
-    "D212",  # Multi-line docstring summary should start at the first line (optional style)
-    "D400",  # First line should end with a period (not always a first line)
-    "D413",  # Missing blank line after last section ('Parameters')
-    "D415",  # First line should end with a period, question mark, or exclamation point (not always a first line)
-    "D416",  # Section name should end with a colon ('Warnings:', not 'Warnings') (incorrect?)
-    "S101",  # Use of assert detected (OK in test suite)
-    "S105",  # Use of hardcoded password (spurious)
-    "S106",  # Use of hardcoded password (spurious)
-    "S113",  # Probable use of requests call without timeout **fix**
+  "D100", # Missing docstring in public module  **fix**
+  "D101",
+  "D102", # Missing docstring in public method  **fix**
+  "D103", # Missing docstring in public function  **fix**
+  "D104", # Missing docstring in public package  **fix**
+  "D107",
+  "D105",
+  "D200", # One-line docstring should fit on one line with quotes (optional style)
+  "D203", # 1 blank line required before class docstring (optional style)
+  "D205", # 1 blank line required between summary line and description (optional style)
+  "D212", # Multi-line docstring summary should start at the first line (optional style)
+  "D400", # First line should end with a period (not always a first line)
+  "D413", # Missing blank line after last section ('Parameters')
+  "D415", # First line should end with a period, question mark, or exclamation point (not always a first line)
+  "D416", # Section name should end with a colon ('Warnings:', not 'Warnings') (incorrect?)
+  "E501", # Line too long (will lint separately)
+  "E741", # Ambiguous variable name (single char)
+  "FURB166", # int() on sliced str (explicit base is clearer than auto-detection)
+  "PERF401", # manual-list-comprehension (16 violations - fix incrementally)
+  "PERF402", # manual-list-copy (3 violations - fix incrementally)
+  "PT007", # pytest-parametrize-values-wrong-type (1621 violations - deferred)
+  "PT011", # Exception type too broad (needs to be fixed case-by-case)
+  "PT014", # Use list comprehensions (not always readable or appropriate)
+  "PT017", # pytest-assert-in-except (1 violation - fix later)
+  "PT028", # pytest-parameter-with-default-argument (4 violations - fix later)
+  "PYI021", # Docstrings should not be included in stubs (OK as this is the natural place for them)
+  "PGH003", # Blanket type-ignore (TODO: make these specific incrementally)
+  "RUF012", # Mutable class attributes should be annotated with `typing.ClassVar`
+  "RUF059", # Unpacked variable is never used (can still be clearer than a discard in some cases)
+  "S101", # Use of assert detected (OK in test suite, production violations to fix incrementally)
+  "SIM108", # Use ternary operator instead of if-else-block (opinionated style)
+  "B017", # pytest.raises(Exception) is too broad (we need broad catches for now)
+  "B018", # Useless expression (OK in notebooks for displaying figures)
+  "B008", # Function call in default argument (OK for immutable objects like pd.Timedelta, Money)
+  "B024", # Abstract class without abstract methods (intentional for base class pattern)
+  "B904", # raise without from clause (fix later for better exception chaining)
 ]
 
 # Allow autofix for all enabled rules (when `--fix`) is provided
-fixable = [
-    "A",
-    "B",
-    "C",
-    "C4",
-    "D",
-    "DTZ",
-    "E",
-    "F",
-    "UP",
-    "S",
-    "W",
-    "I",
-    "PIE",
-    "PT",
-    "PYI",
-    "RSE",
-    "TID",
-    "ARG",
-    "PD",
-    "SIM",
-    # "PGH",
-    "NPY",
-    "RUF",
-]
+fixable = ["ALL"]
 
-unfixable = []
-
-exclude = [
-    ".benchmarks",
-    ".eggs",
-    ".git",
-    ".mypy_cache",
-    ".pytest_cache",
-    ".ruff_cache",
-    ".venv",
-    "build",
-    "dist",
-    "venv",
-]
-
+# E4 = import-related rules (E401: multiple imports on one line, E402: module level import not at top)
+# E501 = line too long
+# UP006 = Use list instead of List for type annotation (field name 'list' shadows built-in in Bybit schemas)
+# UP035 = typing.List is deprecated (field name 'list' shadows built-in in Bybit schemas)
+# These are ignored and linted separately
+unfixable = ["E4", "E501", "UP006", "UP035"]
 # Allow unused variables when underscore-prefixed.
 dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
 
-[tool.ruff.isort]
+[tool.ruff.lint.isort]
 force-single-line = true
-single-line-exclusions = ["typing"]
 lines-after-imports = 2
+split-on-trailing-comma = true
+force-sort-within-sections = true
+known-first-party = ["nautilus_trader"]
 
-[tool.ruff.mccabe]
+[tool.ruff.lint.mccabe]
 max-complexity = 10
 
-##########################################################
-# Static analysis configs                                #
-##########################################################
+[tool.ruff.lint.per-file-ignores]
+"**/*.ipynb" = ["S101"] # Notebooks can use asserts for demonstrations
+"build.py" = ["S603", "S607"] # Build script needs subprocess calls
+"examples/**/*.py" = [
+  "DTZ",
+  "S101",
+  "S105",
+  "S106",
+] # Examples can use naive datetimes, asserts, and mock credentials
+"nautilus_trader/common/config.py" = [
+  "S105",
+] # redacted_password variable is intentional
+"nautilus_trader/adapters/betfair/**/*.py" = [
+  "S101",
+] # Betfair adapter uses asserts for validation (for now)
+"test_perf_logger.py" = ["S311"]
+"tests/**/*.py" = [
+  "S101",
+  "S105",
+  "S106",
+] # Tests can use asserts, mock credentials, and pickle
+
 [tool.mypy]
-python_version = "3.9"
+python_version = "3.12"
 disallow_incomplete_defs = true
 explicit_package_bases = true
 ignore_missing_imports = true
 namespace_packages = true
+strict_optional = true
 warn_no_return = true
 warn_unused_configs = true
 warn_unused_ignores = true
+mypy_path = ["."]
+exclude = "(^python/examples/|^examples/)"
 
-##########################################################
-# Test configs                                           #
-##########################################################
+[[tool.mypy.overrides]]
+strict_optional = false
+module = [
+  "examples/*",
+  "nautilus_trader/adapters/betfair/*",
+  "nautilus_trader/adapters/binance/*",
+  "nautilus_trader/adapters/interactive_brokers/*",
+  "nautilus_trader/indicators/ta_lib/*",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --new-first --failed-first --doctest-modules --doctest-glob=\"*.pyx\""
 asyncio_mode = "strict"
-filterwarnings = [
-    "ignore::UserWarning",
-    "ignore::DeprecationWarning",
-]
+asyncio_default_fixture_loop_scope = "session"
+filterwarnings = ["ignore::UserWarning", "ignore::DeprecationWarning"]
 
 [tool.coverage.run]
 plugins = ["Cython.Coverage"]
@@ -286,7 +321,9 @@ source = ["nautilus_trader"]
 #    "nautilus_trader/test_kit/*",
 #]
 omit = [
-    "nautilus_trader/examples/*",
+  "nautilus_trader/adapters/*",
+  "nautilus_trader/examples/*",
+  "nautilus_trader/test_kit/*",
 ]
 
 [tool.coverage.report]

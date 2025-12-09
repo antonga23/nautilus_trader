@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,35 +13,43 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
+from libc.stdint cimport uint8_t
 from libc.stdint cimport uint64_t
 
 from nautilus_trader.core.data cimport Data
-from nautilus_trader.model.currency cimport Currency
-from nautilus_trader.model.enums_c cimport AssetClass
-from nautilus_trader.model.enums_c cimport AssetType
+from nautilus_trader.core.rust.model cimport AssetClass
+from nautilus_trader.core.rust.model cimport InstrumentClass
 from nautilus_trader.model.identifiers cimport InstrumentId
 from nautilus_trader.model.identifiers cimport Symbol
+from nautilus_trader.model.objects cimport Currency
 from nautilus_trader.model.objects cimport Money
 from nautilus_trader.model.objects cimport Price
 from nautilus_trader.model.objects cimport Quantity
 from nautilus_trader.model.tick_scheme.base cimport TickScheme
 
 
+cdef set[InstrumentClass] EXPIRING_INSTRUMENT_CLASSES
+cdef tuple[InstrumentClass, InstrumentClass, InstrumentClass] NEGATIVE_PRICE_INSTRUMENT_CLASSES
+
+
 cdef class Instrument(Data):
     cdef TickScheme _tick_scheme
+    cdef uint8_t _min_price_increment_precision
+    cdef uint8_t _min_size_increment_precision
+    cdef double _increment_pow10
 
     cdef readonly InstrumentId id
     """The instrument ID.\n\n:returns: `InstrumentId`"""
-    cdef readonly Symbol native_symbol
-    """The native/local symbol on the exchange for the instrument.\n\n:returns: `Symbol`"""
+    cdef readonly Symbol raw_symbol
+    """The raw/local/native symbol for the instrument, assigned by the venue.\n\n:returns: `Symbol`"""
     cdef readonly AssetClass asset_class
     """The asset class of the instrument.\n\n:returns: `AssetClass`"""
-    cdef readonly AssetType asset_type
-    """The asset type of the instrument.\n\n:returns: `AssetType`"""
+    cdef readonly InstrumentClass instrument_class
+    """The class of the instrument.\n\n:returns: `InstrumentClass`"""
     cdef readonly Currency quote_currency
     """The quote currency for the instrument.\n\n:returns: `Currency`"""
     cdef readonly bint is_inverse
-    """If the quantity is expressed in quote currency.\n\n:returns: `Currency`"""
+    """If the quantity is expressed in quote currency.\n\n:returns: `bool`"""
     cdef readonly int price_precision
     """The price precision of the instrument.\n\n:returns: `int`"""
     cdef readonly int size_precision
@@ -71,17 +79,17 @@ cdef class Instrument(Data):
     cdef readonly object margin_maint
     """The maintenance (position) margin rate for the instrument.\n\n:returns: `Decimal`"""
     cdef readonly object maker_fee
-    """The maker fee rate for the instrument.\n\n:returns: `Decimal`"""
+    """The fee rate for liquidity makers as a percentage of order value (where 1.0 is 100%).\n\n:returns: `Decimal`"""
     cdef readonly object taker_fee
-    """The taker fee rate for the instrument.\n\n:returns: `Decimal`"""
+    """The fee rate for liquidity takers as a percentage of order value (where 1.0 is 100%).\n\n:returns: `Decimal`"""
     cdef readonly str tick_scheme_name
     """The tick scheme name.\n\n:returns: `str` or ``None``"""
     cdef readonly dict info
     """The raw info for the instrument.\n\n:returns: `dict[str, object]`"""
     cdef readonly uint64_t ts_event
-    """The UNIX timestamp (nanoseconds) when the data event occurred.\n\n:returns: `uint64_t`"""
+    """UNIX timestamp (nanoseconds) when the data event occurred.\n\n:returns: `uint64_t`"""
     cdef readonly uint64_t ts_init
-    """The UNIX timestamp (nanoseconds) when the object was initialized.\n\n:returns: `uint64_t`"""
+    """UNIX timestamp (nanoseconds) when the object was initialized.\n\n:returns: `uint64_t`"""
 
     @staticmethod
     cdef Instrument base_from_dict_c(dict values)
@@ -89,11 +97,19 @@ cdef class Instrument(Data):
     @staticmethod
     cdef dict base_to_dict_c(Instrument obj)
 
+    cpdef bint is_spread(self)
     cpdef Currency get_base_currency(self)
     cpdef Currency get_settlement_currency(self)
+    cpdef Currency get_cost_currency(self)
+    cpdef void set_tick_scheme(self, str tick_scheme_name)
     cpdef Price make_price(self, value)
     cpdef Price next_bid_price(self, double value, int num_ticks=*)
     cpdef Price next_ask_price(self, double value, int num_ticks=*)
-    cpdef Quantity make_qty(self, value)
+    cpdef list next_bid_prices(self, double value, int num_ticks=*)
+    cpdef list next_ask_prices(self, double value, int num_ticks=*)
+    cpdef Quantity make_qty(self, value, bint round_down=*)
     cpdef Money notional_value(self, Quantity quantity, Price price, bint use_quote_for_inverse=*)
     cpdef Quantity calculate_base_quantity(self, Quantity quantity, Price last_px)
+
+
+cpdef list[Instrument] instruments_from_pyo3(list pyo3_instruments)

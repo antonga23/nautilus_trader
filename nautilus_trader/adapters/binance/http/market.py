@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -14,13 +14,12 @@
 # -------------------------------------------------------------------------------------------------
 
 import sys
-from typing import Optional
+import time
 
 import msgspec
 
 from nautilus_trader.adapters.binance.common.enums import BinanceAccountType
 from nautilus_trader.adapters.binance.common.enums import BinanceKlineInterval
-from nautilus_trader.adapters.binance.common.enums import BinanceMethodType
 from nautilus_trader.adapters.binance.common.enums import BinanceSecurityType
 from nautilus_trader.adapters.binance.common.schemas.market import BinanceAggTrade
 from nautilus_trader.adapters.binance.common.schemas.market import BinanceDepth
@@ -30,12 +29,14 @@ from nautilus_trader.adapters.binance.common.schemas.market import BinanceTicker
 from nautilus_trader.adapters.binance.common.schemas.market import BinanceTickerPrice
 from nautilus_trader.adapters.binance.common.schemas.market import BinanceTime
 from nautilus_trader.adapters.binance.common.schemas.market import BinanceTrade
-from nautilus_trader.adapters.binance.common.schemas.symbol import BinanceSymbol
-from nautilus_trader.adapters.binance.common.schemas.symbol import BinanceSymbols
+from nautilus_trader.adapters.binance.common.symbol import BinanceSymbol
+from nautilus_trader.adapters.binance.common.symbol import BinanceSymbols
 from nautilus_trader.adapters.binance.common.types import BinanceBar
 from nautilus_trader.adapters.binance.http.client import BinanceHttpClient
 from nautilus_trader.adapters.binance.http.endpoint import BinanceHttpEndpoint
 from nautilus_trader.core.correctness import PyCondition
+from nautilus_trader.core.datetime import nanos_to_millis
+from nautilus_trader.core.nautilus_pyo3 import HttpMethod
 from nautilus_trader.model.data import BarType
 from nautilus_trader.model.data import OrderBookDeltas
 from nautilus_trader.model.data import TradeTick
@@ -55,6 +56,7 @@ class BinancePingHttp(BinanceHttpEndpoint):
     https://binance-docs.github.io/apidocs/spot/en/#test-connectivity
     https://binance-docs.github.io/apidocs/futures/en/#test-connectivity
     https://binance-docs.github.io/apidocs/delivery/en/#test-connectivity
+
     """
 
     def __init__(
@@ -63,7 +65,7 @@ class BinancePingHttp(BinanceHttpEndpoint):
         base_endpoint: str,
     ):
         methods = {
-            BinanceMethodType.GET: BinanceSecurityType.NONE,
+            HttpMethod.GET: BinanceSecurityType.NONE,
         }
         url_path = base_endpoint + "ping"
         super().__init__(
@@ -73,8 +75,8 @@ class BinancePingHttp(BinanceHttpEndpoint):
         )
         self._get_resp_decoder = msgspec.json.Decoder()
 
-    async def _get(self) -> dict:
-        method_type = BinanceMethodType.GET
+    async def get(self) -> dict:
+        method_type = HttpMethod.GET
         raw = await self._method(method_type, None)
         return self._get_resp_decoder.decode(raw)
 
@@ -92,6 +94,7 @@ class BinanceTimeHttp(BinanceHttpEndpoint):
     https://binance-docs.github.io/apidocs/spot/en/#check-server-time
     https://binance-docs.github.io/apidocs/futures/en/#check-server-time
     https://binance-docs.github.io/apidocs/delivery/en/#check-server-time
+
     """
 
     def __init__(
@@ -100,14 +103,14 @@ class BinanceTimeHttp(BinanceHttpEndpoint):
         base_endpoint: str,
     ):
         methods = {
-            BinanceMethodType.GET: BinanceSecurityType.NONE,
+            HttpMethod.GET: BinanceSecurityType.NONE,
         }
         url_path = base_endpoint + "time"
         super().__init__(client, methods, url_path)
         self._get_resp_decoder = msgspec.json.Decoder(BinanceTime)
 
-    async def _get(self) -> BinanceTime:
-        method_type = BinanceMethodType.GET
+    async def get(self) -> BinanceTime:
+        method_type = HttpMethod.GET
         raw = await self._method(method_type, None)
         return self._get_resp_decoder.decode(raw)
 
@@ -125,6 +128,7 @@ class BinanceDepthHttp(BinanceHttpEndpoint):
     https://binance-docs.github.io/apidocs/spot/en/#order-book
     https://binance-docs.github.io/apidocs/futures/en/#order-book
     https://binance-docs.github.io/apidocs/delivery/en/#order-book
+
     """
 
     def __init__(
@@ -133,7 +137,7 @@ class BinanceDepthHttp(BinanceHttpEndpoint):
         base_endpoint: str,
     ):
         methods = {
-            BinanceMethodType.GET: BinanceSecurityType.NONE,
+            HttpMethod.GET: BinanceSecurityType.NONE,
         }
         url_path = base_endpoint + "depth"
         super().__init__(
@@ -158,14 +162,15 @@ class BinanceDepthHttp(BinanceHttpEndpoint):
             FUTURES (GET /*api/v1/depth)
                 Default 500; max 1000.
                 Valid limits:[5, 10, 20, 50, 100, 500, 1000].
+
         """
 
         symbol: BinanceSymbol
-        limit: Optional[int] = None
+        limit: int | None = None
 
-    async def _get(self, parameters: GetParameters) -> BinanceDepth:
-        method_type = BinanceMethodType.GET
-        raw = await self._method(method_type, parameters)
+    async def get(self, params: GetParameters) -> BinanceDepth:
+        method_type = HttpMethod.GET
+        raw = await self._method(method_type, params)
         return self._get_resp_decoder.decode(raw)
 
 
@@ -182,6 +187,7 @@ class BinanceTradesHttp(BinanceHttpEndpoint):
     https://binance-docs.github.io/apidocs/spot/en/#recent-trades-list
     https://binance-docs.github.io/apidocs/futures/en/#recent-trades-list
     https://binance-docs.github.io/apidocs/delivery/en/#recent-trades-list
+
     """
 
     def __init__(
@@ -190,7 +196,7 @@ class BinanceTradesHttp(BinanceHttpEndpoint):
         base_endpoint: str,
     ):
         methods = {
-            BinanceMethodType.GET: BinanceSecurityType.NONE,
+            HttpMethod.GET: BinanceSecurityType.NONE,
         }
         url_path = base_endpoint + "trades"
         super().__init__(
@@ -202,7 +208,7 @@ class BinanceTradesHttp(BinanceHttpEndpoint):
 
     class GetParameters(msgspec.Struct, omit_defaults=True, frozen=True):
         """
-        GET parameters for recent trades
+        GET parameters for recent trades.
 
         Parameters
         ----------
@@ -210,20 +216,21 @@ class BinanceTradesHttp(BinanceHttpEndpoint):
             The trading pair.
         limit : int, optional
             The limit for the response. Default 500; max 1000.
+
         """
 
         symbol: BinanceSymbol
-        limit: Optional[int] = None
+        limit: int | None = None
 
-    async def _get(self, parameters: GetParameters) -> list[BinanceTrade]:
-        method_type = BinanceMethodType.GET
-        raw = await self._method(method_type, parameters)
+    async def get(self, params: GetParameters) -> list[BinanceTrade]:
+        method_type = HttpMethod.GET
+        raw = await self._method(method_type, params)
         return self._get_resp_decoder.decode(raw)
 
 
 class BinanceHistoricalTradesHttp(BinanceHttpEndpoint):
     """
-    Endpoint of older market historical trades
+    Endpoint of older market historical trades.
 
     `GET /api/v3/historicalTrades`
     `GET /fapi/v1/historicalTrades`
@@ -234,6 +241,7 @@ class BinanceHistoricalTradesHttp(BinanceHttpEndpoint):
     https://binance-docs.github.io/apidocs/spot/en/#old-trade-lookup-market_data
     https://binance-docs.github.io/apidocs/futures/en/#old-trades-lookup-market_data
     https://binance-docs.github.io/apidocs/delivery/en/#old-trades-lookup-market_data
+
     """
 
     def __init__(
@@ -242,7 +250,7 @@ class BinanceHistoricalTradesHttp(BinanceHttpEndpoint):
         base_endpoint: str,
     ):
         methods = {
-            BinanceMethodType.GET: BinanceSecurityType.MARKET_DATA,
+            HttpMethod.GET: BinanceSecurityType.MARKET_DATA,
         }
         url_path = base_endpoint + "historicalTrades"
         super().__init__(
@@ -254,7 +262,7 @@ class BinanceHistoricalTradesHttp(BinanceHttpEndpoint):
 
     class GetParameters(msgspec.Struct, omit_defaults=True, frozen=True):
         """
-        GET parameters for historical trades
+        GET parameters for historical trades.
 
         Parameters
         ----------
@@ -263,24 +271,24 @@ class BinanceHistoricalTradesHttp(BinanceHttpEndpoint):
         limit : int, optional
             The limit for the response. Default 500; max 1000.
         fromId : int, optional
-            Trade id to fetch from. Default gets most recent trades
+            Trade ID to fetch from. Default gets most recent trades
+
         """
 
         symbol: BinanceSymbol
-        limit: Optional[int] = None
-        fromId: Optional[int] = None
+        limit: int | None = None
+        fromId: int | None = None
 
-    async def _get(self, parameters: GetParameters) -> list[BinanceTrade]:
-        method_type = BinanceMethodType.GET
-        raw = await self._method(method_type, parameters)
+    async def get(self, params: GetParameters) -> list[BinanceTrade]:
+        method_type = HttpMethod.GET
+        raw = await self._method(method_type, params)
         return self._get_resp_decoder.decode(raw)
 
 
 class BinanceAggTradesHttp(BinanceHttpEndpoint):
     """
-    Endpoint of compressed and aggregated market trades.
-    Market trades that fill in 100ms with the same price and same taking side
-    will have the quantity aggregated.
+    Endpoint of compressed and aggregated market trades. Market trades that fill in
+    100ms with the same price and same taking side will have the quantity aggregated.
 
     `GET /api/v3/aggTrades`
     `GET /fapi/v1/aggTrades`
@@ -291,6 +299,7 @@ class BinanceAggTradesHttp(BinanceHttpEndpoint):
     https://binance-docs.github.io/apidocs/spot/en/#compressed-aggregate-trades-list
     https://binance-docs.github.io/apidocs/futures/en/#compressed-aggregate-trades-list
     https://binance-docs.github.io/apidocs/delivery/en/#compressed-aggregate-trades-list
+
     """
 
     def __init__(
@@ -299,7 +308,7 @@ class BinanceAggTradesHttp(BinanceHttpEndpoint):
         base_endpoint: str,
     ):
         methods = {
-            BinanceMethodType.GET: BinanceSecurityType.NONE,
+            HttpMethod.GET: BinanceSecurityType.NONE,
         }
         url_path = base_endpoint + "aggTrades"
         super().__init__(
@@ -320,29 +329,30 @@ class BinanceAggTradesHttp(BinanceHttpEndpoint):
         limit : int, optional
             The limit for the response. Default 500; max 1000.
         fromId : int, optional
-            Trade id to fetch from INCLUSIVE.
+            Trade ID to fetch from INCLUSIVE.
         startTime : int, optional
             Timestamp in ms to get aggregate trades from INCLUSIVE.
         endTime : int, optional
             Timestamp in ms to get aggregate trades until INCLUSIVE.
+
         """
 
         symbol: BinanceSymbol
-        limit: Optional[int] = None
-        fromId: Optional[int] = None
-        startTime: Optional[int] = None
-        endTime: Optional[int] = None
+        limit: int | None = None
+        fromId: int | None = None
+        startTime: int | None = None
+        endTime: int | None = None
 
-    async def _get(self, parameters: GetParameters) -> list[BinanceAggTrade]:
-        method_type = BinanceMethodType.GET
-        raw = await self._method(method_type, parameters)
+    async def get(self, params: GetParameters) -> list[BinanceAggTrade]:
+        method_type = HttpMethod.GET
+        raw = await self._method(method_type, params)
         return self._get_resp_decoder.decode(raw)
 
 
 class BinanceKlinesHttp(BinanceHttpEndpoint):
     """
-    Endpoint of Kline/candlestick bars for a symbol.
-    Klines are uniquely identified by their open time.
+    Endpoint of Kline/candlestick bars for a symbol. Klines are uniquely identified by
+    their open time.
 
     `GET /api/v3/klines`
     `GET /fapi/v1/klines`
@@ -353,6 +363,7 @@ class BinanceKlinesHttp(BinanceHttpEndpoint):
     https://binance-docs.github.io/apidocs/spot/en/#kline-candlestick-data
     https://binance-docs.github.io/apidocs/futures/en/#kline-candlestick-data
     https://binance-docs.github.io/apidocs/delivery/en/#kline-candlestick-data
+
     """
 
     def __init__(
@@ -361,7 +372,7 @@ class BinanceKlinesHttp(BinanceHttpEndpoint):
         base_endpoint: str,
     ):
         methods = {
-            BinanceMethodType.GET: BinanceSecurityType.NONE,
+            HttpMethod.GET: BinanceSecurityType.NONE,
         }
         url_path = base_endpoint + "klines"
         super().__init__(
@@ -387,17 +398,18 @@ class BinanceKlinesHttp(BinanceHttpEndpoint):
             Timestamp in ms to get klines from INCLUSIVE.
         endTime : int, optional
             Timestamp in ms to get klines until INCLUSIVE.
+
         """
 
         symbol: BinanceSymbol
         interval: BinanceKlineInterval
-        limit: Optional[int] = None
-        startTime: Optional[int] = None
-        endTime: Optional[int] = None
+        limit: int | None = None
+        startTime: int | None = None
+        endTime: int | None = None
 
-    async def _get(self, parameters: GetParameters) -> list[BinanceKline]:
-        method_type = BinanceMethodType.GET
-        raw = await self._method(method_type, parameters)
+    async def get(self, params: GetParameters) -> list[BinanceKline]:
+        method_type = HttpMethod.GET
+        raw = await self._method(method_type, params)
         return self._get_resp_decoder.decode(raw)
 
 
@@ -419,6 +431,7 @@ class BinanceTicker24hrHttp(BinanceHttpEndpoint):
     https://binance-docs.github.io/apidocs/spot/en/#24hr-ticker-price-change-statistics
     https://binance-docs.github.io/apidocs/futures/en/#24hr-ticker-price-change-statistics
     https://binance-docs.github.io/apidocs/delivery/en/#24hr-ticker-price-change-statistics
+
     """
 
     def __init__(
@@ -427,7 +440,7 @@ class BinanceTicker24hrHttp(BinanceHttpEndpoint):
         base_endpoint: str,
     ):
         methods = {
-            BinanceMethodType.GET: BinanceSecurityType.NONE,
+            HttpMethod.GET: BinanceSecurityType.NONE,
         }
         url_path = base_endpoint + "ticker/24hr"
         super().__init__(
@@ -453,16 +466,17 @@ class BinanceTicker24hrHttp(BinanceHttpEndpoint):
         type : str
             SPOT/MARGIN only!
             Select between FULL and MINI 24hr ticker responses to save bandwidth.
+
         """
 
-        symbol: Optional[BinanceSymbol] = None
-        symbols: Optional[BinanceSymbols] = None  # SPOT/MARGIN only
-        type: Optional[str] = None  # SPOT/MARIN only
+        symbol: BinanceSymbol | None = None
+        symbols: BinanceSymbols | None = None  # SPOT/MARGIN only
+        type: str | None = None  # SPOT/MARIN only
 
-    async def _get(self, parameters: GetParameters) -> list[BinanceTicker24hr]:
-        method_type = BinanceMethodType.GET
-        raw = await self._method(method_type, parameters)
-        if parameters.symbol is not None:
+    async def _get(self, params: GetParameters) -> list[BinanceTicker24hr]:
+        method_type = HttpMethod.GET
+        raw = await self._method(method_type, params)
+        if params.symbol is not None:
             return [self._get_obj_resp_decoder.decode(raw)]
         else:
             return self._get_arr_resp_decoder.decode(raw)
@@ -473,14 +487,19 @@ class BinanceTickerPriceHttp(BinanceHttpEndpoint):
     Endpoint of latest price for a symbol or symbols.
 
     `GET /api/v3/ticker/price`
-    `GET /fapi/v1/ticker/price`
+    `GET /fapi/v2/ticker/price`
     `GET /dapi/v1/ticker/price`
 
     References
     ----------
     https://binance-docs.github.io/apidocs/spot/en/#symbol-price-ticker
-    https://binance-docs.github.io/apidocs/futures/en/#symbol-price-ticker
+    https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Symbol-Price-Ticker-v2
     https://binance-docs.github.io/apidocs/delivery/en/#symbol-price-ticker
+
+    Notes
+    -----
+    USDT-margined futures uses v2 (v1 deprecated). Coin-margined remains on v1.
+
     """
 
     def __init__(
@@ -489,9 +508,11 @@ class BinanceTickerPriceHttp(BinanceHttpEndpoint):
         base_endpoint: str,
     ):
         methods = {
-            BinanceMethodType.GET: BinanceSecurityType.NONE,
+            HttpMethod.GET: BinanceSecurityType.NONE,
         }
-        url_path = base_endpoint + "ticker/price"
+        # Only USDT-margined futures has v2, coin-margined still uses v1
+        endpoint = base_endpoint.replace("/fapi/v1/", "/fapi/v2/")
+        url_path = endpoint + "ticker/price"
         super().__init__(
             client,
             methods,
@@ -512,15 +533,16 @@ class BinanceTickerPriceHttp(BinanceHttpEndpoint):
         symbols : str
             SPOT/MARGIN only!
             List of trading pairs. When given, endpoint will return a list of BinanceTickerPrice.
+
         """
 
-        symbol: Optional[BinanceSymbol] = None
-        symbols: Optional[BinanceSymbols] = None  # SPOT/MARGIN only
+        symbol: BinanceSymbol | None = None
+        symbols: BinanceSymbols | None = None  # SPOT/MARGIN only
 
-    async def _get(self, parameters: GetParameters) -> list[BinanceTickerPrice]:
-        method_type = BinanceMethodType.GET
-        raw = await self._method(method_type, parameters)
-        if parameters.symbol is not None:
+    async def _get(self, params: GetParameters) -> list[BinanceTickerPrice]:
+        method_type = HttpMethod.GET
+        raw = await self._method(method_type, params)
+        if params.symbol is not None:
             return [self._get_obj_resp_decoder.decode(raw)]
         else:
             return self._get_arr_resp_decoder.decode(raw)
@@ -539,6 +561,7 @@ class BinanceTickerBookHttp(BinanceHttpEndpoint):
     https://binance-docs.github.io/apidocs/spot/en/#symbol-order-book-ticker
     https://binance-docs.github.io/apidocs/futures/en/#symbol-order-book-ticker
     https://binance-docs.github.io/apidocs/delivery/en/#symbol-order-book-ticker
+
     """
 
     def __init__(
@@ -547,9 +570,9 @@ class BinanceTickerBookHttp(BinanceHttpEndpoint):
         base_endpoint: str,
     ):
         methods = {
-            BinanceMethodType.GET: BinanceSecurityType.NONE,
+            HttpMethod.GET: BinanceSecurityType.NONE,
         }
-        url_path = base_endpoint + "ticker/price"
+        url_path = base_endpoint + "ticker/bookTicker"
         super().__init__(
             client,
             methods,
@@ -570,15 +593,16 @@ class BinanceTickerBookHttp(BinanceHttpEndpoint):
         symbols : str
             SPOT/MARGIN only!
             List of trading pairs. When given, endpoint will return a list of BinanceTickerBook.
+
         """
 
-        symbol: Optional[BinanceSymbol] = None
-        symbols: Optional[BinanceSymbols] = None  # SPOT/MARGIN only
+        symbol: BinanceSymbol | None = None
+        symbols: BinanceSymbols | None = None  # SPOT/MARGIN only
 
-    async def _get(self, parameters: GetParameters) -> list[BinanceTickerBook]:
-        method_type = BinanceMethodType.GET
-        raw = await self._method(method_type, parameters)
-        if parameters.symbol is not None:
+    async def _get(self, params: GetParameters) -> list[BinanceTickerBook]:
+        method_type = HttpMethod.GET
+        raw = await self._method(method_type, params)
+        if params.symbol is not None:
             return [self._get_obj_resp_decoder.decode(raw)]
         else:
             return self._get_arr_resp_decoder.decode(raw)
@@ -598,6 +622,7 @@ class BinanceMarketHttpAPI:
     Warnings
     --------
     This class should not be used directly, but through a concrete subclass.
+
     """
 
     def __init__(
@@ -610,9 +635,9 @@ class BinanceMarketHttpAPI:
 
         if account_type.is_spot_or_margin:
             self.base_endpoint = "/api/v3/"
-        elif account_type == BinanceAccountType.USDT_FUTURE:
+        elif account_type == BinanceAccountType.USDT_FUTURES:
             self.base_endpoint = "/fapi/v1/"
-        elif account_type == BinanceAccountType.COIN_FUTURE:
+        elif account_type == BinanceAccountType.COIN_FUTURES:
             self.base_endpoint = "/dapi/v1/"
         else:
             raise RuntimeError(  # pragma: no cover (design-time error)
@@ -632,22 +657,28 @@ class BinanceMarketHttpAPI:
         self._endpoint_ticker_book = BinanceTickerBookHttp(client, self.base_endpoint)
 
     async def ping(self) -> dict:
-        """Ping Binance REST API."""
-        return await self._endpoint_ping._get()
+        """
+        Ping Binance REST API.
+        """
+        return await self._endpoint_ping.get()
 
     async def request_server_time(self) -> int:
-        """Request server time from Binance."""
-        response = await self._endpoint_time._get()
+        """
+        Request server time from Binance.
+        """
+        response = await self._endpoint_time.get()
         return response.serverTime
 
     async def query_depth(
         self,
         symbol: str,
-        limit: Optional[int] = None,
+        limit: int | None = None,
     ) -> BinanceDepth:
-        """Query order book depth for a symbol."""
-        return await self._endpoint_depth._get(
-            parameters=self._endpoint_depth.GetParameters(
+        """
+        Query order book depth for a symbol.
+        """
+        return await self._endpoint_depth.get(
+            params=self._endpoint_depth.GetParameters(
                 symbol=BinanceSymbol(symbol),
                 limit=limit,
             ),
@@ -657,9 +688,11 @@ class BinanceMarketHttpAPI:
         self,
         instrument_id: InstrumentId,
         ts_init: int,
-        limit: Optional[int] = None,
+        limit: int | None = None,
     ) -> OrderBookDeltas:
-        """Request snapshot of order book depth."""
+        """
+        Request snapshot of order book depth.
+        """
         depth = await self.query_depth(instrument_id.symbol.value, limit)
         return depth.parse_to_order_book_snapshot(
             instrument_id=instrument_id,
@@ -669,11 +702,13 @@ class BinanceMarketHttpAPI:
     async def query_trades(
         self,
         symbol: str,
-        limit: Optional[int] = None,
+        limit: int | None = None,
     ) -> list[BinanceTrade]:
-        """Query trades for symbol."""
-        return await self._endpoint_trades._get(
-            parameters=self._endpoint_trades.GetParameters(
+        """
+        Query trades for symbol.
+        """
+        return await self._endpoint_trades.get(
+            params=self._endpoint_trades.GetParameters(
                 symbol=BinanceSymbol(symbol),
                 limit=limit,
             ),
@@ -682,15 +717,15 @@ class BinanceMarketHttpAPI:
     async def request_trade_ticks(
         self,
         instrument_id: InstrumentId,
-        ts_init: int,
-        limit: Optional[int] = None,
+        limit: int | None = None,
     ) -> list[TradeTick]:
-        """Request TradeTicks from Binance."""
+        """
+        Request TradeTicks from Binance.
+        """
         trades = await self.query_trades(instrument_id.symbol.value, limit)
         return [
             trade.parse_to_trade_tick(
                 instrument_id=instrument_id,
-                ts_init=ts_init,
             )
             for trade in trades
         ]
@@ -698,14 +733,16 @@ class BinanceMarketHttpAPI:
     async def query_agg_trades(
         self,
         symbol: str,
-        limit: Optional[int] = None,
-        start_time: Optional[int] = None,
-        end_time: Optional[int] = None,
-        from_id: Optional[int] = None,
+        limit: int | None = None,
+        start_time: int | None = None,
+        end_time: int | None = None,
+        from_id: int | None = None,
     ) -> list[BinanceAggTrade]:
-        """Query aggregated trades for symbol."""
-        return await self._endpoint_agg_trades._get(
-            parameters=self._endpoint_agg_trades.GetParameters(
+        """
+        Query aggregated trades for symbol.
+        """
+        return await self._endpoint_agg_trades.get(
+            params=self._endpoint_agg_trades.GetParameters(
                 symbol=BinanceSymbol(symbol),
                 limit=limit,
                 startTime=start_time,
@@ -717,19 +754,23 @@ class BinanceMarketHttpAPI:
     async def request_agg_trade_ticks(
         self,
         instrument_id: InstrumentId,
-        ts_init: int,
-        limit: int = 1000,
-        start_time: Optional[int] = None,
-        end_time: Optional[int] = None,
-        from_id: Optional[int] = None,
+        limit: int | None = 1000,
+        start_time: int | None = None,
+        end_time: int | None = None,
+        from_id: int | None = None,
     ) -> list[TradeTick]:
         """
         Request TradeTicks from Binance aggregated trades.
-        If start_time and end_time are both specified, will fetch *all* TradeTicks
-        in the interval, making multiple requests if necessary.
+
+        If start_time and end_time are both specified, will request *all* TradeTicks in
+        the interval, making multiple requests if necessary.
+
         """
         ticks: list[TradeTick] = []
         next_start_time = start_time
+
+        if end_time is None:
+            end_time = sys.maxsize
 
         if from_id is not None and (start_time or end_time) is not None:
             raise RuntimeError(
@@ -768,14 +809,17 @@ class BinanceMarketHttpAPI:
                 ticks.append(
                     trade.parse_to_trade_tick(
                         instrument_id=instrument_id,
-                        ts_init=ts_init,
                     ),
                 )
 
-            if len(response) < limit and interval_limited is False:
+            if limit and len(response) < limit and interval_limited is False:
                 # end loop regardless when limit is not hit
                 break
-            if start_time is None or end_time is None:
+            if (
+                start_time is None
+                or end_time is None
+                or next_end_time >= nanos_to_millis(time.time_ns())
+            ):
                 break
             else:
                 last = response[-1]
@@ -792,12 +836,14 @@ class BinanceMarketHttpAPI:
     async def query_historical_trades(
         self,
         symbol: str,
-        limit: Optional[int] = None,
-        from_id: Optional[int] = None,
+        limit: int | None = None,
+        from_id: int | None = None,
     ) -> list[BinanceTrade]:
-        """Query historical trades for symbol."""
-        return await self._endpoint_historical_trades._get(
-            parameters=self._endpoint_historical_trades.GetParameters(
+        """
+        Query historical trades for symbol.
+        """
+        return await self._endpoint_historical_trades.get(
+            params=self._endpoint_historical_trades.GetParameters(
                 symbol=BinanceSymbol(symbol),
                 limit=limit,
                 fromId=from_id,
@@ -807,11 +853,12 @@ class BinanceMarketHttpAPI:
     async def request_historical_trade_ticks(
         self,
         instrument_id: InstrumentId,
-        ts_init: int,
-        limit: Optional[int] = None,
-        from_id: Optional[int] = None,
+        limit: int | None = None,
+        from_id: int | None = None,
     ) -> list[TradeTick]:
-        """Request historical TradeTicks from Binance."""
+        """
+        Request historical TradeTicks from Binance.
+        """
         historical_trades = await self.query_historical_trades(
             symbol=instrument_id.symbol.value,
             limit=limit,
@@ -820,7 +867,6 @@ class BinanceMarketHttpAPI:
         return [
             trade.parse_to_trade_tick(
                 instrument_id=instrument_id,
-                ts_init=ts_init,
             )
             for trade in historical_trades
         ]
@@ -829,13 +875,15 @@ class BinanceMarketHttpAPI:
         self,
         symbol: str,
         interval: BinanceKlineInterval,
-        limit: Optional[int] = None,
-        start_time: Optional[int] = None,
-        end_time: Optional[int] = None,
+        limit: int | None = None,
+        start_time: int | None = None,
+        end_time: int | None = None,
     ) -> list[BinanceKline]:
-        """Query klines for a symbol over an interval."""
-        return await self._endpoint_klines._get(
-            parameters=self._endpoint_klines.GetParameters(
+        """
+        Query klines for a symbol over an interval.
+        """
+        return await self._endpoint_klines.get(
+            params=self._endpoint_klines.GetParameters(
                 symbol=BinanceSymbol(symbol),
                 interval=interval,
                 limit=limit,
@@ -847,13 +895,14 @@ class BinanceMarketHttpAPI:
     async def request_binance_bars(
         self,
         bar_type: BarType,
-        ts_init: int,
         interval: BinanceKlineInterval,
-        limit: Optional[int] = None,
-        start_time: Optional[int] = None,
-        end_time: Optional[int] = None,
+        limit: int | None = None,
+        start_time: int | None = None,
+        end_time: int | None = None,
     ) -> list[BinanceBar]:
-        """Request Binance Bars from Klines."""
+        """
+        Request Binance Bars from Klines.
+        """
         end_time_ms = int(end_time) if end_time is not None else sys.maxsize
         all_bars: list[BinanceBar] = []
         while True:
@@ -864,9 +913,7 @@ class BinanceMarketHttpAPI:
                 start_time=start_time,
                 end_time=end_time,
             )
-            bars: list[BinanceBar] = [
-                kline.parse_to_binance_bar(bar_type, ts_init) for kline in klines
-            ]
+            bars: list[BinanceBar] = [kline.parse_to_binance_bar(bar_type) for kline in klines]
             all_bars.extend(bars)
 
             # Update the start_time to fetch the next set of bars
@@ -886,53 +933,59 @@ class BinanceMarketHttpAPI:
 
     async def query_ticker_24hr(
         self,
-        symbol: Optional[str] = None,
-        symbols: Optional[list[str]] = None,
-        response_type: Optional[str] = None,
+        symbol: str | None = None,
+        symbols: list[str] | None = None,
+        response_type: str | None = None,
     ) -> list[BinanceTicker24hr]:
-        """Query 24hr ticker for symbol or symbols."""
+        """
+        Query 24hr ticker for symbol or symbols.
+        """
         if symbol is not None and symbols is not None:
             raise RuntimeError(
                 "Cannot specify both symbol and symbols parameters.",
             )
         return await self._endpoint_ticker_24hr._get(
-            parameters=self._endpoint_ticker_24hr.GetParameters(
-                symbol=BinanceSymbol(symbol),
-                symbols=BinanceSymbols(symbols),
+            params=self._endpoint_ticker_24hr.GetParameters(
+                symbol=BinanceSymbol(symbol) if symbol else None,
+                symbols=BinanceSymbols(symbols) if symbols else None,
                 type=response_type,
             ),
         )
 
     async def query_ticker_price(
         self,
-        symbol: Optional[str] = None,
-        symbols: Optional[list[str]] = None,
+        symbol: str | None = None,
+        symbols: list[str] | None = None,
     ) -> list[BinanceTickerPrice]:
-        """Query price ticker for symbol or symbols."""
+        """
+        Query price ticker for symbol or symbols.
+        """
         if symbol is not None and symbols is not None:
             raise RuntimeError(
                 "Cannot specify both symbol and symbols parameters.",
             )
         return await self._endpoint_ticker_price._get(
-            parameters=self._endpoint_ticker_price.GetParameters(
-                symbol=BinanceSymbol(symbol),
-                symbols=BinanceSymbols(symbols),
+            params=self._endpoint_ticker_price.GetParameters(
+                symbol=BinanceSymbol(symbol) if symbol else None,
+                symbols=BinanceSymbols(symbols) if symbols else None,
             ),
         )
 
     async def query_ticker_book(
         self,
-        symbol: Optional[str] = None,
-        symbols: Optional[list[str]] = None,
+        symbol: str | None = None,
+        symbols: list[str] | None = None,
     ) -> list[BinanceTickerBook]:
-        """Query book ticker for symbol or symbols."""
+        """
+        Query book ticker for symbol or symbols.
+        """
         if symbol is not None and symbols is not None:
             raise RuntimeError(
                 "Cannot specify both symbol and symbols parameters.",
             )
         return await self._endpoint_ticker_book._get(
-            parameters=self._endpoint_ticker_book.GetParameters(
-                symbol=BinanceSymbol(symbol),
-                symbols=BinanceSymbols(symbols),
+            params=self._endpoint_ticker_book.GetParameters(
+                symbol=BinanceSymbol(symbol) if symbol else None,
+                symbols=BinanceSymbols(symbols) if symbols else None,
             ),
         )

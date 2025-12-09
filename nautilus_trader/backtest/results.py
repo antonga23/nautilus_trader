@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -14,7 +14,6 @@
 # -------------------------------------------------------------------------------------------------
 
 from dataclasses import dataclass
-from typing import Optional
 
 
 @dataclass
@@ -25,13 +24,13 @@ class BacktestResult:
 
     trader_id: str
     machine_id: str
-    run_config_id: Optional[str]
+    run_config_id: str | None
     instance_id: str
     run_id: str
-    run_started: Optional[int]
-    run_finished: Optional[int]
-    backtest_start: Optional[int]
-    backtest_end: Optional[int]
+    run_started: int | None
+    run_finished: int | None
+    backtest_start: int | None
+    backtest_end: int | None
     elapsed_time: float
     iterations: int
     total_events: int
@@ -62,7 +61,9 @@ def ensure_plotting(func):
     """
     Decorate a function that require a plotting library.
 
-    Ensures library is installed and providers a better error about how to install if not found.
+    Ensures library is installed and providers a better error about how to install if
+    not found.
+
     """
 
     def inner(*args, **kwargs):

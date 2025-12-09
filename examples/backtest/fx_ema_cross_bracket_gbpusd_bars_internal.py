@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -19,18 +19,20 @@ from decimal import Decimal
 
 import pandas as pd
 
+from nautilus_trader.backtest.config import BacktestEngineConfig
 from nautilus_trader.backtest.engine import BacktestEngine
-from nautilus_trader.backtest.engine import BacktestEngineConfig
 from nautilus_trader.backtest.models import FillModel
 from nautilus_trader.backtest.modules import FXRolloverInterestConfig
 from nautilus_trader.backtest.modules import FXRolloverInterestModule
-from nautilus_trader.config.common import LoggingConfig
-from nautilus_trader.config.common import RiskEngineConfig
+from nautilus_trader.config import LoggingConfig
+from nautilus_trader.config import RiskEngineConfig
 from nautilus_trader.examples.strategies.ema_cross_bracket import EMACrossBracket
 from nautilus_trader.examples.strategies.ema_cross_bracket import EMACrossBracketConfig
 from nautilus_trader.model.currencies import USD
+from nautilus_trader.model.data import BarType
 from nautilus_trader.model.enums import AccountType
 from nautilus_trader.model.enums import OmsType
+from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.objects import Money
 from nautilus_trader.persistence.wranglers import QuoteTickDataWrangler
@@ -41,7 +43,7 @@ from nautilus_trader.test_kit.providers import TestInstrumentProvider
 if __name__ == "__main__":
     # Configure backtest engine
     config = BacktestEngineConfig(
-        trader_id="BACKTESTER-001",
+        trader_id=TraderId("BACKTESTER-001"),
         logging=LoggingConfig(log_level="INFO"),
         risk_engine=RiskEngineConfig(
             bypass=True,  # Example of bypassing pre-trade risk checks for backtests
@@ -86,22 +88,22 @@ if __name__ == "__main__":
     # Add data
     wrangler = QuoteTickDataWrangler(instrument=GBPUSD_SIM)
     ticks = wrangler.process_bar_data(
-        bid_data=provider.read_csv_bars("fxcm-gbpusd-m1-bid-2012.csv"),
-        ask_data=provider.read_csv_bars("fxcm-gbpusd-m1-ask-2012.csv"),
+        bid_data=provider.read_csv_bars("fxcm/gbpusd-m1-bid-2012.csv"),
+        ask_data=provider.read_csv_bars("fxcm/gbpusd-m1-ask-2012.csv"),
     )
     engine.add_data(ticks)
 
     # Configure your strategy
-    config = EMACrossBracketConfig(
-        instrument_id=str(GBPUSD_SIM.id),
-        bar_type="GBP/USD.SIM-5-MINUTE-BID-INTERNAL",
+    strategy_config = EMACrossBracketConfig(
+        instrument_id=GBPUSD_SIM.id,
+        bar_type=BarType.from_str("GBP/USD.SIM-5-MINUTE-BID-INTERNAL"),
         fast_ema_period=10,
         slow_ema_period=20,
         bracket_distance_atr=3.0,
         trade_size=Decimal(1_000_000),
     )
     # Instantiate and add your strategy
-    strategy = EMACrossBracket(config=config)
+    strategy = EMACrossBracket(config=strategy_config)
     engine.add_strategy(strategy=strategy)
 
     time.sleep(0.1)

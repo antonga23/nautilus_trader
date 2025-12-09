@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -15,14 +15,16 @@
 
 from libc.stdint cimport uint64_t
 
-from nautilus_trader.model.enums_c cimport TrailingOffsetType
-from nautilus_trader.model.enums_c cimport TriggerType
+from nautilus_trader.core.rust.model cimport TrailingOffsetType
+from nautilus_trader.core.rust.model cimport TriggerType
 from nautilus_trader.model.events.order cimport OrderInitialized
 from nautilus_trader.model.objects cimport Price
 from nautilus_trader.model.orders.base cimport Order
 
 
 cdef class TrailingStopMarketOrder(Order):
+    cdef readonly Price activation_price
+    """The order activation price (STOP).\n\n:returns: `Price` or ``None``"""
     cdef readonly Price trigger_price
     """The order trigger price (STOP).\n\n:returns: `Price` or ``None``"""
     cdef readonly TriggerType trigger_type
@@ -33,6 +35,8 @@ cdef class TrailingStopMarketOrder(Order):
     """The trailing offset type.\n\n:returns: `TrailingOffsetType`"""
     cdef readonly uint64_t expire_time_ns
     """The order expiration (UNIX epoch nanoseconds), zero for no expiration.\n\n:returns: `uint64_t`"""
+    cdef readonly bint is_activated
+    """If the order has been activated.\n\n:returns: `bool`"""
 
     @staticmethod
-    cdef TrailingStopMarketOrder create(OrderInitialized init)
+    cdef TrailingStopMarketOrder create_c(OrderInitialized init)

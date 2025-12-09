@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -17,17 +17,15 @@ from typing import Any
 
 import msgspec
 
-from nautilus_trader.adapters.binance.common.enums import BinanceMethodType
 from nautilus_trader.adapters.binance.common.enums import BinanceSecurityType
-from nautilus_trader.adapters.binance.common.schemas.symbol import BinanceSymbol
-from nautilus_trader.adapters.binance.common.schemas.symbol import BinanceSymbols
+from nautilus_trader.adapters.binance.common.symbol import BinanceSymbol
+from nautilus_trader.adapters.binance.common.symbol import BinanceSymbols
 from nautilus_trader.adapters.binance.http.client import BinanceHttpClient
+from nautilus_trader.core.nautilus_pyo3 import HttpMethod
 
 
 def enc_hook(obj: Any) -> Any:
-    if isinstance(obj, BinanceSymbol):
-        return str(obj)  # serialize BinanceSymbol as string.
-    elif isinstance(obj, BinanceSymbols):
+    if isinstance(obj, (BinanceSymbol, BinanceSymbols)):
         return str(obj)  # serialize BinanceSymbol as string.
     else:
         raise TypeError(f"Objects of type {type(obj)} are not supported")
@@ -40,17 +38,19 @@ class BinanceHttpEndpoint:
     Warnings
     --------
     This class should not be used directly, but through a concrete subclass.
+
     """
 
     def __init__(
         self,
         client: BinanceHttpClient,
-        methods_desc: dict[BinanceMethodType, BinanceSecurityType],
+        methods_desc: dict[HttpMethod, BinanceSecurityType],
         url_path: str,
     ):
         self.client = client
         self.methods_desc = methods_desc
         self.url_path = url_path
+        self._ratelimiter_key = f"binance:{url_path}"
 
         self.decoder = msgspec.json.Decoder()
         self.encoder = msgspec.json.Encoder(enc_hook=enc_hook)
@@ -64,15 +64,39 @@ class BinanceHttpEndpoint:
             BinanceSecurityType.USER_DATA: self.client.sign_request,
         }
 
-    async def _method(self, method_type: BinanceMethodType, parameters: Any) -> bytes:
-        payload: dict = self.decoder.decode(self.encoder.encode(parameters))
+    async def _method(
+        self,
+        method_type: HttpMethod,
+        params: Any,
+        ratelimiter_keys: list[str] | None = None,
+    ) -> bytes:
+        payload: dict = self.decoder.decode(self.encoder.encode(params))
         if self.methods_desc[method_type] is None:
             raise RuntimeError(
                 f"{method_type.name} not available for {self.url_path}",
             )
+
+        default_keys: list[str] = []
+
+        if ratelimiter_keys:
+            default_keys.extend(ratelimiter_keys)
+
+        default_keys.append(self._ratelimiter_key)
+        default_keys.append("binance:global")
+
+        # Maintain order but remove duplicates so overlapping quotas only queue once
+        unique_keys: list[str] = []
+        seen: set[str] = set()
+
+        for key in default_keys:
+            if key not in seen:
+                seen.add(key)
+                unique_keys.append(key)
+
         raw: bytes = await self._method_request[self.methods_desc[method_type]](
-            http_method=method_type.name,
+            http_method=method_type,
             url_path=self.url_path,
             payload=payload,
+            ratelimiter_keys=unique_keys,
         )
         return raw

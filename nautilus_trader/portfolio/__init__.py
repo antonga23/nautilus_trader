@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -12,5 +12,15 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
+"""
+The `portfolio` subpackage provides portfolio management functionality.
+"""
 
-"""The `portfolio` subpackage provides portfolio management functionality."""
+from nautilus_trader.portfolio.base import PortfolioFacade
+from nautilus_trader.portfolio.portfolio import Portfolio
+
+
+__all__ = [
+    "Portfolio",
+    "PortfolioFacade",
+]

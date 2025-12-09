@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,15 +13,22 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
+from libc.stdint cimport uint64_t
+
 from nautilus_trader.core.message cimport Event
+from nautilus_trader.core.rust.model cimport ContingencyType
+from nautilus_trader.core.rust.model cimport LiquiditySide
+from nautilus_trader.core.rust.model cimport OrderAccepted_t
 from nautilus_trader.core.rust.model cimport OrderDenied_t
-from nautilus_trader.model.currency cimport Currency
-from nautilus_trader.model.enums_c cimport ContingencyType
-from nautilus_trader.model.enums_c cimport LiquiditySide
-from nautilus_trader.model.enums_c cimport OrderSide
-from nautilus_trader.model.enums_c cimport OrderType
-from nautilus_trader.model.enums_c cimport TimeInForce
-from nautilus_trader.model.enums_c cimport TriggerType
+from nautilus_trader.core.rust.model cimport OrderEmulated_t
+from nautilus_trader.core.rust.model cimport OrderRejected_t
+from nautilus_trader.core.rust.model cimport OrderReleased_t
+from nautilus_trader.core.rust.model cimport OrderSide
+from nautilus_trader.core.rust.model cimport OrderSubmitted_t
+from nautilus_trader.core.rust.model cimport OrderType
+from nautilus_trader.core.rust.model cimport TimeInForce
+from nautilus_trader.core.rust.model cimport TriggerType
+from nautilus_trader.core.uuid cimport UUID4
 from nautilus_trader.model.identifiers cimport AccountId
 from nautilus_trader.model.identifiers cimport ClientOrderId
 from nautilus_trader.model.identifiers cimport ExecAlgorithmId
@@ -32,29 +39,26 @@ from nautilus_trader.model.identifiers cimport StrategyId
 from nautilus_trader.model.identifiers cimport TradeId
 from nautilus_trader.model.identifiers cimport TraderId
 from nautilus_trader.model.identifiers cimport VenueOrderId
+from nautilus_trader.model.objects cimport Currency
 from nautilus_trader.model.objects cimport Money
 from nautilus_trader.model.objects cimport Price
 from nautilus_trader.model.objects cimport Quantity
 
 
 cdef class OrderEvent(Event):
-    cdef readonly TraderId trader_id
-    """The trader ID associated with the event.\n\n:returns: `TraderId`"""
-    cdef readonly StrategyId strategy_id
-    """The strategy ID associated with the event.\n\n:returns: `StrategyId`"""
-    cdef readonly InstrumentId instrument_id
-    """The instrument ID associated with the event.\n\n:returns: `InstrumentId`"""
-    cdef readonly ClientOrderId client_order_id
-    """The client order ID associated with the event.\n\n:returns: `ClientOrderId`"""
-    cdef readonly VenueOrderId venue_order_id
-    """The venue order ID associated with the event.\n\n:returns: `VenueOrderId` or ``None``"""
-    cdef readonly AccountId account_id
-    """The account ID associated with the event.\n\n:returns: `AccountId` or ``None``"""
-    cdef readonly bint reconciliation
-    """If the event was generated during reconciliation.\n\n:returns: `bool`"""
+    pass  # Abstract base class
 
 
 cdef class OrderInitialized(OrderEvent):
+    cdef TraderId _trader_id
+    cdef StrategyId _strategy_id
+    cdef InstrumentId _instrument_id
+    cdef ClientOrderId _client_order_id
+    cdef bint _reconciliation
+    cdef UUID4 _event_id
+    cdef uint64_t _ts_event
+    cdef uint64_t _ts_init
+
     cdef readonly OrderSide side
     """The order side.\n\n:returns: `OrderSide`"""
     cdef readonly OrderType order_type
@@ -89,8 +93,8 @@ cdef class OrderInitialized(OrderEvent):
     """The execution algorithm parameters for the order.\n\n:returns: `dict[str, Any]` or ``None``"""
     cdef readonly ClientOrderId exec_spawn_id
     """The execution algorithm spawning client order ID.\n\n:returns: `ClientOrderId` or ``None``"""
-    cdef readonly str tags
-    """The order custom user tags.\n\n:returns: `str` or ``None``"""
+    cdef readonly list[str] tags
+    """The order custom user tags.\n\n:returns: `list[str]` or ``None``"""
 
     @staticmethod
     cdef OrderInitialized from_dict_c(dict values)
@@ -110,7 +114,28 @@ cdef class OrderDenied(OrderEvent):
 
 
 
+cdef class OrderEmulated(OrderEvent):
+    cdef OrderEmulated_t _mem
+
+    @staticmethod
+    cdef OrderEmulated from_dict_c(dict values)
+
+    @staticmethod
+    cdef dict to_dict_c(OrderEmulated obj)
+
+
+cdef class OrderReleased(OrderEvent):
+    cdef OrderReleased_t _mem
+
+    @staticmethod
+    cdef OrderReleased from_dict_c(dict values)
+
+    @staticmethod
+    cdef dict to_dict_c(OrderReleased obj)
+
+
 cdef class OrderSubmitted(OrderEvent):
+    cdef OrderSubmitted_t _mem
 
     @staticmethod
     cdef OrderSubmitted from_dict_c(dict values)
@@ -120,6 +145,7 @@ cdef class OrderSubmitted(OrderEvent):
 
 
 cdef class OrderAccepted(OrderEvent):
+    cdef OrderAccepted_t _mem
 
     @staticmethod
     cdef OrderAccepted from_dict_c(dict values)
@@ -129,8 +155,7 @@ cdef class OrderAccepted(OrderEvent):
 
 
 cdef class OrderRejected(OrderEvent):
-    cdef readonly str reason
-    """The reason the order was rejected.\n\n:returns: `str`"""
+    cdef OrderRejected_t _mem
 
     @staticmethod
     cdef OrderRejected from_dict_c(dict values)
@@ -140,6 +165,16 @@ cdef class OrderRejected(OrderEvent):
 
 
 cdef class OrderCanceled(OrderEvent):
+    cdef TraderId _trader_id
+    cdef StrategyId _strategy_id
+    cdef InstrumentId _instrument_id
+    cdef ClientOrderId _client_order_id
+    cdef VenueOrderId _venue_order_id
+    cdef AccountId _account_id
+    cdef bint _reconciliation
+    cdef UUID4 _event_id
+    cdef uint64_t _ts_event
+    cdef uint64_t _ts_init
 
     @staticmethod
     cdef OrderCanceled from_dict_c(dict values)
@@ -149,6 +184,16 @@ cdef class OrderCanceled(OrderEvent):
 
 
 cdef class OrderExpired(OrderEvent):
+    cdef TraderId _trader_id
+    cdef StrategyId _strategy_id
+    cdef InstrumentId _instrument_id
+    cdef ClientOrderId _client_order_id
+    cdef VenueOrderId _venue_order_id
+    cdef AccountId _account_id
+    cdef bint _reconciliation
+    cdef UUID4 _event_id
+    cdef uint64_t _ts_event
+    cdef uint64_t _ts_init
 
     @staticmethod
     cdef OrderExpired from_dict_c(dict values)
@@ -158,6 +203,16 @@ cdef class OrderExpired(OrderEvent):
 
 
 cdef class OrderTriggered(OrderEvent):
+    cdef TraderId _trader_id
+    cdef StrategyId _strategy_id
+    cdef InstrumentId _instrument_id
+    cdef ClientOrderId _client_order_id
+    cdef VenueOrderId _venue_order_id
+    cdef AccountId _account_id
+    cdef bint _reconciliation
+    cdef UUID4 _event_id
+    cdef uint64_t _ts_event
+    cdef uint64_t _ts_init
 
     @staticmethod
     cdef OrderTriggered from_dict_c(dict values)
@@ -167,6 +222,16 @@ cdef class OrderTriggered(OrderEvent):
 
 
 cdef class OrderPendingUpdate(OrderEvent):
+    cdef TraderId _trader_id
+    cdef StrategyId _strategy_id
+    cdef InstrumentId _instrument_id
+    cdef ClientOrderId _client_order_id
+    cdef VenueOrderId _venue_order_id
+    cdef AccountId _account_id
+    cdef bint _reconciliation
+    cdef UUID4 _event_id
+    cdef uint64_t _ts_event
+    cdef uint64_t _ts_init
 
     @staticmethod
     cdef OrderPendingUpdate from_dict_c(dict values)
@@ -176,6 +241,16 @@ cdef class OrderPendingUpdate(OrderEvent):
 
 
 cdef class OrderPendingCancel(OrderEvent):
+    cdef TraderId _trader_id
+    cdef StrategyId _strategy_id
+    cdef InstrumentId _instrument_id
+    cdef ClientOrderId _client_order_id
+    cdef VenueOrderId _venue_order_id
+    cdef AccountId _account_id
+    cdef bint _reconciliation
+    cdef UUID4 _event_id
+    cdef uint64_t _ts_event
+    cdef uint64_t _ts_init
 
     @staticmethod
     cdef OrderPendingCancel from_dict_c(dict values)
@@ -185,8 +260,17 @@ cdef class OrderPendingCancel(OrderEvent):
 
 
 cdef class OrderModifyRejected(OrderEvent):
-    cdef readonly str reason
-    """The reason for modify order rejection.\n\n:returns: `str`"""
+    cdef TraderId _trader_id
+    cdef StrategyId _strategy_id
+    cdef InstrumentId _instrument_id
+    cdef ClientOrderId _client_order_id
+    cdef VenueOrderId _venue_order_id
+    cdef AccountId _account_id
+    cdef str _reason
+    cdef bint _reconciliation
+    cdef UUID4 _event_id
+    cdef uint64_t _ts_event
+    cdef uint64_t _ts_init
 
     @staticmethod
     cdef OrderModifyRejected from_dict_c(dict values)
@@ -196,8 +280,17 @@ cdef class OrderModifyRejected(OrderEvent):
 
 
 cdef class OrderCancelRejected(OrderEvent):
-    cdef readonly str reason
-    """The reason for order cancel rejection.\n\n:returns: `str`"""
+    cdef TraderId _trader_id
+    cdef StrategyId _strategy_id
+    cdef InstrumentId _instrument_id
+    cdef ClientOrderId _client_order_id
+    cdef VenueOrderId _venue_order_id
+    cdef AccountId _account_id
+    cdef str _reason
+    cdef bint _reconciliation
+    cdef UUID4 _event_id
+    cdef uint64_t _ts_event
+    cdef uint64_t _ts_init
 
     @staticmethod
     cdef OrderCancelRejected from_dict_c(dict values)
@@ -207,6 +300,17 @@ cdef class OrderCancelRejected(OrderEvent):
 
 
 cdef class OrderUpdated(OrderEvent):
+    cdef TraderId _trader_id
+    cdef StrategyId _strategy_id
+    cdef InstrumentId _instrument_id
+    cdef ClientOrderId _client_order_id
+    cdef VenueOrderId _venue_order_id
+    cdef AccountId _account_id
+    cdef bint _reconciliation
+    cdef UUID4 _event_id
+    cdef uint64_t _ts_event
+    cdef uint64_t _ts_init
+
     cdef readonly Quantity quantity
     """The orders current quantity.\n\n:returns: `Quantity`"""
     cdef readonly Price price
@@ -222,6 +326,17 @@ cdef class OrderUpdated(OrderEvent):
 
 
 cdef class OrderFilled(OrderEvent):
+    cdef TraderId _trader_id
+    cdef StrategyId _strategy_id
+    cdef InstrumentId _instrument_id
+    cdef ClientOrderId _client_order_id
+    cdef VenueOrderId _venue_order_id
+    cdef AccountId _account_id
+    cdef bint _reconciliation
+    cdef UUID4 _event_id
+    cdef uint64_t _ts_event
+    cdef uint64_t _ts_init
+
     cdef readonly TradeId trade_id
     """The trade match ID (assigned by the venue).\n\n:returns: `TradeId`"""
     cdef readonly PositionId position_id

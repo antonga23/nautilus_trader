@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,7 +13,7 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
-from nautilus_trader.indicators.average.sma import SimpleMovingAverage
+from nautilus_trader.indicators import SimpleMovingAverage
 from nautilus_trader.model.enums import PriceType
 from nautilus_trader.test_kit.providers import TestInstrumentProvider
 from nautilus_trader.test_kit.stubs.data import TestDataStubs
@@ -133,8 +133,8 @@ class TestSimpleMovingAverage:
         sma_for_ticks3 = SimpleMovingAverage(10, PriceType.BID)
 
         tick = TestDataStubs.quote_tick(
-            bid=1.00001,
-            ask=1.00003,
+            bid_price=1.00001,
+            ask_price=1.00003,
         )
 
         # Act
@@ -165,7 +165,7 @@ class TestSimpleMovingAverage:
 
     def test_reset_successfully_returns_indicator_to_fresh_state(self):
         # Arrange
-        for _i in range(1000):
+        for _ in range(1000):
             self.sma.update_raw(1.0)
 
         # Act

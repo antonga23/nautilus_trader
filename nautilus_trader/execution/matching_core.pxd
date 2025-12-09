@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -14,21 +14,25 @@
 # -------------------------------------------------------------------------------------------------
 
 from libc.stdint cimport int64_t
+from libc.stdint cimport uint8_t
 from libc.stdint cimport uint64_t
 
-from nautilus_trader.model.enums_c cimport LiquiditySide
-from nautilus_trader.model.enums_c cimport OrderSide
+from nautilus_trader.core.rust.model cimport LiquiditySide
+from nautilus_trader.core.rust.model cimport OrderSide
+from nautilus_trader.core.rust.model cimport PriceRaw
 from nautilus_trader.model.identifiers cimport ClientOrderId
-from nautilus_trader.model.instruments.base cimport Instrument
+from nautilus_trader.model.identifiers cimport InstrumentId
 from nautilus_trader.model.objects cimport Price
 from nautilus_trader.model.orders.base cimport Order
 
 
 cdef class MatchingCore:
-    cdef Instrument _instrument
-    cdef readonly int64_t bid_raw
-    cdef readonly int64_t ask_raw
-    cdef readonly int64_t last_raw
+    cdef InstrumentId _instrument_id
+    cdef Price _price_increment
+    cdef uint8_t _price_precision
+    cdef readonly PriceRaw bid_raw
+    cdef readonly PriceRaw ask_raw
+    cdef readonly PriceRaw last_raw
     cdef readonly bint is_bid_initialized
     cdef readonly bint is_ask_initialized
     cdef readonly bint is_last_initialized
@@ -51,9 +55,9 @@ cdef class MatchingCore:
 
 # -- COMMANDS -------------------------------------------------------------------------------------
 
-    cdef void set_bid_raw(self, int64_t bid_raw)
-    cdef void set_ask_raw(self, int64_t ask_raw)
-    cdef void set_last_raw(self, int64_t last_raw)
+    cdef void set_bid_raw(self, PriceRaw bid_raw)
+    cdef void set_ask_raw(self, PriceRaw ask_raw)
+    cdef void set_last_raw(self, PriceRaw last_raw)
 
     cpdef void reset(self)
     cpdef void add_order(self, Order order)
@@ -71,6 +75,8 @@ cdef class MatchingCore:
     cpdef void match_stop_limit_order(self, Order order, bint initial)
     cpdef void match_market_if_touched_order(self, Order order)
     cpdef void match_limit_if_touched_order(self, Order order, bint initial)
+    cpdef void match_trailing_stop_market_order(self, Order order)
+    cpdef void match_trailing_stop_limit_order(self, Order order, bint initial)
     cpdef bint is_limit_matched(self, OrderSide side, Price price)
     cpdef bint is_stop_triggered(self, OrderSide side, Price trigger_price)
     cpdef bint is_touch_triggered(self, OrderSide side, Price trigger_price)

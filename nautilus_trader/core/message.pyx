@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,7 +13,10 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
-from typing import Any, Callable
+from typing import Any
+from typing import Callable
+
+import cython
 
 from nautilus_trader.core.uuid cimport UUID4
 
@@ -27,7 +30,9 @@ cdef class Command:
     command_id : UUID4
         The command ID.
     ts_init : uint64_t
-        The UNIX timestamp (nanoseconds) when the object was initialized.
+        UNIX timestamp (nanoseconds) when the object was initialized.
+    correlation_id : UUID4, optional
+        The correlation ID. If provided, this command is correlated to another command or request.
 
     Warnings
     --------
@@ -38,28 +43,35 @@ cdef class Command:
         self,
         UUID4 command_id not None,
         uint64_t ts_init,
+        UUID4 correlation_id = None,
     ):
         self.id = command_id
         self.ts_init = ts_init
+        self.correlation_id = correlation_id
 
     def __getstate__(self):
         return (
             self.id.to_str(),
             self.ts_init,
+            self.correlation_id.to_str() if self.correlation_id is not None else None,
         )
 
     def __setstate__(self, state):
-        self.id = UUID4(state[0])
+        self.id = UUID4.from_str_c(state[0])
         self.ts_init = state[1]
+        self.correlation_id = UUID4.from_str_c(state[2]) if state[2] is not None else None
 
     def __eq__(self, Command other) -> bool:
+        if other is None:
+            return False
         return self.id == other.id
 
     def __hash__(self) -> int:
         return hash(self.id)
 
     def __repr__(self) -> str:
-        return f"{type(self).__name__}(id={self.id}, ts_init={self.ts_init})"
+        correlation_str = f", correlation_id={self.correlation_id}" if self.correlation_id is not None else ""
+        return f"{type(self).__name__}(id={self.id}, ts_init={self.ts_init}{correlation_str})"
 
 
 cdef class Document:
@@ -71,7 +83,7 @@ cdef class Document:
     document_id : UUID4
         The command ID.
     ts_init : uint64_t
-        The UNIX timestamp (nanoseconds) when the object was initialized.
+        UNIX timestamp (nanoseconds) when the object was initialized.
 
     Warnings
     --------
@@ -93,10 +105,12 @@ cdef class Document:
         )
 
     def __setstate__(self, state):
-        self.id = UUID4(state[0])
+        self.id = UUID4.from_str_c(state[0])
         self.ts_init = state[1]
 
     def __eq__(self, Document other) -> bool:
+        if other is None:
+            return False
         return self.id == other.id
 
     def __hash__(self) -> int:
@@ -106,54 +120,51 @@ cdef class Document:
         return f"{type(self).__name__}(id={self.id}, ts_init={self.ts_init})"
 
 
+@cython.auto_pickle(False)
 cdef class Event:
     """
-    The base class for all event messages.
-
-    Parameters
-    ----------
-    event_id : UUID4
-        The event ID.
-    ts_event : uint64_t
-        The UNIX timestamp (nanoseconds) when the event occurred.
-    ts_init : uint64_t
-        The UNIX timestamp (nanoseconds) when the object was initialized.
+    The abstract base class for all event messages.
 
     Warnings
     --------
     This class should not be used directly, but through a concrete subclass.
     """
 
-    def __init__(
-        self,
-        UUID4 event_id not None,
-        uint64_t ts_event,
-        uint64_t ts_init,
-    ):
-        self.id = event_id
-        self.ts_event = ts_event
-        self.ts_init = ts_init
+    @property
+    def id(self) -> UUID4:
+        """
+        The event message identifier.
 
-    def __getstate__(self):
-        return (
-            self.id.to_str(),
-            self.ts_event,
-            self.ts_init,
-        )
+        Returns
+        -------
+        UUID4
 
-    def __setstate__(self, state):
-        self.id = UUID4(state[0])
-        self.ts_event = state[1]
-        self.ts_init = state[2]
+        """
+        raise NotImplementedError("abstract property must be implemented")
 
-    def __eq__(self, Event other) -> bool:
-        return self.id == other.id
+    @property
+    def ts_event(self) -> int:
+        """
+        UNIX timestamp (nanoseconds) when the event occurred.
 
-    def __hash__(self) -> int:
-        return hash(self.id)
+        Returns
+        -------
+        int
 
-    def __repr__(self) -> str:
-        return f"{type(self).__name__}(id={self.id}, ts_event={self.ts_event}, ts_init={self.ts_init})"
+        """
+        raise NotImplementedError("abstract property must be implemented")
+
+    @property
+    def ts_init(self) -> int:
+        """
+        UNIX timestamp (nanoseconds) when the object was initialized.
+
+        Returns
+        -------
+        int
+
+        """
+        raise NotImplementedError("abstract property must be implemented")
 
 
 cdef class Request:
@@ -167,7 +178,9 @@ cdef class Request:
     request_id : UUID4
         The request ID.
     ts_init : uint64_t
-        The UNIX timestamp (nanoseconds) when the object was initialized.
+        UNIX timestamp (nanoseconds) when the object was initialized.
+    correlation_id : UUID4, optional
+        The correlation ID. If provided, this request is correlated to another request.
 
     Warnings
     --------
@@ -176,34 +189,42 @@ cdef class Request:
 
     def __init__(
         self,
-        callback not None: Callable[[Any], None],
+        callback: Callable[[Any], None] | None,
         UUID4 request_id not None,
         uint64_t ts_init,
+        UUID4 correlation_id = None,
     ):
         self.callback = callback
         self.id = request_id
         self.ts_init = ts_init
+        self.correlation_id = correlation_id
 
     def __getstate__(self):
         return (
             self.callback,
             self.id.to_str(),
             self.ts_init,
+            self.correlation_id.to_str() if self.correlation_id is not None else None,
         )
 
     def __setstate__(self, state):
         self.callback = state[0]
-        self.id = UUID4(state[1])
+        self.id = UUID4.from_str_c(state[1])
         self.ts_init = state[2]
+        self.correlation_id = UUID4.from_str_c(state[3]) if state[3] is not None else None
 
     def __eq__(self, Request other) -> bool:
+        if other is None:
+            return False
         return self.id == other.id
 
     def __hash__(self) -> int:
         return hash(self.id)
 
     def __repr__(self) -> str:
-        return f"{type(self).__name__}(id={self.id}, callback={self.callback}, ts_init={self.ts_init})"
+        correlation_str = f", correlation_id={self.correlation_id}" if self.correlation_id is not None else ""
+
+        return f"{type(self).__name__}(id={self.id}, callback={self.callback}, ts_init={self.ts_init}{correlation_str})"
 
 
 cdef class Response:
@@ -217,7 +238,7 @@ cdef class Response:
     response_id : UUID4
         The response ID.
     ts_init : uint64_t
-        The UNIX timestamp (nanoseconds) when the object was initialized.
+        UNIX timestamp (nanoseconds) when the object was initialized.
 
     Warnings
     --------
@@ -242,11 +263,13 @@ cdef class Response:
         )
 
     def __setstate__(self, state):
-        self.correlation_id = UUID4(state[0])
-        self.id = UUID4(state[1])
+        self.correlation_id = UUID4.from_str_c(state[0])
+        self.id = UUID4.from_str_c(state[1])
         self.ts_init = state[2]
 
     def __eq__(self, Response other) -> bool:
+        if other is None:
+            return False
         return self.id == other.id
 
     def __hash__(self) -> int:

@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -22,6 +22,7 @@ from nautilus_trader.model.tick_scheme.base cimport TickScheme
 cdef class TieredTickScheme(TickScheme):
     cdef list tiers
     cdef int max_ticks_per_tier
+    cdef int price_precision
     cdef int tick_count
 
     cdef readonly np.ndarray ticks

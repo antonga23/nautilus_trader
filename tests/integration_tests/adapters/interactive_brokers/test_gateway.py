@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2021 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -16,16 +16,16 @@
 import pytest
 from docker.models.containers import ContainerCollection
 
-from nautilus_trader.adapters.interactive_brokers.gateway import InteractiveBrokersGateway
+from nautilus_trader.adapters.interactive_brokers.gateway import DockerizedIBGateway
 
 
 pytestmark = pytest.mark.skip(reason="Skip due currently flaky mocks")
 
 
 def test_gateway_start_no_container(mocker):
-    # Arrange,
+    # Arrange
     mock_docker = mocker.patch.object(ContainerCollection, "run")
-    gateway = InteractiveBrokersGateway(username="test", password="test")
+    gateway = DockerizedIBGateway(username="test", password="test")
 
     # Act
     gateway.start(wait=None)

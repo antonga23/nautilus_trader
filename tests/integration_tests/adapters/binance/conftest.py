@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,20 +13,14 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
-import asyncio
 
 import pytest
 
 from nautilus_trader.adapters.binance.common.constants import BINANCE_VENUE
 from nautilus_trader.adapters.binance.http.client import BinanceHttpClient
-from nautilus_trader.common.clock import LiveClock
-from nautilus_trader.common.logging import Logger
+from nautilus_trader.common.component import LiveClock
+from nautilus_trader.common.component import Logger
 from nautilus_trader.model.identifiers import Venue
-
-
-@pytest.fixture(scope="session")
-def loop():
-    return asyncio.get_event_loop()
 
 
 @pytest.fixture(scope="session")
@@ -35,42 +29,41 @@ def live_clock():
 
 
 @pytest.fixture(scope="session")
-def live_logger(live_clock):
-    return Logger(clock=live_clock)
+def live_logger():
+    return Logger("TEST_LOGGER")
 
 
 @pytest.fixture(scope="session")
-def binance_http_client(loop, live_clock, live_logger):
+def binance_http_client(session_event_loop, live_clock):
     client = BinanceHttpClient(
         clock=live_clock,
-        logger=live_logger,
-        key="SOME_BINANCE_API_KEY",
-        secret="SOME_BINANCE_API_SECRET",
+        api_key="SOME_BINANCE_API_KEY",
+        api_secret="SOME_BINANCE_API_SECRET",
         base_url="https://api.binance.com/",  # Spot/Margin
     )
     return client
 
 
-@pytest.fixture()
+@pytest.fixture
 def venue() -> Venue:
     raise BINANCE_VENUE
 
 
-@pytest.fixture()
+@pytest.fixture
 def data_client():
     pass
 
 
-@pytest.fixture()
+@pytest.fixture
 def exec_client():
     pass
 
 
-@pytest.fixture()
+@pytest.fixture
 def instrument():
     pass
 
 
-@pytest.fixture()
+@pytest.fixture
 def account_state():
     pass

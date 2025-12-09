@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -16,17 +16,15 @@
 import datetime
 from decimal import Decimal
 
-# fmt: off
 from nautilus_trader.core.datetime import nanos_to_secs
 from nautilus_trader.model.data import BarAggregation
 from nautilus_trader.model.data import BarSpecification
+from nautilus_trader.model.data import BarType
 from nautilus_trader.model.enums import BookAction
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.enums import PriceType
 from nautilus_trader.model.identifiers import TradeId
 
-
-# fmt: on
 
 MKT_DEPTH_OPERATIONS = {
     0: BookAction.ADD,
@@ -44,26 +42,34 @@ IB_TICK_TYPE = {
     4: "MidPoint",
 }
 
-what_to_show = {
-    PriceType.ASK: "ASK",
-    PriceType.BID: "BID",
-    PriceType.LAST: "TRADES",
-    PriceType.MID: "MIDPOINT",
-}
+
+def what_to_show(bar_type: BarType) -> str:
+    mapping = {
+        PriceType.ASK: "ASK",
+        PriceType.BID: "BID",
+        PriceType.LAST: "TRADES",
+        PriceType.MID: "MIDPOINT",
+    }
+    if str(bar_type.instrument_id.venue) == "PAXOS" and bar_type.spec.price_type == PriceType.LAST:
+        return "AGGTRADES"
+    else:
+        return mapping[bar_type.spec.price_type]
 
 
 def generate_trade_id(ts_event: int, price: float, size: Decimal) -> TradeId:
-    id = TradeId(f"{int(nanos_to_secs(ts_event))}-{price}-{size}")
-    assert len(id.value) < 36, f"TradeId too long, was {len(id.value)}"
-    return id
+    trade_id = TradeId(f"{int(nanos_to_secs(ts_event))}-{price}-{size}")
+    assert len(trade_id.value) < 36, f"TradeId too long, was {len(id.value)}"  # type: ignore
+
+    return trade_id
 
 
 def bar_spec_to_bar_size(bar_spec: BarSpecification) -> str:
     aggregation = bar_spec.aggregation
     step = bar_spec.step
-    if aggregation == BarAggregation.SECOND and step == 5:
-        return f"{step} secs"
-    elif aggregation == BarAggregation.SECOND and step in [10, 15, 30]:
+
+    if (aggregation == BarAggregation.SECOND and step == 5) or (
+        aggregation == BarAggregation.SECOND and step in [10, 15, 30]
+    ):
         return f"{step} secs"
     elif aggregation == BarAggregation.MINUTE and step in [1, 2, 3, 5, 10, 15, 20, 30]:
         return f"{step} min{'' if step == 1 else 's'}"

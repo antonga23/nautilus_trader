@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,34 +13,62 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
+from typing import Final
+
+from betfair_parser.exceptions import BetfairError
+from betfair_parser.spec.betting.enums import PersistenceType
+from betfair_parser.spec.betting.enums import Side
+from betfair_parser.spec.betting.enums import TimeInForce as BetfairTimeInForce
+from betfair_parser.spec.common import OrderType
+
+from nautilus_trader.adapters.betfair.constants import BETFAIR_PRICE_PRECISION
+from nautilus_trader.core.rust.model import OrderType as NautilusOrderType
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.enums import TimeInForce
-from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.tick_scheme import register_tick_scheme
 from nautilus_trader.model.tick_scheme.implementations.tiered import TieredTickScheme
 
 
-BETFAIR_VENUE = Venue("BETFAIR")
-BETFAIR_PRICE_PRECISION = 2
-BETFAIR_QUANTITY_PRECISION = 4
-
 # ------------------------------- MAPPINGS ------------------------------- #
-
 # Mappings between Nautilus and betfair - prefixes:
 #     N2B = {NAUTILUS: BETFAIR}
 #     B2N = {BETFAIR: NAUTILUS}
 
 
-N2B_SIDE = {
-    OrderSide.BUY: "BACK",
-    OrderSide.SELL: "LAY",
+class OrderSideParser:
+    BACKS = (Side.BACK, "B")
+    LAYS = (Side.LAY, "L")
+
+    @classmethod
+    def to_nautilus(cls, side: Side | str) -> OrderSide:
+        if side in cls.BACKS:
+            return OrderSide.SELL
+        elif side in cls.LAYS:
+            return OrderSide.BUY
+        else:
+            raise ValueError(f"Unknown side: {side}")
+
+    @staticmethod
+    def to_betfair(order_side: OrderSide) -> Side:
+        if order_side == OrderSide.BUY:
+            return Side.LAY
+        elif order_side == OrderSide.SELL:
+            return Side.BACK
+        else:
+            raise ValueError(f"Unknown order_side: {order_side}")
+
+
+N2B_TIME_IN_FORCE: Final[dict[TimeInForce, BetfairTimeInForce]] = {
+    TimeInForce.FOK: BetfairTimeInForce.FILL_OR_KILL,
+    TimeInForce.IOC: BetfairTimeInForce.FILL_OR_KILL,  # min_fill_size 0 also needed
 }
 
-N2B_TIME_IN_FORCE = {
-    TimeInForce.FOK: "FILL_OR_KILL",
+N2B_PERSISTENCE: Final[dict[TimeInForce, PersistenceType]] = {
+    TimeInForce.GTC: PersistenceType.PERSIST,
+    TimeInForce.DAY: PersistenceType.LAPSE,
 }
 
-B2N_MARKET_STREAM_SIDE = {
+B2N_MARKET_SIDE: Final[dict[str, OrderSide]] = {
     "atb": OrderSide.SELL,  # Available to Back / Sell order
     "batb": OrderSide.SELL,  # Best available to Back / Sell order
     "bdatb": OrderSide.SELL,  # Best display to Back / Sell order
@@ -51,19 +79,19 @@ B2N_MARKET_STREAM_SIDE = {
     "spl": OrderSide.BUY,  # Starting Price LAY
 }
 
-B2N_ORDER_STREAM_SIDE = {
-    "B": OrderSide.BUY,
-    "L": OrderSide.SELL,
-    "BACK": OrderSide.BUY,
-    "LAY": OrderSide.SELL,
+
+B2N_TIME_IN_FORCE: Final[dict[PersistenceType, TimeInForce]] = {
+    PersistenceType.LAPSE: TimeInForce.DAY,
+    PersistenceType.PERSIST: TimeInForce.GTC,
 }
 
-B2N_TIME_IN_FORCE = {
-    "LAPSE": TimeInForce.DAY,
-    "PERSIST": TimeInForce.GTC,
+B2N_ORDER_TYPE: Final[dict[OrderType, NautilusOrderType]] = {
+    OrderType.LIMIT: NautilusOrderType.LIMIT,
+    OrderType.LIMIT_ON_CLOSE: NautilusOrderType.LIMIT,
+    OrderType.MARKET_ON_CLOSE: NautilusOrderType.MARKET,
 }
 
-BETFAIR_PRICE_TIERS = [
+BETFAIR_PRICE_TIERS: Final[list[tuple[float, ...]]] = [
     (1.01, 2, 0.01),
     (2, 3, 0.02),
     (3, 4, 0.05),
@@ -76,8 +104,44 @@ BETFAIR_PRICE_TIERS = [
     (100, 1010, 10),
 ]
 
-BETFAIR_TICK_SCHEME = TieredTickScheme(name="BETFAIR", tiers=BETFAIR_PRICE_TIERS)
+BETFAIR_TICK_SCHEME = TieredTickScheme(
+    "BETFAIR",
+    BETFAIR_PRICE_TIERS,
+    price_precision=BETFAIR_PRICE_PRECISION,
+)
 BETFAIR_FLOAT_TO_PRICE = {price.as_double(): price for price in BETFAIR_TICK_SCHEME.ticks}
 MAX_BET_PRICE = max(BETFAIR_TICK_SCHEME.ticks)
 MIN_BET_PRICE = min(BETFAIR_TICK_SCHEME.ticks)
 register_tick_scheme(BETFAIR_TICK_SCHEME)
+
+
+def is_session_error(error: BetfairError) -> bool:
+    """
+    Check if a BetfairError is a session expiry error.
+
+    Session errors (NO_SESSION, INVALID_SESSION_INFORMATION) are expected to occur
+    every 12-24 hours and should trigger automatic reconnection.
+
+    This also handles errors from betfair-parser when it can't parse undocumented
+    error codes like -32099 (JSON-RPC server errors).
+
+    Parameters
+    ----------
+    error : BetfairError
+        The error to check.
+
+    Returns
+    -------
+    bool
+        True if the error is a session expiry error.
+
+    """
+    if not error.args:
+        return False
+    msg = str(error.args[0])
+    return (
+        "NO_SESSION" in msg
+        or "INVALID_SESSION_INFORMATION" in msg
+        or "is not a valid JSONExceptionCode" in msg
+        or "JSON_PARSE_ERROR" in msg
+    )

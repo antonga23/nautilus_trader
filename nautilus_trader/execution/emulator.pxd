@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -14,6 +14,7 @@
 # -------------------------------------------------------------------------------------------------
 
 from nautilus_trader.common.actor cimport Actor
+from nautilus_trader.execution.manager cimport OrderManager
 from nautilus_trader.execution.matching_core cimport MatchingCore
 from nautilus_trader.execution.messages cimport CancelAllOrders
 from nautilus_trader.execution.messages cimport CancelOrder
@@ -29,57 +30,48 @@ from nautilus_trader.model.events.order cimport OrderRejected
 from nautilus_trader.model.events.order cimport OrderUpdated
 from nautilus_trader.model.events.position cimport PositionEvent
 from nautilus_trader.model.identifiers cimport ClientId
+from nautilus_trader.model.identifiers cimport InstrumentId
 from nautilus_trader.model.identifiers cimport PositionId
-from nautilus_trader.model.instruments.base cimport Instrument
+from nautilus_trader.model.identifiers cimport StrategyId
+from nautilus_trader.model.objects cimport Price
 from nautilus_trader.model.objects cimport Quantity
 from nautilus_trader.model.orders.base cimport Order
 
 
 cdef class OrderEmulator(Actor):
-    cdef dict _matching_cores
-    cdef dict _commands_submit_order
-    cdef dict _commands_submit_order_list
+    cdef OrderManager _manager
+    cdef dict[InstrumentId, MatchingCore] _matching_cores
 
-    cdef set _subscribed_quotes
-    cdef set _subscribed_trades
-    cdef set _subscribed_strategies
-    cdef set _monitored_positions
+    cdef set[InstrumentId] _subscribed_quotes
+    cdef set[InstrumentId] _subscribed_trades
+    cdef set[StrategyId] _subscribed_strategies
+    cdef set[PositionId] _monitored_positions
+
+    cdef readonly bint debug
+    """If debug mode is active (will provide extra debug logging).\n\n:returns: `bool`"""
+    cdef readonly int command_count
+    """The total count of commands received by the emulator.\n\n:returns: `int`"""
+    cdef readonly int event_count
+    """The total count of events received by the emulator.\n\n:returns: `int`"""
 
     cpdef void execute(self, TradingCommand command)
-    cpdef MatchingCore create_matching_core(self, Instrument instrument)
+    cpdef MatchingCore create_matching_core(self, InstrumentId instrument_id, Price price_increment)
     cdef void _handle_submit_order(self, SubmitOrder command)
     cdef void _handle_submit_order_list(self, SubmitOrderList command)
     cdef void _handle_modify_order(self, ModifyOrder command)
     cdef void _handle_cancel_order(self, CancelOrder command)
     cdef void _handle_cancel_all_orders(self, CancelAllOrders command)
 
-    cdef void _create_new_submit_order(self, Order order, PositionId position_id, ClientId client_id)
-    cdef void _cancel_order(self, MatchingCore matching_core, Order order)
-
-# -- EVENT HANDLERS -------------------------------------------------------------------------------
-
-    cdef void _handle_order_rejected(self, OrderRejected rejected)
-    cdef void _handle_order_canceled(self, OrderCanceled canceled)
-    cdef void _handle_order_expired(self, OrderExpired expired)
-    cdef void _handle_order_updated(self, OrderUpdated updated)
-    cdef void _handle_order_filled(self, OrderFilled filled)
-    cdef void _handle_position_event(self, PositionEvent event)
-    cdef void _handle_contingencies(self, Order order)
-    cdef void _update_order_quantity(self, Order order, Quantity new_quantity)
+    cpdef void _check_monitoring(self, StrategyId strategy_id, PositionId position_id)
+    cpdef void _cancel_order(self, Order order)
+    cpdef void _update_order(self, Order order, Quantity new_quantity)
 
 # -------------------------------------------------------------------------------------------------
 
+    cpdef Price _validate_release(self, Order order, MatchingCore matching_core, InstrumentId trigger_instrument_id)
     cpdef void _trigger_stop_order(self, Order order)
     cpdef void _fill_market_order(self, Order order)
     cpdef void _fill_limit_order(self, Order order)
 
     cdef void _iterate_orders(self, MatchingCore matching_core)
-    cdef void _update_trailing_stop_order(self, MatchingCore matching_core, Order order)
-
-# -- EGRESS ---------------------------------------------------------------------------------------
-
-    cdef void _send_algo_command(self, TradingCommand command)
-    cdef void _send_risk_command(self, TradingCommand command)
-    cdef void _send_exec_command(self, TradingCommand command)
-    cdef void _send_risk_event(self, OrderEvent event)
-    cdef void _send_exec_event(self, OrderEvent event)
+    cdef void _trail_stop_order(self, MatchingCore matching_core, Order order)

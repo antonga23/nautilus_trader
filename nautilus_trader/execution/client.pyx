@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,33 +13,36 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
-from typing import Optional
+from nautilus_trader.common.config import NautilusConfig
+from nautilus_trader.execution.reports import ExecutionMassStatus
+from nautilus_trader.execution.reports import FillReport
+from nautilus_trader.execution.reports import OrderStatusReport
+from nautilus_trader.execution.reports import PositionStatusReport
 
 from libc.stdint cimport uint64_t
 
 from nautilus_trader.cache.cache cimport Cache
-from nautilus_trader.common.clock cimport Clock
+from nautilus_trader.common.component cimport Clock
 from nautilus_trader.common.component cimport Component
-from nautilus_trader.common.logging cimport Logger
+from nautilus_trader.common.component cimport MessageBus
 from nautilus_trader.core.correctness cimport Condition
+from nautilus_trader.core.rust.model cimport AccountType
+from nautilus_trader.core.rust.model cimport LiquiditySide
+from nautilus_trader.core.rust.model cimport OrderSide
+from nautilus_trader.core.rust.model cimport OrderType
 from nautilus_trader.core.uuid cimport UUID4
 from nautilus_trader.execution.messages cimport CancelAllOrders
 from nautilus_trader.execution.messages cimport CancelOrder
 from nautilus_trader.execution.messages cimport ModifyOrder
+from nautilus_trader.execution.messages cimport QueryAccount
+from nautilus_trader.execution.messages cimport QueryOrder
 from nautilus_trader.execution.messages cimport SubmitOrder
 from nautilus_trader.execution.messages cimport SubmitOrderList
-from nautilus_trader.execution.reports cimport ExecutionMassStatus
-from nautilus_trader.execution.reports cimport OrderStatusReport
-from nautilus_trader.execution.reports cimport TradeReport
-from nautilus_trader.model.currency cimport Currency
-from nautilus_trader.model.enums_c cimport AccountType
-from nautilus_trader.model.enums_c cimport LiquiditySide
-from nautilus_trader.model.enums_c cimport OrderSide
-from nautilus_trader.model.enums_c cimport OrderType
 from nautilus_trader.model.events.account cimport AccountState
 from nautilus_trader.model.events.order cimport OrderAccepted
 from nautilus_trader.model.events.order cimport OrderCanceled
 from nautilus_trader.model.events.order cimport OrderCancelRejected
+from nautilus_trader.model.events.order cimport OrderDenied
 from nautilus_trader.model.events.order cimport OrderExpired
 from nautilus_trader.model.events.order cimport OrderFilled
 from nautilus_trader.model.events.order cimport OrderModifyRejected
@@ -57,10 +60,10 @@ from nautilus_trader.model.identifiers cimport PositionId
 from nautilus_trader.model.identifiers cimport StrategyId
 from nautilus_trader.model.identifiers cimport TradeId
 from nautilus_trader.model.identifiers cimport VenueOrderId
+from nautilus_trader.model.objects cimport Currency
 from nautilus_trader.model.objects cimport Money
 from nautilus_trader.model.objects cimport Price
 from nautilus_trader.model.objects cimport Quantity
-from nautilus_trader.msgbus.bus cimport MessageBus
 
 
 cdef class ExecutionClient(Component):
@@ -71,13 +74,13 @@ cdef class ExecutionClient(Component):
     ----------
     client_id : ClientId
         The client ID.
-    venue : Venue, optional with no default so ``None`` must be passed explicitly
+    venue : Venue or ``None``
         The client venue. If multi-venue then can be ``None``.
     oms_type : OmsType
         The venues order management system type.
     account_type : AccountType
         The account type for the client.
-    base_currency : Currency, optional with no default so ``None`` must be passed explicitly
+    base_currency : Currency or ``None``
         The account base currency. Use ``None`` for multi-currency accounts.
     msgbus : MessageBus
         The message bus for the client.
@@ -85,9 +88,7 @@ cdef class ExecutionClient(Component):
         The cache for the client.
     clock : Clock
         The clock for the client.
-    logger : Logger
-        The logger for the client.
-    config : dict[str, object], optional
+    config : NautilusConfig, optional
         The configuration for the instance.
 
     Raises
@@ -105,24 +106,21 @@ cdef class ExecutionClient(Component):
     def __init__(
         self,
         ClientId client_id not None,
-        Venue venue: Optional[Venue],
+        Venue venue: Venue | None,
         OmsType oms_type,
         AccountType account_type,
-        Currency base_currency: Optional[Currency],
+        Currency base_currency: Currency | None,
         MessageBus msgbus not None,
         Cache cache not None,
         Clock clock not None,
-        Logger logger not None,
-        dict config = None,
+        config: NautilusConfig | None = None,
     ):
         Condition.not_equal(oms_type, OmsType.UNSPECIFIED, "oms_type", "UNSPECIFIED")
-        if config is None:
-            config = {}
+
         super().__init__(
             clock=clock,
-            logger=logger,
             component_id=client_id,
-            component_name=config.get("name", f"ExecClient-{client_id}"),
+            component_name=f"ExecClient-{client_id}",
             msgbus=msgbus,
             config=config,
         )
@@ -176,9 +174,9 @@ cdef class ExecutionClient(Component):
         """
         self._log.error(  # pragma: no cover
             f"Cannot execute command {command}: not implemented. "  # pragma: no cover
-            f"You can implement by overriding the `submit_order` method for this client.",  # pragma: no cover  # noqa
+            f"You can implement by overriding the `submit_order` method for this client",  # pragma: no cover  # noqa
         )
-        raise NotImplementedError("method must be implemented in the subclass")
+        raise NotImplementedError("method `submit_order` must be implemented in the subclass")
 
     cpdef void submit_order_list(self, SubmitOrderList command):
         """
@@ -192,9 +190,9 @@ cdef class ExecutionClient(Component):
         """
         self._log.error(  # pragma: no cover
             f"Cannot execute command {command}: not implemented. "  # pragma: no cover
-            f"You can implement by overriding the `submit_order_list` method for this client.",  # pragma: no cover   # noqa
+            f"You can implement by overriding the `submit_order_list` method for this client",  # pragma: no cover   # noqa
         )
-        raise NotImplementedError("method must be implemented in the subclass")
+        raise NotImplementedError("method `submit_order_list` must be implemented in the subclass")
 
     cpdef void modify_order(self, ModifyOrder command):
         """
@@ -208,9 +206,9 @@ cdef class ExecutionClient(Component):
         """
         self._log.error(  # pragma: no cover
             f"Cannot execute command {command}: not implemented. "  # pragma: no cover
-            f"You can implement by overriding the `modify_order` method for this client.",  # pragma: no cover  # noqa
+            f"You can implement by overriding the `modify_order` method for this client",  # pragma: no cover  # noqa
         )
-        raise NotImplementedError("method must be implemented in the subclass")
+        raise NotImplementedError("method `modify_order` must be implemented in the subclass")
 
     cpdef void cancel_order(self, CancelOrder command):
         """
@@ -224,9 +222,9 @@ cdef class ExecutionClient(Component):
         """
         self._log.error(  # pragma: no cover
             f"Cannot execute command {command}: not implemented. "  # pragma: no cover
-            f"You can implement by overriding the `cancel_order` method for this client.",  # pragma: no cover  # noqa
+            f"You can implement by overriding the `cancel_order` method for this client",  # pragma: no cover  # noqa
         )
-        raise NotImplementedError("method must be implemented in the subclass")
+        raise NotImplementedError("method `cancel_order` must be implemented in the subclass")
 
     cpdef void cancel_all_orders(self, CancelAllOrders command):
         """
@@ -240,9 +238,41 @@ cdef class ExecutionClient(Component):
         """
         self._log.error(  # pragma: no cover
             f"Cannot execute command {command}: not implemented. "  # pragma: no cover
-            f"You can implement by overriding the `cancel_all_orders` method for this client.",  # pragma: no cover  # noqa
+            f"You can implement by overriding the `cancel_all_orders` method for this client",  # pragma: no cover  # noqa
         )
-        raise NotImplementedError("method must be implemented in the subclass")
+        raise NotImplementedError("method `cancel_all_orders` must be implemented in the subclass")
+
+    cpdef void batch_cancel_orders(self, BatchCancelOrders command):
+        """
+        Batch cancel orders for the instrument ID contained in the given command.
+
+        Parameters
+        ----------
+        command : BatchCancelOrders
+            The command to execute.
+
+        """
+        self._log.error(  # pragma: no cover
+            f"Cannot execute command {command}: not implemented. "  # pragma: no cover
+            f"You can implement by overriding the `batch_cancel_orders` method for this client",  # pragma: no cover  # noqa
+        )
+        raise NotImplementedError("method `batch_cancel_orders` must be implemented in the subclass")
+
+    cpdef void query_account(self, QueryAccount command):
+        """
+        Query the account specified by the command which will generate an `AccountState` event.
+
+        Parameters
+        ----------
+        command : QueryAccount
+            The command to execute.
+
+        """
+        self._log.error(  # pragma: no cover
+            f"Cannot execute command {command}: not implemented. "  # pragma: no cover
+            f"You can implement by overriding the `query_account` method for this client",  # pragma: no cover  # noqa
+        )
+        raise NotImplementedError("method `query_account` must be implemented in the subclass")
 
     cpdef void query_order(self, QueryOrder command):
         """
@@ -257,9 +287,9 @@ cdef class ExecutionClient(Component):
         """
         self._log.error(  # pragma: no cover
             f"Cannot execute command {command}: not implemented. "  # pragma: no cover
-            f"You can implement by overriding the `query_order` method for this client.",  # pragma: no cover  # noqa
+            f"You can implement by overriding the `query_order` method for this client",  # pragma: no cover  # noqa
         )
-        raise NotImplementedError("method must be implemented in the subclass")
+        raise NotImplementedError("method `query_order` must be implemented in the subclass")
 
 # -- EVENT HANDLERS -------------------------------------------------------------------------------
 
@@ -283,7 +313,7 @@ cdef class ExecutionClient(Component):
         reported : bool
             If the balances are reported directly from the exchange.
         ts_event : uint64_t
-            The UNIX timestamp (nanoseconds) when the account state event occurred.
+            UNIX timestamp (nanoseconds) when the account state event occurred.
         info : dict [str, object]
             The additional implementation specific account information.
 
@@ -304,6 +334,47 @@ cdef class ExecutionClient(Component):
 
         self._send_account_state(account_state)
 
+    cpdef void generate_order_denied(
+        self,
+        StrategyId strategy_id,
+        InstrumentId instrument_id,
+        ClientOrderId client_order_id,
+        str reason,
+        uint64_t ts_event,
+    ):
+        """
+        Generate an `OrderDenied` event and send it to the `ExecutionEngine`.
+
+        Parameters
+        ----------
+        strategy_id : StrategyId
+            The strategy ID associated with the event.
+        instrument_id : InstrumentId
+            The instrument ID.
+        client_order_id : ClientOrderId
+            The client order ID.
+        reason : str
+            The order denied reason.
+        ts_event : uint64_t
+            UNIX timestamp (nanoseconds) when the order denied event occurred.
+
+        """
+        Condition.not_none(instrument_id, "instrument_id")
+
+        # Generate event
+        cdef OrderDenied denied = OrderDenied(
+            trader_id=self.trader_id,
+            strategy_id=strategy_id,
+            instrument_id=instrument_id,
+            client_order_id=client_order_id,
+            reason=reason,
+            event_id=UUID4(),
+            ts_init=self._clock.timestamp_ns(),
+        )
+        denied._mem.ts_event = ts_event
+
+        self._send_order_event(denied)
+
     cpdef void generate_order_submitted(
         self,
         StrategyId strategy_id,
@@ -323,7 +394,7 @@ cdef class ExecutionClient(Component):
         client_order_id : ClientOrderId
             The client order ID.
         ts_event : uint64_t
-            The UNIX timestamp (nanoseconds) when the order submitted event occurred.
+            UNIX timestamp (nanoseconds) when the order submitted event occurred.
 
         """
         # Generate event
@@ -347,6 +418,7 @@ cdef class ExecutionClient(Component):
         ClientOrderId client_order_id,
         str reason,
         uint64_t ts_event,
+        bint due_post_only=False,
     ):
         """
         Generate an `OrderRejected` event and send it to the `ExecutionEngine`.
@@ -362,7 +434,9 @@ cdef class ExecutionClient(Component):
         reason : datetime
             The order rejected reason.
         ts_event : uint64_t
-            The UNIX timestamp (nanoseconds) when the order rejected event occurred.
+            UNIX timestamp (nanoseconds) when the order rejected event occurred.
+        due_post_only : bool, default False
+            If the order was rejected because it was post-only and would execute immediately as a taker.
 
         """
         # Generate event
@@ -376,6 +450,7 @@ cdef class ExecutionClient(Component):
             event_id=UUID4(),
             ts_event=ts_event,
             ts_init=self._clock.timestamp_ns(),
+            due_post_only=due_post_only,
         )
 
         self._send_order_event(rejected)
@@ -402,7 +477,7 @@ cdef class ExecutionClient(Component):
         venue_order_id : VenueOrderId
             The venue order ID (assigned by the venue).
         ts_event : uint64_t
-            The UNIX timestamp (nanoseconds) when the order accepted event occurred.
+            UNIX timestamp (nanoseconds) when the order accepted event occurred.
 
         """
         # Generate event
@@ -445,7 +520,7 @@ cdef class ExecutionClient(Component):
         reason : str
             The order update rejected reason.
         ts_event : uint64_t
-            The UNIX timestamp (nanoseconds) when the order update rejection event occurred.
+            UNIX timestamp (nanoseconds) when the order update rejection event occurred.
 
         """
         # Generate event
@@ -489,7 +564,7 @@ cdef class ExecutionClient(Component):
         reason : str
             The order cancel rejected reason.
         ts_event : uint64_t
-            The UNIX timestamp (nanoseconds) when the order cancel rejected event occurred.
+            UNIX timestamp (nanoseconds) when the order cancel rejected event occurred.
 
         """
         # Generate event
@@ -537,10 +612,10 @@ cdef class ExecutionClient(Component):
             The orders current quantity.
         price : Price
             The orders current price.
-        trigger_price : Price, optional with no default so ``None`` must be passed explicitly
+        trigger_price : Price or ``None``
             The orders current trigger price.
         ts_event : uint64_t
-            The UNIX timestamp (nanoseconds) when the order update event occurred.
+            UNIX timestamp (nanoseconds) when the order update event occurred.
         venue_order_id_modified : bool
             If the ID was modified for this event.
 
@@ -596,7 +671,7 @@ cdef class ExecutionClient(Component):
         venue_order_id : VenueOrderId
             The venue order ID (assigned by the venue).
         ts_event : uint64_t
-            The UNIX timestamp (nanoseconds) when order canceled event occurred.
+            UNIX timestamp (nanoseconds) when order canceled event occurred.
 
         """
         # Generate event
@@ -636,7 +711,7 @@ cdef class ExecutionClient(Component):
         venue_order_id : VenueOrderId
             The venue order ID (assigned by the venue).
         ts_event : uint64_t
-            The UNIX timestamp (nanoseconds) when the order triggered event occurred.
+            UNIX timestamp (nanoseconds) when the order triggered event occurred.
 
         """
         # Generate event
@@ -676,7 +751,7 @@ cdef class ExecutionClient(Component):
         venue_order_id : VenueOrderId
             The venue order ID (assigned by the venue).
         ts_event : uint64_t
-            The UNIX timestamp (nanoseconds) when the order expired event occurred.
+            UNIX timestamp (nanoseconds) when the order expired event occurred.
 
         """
         # Generate event
@@ -700,7 +775,7 @@ cdef class ExecutionClient(Component):
         InstrumentId instrument_id,
         ClientOrderId client_order_id,
         VenueOrderId venue_order_id,
-        PositionId venue_position_id: Optional[PositionId],
+        PositionId venue_position_id: PositionId | None,
         TradeId trade_id,
         OrderSide order_side,
         OrderType order_type,
@@ -710,6 +785,7 @@ cdef class ExecutionClient(Component):
         Money commission,
         LiquiditySide liquidity_side,
         uint64_t ts_event,
+        dict info = None,
     ):
         """
         Generate an `OrderFilled` event and send it to the `ExecutionEngine`.
@@ -726,7 +802,7 @@ cdef class ExecutionClient(Component):
             The venue order ID (assigned by the venue).
         trade_id : TradeId
             The trade ID.
-        venue_position_id : PositionId, optional with no default so ``None`` must be passed explicitly
+        venue_position_id : PositionId or ``None``
             The venue position ID associated with the order. If the trading
             venue has assigned a position ID / ticket then pass that here,
             otherwise pass ``None`` and the execution engine OMS will handle
@@ -746,7 +822,9 @@ cdef class ExecutionClient(Component):
         liquidity_side : LiquiditySide {``NO_LIQUIDITY_SIDE``, ``MAKER``, ``TAKER``}
             The execution liquidity side.
         ts_event : uint64_t
-            The UNIX timestamp (nanoseconds) when the order filled event occurred.
+            UNIX timestamp (nanoseconds) when the order filled event occurred.
+        info : dict[str, object], optional
+            The additional fill information.
 
         """
         Condition.not_none(instrument_id, "instrument_id")
@@ -771,38 +849,45 @@ cdef class ExecutionClient(Component):
             event_id=UUID4(),
             ts_event=ts_event,
             ts_init=self._clock.timestamp_ns(),
+            info=info,
         )
 
         self._send_order_event(fill)
 
 # --------------------------------------------------------------------------------------------------
 
-    cpdef void _send_account_state(self, AccountState account_state):
+    cpdef void _send_account_state(self, account_state: AccountState):
         self._msgbus.send(
             endpoint=f"Portfolio.update_account",
             msg=account_state,
         )
 
-    cpdef void _send_order_event(self, OrderEvent event):
+    cpdef void _send_order_event(self, event: OrderEvent):
         self._msgbus.send(
             endpoint="ExecEngine.process",
             msg=event,
         )
 
-    cpdef void _send_mass_status_report(self, ExecutionMassStatus report):
+    cpdef void _send_mass_status_report(self, report: ExecutionMassStatus):
         self._msgbus.send(
-            endpoint="ExecEngine.reconcile_mass_status",
+            endpoint="ExecEngine.reconcile_execution_mass_status",
             msg=report,
         )
 
-    cpdef void _send_order_status_report(self, OrderStatusReport report):
+    cpdef void _send_order_status_report(self, report: OrderStatusReport):
         self._msgbus.send(
-            endpoint="ExecEngine.reconcile_report",
+            endpoint="ExecEngine.reconcile_execution_report",
             msg=report,
         )
 
-    cpdef void _send_trade_report(self, TradeReport report):
+    cpdef void _send_fill_report(self, report: FillReport):
         self._msgbus.send(
-            endpoint="ExecEngine.reconcile_report",
+            endpoint="ExecEngine.reconcile_execution_report",
+            msg=report,
+        )
+
+    cpdef void _send_position_status_report(self, report: PositionStatusReport):
+        self._msgbus.send(
+            endpoint="ExecEngine.reconcile_execution_report",
             msg=report,
         )

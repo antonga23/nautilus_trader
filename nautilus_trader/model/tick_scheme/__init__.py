@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -12,11 +12,29 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
+"""
+Defines a scheme for modeling the tick space for various instruments.
+"""
 
-"""Defines a scheme for modeling the tick space for various instruments."""
+from nautilus_trader.model.tick_scheme.base import get_tick_scheme
+from nautilus_trader.model.tick_scheme.base import register_tick_scheme
+from nautilus_trader.model.tick_scheme.implementations.fixed import FOREX_3DECIMAL_TICK_SCHEME
+from nautilus_trader.model.tick_scheme.implementations.fixed import FOREX_5DECIMAL_TICK_SCHEME
+from nautilus_trader.model.tick_scheme.implementations.fixed import FixedTickScheme
+from nautilus_trader.model.tick_scheme.implementations.tiered import TOPIX100_TICK_SCHEME
+from nautilus_trader.model.tick_scheme.implementations.tiered import TieredTickScheme
 
-# Required to register tick schemes
-from nautilus_trader.model.tick_scheme.base import get_tick_scheme  # noqa: F401
-from nautilus_trader.model.tick_scheme.base import list_tick_schemes  # noqa: F401
-from nautilus_trader.model.tick_scheme.base import register_tick_scheme  # noqa: F401
-from nautilus_trader.model.tick_scheme.implementations import *  # noqa: F403
+
+register_tick_scheme(TOPIX100_TICK_SCHEME)
+register_tick_scheme(FOREX_3DECIMAL_TICK_SCHEME)
+register_tick_scheme(FOREX_5DECIMAL_TICK_SCHEME)
+
+__all__ = [
+    "FOREX_3DECIMAL_TICK_SCHEME",
+    "FOREX_5DECIMAL_TICK_SCHEME",
+    "TOPIX100_TICK_SCHEME",
+    "FixedTickScheme",
+    "TieredTickScheme",
+    "get_tick_scheme",
+    "register_tick_scheme",
+]

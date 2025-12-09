@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -12,48 +12,55 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
-
 """
-The `LiveExecutionClient` class is responsible for interfacing with a particular
-API which may be presented directly by an exchange, or broker intermediary.
+The `LiveExecutionClient` class is responsible for interfacing with a particular API
+which may be presented directly by a venue, or through a broker intermediary.
 """
 
 import asyncio
 import functools
 from asyncio import Task
+from collections.abc import Callable
 from collections.abc import Coroutine
 from datetime import timedelta
-from typing import Any, Callable, Optional
+from weakref import WeakSet
 
 import pandas as pd
 
 from nautilus_trader.cache.cache import Cache
-from nautilus_trader.common.clock import LiveClock
+from nautilus_trader.common.component import LiveClock
+from nautilus_trader.common.component import MessageBus
+from nautilus_trader.common.config import NautilusConfig
 from nautilus_trader.common.enums import LogColor
-from nautilus_trader.common.logging import Logger
+from nautilus_trader.common.enums import LogLevel
 from nautilus_trader.common.providers import InstrumentProvider
 from nautilus_trader.core.correctness import PyCondition
+from nautilus_trader.core.nautilus_pyo3 import MILLISECONDS_IN_SECOND
 from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.execution.client import ExecutionClient
+from nautilus_trader.execution.messages import BatchCancelOrders
 from nautilus_trader.execution.messages import CancelAllOrders
 from nautilus_trader.execution.messages import CancelOrder
+from nautilus_trader.execution.messages import GenerateFillReports
+from nautilus_trader.execution.messages import GenerateOrderStatusReport
+from nautilus_trader.execution.messages import GenerateOrderStatusReports
+from nautilus_trader.execution.messages import GeneratePositionStatusReports
 from nautilus_trader.execution.messages import ModifyOrder
+from nautilus_trader.execution.messages import QueryAccount
 from nautilus_trader.execution.messages import QueryOrder
 from nautilus_trader.execution.messages import SubmitOrder
 from nautilus_trader.execution.messages import SubmitOrderList
 from nautilus_trader.execution.reports import ExecutionMassStatus
+from nautilus_trader.execution.reports import FillReport
 from nautilus_trader.execution.reports import OrderStatusReport
 from nautilus_trader.execution.reports import PositionStatusReport
-from nautilus_trader.execution.reports import TradeReport
-from nautilus_trader.model.currency import Currency
+from nautilus_trader.live.cancellation import cancel_tasks_with_timeout
 from nautilus_trader.model.enums import AccountType
 from nautilus_trader.model.enums import OmsType
+from nautilus_trader.model.enums import order_side_to_str
 from nautilus_trader.model.identifiers import ClientId
-from nautilus_trader.model.identifiers import ClientOrderId
-from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import Venue
-from nautilus_trader.model.identifiers import VenueOrderId
-from nautilus_trader.msgbus.bus import MessageBus
+from nautilus_trader.model.objects import Currency
 
 
 class LiveExecutionClient(ExecutionClient):
@@ -66,7 +73,7 @@ class LiveExecutionClient(ExecutionClient):
         The event loop for the client.
     client_id : ClientId
         The client ID.
-    venue : Venue, optional with no default so ``None`` must be passed explicitly
+    venue : Venue or ``None``
         The client venue. If multi-venue then can be ``None``.
     instrument_provider : InstrumentProvider
         The instrument provider for the client.
@@ -80,9 +87,7 @@ class LiveExecutionClient(ExecutionClient):
         The cache for the client.
     clock : LiveClock
         The clock for the client.
-    logger : Logger
-        The logger for the client.
-    config : dict[str, object], optional
+    config : NautilusConfig, optional
         The configuration for the instance.
 
     Raises
@@ -93,22 +98,22 @@ class LiveExecutionClient(ExecutionClient):
     Warnings
     --------
     This class should not be used directly, but through a concrete subclass.
+
     """
 
     def __init__(
         self,
         loop: asyncio.AbstractEventLoop,
         client_id: ClientId,
-        venue: Optional[Venue],
+        venue: Venue | None,
         oms_type: OmsType,
         account_type: AccountType,
-        base_currency: Optional[Currency],
+        base_currency: Currency | None,
         instrument_provider: InstrumentProvider,
         msgbus: MessageBus,
         cache: Cache,
         clock: LiveClock,
-        logger: Logger,
-        config: Optional[dict[str, Any]] = None,
+        config: NautilusConfig | None = None,
     ) -> None:
         PyCondition.type(instrument_provider, InstrumentProvider, "instrument_provider")
 
@@ -121,11 +126,11 @@ class LiveExecutionClient(ExecutionClient):
             msgbus=msgbus,
             cache=cache,
             clock=clock,
-            logger=logger,
             config=config,
         )
 
         self._loop = loop
+        self._tasks: WeakSet[asyncio.Task] = WeakSet()
         self._instrument_provider = instrument_provider
 
         self.reconciliation_active = False
@@ -152,13 +157,14 @@ class LiveExecutionClient(ExecutionClient):
     def create_task(
         self,
         coro: Coroutine,
-        log_msg: Optional[str] = None,
-        actions: Optional[Callable] = None,
-        success: Optional[str] = None,
+        log_msg: str | None = None,
+        actions: Callable | None = None,
+        success_msg: str | None = None,
+        success_color: LogColor = LogColor.NORMAL,
     ) -> asyncio.Task:
         """
-        Run the given coroutine with error handling and optional callback
-        actions when done.
+        Run the given coroutine with error handling and optional callback actions when
+        done.
 
         Parameters
         ----------
@@ -168,50 +174,59 @@ class LiveExecutionClient(ExecutionClient):
             The log message for the task.
         actions : Callable, optional
             The actions callback to run when the coroutine is done.
-        success : str, optional
-            The log message to write on actions success.
+        success_msg : str, optional
+            The log message to write on `actions` success.
+        success_color : str, default ``NORMAL``
+            The log message color for `actions` success.
 
         Returns
         -------
         asyncio.Task
 
         """
-        log_msg = log_msg or coro.__name__
-        self._log.debug(f"Creating task {log_msg}.")
+        task_name = log_msg or getattr(coro, "__name__", None) or coro.__class__.__name__
+        self._log.debug(f"Creating task '{task_name}'")
         task = self._loop.create_task(
             coro,
-            name=coro.__name__,
+            name=task_name,
         )
         task.add_done_callback(
             functools.partial(
                 self._on_task_completed,
                 actions,
-                success,
+                success_msg,
+                success_color,
             ),
         )
+        self._tasks.add(task)
         return task
 
     def _on_task_completed(
         self,
-        actions: Optional[Callable],
-        success: Optional[str],
+        actions: Callable | None,
+        success_msg: str | None,
+        success_color: LogColor,
         task: Task,
     ) -> None:
-        if task.exception():
-            self._log.error(
-                f"Error on `{task.get_name()}`: " f"{task.exception()!r}",
-            )
+        try:
+            e: BaseException | None = task.exception()
+        except asyncio.CancelledError:
+            self._log.warning(f"Task '{task.get_name()}' was cancelled")
+            return
+
+        if e:
+            self._log.exception(f"Error on '{task.get_name()}'", e)
         else:
             if actions:
                 try:
                     actions()
                 except Exception as e:
-                    self._log.error(
-                        f"Failed triggering action {actions.__name__} on `{task.get_name()}`: "
-                        f"{e!r}",
+                    self._log.exception(
+                        f"Failed triggering action {actions.__name__} on '{task.get_name()}'",
+                        e,
                     )
-            if success:
-                self._log.info(success, LogColor.GREEN)
+            if success_msg:
+                self._log.info(success_msg, success_color)
 
     def connect(self) -> None:
         """
@@ -221,7 +236,8 @@ class LiveExecutionClient(ExecutionClient):
         self.create_task(
             self._connect(),
             actions=lambda: self._set_connected(True),
-            success="Connected",
+            success_msg="Connected",
+            success_color=LogColor.GREEN,
         )
 
     def disconnect(self) -> None:
@@ -229,43 +245,88 @@ class LiveExecutionClient(ExecutionClient):
         Disconnect the client.
         """
         self._log.info("Disconnecting...")
-        self.create_task(
-            self._disconnect(),
-            actions=lambda: self._set_connected(False),
-            success="Disconnected",
-        )
+
+        async def _disconnect_with_cleanup():
+            await self._disconnect()
+            await self.cancel_pending_tasks()
+            self._set_connected(False)
+            self._log.info("Disconnected", LogColor.GREEN)
+
+        self._loop.create_task(_disconnect_with_cleanup())
+
+    async def cancel_pending_tasks(self, timeout_secs: float = 5.0) -> None:
+        """
+        Cancel all pending tasks and await their cancellation.
+
+        Parameters
+        ----------
+        timeout_secs : float, default 5.0
+            The timeout in seconds to wait for tasks to cancel.
+
+        """
+        await cancel_tasks_with_timeout(self._tasks, self._log, timeout_secs)
 
     def submit_order(self, command: SubmitOrder) -> None:
+        self._log.info(f"Submit {command.order}", LogColor.BLUE)
         self.create_task(
             self._submit_order(command),
             log_msg=f"submit_order: {command}",
         )
 
     def submit_order_list(self, command: SubmitOrderList) -> None:
+        self._log.info(f"Submit {command.order_list}", LogColor.BLUE)
         self.create_task(
             self._submit_order_list(command),
             log_msg=f"submit_order_list: {command}",
         )
 
     def modify_order(self, command: ModifyOrder) -> None:
+        venue_order_id_str = (
+            " " + repr(command.venue_order_id) if command.venue_order_id is not None else ""
+        )
+        self._log.info(f"Modify {command.client_order_id!r}{venue_order_id_str}", LogColor.BLUE)
         self.create_task(
             self._modify_order(command),
             log_msg=f"modify_order: {command}",
         )
 
     def cancel_order(self, command: CancelOrder) -> None:
+        venue_order_id_str = (
+            " " + repr(command.venue_order_id) if command.venue_order_id is not None else ""
+        )
+        self._log.info(f"Cancel {command.client_order_id!r}{venue_order_id_str}", LogColor.BLUE)
         self.create_task(
             self._cancel_order(command),
             log_msg=f"cancel_order: {command}",
         )
 
     def cancel_all_orders(self, command: CancelAllOrders) -> None:
+        side_str = f" {order_side_to_str(command.order_side)} " if command.order_side else " "
+        self._log.info(f"Cancel all{side_str}orders", LogColor.BLUE)
         self.create_task(
             self._cancel_all_orders(command),
             log_msg=f"cancel_all_orders: {command}",
         )
 
+    def batch_cancel_orders(self, command: BatchCancelOrders) -> None:
+        self._log.info(
+            f"Batch cancel orders {[repr(c.client_order_id) for c in command.cancels]}",
+            LogColor.BLUE,
+        )
+        self.create_task(
+            self._batch_cancel_orders(command),
+            log_msg=f"batch_cancel_orders: {command}",
+        )
+
+    def query_account(self, command: QueryAccount) -> None:
+        self._log.info(f"Query {command.account_id!r}", LogColor.BLUE)
+        self.create_task(
+            self._query_account(command),
+            log_msg=f"query_account: {command}",
+        )
+
     def query_order(self, command: QueryOrder) -> None:
+        self._log.info(f"Query {command.client_order_id!r}", LogColor.BLUE)
         self.create_task(
             self._query_order(command),
             log_msg=f"query_order: {command}",
@@ -273,10 +334,8 @@ class LiveExecutionClient(ExecutionClient):
 
     async def generate_order_status_report(
         self,
-        instrument_id: InstrumentId,
-        client_order_id: Optional[ClientOrderId] = None,
-        venue_order_id: Optional[VenueOrderId] = None,
-    ) -> Optional[OrderStatusReport]:
+        command: GenerateOrderStatusReport,
+    ) -> OrderStatusReport | None:
         """
         Generate an `OrderStatusReport` for the given order identifier parameter(s).
 
@@ -284,12 +343,8 @@ class LiveExecutionClient(ExecutionClient):
 
         Parameters
         ----------
-        instrument_id : InstrumentId
-            The instrument ID for the report.
-        client_order_id : ClientOrderId, optional
-            The client order ID for the report.
-        venue_order_id : VenueOrderId, optional
-            The venue order ID for the report.
+        command : GenerateOrderStatusReport
+            The command to generate the report.
 
         Returns
         -------
@@ -301,14 +356,13 @@ class LiveExecutionClient(ExecutionClient):
             If both the `client_order_id` and `venue_order_id` are ``None``.
 
         """
-        raise NotImplementedError("method must be implemented in the subclass")  # pragma: no cover
+        raise NotImplementedError(
+            "method `generate_order_status_report` must be implemented in the subclass",
+        )  # pragma: no cover
 
     async def generate_order_status_reports(
         self,
-        instrument_id: Optional[InstrumentId] = None,
-        start: Optional[pd.Timestamp] = None,
-        end: Optional[pd.Timestamp] = None,
-        open_only: bool = False,
+        command: GenerateOrderStatusReports,
     ) -> list[OrderStatusReport]:
         """
         Generate a list of `OrderStatusReport`s with optional query filters.
@@ -317,57 +371,44 @@ class LiveExecutionClient(ExecutionClient):
 
         Parameters
         ----------
-        instrument_id : InstrumentId, optional
-            The instrument ID query filter.
-        start : pd.Timestamp, optional
-            The start datetime query filter.
-        end : pd.Timestamp, optional
-            The end datetime query filter.
-        open_only : bool, default False
-            If the query is for open orders only.
+        command : GenerateOrderStatusReports
+            The command for generating the reports.
 
         Returns
         -------
         list[OrderStatusReport]
 
         """
-        raise NotImplementedError("method must be implemented in the subclass")  # pragma: no cover
+        raise NotImplementedError(
+            "method `generate_order_status_reports` must be implemented in the subclass",
+        )  # pragma: no cover
 
-    async def generate_trade_reports(
+    async def generate_fill_reports(
         self,
-        instrument_id: Optional[InstrumentId] = None,
-        venue_order_id: Optional[VenueOrderId] = None,
-        start: Optional[pd.Timestamp] = None,
-        end: Optional[pd.Timestamp] = None,
-    ) -> list[TradeReport]:
+        command: GenerateFillReports,
+    ) -> list[FillReport]:
         """
-        Generate a list of `TradeReport`s with optional query filters.
+        Generate a list of `FillReport`s with optional query filters.
 
         The returned list may be empty if no trades match the given parameters.
 
         Parameters
         ----------
-        instrument_id : InstrumentId, optional
-            The instrument ID query filter.
-        venue_order_id : VenueOrderId, optional
-            The venue order ID (assigned by the venue) query filter.
-        start : pd.Timestamp, optional
-            The start datetime query filter.
-        end : pd.Timestamp, optional
-            The end datetime query filter.
+        command : GenerateFillReports
+            The command for generating the reports.
 
         Returns
         -------
-        list[TradeReport]
+        list[FillReport]
 
         """
-        raise NotImplementedError("method must be implemented in the subclass")  # pragma: no cover
+        raise NotImplementedError(
+            "method `generate_fill_reports` must be implemented in the subclass",
+        )  # pragma: no cover
 
     async def generate_position_status_reports(
         self,
-        instrument_id: Optional[InstrumentId] = None,
-        start: Optional[pd.Timestamp] = None,
-        end: Optional[pd.Timestamp] = None,
+        command: GeneratePositionStatusReports,
     ) -> list[PositionStatusReport]:
         """
         Generate a list of `PositionStatusReport`s with optional query filters.
@@ -376,24 +417,22 @@ class LiveExecutionClient(ExecutionClient):
 
         Parameters
         ----------
-        instrument_id : InstrumentId, optional
-            The instrument ID query filter.
-        start : pd.Timestamp, optional
-            The start datetime query filter.
-        end : pd.Timestamp, optional
-            The end datetime query filter.
+        command : GeneratePositionStatusReports
+            The command for generating the position status reports.
 
         Returns
         -------
         list[PositionStatusReport]
 
         """
-        raise NotImplementedError("method must be implemented in the subclass")  # pragma: no cover
+        raise NotImplementedError(
+            "method `generate_position_status_reports` must be implemented in the subclass",
+        )  # pragma: no cover
 
     async def generate_mass_status(
         self,
-        lookback_mins: Optional[int] = None,
-    ) -> ExecutionMassStatus:
+        lookback_mins: int | None = None,
+    ) -> ExecutionMassStatus | None:
         """
         Generate an `ExecutionMassStatus` report.
 
@@ -404,10 +443,10 @@ class LiveExecutionClient(ExecutionClient):
 
         Returns
         -------
-        ExecutionMassStatus
+        ExecutionMassStatus or ``None``
 
         """
-        self._log.info(f"Generating ExecutionMassStatus for {self.id}...")
+        self._log.info("Generating ExecutionMassStatus...")
 
         self.reconciliation_active = True
 
@@ -419,19 +458,43 @@ class LiveExecutionClient(ExecutionClient):
             ts_init=self._clock.timestamp_ns(),
         )
 
-        since: Optional[pd.Timestamp] = None
+        since: pd.Timestamp | None = None
         if lookback_mins is not None:
             since = self._clock.utc_now() - timedelta(minutes=lookback_mins)
 
+        order_status_command = GenerateOrderStatusReports(
+            instrument_id=None,
+            start=since,
+            end=None,
+            open_only=False,
+            command_id=UUID4(),
+            ts_init=self._clock.timestamp_ns(),
+        )
+        fill_reports_command = GenerateFillReports(
+            instrument_id=None,
+            venue_order_id=None,
+            start=since,
+            end=None,
+            command_id=UUID4(),
+            ts_init=self._clock.timestamp_ns(),
+        )
+        position_status_command = GeneratePositionStatusReports(
+            instrument_id=None,
+            start=since,
+            end=None,
+            command_id=UUID4(),
+            ts_init=self._clock.timestamp_ns(),
+        )
+
         try:
             reports = await asyncio.gather(
-                self.generate_order_status_reports(start=since),
-                self.generate_trade_reports(start=since),
-                self.generate_position_status_reports(start=since),
+                self.generate_order_status_reports(order_status_command),
+                self.generate_fill_reports(fill_reports_command),
+                self.generate_position_status_reports(position_status_command),
             )
 
             mass_status.add_order_reports(reports=reports[0])
-            mass_status.add_trade_reports(reports=reports[1])
+            mass_status.add_fill_reports(reports=reports[1])
             mass_status.add_position_reports(reports=reports[2])
 
             self.reconciliation_active = False
@@ -439,21 +502,78 @@ class LiveExecutionClient(ExecutionClient):
             return mass_status
         except Exception as e:
             self._log.exception("Cannot reconcile execution state", e)
+        return None
 
     async def _query_order(self, command: QueryOrder) -> None:
-        self._log.debug(f"Synchronizing order status {command}.")
+        self._log.debug(f"Synchronizing order status {command}")
 
-        report: OrderStatusReport = await self.generate_order_status_report(
+        command = GenerateOrderStatusReport(
             instrument_id=command.instrument_id,
             client_order_id=command.client_order_id,
             venue_order_id=command.venue_order_id,
+            command_id=UUID4(),
+            ts_init=self._clock.timestamp_ns(),
         )
+        report: OrderStatusReport | None = await self.generate_order_status_report(command)
 
         if report is None:
-            self._log.warning("Did not received `OrderStatusReport` from request.")
+            self._log.warning("Did not receive `OrderStatusReport` from request")
             return
 
         self._send_order_status_report(report)
+
+    async def _await_account_registered(
+        self,
+        timeout_secs: float = 30.0,
+        log_registered: bool = True,
+    ) -> None:
+        # This method polls the cache to ensure the account state event has been
+        # processed and the account is available. This prevents race conditions
+        # during startup where strategies or portfolio calculations may try to
+        # access the account before it's registered.
+
+        if not self.account_id:
+            self._log.warning("Cannot await account registration: account_id not set")
+            return
+
+        # Check if account already registered first
+        if self._cache.account(self.account_id):
+            if log_registered:
+                self._log_account_registered()
+            return
+
+        interval_ms = 10  # Check every 10ms
+        interval_secs = interval_ms / MILLISECONDS_IN_SECOND
+        max_attempts = int((timeout_secs * MILLISECONDS_IN_SECOND) / interval_ms)
+
+        for _ in range(1, max_attempts + 1):
+            if self._cache.account(self.account_id):
+                if log_registered:
+                    self._log_account_registered()
+                return
+            await asyncio.sleep(interval_secs)
+
+        raise RuntimeError(
+            f"Account {self.account_id} not registered in cache after {timeout_secs}s timeout",
+        )
+
+    def _log_account_registered(self) -> None:
+        self._log.info(f"Account {self.account_id} registered in cache", LogColor.GREEN)
+
+    def _log_report_receipt(
+        self,
+        count: int,
+        report_type: str,
+        log_level: LogLevel,
+        verb: str = "Received",
+    ) -> None:
+        plural = "" if count == 1 else "s"
+        receipt_log = f"{verb} {count} {report_type}{plural}"
+
+        if log_level == LogLevel.INFO:
+            self._log.info(receipt_log)
+        else:
+            self._log.debug(receipt_log)
 
     ############################################################################
     # Coroutines to implement
@@ -491,4 +611,9 @@ class LiveExecutionClient(ExecutionClient):
     async def _cancel_all_orders(self, command: CancelAllOrders) -> None:
         raise NotImplementedError(  # pragma: no cover
             "implement the `_cancel_all_orders` coroutine",  # pragma: no cover
+        )
+
+    async def _batch_cancel_orders(self, command: BatchCancelOrders) -> None:
+        raise NotImplementedError(  # pragma: no cover
+            "implement the `_batch_cancel_orders` coroutine",  # pragma: no cover
         )

@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -16,10 +16,11 @@
 from libc.stdint cimport uint8_t
 from libc.stdint cimport uint64_t
 
-from nautilus_trader.model.currency cimport Currency
-from nautilus_trader.model.enums_c cimport OrderSide
-from nautilus_trader.model.enums_c cimport PositionSide
+from nautilus_trader.core.rust.model cimport InstrumentClass
+from nautilus_trader.core.rust.model cimport OrderSide
+from nautilus_trader.core.rust.model cimport PositionSide
 from nautilus_trader.model.events.order cimport OrderFilled
+from nautilus_trader.model.events.position cimport PositionAdjusted
 from nautilus_trader.model.identifiers cimport AccountId
 from nautilus_trader.model.identifiers cimport ClientOrderId
 from nautilus_trader.model.identifiers cimport InstrumentId
@@ -27,6 +28,7 @@ from nautilus_trader.model.identifiers cimport PositionId
 from nautilus_trader.model.identifiers cimport StrategyId
 from nautilus_trader.model.identifiers cimport TradeId
 from nautilus_trader.model.identifiers cimport TraderId
+from nautilus_trader.model.objects cimport Currency
 from nautilus_trader.model.objects cimport Money
 from nautilus_trader.model.objects cimport Price
 from nautilus_trader.model.objects cimport Quantity
@@ -34,6 +36,7 @@ from nautilus_trader.model.objects cimport Quantity
 
 cdef class Position:
     cdef list _events
+    cdef list _adjustments
     cdef list _trade_ids
     cdef Quantity _buy_qty
     cdef Quantity _sell_qty
@@ -71,22 +74,26 @@ cdef class Position:
     """The multiplier for the positions instrument.\n\n:returns: `Quantity`"""
     cdef readonly bint is_inverse
     """If the quantity is expressed in quote currency.\n\n:returns: `bool`"""
+    cdef readonly bint is_spot_currency
+    """If the instrument is a spot currency pair.\n\n:returns: `bool`"""
+    cdef readonly InstrumentClass instrument_class
+    """The position instrument class.\n\n:returns: `InstrumentClass`"""
     cdef readonly Currency quote_currency
     """The position quote currency.\n\n:returns: `Currency`"""
     cdef readonly Currency base_currency
     """The position base currency (if applicable).\n\n:returns: `Currency` or ``None``"""
-    cdef readonly Currency cost_currency
-    """The position cost currency (for PnL).\n\n:returns: `Currency`"""
+    cdef readonly Currency settlement_currency
+    """The position settlement currency (for PnL).\n\n:returns: `Currency`"""
     cdef readonly uint64_t ts_init
-    """The UNIX timestamp (nanoseconds) when the object was initialized.\n\n:returns: `uint64_t`"""
+    """UNIX timestamp (nanoseconds) when the object was initialized.\n\n:returns: `uint64_t`"""
     cdef readonly uint64_t ts_opened
-    """The UNIX timestamp (nanoseconds) when the position was opened.\n\n:returns: `uint64_t`"""
+    """UNIX timestamp (nanoseconds) when the position was opened.\n\n:returns: `uint64_t`"""
     cdef readonly uint64_t ts_last
-    """The UNIX timestamp (nanoseconds) when the last fill occurred.\n\n:returns: `uint64_t`"""
+    """UNIX timestamp (nanoseconds) when the last event occurred.\n\n:returns: `uint64_t`"""
     cdef readonly uint64_t ts_closed
-    """The UNIX timestamp (nanoseconds) when the position was closed.\n\n:returns: `uint64_t`"""
+    """UNIX timestamp (nanoseconds) when the position was closed (zero unless closed).\n\n:returns: `uint64_t`"""
     cdef readonly uint64_t duration_ns
-    """The total open duration (nanoseconds).\n\n:returns: `uint64_t`"""
+    """The total open duration in nanoseconds (zero unless closed).\n\n:returns: `uint64_t`"""
     cdef readonly double avg_px_open
     """The average open price.\n\n:returns: `double`"""
     cdef readonly double avg_px_close
@@ -103,8 +110,10 @@ cdef class Position:
     cdef list venue_order_ids_c(self)
     cdef list trade_ids_c(self)
     cdef list events_c(self)
+    cdef list adjustments_c(self)
     cdef OrderFilled last_event_c(self)
     cdef TradeId last_trade_id_c(self)
+    cdef bint has_trade_id_c(self, TradeId trade_id)
     cdef int event_count_c(self)
     cdef bint is_long_c(self)
     cdef bint is_short_c(self)
@@ -113,17 +122,20 @@ cdef class Position:
 
     @staticmethod
     cdef PositionSide side_from_order_side_c(OrderSide side)
+    cpdef OrderSide closing_order_side(self)
     cpdef signed_decimal_qty(self)
     cpdef bint is_opposite_side(self, OrderSide side)
 
     cpdef void apply(self, OrderFilled fill)
+    cpdef void apply_adjustment(self, PositionAdjusted adjustment)
 
-    cpdef Money notional_value(self, Price last)
+    cpdef Money notional_value(self, Price price)
     cpdef Money calculate_pnl(self, double avg_px_open, double avg_px_close, Quantity quantity)
-    cpdef Money unrealized_pnl(self, Price last)
-    cpdef Money total_pnl(self, Price last)
+    cpdef Money unrealized_pnl(self, Price price)
+    cpdef Money total_pnl(self, Price price)
     cpdef list commissions(self)
 
+    cdef void _check_duplicate_trade_id(self, OrderFilled fill)
     cdef void _handle_buy_order_fill(self, OrderFilled fill)
     cdef void _handle_sell_order_fill(self, OrderFilled fill)
     cdef double _calculate_avg_px(self, double avg_px, double qty, double last_px, double last_qty)

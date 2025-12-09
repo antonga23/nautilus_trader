@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -12,7 +12,14 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
+"""
+Defines Binance Spot/Margin specific enums.
 
+References
+----------
+https://binance-docs.github.io/apidocs/spot/en/#public-api-definitions
+
+"""
 from enum import Enum
 from enum import unique
 
@@ -24,18 +31,11 @@ from nautilus_trader.model.enums import order_type_to_str
 from nautilus_trader.model.orders import Order
 
 
-"""
-Defines `Binance` Spot/Margin specific enums.
-
-References
-----------
-https://binance-docs.github.io/apidocs/spot/en/#public-api-definitions
-"""
-
-
 @unique
 class BinanceSpotPermissions(Enum):
-    """Represents `Binance Spot/Margin` trading permissions."""
+    """
+    Represents Binance Spot/Margin trading permissions.
+    """
 
     SPOT = "SPOT"
     MARGIN = "MARGIN"
@@ -48,11 +48,36 @@ class BinanceSpotPermissions(Enum):
     TRD_GRP_007 = "TRD_GRP_007"
     TRD_GRP_008 = "TRD_GRP_008"
     TRD_GRP_009 = "TRD_GRP_009"
+    TRD_GRP_010 = "TRD_GRP_010"
+    TRD_GRP_011 = "TRD_GRP_011"
+    TRD_GRP_012 = "TRD_GRP_012"
+    TRD_GRP_013 = "TRD_GRP_013"
+    TRD_GRP_014 = "TRD_GRP_014"
+    TRD_GRP_015 = "TRD_GRP_015"
+    TRD_GRP_016 = "TRD_GRP_016"
+    TRD_GRP_017 = "TRD_GRP_017"
+    TRD_GRP_018 = "TRD_GRP_018"
+    TRD_GRP_019 = "TRD_GRP_019"
+    TRD_GRP_020 = "TRD_GRP_020"
+    TRD_GRP_021 = "TRD_GRP_021"
+    TRD_GRP_022 = "TRD_GRP_022"
+    TRD_GRP_023 = "TRD_GRP_023"
+    TRD_GRP_024 = "TRD_GRP_024"
+    TRD_GRP_025 = "TRD_GRP_025"
+    TRD_GRP_026 = "TRD_GRP_026"
+    TRD_GRP_027 = "TRD_GRP_027"
+    TRD_GRP_028 = "TRD_GRP_028"
+    TRD_GRP_029 = "TRD_GRP_029"
+    TRD_GRP_030 = "TRD_GRP_030"
+    TRD_GRP_031 = "TRD_GRP_031"
+    TRD_GRP_032 = "TRD_GRP_032"
 
 
 @unique
 class BinanceSpotSymbolStatus(Enum):
-    """Represents a `Binance Spot/Margin` symbol status."""
+    """
+    Represents a Binance Spot/Margin symbol status.
+    """
 
     PRE_TRADING = "PRE_TRADING"
     TRADING = "TRADING"
@@ -65,7 +90,9 @@ class BinanceSpotSymbolStatus(Enum):
 
 @unique
 class BinanceSpotEventType(Enum):
-    """Represents a `Binance Spot/Margin` event type."""
+    """
+    Represents a Binance Spot/Margin event type.
+    """
 
     outboundAccountPosition = "outboundAccountPosition"
     balanceUpdate = "balanceUpdate"

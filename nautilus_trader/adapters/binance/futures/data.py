@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -14,59 +14,61 @@
 # -------------------------------------------------------------------------------------------------
 
 import asyncio
-from typing import Optional, Union
 
 import msgspec
 
-from nautilus_trader.adapters.binance.common.data import BinanceCommonDataClient
 from nautilus_trader.adapters.binance.common.enums import BinanceAccountType
+from nautilus_trader.adapters.binance.config import BinanceDataClientConfig
+from nautilus_trader.adapters.binance.data import BinanceCommonDataClient
 from nautilus_trader.adapters.binance.futures.enums import BinanceFuturesEnumParser
 from nautilus_trader.adapters.binance.futures.http.market import BinanceFuturesMarketHttpAPI
+from nautilus_trader.adapters.binance.futures.schemas.market import BinanceFuturesMarkPriceAllMsg
+from nautilus_trader.adapters.binance.futures.schemas.market import BinanceFuturesMarkPriceData
 from nautilus_trader.adapters.binance.futures.schemas.market import BinanceFuturesMarkPriceMsg
 from nautilus_trader.adapters.binance.futures.schemas.market import BinanceFuturesTradeMsg
 from nautilus_trader.adapters.binance.futures.types import BinanceFuturesMarkPriceUpdate
 from nautilus_trader.adapters.binance.http.client import BinanceHttpClient
 from nautilus_trader.cache.cache import Cache
-from nautilus_trader.common.clock import LiveClock
-from nautilus_trader.common.logging import Logger
+from nautilus_trader.common.component import LiveClock
+from nautilus_trader.common.component import MessageBus
 from nautilus_trader.common.providers import InstrumentProvider
 from nautilus_trader.core.correctness import PyCondition
+from nautilus_trader.model.data import CustomData
 from nautilus_trader.model.data import DataType
-from nautilus_trader.model.data import GenericData
+from nautilus_trader.model.data import MarkPriceUpdate
 from nautilus_trader.model.data import OrderBookDelta
 from nautilus_trader.model.data import OrderBookDeltas
 from nautilus_trader.model.data import TradeTick
 from nautilus_trader.model.identifiers import InstrumentId
-from nautilus_trader.msgbus.bus import MessageBus
 
 
 class BinanceFuturesDataClient(BinanceCommonDataClient):
     """
-    Provides a data client for the `Binance Futures` exchange.
+    Provides a data client for the Binance Futures exchange.
 
     Parameters
     ----------
     loop : asyncio.AbstractEventLoop
         The event loop for the client.
     client : BinanceHttpClient
-        The binance HTTP client.
+        The Binance HTTP client.
     msgbus : MessageBus
         The message bus for the client.
     cache : Cache
         The cache for the client.
     clock : LiveClock
         The clock for the client.
-    logger : Logger
-        The logger for the client.
     instrument_provider : InstrumentProvider
         The instrument provider.
     base_url_ws : str
         The base URL for the WebSocket client.
-    account_type : BinanceAccountType
+    config : BinanceDataClientConfig
+        The configuration for the client.
+    account_type : BinanceAccountType, default 'USDT_FUTURES'
         The account type for the client.
-    use_agg_trade_ticks : bool, default False
-        Whether to use aggregated trade tick endpoints instead of raw trade ticks.
-        TradeId of ticks will be the Aggregate tradeId returned by Binance.
+    name : str, optional
+        The custom client ID.
+
     """
 
     def __init__(
@@ -76,15 +78,15 @@ class BinanceFuturesDataClient(BinanceCommonDataClient):
         msgbus: MessageBus,
         cache: Cache,
         clock: LiveClock,
-        logger: Logger,
         instrument_provider: InstrumentProvider,
         base_url_ws: str,
-        account_type: BinanceAccountType = BinanceAccountType.USDT_FUTURE,
-        use_agg_trade_ticks: bool = False,
-    ):
-        PyCondition.true(
+        config: BinanceDataClientConfig,
+        account_type: BinanceAccountType = BinanceAccountType.USDT_FUTURES,
+        name: str | None = None,
+    ) -> None:
+        PyCondition.is_true(
             account_type.is_futures,
-            "account_type was not USDT_FUTURE or COIN_FUTURE",
+            "account_type was not USDT_FUTURES or COIN_FUTURES",
         )
 
         # Futures HTTP API
@@ -102,73 +104,36 @@ class BinanceFuturesDataClient(BinanceCommonDataClient):
             msgbus=msgbus,
             cache=cache,
             clock=clock,
-            logger=logger,
             instrument_provider=instrument_provider,
             account_type=account_type,
             base_url_ws=base_url_ws,
-            use_agg_trade_ticks=use_agg_trade_ticks,
+            name=name,
+            config=config,
         )
 
         # Register additional futures websocket handlers
         self._ws_handlers["@markPrice"] = self._handle_mark_price
+        self._ws_handlers["!markPrice@arr"] = self._handle_mark_price_all
 
         # Websocket msgspec decoders
         self._decoder_futures_trade_msg = msgspec.json.Decoder(BinanceFuturesTradeMsg)
         self._decoder_futures_mark_price_msg = msgspec.json.Decoder(BinanceFuturesMarkPriceMsg)
-
-    # -- SUBSCRIPTIONS ----------------------------------------------------------------------------
-
-    async def _subscribe(self, data_type: DataType) -> None:
-        if data_type.type == BinanceFuturesMarkPriceUpdate:
-            if not self._binance_account_type.is_futures:
-                self._log.error(
-                    f"Cannot subscribe to `BinanceFuturesMarkPriceUpdate` "
-                    f"for {self._binance_account_type.value} account types.",
-                )
-                return
-            instrument_id: Optional[InstrumentId] = data_type.metadata.get("instrument_id")
-            if instrument_id is None:
-                self._log.error(
-                    "Cannot subscribe to `BinanceFuturesMarkPriceUpdate` "
-                    "no instrument ID in `data_type` metadata.",
-                )
-                return
-            self._ws_client.subscribe_mark_price(instrument_id.symbol.value, speed=1000)
-        else:
-            self._log.error(
-                f"Cannot subscribe to {data_type.type} (not implemented).",
-            )
-
-    async def _unsubscribe(self, data_type: DataType) -> None:
-        if data_type.type == BinanceFuturesMarkPriceUpdate:
-            if not self._binance_account_type.is_futures:
-                self._log.error(
-                    "Cannot unsubscribe from `BinanceFuturesMarkPriceUpdate` "
-                    f"for {self._binance_account_type.value} account types.",
-                )
-                return
-            instrument_id: Optional[InstrumentId] = data_type.metadata.get("instrument_id")
-            if instrument_id is None:
-                self._log.error(
-                    "Cannot subscribe to `BinanceFuturesMarkPriceUpdate` no instrument ID in `data_type` metadata.",
-                )
-                return
-        else:
-            self._log.error(
-                f"Cannot unsubscribe from {data_type.type} (not implemented).",
-            )
+        self._decoder_futures_mark_price_all_msg = msgspec.json.Decoder(
+            BinanceFuturesMarkPriceAllMsg,
+        )
 
     # -- WEBSOCKET HANDLERS ---------------------------------------------------------------------------------
 
     def _handle_book_partial_update(self, raw: bytes) -> None:
         msg = self._decoder_order_book_msg.decode(raw)
         instrument_id: InstrumentId = self._get_cached_instrument_id(msg.data.s)
-        book_snapshot: OrderBookDeltas = msg.data.parse_to_order_book_snapshot(
+        book_snapshot: OrderBookDeltas = msg.data.parse_to_order_book_deltas(
             instrument_id=instrument_id,
             ts_init=self._clock.timestamp_ns(),
+            snapshot=True,
         )
         # Check if book buffer active
-        book_buffer: Optional[list[Union[OrderBookDelta, OrderBookDeltas]]] = self._book_buffer.get(
+        book_buffer: list[OrderBookDelta | OrderBookDeltas] | None = self._book_buffer.get(
             instrument_id,
         )
         if book_buffer is not None:
@@ -180,16 +145,19 @@ class BinanceFuturesDataClient(BinanceCommonDataClient):
         # NOTE @trade is an undocumented endpoint for Futures exchanges
         msg = self._decoder_futures_trade_msg.decode(raw)
         instrument_id: InstrumentId = self._get_cached_instrument_id(msg.data.s)
-        trade_tick: TradeTick = msg.data.parse_to_trade_tick(
-            instrument_id=instrument_id,
-            ts_init=self._clock.timestamp_ns(),
-        )
-        self._handle_data(trade_tick)
+        try:
+            trade_tick: TradeTick = msg.data.parse_to_trade_tick(
+                instrument_id=instrument_id,
+                ts_init=self._clock.timestamp_ns(),
+            )
+        except ValueError as e:
+            self._log.debug(f"Error handling trade tick message {raw!r}, {e}")
+        else:
+            self._handle_data(trade_tick)
 
-    def _handle_mark_price(self, raw: bytes) -> None:
-        msg = self._decoder_futures_mark_price_msg.decode(raw)
-        instrument_id: InstrumentId = self._get_cached_instrument_id(msg.data.s)
-        data = msg.data.parse_to_binance_futures_mark_price_update(
+    def _handle_mark_price_data(self, data: BinanceFuturesMarkPriceData) -> None:
+        instrument_id: InstrumentId = self._get_cached_instrument_id(data.s)
+        data = data.parse_to_binance_futures_mark_price_update(
             instrument_id=instrument_id,
             ts_init=self._clock.timestamp_ns(),
         )
@@ -197,5 +165,23 @@ class BinanceFuturesDataClient(BinanceCommonDataClient):
             BinanceFuturesMarkPriceUpdate,
             metadata={"instrument_id": instrument_id},
         )
-        generic = GenericData(data_type=data_type, data=data)
+        generic = CustomData(data_type=data_type, data=data)
+
         self._handle_data(generic)
+        self._handle_data(
+            MarkPriceUpdate(
+                data.instrument_id,
+                data.mark,
+                data.ts_event,
+                data.ts_init,
+            ),
+        )
+
+    def _handle_mark_price(self, raw: bytes) -> None:
+        msg = self._decoder_futures_mark_price_msg.decode(raw)
+        self._handle_mark_price_data(msg.data)
+
+    def _handle_mark_price_all(self, raw: bytes) -> None:
+        msg = self._decoder_futures_mark_price_all_msg.decode(raw)
+        for data in msg.data:
+            self._handle_mark_price_data(data)

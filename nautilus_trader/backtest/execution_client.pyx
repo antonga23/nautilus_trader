@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -14,13 +14,16 @@
 # -------------------------------------------------------------------------------------------------
 
 from nautilus_trader.accounting.factory import AccountFactory
+from nautilus_trader.common.config import NautilusConfig
 
-from nautilus_trader.backtest.exchange cimport SimulatedExchange
+from nautilus_trader.backtest.engine cimport SimulatedExchange
 from nautilus_trader.cache.cache cimport Cache
-from nautilus_trader.common.clock cimport TestClock
-from nautilus_trader.common.logging cimport Logger
+from nautilus_trader.common.component cimport MessageBus
+from nautilus_trader.common.component cimport TestClock
 from nautilus_trader.core.correctness cimport Condition
+from nautilus_trader.core.rust.model cimport AccountType
 from nautilus_trader.execution.client cimport ExecutionClient
+from nautilus_trader.execution.messages cimport BatchCancelOrders
 from nautilus_trader.execution.messages cimport CancelAllOrders
 from nautilus_trader.execution.messages cimport CancelOrder
 from nautilus_trader.execution.messages cimport ModifyOrder
@@ -30,7 +33,6 @@ from nautilus_trader.model.identifiers cimport AccountId
 from nautilus_trader.model.identifiers cimport ClientId
 from nautilus_trader.model.identifiers cimport Venue
 from nautilus_trader.model.orders.base cimport Order
-from nautilus_trader.msgbus.bus cimport MessageBus
 
 
 cdef class BacktestExecClient(ExecutionClient):
@@ -47,12 +49,12 @@ cdef class BacktestExecClient(ExecutionClient):
         The cache for the client.
     clock : TestClock
         The clock for the client.
-    logger : Logger
-        The logger for the client.
     routing : bool
         If multi-venue routing is enabled for the client.
     frozen_account : bool
         If the backtest run account is frozen.
+    allow_cash_borrowing : bool
+        If cash accounts should allow borrowing (negative balances).
     """
 
     def __init__(
@@ -61,10 +63,10 @@ cdef class BacktestExecClient(ExecutionClient):
         MessageBus msgbus not None,
         Cache cache not None,
         TestClock clock not None,
-        Logger logger not None,
         bint routing=False,
         bint frozen_account=False,
-    ):
+        bint allow_cash_borrowing=False,
+    ) -> None:
         super().__init__(
             client_id=ClientId(exchange.id.value),
             venue=Venue(exchange.id.value),
@@ -74,13 +76,15 @@ cdef class BacktestExecClient(ExecutionClient):
             msgbus=msgbus,
             cache=cache,
             clock=clock,
-            logger=logger,
-            config={"routing": True} if routing else None,
         )
 
         self._set_account_id(AccountId(f"{exchange.id.value}-001"))
+
         if not frozen_account:
             AccountFactory.register_calculated_account(exchange.id.value)
+
+        if exchange.account_type == AccountType.CASH and allow_cash_borrowing:
+            AccountFactory.register_cash_borrowing(exchange.id.value)
 
         self._exchange = exchange
         self.is_connected = False
@@ -88,17 +92,17 @@ cdef class BacktestExecClient(ExecutionClient):
     cpdef void _start(self):
         self._log.info(f"Connecting...")
         self.is_connected = True
-        self._log.info(f"Connected.")
+        self._log.info(f"Connected")
 
     cpdef void _stop(self):
         self._log.info(f"Disconnecting...")
         self.is_connected = False
-        self._log.info(f"Disconnected.")
+        self._log.info(f"Disconnected")
 
 # -- COMMAND HANDLERS -----------------------------------------------------------------------------
 
     cpdef void submit_order(self, SubmitOrder command):
-        Condition.true(self.is_connected, "not connected")
+        Condition.is_true(self.is_connected, "not connected")
 
         self.generate_order_submitted(
             strategy_id=command.strategy_id,
@@ -110,7 +114,7 @@ cdef class BacktestExecClient(ExecutionClient):
         self._exchange.send(command)
 
     cpdef void submit_order_list(self, SubmitOrderList command):
-        Condition.true(self.is_connected, "not connected")
+        Condition.is_true(self.is_connected, "not connected")
 
         cdef Order order
         for order in command.order_list.orders:
@@ -124,16 +128,21 @@ cdef class BacktestExecClient(ExecutionClient):
         self._exchange.send(command)
 
     cpdef void modify_order(self, ModifyOrder command):
-        Condition.true(self.is_connected, "not connected")
+        Condition.is_true(self.is_connected, "not connected")
 
         self._exchange.send(command)
 
     cpdef void cancel_order(self, CancelOrder command):
-        Condition.true(self.is_connected, "not connected")
+        Condition.is_true(self.is_connected, "not connected")
 
         self._exchange.send(command)
 
     cpdef void cancel_all_orders(self, CancelAllOrders command):
-        Condition.true(self.is_connected, "not connected")
+        Condition.is_true(self.is_connected, "not connected")
+
+        self._exchange.send(command)
+
+    cpdef void batch_cancel_orders(self, BatchCancelOrders command):
+        Condition.is_true(self.is_connected, "not connected")
 
         self._exchange.send(command)

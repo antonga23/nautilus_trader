@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -17,7 +17,7 @@ from decimal import Decimal
 
 import pytest
 
-from nautilus_trader.indicators.average.dema import DoubleExponentialMovingAverage
+from nautilus_trader.indicators import DoubleExponentialMovingAverage
 from nautilus_trader.model.enums import PriceType
 from nautilus_trader.test_kit.providers import TestInstrumentProvider
 from nautilus_trader.test_kit.stubs.data import TestDataStubs
@@ -76,7 +76,7 @@ class TestDoubleExponentialMovingAverage:
         indicator.handle_quote_tick(tick)
 
         # Assert
-        print(Decimal(1.00002))
+        print(Decimal("1.00002"))
         print(Decimal(indicator.value))
         assert indicator.has_inputs
         assert indicator.value == 1.0
@@ -125,7 +125,7 @@ class TestDoubleExponentialMovingAverage:
 
     def test_reset_successfully_returns_indicator_to_fresh_state(self):
         # Arrange
-        for _i in range(1000):
+        for _ in range(1000):
             self.dema.update_raw(1.00000)
 
         # Act

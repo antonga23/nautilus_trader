@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -14,12 +14,9 @@
 # -------------------------------------------------------------------------------------------------
 
 from nautilus_trader.adapters.betfair.common import BETFAIR_FLOAT_TO_PRICE
-from nautilus_trader.adapters.betfair.common import BETFAIR_PRICE_PRECISION
-from nautilus_trader.adapters.betfair.common import BETFAIR_QUANTITY_PRECISION
 from nautilus_trader.adapters.betfair.constants import BETFAIR_PRICE_PRECISION
 from nautilus_trader.adapters.betfair.constants import BETFAIR_QUANTITY_PRECISION
-from nautilus_trader.model.enums import BookType
-from nautilus_trader.model.orderbook.book import OrderBook
+from nautilus_trader.core.rust.model import BookType
 
 from nautilus_trader.model.identifiers cimport InstrumentId
 from nautilus_trader.model.objects cimport Price
@@ -27,7 +24,10 @@ from nautilus_trader.model.objects cimport Quantity
 
 
 cpdef inline OrderBook create_betfair_order_book(InstrumentId instrument_id):
-    return OrderBook(instrument_id, BookType.L2_MBP)
+    return OrderBook(
+        instrument_id,
+        BookType.L2_MBP,
+    )
 
 
 cpdef Price betfair_float_to_price(double value):
@@ -36,6 +36,6 @@ cpdef Price betfair_float_to_price(double value):
     except KeyError:
         return Price(value, BETFAIR_PRICE_PRECISION)
 
+
 cpdef Quantity betfair_float_to_quantity(double value):
-    cdef Quantity quantity = Quantity(value, BETFAIR_QUANTITY_PRECISION)
-    return quantity
+    return Quantity(value, BETFAIR_QUANTITY_PRECISION)

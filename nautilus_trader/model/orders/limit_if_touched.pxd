@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -15,7 +15,7 @@
 
 from libc.stdint cimport uint64_t
 
-from nautilus_trader.model.enums_c cimport TriggerType
+from nautilus_trader.core.rust.model cimport TriggerType
 from nautilus_trader.model.events.order cimport OrderInitialized
 from nautilus_trader.model.objects cimport Price
 from nautilus_trader.model.objects cimport Quantity
@@ -36,7 +36,7 @@ cdef class LimitIfTouchedOrder(Order):
     cdef readonly bint is_triggered
     """If the order has been triggered.\n\n:returns: `bool`"""
     cdef readonly uint64_t ts_triggered
-    """The UNIX timestamp (nanoseconds) when the order was triggered (0 if not triggered).\n\n:returns: `uint64_t`"""
+    """UNIX timestamp (nanoseconds) when the order was triggered (0 if not triggered).\n\n:returns: `uint64_t`"""
 
     @staticmethod
-    cdef LimitIfTouchedOrder create(OrderInitialized init)
+    cdef LimitIfTouchedOrder create_c(OrderInitialized init)

@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -12,10 +12,19 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
-
 """
 The `cache` subpackage provides common caching infrastructure.
 
 A running Nautilus system generally uses a single centralized cache which can be
 accessed by many components.
+
 """
+
+from nautilus_trader.cache.cache import Cache
+from nautilus_trader.cache.database import CacheDatabaseAdapter
+
+
+__all__ = [
+    "Cache",
+    "CacheDatabaseAdapter",
+]

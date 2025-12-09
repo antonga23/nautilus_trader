@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -12,7 +12,17 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
+"""
+Defines Binance Futures specific enums.
 
+References
+----------
+https://binance-docs.github.io/apidocs/futures/en/#public-endpoints-info
+
+"""
+
+
+from decimal import Decimal
 from enum import Enum
 from enum import unique
 
@@ -25,29 +35,26 @@ from nautilus_trader.model.enums import TriggerType
 from nautilus_trader.model.orders import Order
 
 
-"""
-Defines `Binance` Futures specific enums.
-
-References
-----------
-https://binance-docs.github.io/apidocs/futures/en/#public-endpoints-info
-"""
-
-
 @unique
 class BinanceFuturesContractType(Enum):
-    """Represents a `Binance Futures` derivatives contract type."""
+    """
+    Represents a Binance Futures derivatives contract type.
+    """
 
     PERPETUAL = "PERPETUAL"
     CURRENT_MONTH = "CURRENT_MONTH"
     NEXT_MONTH = "NEXT_MONTH"
     CURRENT_QUARTER = "CURRENT_QUARTER"
     NEXT_QUARTER = "NEXT_QUARTER"
+    PERPETUAL_DELIVERING = "PERPETUAL_DELIVERING"
+    CURRENT_QUARTER_DELIVERING = "CURRENT_QUARTER DELIVERING"  # Underscore omission intentional
 
 
 @unique
 class BinanceFuturesContractStatus(Enum):
-    """Represents a `Binance Futures` contract status."""
+    """
+    Represents a Binance Futures contract status.
+    """
 
     PENDING_TRADING = "PENDING_TRADING"
     TRADING = "TRADING"
@@ -60,17 +67,10 @@ class BinanceFuturesContractStatus(Enum):
 
 
 @unique
-class BinanceFuturesPositionSide(Enum):
-    """Represents a `Binance Futures` position side."""
-
-    BOTH = "BOTH"
-    LONG = "LONG"
-    SHORT = "SHORT"
-
-
-@unique
 class BinanceFuturesWorkingType(Enum):
-    """Represents a `Binance Futures` working type."""
+    """
+    Represents a Binance Futures working type.
+    """
 
     MARK_PRICE = "MARK_PRICE"
     CONTRACT_PRICE = "CONTRACT_PRICE"
@@ -78,15 +78,19 @@ class BinanceFuturesWorkingType(Enum):
 
 @unique
 class BinanceFuturesMarginType(Enum):
-    """Represents a `Binance Futures` margin type."""
+    """
+    Represents a Binance Futures margin type.
+    """
 
-    ISOLATED = "isolated"
-    CROSS = "cross"
+    ISOLATED = "ISOLATED"
+    CROSS = "CROSSED"
 
 
 @unique
 class BinanceFuturesPositionUpdateReason(Enum):
-    """Represents a `Binance Futures` position and balance update reason."""
+    """
+    Represents a Binance Futures position and balance update reason.
+    """
 
     DEPOSIT = "DEPOSIT"
     WITHDRAW = "WITHDRAW"
@@ -103,17 +107,25 @@ class BinanceFuturesPositionUpdateReason(Enum):
     OPTIONS_PREMIUM_FEE = "OPTIONS_PREMIUM_FEE"
     OPTIONS_SETTLE_PROFIT = "OPTIONS_SETTLE_PROFIT"
     AUTO_EXCHANGE = "AUTO_EXCHANGE"
+    COIN_SWAP_DEPOSIT = "COIN_SWAP_DEPOSIT"
+    COIN_SWAP_WITHDRAW = "COIN_SWAP_WITHDRAW"
 
 
 @unique
 class BinanceFuturesEventType(Enum):
-    """Represents a `Binance Futures` event type."""
+    """
+    Represents a Binance Futures event type.
+    """
 
     LISTEN_KEY_EXPIRED = "listenKeyExpired"
     MARGIN_CALL = "MARGIN_CALL"
     ACCOUNT_UPDATE = "ACCOUNT_UPDATE"
     ORDER_TRADE_UPDATE = "ORDER_TRADE_UPDATE"
     ACCOUNT_CONFIG_UPDATE = "ACCOUNT_CONFIG_UPDATE"
+    TRADE_LITE = "TRADE_LITE"
+    STRATEGY_UPDATE = "STRATEGY_UPDATE"
+    GRID_UPDATE = "GRID_UPDATE"
+    CONDITIONAL_ORDER_TRIGGER_REJECT = "CONDITIONAL_ORDER_TRIGGER_REJECT"
 
 
 class BinanceFuturesEnumParser(BinanceEnumParser):
@@ -137,15 +149,9 @@ class BinanceFuturesEnumParser(BinanceEnumParser):
             b: a for a, b in self.futures_ext_to_int_order_type.items()
         }
 
-        self.futures_ext_to_int_position_side = {
-            BinanceFuturesPositionSide.BOTH: PositionSide.FLAT,
-            BinanceFuturesPositionSide.LONG: PositionSide.LONG,
-            BinanceFuturesPositionSide.SHORT: PositionSide.SHORT,
-        }
-
         self.futures_valid_time_in_force = {
             TimeInForce.GTC,
-            TimeInForce.GTD,  # Will be transformed to GTC with warning
+            TimeInForce.GTD,
             TimeInForce.FOK,
             TimeInForce.IOC,
         }
@@ -178,7 +184,7 @@ class BinanceFuturesEnumParser(BinanceEnumParser):
 
     def parse_binance_trigger_type(self, trigger_type: str) -> TriggerType:
         if trigger_type == BinanceFuturesWorkingType.CONTRACT_PRICE.value:
-            return TriggerType.LAST_TRADE
+            return TriggerType.LAST_PRICE
         elif trigger_type == BinanceFuturesWorkingType.MARK_PRICE.value:
             return TriggerType.MARK_PRICE
         else:
@@ -186,11 +192,11 @@ class BinanceFuturesEnumParser(BinanceEnumParser):
 
     def parse_futures_position_side(
         self,
-        position_side: BinanceFuturesPositionSide,
+        net_size: Decimal,
     ) -> PositionSide:
-        try:
-            return self.futures_ext_to_int_position_side[position_side]
-        except KeyError:
-            raise RuntimeError(  # pragma: no cover (design-time error)
-                f"unrecognized binance futures position side, was {position_side}",  # pragma: no cover
-            )
+        if net_size > 0:
+            return PositionSide.LONG
+        elif net_size < 0:
+            return PositionSide.SHORT
+        else:
+            return PositionSide.FLAT

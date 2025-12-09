@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,29 +13,29 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
-from typing import Optional
-
 import msgspec
 
 from nautilus_trader.adapters.binance.common.enums import BinanceAccountType
-from nautilus_trader.adapters.binance.common.enums import BinanceMethodType
 from nautilus_trader.adapters.binance.common.enums import BinanceSecurityType
-from nautilus_trader.adapters.binance.common.schemas.symbol import BinanceSymbol
+from nautilus_trader.adapters.binance.common.symbol import BinanceSymbol
 from nautilus_trader.adapters.binance.http.client import BinanceHttpClient
 from nautilus_trader.adapters.binance.http.endpoint import BinanceHttpEndpoint
 from nautilus_trader.adapters.binance.spot.schemas.wallet import BinanceSpotTradeFee
-from nautilus_trader.common.clock import LiveClock
+from nautilus_trader.common.component import LiveClock
+from nautilus_trader.core.nautilus_pyo3 import HttpMethod
 
 
 class BinanceSpotTradeFeeHttp(BinanceHttpEndpoint):
     """
     Endpoint of maker/taker trade fee information.
 
-    `GET /sapi/v1/asset/tradeFee`
+    `GET /sapi/v1/asset/tradeFee` (Binance.com)
+    `GET /sapi/v1/asset/query/trading-fee` (Binance.US)
 
     References
     ----------
     https://binance-docs.github.io/apidocs/spot/en/#trade-fee-user_data
+
     """
 
     def __init__(
@@ -44,19 +44,25 @@ class BinanceSpotTradeFeeHttp(BinanceHttpEndpoint):
         base_endpoint: str,
     ):
         methods = {
-            BinanceMethodType.GET: BinanceSecurityType.USER_DATA,
+            HttpMethod.GET: BinanceSecurityType.USER_DATA,
         }
+
+        # Check if Binance.US based on base URL
+        if ".us" in client.base_url:
+            endpoint_path = base_endpoint + "query/trading-fee"
+        else:
+            endpoint_path = base_endpoint + "tradeFee"
+
         super().__init__(
             client,
             methods,
-            base_endpoint + "tradeFee",
+            endpoint_path,
         )
-        self._get_obj_resp_decoder = msgspec.json.Decoder(BinanceSpotTradeFee)
         self._get_arr_resp_decoder = msgspec.json.Decoder(list[BinanceSpotTradeFee])
 
     class GetParameters(msgspec.Struct, omit_defaults=True, frozen=True):
         """
-        GET parameters for fetching trade fees.
+        GET parameters for requesting trade fees.
 
         Parameters
         ----------
@@ -66,29 +72,28 @@ class BinanceSpotTradeFeeHttp(BinanceHttpEndpoint):
             Optional number of milliseconds after timestamp the request is valid
         timestamp : str
             Millisecond timestamp of the request
+
         """
 
         timestamp: str
-        symbol: Optional[BinanceSymbol] = None
-        recvWindow: Optional[str] = None
+        symbol: BinanceSymbol | None = None
+        recvWindow: str | None = None
 
-    async def _get(self, parameters: GetParameters) -> list[BinanceSpotTradeFee]:
-        method_type = BinanceMethodType.GET
-        raw = await self._method(method_type, parameters)
-        if parameters.symbol is not None:
-            return [self._get_obj_resp_decoder.decode(raw)]
-        else:
-            return self._get_arr_resp_decoder.decode(raw)
+    async def get(self, params: GetParameters) -> list[BinanceSpotTradeFee]:
+        method_type = HttpMethod.GET
+        raw = await self._method(method_type, params)
+        return self._get_arr_resp_decoder.decode(raw)
 
 
 class BinanceSpotWalletHttpAPI:
     """
-    Provides access to the `Binance Spot/Margin` Wallet HTTP REST API.
+    Provides access to the Binance Spot/Margin Wallet HTTP REST API.
 
     Parameters
     ----------
     client : BinanceHttpClient
         The Binance REST API client.
+
     """
 
     def __init__(
@@ -109,16 +114,18 @@ class BinanceSpotWalletHttpAPI:
         self._endpoint_spot_trade_fee = BinanceSpotTradeFeeHttp(client, self.base_endpoint)
 
     def _timestamp(self) -> str:
-        """Create Binance timestamp from internal clock."""
+        """
+        Create Binance timestamp from internal clock.
+        """
         return str(self._clock.timestamp_ms())
 
     async def query_spot_trade_fees(
         self,
-        symbol: Optional[str] = None,
-        recv_window: Optional[str] = None,
+        symbol: str | None = None,
+        recv_window: str | None = None,
     ) -> list[BinanceSpotTradeFee]:
-        fees = await self._endpoint_spot_trade_fee._get(
-            parameters=self._endpoint_spot_trade_fee.GetParameters(
+        fees = await self._endpoint_spot_trade_fee.get(
+            params=self._endpoint_spot_trade_fee.GetParameters(
                 timestamp=self._timestamp(),
                 symbol=BinanceSymbol(symbol) if symbol is not None else None,
                 recvWindow=recv_window,

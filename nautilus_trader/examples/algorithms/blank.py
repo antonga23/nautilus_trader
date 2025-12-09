@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,11 +13,10 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
-from typing import Optional
-
-from nautilus_trader.common.logging import LogColor
-from nautilus_trader.config.common import ExecAlgorithmConfig
+from nautilus_trader.common.component import LogColor
+from nautilus_trader.config import ExecAlgorithmConfig
 from nautilus_trader.execution.algorithm import ExecAlgorithm
+from nautilus_trader.model.identifiers import ExecAlgorithmId
 from nautilus_trader.model.orders import Order
 from nautilus_trader.model.orders import OrderList
 
@@ -30,9 +29,10 @@ class MyExecAlgorithmConfig(ExecAlgorithmConfig, frozen=True):
     ----------
     exec_algorithm_id : str | ExecAlgorithmId, optional
         The execution algorithm ID (will override default which is the class name).
+
     """
 
-    exec_algorithm_id: Optional[str] = None
+    exec_algorithm_id: ExecAlgorithmId | None = None
 
 
 class MyExecAlgorithm(ExecAlgorithm):
@@ -43,6 +43,7 @@ class MyExecAlgorithm(ExecAlgorithm):
     ----------
     config : MyExecAlgorithmConfig
         The configuration for the instance.
+
     """
 
     def __init__(self, config: MyExecAlgorithmConfig) -> None:
@@ -50,15 +51,21 @@ class MyExecAlgorithm(ExecAlgorithm):
         # Optionally implement further initialization
 
     def on_start(self) -> None:
-        """Actions to be performed when the algorithm component is started."""
+        """
+        Actions to be performed when the algorithm component is started.
+        """
         # Optionally implement
 
     def on_stop(self) -> None:
-        """Actions to be performed when the algorithm component is stopped."""
+        """
+        Actions to be performed when the algorithm component is stopped.
+        """
         # Optionally implement
 
     def on_reset(self) -> None:
-        """Actions to be performed when the algorithm component is reset."""
+        """
+        Actions to be performed when the algorithm component is reset.
+        """
         # Optionally implement
 
     def on_dispose(self) -> None:

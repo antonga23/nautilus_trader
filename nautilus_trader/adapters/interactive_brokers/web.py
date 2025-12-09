@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -14,27 +14,31 @@
 # -------------------------------------------------------------------------------------------------
 
 import enum
-from collections import namedtuple
+from collections.abc import Generator
+from typing import Any
+from typing import NamedTuple
 
-import requests
+from lxml.etree import _Element
 from lxml.html import fromstring
+
+from nautilus_trader.core.nautilus_pyo3.network import http_get
 
 
 class ProductClass(enum.Enum):
     """
-    Interactive Brokers Web ProductClass
+    Interactive Brokers Web ProductClass.
     """
 
     ETFS = "ETF"
     INDICES = "IND"
     STOCKS = "STK"
     OPTIONS = "OPTGRP"
-    WARRANTS = "WNT"
+    WARRANTS = "WANT"
 
 
 class Exchange(enum.Enum):
     """
-    Interactive Brokers Exchange
+    Interactive Brokers Exchange.
     """
 
     AEB = "aeb"
@@ -121,13 +125,18 @@ class Exchange(enum.Enum):
     WSE = "wse"
 
 
-class Product(namedtuple("Product", "ib_symbol, description, native_symbol, currency")):
+class Product(NamedTuple):
     """
-    Interactive Brokers Web Product
+    Interactive Brokers Web Product.
     """
 
+    ib_symbol: Any  # TODO: More specific type
+    description: Any  # TODO: More specific type
+    native_symbol: Any  # TODO: More specific type
+    currency: Any  # TODO: More specific type
 
-def _parse_products(table):
+
+def _parse_products(table: _Element) -> Generator:
     for row in table.xpath(".//tr")[1:]:
         ib_symbol, desc, symbol, currency = list(
             filter(None, map(str.strip, row.xpath(".//text()"))),
@@ -145,9 +154,10 @@ def load_product_list(
     product_class: ProductClass,
     limit: int = 500,
     debug: bool = False,
-):
+) -> Generator:
     """
-    Load all instruments for a given `exchange` and `product_class` via the Interactive Brokers web interface
+    Load all instruments for a given `exchange` and `product_class` via the Interactive
+    Brokers web interface.
 
     >>> products = load_product_list(exchange=Exchange.NYSE, product_class=ProductClass.STOCKS)
 
@@ -160,22 +170,29 @@ def load_product_list(
         "limit": str(limit),
     }
     page = 0
+
     while True:
         page += 1
         params.update({"page": str(page)})
+
         if debug:
             print(f"Requesting instruments using {params=}")
-        response = requests.get(url, params=params)
-        tree = fromstring(response.content)
+
+        response = http_get(url, params=params, timeout_secs=30)
+        tree = fromstring(response.body)
         tables = tree.xpath('//table[@class="table table-striped table-bordered"]')
+
         if not tables:
             break
         try:
             symbol_table = tables[2]
         except IndexError:
             break
+
         products = list(_parse_products(symbol_table))
+
         if not products:
             break
+
         print(f"Found {len(products)} products for {page=}")
         yield from products

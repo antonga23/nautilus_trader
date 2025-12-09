@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,94 +13,179 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
-from collections.abc import Generator
-from functools import partial
+
 from pathlib import Path
+from typing import Literal
 
-import pandas as pd
-
-from nautilus_trader.common.clock import TestClock
-from nautilus_trader.common.logging import Logger
-from nautilus_trader.common.providers import InstrumentProvider
+from nautilus_trader.cache.cache import Cache
+from nautilus_trader.common.component import Clock
+from nautilus_trader.common.component import MessageBus
+from nautilus_trader.data.client import MarketDataClient
+from nautilus_trader.data.messages import RequestBars
+from nautilus_trader.data.messages import RequestInstrument
+from nautilus_trader.data.messages import RequestInstruments
+from nautilus_trader.data.messages import RequestOrderBookDepth
+from nautilus_trader.data.messages import RequestQuoteTicks
+from nautilus_trader.data.messages import RequestTradeTicks
+from nautilus_trader.model.data import Bar
+from nautilus_trader.model.data import OrderBookDepth10
 from nautilus_trader.model.data import QuoteTick
+from nautilus_trader.model.data import TradeTick
+from nautilus_trader.model.identifiers import ClientId
 from nautilus_trader.model.identifiers import Venue
-from nautilus_trader.model.objects import Price
-from nautilus_trader.model.objects import Quantity
+from nautilus_trader.model.instruments import Instrument
 from nautilus_trader.persistence.catalog.parquet import ParquetDataCatalog
-from nautilus_trader.persistence.external.core import process_files
-from nautilus_trader.persistence.external.readers import CSVReader
-from nautilus_trader.persistence.external.readers import Reader
-from nautilus_trader.persistence.external.util import clear_singleton_instances
+from nautilus_trader.persistence.catalog.singleton import clear_singleton_instances
+from nautilus_trader.persistence.wranglers import QuoteTickDataWrangler
+from nautilus_trader.persistence.wranglers import TradeTickDataWrangler
+from nautilus_trader.test_kit.providers import TestDataProvider
+from nautilus_trader.test_kit.providers import TestInstrumentProvider
 from nautilus_trader.trading.filters import NewsEvent
 
 
-class MockReader(Reader):
-    def parse(self, block: bytes) -> Generator:
-        yield block
+class MockMarketDataClient(MarketDataClient):
+    """
+    Provides an implementation of `MarketDataClient` for testing.
+
+    Parameters
+    ----------
+    client_id : ClientId
+        The data client ID.
+    msgbus : MessageBus
+        The message bus for the client.
+    cache : Cache
+        The cache for the client.
+    clock : Clock
+        The clock for the client.
+
+    """
+
+    def __init__(
+        self,
+        client_id: ClientId,
+        msgbus: MessageBus,
+        cache: Cache,
+        clock: Clock,
+    ):
+        super().__init__(
+            client_id=client_id,
+            venue=Venue(str(client_id)),
+            msgbus=msgbus,
+            cache=cache,
+            clock=clock,
+        )
+        self._set_connected()
+
+        self.instrument: Instrument | None = None
+        self.instruments: list[Instrument] = []
+        self.quote_ticks: list[QuoteTick] = []
+        self.trade_ticks: list[TradeTick] = []
+        self.bars: list[Bar] = []
+        self.order_book_depths: list[OrderBookDepth10] = []
+
+    def request_instrument(self, request: RequestInstrument) -> None:
+        self._handle_instrument(
+            self.instrument,
+            request.id,
+            request.start,
+            request.end,
+            request.params,
+        )
+
+    def request_instruments(self, request: RequestInstruments) -> None:
+        self._handle_instruments(
+            request.venue,
+            self.instruments,
+            request.id,
+            request.start,
+            request.end,
+            request.params,
+        )
+
+    def request_quote_ticks(self, request: RequestQuoteTicks) -> None:
+        self._handle_quote_ticks_py(
+            request.instrument_id,
+            self.quote_ticks,
+            request.id,
+            request.start,
+            request.end,
+            request.params,
+        )
+
+    def request_trade_ticks(self, request: RequestTradeTicks) -> None:
+        self._handle_trade_ticks_py(
+            request.instrument_id,
+            self.trade_ticks,
+            request.id,
+            request.start,
+            request.end,
+            request.params,
+        )
+
+    def request_bars(self, request: RequestBars) -> None:
+        self._handle_bars_py(
+            request.bar_type,
+            self.bars,
+            request.id,
+            request.start,
+            request.end,
+            request.params,
+        )
+
+    def request_order_book_depth(self, request: RequestOrderBookDepth) -> None:
+        self._handle_order_book_depths_py(
+            request.instrument_id,
+            self.order_book_depths,
+            request.id,
+            request.start,
+            request.end,
+            request.params,
+        )
+
+
+_AUDUSD_SIM = TestInstrumentProvider.default_fx_ccy("AUD/USD")
+_ETHUSDT_BINANCE = TestInstrumentProvider.ethusdt_binance()
 
 
 class NewsEventData(NewsEvent):
-    """Generic data NewsEvent"""
+    """
+    Represents news event custom data.
+    """
 
 
-def data_catalog_setup(protocol, path=None) -> ParquetDataCatalog:
+def setup_catalog(
+    protocol: Literal["memory", "file"],
+    path: Path | str,
+) -> ParquetDataCatalog:
     if protocol not in ("memory", "file"):
         raise ValueError("`protocol` should only be one of `memory` or `file` for testing")
 
+    if isinstance(path, str):
+        path = Path(path)
+    path = path.resolve()
+
     clear_singleton_instances(ParquetDataCatalog)
 
-    path = Path.cwd() / "data_catalog" if path is None else Path(path).resolve()
-
     catalog = ParquetDataCatalog(path=path.as_posix(), fs_protocol=protocol)
-
-    if catalog.fs.exists(catalog.path):
-        catalog.fs.rm(catalog.path, recursive=True)
-
     catalog.fs.mkdir(catalog.path, create_parents=True)
 
     assert catalog.fs.isdir(catalog.path)
-    assert not catalog.fs.glob(f"{catalog.path}/**")
+    assert not [fn for fn in catalog.fs.glob(f"{catalog.path}/**") if catalog.fs.isfile(fn)]
 
     return catalog
 
 
-def aud_usd_data_loader(catalog: ParquetDataCatalog):
-    from nautilus_trader.test_kit.providers import TestInstrumentProvider
-    from nautilus_trader.test_kit.stubs.identifiers import TestIdStubs
-    from tests.unit_tests.backtest.test_backtest_config import TEST_DATA_DIR
+def load_catalog_with_stub_quote_ticks_audusd(catalog: ParquetDataCatalog) -> None:
+    wrangler = QuoteTickDataWrangler(_AUDUSD_SIM)
+    ticks = wrangler.process(TestDataProvider().read_csv_ticks("truefx/audusd-ticks.csv"))
+    ticks.sort(key=lambda x: x.ts_init)  # CAUTION: data was not originally sorted
+    catalog.write_data([_AUDUSD_SIM])
+    catalog.write_data(ticks)
 
-    venue = Venue("SIM")
-    instrument = TestInstrumentProvider.default_fx_ccy("AUD/USD", venue=venue)
 
-    def parse_csv_tick(df, instrument_id):
-        yield instrument
-        for r in df.values:
-            ts = pd.Timestamp(r[0], tz="UTC").value
-            tick = QuoteTick(
-                instrument_id=instrument_id,
-                bid=Price(r[1], 5),
-                ask=Price(r[2], 5),
-                bid_size=Quantity.from_int(1_000_000),
-                ask_size=Quantity.from_int(1_000_000),
-                ts_event=ts,
-                ts_init=ts,
-            )
-            yield tick
-
-    clock = TestClock()
-    logger = Logger(clock)
-
-    instrument_provider = InstrumentProvider(
-        venue=venue,
-        logger=logger,
-    )
-    instrument_provider.add(instrument)
-    process_files(
-        glob_path=f"{TEST_DATA_DIR}/truefx-audusd-ticks.csv",
-        reader=CSVReader(
-            block_parser=partial(parse_csv_tick, instrument_id=TestIdStubs.audusd_id()),
-            as_dataframe=True,
-        ),
-        instrument_provider=instrument_provider,
-        catalog=catalog,
-    )
+def load_catalog_with_stub_trade_ticks_ethusdt(catalog: ParquetDataCatalog) -> None:
+    wrangler = TradeTickDataWrangler(_ETHUSDT_BINANCE)
+    ticks = wrangler.process(TestDataProvider().read_csv_ticks("binance/ethusdt-trades.csv"))
+    # ticks.sort(key=lambda x: x.ts_init)
+    catalog.write_data([_ETHUSDT_BINANCE])
+    catalog.write_data(ticks)

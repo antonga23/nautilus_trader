@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,87 +13,142 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
-import copy
+from __future__ import annotations
+
 from enum import Enum
-from typing import Optional
 
 import pyarrow as pa
 
-# fmt: off
 from nautilus_trader.core.correctness import PyCondition
 from nautilus_trader.core.data import Data
+from nautilus_trader.model.custom import customdataclass
 from nautilus_trader.model.data import BookOrder
 from nautilus_trader.model.data import OrderBookDelta
-from nautilus_trader.model.data import OrderBookDeltas
-from nautilus_trader.model.data import Ticker
 from nautilus_trader.model.enums import BookAction
-from nautilus_trader.model.enums import book_action_from_str
 from nautilus_trader.model.identifiers import InstrumentId
-from nautilus_trader.serialization.arrow.implementations.order_book import deserialize as deserialize_orderbook
-from nautilus_trader.serialization.arrow.implementations.order_book import serialize as serialize_orderbook
-from nautilus_trader.serialization.arrow.schema import NAUTILUS_PARQUET_SCHEMA
-from nautilus_trader.serialization.arrow.serializer import register_parquet
-from nautilus_trader.serialization.base import register_serializable_object
-
-
-# fmt: on
+from nautilus_trader.model.objects import Price
+from nautilus_trader.model.objects import Quantity
+from nautilus_trader.serialization.arrow.serializer import make_dict_deserializer
+from nautilus_trader.serialization.arrow.serializer import make_dict_serializer
+from nautilus_trader.serialization.arrow.serializer import register_arrow
+from nautilus_trader.serialization.base import register_serializable_type
 
 
 class SubscriptionStatus(Enum):
     """
-    Represents a `Betfair` subscription status.
+    Represents a Betfair subscription status.
     """
 
     UNSUBSCRIBED = 0
     PENDING_STARTUP = 1
     RUNNING = 2
-
-
-class BSPOrderBookDeltas(OrderBookDeltas):
-    """
-    Represents a batch of Betfair BSP order book delta.
-    """
+    SUBSCRIBED = 3
 
 
 class BSPOrderBookDelta(OrderBookDelta):
-    """
-    Represents a `Betfair` BSP order book delta.
-    """
-
     @staticmethod
-    def from_dict(values) -> "BSPOrderBookDelta":
-        PyCondition.not_none(values, "values")
-        action: BookAction = book_action_from_str(values["action"])
-        order: BookOrder = (
-            BookOrder.from_dict(
-                {
-                    "price": values["price"],
-                    "size": values["size"],
-                    "side": values["side"],
-                    "order_id": values["order_id"],
-                },
+    def from_batch(batch: pa.RecordBatch) -> list[BSPOrderBookDelta]:
+        PyCondition.not_none(batch, "batch")
+        data = []
+        for idx in range(batch.num_rows):
+            instrument_id = InstrumentId.from_str(batch.schema.metadata[b"instrument_id"].decode())
+            action: BookAction = BookAction(batch["action"].to_pylist()[idx])
+            if action == BookAction.CLEAR:
+                book_order = None
+            else:
+                book_order = BookOrder(
+                    price=Price.from_raw(
+                        batch["price"].to_pylist()[idx],
+                        int(batch.schema.metadata[b"price_precision"]),
+                    ),
+                    size=Quantity.from_raw(
+                        batch["size"].to_pylist()[idx],
+                        int(batch.schema.metadata[b"size_precision"]),
+                    ),
+                    side=batch["side"].to_pylist()[idx],
+                    order_id=batch["order_id"].to_pylist()[idx],
+                )
+
+            delta = BSPOrderBookDelta(
+                instrument_id=instrument_id,
+                action=action,
+                order=book_order,
+                flags=0,
+                sequence=0,
+                ts_event=batch["ts_event"].to_pylist()[idx],
+                ts_init=batch["ts_init"].to_pylist()[idx],
             )
-            if values["action"] != "CLEAR"
-            else None
-        )
-        return BSPOrderBookDelta(
-            instrument_id=InstrumentId.from_str(values["instrument_id"]),
-            action=action,
-            order=order,
-            ts_event=values["ts_event"],
-            ts_init=values["ts_init"],
-        )
+            data.append(delta)
+        return data
 
     @staticmethod
-    def to_dict(obj) -> dict:
-        values = OrderBookDelta.to_dict(obj)
-        values["type"] = obj.__class__.__name__
-        return values
+    def to_batch(obj: BSPOrderBookDelta) -> pa.RecordBatch:
+        # Handle CLEAR action where order is None
+        if obj.order is None:
+            metadata = {
+                b"instrument_id": obj.instrument_id.value.encode(),
+                b"price_precision": b"0",
+                b"size_precision": b"0",
+            }
+            schema = BSPOrderBookDelta.schema().with_metadata(metadata)
+            return pa.RecordBatch.from_pylist(
+                [
+                    {
+                        "action": obj.action,
+                        "side": 0,  # Default value for CLEAR
+                        "price": 0,
+                        "size": 0,
+                        "order_id": 0,
+                        "flags": obj.flags,
+                        "ts_event": obj.ts_event,
+                        "ts_init": obj.ts_init,
+                    },
+                ],
+                schema=schema,
+            )
+
+        metadata = {
+            b"instrument_id": obj.instrument_id.value.encode(),
+            b"price_precision": str(obj.order.price.precision).encode(),
+            b"size_precision": str(obj.order.size.precision).encode(),
+        }
+        schema = BSPOrderBookDelta.schema().with_metadata(metadata)
+        return pa.RecordBatch.from_pylist(
+            [
+                {
+                    "action": obj.action,
+                    "side": obj.order.side,
+                    "price": obj.order.price.raw,
+                    "size": obj.order.size.raw,
+                    "order_id": obj.order.order_id,
+                    "flags": obj.flags,
+                    "ts_event": obj.ts_event,
+                    "ts_init": obj.ts_init,
+                },
+            ],
+            schema=schema,
+        )
+
+    @classmethod
+    def schema(cls) -> pa.Schema:
+        return pa.schema(
+            {
+                "action": pa.uint8(),
+                "side": pa.uint8(),
+                "price": pa.int64(),
+                "size": pa.uint64(),
+                "order_id": pa.uint64(),
+                "flags": pa.uint8(),
+                "ts_event": pa.uint64(),
+                "ts_init": pa.uint64(),
+            },
+            metadata={"type": "BSPOrderBookDelta"},
+        )
 
 
-class BetfairTicker(Ticker):
+class BetfairTicker(Data):
     """
-    Represents a `Betfair` ticker.
+    Represents a Betfair ticker.
     """
 
     def __init__(
@@ -101,16 +156,52 @@ class BetfairTicker(Ticker):
         instrument_id: InstrumentId,
         ts_event: int,
         ts_init: int,
-        last_traded_price: Optional[float] = None,
-        traded_volume: Optional[float] = None,
-        starting_price_near: Optional[float] = None,
-        starting_price_far: Optional[float] = None,
+        last_traded_price: float | None = None,
+        traded_volume: float | None = None,
+        starting_price_near: float | None = None,
+        starting_price_far: float | None = None,
     ):
-        super().__init__(instrument_id=instrument_id, ts_event=ts_event, ts_init=ts_init)
+        self.instrument_id = instrument_id
         self.last_traded_price = last_traded_price
         self.traded_volume = traded_volume
         self.starting_price_near = starting_price_near
         self.starting_price_far = starting_price_far
+        self._ts_event = ts_event
+        self._ts_init = ts_init
+
+    def __eq__(self, other: object) -> bool:
+        if other is None:
+            return False
+        if not isinstance(other, BetfairTicker):
+            return False
+        return self.instrument_id == other.instrument_id
+
+    def __hash__(self) -> int:
+        return hash(self.instrument_id)
+
+    @property
+    def ts_event(self) -> int:
+        """
+        UNIX timestamp (nanoseconds) when the data event occurred.
+
+        Returns
+        -------
+        int
+
+        """
+        return self._ts_event
+
+    @property
+    def ts_init(self) -> int:
+        """
+        UNIX timestamp (nanoseconds) when the object was initialized.
+
+        Returns
+        -------
+        int
+
+        """
+        return self._ts_init
 
     @classmethod
     def schema(cls):
@@ -135,30 +226,38 @@ class BetfairTicker(Ticker):
             ts_init=values["ts_init"],
             last_traded_price=values["last_traded_price"] if values["last_traded_price"] else None,
             traded_volume=values["traded_volume"] if values["traded_volume"] else None,
-            starting_price_near=values["starting_price_near"]
-            if values["starting_price_near"]
-            else None,
-            starting_price_far=values["starting_price_far"]
-            if values["starting_price_far"]
-            else None,
+            starting_price_near=(
+                values["starting_price_near"] if values["starting_price_near"] else None
+            ),
+            starting_price_far=(
+                values["starting_price_far"] if values["starting_price_far"] else None
+            ),
         )
 
-    def to_dict(self):
+    @staticmethod
+    def to_dict(obj: BetfairTicker):
         return {
-            "type": type(self).__name__,
-            "instrument_id": self.instrument_id.value,
-            "ts_event": self.ts_event,
-            "ts_init": self.ts_init,
-            "last_traded_price": self.last_traded_price,
-            "traded_volume": self.traded_volume,
-            "starting_price_near": self.starting_price_near,
-            "starting_price_far": self.starting_price_far,
+            "type": type(obj).__name__,
+            "instrument_id": obj.instrument_id.value,
+            "ts_event": obj._ts_event,
+            "ts_init": obj._ts_init,
+            "last_traded_price": obj.last_traded_price,
+            "traded_volume": obj.traded_volume,
+            "starting_price_near": obj.starting_price_near,
+            "starting_price_far": obj.starting_price_far,
         }
+
+    def __repr__(self):
+        return (
+            f"BetfairTicker(instrument_id={self.instrument_id.value}, ltp={self.last_traded_price}, "
+            f"tv={self.traded_volume}, spn={self.starting_price_near}, spf={self.starting_price_far},"
+            f" ts_init={self.ts_init})"
+        )
 
 
 class BetfairStartingPrice(Data):
     """
-    Represents the realised Betfair Starting Price.
+    Represents the realized Betfair Starting Price.
     """
 
     def __init__(
@@ -166,11 +265,36 @@ class BetfairStartingPrice(Data):
         instrument_id: InstrumentId,
         ts_event: int,
         ts_init: int,
-        bsp: float = None,
+        bsp: float | None = None,
     ):
-        super().__init__(ts_event=ts_event, ts_init=ts_init)
         self.instrument_id: InstrumentId = instrument_id
         self.bsp = bsp
+        self._ts_event = ts_event
+        self._ts_init = ts_init
+
+    @property
+    def ts_event(self) -> int:
+        """
+        UNIX timestamp (nanoseconds) when the data event occurred.
+
+        Returns
+        -------
+        int
+
+        """
+        return self._ts_event
+
+    @property
+    def ts_init(self) -> int:
+        """
+        UNIX timestamp (nanoseconds) when the object was initialized.
+
+        Returns
+        -------
+        int
+
+        """
+        return self._ts_init
 
     @classmethod
     def schema(cls):
@@ -193,41 +317,61 @@ class BetfairStartingPrice(Data):
             bsp=values["bsp"] if values["bsp"] else None,
         )
 
-    def to_dict(self):
+    @staticmethod
+    def to_dict(obj):
         return {
-            "type": type(self).__name__,
-            "instrument_id": self.instrument_id.value,
-            "ts_event": self.ts_event,
-            "ts_init": self.ts_init,
-            "bsp": self.bsp,
+            "type": type(obj).__name__,
+            "instrument_id": obj.instrument_id.value,
+            "ts_event": obj.ts_event,
+            "ts_init": obj.ts_init,
+            "bsp": obj.bsp,
         }
 
 
+@customdataclass
+class BetfairSequenceCompleted(Data):
+    pass
+
+
 # Register serialization/parquet BetfairTicker
-register_serializable_object(BetfairTicker, BetfairTicker.to_dict, BetfairTicker.from_dict)
-register_parquet(cls=BetfairTicker, schema=BetfairTicker.schema())
+register_serializable_type(
+    BetfairTicker,
+    BetfairTicker.to_dict,
+    BetfairTicker.from_dict,
+)
+
+register_arrow(
+    data_cls=BetfairTicker,
+    schema=BetfairTicker.schema(),
+    encoder=make_dict_serializer(schema=BetfairTicker.schema()),
+    decoder=make_dict_deserializer(BetfairTicker),
+)
 
 # Register serialization/parquet BetfairStartingPrice
-register_serializable_object(
+register_serializable_type(
     BetfairStartingPrice,
     BetfairStartingPrice.to_dict,
     BetfairStartingPrice.from_dict,
 )
-register_parquet(cls=BetfairStartingPrice, schema=BetfairStartingPrice.schema())
+
+register_arrow(
+    data_cls=BetfairStartingPrice,
+    schema=BetfairStartingPrice.schema(),
+    encoder=make_dict_serializer(schema=BetfairStartingPrice.schema()),
+    decoder=make_dict_deserializer(BetfairStartingPrice),
+)
+
 
 # Register serialization/parquet BSPOrderBookDeltas
-BSP_ORDERBOOK_SCHEMA: pa.Schema = copy.copy(NAUTILUS_PARQUET_SCHEMA[OrderBookDelta])
-BSP_ORDERBOOK_SCHEMA = BSP_ORDERBOOK_SCHEMA.with_metadata({"type": "BSPOrderBookDelta"})
-
-register_serializable_object(
-    BSPOrderBookDeltas,
-    BSPOrderBookDeltas.to_dict,
-    BSPOrderBookDeltas.from_dict,
+register_serializable_type(
+    BSPOrderBookDelta,
+    BSPOrderBookDelta.to_dict,
+    BSPOrderBookDelta.from_dict,
 )
-register_parquet(
-    cls=BSPOrderBookDeltas,
-    serializer=serialize_orderbook,
-    deserializer=deserialize_orderbook,
-    schema=BSP_ORDERBOOK_SCHEMA,
-    chunk=True,
+
+register_arrow(
+    data_cls=BSPOrderBookDelta,
+    encoder=BSPOrderBookDelta.to_batch,
+    decoder=BSPOrderBookDelta.from_batch,
+    schema=BSPOrderBookDelta.schema(),
 )

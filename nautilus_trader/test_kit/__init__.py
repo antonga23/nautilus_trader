@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -12,8 +12,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
-
 """
-The test kit contains test doubles and helpers to support the NautilusTrader
-test suite, as well as supporting testing for downstream projects and packages.
+The test kit contains test doubles and helpers to support the NautilusTrader test suite,
+as well as supporting testing for downstream projects and packages.
 """

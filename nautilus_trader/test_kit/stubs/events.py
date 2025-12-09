@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -14,17 +14,18 @@
 # -------------------------------------------------------------------------------------------------
 
 from decimal import Decimal
-from typing import Optional
 
 from nautilus_trader.accounting.accounts.base import Account
 from nautilus_trader.common.enums import ComponentState
 from nautilus_trader.common.messages import ComponentStateChanged
 from nautilus_trader.common.messages import TradingStateChanged
 from nautilus_trader.core.uuid import UUID4
+from nautilus_trader.model.currencies import AUD
 from nautilus_trader.model.currencies import GBP
 from nautilus_trader.model.currencies import USD
 from nautilus_trader.model.enums import AccountType
 from nautilus_trader.model.enums import LiquiditySide
+from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.enums import TradingState
 from nautilus_trader.model.events import AccountState
 from nautilus_trader.model.events import OrderAccepted
@@ -34,6 +35,7 @@ from nautilus_trader.model.events import OrderFilled
 from nautilus_trader.model.events import OrderPendingCancel
 from nautilus_trader.model.events import OrderPendingUpdate
 from nautilus_trader.model.events import OrderRejected
+from nautilus_trader.model.events import OrderReleased
 from nautilus_trader.model.events import OrderSubmitted
 from nautilus_trader.model.events import OrderTriggered
 from nautilus_trader.model.events import OrderUpdated
@@ -48,6 +50,7 @@ from nautilus_trader.model.identifiers import TradeId
 from nautilus_trader.model.identifiers import VenueOrderId
 from nautilus_trader.model.instruments import Instrument
 from nautilus_trader.model.objects import AccountBalance
+from nautilus_trader.model.objects import Currency
 from nautilus_trader.model.objects import MarginBalance
 from nautilus_trader.model.objects import Money
 from nautilus_trader.model.objects import Price
@@ -65,7 +68,7 @@ class TestEventStubs:
             component_id=ComponentId("MyActor-001"),
             component_type="MyActor",
             state=ComponentState.RUNNING,
-            config={"do_something": True, "trade_size": Decimal("10")},
+            config={"do_something": True, "trade_size": Decimal(10)},
             event_id=UUID4(),
             ts_event=0,
             ts_init=0,
@@ -83,19 +86,33 @@ class TestEventStubs:
         )
 
     @staticmethod
-    def cash_account_state(account_id: Optional[AccountId] = None) -> AccountState:
+    def cash_account_state(
+        account_id: AccountId | None = None,
+        base_currency: Currency | None = USD,
+    ) -> AccountState:
+        balances = [
+            AccountBalance(
+                Money(1_000_000, USD),
+                Money(0, USD),
+                Money(1_000_000, USD),
+            ),
+        ]
+
+        if base_currency is None:
+            balances.append(
+                AccountBalance(
+                    Money(10_000, AUD),
+                    Money(0, AUD),
+                    Money(10_000, AUD),
+                ),
+            )
+
         return AccountState(
             account_id=account_id or TestIdStubs.account_id(),
             account_type=AccountType.CASH,
-            base_currency=USD,
+            base_currency=base_currency,
             reported=True,  # reported
-            balances=[
-                AccountBalance(
-                    Money(1_000_000, USD),
-                    Money(0, USD),
-                    Money(1_000_000, USD),
-                ),
-            ],
+            balances=balances,
             margins=[],
             info={},
             event_id=UUID4(),
@@ -104,7 +121,7 @@ class TestEventStubs:
         )
 
     @staticmethod
-    def margin_account_state(account_id: Optional[AccountId] = None) -> AccountState:
+    def margin_account_state(account_id: AccountId | None = None) -> AccountState:
         return AccountState(
             account_id=account_id or TestIdStubs.account_id(),
             account_type=AccountType.MARGIN,
@@ -131,7 +148,11 @@ class TestEventStubs:
         )
 
     @staticmethod
-    def betting_account_state(account_id: Optional[AccountId] = None) -> AccountState:
+    def betting_account_state(
+        balance: float = 10_000,
+        currency: Currency = GBP,
+        account_id: AccountId | None = None,
+    ) -> AccountState:
         return AccountState(
             account_id=account_id or TestIdStubs.account_id(),
             account_type=AccountType.BETTING,
@@ -139,9 +160,9 @@ class TestEventStubs:
             reported=False,  # reported
             balances=[
                 AccountBalance(
-                    Money(1_000, GBP),
-                    Money(0, GBP),
-                    Money(1_000, GBP),
+                    Money(balance, currency),
+                    Money(0, currency),
+                    Money(balance, currency),
                 ),
             ],
             margins=[],
@@ -152,9 +173,25 @@ class TestEventStubs:
         )
 
     @staticmethod
+    def order_released(
+        order: Order,
+        released_price: Price | None = None,
+    ) -> OrderReleased:
+        return OrderReleased(
+            trader_id=order.trader_id,
+            strategy_id=order.strategy_id,
+            instrument_id=order.instrument_id,
+            client_order_id=order.client_order_id,
+            released_price=released_price or Price.from_str("1.00000"),
+            event_id=UUID4(),
+            ts_init=0,
+        )
+
+    @staticmethod
     def order_submitted(
         order: Order,
-        account_id: Optional[AccountId] = None,
+        account_id: AccountId | None = None,
+        ts_event: int = 0,
     ) -> OrderSubmitted:
         return OrderSubmitted(
             trader_id=order.trader_id,
@@ -162,7 +199,7 @@ class TestEventStubs:
             instrument_id=order.instrument_id,
             client_order_id=order.client_order_id,
             account_id=account_id or TestIdStubs.account_id(),
-            ts_event=0,
+            ts_event=ts_event,
             event_id=UUID4(),
             ts_init=0,
         )
@@ -170,8 +207,9 @@ class TestEventStubs:
     @staticmethod
     def order_accepted(
         order: Order,
-        account_id: Optional[AccountId] = None,
-        venue_order_id: Optional[VenueOrderId] = None,
+        account_id: AccountId | None = None,
+        venue_order_id: VenueOrderId | None = None,
+        ts_event: int = 0,
     ) -> OrderAccepted:
         return OrderAccepted(
             trader_id=order.trader_id,
@@ -180,7 +218,7 @@ class TestEventStubs:
             client_order_id=order.client_order_id,
             venue_order_id=venue_order_id or TestIdStubs.venue_order_id(),
             account_id=account_id or TestIdStubs.account_id(),
-            ts_event=0,
+            ts_event=ts_event,
             event_id=UUID4(),
             ts_init=0,
         )
@@ -188,7 +226,8 @@ class TestEventStubs:
     @staticmethod
     def order_rejected(
         order: Order,
-        account_id: Optional[AccountId] = None,
+        account_id: AccountId | None = None,
+        ts_event: int = 0,
     ) -> OrderRejected:
         return OrderRejected(
             trader_id=order.trader_id,
@@ -197,13 +236,16 @@ class TestEventStubs:
             client_order_id=order.client_order_id,
             account_id=account_id or TestIdStubs.account_id(),
             reason="ORDER_REJECTED",
-            ts_event=0,
+            ts_event=ts_event,
             event_id=UUID4(),
             ts_init=0,
         )
 
     @staticmethod
-    def order_pending_update(order: Order) -> OrderPendingUpdate:
+    def order_pending_update(
+        order: Order,
+        ts_event: int = 0,
+    ) -> OrderPendingUpdate:
         return OrderPendingUpdate(
             trader_id=order.trader_id,
             strategy_id=order.strategy_id,
@@ -211,7 +253,7 @@ class TestEventStubs:
             client_order_id=order.client_order_id,
             venue_order_id=order.venue_order_id,
             account_id=order.account_id,
-            ts_event=0,
+            ts_event=ts_event,
             event_id=UUID4(),
             ts_init=0,
         )
@@ -219,9 +261,10 @@ class TestEventStubs:
     @staticmethod
     def order_updated(
         order: Order,
-        quantity: Optional[Quantity] = None,
-        price: Optional[Price] = None,
-        trigger_price: Optional[Price] = None,
+        quantity: Quantity | None = None,
+        price: Price | None = None,
+        trigger_price: Price | None = None,
+        ts_event: int = 0,
     ) -> OrderUpdated:
         return OrderUpdated(
             trader_id=order.trader_id,
@@ -231,15 +274,18 @@ class TestEventStubs:
             venue_order_id=order.venue_order_id,
             account_id=order.account_id,
             event_id=UUID4(),
-            quantity=quantity,
+            quantity=quantity or order.quantity,
             price=price,
             trigger_price=trigger_price,
+            ts_event=ts_event,
             ts_init=0,
-            ts_event=0,
         )
 
     @staticmethod
-    def order_pending_cancel(order: Order) -> OrderPendingCancel:
+    def order_pending_cancel(
+        order: Order,
+        ts_event: int = 0,
+    ) -> OrderPendingCancel:
         return OrderPendingCancel(
             trader_id=order.trader_id,
             strategy_id=order.strategy_id,
@@ -247,7 +293,7 @@ class TestEventStubs:
             client_order_id=order.client_order_id,
             venue_order_id=order.venue_order_id,
             account_id=order.account_id,
-            ts_event=0,
+            ts_event=ts_event,
             event_id=UUID4(),
             ts_init=0,
         )
@@ -256,33 +302,27 @@ class TestEventStubs:
     def order_filled(
         order: Order,
         instrument: Instrument,
-        strategy_id: Optional[StrategyId] = None,
-        account_id: Optional[AccountId] = None,
-        venue_order_id: Optional[VenueOrderId] = None,
-        trade_id: Optional[TradeId] = None,
-        position_id: Optional[PositionId] = None,
-        last_qty: Optional[Quantity] = None,
-        last_px: Optional[Price] = None,
+        strategy_id: StrategyId | None = None,
+        account_id: AccountId | None = None,
+        venue_order_id: VenueOrderId | None = None,
+        trade_id: TradeId | None = None,
+        position_id: PositionId | None = None,
+        last_qty: Quantity | None = None,
+        last_px: Price | None = None,
+        side: OrderSide | None = None,  # For linearizing: flip side & use 1/price for prob space
         liquidity_side: LiquiditySide = LiquiditySide.TAKER,
-        ts_filled_ns: int = 0,
-        account: Optional[Account] = None,
+        account: Account | None = None,
+        ts_event: int = 0,
     ) -> OrderFilled:
-        if strategy_id is None:
-            strategy_id = order.strategy_id
-        if account_id is None:
-            account_id = order.account_id
-            if account_id is None:
-                account_id = TestIdStubs.account_id()
-        if venue_order_id is None:
-            venue_order_id = VenueOrderId("1")
-        if trade_id is None:
-            trade_id = TradeId(order.client_order_id.value.replace("O", "E"))
-        if position_id is None:
-            position_id = order.position_id
-        if last_px is None:
-            last_px = Price.from_str(f"{1:.{instrument.price_precision}f}")
-        if last_qty is None:
-            last_qty = order.quantity
+        strategy_id = strategy_id or order.strategy_id
+        account_id = account_id or order.account_id or TestIdStubs.account_id()
+        venue_order_id = venue_order_id or order.venue_order_id or VenueOrderId("1")
+        trade_id = trade_id or TradeId(order.client_order_id.value.replace("O", "E"))
+        position_id = position_id or order.position_id
+        last_qty = last_qty or order.quantity
+        last_px = last_px or Price.from_str(f"{1:.{instrument.price_precision}f}")
+        order_side = side or order.side
+
         if account is None:
             # Causes circular import if moved to the top
             from nautilus_trader.test_kit.stubs.execution import TestExecStubs
@@ -306,20 +346,23 @@ class TestEventStubs:
             account_id=account_id,
             trade_id=trade_id,
             position_id=position_id,
-            order_side=order.side,
+            order_side=order_side,
             order_type=order.order_type,
             last_qty=last_qty,
-            last_px=last_px or order.price,
+            last_px=last_px or (order.price if order.has_price else None),
             currency=instrument.quote_currency,
             commission=commission,
             liquidity_side=liquidity_side,
-            ts_event=ts_filled_ns,
+            ts_event=ts_event,
             event_id=UUID4(),
             ts_init=0,
         )
 
     @staticmethod
-    def order_canceled(order: Order) -> OrderCanceled:
+    def order_canceled(
+        order: Order,
+        ts_event: int = 0,
+    ) -> OrderCanceled:
         return OrderCanceled(
             trader_id=order.trader_id,
             strategy_id=order.strategy_id,
@@ -327,13 +370,16 @@ class TestEventStubs:
             client_order_id=order.client_order_id,
             venue_order_id=order.venue_order_id,
             account_id=TestIdStubs.account_id(),
-            ts_event=0,
+            ts_event=ts_event,
             event_id=UUID4(),
             ts_init=0,
         )
 
     @staticmethod
-    def order_expired(order: Order) -> OrderExpired:
+    def order_expired(
+        order: Order,
+        ts_event: int = 0,
+    ) -> OrderExpired:
         return OrderExpired(
             trader_id=order.trader_id,
             strategy_id=order.strategy_id,
@@ -341,13 +387,16 @@ class TestEventStubs:
             client_order_id=order.client_order_id,
             venue_order_id=order.venue_order_id,
             account_id=TestIdStubs.account_id(),
-            ts_event=0,
+            ts_event=ts_event,
             event_id=UUID4(),
             ts_init=0,
         )
 
     @staticmethod
-    def order_triggered(order: Order) -> OrderTriggered:
+    def order_triggered(
+        order: Order,
+        ts_event: int = 0,
+    ) -> OrderTriggered:
         return OrderTriggered(
             trader_id=order.trader_id,
             strategy_id=order.strategy_id,
@@ -355,7 +404,7 @@ class TestEventStubs:
             client_order_id=order.client_order_id,
             venue_order_id=order.venue_order_id,
             account_id=TestIdStubs.account_id(),
-            ts_event=0,
+            ts_event=ts_event,
             event_id=UUID4(),
             ts_init=0,
         )

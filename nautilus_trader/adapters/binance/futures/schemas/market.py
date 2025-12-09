@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -14,7 +14,6 @@
 # -------------------------------------------------------------------------------------------------
 
 from decimal import Decimal
-from typing import Optional
 
 import msgspec
 
@@ -26,12 +25,12 @@ from nautilus_trader.adapters.binance.common.schemas.market import BinanceSymbol
 from nautilus_trader.adapters.binance.futures.enums import BinanceFuturesContractStatus
 from nautilus_trader.adapters.binance.futures.types import BinanceFuturesMarkPriceUpdate
 from nautilus_trader.core.datetime import millis_to_nanos
-from nautilus_trader.model.currency import Currency
 from nautilus_trader.model.data import TradeTick
 from nautilus_trader.model.enums import AggressorSide
 from nautilus_trader.model.enums import CurrencyType
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import TradeId
+from nautilus_trader.model.objects import Currency
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
 
@@ -42,7 +41,9 @@ from nautilus_trader.model.objects import Quantity
 
 
 class BinanceFuturesAsset(msgspec.Struct, frozen=True):
-    """HTTP response 'inner struct' from `Binance Futures` GET /fapi/v1/exchangeInfo."""
+    """
+    HTTP response 'inner struct' from Binance Futures GET /fapi/v1/exchangeInfo.
+    """
 
     asset: str
     marginAvailable: bool
@@ -50,14 +51,16 @@ class BinanceFuturesAsset(msgspec.Struct, frozen=True):
 
 
 class BinanceFuturesSymbolInfo(msgspec.Struct, kw_only=True, frozen=True):
-    """HTTP response 'inner struct' from `Binance Futures` GET /fapi/v1/exchangeInfo."""
+    """
+    HTTP response 'inner struct' from Binance Futures GET /fapi/v1/exchangeInfo.
+    """
 
     symbol: str
     pair: str
     contractType: str  # Can be '' empty string
     deliveryDate: int
     onboardDate: int
-    status: Optional[BinanceFuturesContractStatus] = None
+    status: BinanceFuturesContractStatus | None = None
     maintMarginPercent: str
     requiredMarginPercent: str
     baseAsset: str
@@ -69,7 +72,7 @@ class BinanceFuturesSymbolInfo(msgspec.Struct, kw_only=True, frozen=True):
     quotePrecision: int
     underlyingType: str
     underlyingSubType: list[str]
-    settlePlan: Optional[int] = None
+    settlePlan: int | None = None
     triggerProtect: str
     liquidationFee: str
     marketTakeBound: str
@@ -81,7 +84,7 @@ class BinanceFuturesSymbolInfo(msgspec.Struct, kw_only=True, frozen=True):
         return Currency(
             code=self.baseAsset,
             precision=self.baseAssetPrecision,
-            iso4217=0,  # Currently undetermined for crypto assets
+            iso4217=0,  # Currently unspecified for crypto assets
             name=self.baseAsset,
             currency_type=CurrencyType.CRYPTO,
         )
@@ -90,30 +93,36 @@ class BinanceFuturesSymbolInfo(msgspec.Struct, kw_only=True, frozen=True):
         return Currency(
             code=self.quoteAsset,
             precision=self.quotePrecision,
-            iso4217=0,  # Currently undetermined for crypto assets
+            iso4217=0,  # Currently unspecified for crypto assets
             name=self.quoteAsset,
             currency_type=CurrencyType.CRYPTO,
         )
 
 
 class BinanceFuturesExchangeInfo(msgspec.Struct, kw_only=True, frozen=True):
-    """HTTP response from `Binance Futures` GET /fapi/v1/exchangeInfo."""
+    """
+    HTTP response from Binance Futures GET /fapi/v1/exchangeInfo.
+    """
 
     timezone: str
     serverTime: int
     rateLimits: list[BinanceRateLimit]
     exchangeFilters: list[BinanceExchangeFilter]
-    assets: Optional[list[BinanceFuturesAsset]] = None
+    assets: list[BinanceFuturesAsset] | None = None
     symbols: list[BinanceFuturesSymbolInfo]
 
 
 class BinanceFuturesMarkFunding(msgspec.Struct, frozen=True):
-    """HTTP response from `Binance Future` GET /fapi/v1/premiumIndex."""
+    """
+    HTTP response from Binance Futures GET /fapi/v1/premiumIndex.
+    """
 
     symbol: str
     markPrice: str  # Mark price
     indexPrice: str  # Index price
-    estimatedSettlePrice: str  # Estimated Settle Price (only useful in the last hour before the settlement starts)
+    estimatedSettlePrice: (
+        str  # Estimated Settle Price (only useful in the last hour before the settlement starts)
+    )
     lastFundingRate: str  # This is the lasted funding rate
     nextFundingTime: int
     interestRate: str
@@ -121,7 +130,9 @@ class BinanceFuturesMarkFunding(msgspec.Struct, frozen=True):
 
 
 class BinanceFuturesFundRate(msgspec.Struct, frozen=True):
-    """HTTP response from `Binance Future` GET /fapi/v1/fundingRate."""
+    """
+    HTTP response from Binance Futures GET /fapi/v1/fundingRate.
+    """
 
     symbol: str
     fundingRate: str
@@ -135,7 +146,7 @@ class BinanceFuturesFundRate(msgspec.Struct, frozen=True):
 
 class BinanceFuturesTradeData(msgspec.Struct, frozen=True):
     """
-    WebSocket message 'inner struct' for `Binance Futures` Trade Streams.
+    WebSocket message 'inner struct' for Binance Futures Trade Streams.
 
     Fields
     ------
@@ -149,16 +160,16 @@ class BinanceFuturesTradeData(msgspec.Struct, frozen=True):
     - a: Seller order ID
     - T: Trade time
     - m: Is the buyer the market maker?
+
     """
 
     e: str  # Event type
     E: int  # Event time
-    T: int  # Trade time
     s: str  # Symbol
     t: int  # Trade ID
     p: str  # Price
     q: str  # Quantity
-    X: BinanceOrderType  # Buyer order type
+    T: int  # Trade time
     m: bool  # Is the buyer the market maker?
 
     def parse_to_trade_tick(
@@ -166,6 +177,19 @@ class BinanceFuturesTradeData(msgspec.Struct, frozen=True):
         instrument_id: InstrumentId,
         ts_init: int,
     ) -> TradeTick:
+        """
+        Parameters
+        ----------
+        instrument_id : InstrumentId
+            The trade instrument ID.
+        ts_init : uint64_t
+            UNIX timestamp (nanoseconds) when the data object was initialized.
+
+        Raises
+        ------
+        ValueError
+            If trade tick data are incorrect
+        """
         return TradeTick(
             instrument_id=instrument_id,
             price=Price.from_str(self.p),
@@ -178,14 +202,18 @@ class BinanceFuturesTradeData(msgspec.Struct, frozen=True):
 
 
 class BinanceFuturesTradeMsg(msgspec.Struct, frozen=True):
-    """WebSocket message from `Binance Futures` Trade Streams."""
+    """
+    WebSocket message from Binance Futures Trade Streams.
+    """
 
     stream: str
     data: BinanceFuturesTradeData
 
 
 class BinanceFuturesMarkPriceData(msgspec.Struct, frozen=True):
-    """WebSocket message 'inner struct' for `Binance Futures` Mark Price Update events."""
+    """
+    WebSocket message 'inner struct' for Binance Futures Mark Price Update events.
+    """
 
     e: str  # Event type
     E: int  # Event time
@@ -207,14 +235,25 @@ class BinanceFuturesMarkPriceData(msgspec.Struct, frozen=True):
             index=Price.from_str(self.i),
             estimated_settle=Price.from_str(self.P),
             funding_rate=Decimal(self.r),
-            ts_next_funding=millis_to_nanos(self.T),
+            next_funding_ns=millis_to_nanos(self.T),
             ts_event=millis_to_nanos(self.E),
             ts_init=ts_init,
         )
 
 
 class BinanceFuturesMarkPriceMsg(msgspec.Struct, frozen=True):
-    """WebSocket message from `Binance Futures` Mark Price Update events."""
+    """
+    WebSocket message from Binance Futures Mark Price Update events.
+    """
 
     stream: str
     data: BinanceFuturesMarkPriceData
+
+
+class BinanceFuturesMarkPriceAllMsg(msgspec.Struct, frozen=True):
+    """
+    WebSocket message from Binance Futures All Mark Price Update events.
+    """
+
+    stream: str
+    data: list[BinanceFuturesMarkPriceData]

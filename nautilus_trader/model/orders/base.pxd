@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -16,15 +16,15 @@
 from libc.stdint cimport uint64_t
 
 from nautilus_trader.core.fsm cimport FiniteStateMachine
+from nautilus_trader.core.rust.model cimport ContingencyType
+from nautilus_trader.core.rust.model cimport LiquiditySide
+from nautilus_trader.core.rust.model cimport OrderSide
+from nautilus_trader.core.rust.model cimport OrderStatus
+from nautilus_trader.core.rust.model cimport OrderType
+from nautilus_trader.core.rust.model cimport PositionSide
+from nautilus_trader.core.rust.model cimport TimeInForce
+from nautilus_trader.core.rust.model cimport TriggerType
 from nautilus_trader.core.uuid cimport UUID4
-from nautilus_trader.model.enums_c cimport ContingencyType
-from nautilus_trader.model.enums_c cimport LiquiditySide
-from nautilus_trader.model.enums_c cimport OrderSide
-from nautilus_trader.model.enums_c cimport OrderStatus
-from nautilus_trader.model.enums_c cimport OrderType
-from nautilus_trader.model.enums_c cimport PositionSide
-from nautilus_trader.model.enums_c cimport TimeInForce
-from nautilus_trader.model.enums_c cimport TriggerType
 from nautilus_trader.model.events.order cimport OrderAccepted
 from nautilus_trader.model.events.order cimport OrderCanceled
 from nautilus_trader.model.events.order cimport OrderDenied
@@ -50,14 +50,17 @@ from nautilus_trader.model.objects cimport Price
 from nautilus_trader.model.objects cimport Quantity
 
 
-cdef tuple VALID_STOP_ORDER_TYPES
-cdef tuple VALID_LIMIT_ORDER_TYPES
+cdef set[OrderType] STOP_ORDER_TYPES
+cdef set[OrderType] LIMIT_ORDER_TYPES
+cdef set[OrderStatus] CANCELLABLE_ORDER_STATUSES
+cdef set[OrderStatus] LOCAL_ACTIVE_ORDER_STATUSES
 
 
 cdef class Order:
     cdef list _events
     cdef list _venue_order_ids
     cdef list _trade_ids
+    cdef dict _commissions
     cdef FiniteStateMachine _fsm
     cdef OrderStatus _previous_status
     cdef Price _triggered_price
@@ -98,6 +101,8 @@ cdef class Order:
     """The order total filled quantity.\n\n:returns: `Quantity`"""
     cdef readonly Quantity leaves_qty
     """The order total leaves quantity.\n\n:returns: `Quantity`"""
+    cdef readonly Quantity overfill_qty
+    """The order total overfill quantity (filled beyond original quantity).\n\n:returns: `Quantity`"""
     cdef readonly double avg_px
     """The order average fill price.\n\n:returns: `double`"""
     cdef readonly double slippage
@@ -120,18 +125,30 @@ cdef class Order:
     """The execution algorithm parameters for the order.\n\n:returns: `dict[str, Any]` or ``None``"""
     cdef readonly ClientOrderId exec_spawn_id
     """The execution algorithm spawning client order ID.\n\n:returns: `ClientOrderId` or ``None``"""
-    cdef readonly str tags
-    """The order custom user tags.\n\n:returns: `str` or ``None``"""
+    cdef readonly list[str] tags
+    """The order custom user tags.\n\n:returns: `list[str]` or ``None``"""
     cdef readonly UUID4 init_id
     """The event ID of the `OrderInitialized` event.\n\n:returns: `UUID4`"""
     cdef readonly uint64_t ts_init
-    """The UNIX timestamp (nanoseconds) when the object was initialized.\n\n:returns: `uint64_t`"""
+    """UNIX timestamp (nanoseconds) when the order was initialized.\n\n:returns: `uint64_t`"""
+    cdef readonly uint64_t ts_submitted
+    """UNIX timestamp (nanoseconds) when the order was submitted (zero unless submitted).\n\n:returns: `uint64_t`"""
+    cdef readonly uint64_t ts_accepted
+    """UNIX timestamp (nanoseconds) when the order was accepted or first filled (zero unless accepted or filled).\n\n:returns: `uint64_t`"""
+    cdef readonly uint64_t ts_closed
+    """UNIX timestamp (nanoseconds) when the order closed / lifecycle completed (zero unless closed).\n\n:returns: `uint64_t`"""
     cdef readonly uint64_t ts_last
-    """The UNIX timestamp (nanoseconds) when the last fill occurred (0 for no fill).\n\n:returns: `uint64_t`"""
+    """UNIX timestamp (nanoseconds) when the last order event occurred.\n\n:returns: `uint64_t`"""
 
     cpdef str info(self)
+    cpdef str status_string(self)
+    cpdef str side_string(self)
+    cpdef str type_string(self)
+    cpdef str tif_string(self)
     cpdef dict to_dict(self)
 
+    cpdef void set_quote_quantity(self, bint value)
+    cdef void set_activated_c(self, Price activation_price)
     cdef void set_triggered_price_c(self, Price triggered_price)
     cdef Price get_triggered_price_c(self)
     cdef OrderStatus status_c(self)
@@ -146,12 +163,14 @@ cdef class Order:
     cdef str side_string_c(self)
     cdef str tif_string_c(self)
     cdef bint has_price_c(self)
+    cdef bint has_activation_price_c(self)
     cdef bint has_trigger_price_c(self)
     cdef bint is_buy_c(self)
     cdef bint is_sell_c(self)
     cdef bint is_passive_c(self)
     cdef bint is_aggressive_c(self)
     cdef bint is_emulated_c(self)
+    cdef bint is_active_local_c(self)
     cdef bint is_primary_c(self)
     cdef bint is_spawned_c(self)
     cdef bint is_contingency_c(self)
@@ -172,9 +191,12 @@ cdef class Order:
 
     cpdef signed_decimal_qty(self)
     cpdef bint would_reduce_only(self, PositionSide position_side, Quantity position_qty)
+    cpdef list commissions(self)
 
     cpdef void apply(self, OrderEvent event)
 
+    cdef Quantity calculate_overfill_c(self, Quantity fill_qty)
+    cdef bint is_duplicate_fill_c(self, OrderFilled fill)
     cdef void _denied(self, OrderDenied event)
     cdef void _submitted(self, OrderSubmitted event)
     cdef void _rejected(self, OrderRejected event)

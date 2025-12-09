@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -18,24 +18,22 @@ import pytest
 from nautilus_trader.adapters.binance.common.enums import BinanceAccountType
 from nautilus_trader.adapters.binance.factories import get_cached_binance_http_client
 from nautilus_trader.adapters.binance.futures.http.account import BinanceFuturesAccountHttpAPI
-from nautilus_trader.common.clock import LiveClock
-from nautilus_trader.common.logging import Logger
+from nautilus_trader.common.component import LiveClock
 
 
-@pytest.mark.asyncio()
+@pytest.mark.asyncio
 async def test_binance_futures_account_http_client():
     clock = LiveClock()
 
     client = get_cached_binance_http_client(
         clock=clock,
-        logger=Logger(clock=clock),
-        account_type=BinanceAccountType.USDT_FUTURE,
+        account_type=BinanceAccountType.USDT_FUTURES,
     )
 
     http_account = BinanceFuturesAccountHttpAPI(
         clock=clock,
         client=client,
-        account_type=BinanceAccountType.USDT_FUTURE,
+        account_type=BinanceAccountType.USDT_FUTURES,
     )
 
     ############################################################################

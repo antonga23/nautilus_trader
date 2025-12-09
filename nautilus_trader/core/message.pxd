@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -22,38 +22,37 @@ cdef class Command:
     cdef readonly UUID4 id
     """The command message ID.\n\n:returns: `UUID4`"""
     cdef readonly uint64_t ts_init
-    """The UNIX timestamp (nanoseconds) when the object was initialized.\n\n:returns: `uint64_t`"""
+    """UNIX timestamp (nanoseconds) when the object was initialized.\n\n:returns: `uint64_t`"""
+    cdef readonly UUID4 correlation_id
+    """The command correlation ID.\n\n:returns: `UUID4` or ``None``"""
 
 
 cdef class Document:
     cdef readonly UUID4 id
     """The document message ID.\n\n:returns: `UUID4`"""
     cdef readonly uint64_t ts_init
-    """The UNIX timestamp (nanoseconds) when the object was initialized.\n\n:returns: `uint64_t`"""
+    """UNIX timestamp (nanoseconds) when the object was initialized.\n\n:returns: `uint64_t`"""
 
 
 cdef class Event:
-    cdef readonly UUID4 id
-    """The event message ID.\n\n:returns: `UUID4`"""
-    cdef readonly uint64_t ts_init
-    """The UNIX timestamp (nanoseconds) when the object was initialized.\n\n:returns: `uint64_t`"""
-    cdef readonly uint64_t ts_event
-    """The UNIX timestamp (nanoseconds) when the event occurred.\n\n:returns: `uint64_t`"""
+    pass
 
 
 cdef class Request:
     cdef readonly UUID4 id
     """The request message ID.\n\n:returns: `UUID4`"""
     cdef readonly uint64_t ts_init
-    """The UNIX timestamp (nanoseconds) when the object was initialized.\n\n:returns: `uint64_t`"""
+    """UNIX timestamp (nanoseconds) when the object was initialized.\n\n:returns: `uint64_t`"""
     cdef readonly object callback
     """The callback for the response.\n\n:returns: `Callable`"""
+    cdef readonly UUID4 correlation_id
+    """The request correlation ID.\n\n:returns: `UUID4` or ``None``"""
 
 
 cdef class Response:
     cdef readonly UUID4 id
     """The response message ID.\n\n:returns: `UUID4`"""
     cdef readonly uint64_t ts_init
-    """The UNIX timestamp (nanoseconds) when the object was initialized.\n\n:returns: `uint64_t`"""
+    """UNIX timestamp (nanoseconds) when the object was initialized.\n\n:returns: `uint64_t`"""
     cdef readonly UUID4 correlation_id
     """The response correlation ID.\n\n:returns: `UUID4`"""

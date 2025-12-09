@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -19,7 +19,9 @@ from nautilus_trader.live.risk_engine import LiveRiskEngine
 
 
 class MockLiveDataEngine(LiveDataEngine):
-    """Provides a mock live data engine for testing."""
+    """
+    Provides a mock live data engine for testing.
+    """
 
     def __init__(
         self,
@@ -27,7 +29,6 @@ class MockLiveDataEngine(LiveDataEngine):
         msgbus,
         cache,
         clock,
-        logger,
         config=None,
     ):
         super().__init__(
@@ -35,7 +36,6 @@ class MockLiveDataEngine(LiveDataEngine):
             msgbus=msgbus,
             cache=cache,
             clock=clock,
-            logger=logger,
             config=config,
         )
 
@@ -46,15 +46,17 @@ class MockLiveDataEngine(LiveDataEngine):
     def execute(self, command):
         self.commands.append(command)
 
-    def process(self, event):
-        self.events.append(event)
+    def process(self, data):
+        self.events.append(data)
 
     def receive(self, response):
         self.responses.append(response)
 
 
 class MockLiveExecutionEngine(LiveExecutionEngine):
-    """Provides a mock live execution engine for testing."""
+    """
+    Provides a mock live execution engine for testing.
+    """
 
     def __init__(
         self,
@@ -62,7 +64,6 @@ class MockLiveExecutionEngine(LiveExecutionEngine):
         msgbus,
         cache,
         clock,
-        logger,
         config=None,
     ):
         super().__init__(
@@ -70,7 +71,6 @@ class MockLiveExecutionEngine(LiveExecutionEngine):
             msgbus=msgbus,
             cache=cache,
             clock=clock,
-            logger=logger,
             config=config,
         )
 
@@ -85,7 +85,9 @@ class MockLiveExecutionEngine(LiveExecutionEngine):
 
 
 class MockLiveRiskEngine(LiveRiskEngine):
-    """Provides a mock live risk engine for testing."""
+    """
+    Provides a mock live risk engine for testing.
+    """
 
     def __init__(
         self,
@@ -94,7 +96,6 @@ class MockLiveRiskEngine(LiveRiskEngine):
         msgbus,
         cache,
         clock,
-        logger,
         config=None,
     ):
         super().__init__(
@@ -103,7 +104,6 @@ class MockLiveRiskEngine(LiveRiskEngine):
             msgbus=msgbus,
             cache=cache,
             clock=clock,
-            logger=logger,
             config=config,
         )
 

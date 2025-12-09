@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -19,15 +19,11 @@ from cpython.datetime cimport datetime
 from libc.stdint cimport uint64_t
 
 
-cpdef uint64_t secs_to_nanos(double seconds)
-cpdef uint64_t secs_to_millis(double secs)
-cpdef uint64_t millis_to_nanos(double millis)
-cpdef uint64_t micros_to_nanos(double micros)
-cpdef double nanos_to_secs(uint64_t nanos)
-cpdef uint64_t nanos_to_millis(uint64_t nanos)
-cpdef uint64_t nanos_to_micros(uint64_t nanos)
 cpdef unix_nanos_to_dt(uint64_t nanos)
 cpdef dt_to_unix_nanos(dt: pd.Timestamp)
+cpdef str unix_nanos_to_iso8601(uint64_t unix_nanos, bint nanos_precision=*)
+cpdef str format_iso8601(datetime dt, bint nanos_precision=*)
+cpdef str format_optional_iso8601(datetime dt, bint nanos_precision=*)
 cpdef maybe_unix_nanos_to_dt(nanos)
 cpdef maybe_dt_to_unix_nanos(dt: pd.Timestamp)
 cpdef bint is_datetime_utc(datetime dt)
@@ -35,4 +31,4 @@ cpdef bint is_tz_aware(time_object)
 cpdef bint is_tz_naive(time_object)
 cpdef datetime as_utc_timestamp(datetime dt)
 cpdef object as_utc_index(time_object)
-cpdef str format_iso8601(datetime dt)
+cpdef datetime time_object_to_dt(time_object)

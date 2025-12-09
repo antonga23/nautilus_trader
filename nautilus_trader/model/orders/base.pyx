@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -15,27 +15,26 @@
 
 from decimal import Decimal
 
+from nautilus_trader.core import nautilus_pyo3
+
+# This needs to be a Python import so it can used in the FSM
 from nautilus_trader.model.enums import order_status_to_str
 
-from libc.stdint cimport int64_t
-from libc.stdint cimport uint64_t
-
 from nautilus_trader.core.correctness cimport Condition
-from nautilus_trader.model.enums_c cimport ContingencyType
-from nautilus_trader.model.enums_c cimport LiquiditySide
-from nautilus_trader.model.enums_c cimport OrderSide
-from nautilus_trader.model.enums_c cimport OrderStatus
-from nautilus_trader.model.enums_c cimport OrderType
-from nautilus_trader.model.enums_c cimport PositionSide
-from nautilus_trader.model.enums_c cimport contingency_type_to_str
-from nautilus_trader.model.enums_c cimport order_side_to_str
-from nautilus_trader.model.enums_c cimport order_type_to_str
-from nautilus_trader.model.enums_c cimport position_side_to_str
-from nautilus_trader.model.enums_c cimport time_in_force_to_str
+from nautilus_trader.core.rust.model cimport FIXED_SCALAR
+from nautilus_trader.core.rust.model cimport ContingencyType
+from nautilus_trader.core.rust.model cimport LiquiditySide
+from nautilus_trader.core.rust.model cimport OrderSide
+from nautilus_trader.core.rust.model cimport OrderStatus
+from nautilus_trader.core.rust.model cimport OrderType
+from nautilus_trader.core.rust.model cimport PositionSide
+from nautilus_trader.core.rust.model cimport PriceRaw
+from nautilus_trader.core.rust.model cimport QuantityRaw
 from nautilus_trader.model.events.order cimport OrderAccepted
 from nautilus_trader.model.events.order cimport OrderCanceled
 from nautilus_trader.model.events.order cimport OrderCancelRejected
 from nautilus_trader.model.events.order cimport OrderDenied
+from nautilus_trader.model.events.order cimport OrderEmulated
 from nautilus_trader.model.events.order cimport OrderEvent
 from nautilus_trader.model.events.order cimport OrderExpired
 from nautilus_trader.model.events.order cimport OrderFilled
@@ -44,45 +43,77 @@ from nautilus_trader.model.events.order cimport OrderModifyRejected
 from nautilus_trader.model.events.order cimport OrderPendingCancel
 from nautilus_trader.model.events.order cimport OrderPendingUpdate
 from nautilus_trader.model.events.order cimport OrderRejected
+from nautilus_trader.model.events.order cimport OrderReleased
 from nautilus_trader.model.events.order cimport OrderSubmitted
 from nautilus_trader.model.events.order cimport OrderTriggered
 from nautilus_trader.model.events.order cimport OrderUpdated
+from nautilus_trader.model.functions cimport contingency_type_to_str
+from nautilus_trader.model.functions cimport order_side_to_pyo3
+from nautilus_trader.model.functions cimport order_side_to_str
+from nautilus_trader.model.functions cimport order_status_to_pyo3
+from nautilus_trader.model.functions cimport order_type_to_pyo3
+from nautilus_trader.model.functions cimport order_type_to_str
+from nautilus_trader.model.functions cimport position_side_to_str
+from nautilus_trader.model.functions cimport time_in_force_to_pyo3
+from nautilus_trader.model.functions cimport time_in_force_to_str
 from nautilus_trader.model.identifiers cimport TradeId
+from nautilus_trader.model.objects cimport Currency
+from nautilus_trader.model.objects cimport Money
 from nautilus_trader.model.objects cimport Quantity
 
 
-VALID_STOP_ORDER_TYPES = (
+STOP_ORDER_TYPES = {
     OrderType.STOP_MARKET,
     OrderType.STOP_LIMIT,
     OrderType.MARKET_IF_TOUCHED,
     OrderType.LIMIT_IF_TOUCHED,
-)
+}
 
-VALID_LIMIT_ORDER_TYPES = (
+LIMIT_ORDER_TYPES = {
     OrderType.LIMIT,
     OrderType.STOP_LIMIT,
     OrderType.LIMIT_IF_TOUCHED,
     OrderType.MARKET_TO_LIMIT,
-)
+}
+
+CANCELLABLE_ORDER_STATUSES = {
+    OrderStatus.ACCEPTED,
+    OrderStatus.TRIGGERED,
+    OrderStatus.PENDING_UPDATE,
+    OrderStatus.PARTIALLY_FILLED,
+}
+
+LOCAL_ACTIVE_ORDER_STATUSES =  {
+    OrderStatus.INITIALIZED,
+    OrderStatus.EMULATED,
+    OrderStatus.RELEASED,
+}
 
 # OrderStatus being used as trigger
 cdef dict _ORDER_STATE_TABLE = {
     (OrderStatus.INITIALIZED, OrderStatus.DENIED): OrderStatus.DENIED,
+    (OrderStatus.INITIALIZED, OrderStatus.EMULATED): OrderStatus.EMULATED,  # Emulated orders
+    (OrderStatus.INITIALIZED, OrderStatus.RELEASED): OrderStatus.RELEASED,  # Emulated orders
     (OrderStatus.INITIALIZED, OrderStatus.SUBMITTED): OrderStatus.SUBMITTED,
-    (OrderStatus.INITIALIZED, OrderStatus.ACCEPTED): OrderStatus.ACCEPTED,  # Covers external orders
-    (OrderStatus.INITIALIZED, OrderStatus.REJECTED): OrderStatus.REJECTED,  # Covers external orders
-    (OrderStatus.INITIALIZED, OrderStatus.CANCELED): OrderStatus.CANCELED,  # Covers emulated and external orders
-    (OrderStatus.INITIALIZED, OrderStatus.EXPIRED): OrderStatus.EXPIRED,  # Covers emulated and external orders
-    (OrderStatus.INITIALIZED, OrderStatus.TRIGGERED): OrderStatus.TRIGGERED,  # Covers emulated and external orders
+    (OrderStatus.INITIALIZED, OrderStatus.REJECTED): OrderStatus.REJECTED,  # External orders
+    (OrderStatus.INITIALIZED, OrderStatus.ACCEPTED): OrderStatus.ACCEPTED,  # External orders
+    (OrderStatus.INITIALIZED, OrderStatus.CANCELED): OrderStatus.CANCELED,  # External orders
+    (OrderStatus.INITIALIZED, OrderStatus.EXPIRED): OrderStatus.EXPIRED,  # External orders
+    (OrderStatus.INITIALIZED, OrderStatus.TRIGGERED): OrderStatus.TRIGGERED,  # External orders
+    (OrderStatus.EMULATED, OrderStatus.CANCELED): OrderStatus.CANCELED,  # Emulated orders
+    (OrderStatus.EMULATED, OrderStatus.EXPIRED): OrderStatus.EXPIRED,  # Emulated orders
+    (OrderStatus.EMULATED, OrderStatus.RELEASED): OrderStatus.RELEASED,  # Emulated orders
+    (OrderStatus.RELEASED, OrderStatus.DENIED): OrderStatus.DENIED,  # Emulated orders
+    (OrderStatus.RELEASED, OrderStatus.SUBMITTED): OrderStatus.SUBMITTED,  # Emulated orders
+    (OrderStatus.RELEASED, OrderStatus.CANCELED): OrderStatus.CANCELED,  # Execution Algo
     (OrderStatus.SUBMITTED, OrderStatus.PENDING_UPDATE): OrderStatus.PENDING_UPDATE,
     (OrderStatus.SUBMITTED, OrderStatus.PENDING_CANCEL): OrderStatus.PENDING_CANCEL,
     (OrderStatus.SUBMITTED, OrderStatus.REJECTED): OrderStatus.REJECTED,
-    (OrderStatus.SUBMITTED, OrderStatus.CANCELED): OrderStatus.CANCELED,  # Covers FOK and IOC cases
+    (OrderStatus.SUBMITTED, OrderStatus.CANCELED): OrderStatus.CANCELED,  # FOK and IOC cases
     (OrderStatus.SUBMITTED, OrderStatus.ACCEPTED): OrderStatus.ACCEPTED,
-    (OrderStatus.SUBMITTED, OrderStatus.TRIGGERED): OrderStatus.TRIGGERED,  # Covers emulated StopLimit order
     (OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED): OrderStatus.PARTIALLY_FILLED,
     (OrderStatus.SUBMITTED, OrderStatus.FILLED): OrderStatus.FILLED,
-    (OrderStatus.ACCEPTED, OrderStatus.REJECTED): OrderStatus.REJECTED,  # Covers StopLimit order
+    (OrderStatus.ACCEPTED, OrderStatus.REJECTED): OrderStatus.REJECTED,  # StopLimit order
     (OrderStatus.ACCEPTED, OrderStatus.PENDING_UPDATE): OrderStatus.PENDING_UPDATE,
     (OrderStatus.ACCEPTED, OrderStatus.PENDING_CANCEL): OrderStatus.PENDING_CANCEL,
     (OrderStatus.ACCEPTED, OrderStatus.CANCELED): OrderStatus.CANCELED,
@@ -105,6 +136,7 @@ cdef dict _ORDER_STATE_TABLE = {
     (OrderStatus.PENDING_CANCEL, OrderStatus.REJECTED): OrderStatus.REJECTED,  # Real world possibility
     (OrderStatus.PENDING_CANCEL, OrderStatus.PENDING_CANCEL): OrderStatus.PENDING_CANCEL,  # Allow multiple requests
     (OrderStatus.PENDING_CANCEL, OrderStatus.CANCELED): OrderStatus.CANCELED,
+    (OrderStatus.PENDING_CANCEL, OrderStatus.EXPIRED): OrderStatus.EXPIRED,
     (OrderStatus.PENDING_CANCEL, OrderStatus.ACCEPTED): OrderStatus.ACCEPTED,  # Allows failed cancel requests
     (OrderStatus.PENDING_CANCEL, OrderStatus.PARTIALLY_FILLED): OrderStatus.PARTIALLY_FILLED,
     (OrderStatus.PENDING_CANCEL, OrderStatus.FILLED): OrderStatus.FILLED,
@@ -144,6 +176,7 @@ cdef class Order:
         self._events: list[OrderEvent] = [init]
         self._venue_order_ids: list[VenueOrderId] = []
         self._trade_ids: list[TradeId] = []
+        self._commissions: dict[Currency, Money] = {}
         self._fsm = FiniteStateMachine(
             state_transition_table=_ORDER_STATE_TABLE,
             initial_state=OrderStatus.INITIALIZED,
@@ -184,17 +217,23 @@ cdef class Order:
         self.tags = init.tags
 
         # Execution
-        self.filled_qty = Quantity.zero_c(precision=0)
+        self.filled_qty = Quantity.zero_c(self.quantity._mem.precision)
         self.leaves_qty = init.quantity
+        self.overfill_qty = Quantity.zero_c(self.quantity._mem.precision)
         self.avg_px = 0.0  # No fills yet
         self.slippage = 0.0
 
         # Timestamps
         self.init_id = init.id
         self.ts_init = init.ts_init
-        self.ts_last = 0  # No fills yet
+        self.ts_submitted = 0
+        self.ts_accepted = 0
+        self.ts_closed = 0
+        self.ts_last = init.ts_init
 
     def __eq__(self, Order other) -> bool:
+        if other is None:
+            return False
         return self.client_order_id == other.client_order_id
 
     def __hash__(self) -> int:
@@ -213,7 +252,8 @@ cdef class Order:
             f"{self.info()}, "
             f"status={self._fsm.state_string_c()}, "
             f"client_order_id={self.client_order_id.to_str()}, "
-            f"venue_order_id={self.venue_order_id}"  # Can be None (no whitespace before contingency_str)
+            f"venue_order_id={self.venue_order_id}, "  # Can be None (no whitespace before contingency_str)
+            f"position_id={self.position_id}"  # Can be None (no whitespace before contingency_str)
             f"{contingency_str}"
             f"{linked_order_ids_str}"
             f"{parent_order_id_str}"
@@ -222,6 +262,50 @@ cdef class Order:
             f"{exec_spawn_id_str}"
             f", tags={self.tags})"
         )
+
+    cpdef str status_string(self):
+        """
+        Return the orders current status as a string.
+
+        Returns
+        -------
+        str
+
+        """
+        return self.status_string_c()
+
+    cpdef str side_string(self):
+        """
+        Return the orders side as a string.
+
+        Returns
+        -------
+        str
+
+        """
+        return self.side_string_c()
+
+    cpdef str type_string(self):
+        """
+        Return the orders type as a string.
+
+        Returns
+        -------
+        str
+
+        """
+        return self.type_string_c()
+
+    cpdef str tif_string(self):
+        """
+        Return the orders time in force as a string.
+
+        Returns
+        -------
+        str
+
+        """
+        return self.tif_string_c()
 
     cpdef str info(self):
         """
@@ -232,7 +316,7 @@ cdef class Order:
         str
 
         """
-        raise NotImplementedError("method must be implemented in the subclass")  # pragma: no cover
+        raise NotImplementedError("method `info` must be implemented in the subclass")  # pragma: no cover
 
     cpdef dict to_dict(self):
         """
@@ -243,7 +327,13 @@ cdef class Order:
         dict[str, object]
 
         """
-        raise NotImplementedError("method must be implemented in the subclass")  # pragma: no cover
+        raise NotImplementedError("method `to_dict` must be implemented in the subclass")  # pragma: no cover
+
+    cpdef void set_quote_quantity(self, bint value):
+        self.is_quote_quantity = value
+
+    cdef void set_activated_c(self, Price activation_price):
+        raise NotImplementedError("method `set_activated` must be implemented in the subclass")  # pragma: no cover
 
     cdef void set_triggered_price_c(self, Price triggered_price):
         Condition.not_none(triggered_price, "triggered_price")
@@ -286,10 +376,13 @@ cdef class Order:
         return time_in_force_to_str(self.time_in_force)
 
     cdef bint has_price_c(self):
-        raise NotImplementedError("method must be implemented in subclass")  # pragma: no cover
+        raise NotImplementedError("method `has_price_c` must be implemented in subclass")  # pragma: no cover
+
+    cdef bint has_activation_price_c(self):
+        return False
 
     cdef bint has_trigger_price_c(self):
-        raise NotImplementedError("method must be implemented in subclass")  # pragma: no cover
+        raise NotImplementedError("method `has_trigger_price_c` must be implemented in subclass")  # pragma: no cover
 
     cdef bint is_buy_c(self):
         return self.side == OrderSide.BUY
@@ -304,13 +397,16 @@ cdef class Order:
         return self.order_type == OrderType.MARKET
 
     cdef bint is_emulated_c(self):
-        return self.emulation_trigger != TriggerType.NO_TRIGGER
+        return self._fsm.state == OrderStatus.EMULATED
+
+    cdef bint is_active_local_c(self):
+        return self._fsm.state in LOCAL_ACTIVE_ORDER_STATUSES
 
     cdef bint is_primary_c(self):
-        return self.exec_algorithm_id is not None and self.exec_spawn_id is None
+        return self.exec_algorithm_id is not None and self.exec_spawn_id == self.client_order_id
 
     cdef bint is_spawned_c(self):
-        return self.exec_spawn_id is not None
+        return self.exec_algorithm_id is not None and self.exec_spawn_id != self.client_order_id
 
     cdef bint is_contingency_c(self):
         return self.contingency_type != ContingencyType.NO_CONTINGENCY
@@ -345,8 +441,6 @@ cdef class Order:
         )
 
     cdef bint is_inflight_c(self):
-        if self.emulation_trigger != TriggerType.NO_TRIGGER:
-            return False
         return (
             self._fsm.state == OrderStatus.SUBMITTED
             or self._fsm.state == OrderStatus.PENDING_CANCEL
@@ -358,6 +452,35 @@ cdef class Order:
 
     cdef bint is_pending_cancel_c(self):
         return self._fsm.state == OrderStatus.PENDING_CANCEL
+
+    def to_own_book_order(self) -> nautilus_pyo3.OwnBookOrder:
+        """
+        Returns an own/user order representation of this order.
+
+        Returns
+        -------
+        nautilus_pyo3.OwnBookOrder
+
+        """
+        if not self.has_price_c():
+            raise TypeError(f"Cannot initialize {self.type_string_c()} order as `nautilus_pyo3.OwnBookOrder`, no price")
+
+        cdef Price price = self.price
+        return nautilus_pyo3.OwnBookOrder(
+            trader_id=nautilus_pyo3.TraderId(self.trader_id.value),
+            client_order_id=nautilus_pyo3.ClientOrderId(self.client_order_id.value),
+            venue_order_id=nautilus_pyo3.VenueOrderId(self.venue_order_id.value) if self.venue_order_id else None,
+            side=order_side_to_pyo3(self.side),
+            price=nautilus_pyo3.Price(price.as_f64_c(), price._mem.precision),
+            size=nautilus_pyo3.Quantity(self.leaves_qty.as_f64_c(), self.leaves_qty._mem.precision),
+            order_type=order_type_to_pyo3(self.order_type),
+            time_in_force=time_in_force_to_pyo3(self.time_in_force),
+            status=order_status_to_pyo3(<OrderStatus>self._fsm.state),
+            ts_last=self.ts_last,
+            ts_accepted=self.ts_accepted,
+            ts_submitted=self.ts_submitted,
+            ts_init=self.ts_init,
+        )
 
     @property
     def symbol(self):
@@ -382,18 +505,6 @@ cdef class Order:
 
         """
         return self.instrument_id.venue
-
-    @property
-    def side_string(self) -> str:
-        """
-        Return the orders side as a string.
-
-        Returns
-        -------
-        str
-
-        """
-        return self.side_string_c()
 
     @property
     def status(self):
@@ -504,6 +615,18 @@ cdef class Order:
         return self.has_trigger_price_c()
 
     @property
+    def has_activation_price(self):
+        """
+        Return whether the order has a `activation_price` property.
+
+        Returns
+        -------
+        bool
+
+        """
+        return self.has_activation_price_c()
+
+    @property
     def is_buy(self):
         """
         Return whether the order side is ``BUY``.
@@ -562,6 +685,23 @@ cdef class Order:
 
         """
         return self.is_emulated_c()
+
+    @property
+    def is_active_local(self):
+        """
+        Return whether the order is active and held in the local system.
+
+        An order is considered active local when its status is any of:
+        - ``INITIALIZED``
+        - ``EMULATED``
+        - ``RELEASED``
+
+        Returns
+        -------
+        bool
+
+        """
+        return self.is_active_local_c()
 
     @property
     def is_primary(self):
@@ -628,8 +768,7 @@ cdef class Order:
         """
         Return whether the order is in-flight (order request sent to the trading venue).
 
-        An order is considered in-flight when its status is any of;
-
+        An order is considered in-flight when its status is any of:
         - ``SUBMITTED``
         - ``PENDING_UPDATE``
         - ``PENDING_CANCEL``
@@ -650,8 +789,7 @@ cdef class Order:
         """
         Return whether the order is open at the trading venue.
 
-        An order is considered open when its status is any of;
-
+        An order is considered open when its status is any of:
         - ``ACCEPTED``
         - ``TRIGGERED``
         - ``PENDING_UPDATE``
@@ -684,7 +822,7 @@ cdef class Order:
     @property
     def is_closed(self):
         """
-        Return whether the order is closed.
+        Return whether the order is closed (lifecycle completed).
 
         An order is considered closed when its status can no longer change.
         The possible statuses of closed orders include;
@@ -848,6 +986,17 @@ cdef class Order:
 
         return True  # Would reduce only
 
+    cpdef list commissions(self):
+        """
+        Return the total commissions generated by the order.
+
+        Returns
+        -------
+        list[Money]
+
+        """
+        return sorted(self._commissions.values())
+
     cpdef void apply(self, OrderEvent event):
         """
         Apply the given order event to the order.
@@ -882,6 +1031,13 @@ cdef class Order:
         elif isinstance(event, OrderDenied):
             self._fsm.trigger(OrderStatus.DENIED)
             self._denied(event)
+        elif isinstance(event, OrderEmulated):
+            self._fsm.trigger(OrderStatus.EMULATED)
+            # self._emulated(event)
+        elif isinstance(event, OrderReleased):
+            self._fsm.trigger(OrderStatus.RELEASED)
+            self.emulation_trigger = TriggerType.NO_TRIGGER
+            # self._released(event)
         elif isinstance(event, OrderSubmitted):
             self._fsm.trigger(OrderStatus.SUBMITTED)
             self._submitted(event)
@@ -906,7 +1062,7 @@ cdef class Order:
                 self._fsm.trigger(self._previous_status)
             self._updated(event)
         elif isinstance(event, OrderTriggered):
-            Condition.true(
+            Condition.is_true(
                 (
                     self.order_type == OrderType.STOP_LIMIT
                     or self.order_type == OrderType.TRAILING_STOP_LIMIT
@@ -940,69 +1096,127 @@ cdef class Order:
             self._previous_status = previous_status
 
         self._events.append(event)
+        self.ts_last = event.ts_event
+
+    cdef Quantity calculate_overfill_c(self, Quantity fill_qty):
+        cdef QuantityRaw potential_filled_raw = self.filled_qty._mem.raw + fill_qty._mem.raw
+
+        if potential_filled_raw > self.quantity._mem.raw:
+            return Quantity.from_raw_c(
+                potential_filled_raw - self.quantity._mem.raw,
+                fill_qty._mem.precision,
+            )
+        return Quantity.zero_c(fill_qty._mem.precision)
+
+    cdef bint is_duplicate_fill_c(self, OrderFilled fill):
+        cdef OrderEvent event
+        for event in self._events:
+            if not isinstance(event, OrderFilled):
+                continue
+
+            if (
+                event.trade_id == fill.trade_id
+                and event.order_side == fill.order_side
+                and event.last_px == fill.last_px
+                and event.last_qty == fill.last_qty
+            ):
+                return True
+
+        return False
+
+    def is_duplicate_fill(self, OrderFilled fill) -> bool:
+        """
+        Return whether a fill with matching trade_id, side, qty, and price already exists.
+
+        Parameters
+        ----------
+        fill : OrderFilled
+            The fill event to check.
+
+        Returns
+        -------
+        bool
+
+        """
+        return self.is_duplicate_fill_c(fill)
 
     cdef void _denied(self, OrderDenied event):
-        pass  # Do nothing else
+        self.ts_closed = event.ts_event
 
     cdef void _submitted(self, OrderSubmitted event):
         self.account_id = event.account_id
+        self.ts_submitted = event.ts_event
 
     cdef void _rejected(self, OrderRejected event):
-        pass  # Do nothing else
+        self.ts_closed = event.ts_event
 
     cdef void _accepted(self, OrderAccepted event):
         self.venue_order_id = event.venue_order_id
+        self.ts_accepted = event.ts_event
 
     cdef void _updated(self, OrderUpdated event):
         """Abstract method (implement in subclass)."""
-        raise NotImplementedError("method must be implemented in the subclass")  # pragma: no cover
+        raise NotImplementedError("method `_updated` must be implemented in the subclass")  # pragma: no cover
 
     cdef void _triggered(self, OrderTriggered event):
         """Abstract method (implement in subclass)."""
-        raise NotImplementedError("method must be implemented in the subclass")  # pragma: no cover
+        raise NotImplementedError("method `_triggered` must be implemented in the subclass")  # pragma: no cover
 
     cdef void _canceled(self, OrderCanceled event):
-        pass  # Do nothing else
+        self.ts_closed = event.ts_event
 
     cdef void _expired(self, OrderExpired event):
-        pass  # Do nothing else
+        self.ts_closed = event.ts_event
 
     cdef void _filled(self, OrderFilled fill):
         if self.filled_qty._mem.raw + fill.last_qty._mem.raw < self.quantity._mem.raw:
             self._fsm.trigger(OrderStatus.PARTIALLY_FILLED)
         else:
             self._fsm.trigger(OrderStatus.FILLED)
+            self.ts_closed = fill.ts_event
 
         self.venue_order_id = fill.venue_order_id
         self.position_id = fill.position_id
         self.strategy_id = fill.strategy_id
         self._trade_ids.append(fill.trade_id)
         self.last_trade_id = fill.trade_id
-        cdef uint64_t raw_filled_qty = self.filled_qty._mem.raw + fill.last_qty._mem.raw
-        cdef int64_t raw_leaves_qty = self.quantity._mem.raw - raw_filled_qty
+        if self.ts_accepted == 0:
+            # Set ts_accepted to time of first fill if not previously set
+            self.ts_accepted = fill.ts_event
+
+        cdef QuantityRaw raw_filled_qty = self.filled_qty._mem.raw + fill.last_qty._mem.raw
+
+        # Using `PriceRaw` as temporary hack to access int128_t so that negative values can be represented
+        cdef PriceRaw raw_leaves_qty = self.quantity._mem.raw - raw_filled_qty
+
         if raw_leaves_qty < 0:
-            raise ValueError(
-                f"invalid order.leaves_qty: was {<uint64_t>raw_leaves_qty / 1e9}, "
-                f"order.quantity={self.quantity}, "
-                f"order.filled_qty={self.filled_qty}, "
-                f"fill.last_qty={fill.last_qty}, "
-                f"fill={fill}",
+            self.overfill_qty = self.overfill_qty.add(
+                Quantity.from_raw_c(-raw_leaves_qty, fill.last_qty._mem.precision)
             )
+            raw_leaves_qty = 0  # Clamp to zero
+
         self.filled_qty.add_assign(fill.last_qty)
-        self.leaves_qty = Quantity.from_raw_c(<uint64_t>raw_leaves_qty, fill.last_qty._mem.precision)
-        self.ts_last = fill.ts_event
+        self.leaves_qty = Quantity.from_raw_c(<QuantityRaw>raw_leaves_qty, fill.last_qty._mem.precision)
         self.avg_px = self._calculate_avg_px(fill.last_qty.as_f64_c(), fill.last_px.as_f64_c())
         self.liquidity_side = fill.liquidity_side
         self._set_slippage()
+
+        # Calculate cumulative commission
+        cdef Currency currency = fill.commission.currency
+        cdef Money commissions = self._commissions.get(currency)
+        cdef double total_commissions = commissions.as_f64_c() if commissions is not None else 0.0
+        self._commissions[currency] = Money(total_commissions + fill.commission.as_f64_c(), currency)
 
     cdef double _calculate_avg_px(self, double last_qty, double last_px):
         if self.avg_px == 0.0:
             return last_px
 
+        # Use previous filled quantity (before current fill) to avoid double-counting
+        # self.filled_qty already includes last_qty at this point
         cdef double filled_qty_f64 = self.filled_qty.as_f64_c()
-        cdef double total_qty = filled_qty_f64 + last_qty
-        if total_qty > 0:  # Protect divide by zero
-            return ((self.avg_px * filled_qty_f64) + (last_px * last_qty)) / total_qty
+        cdef double prev_filled_qty = filled_qty_f64 - last_qty
+        if filled_qty_f64 > 0:  # Protect divide by zero
+            return ((self.avg_px * prev_filled_qty) + (last_px * last_qty)) / filled_qty_f64
 
     cdef void _set_slippage(self):
         pass  # Optionally implement

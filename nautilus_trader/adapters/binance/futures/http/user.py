@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,7 +13,6 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
-
 from nautilus_trader.adapters.binance.common.enums import BinanceAccountType
 from nautilus_trader.adapters.binance.http.client import BinanceHttpClient
 from nautilus_trader.adapters.binance.http.user import BinanceUserDataHttpAPI
@@ -21,7 +20,7 @@ from nautilus_trader.adapters.binance.http.user import BinanceUserDataHttpAPI
 
 class BinanceFuturesUserDataHttpAPI(BinanceUserDataHttpAPI):
     """
-    Provides access to the `Binance Futures` User Data HTTP REST API.
+    Provides access to the Binance Futures User Data HTTP REST API.
 
     Parameters
     ----------
@@ -29,12 +28,13 @@ class BinanceFuturesUserDataHttpAPI(BinanceUserDataHttpAPI):
         The Binance REST API client.
     account_type : BinanceAccountType
         The Binance account type, used to select the endpoint.
+
     """
 
     def __init__(
         self,
         client: BinanceHttpClient,
-        account_type: BinanceAccountType = BinanceAccountType.USDT_FUTURE,
+        account_type: BinanceAccountType = BinanceAccountType.USDT_FUTURES,
     ):
         super().__init__(
             client=client,
@@ -43,5 +43,5 @@ class BinanceFuturesUserDataHttpAPI(BinanceUserDataHttpAPI):
 
         if not account_type.is_futures:
             raise RuntimeError(  # pragma: no cover (design-time error)
-                f"`BinanceAccountType` not USDT_FUTURE or COIN_FUTURE, was {account_type}",  # pragma: no cover (design-time error)
+                f"`BinanceAccountType` not USDT_FUTURES or COIN_FUTURES, was {account_type}",  # pragma: no cover (design-time error)
             )

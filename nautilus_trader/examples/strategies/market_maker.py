@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -14,9 +14,9 @@
 # -------------------------------------------------------------------------------------------------
 
 from decimal import Decimal
-from typing import Optional
 
 from nautilus_trader.core.message import Event
+from nautilus_trader.model.book import OrderBook
 from nautilus_trader.model.data import OrderBookDeltas
 from nautilus_trader.model.enums import BookType
 from nautilus_trader.model.enums import OrderSide
@@ -27,7 +27,6 @@ from nautilus_trader.model.events import PositionOpened
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.instruments import Instrument
 from nautilus_trader.model.objects import Price
-from nautilus_trader.model.orderbook import OrderBook
 from nautilus_trader.trading.strategy import Strategy
 
 
@@ -43,6 +42,7 @@ class MarketMaker(Strategy):
         The position size per trade.
     max_size : Decimal
         The maximum inventory size allowed.
+
     """
 
     def __init__(
@@ -58,9 +58,9 @@ class MarketMaker(Strategy):
         self.trade_size = trade_size
         self.max_size = max_size
 
-        self.instrument: Optional[Instrument] = None  # Initialized in on_start
-        self._book: Optional[OrderBook] = None
-        self._mid: Optional[Decimal] = None
+        self.instrument: Instrument | None = None  # Initialized in on_start
+        self._book: OrderBook | None = None
+        self._mid: Decimal | None = None
         self._adj = Decimal(0)
 
     def on_start(self) -> None:
@@ -81,7 +81,7 @@ class MarketMaker(Strategy):
 
     def on_order_book_deltas(self, deltas: OrderBookDeltas) -> None:
         if not self._book:
-            self.log.error("No book being maintained.")
+            self.log.error("No book being maintained")
             return
 
         self._book.apply_deltas(deltas)
@@ -93,15 +93,15 @@ class MarketMaker(Strategy):
                 self.cancel_all_orders(self.instrument_id)
                 self._mid = Decimal(mid)
                 val = self._mid + self._adj
-                self.buy(price=val * Decimal(1.01))
-                self.sell(price=val * Decimal(0.99))
+                self.buy(price=val * Decimal("1.01"))
+                self.sell(price=val * Decimal("0.99"))
 
     def on_event(self, event: Event) -> None:
-        if isinstance(event, (PositionOpened, PositionChanged)):
+        if isinstance(event, PositionOpened | PositionChanged):
             signed_qty = event.quantity.as_decimal()
             if event.side == PositionSide.SHORT:
                 signed_qty = -signed_qty
-            self._adj = (signed_qty / self.max_size) * Decimal(0.01)
+            self._adj = (signed_qty / self.max_size) * Decimal("0.01")
         elif isinstance(event, PositionClosed):
             self._adj = Decimal(0)
 
@@ -110,7 +110,7 @@ class MarketMaker(Strategy):
         Users simple buy method (example).
         """
         if not self.instrument:
-            self.log.error("No instrument loaded.")
+            self.log.error("No instrument loaded")
             return
 
         order = self.order_factory.limit(
@@ -127,7 +127,7 @@ class MarketMaker(Strategy):
         Users simple sell method (example).
         """
         if not self.instrument:
-            self.log.error("No instrument loaded.")
+            self.log.error("No instrument loaded")
             return
 
         order = self.order_factory.limit(

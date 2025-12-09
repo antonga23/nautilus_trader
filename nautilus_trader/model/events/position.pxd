@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -16,10 +16,10 @@
 from libc.stdint cimport uint64_t
 
 from nautilus_trader.core.message cimport Event
+from nautilus_trader.core.rust.model cimport OrderSide
+from nautilus_trader.core.rust.model cimport PositionAdjustmentType
+from nautilus_trader.core.rust.model cimport PositionSide
 from nautilus_trader.core.uuid cimport UUID4
-from nautilus_trader.model.currency cimport Currency
-from nautilus_trader.model.enums_c cimport OrderSide
-from nautilus_trader.model.enums_c cimport PositionSide
 from nautilus_trader.model.events.order cimport OrderFilled
 from nautilus_trader.model.identifiers cimport AccountId
 from nautilus_trader.model.identifiers cimport ClientOrderId
@@ -27,6 +27,7 @@ from nautilus_trader.model.identifiers cimport InstrumentId
 from nautilus_trader.model.identifiers cimport PositionId
 from nautilus_trader.model.identifiers cimport StrategyId
 from nautilus_trader.model.identifiers cimport TraderId
+from nautilus_trader.model.objects cimport Currency
 from nautilus_trader.model.objects cimport Money
 from nautilus_trader.model.objects cimport Price
 from nautilus_trader.model.objects cimport Quantity
@@ -34,6 +35,10 @@ from nautilus_trader.model.position cimport Position
 
 
 cdef class PositionEvent(Event):
+    cdef UUID4 _event_id
+    cdef uint64_t _ts_event
+    cdef uint64_t _ts_init
+
     cdef readonly TraderId trader_id
     """The trader ID associated with the event.\n\n:returns: `TraderId`"""
     cdef readonly StrategyId strategy_id
@@ -75,9 +80,9 @@ cdef class PositionEvent(Event):
     cdef readonly Money unrealized_pnl
     """The unrealized PnL for the position (including commissions).\n\n:returns: `Money`"""
     cdef readonly uint64_t ts_opened
-    """The UNIX timestamp (nanoseconds) when the position was opened.\n\n:returns: `uint64_t`"""
+    """UNIX timestamp (nanoseconds) when the position was opened.\n\n:returns: `uint64_t`"""
     cdef readonly uint64_t ts_closed
-    """The UNIX timestamp (nanoseconds) when the position was closed.\n\n:returns: `uint64_t`"""
+    """UNIX timestamp (nanoseconds) when the position was closed.\n\n:returns: `uint64_t`"""
     cdef readonly uint64_t duration_ns
     """The total open duration (nanoseconds).\n\n:returns: `uint64_t`"""
 
@@ -131,3 +136,34 @@ cdef class PositionClosed(PositionEvent):
 
     @staticmethod
     cdef dict to_dict_c(PositionClosed obj)
+
+
+cdef class PositionAdjusted(Event):
+    cdef UUID4 _event_id
+    cdef uint64_t _ts_event
+    cdef uint64_t _ts_init
+
+    cdef readonly TraderId trader_id
+    """The trader ID associated with the event.\n\n:returns: `TraderId`"""
+    cdef readonly StrategyId strategy_id
+    """The strategy ID associated with the event.\n\n:returns: `StrategyId`"""
+    cdef readonly InstrumentId instrument_id
+    """The instrument ID associated with the event.\n\n:returns: `InstrumentId`"""
+    cdef readonly PositionId position_id
+    """The position ID associated with the event.\n\n:returns: `PositionId`"""
+    cdef readonly AccountId account_id
+    """The account ID associated with the adjustment.\n\n:returns: `AccountId`"""
+    cdef readonly PositionAdjustmentType adjustment_type
+    """The type of adjustment.\n\n:returns: `PositionAdjustmentType`"""
+    cdef readonly object quantity_change
+    """The quantity change (can be negative).\n\n:returns: `Decimal` or `None`"""
+    cdef readonly Money pnl_change
+    """The PnL change.\n\n:returns: `Money` or `None`"""
+    cdef readonly str reason
+    """Optional reason for the adjustment.\n\n:returns: `str` or `None`"""
+
+    @staticmethod
+    cdef PositionAdjusted from_dict_c(dict values)
+
+    @staticmethod
+    cdef dict to_dict_c(PositionAdjusted obj)

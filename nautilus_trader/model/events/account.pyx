@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,19 +13,17 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
-import msgspec
-
 from libc.stdint cimport uint64_t
 
 from nautilus_trader.core.correctness cimport Condition
 from nautilus_trader.core.message cimport Event
+from nautilus_trader.core.rust.model cimport AccountType
 from nautilus_trader.core.uuid cimport UUID4
-from nautilus_trader.model.currency cimport Currency
-from nautilus_trader.model.enums_c cimport AccountType
-from nautilus_trader.model.enums_c cimport account_type_from_str
-from nautilus_trader.model.enums_c cimport account_type_to_str
+from nautilus_trader.model.functions cimport account_type_from_str
+from nautilus_trader.model.functions cimport account_type_to_str
 from nautilus_trader.model.identifiers cimport AccountId
 from nautilus_trader.model.objects cimport AccountBalance
+from nautilus_trader.model.objects cimport Currency
 from nautilus_trader.model.objects cimport MarginBalance
 
 
@@ -37,7 +35,7 @@ cdef class AccountState(Event):
     ----------
     account_id : AccountId
         The account ID (with the venue).
-    account_type : AccountId
+    account_type : AccountType
         The account type for the event.
     base_currency : Currency, optional
         The account base currency. Use None for multi-currency accounts.
@@ -52,9 +50,9 @@ cdef class AccountState(Event):
     event_id : UUID4
         The event ID.
     ts_event : uint64_t
-        The UNIX timestamp (nanoseconds) when the account state event occurred.
+        UNIX timestamp (nanoseconds) when the account state event occurred.
     ts_init : uint64_t
-        The UNIX timestamp (nanoseconds) when the object was initialized.
+        UNIX timestamp (nanoseconds) when the object was initialized.
 
     Raises
     ------
@@ -76,15 +74,26 @@ cdef class AccountState(Event):
         uint64_t ts_init,
     ):
         Condition.not_empty(balances, "balances")
-        super().__init__(event_id, ts_event, ts_init)
 
         self.account_id = account_id
         self.account_type = account_type
         self.base_currency = base_currency
-        self.balances = balances
-        self.margins = margins
+        self.balances = [balance.copy() for balance in balances]
+        self.margins = [margin.copy() for margin in margins]
         self.is_reported = reported
         self.info = info
+
+        self._event_id = event_id
+        self._ts_event = ts_event
+        self._ts_init = ts_init
+
+    def __eq__(self, Event other) -> bool:
+        if other is None:
+            return False
+        return self._event_id == other.id
+
+    def __hash__(self) -> int:
+        return hash(self._event_id)
 
     def __repr__(self) -> str:
         return (
@@ -95,8 +104,45 @@ cdef class AccountState(Event):
             f"is_reported={self.is_reported}, "
             f"balances=[{', '.join([str(b) for b in self.balances])}], "
             f"margins=[{', '.join([str(m) for m in self.margins])}], "
-            f"event_id={self.id.to_str()})"
+            f"event_id={self._event_id.to_str()})"
         )
+
+    @property
+    def id(self) -> UUID4:
+        """
+        The event message identifier.
+
+        Returns
+        -------
+        UUID4
+
+        """
+        return self._event_id
+
+    @property
+    def ts_event(self) -> int:
+        """
+        UNIX timestamp (nanoseconds) when the event occurred.
+
+        Returns
+        -------
+        int
+
+        """
+        return self._ts_event
+
+    @property
+    def ts_init(self) -> int:
+        """
+        UNIX timestamp (nanoseconds) when the object was initialized.
+
+        Returns
+        -------
+        int
+
+        """
+        return self._ts_init
+
 
     @staticmethod
     cdef AccountState from_dict_c(dict values):
@@ -107,10 +153,10 @@ cdef class AccountState(Event):
             account_type=account_type_from_str(values["account_type"]),
             base_currency=Currency.from_str_c(base_str) if base_str is not None else None,
             reported=values["reported"],
-            balances=[AccountBalance.from_dict(b) for b in msgspec.json.decode(values["balances"])],
-            margins=[MarginBalance.from_dict(m) for m in msgspec.json.decode(values["margins"])],
-            info=msgspec.json.decode(values["info"]),
-            event_id=UUID4(values["event_id"]),
+            balances=[AccountBalance.from_dict(b) for b in values["balances"]],
+            margins=[MarginBalance.from_dict(m) for m in values["margins"]],
+            info=values["info"],
+            event_id=UUID4.from_str_c(values["event_id"]),
             ts_event=values["ts_event"],
             ts_init=values["ts_init"],
         )
@@ -123,13 +169,13 @@ cdef class AccountState(Event):
             "account_id": obj.account_id.to_str(),
             "account_type": account_type_to_str(obj.account_type),
             "base_currency": obj.base_currency.code if obj.base_currency else None,
-            "balances": msgspec.json.encode([b.to_dict() for b in obj.balances]),
-            "margins": msgspec.json.encode([m.to_dict() for m in obj.margins]),
+            "balances": [b.to_dict() for b in obj.balances],
+            "margins": [m.to_dict() for m in obj.margins],
             "reported": obj.is_reported,
-            "info": msgspec.json.encode(obj.info),
-            "event_id": obj.id.to_str(),
-            "ts_event": obj.ts_event,
-            "ts_init": obj.ts_init,
+            "info": obj.info,
+            "event_id": obj._event_id.to_str(),
+            "ts_event": obj._ts_event,
+            "ts_init": obj._ts_init,
         }
 
     @staticmethod

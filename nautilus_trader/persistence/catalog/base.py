@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,23 +13,29 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
+from __future__ import annotations
+
 from abc import ABC
 from abc import ABCMeta
 from abc import abstractmethod
-from typing import Optional
+from typing import Any
 
+import pandas as pd
+
+from nautilus_trader.core.data import Data
 from nautilus_trader.model.data import Bar
+from nautilus_trader.model.data import CustomData
 from nautilus_trader.model.data import DataType
-from nautilus_trader.model.data import GenericData
 from nautilus_trader.model.data import InstrumentClose
-from nautilus_trader.model.data import InstrumentStatusUpdate
+from nautilus_trader.model.data import InstrumentStatus
 from nautilus_trader.model.data import OrderBookDelta
+from nautilus_trader.model.data import OrderBookDeltas
+from nautilus_trader.model.data import OrderBookDepth10
 from nautilus_trader.model.data import QuoteTick
-from nautilus_trader.model.data import Ticker
 from nautilus_trader.model.data import TradeTick
 from nautilus_trader.model.instruments import Instrument
-from nautilus_trader.persistence.external.util import Singleton
-from nautilus_trader.serialization.arrow.util import GENERIC_DATA_PREFIX
+from nautilus_trader.persistence.catalog.singleton import Singleton
+from nautilus_trader.persistence.funcs import CUSTOM_DATA_PREFIX
 
 
 class _CombinedMeta(Singleton, ABCMeta):
@@ -41,45 +47,26 @@ class BaseDataCatalog(ABC, metaclass=_CombinedMeta):
     Provides a abstract base class for a queryable data catalog.
     """
 
+    @classmethod
     @abstractmethod
-    def from_env(cls):
+    def from_env(cls) -> BaseDataCatalog:
         raise NotImplementedError
 
+    @classmethod
     @abstractmethod
-    def from_uri(cls, uri):
+    def from_uri(
+        cls, uri: str, storage_options: dict[str, str] | None = None,
+    ) -> BaseDataCatalog:
         raise NotImplementedError
 
     # -- QUERIES -----------------------------------------------------------------------------------
 
-    def query(
-        self,
-        cls: type,
-        instrument_ids: Optional[list[str]] = None,
-        **kwargs,
-    ):
-        raise NotImplementedError
-
-    def _query_subclasses(
-        self,
-        base_cls: type,
-        instrument_ids: Optional[list[str]] = None,
-        **kwargs,
-    ):
-        objects = []
-        for cls in base_cls.__subclasses__():
-            try:
-                objs = self.query(cls=cls, instrument_ids=instrument_ids, **kwargs)
-                objects.extend(objs)
-            except AssertionError:
-                continue
-        return objects
-
     def instruments(
         self,
-        instrument_type: Optional[type] = None,
-        instrument_ids: Optional[list[str]] = None,
-        **kwargs,
-    ):
+        instrument_type: type | None = None,
+        instrument_ids: list[str] | None = None,
+        **kwargs: Any,
+    ) -> list[Instrument]:
         if instrument_type is not None:
             assert isinstance(instrument_type, type)
             base_cls = instrument_type
@@ -88,116 +75,150 @@ class BaseDataCatalog(ABC, metaclass=_CombinedMeta):
 
         return self._query_subclasses(
             base_cls=base_cls,
-            instrument_ids=instrument_ids,
-            instrument_id_column="id",
+            identifiers=instrument_ids,
             **kwargs,
         )
 
-    def instrument_status_updates(
+    def _query_subclasses(
         self,
-        instrument_ids: Optional[list[str]] = None,
-        **kwargs,
-    ):
+        base_cls: type,
+        identifiers: list[str] | None = None,
+        **kwargs: Any,
+    ) -> list[Data]:
+        objects = []
+
+        for cls in base_cls.__subclasses__():
+            try:
+                objs = self.query(data_cls=cls, identifiers=identifiers, **kwargs)
+                objects.extend(objs)
+            except AssertionError as e:
+                print(e)
+                continue
+
+        return objects
+
+    def instrument_status(
+        self,
+        instrument_ids: list[str] | None = None,
+        **kwargs: Any,
+    ) -> list[InstrumentStatus]:
         return self.query(
-            cls=InstrumentStatusUpdate,
-            instrument_ids=instrument_ids,
-            **kwargs,
+            data_cls=InstrumentStatus, identifiers=instrument_ids, **kwargs,
         )
 
     def instrument_closes(
         self,
-        instrument_ids: Optional[list[str]] = None,
-        **kwargs,
-    ):
+        instrument_ids: list[str] | None = None,
+        **kwargs: Any,
+    ) -> list[InstrumentClose]:
         return self.query(
-            cls=InstrumentClose,
-            instrument_ids=instrument_ids,
-            **kwargs,
-        )
-
-    def trade_ticks(
-        self,
-        instrument_ids: Optional[list[str]] = None,
-        **kwargs,
-    ):
-        return self.query(
-            cls=TradeTick,
-            instrument_ids=instrument_ids,
-            **kwargs,
-        )
-
-    def quote_ticks(
-        self,
-        instrument_ids: Optional[list[str]] = None,
-        **kwargs,
-    ):
-        return self.query(
-            cls=QuoteTick,
-            instrument_ids=instrument_ids,
-            **kwargs,
-        )
-
-    def tickers(
-        self,
-        instrument_ids: Optional[list[str]] = None,
-        **kwargs,
-    ):
-        return self._query_subclasses(
-            base_cls=Ticker,
-            instrument_ids=instrument_ids,
-            **kwargs,
-        )
-
-    def bars(
-        self,
-        instrument_ids: Optional[list[str]] = None,
-        **kwargs,
-    ):
-        return self.query(
-            cls=Bar,
-            instrument_ids=instrument_ids,
-            **kwargs,
+            data_cls=InstrumentClose, identifiers=instrument_ids, **kwargs,
         )
 
     def order_book_deltas(
         self,
-        instrument_ids: Optional[list[str]] = None,
-        **kwargs,
-    ):
+        instrument_ids: list[str] | None = None,
+        batched: bool = False,
+        **kwargs: Any,
+    ) -> list[OrderBookDelta] | list[OrderBookDeltas]:
+        data_cls = OrderBookDeltas if batched else OrderBookDelta
+
+        return self.query(data_cls=data_cls, identifiers=instrument_ids, **kwargs)
+
+    def order_book_depth10(
+        self,
+        instrument_ids: list[str] | None = None,
+        **kwargs: Any,
+    ) -> list[OrderBookDepth10]:
         return self.query(
-            cls=OrderBookDelta,
-            instrument_ids=instrument_ids,
-            **kwargs,
+            data_cls=OrderBookDepth10, identifiers=instrument_ids, **kwargs,
         )
 
-    def generic_data(
+    def quote_ticks(
+        self,
+        instrument_ids: list[str] | None = None,
+        **kwargs: Any,
+    ) -> list[QuoteTick]:
+        return self.query(data_cls=QuoteTick, identifiers=instrument_ids, **kwargs)
+
+    def trade_ticks(
+        self,
+        instrument_ids: list[str] | None = None,
+        **kwargs: Any,
+    ) -> list[TradeTick]:
+        return self.query(data_cls=TradeTick, identifiers=instrument_ids, **kwargs)
+
+    def bars(
+        self,
+        bar_types: list[str] | None = None,
+        instrument_ids: list[str] | None = None,
+        **kwargs: Any,
+    ) -> list[Bar]:
+        return self.query(
+            data_cls=Bar, identifiers=(bar_types or instrument_ids), **kwargs,
+        )
+
+    def custom_data(
         self,
         cls: type,
+        instrument_ids: list[str] | None = None,
         as_nautilus: bool = False,
-        metadata: Optional[dict] = None,
-        **kwargs,
-    ):
-        data = self.query(cls=cls, **kwargs)
+        metadata: dict | None = None,
+        **kwargs: Any,
+    ) -> list[CustomData]:
+        data = self.query(data_cls=cls, identifiers=instrument_ids, **kwargs)
+
         if as_nautilus:
             if data is None:
                 return []
-            return [GenericData(data_type=DataType(cls, metadata=metadata), data=d) for d in data]
+
+            return [
+                CustomData(data_type=DataType(cls, metadata=metadata), data=d)
+                for d in data
+            ]
+
         return data
 
     @abstractmethod
-    def list_data_types(self):
+    def query(
+        self,
+        data_cls: type,
+        identifiers: list[str] | None = None,
+        **kwargs: Any,
+    ) -> list[Data]:
         raise NotImplementedError
 
-    def list_generic_data_types(self):
+    @abstractmethod
+    def query_first_timestamp(
+        self,
+        data_cls: type,
+        identifier: str | None = None,
+    ) -> pd.Timestamp | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def query_last_timestamp(
+        self,
+        data_cls: type,
+        identifier: str | None = None,
+    ) -> pd.Timestamp | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_data_types(self) -> list[str]:
+        raise NotImplementedError
+
+    def list_generic_data_types(self) -> list[str]:
         data_types = self.list_data_types()
+
         return [
-            n.replace(GENERIC_DATA_PREFIX, "")
+            n.replace(CUSTOM_DATA_PREFIX, "")
             for n in data_types
-            if n.startswith(GENERIC_DATA_PREFIX)
+            if n.startswith(CUSTOM_DATA_PREFIX)
         ]
 
     @abstractmethod
-    def list_backtests(self) -> list[str]:
+    def list_backtest_runs(self) -> list[str]:
         raise NotImplementedError
 
     @abstractmethod
@@ -205,9 +226,13 @@ class BaseDataCatalog(ABC, metaclass=_CombinedMeta):
         raise NotImplementedError
 
     @abstractmethod
-    def read_live_run(self, live_run_id: str, **kwargs):
+    def read_live_run(
+        self, instance_id: str, **kwargs: Any,
+    ) -> list[str] | dict[str, list[Data]]:
         raise NotImplementedError
 
     @abstractmethod
-    def read_backtest(self, backtest_run_id: str, **kwargs):
+    def read_backtest(
+        self, instance_id: str, **kwargs: Any,
+    ) -> list[str] | dict[str, list[Data]]:
         raise NotImplementedError

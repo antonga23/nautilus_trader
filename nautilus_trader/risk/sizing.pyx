@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -14,7 +14,6 @@
 # -------------------------------------------------------------------------------------------------
 
 from decimal import Decimal
-from typing import Optional
 
 from nautilus_trader.core.correctness cimport Condition
 from nautilus_trader.model.instruments.base cimport Instrument
@@ -68,12 +67,12 @@ cdef class PositionSizer:
         risk: Decimal,
         commission_rate: Decimal = Decimal(0),
         exchange_rate: Decimal = Decimal(1),
-        hard_limit: Optional[Decimal] = None,
+        hard_limit: Decimal | None = None,
         unit_batch_size: Decimal = Decimal(1),
         int units=1,
     ):
         """Abstract method (implement in subclass)."""
-        raise NotImplementedError("method must be implemented in the subclass")  # pragma: no cover
+        raise NotImplementedError("method `calculate` must be implemented in the subclass")  # pragma: no cover
 
     cdef object _calculate_risk_ticks(self, Price entry, Price stop_loss):
         return abs(entry - stop_loss) / self.instrument.price_increment
@@ -113,7 +112,7 @@ cdef class FixedRiskSizer(PositionSizer):
         risk: Decimal,
         commission_rate: Decimal = Decimal(0),
         exchange_rate: Decimal = Decimal(1),
-        hard_limit: Optional[Decimal] = None,
+        hard_limit: Decimal | None = None,
         unit_batch_size: Decimal=Decimal(1),
         int units=1,
     ):

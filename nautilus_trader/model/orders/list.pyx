@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -22,12 +22,14 @@ cdef class OrderList:
     """
     Represents a list of bulk or related contingent orders.
 
+    All orders must be for the same instrument ID.
+
     Parameters
     ----------
     order_list_id : OrderListId
         The order list ID.
     orders : list[Order]
-        The order bulk for the list.
+        The contained orders list.
 
     Raises
     ------
@@ -35,17 +37,29 @@ cdef class OrderList:
         If `orders` is empty.
     ValueError
         If `orders` contains a type other than `Order`.
+    ValueError
+        If orders contain different instrument IDs (must all be the same instrument).
+
     """
 
     def __init__(
         self,
         OrderListId order_list_id not None,
         list orders not None,
-    ):
+    ) -> None:
         Condition.not_empty(orders, "orders")
         Condition.list_type(orders, Order, "orders")
-
         cdef Order first = orders[0]
+        cdef Order order
+        for order in orders:
+            # First condition check avoids creating an f-string for performance reasons
+            if order.instrument_id != first.instrument_id:
+                Condition.is_true(
+                    order.instrument_id == first.instrument_id,
+                    f"order.instrument_id {order.instrument_id} != instrument_id {first.instrument_id}; "
+                    "all orders in the list must be for the same instrument ID",
+                )
+
         self.id = order_list_id
         self.instrument_id = first.instrument_id
         self.strategy_id = first.strategy_id
@@ -54,6 +68,8 @@ cdef class OrderList:
         self.ts_init = first.ts_init
 
     def __eq__(self, OrderList other) -> bool:
+        if other is None:
+            return False
         return self.id == other.id
 
     def __hash__(self) -> int:

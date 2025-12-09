@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -12,8 +12,10 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
-
-"""Provides a full range of standard order types, as well as more advanced types and order lists."""
+"""
+Provides a full range of standard order types, as well as more advanced types and order
+lists.
+"""
 
 from nautilus_trader.model.orders.base import Order
 from nautilus_trader.model.orders.limit import LimitOrder
@@ -30,16 +32,16 @@ from nautilus_trader.model.orders.unpacker import OrderUnpacker
 
 
 __all__ = [
-    "Order",
-    "LimitOrder",
     "LimitIfTouchedOrder",
-    "OrderList",
-    "MarketOrder",
+    "LimitOrder",
     "MarketIfTouchedOrder",
+    "MarketOrder",
     "MarketToLimitOrder",
+    "Order",
+    "OrderList",
+    "OrderUnpacker",
     "StopLimitOrder",
     "StopMarketOrder",
     "TrailingStopLimitOrder",
     "TrailingStopMarketOrder",
-    "OrderUnpacker",
 ]

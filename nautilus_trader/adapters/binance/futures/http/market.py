@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -16,12 +16,12 @@
 import msgspec
 
 from nautilus_trader.adapters.binance.common.enums import BinanceAccountType
-from nautilus_trader.adapters.binance.common.enums import BinanceMethodType
 from nautilus_trader.adapters.binance.common.enums import BinanceSecurityType
 from nautilus_trader.adapters.binance.futures.schemas.market import BinanceFuturesExchangeInfo
 from nautilus_trader.adapters.binance.http.client import BinanceHttpClient
 from nautilus_trader.adapters.binance.http.endpoint import BinanceHttpEndpoint
 from nautilus_trader.adapters.binance.http.market import BinanceMarketHttpAPI
+from nautilus_trader.core.nautilus_pyo3 import HttpMethod
 
 
 class BinanceFuturesExchangeInfoHttp(BinanceHttpEndpoint):
@@ -35,6 +35,7 @@ class BinanceFuturesExchangeInfoHttp(BinanceHttpEndpoint):
     ----------
     https://binance-docs.github.io/apidocs/futures/en/#exchange-information
     https://binance-docs.github.io/apidocs/delivery/en/#exchange-information
+
     """
 
     def __init__(
@@ -43,7 +44,7 @@ class BinanceFuturesExchangeInfoHttp(BinanceHttpEndpoint):
         base_endpoint: str,
     ):
         methods = {
-            BinanceMethodType.GET: BinanceSecurityType.NONE,
+            HttpMethod.GET: BinanceSecurityType.NONE,
         }
         url_path = base_endpoint + "exchangeInfo"
         super().__init__(
@@ -53,15 +54,15 @@ class BinanceFuturesExchangeInfoHttp(BinanceHttpEndpoint):
         )
         self._get_resp_decoder = msgspec.json.Decoder(BinanceFuturesExchangeInfo)
 
-    async def _get(self) -> BinanceFuturesExchangeInfo:
-        method_type = BinanceMethodType.GET
+    async def get(self) -> BinanceFuturesExchangeInfo:
+        method_type = HttpMethod.GET
         raw = await self._method(method_type, None)
         return self._get_resp_decoder.decode(raw)
 
 
 class BinanceFuturesMarketHttpAPI(BinanceMarketHttpAPI):
     """
-    Provides access to the `Binance Futures` HTTP REST API.
+    Provides access to the Binance Futures HTTP REST API.
 
     Parameters
     ----------
@@ -69,12 +70,13 @@ class BinanceFuturesMarketHttpAPI(BinanceMarketHttpAPI):
         The Binance REST API client.
     account_type : BinanceAccountType
         The Binance account type, used to select the endpoint.
+
     """
 
     def __init__(
         self,
         client: BinanceHttpClient,
-        account_type: BinanceAccountType = BinanceAccountType.USDT_FUTURE,
+        account_type: BinanceAccountType = BinanceAccountType.USDT_FUTURES,
     ):
         super().__init__(
             client=client,
@@ -83,7 +85,7 @@ class BinanceFuturesMarketHttpAPI(BinanceMarketHttpAPI):
 
         if not account_type.is_futures:
             raise RuntimeError(  # pragma: no cover (design-time error)
-                f"`BinanceAccountType` not USDT_FUTURE or COIN_FUTURE, was {account_type}",  # pragma: no cover
+                f"`BinanceAccountType` not USDT_FUTURES or COIN_FUTURES, was {account_type}",  # pragma: no cover
             )
 
         self._endpoint_futures_exchange_info = BinanceFuturesExchangeInfoHttp(
@@ -92,5 +94,7 @@ class BinanceFuturesMarketHttpAPI(BinanceMarketHttpAPI):
         )
 
     async def query_futures_exchange_info(self) -> BinanceFuturesExchangeInfo:
-        """Retrieve Binance Futures exchange information."""
-        return await self._endpoint_futures_exchange_info._get()
+        """
+        Retrieve Binance Futures exchange information.
+        """
+        return await self._endpoint_futures_exchange_info.get()

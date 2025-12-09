@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,25 +13,24 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
-import msgspec
-
 from libc.stdint cimport uint64_t
 
 from nautilus_trader.core.correctness cimport Condition
-from nautilus_trader.core.datetime cimport format_iso8601
 from nautilus_trader.core.datetime cimport unix_nanos_to_dt
+from nautilus_trader.core.datetime cimport unix_nanos_to_iso8601
+from nautilus_trader.core.rust.model cimport ContingencyType
+from nautilus_trader.core.rust.model cimport OrderSide
+from nautilus_trader.core.rust.model cimport OrderType
+from nautilus_trader.core.rust.model cimport TimeInForce
+from nautilus_trader.core.rust.model cimport TriggerType
 from nautilus_trader.core.uuid cimport UUID4
-from nautilus_trader.model.enums_c cimport ContingencyType
-from nautilus_trader.model.enums_c cimport OrderSide
-from nautilus_trader.model.enums_c cimport OrderType
-from nautilus_trader.model.enums_c cimport TimeInForce
-from nautilus_trader.model.enums_c cimport TriggerType
-from nautilus_trader.model.enums_c cimport contingency_type_to_str
-from nautilus_trader.model.enums_c cimport order_side_to_str
-from nautilus_trader.model.enums_c cimport order_type_to_str
-from nautilus_trader.model.enums_c cimport time_in_force_to_str
 from nautilus_trader.model.events.order cimport OrderInitialized
 from nautilus_trader.model.events.order cimport OrderUpdated
+from nautilus_trader.model.functions cimport contingency_type_to_str
+from nautilus_trader.model.functions cimport liquidity_side_to_str
+from nautilus_trader.model.functions cimport order_side_to_str
+from nautilus_trader.model.functions cimport order_type_to_str
+from nautilus_trader.model.functions cimport time_in_force_to_str
 from nautilus_trader.model.identifiers cimport ClientOrderId
 from nautilus_trader.model.identifiers cimport ExecAlgorithmId
 from nautilus_trader.model.identifiers cimport InstrumentId
@@ -69,11 +68,11 @@ cdef class MarketToLimitOrder(Order):
     init_id : UUID4
         The order initialization event ID.
     ts_init : uint64_t
-        The UNIX timestamp (nanoseconds) when the object was initialized.
+        UNIX timestamp (nanoseconds) when the object was initialized.
     time_in_force : TimeInForce {``GTC``, ``IOC``, ``FOK``, ``GTD``, ``DAY``}, default ``GTC``
         The order time in force.
     expire_time_ns : uint64_t, default 0 (no expiry)
-        The UNIX timestamp (nanoseconds) when the order will expire.
+        UNIX timestamp (nanoseconds) when the order will expire.
     reduce_only : bool, default False
         If the order carries the 'reduce-only' execution instruction.
     quote_quantity : bool, default False
@@ -94,9 +93,8 @@ cdef class MarketToLimitOrder(Order):
         The execution algorithm parameters for the order.
     exec_spawn_id : ClientOrderId, optional
         The execution algorithm spawning primary client order ID.
-    tags : str, optional
-        The custom user tags for the order. These are optional and can
-        contain any arbitrary delimiter if required.
+    tags : list[str], optional
+        The custom user tags for the order.
 
     Raises
     ------
@@ -134,7 +132,7 @@ cdef class MarketToLimitOrder(Order):
         ExecAlgorithmId exec_algorithm_id = None,
         dict exec_algorithm_params = None,
         ClientOrderId exec_spawn_id = None,
-        str tags = None,
+        list[str] tags = None,
     ):
         Condition.not_equal(order_side, OrderSide.NO_ORDER_SIDE, "order_side", "NO_ORDER_SIDE")
         Condition.not_equal(time_in_force, TimeInForce.AT_THE_OPEN, "time_in_force", "AT_THE_OPEN`")
@@ -142,10 +140,10 @@ cdef class MarketToLimitOrder(Order):
 
         if time_in_force == TimeInForce.GTD:
             # Must have an expire time
-            Condition.true(expire_time_ns > 0, "`expire_time_ns` cannot be <= UNIX epoch.")
+            Condition.is_true(expire_time_ns > 0, "`expire_time_ns` cannot be <= UNIX epoch.")
         else:
             # Should not have an expire time
-            Condition.true(expire_time_ns == 0, "`expire_time_ns` was set when `time_in_force` not GTD.")
+            Condition.is_true(expire_time_ns == 0, "`expire_time_ns` was set when `time_in_force` not GTD.")
 
         # Set options
         cdef dict options = {
@@ -229,10 +227,10 @@ cdef class MarketToLimitOrder(Order):
         str
 
         """
-        cdef str expiration_str = "" if self.expire_time_ns == 0 else f" {format_iso8601(unix_nanos_to_dt(self.expire_time_ns))}"
+        cdef str expiration_str = "" if self.expire_time_ns == 0 else f" {unix_nanos_to_iso8601(self.expire_time_ns, nanos_precision=False)}"
         return (
-            f"{order_side_to_str(self.side)} {self.quantity.to_str()} {self.instrument_id} "
-            f"{order_type_to_str(self.order_type)} @ {self.price} "
+            f"{order_side_to_str(self.side)} {self.quantity.to_formatted_str()} {self.instrument_id} "
+            f"{order_type_to_str(self.order_type)} @ {self.price.to_formatted_str() if self.price else None} "
             f"{time_in_force_to_str(self.time_in_force)}{expiration_str}"
         )
 
@@ -260,28 +258,31 @@ cdef class MarketToLimitOrder(Order):
             "quantity": str(self.quantity),
             "price": str(self.price),
             "time_in_force": time_in_force_to_str(self.time_in_force),
-            "expire_time_ns": self.expire_time_ns,
+            "expire_time_ns": self.expire_time_ns if self.expire_time_ns > 0 else None,
             "is_reduce_only": self.is_reduce_only,
             "is_quote_quantity": self.is_quote_quantity,
             "display_qty": str(self.display_qty) if self.display_qty is not None else None,
             "filled_qty": str(self.filled_qty),
-            "avg_px": str(self.avg_px),
-            "slippage": str(self.slippage),
+            "liquidity_side": liquidity_side_to_str(self.liquidity_side),
+            "avg_px": self.avg_px if self.filled_qty.as_f64_c() > 0.0 else None,
+            "slippage": self.slippage if self.filled_qty.as_f64_c() > 0.0 else None,
+            "commissions": [str(c) for c in self.commissions()] if self._commissions else None,
             "status": self._fsm.state_string_c(),
             "contingency_type": contingency_type_to_str(self.contingency_type),
             "order_list_id": self.order_list_id.to_str() if self.order_list_id is not None else None,
-            "linked_order_ids": ",".join([o.to_str() for o in self.linked_order_ids]) if self.linked_order_ids is not None else None,  # noqa
+            "linked_order_ids": [o.to_str() for o in self.linked_order_ids] if self.linked_order_ids is not None else None,  # noqa
             "parent_order_id": self.parent_order_id.to_str() if self.parent_order_id is not None else None,
             "exec_algorithm_id": self.exec_algorithm_id.to_str() if self.exec_algorithm_id is not None else None,
-            "exec_algorithm_params": msgspec.json.encode(self.exec_algorithm_params) if self.exec_algorithm_params is not None else None,  # noqa
+            "exec_algorithm_params": self.exec_algorithm_params,
             "exec_spawn_id": self.exec_spawn_id.to_str() if self.exec_spawn_id is not None else None,
             "tags": self.tags,
-            "ts_last": self.ts_last,
+            "init_id": str(self.init_id),
             "ts_init": self.ts_init,
+            "ts_last": self.ts_last,
         }
 
     @staticmethod
-    cdef MarketToLimitOrder create(OrderInitialized init):
+    cdef MarketToLimitOrder create_c(OrderInitialized init):
         """
         Return a `Market-To-Limit` order from the given initialized event.
 
@@ -328,3 +329,7 @@ cdef class MarketToLimitOrder(Order):
             exec_spawn_id=init.exec_spawn_id,
             tags=init.tags,
         )
+
+    @staticmethod
+    def create(init):
+        return MarketToLimitOrder.create_c(init)

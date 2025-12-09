@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,18 +13,16 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
-from typing import Optional
-
 import msgspec
 
 from nautilus_trader.adapters.binance.common.enums import BinanceAccountType
-from nautilus_trader.adapters.binance.common.enums import BinanceMethodType
 from nautilus_trader.adapters.binance.common.enums import BinanceSecurityType
-from nautilus_trader.adapters.binance.common.schemas.symbol import BinanceSymbol
+from nautilus_trader.adapters.binance.common.symbol import BinanceSymbol
 from nautilus_trader.adapters.binance.futures.schemas.wallet import BinanceFuturesCommissionRate
 from nautilus_trader.adapters.binance.http.client import BinanceHttpClient
 from nautilus_trader.adapters.binance.http.endpoint import BinanceHttpEndpoint
-from nautilus_trader.common.clock import LiveClock
+from nautilus_trader.common.component import LiveClock
+from nautilus_trader.core.nautilus_pyo3 import HttpMethod
 
 
 class BinanceFuturesCommissionRateHttp(BinanceHttpEndpoint):
@@ -38,6 +36,7 @@ class BinanceFuturesCommissionRateHttp(BinanceHttpEndpoint):
     ----------
     https://binance-docs.github.io/apidocs/futures/en/#user-commission-rate-user_data
     https://binance-docs.github.io/apidocs/delivery/en/#user-commission-rate-user_data
+
     """
 
     def __init__(
@@ -46,7 +45,7 @@ class BinanceFuturesCommissionRateHttp(BinanceHttpEndpoint):
         base_endpoint: str,
     ):
         methods = {
-            BinanceMethodType.GET: BinanceSecurityType.USER_DATA,
+            HttpMethod.GET: BinanceSecurityType.USER_DATA,
         }
         super().__init__(
             client,
@@ -67,45 +66,47 @@ class BinanceFuturesCommissionRateHttp(BinanceHttpEndpoint):
             Millisecond timestamp of the request.
         recvWindow : str, optional
             The number of milliseconds after timestamp the request is valid.
+
         """
 
         timestamp: str
         symbol: BinanceSymbol
-        recvWindow: Optional[str] = None
+        recvWindow: str | None = None
 
-    async def _get(self, parameters: GetParameters) -> BinanceFuturesCommissionRate:
-        method_type = BinanceMethodType.GET
-        raw = await self._method(method_type, parameters)
+    async def get(self, params: GetParameters) -> BinanceFuturesCommissionRate:
+        method_type = HttpMethod.GET
+        raw = await self._method(method_type, params)
         return self._get_resp_decoder.decode(raw)
 
 
 class BinanceFuturesWalletHttpAPI:
     """
-    Provides access to the `Binance Futures` Wallet HTTP REST API.
+    Provides access to the Binance Futures Wallet HTTP REST API.
 
     Parameters
     ----------
     client : BinanceHttpClient
         The Binance REST API client.
+
     """
 
     def __init__(
         self,
         client: BinanceHttpClient,
         clock: LiveClock,
-        account_type: BinanceAccountType = BinanceAccountType.USDT_FUTURE,
+        account_type: BinanceAccountType = BinanceAccountType.USDT_FUTURES,
     ):
         self.client = client
         self._clock = clock
 
-        if account_type == BinanceAccountType.USDT_FUTURE:
+        if account_type == BinanceAccountType.USDT_FUTURES:
             self.base_endpoint = "/fapi/v1/"
-        elif account_type == BinanceAccountType.COIN_FUTURE:
+        elif account_type == BinanceAccountType.COIN_FUTURES:
             self.base_endpoint = "/dapi/v1/"
 
         if not account_type.is_futures:
             raise RuntimeError(  # pragma: no cover (design-time error)
-                f"`BinanceAccountType` not USDT_FUTURE or COIN_FUTURE, was {account_type}",  # pragma: no cover
+                f"`BinanceAccountType` not USDT_FUTURES or COIN_FUTURES, was {account_type}",  # pragma: no cover
             )
 
         self._endpoint_futures_commission_rate = BinanceFuturesCommissionRateHttp(
@@ -114,17 +115,21 @@ class BinanceFuturesWalletHttpAPI:
         )
 
     def _timestamp(self) -> str:
-        """Create Binance timestamp from internal clock."""
+        """
+        Create Binance timestamp from internal clock.
+        """
         return str(self._clock.timestamp_ms())
 
     async def query_futures_commission_rate(
         self,
         symbol: str,
-        recv_window: Optional[str] = None,
+        recv_window: str | None = None,
     ) -> BinanceFuturesCommissionRate:
-        """Get Futures commission rates for a given symbol."""
-        rate = await self._endpoint_futures_commission_rate._get(
-            parameters=self._endpoint_futures_commission_rate.GetParameters(
+        """
+        Get Futures commission rates for a given symbol.
+        """
+        rate = await self._endpoint_futures_commission_rate.get(
+            params=self._endpoint_futures_commission_rate.GetParameters(
                 timestamp=self._timestamp(),
                 symbol=BinanceSymbol(symbol),
                 recvWindow=recv_window,

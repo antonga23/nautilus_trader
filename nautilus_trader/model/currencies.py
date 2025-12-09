@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,79 +13,124 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
-from nautilus_trader.model.currency import Currency
+from typing import Final
+
+from nautilus_trader.core import nautilus_pyo3
+from nautilus_trader.model.objects import Currency
+
+
+def register_currency(currency: Currency, overwrite: bool = False) -> None:
+    """
+    Register a currency in both Cython and PyO3 currency maps.
+
+    This ensures the currency is available to both the Cython-based code
+    (nautilus_trader.model.objects.Currency) and PyO3-based code
+    (nautilus_trader.core.nautilus_pyo3.Currency).
+
+    Parameters
+    ----------
+    currency : Currency
+        The currency to register.
+    overwrite : bool, default False
+        If the currency in the internal currency maps should be overwritten.
+
+    """
+    Currency.register(currency, overwrite)
+
+    pyo3_currency_type = nautilus_pyo3.CurrencyType.from_str(currency.currency_type.name)
+
+    pyo3_currency = nautilus_pyo3.Currency(
+        code=currency.code,
+        precision=currency.precision,
+        iso4217=currency.iso4217,
+        name=currency.name,
+        currency_type=pyo3_currency_type,
+    )
+    nautilus_pyo3.Currency.register(pyo3_currency, overwrite)
 
 
 # Fiat currencies
-AUD = Currency.from_internal_map("AUD")
-BRL = Currency.from_internal_map("BRL")
-CAD = Currency.from_internal_map("CAD")
-CHF = Currency.from_internal_map("CHF")
-CNY = Currency.from_internal_map("CNY")
-CNH = Currency.from_internal_map("CNH")
-CZK = Currency.from_internal_map("CZK")
-DKK = Currency.from_internal_map("DKK")
-EUR = Currency.from_internal_map("EUR")
-GBP = Currency.from_internal_map("GBP")
-HKD = Currency.from_internal_map("HKD")
-HUF = Currency.from_internal_map("HUF")
-ILS = Currency.from_internal_map("ILS")
-INR = Currency.from_internal_map("INR")
-JPY = Currency.from_internal_map("JPY")
-KRW = Currency.from_internal_map("KRW")
-MXN = Currency.from_internal_map("MXN")
-NOK = Currency.from_internal_map("NOK")
-NZD = Currency.from_internal_map("NZD")
-PLN = Currency.from_internal_map("PLN")
-RUB = Currency.from_internal_map("RUB")
-SAR = Currency.from_internal_map("SAR")
-SEK = Currency.from_internal_map("SEK")
-SGD = Currency.from_internal_map("SGD")
-THB = Currency.from_internal_map("THB")
-TRY = Currency.from_internal_map("TRY")
-USD = Currency.from_internal_map("USD")
-XAG = Currency.from_internal_map("XAG")
-XAU = Currency.from_internal_map("XAU")
-ZAR = Currency.from_internal_map("ZAR")
+AUD: Final[Currency] = Currency.from_internal_map("AUD")
+BRL: Final[Currency] = Currency.from_internal_map("BRL")
+CAD: Final[Currency] = Currency.from_internal_map("CAD")
+CHF: Final[Currency] = Currency.from_internal_map("CHF")
+CNY: Final[Currency] = Currency.from_internal_map("CNY")
+CNH: Final[Currency] = Currency.from_internal_map("CNH")
+CZK: Final[Currency] = Currency.from_internal_map("CZK")
+DKK: Final[Currency] = Currency.from_internal_map("DKK")
+EUR: Final[Currency] = Currency.from_internal_map("EUR")
+GBP: Final[Currency] = Currency.from_internal_map("GBP")
+HKD: Final[Currency] = Currency.from_internal_map("HKD")
+HUF: Final[Currency] = Currency.from_internal_map("HUF")
+ILS: Final[Currency] = Currency.from_internal_map("ILS")
+INR: Final[Currency] = Currency.from_internal_map("INR")
+JPY: Final[Currency] = Currency.from_internal_map("JPY")
+KRW: Final[Currency] = Currency.from_internal_map("KRW")
+MXN: Final[Currency] = Currency.from_internal_map("MXN")
+NOK: Final[Currency] = Currency.from_internal_map("NOK")
+NZD: Final[Currency] = Currency.from_internal_map("NZD")
+PLN: Final[Currency] = Currency.from_internal_map("PLN")
+RUB: Final[Currency] = Currency.from_internal_map("RUB")
+SAR: Final[Currency] = Currency.from_internal_map("SAR")
+SEK: Final[Currency] = Currency.from_internal_map("SEK")
+SGD: Final[Currency] = Currency.from_internal_map("SGD")
+THB: Final[Currency] = Currency.from_internal_map("THB")
+TRY: Final[Currency] = Currency.from_internal_map("TRY")
+USD: Final[Currency] = Currency.from_internal_map("USD")
+XAG: Final[Currency] = Currency.from_internal_map("XAG")
+XAU: Final[Currency] = Currency.from_internal_map("XAU")
+ZAR: Final[Currency] = Currency.from_internal_map("ZAR")
 
 # Crypto currencies
-ONEINCH = Currency.from_internal_map("1INCH")
-AAVE = Currency.from_internal_map("AAVE")
-ACA = Currency.from_internal_map("ACA")
-ADA = Currency.from_internal_map("ADA")
-AVAX = Currency.from_internal_map("AVAX")
-BCH = Currency.from_internal_map("BCH")
-BTTC = Currency.from_internal_map("BTTC")
-BNB = Currency.from_internal_map("BNB")
-BRZ = Currency.from_internal_map("BRZ")
-BSV = Currency.from_internal_map("BSV")
-BTC = Currency.from_internal_map("BTC")
-BUSD = Currency.from_internal_map("BUSD")
-XBT = Currency.from_internal_map("XBT")
-DASH = Currency.from_internal_map("DASH")
-DOGE = Currency.from_internal_map("DOGE")
-DOT = Currency.from_internal_map("DOT")
-EOS = Currency.from_internal_map("EOS")
-ETH = Currency.from_internal_map("ETH")
-ETHW = Currency.from_internal_map("ETHW")
-EZ = Currency.from_internal_map("EZ")
-FTT = Currency.from_internal_map("FTT")
-JOE = Currency.from_internal_map("JOE")
-LINK = Currency.from_internal_map("LINK")
-LTC = Currency.from_internal_map("LTC")
-LUNA = Currency.from_internal_map("LUNA")
-NBT = Currency.from_internal_map("NBT")
-SOL = Currency.from_internal_map("SOL")
-TRX = Currency.from_internal_map("TRX")
-TRYB = Currency.from_internal_map("TRYB")
-VTC = Currency.from_internal_map("VTC")
-XLM = Currency.from_internal_map("XLM")
-XMR = Currency.from_internal_map("XMR")
-XRP = Currency.from_internal_map("XRP")
-XTZ = Currency.from_internal_map("XTZ")
-USDC = Currency.from_internal_map("USDC")
-USDT = Currency.from_internal_map("USDT")
-WSB = Currency.from_internal_map("WSB")
-XEC = Currency.from_internal_map("XEC")
-ZEC = Currency.from_internal_map("ZEC")
-PLAY_EUR = Currency.from_internal_map("PLAY_EUR")
+ONEINCH: Final[Currency] = Currency.from_internal_map("1INCH")
+AAVE: Final[Currency] = Currency.from_internal_map("AAVE")
+ACA: Final[Currency] = Currency.from_internal_map("ACA")
+ADA: Final[Currency] = Currency.from_internal_map("ADA")
+ARB: Final[Currency] = Currency.from_internal_map("ARB")
+AVAX: Final[Currency] = Currency.from_internal_map("AVAX")
+BCH: Final[Currency] = Currency.from_internal_map("BCH")
+BIO: Final[Currency] = Currency.from_internal_map("BIO")
+BTTC: Final[Currency] = Currency.from_internal_map("BTTC")
+BNB: Final[Currency] = Currency.from_internal_map("BNB")
+BRZ: Final[Currency] = Currency.from_internal_map("BRZ")
+BSV: Final[Currency] = Currency.from_internal_map("BSV")
+BTC: Final[Currency] = Currency.from_internal_map("BTC")
+BUSD: Final[Currency] = Currency.from_internal_map("BUSD")
+XBT: Final[Currency] = Currency.from_internal_map("XBT")
+CRV: Final[Currency] = Currency.from_internal_map("CRV")
+DASH: Final[Currency] = Currency.from_internal_map("DASH")
+DOGE: Final[Currency] = Currency.from_internal_map("DOGE")
+DOT: Final[Currency] = Currency.from_internal_map("DOT")
+ENA: Final[Currency] = Currency.from_internal_map("ENA")
+EOS: Final[Currency] = Currency.from_internal_map("EOS")
+ETH: Final[Currency] = Currency.from_internal_map("ETH")
+ETHW: Final[Currency] = Currency.from_internal_map("ETHW")
+FDUSD: Final[Currency] = Currency.from_internal_map("FDUSD")
+EZ: Final[Currency] = Currency.from_internal_map("EZ")
+FTT: Final[Currency] = Currency.from_internal_map("FTT")
+HYPE: Final[Currency] = Currency.from_internal_map("HYPE")
+JOE: Final[Currency] = Currency.from_internal_map("JOE")
+LINK: Final[Currency] = Currency.from_internal_map("LINK")
+LTC: Final[Currency] = Currency.from_internal_map("LTC")
+LUNA: Final[Currency] = Currency.from_internal_map("LUNA")
+NBT: Final[Currency] = Currency.from_internal_map("NBT")
+PROVE: Final[Currency] = Currency.from_internal_map("PROVE")
+SOL: Final[Currency] = Currency.from_internal_map("SOL")
+SUI: Final[Currency] = Currency.from_internal_map("SUI")
+TRX: Final[Currency] = Currency.from_internal_map("TRX")
+TRYB: Final[Currency] = Currency.from_internal_map("TRYB")
+TUSD: Final[Currency] = Currency.from_internal_map("TUSD")
+UNI: Final[Currency] = Currency.from_internal_map("UNI")
+VTC: Final[Currency] = Currency.from_internal_map("VTC")
+XLM: Final[Currency] = Currency.from_internal_map("XLM")
+XMR: Final[Currency] = Currency.from_internal_map("XMR")
+XRP: Final[Currency] = Currency.from_internal_map("XRP")
+XTZ: Final[Currency] = Currency.from_internal_map("XTZ")
+USDC: Final[Currency] = Currency.from_internal_map("USDC")
+USDC_POS: Final[Currency] = Currency.from_internal_map("USDC.e")
+USDP: Final[Currency] = Currency.from_internal_map("USDP")
+USDT: Final[Currency] = Currency.from_internal_map("USDT")
+WSB: Final[Currency] = Currency.from_internal_map("WSB")
+XEC: Final[Currency] = Currency.from_internal_map("XEC")
+ZEC: Final[Currency] = Currency.from_internal_map("ZEC")
+PLAY_EUR = Final[Currency] = Currency.from_internal_map("PLAY_EUR") # CLOUDBET TEST CURRENCY

@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -14,9 +14,8 @@
 # -------------------------------------------------------------------------------------------------
 
 import inspect
-from typing import Optional
 
-from nautilus_trader.indicators.average.ema import ExponentialMovingAverage
+from nautilus_trader.indicators import ExponentialMovingAverage
 from nautilus_trader.model.data import BarType
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.identifiers import PositionId
@@ -31,6 +30,7 @@ class MockStrategy(Strategy):
     ----------
     bar_type : BarType
         The bar type for the strategy.
+
     """
 
     def __init__(self, bar_type: BarType) -> None:
@@ -42,33 +42,45 @@ class MockStrategy(Strategy):
         self.ema1 = ExponentialMovingAverage(10)
         self.ema2 = ExponentialMovingAverage(20)
 
-        self.position_id: Optional[PositionId] = None
+        self.position_id: PositionId | None = None
 
         self.calls: list[str] = []
 
     def on_start(self) -> None:
-        self.calls.append(inspect.currentframe().f_code.co_name)
+        current_frame = inspect.currentframe()
+        assert current_frame  # Type checking
+        self.calls.append(current_frame.f_code.co_name)
         self.register_indicator_for_bars(self.bar_type, self.ema1)
         self.register_indicator_for_bars(self.bar_type, self.ema2)
 
     def on_instrument(self, instrument) -> None:
-        self.calls.append(inspect.currentframe().f_code.co_name)
+        current_frame = inspect.currentframe()
+        assert current_frame  # Type checking
+        self.calls.append(current_frame.f_code.co_name)
         self.store.append(instrument)
 
     def on_ticker(self, ticker):
-        self.calls.append(inspect.currentframe().f_code.co_name)
+        current_frame = inspect.currentframe()
+        assert current_frame  # Type checking
+        self.calls.append(current_frame.f_code.co_name)
         self.store.append(ticker)
 
     def on_quote_tick(self, tick):
-        self.calls.append(inspect.currentframe().f_code.co_name)
+        current_frame = inspect.currentframe()
+        assert current_frame  # Type checking
+        self.calls.append(current_frame.f_code.co_name)
         self.store.append(tick)
 
     def on_trade_tick(self, tick) -> None:
-        self.calls.append(inspect.currentframe().f_code.co_name)
+        current_frame = inspect.currentframe()
+        assert current_frame  # Type checking
+        self.calls.append(current_frame.f_code.co_name)
         self.store.append(tick)
 
     def on_bar(self, bar) -> None:
-        self.calls.append(inspect.currentframe().f_code.co_name)
+        current_frame = inspect.currentframe()
+        assert current_frame  # Type checking
+        self.calls.append(current_frame.f_code.co_name)
         self.store.append(bar)
 
         if bar.bar_type != self.bar_type:
@@ -94,36 +106,60 @@ class MockStrategy(Strategy):
             self.position_id = sell_order.client_order_id
 
     def on_data(self, data) -> None:
-        self.calls.append(inspect.currentframe().f_code.co_name)
+        current_frame = inspect.currentframe()
+        assert current_frame  # Type checking
+        self.calls.append(current_frame.f_code.co_name)
         self.store.append(data)
 
+    def on_signal(self, signal) -> None:
+        current_frame = inspect.currentframe()
+        assert current_frame  # Type checking
+        self.calls.append(current_frame.f_code.co_name)
+        self.store.append(signal)
+
     def on_strategy_data(self, data) -> None:
-        self.calls.append(inspect.currentframe().f_code.co_name)
+        current_frame = inspect.currentframe()
+        assert current_frame  # Type checking
+        self.calls.append(current_frame.f_code.co_name)
         self.store.append(data)
 
     def on_event(self, event) -> None:
-        self.calls.append(inspect.currentframe().f_code.co_name)
+        current_frame = inspect.currentframe()
+        assert current_frame  # Type checking
+        self.calls.append(current_frame.f_code.co_name)
         self.store.append(event)
 
     def on_stop(self) -> None:
-        self.calls.append(inspect.currentframe().f_code.co_name)
+        current_frame = inspect.currentframe()
+        assert current_frame  # Type checking
+        self.calls.append(current_frame.f_code.co_name)
 
     def on_resume(self) -> None:
-        self.calls.append(inspect.currentframe().f_code.co_name)
+        current_frame = inspect.currentframe()
+        assert current_frame  # Type checking
+        self.calls.append(current_frame.f_code.co_name)
 
     def on_reset(self) -> None:
-        self.calls.append(inspect.currentframe().f_code.co_name)
+        current_frame = inspect.currentframe()
+        assert current_frame  # Type checking
+        self.calls.append(current_frame.f_code.co_name)
 
     def on_save(self) -> dict[str, bytes]:
-        self.calls.append(inspect.currentframe().f_code.co_name)
+        current_frame = inspect.currentframe()
+        assert current_frame  # Type checking
+        self.calls.append(current_frame.f_code.co_name)
         return {"UserState": b"1"}
 
     def on_load(self, state: dict[str, bytes]) -> None:
-        self.calls.append(inspect.currentframe().f_code.co_name)
+        current_frame = inspect.currentframe()
+        assert current_frame  # Type checking
+        self.calls.append(current_frame.f_code.co_name)
         self.store.append(state)
 
     def on_dispose(self) -> None:
-        self.calls.append(inspect.currentframe().f_code.co_name)
+        current_frame = inspect.currentframe()
+        assert current_frame  # Type checking
+        self.calls.append(current_frame.f_code.co_name)
 
 
 class KaboomStrategy(Strategy):
@@ -179,6 +215,9 @@ class KaboomStrategy(Strategy):
         raise RuntimeError(f"{self} BOOM!")
 
     def on_data(self, data) -> None:
+        raise RuntimeError(f"{self} BOOM!")
+
+    def on_signal(self, data) -> None:
         raise RuntimeError(f"{self} BOOM!")
 
     def on_event(self, event) -> None:

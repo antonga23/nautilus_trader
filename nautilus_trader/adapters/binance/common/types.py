@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,12 +13,14 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
-from decimal import Decimal
-from typing import Any, Optional
+from __future__ import annotations
 
+from decimal import Decimal
+from typing import Any
+
+from nautilus_trader.core.data import Data
 from nautilus_trader.model.data import Bar
 from nautilus_trader.model.data import BarType
-from nautilus_trader.model.data import Ticker
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
@@ -26,9 +28,9 @@ from nautilus_trader.model.objects import Quantity
 
 class BinanceBar(Bar):
     """
-    Represents an aggregated `Binance` bar.
+    Represents an aggregated Binance bar.
 
-    This data type includes the raw data provided by `Binance`.
+    This data type includes the raw data provided by Binance.
 
     Parameters
     ----------
@@ -53,14 +55,15 @@ class BinanceBar(Bar):
     taker_buy_quote_volume : Decimal
         The liquidity taker volume on the buy side for the quote asset.
     ts_event : uint64_t
-        The UNIX timestamp (nanoseconds) when the data event occurred.
+        UNIX timestamp (nanoseconds) when the data event occurred.
     ts_init : uint64_t
-        The UNIX timestamp (nanoseconds) when the data object was initialized.
+        UNIX timestamp (nanoseconds) when the data object was initialized.
 
     References
     ----------
     https://binance-docs.github.io/apidocs/spot/en/#kline-candlestick-data
     https://binance-docs.github.io/apidocs/futures/en/#kline-candlestick-data
+
     """
 
     def __init__(
@@ -77,7 +80,7 @@ class BinanceBar(Bar):
         taker_buy_quote_volume: Decimal,
         ts_event: int,
         ts_init: int,
-    ):
+    ) -> None:
         super().__init__(
             bar_type=bar_type,
             open=open,
@@ -136,9 +139,9 @@ class BinanceBar(Bar):
         )
 
     @staticmethod
-    def from_dict(values: dict[str, Any]) -> "BinanceBar":
+    def from_dict(values: dict[str, Any]) -> BinanceBar:
         """
-        Return a `Binance` bar parsed from the given values.
+        Return a Binance bar parsed from the given values.
 
         Parameters
         ----------
@@ -166,7 +169,7 @@ class BinanceBar(Bar):
         )
 
     @staticmethod
-    def to_dict(obj: "BinanceBar") -> dict[str, Any]:
+    def to_dict(obj: BinanceBar) -> dict[str, Any]:
         """
         Return a dictionary representation of this object.
 
@@ -192,11 +195,11 @@ class BinanceBar(Bar):
         }
 
 
-class BinanceTicker(Ticker):
+class BinanceTicker(Data):
     """
-    Represents a `Binance` 24hr statistics ticker.
+    Represents a Binance 24hr statistics ticker.
 
-    This data type includes the raw data provided by `Binance`.
+    This data type includes the raw data provided by Binance.
 
     Parameters
     ----------
@@ -233,9 +236,9 @@ class BinanceTicker(Ticker):
     quote_volume : Decimal
         The quote volume.
     open_time_ms : int
-        The UNIX timestamp (milliseconds) when the ticker opened.
+        UNIX timestamp (milliseconds) when the ticker opened.
     close_time_ms : int
-        The UNIX timestamp (milliseconds) when the ticker closed.
+        UNIX timestamp (milliseconds) when the ticker closed.
     first_id : int
         The first trade match ID (assigned by the venue) for the ticker.
     last_id : int
@@ -243,14 +246,15 @@ class BinanceTicker(Ticker):
     count : int
         The count of trades over the tickers time range.
     ts_event : uint64_t
-        The UNIX timestamp (nanoseconds) when the ticker event occurred.
+        UNIX timestamp (nanoseconds) when the ticker event occurred.
     ts_init : uint64_t
-        The UNIX timestamp (nanoseconds) when the object was initialized.
+        UNIX timestamp (nanoseconds) when the object was initialized.
 
     References
     ----------
     https://binance-docs.github.io/apidocs/spot/en/#24hr-ticker-price-change-statistics
     https://binance-docs.github.io/apidocs/futures/en/#24hr-ticker-price-change-statistics
+
     """
 
     def __init__(
@@ -273,18 +277,13 @@ class BinanceTicker(Ticker):
         count: int,
         ts_event: int,
         ts_init: int,
-        prev_close_price: Optional[Decimal] = None,
-        bid_price: Optional[Decimal] = None,
-        bid_qty: Optional[Decimal] = None,
-        ask_price: Optional[Decimal] = None,
-        ask_qty: Optional[Decimal] = None,
-    ):
-        super().__init__(
-            instrument_id=instrument_id,
-            ts_event=ts_event,
-            ts_init=ts_init,
-        )
-
+        prev_close_price: Decimal | None = None,
+        bid_price: Decimal | None = None,
+        bid_qty: Decimal | None = None,
+        ask_price: Decimal | None = None,
+        ask_qty: Decimal | None = None,
+    ) -> None:
+        self.instrument_id = instrument_id
         self.price_change = price_change
         self.price_change_percent = price_change_percent
         self.weighted_avg_price = weighted_avg_price
@@ -305,6 +304,18 @@ class BinanceTicker(Ticker):
         self.first_id = first_id
         self.last_id = last_id
         self.count = count
+        self._ts_event = ts_event
+        self._ts_init = ts_init
+
+    def __eq__(self, other: object) -> bool:
+        if other is None:
+            return False
+        if not isinstance(other, BinanceTicker):
+            return False
+        return self.instrument_id == other.instrument_id
+
+    def __hash__(self) -> int:
+        return hash(self.instrument_id)
 
     def __repr__(self) -> str:
         return (
@@ -334,10 +345,34 @@ class BinanceTicker(Ticker):
             f"ts_init={self.ts_init})"
         )
 
-    @staticmethod
-    def from_dict(values: dict[str, Any]) -> "BinanceTicker":
+    @property
+    def ts_event(self) -> int:
         """
-        Return a `Binance Spot/Margin` ticker parsed from the given values.
+        UNIX timestamp (nanoseconds) when the data event occurred.
+
+        Returns
+        -------
+        int
+
+        """
+        return self._ts_event
+
+    @property
+    def ts_init(self) -> int:
+        """
+        UNIX timestamp (nanoseconds) when the object was initialized.
+
+        Returns
+        -------
+        int
+
+        """
+        return self._ts_init
+
+    @staticmethod
+    def from_dict(values: dict[str, Any]) -> BinanceTicker:
+        """
+        Return a Binance Spot/Margin ticker parsed from the given values.
 
         Parameters
         ----------
@@ -349,11 +384,11 @@ class BinanceTicker(Ticker):
         BinanceTicker
 
         """
-        prev_close_str: Optional[str] = values.get("prev_close")
-        bid_price_str: Optional[str] = values.get("bid_price")
-        bid_qty_str: Optional[str] = values.get("bid_qty")
-        ask_price_str: Optional[str] = values.get("ask_price")
-        ask_qty_str: Optional[str] = values.get("ask_qty")
+        prev_close_str: str | None = values.get("prev_close")
+        bid_price_str: str | None = values.get("bid_price")
+        bid_qty_str: str | None = values.get("bid_qty")
+        ask_price_str: str | None = values.get("ask_price")
+        ask_qty_str: str | None = values.get("ask_qty")
         return BinanceTicker(
             instrument_id=InstrumentId.from_str(values["instrument_id"]),
             price_change=Decimal(values["price_change"]),
@@ -381,7 +416,7 @@ class BinanceTicker(Ticker):
         )
 
     @staticmethod
-    def to_dict(obj: "BinanceTicker") -> dict[str, Any]:
+    def to_dict(obj: BinanceTicker) -> dict[str, Any]:
         """
         Return a dictionary representation of this object.
 
@@ -396,9 +431,9 @@ class BinanceTicker(Ticker):
             "price_change": str(obj.price_change),
             "price_change_percent": str(obj.price_change_percent),
             "weighted_avg_price": str(obj.weighted_avg_price),
-            "prev_close_price": str(obj.prev_close_price)
-            if obj.prev_close_price is not None
-            else None,
+            "prev_close_price": (
+                str(obj.prev_close_price) if obj.prev_close_price is not None else None
+            ),
             "last_price": str(obj.last_price),
             "last_qty": str(obj.last_qty),
             "bid_price": str(obj.bid_price),

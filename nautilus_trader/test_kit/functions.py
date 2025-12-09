@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -14,10 +14,8 @@
 # -------------------------------------------------------------------------------------------------
 
 import asyncio
-from typing import Callable, TypeVar
-
-
-T = TypeVar("T")
+from collections.abc import Callable
+from contextlib import suppress
 
 
 async def eventually(condition: Callable, timeout: float = 2.0) -> None:
@@ -46,3 +44,32 @@ async def eventually(condition: Callable, timeout: float = 2.0) -> None:
             await asyncio.sleep(0)
 
     await asyncio.wait_for(await_condition(condition), timeout=timeout)
+
+
+def ensure_all_tasks_completed() -> None:
+    """
+    Gather all remaining tasks from the running event loop, cancel then run until
+    complete.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # No loop is running, attempt to retrieve any preconfigured loop
+        try:
+            policy = asyncio.get_event_loop_policy()
+            loop = policy.get_event_loop()
+        except RuntimeError:
+            return  # Nothing to clean up
+        if loop.is_closed():
+            return  # Loop is already closed
+
+    # Cancel ALL tasks in the event loop
+    all_tasks = asyncio.tasks.all_tasks(loop)
+    for task in all_tasks:
+        task.cancel()
+
+    gather_all = asyncio.gather(*all_tasks, return_exceptions=True)
+
+    # Expected due to task cancellation
+    with suppress(asyncio.CancelledError):
+        loop.run_until_complete(gather_all)

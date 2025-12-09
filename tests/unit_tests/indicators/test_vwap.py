@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -17,7 +17,7 @@ from datetime import timedelta
 
 import pytest
 
-from nautilus_trader.indicators.vwap import VolumeWeightedAveragePrice
+from nautilus_trader.indicators import VolumeWeightedAveragePrice
 from nautilus_trader.test_kit.providers import TestInstrumentProvider
 from nautilus_trader.test_kit.stubs.data import UNIX_EPOCH
 from nautilus_trader.test_kit.stubs.data import TestDataStubs
@@ -62,7 +62,7 @@ class TestVolumeWeightedAveragePrice:
 
         # Assert
         assert indicator.has_inputs
-        assert indicator.value == 1.00003
+        assert indicator.value == 1.0000266666666666
 
     def test_value_with_one_input_returns_expected_value(self):
         # Arrange
@@ -130,7 +130,7 @@ class TestVolumeWeightedAveragePrice:
 
     def test_reset_successfully_returns_indicator_to_fresh_state(self):
         # Arrange
-        for _i in range(100):
+        for _ in range(100):
             self.vwap.update_raw(1.00000, 10000, UNIX_EPOCH)
 
         # Act

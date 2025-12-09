@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -15,33 +15,29 @@
 
 import asyncio
 import os
-from functools import lru_cache
-from typing import Optional
 
-# fmt: off
 from nautilus_trader.adapters.interactive_brokers.client import InteractiveBrokersClient
 from nautilus_trader.adapters.interactive_brokers.common import IB_VENUE
+from nautilus_trader.adapters.interactive_brokers.config import DockerizedIBGatewayConfig
 from nautilus_trader.adapters.interactive_brokers.config import InteractiveBrokersDataClientConfig
 from nautilus_trader.adapters.interactive_brokers.config import InteractiveBrokersExecClientConfig
-from nautilus_trader.adapters.interactive_brokers.config import InteractiveBrokersGatewayConfig
 from nautilus_trader.adapters.interactive_brokers.config import InteractiveBrokersInstrumentProviderConfig
 from nautilus_trader.adapters.interactive_brokers.data import InteractiveBrokersDataClient
 from nautilus_trader.adapters.interactive_brokers.execution import InteractiveBrokersExecutionClient
-from nautilus_trader.adapters.interactive_brokers.gateway import InteractiveBrokersGateway
+from nautilus_trader.adapters.interactive_brokers.gateway import DockerizedIBGateway
 from nautilus_trader.adapters.interactive_brokers.providers import InteractiveBrokersInstrumentProvider
 from nautilus_trader.cache.cache import Cache
-from nautilus_trader.common.clock import LiveClock
-from nautilus_trader.common.logging import Logger
+from nautilus_trader.common.component import LiveClock
+from nautilus_trader.common.component import MessageBus
+from nautilus_trader.core.correctness import PyCondition
 from nautilus_trader.live.factories import LiveDataClientFactory
 from nautilus_trader.live.factories import LiveExecClientFactory
 from nautilus_trader.model.identifiers import AccountId
-from nautilus_trader.msgbus.bus import MessageBus
 
 
-# fmt: on
-
-GATEWAY = None
+GATEWAYS: dict[tuple, DockerizedIBGateway] = {}
 IB_CLIENTS: dict[tuple, InteractiveBrokersClient] = {}
+IB_INSTRUMENT_PROVIDERS: dict[tuple, InteractiveBrokersInstrumentProvider] = {}
 
 
 def get_cached_ib_client(
@@ -49,17 +45,19 @@ def get_cached_ib_client(
     msgbus: MessageBus,
     cache: Cache,
     clock: LiveClock,
-    logger: Logger,
     host: str = "127.0.0.1",
-    port: Optional[int] = None,
+    port: int | None = None,
     client_id: int = 1,
-    gateway: InteractiveBrokersGatewayConfig = InteractiveBrokersGatewayConfig(),
+    dockerized_gateway: DockerizedIBGatewayConfig | None = None,
+    fetch_all_open_orders: bool = False,
 ) -> InteractiveBrokersClient:
     """
-    Cache and return a InteractiveBrokers HTTP client with the given key and secret.
+    Retrieve or create a cached InteractiveBrokersClient using the provided key.
 
-    If a cached client with matching key and secret already exists, then that
-    cached client will be returned.
+    Should a keyed client already exist within the cache, the function will return this instance. It's important
+    to note that the key comprises a combination of the host, port, and client_id.
+
+    When using DockerizedIBGatewayConfig, multiple gateways can be created and cached based on their trading_mode.
 
     Parameters
     ----------
@@ -71,32 +69,48 @@ def get_cached_ib_client(
         cache
     clock: LiveClock,
         clock
-    logger: Logger,
-        logger
-    host : str, optional
-        The IB host to connect to
-    port : int, optional
-        The IB port to connect to
-    client_id: int, optional
-        The client_id to connect with
-    gateway: InteractiveBrokersGatewayConfig
-        Configuration for the gateway.
+    host: str
+        The IB host to connect to. This is optional if using DockerizedIBGatewayConfig, but is required otherwise.
+    port: int
+        The IB port to connect to. This is optional if using DockerizedIBGatewayConfig, but is required otherwise.
+    client_id: int
+        The unique session identifier for the TWS or Gateway.A single host can support multiple connections;
+        however, each must use a different client_id.
+    dockerized_gateway: DockerizedIBGatewayConfig, optional
+        The configuration for the dockerized gateway.If this is provided, Nautilus will oversee the docker
+        environment, facilitating the operation of the IB Gateway within. Multiple gateways can be created
+        based on trading_mode.
+    fetch_all_open_orders : bool, default False
+        If True, uses reqAllOpenOrders to fetch orders from all API clients and TWS GUI.
+        If False, uses reqOpenOrders to fetch only orders from current client ID session.
 
     Returns
     -------
     InteractiveBrokersClient
 
     """
-    global GATEWAY
-    if gateway.start:
-        # Start gateway
-        if GATEWAY is None:
-            GATEWAY = InteractiveBrokersGateway(**gateway.dict())
-            # GATEWAY.safe_start(wait=config.timeout)
-            port = port or GATEWAY.port
-    port = port or InteractiveBrokersGateway.PORTS[gateway.trading_mode]
+    if dockerized_gateway:
+        PyCondition.equal(host, "127.0.0.1", "host", "127.0.0.1")
+        PyCondition.none(port, "Ensure `port` is set to None when using DockerizedIBGatewayConfig.")
 
-    client_key: tuple = (host, port, client_id)
+        # Create a unique key for the gateway based on its trading_mode
+        gateway_key = (dockerized_gateway.trading_mode,)
+
+        if gateway_key not in GATEWAYS:
+            gateway = DockerizedIBGateway(dockerized_gateway)
+            gateway.safe_start(wait=dockerized_gateway.timeout)
+            GATEWAYS[gateway_key] = gateway
+            port = gateway.port
+        else:
+            port = GATEWAYS[gateway_key].port
+    else:
+        PyCondition.not_none(
+            host,
+            "Please provide the `host` IP address for the IB TWS or Gateway.",
+        )
+        PyCondition.not_none(port, "Please provide the `port` for the IB TWS or Gateway.")
+
+    client_key: tuple = (host, port, client_id, fetch_all_open_orders)
 
     if client_key not in IB_CLIENTS:
         client = InteractiveBrokersClient(
@@ -104,46 +118,60 @@ def get_cached_ib_client(
             msgbus=msgbus,
             cache=cache,
             clock=clock,
-            logger=logger,
             host=host,
             port=port,
             client_id=client_id,
+            fetch_all_open_orders=fetch_all_open_orders,
         )
+        client.start()
         IB_CLIENTS[client_key] = client
+
     return IB_CLIENTS[client_key]
 
 
-@lru_cache(1)
 def get_cached_interactive_brokers_instrument_provider(
     client: InteractiveBrokersClient,
+    clock: LiveClock,
     config: InteractiveBrokersInstrumentProviderConfig,
-    logger: Logger,
 ) -> InteractiveBrokersInstrumentProvider:
     """
     Cache and return a InteractiveBrokersInstrumentProvider.
 
     If a cached provider already exists, then that cached provider will be returned.
+    The cache key is based on the client connection parameters and config hash.
 
     Parameters
     ----------
     client : InteractiveBrokersClient
         The client for the instrument provider.
+    clock : LiveClock
+        The clock for the provider.
     config: InteractiveBrokersInstrumentProviderConfig
         The instrument provider config
-    logger : Logger
-        The logger for the instrument provider.
 
     Returns
     -------
     InteractiveBrokersInstrumentProvider
 
     """
-    return InteractiveBrokersInstrumentProvider(client=client, config=config, logger=logger)
+    global IB_INSTRUMENT_PROVIDERS
+
+    # Create a cache key based on client connection info and config
+    # We use the client's connection parameters rather than the client object itself
+    # to ensure consistent caching across different client instances with same connection
+    client_key = (client._host, client._port, client._client_id)
+    provider_key = (client_key, hash(config))
+
+    if provider_key not in IB_INSTRUMENT_PROVIDERS:
+        provider = InteractiveBrokersInstrumentProvider(client=client, clock=clock, config=config)
+        IB_INSTRUMENT_PROVIDERS[provider_key] = provider
+
+    return IB_INSTRUMENT_PROVIDERS[provider_key]
 
 
 class InteractiveBrokersLiveDataClientFactory(LiveDataClientFactory):
     """
-    Provides a `InteractiveBrokers` live data client factory.
+    Provides a InteractiveBrokers live data client factory.
     """
 
     @staticmethod
@@ -154,7 +182,6 @@ class InteractiveBrokersLiveDataClientFactory(LiveDataClientFactory):
         msgbus: MessageBus,
         cache: Cache,
         clock: LiveClock,
-        logger: Logger,
     ) -> InteractiveBrokersDataClient:
         """
         Create a new InteractiveBrokers data client.
@@ -164,7 +191,7 @@ class InteractiveBrokersLiveDataClientFactory(LiveDataClientFactory):
         loop : asyncio.AbstractEventLoop
             The event loop for the client.
         name : str
-            The client name.
+            The custom client ID.
         config : dict
             The configuration dictionary.
         msgbus : MessageBus
@@ -173,8 +200,6 @@ class InteractiveBrokersLiveDataClientFactory(LiveDataClientFactory):
             The cache for the client.
         clock : LiveClock
             The clock for the client.
-        logger : Logger
-            The logger for the client.
 
         Returns
         -------
@@ -186,18 +211,17 @@ class InteractiveBrokersLiveDataClientFactory(LiveDataClientFactory):
             msgbus=msgbus,
             cache=cache,
             clock=clock,
-            logger=logger,
             host=config.ibg_host,
             port=config.ibg_port,
             client_id=config.ibg_client_id,
-            gateway=config.gateway,
+            dockerized_gateway=config.dockerized_gateway,
         )
 
         # Get instrument provider singleton
         provider = get_cached_interactive_brokers_instrument_provider(
             client=client,
+            clock=clock,
             config=config.instrument_provider,
-            logger=logger,
         )
 
         # Create client
@@ -207,17 +231,20 @@ class InteractiveBrokersLiveDataClientFactory(LiveDataClientFactory):
             msgbus=msgbus,
             cache=cache,
             clock=clock,
-            logger=logger,
             instrument_provider=provider,
             ibg_client_id=config.ibg_client_id,
             config=config,
+            name=name,
+            connection_timeout=config.connection_timeout,
+            request_timeout=config.request_timeout,
         )
+
         return data_client
 
 
 class InteractiveBrokersLiveExecClientFactory(LiveExecClientFactory):
     """
-    Provides a `InteractiveBrokers` live execution client factory.
+    Provides a InteractiveBrokers live execution client factory.
     """
 
     @staticmethod
@@ -228,7 +255,6 @@ class InteractiveBrokersLiveExecClientFactory(LiveExecClientFactory):
         msgbus: MessageBus,
         cache: Cache,
         clock: LiveClock,
-        logger: Logger,
     ) -> InteractiveBrokersExecutionClient:
         """
         Create a new InteractiveBrokers execution client.
@@ -238,7 +264,7 @@ class InteractiveBrokersLiveExecClientFactory(LiveExecClientFactory):
         loop : asyncio.AbstractEventLoop
             The event loop for the client.
         name : str
-            The client name.
+            The custom client ID.
         config : dict[str, object]
             The configuration for the client.
         msgbus : MessageBus
@@ -247,8 +273,6 @@ class InteractiveBrokersLiveExecClientFactory(LiveExecClientFactory):
             The cache for the client.
         clock : LiveClock
             The clock for the client.
-        logger : Logger
-            The logger for the client.
 
         Returns
         -------
@@ -260,18 +284,18 @@ class InteractiveBrokersLiveExecClientFactory(LiveExecClientFactory):
             msgbus=msgbus,
             cache=cache,
             clock=clock,
-            logger=logger,
             host=config.ibg_host,
             port=config.ibg_port,
             client_id=config.ibg_client_id,
-            gateway=config.gateway,
+            dockerized_gateway=config.dockerized_gateway,
+            fetch_all_open_orders=config.fetch_all_open_orders,
         )
 
         # Get instrument provider singleton
         provider = get_cached_interactive_brokers_instrument_provider(
             client=client,
+            clock=clock,
             config=config.instrument_provider,
-            logger=logger,
         )
 
         # Set account ID
@@ -280,7 +304,7 @@ class InteractiveBrokersLiveExecClientFactory(LiveExecClientFactory):
             ib_account
         ), f"Must pass `{config.__class__.__name__}.account_id` or set `TWS_ACCOUNT` env var."
 
-        account_id = AccountId(f"{IB_VENUE.value}-{ib_account}")
+        account_id = AccountId(f"{name or IB_VENUE.value}-{ib_account}")
 
         # Create client
         exec_client = InteractiveBrokersExecutionClient(
@@ -290,8 +314,11 @@ class InteractiveBrokersLiveExecClientFactory(LiveExecClientFactory):
             msgbus=msgbus,
             cache=cache,
             clock=clock,
-            logger=logger,
             instrument_provider=provider,
-            ibg_client_id=config.ibg_client_id,
+            config=config,
+            name=name,
+            connection_timeout=config.connection_timeout,
+            track_option_exercise_from_position_update=config.track_option_exercise_from_position_update,
         )
+
         return exec_client

@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -16,11 +16,21 @@
 """
 This module provides efficient functions for performing standard datetime related operations.
 
-Functions include awareness/tz checks and conversions, as well as ISO 8601 conversion.
+Functions include awareness/tz checks and conversions, as well as ISO 8601 (RFC 3339) conversion.
 """
 
 import pandas as pd
 import pytz
+from pandas.api.types import is_datetime64_ns_dtype
+
+# Re-exports
+from nautilus_trader.core.nautilus_pyo3 import micros_to_nanos as micros_to_nanos
+from nautilus_trader.core.nautilus_pyo3 import millis_to_nanos as millis_to_nanos
+from nautilus_trader.core.nautilus_pyo3 import nanos_to_micros as nanos_to_micros
+from nautilus_trader.core.nautilus_pyo3 import nanos_to_millis as nanos_to_millis
+from nautilus_trader.core.nautilus_pyo3 import nanos_to_secs as nanos_to_secs
+from nautilus_trader.core.nautilus_pyo3 import secs_to_millis as secs_to_millis
+from nautilus_trader.core.nautilus_pyo3 import secs_to_nanos as secs_to_nanos
 
 cimport cpython.datetime
 from cpython.datetime cimport datetime_tzinfo
@@ -28,13 +38,9 @@ from cpython.unicode cimport PyUnicode_Contains
 from libc.stdint cimport uint64_t
 
 from nautilus_trader.core.correctness cimport Condition
-from nautilus_trader.core.rust.core cimport micros_to_nanos as rust_micros_to_nanos
-from nautilus_trader.core.rust.core cimport millis_to_nanos as rust_millis_to_nanos
-from nautilus_trader.core.rust.core cimport nanos_to_micros as rust_nanos_to_micros
-from nautilus_trader.core.rust.core cimport nanos_to_millis as rust_nanos_to_millis
-from nautilus_trader.core.rust.core cimport nanos_to_secs as rust_nanos_to_secs
-from nautilus_trader.core.rust.core cimport secs_to_millis as rust_secs_to_millis
-from nautilus_trader.core.rust.core cimport secs_to_nanos as rust_secs_to_nanos
+from nautilus_trader.core.rust.core cimport unix_nanos_to_iso8601_cstr
+from nautilus_trader.core.rust.core cimport unix_nanos_to_iso8601_millis_cstr
+from nautilus_trader.core.string cimport cstr_to_pystr
 
 
 # UNIX epoch is the UTC time at 00:00:00 on 1/1/1970
@@ -42,133 +48,14 @@ from nautilus_trader.core.rust.core cimport secs_to_nanos as rust_secs_to_nanos
 cdef datetime UNIX_EPOCH = pd.Timestamp("1970-01-01", tz=pytz.utc)
 
 
-cpdef uint64_t secs_to_nanos(double secs):
-    """
-    Return round nanoseconds (ns) converted from the given seconds.
-
-    Parameters
-    ----------
-    secs : double
-        The seconds to convert.
-
-    Returns
-    -------
-    uint64_t
-
-    """
-    return rust_secs_to_nanos(secs)
-
-
-cpdef uint64_t secs_to_millis(double secs):
-    """
-    Return round milliseconds (ms) converted from the given seconds.
-
-    Parameters
-    ----------
-    secs : double
-        The seconds to convert.
-
-    Returns
-    -------
-    uint64_t
-
-    """
-    return rust_secs_to_millis(secs)
-
-
-cpdef uint64_t millis_to_nanos(double millis):
-    """
-    Return round nanoseconds (ns) converted from the given milliseconds (ms).
-
-    Parameters
-    ----------
-    millis : double
-        The milliseconds to convert.
-
-    Returns
-    -------
-    uint64_t
-
-    """
-    return rust_millis_to_nanos(millis)
-
-
-cpdef uint64_t micros_to_nanos(double micros):
-    """
-    Return round nanoseconds (ns) converted from the given microseconds (μs).
-
-    Parameters
-    ----------
-    micros : double
-        The microseconds to convert.
-
-    Returns
-    -------
-    uint64_t
-
-    """
-    return rust_micros_to_nanos(micros)
-
-
-cpdef double nanos_to_secs(uint64_t nanos):
-    """
-    Return seconds converted from the given nanoseconds (ns).
-
-    Parameters
-    ----------
-    nanos : uint64_t
-        The nanoseconds to convert.
-
-    Returns
-    -------
-    double
-
-    """
-    return rust_nanos_to_secs(nanos)
-
-
-cpdef uint64_t nanos_to_millis(uint64_t nanos):
-    """
-    Return round milliseconds (ms) converted from the given nanoseconds (ns).
-
-    Parameters
-    ----------
-    nanos : uint64_t
-        The nanoseconds to convert.
-
-    Returns
-    -------
-    uint64_t
-
-    """
-    return rust_nanos_to_millis(nanos)
-
-
-cpdef uint64_t nanos_to_micros(uint64_t nanos):
-    """
-    Return round microseconds (μs) converted from the given nanoseconds (ns).
-
-    Parameters
-    ----------
-    nanos : uint64_t
-        The nanoseconds to convert.
-
-    Returns
-    -------
-    uint64_t
-
-    """
-    return rust_nanos_to_micros(nanos)
-
-
 cpdef unix_nanos_to_dt(uint64_t nanos):
     """
-    Return the datetime (UTC) from the given UNIX time (nanoseconds).
+    Return the datetime (UTC) from the given UNIX timestamp (nanoseconds).
 
     Parameters
     ----------
     nanos : uint64_t
-        The UNIX time (nanoseconds) to convert.
+        The UNIX timestamp (nanoseconds) to convert.
 
     Returns
     -------
@@ -180,16 +67,16 @@ cpdef unix_nanos_to_dt(uint64_t nanos):
 
 cpdef dt_to_unix_nanos(dt: pd.Timestamp):
     """
-    Return the UNIX time (nanoseconds) from the given datetime (UTC).
+    Return the UNIX timestamp (nanoseconds) from the given datetime (UTC).
 
     Parameters
     ----------
-    dt : pd.Timestamp, optional
+    dt : pd.Timestamp | str | int
         The datetime to convert.
 
     Returns
     -------
-    uint64_t or ``None``
+    uint64_t
 
     Warnings
     --------
@@ -205,16 +92,86 @@ cpdef dt_to_unix_nanos(dt: pd.Timestamp):
     return <uint64_t>dt.value
 
 
+cpdef str unix_nanos_to_iso8601(uint64_t unix_nanos, bint nanos_precision = True):
+    """
+    Convert the given `unix_nanos` to an ISO 8601 (RFC 3339) format string.
+
+    Parameters
+    ----------
+    unix_nanos : int
+        The UNIX timestamp (nanoseconds) to be converted.
+    nanos_precision : bool, default True
+        If True, use nanosecond precision. If False, use millisecond precision.
+
+    Returns
+    -------
+    str
+
+    """
+    if nanos_precision:
+        return cstr_to_pystr(unix_nanos_to_iso8601_cstr(unix_nanos))
+    else:
+        return cstr_to_pystr(unix_nanos_to_iso8601_millis_cstr(unix_nanos))
+
+
+cpdef str format_iso8601(datetime dt, bint nanos_precision = True):
+    """
+    Format the given datetime as an ISO 8601 (RFC 3339) specification string.
+
+    Parameters
+    ----------
+    dt : pd.Timestamp
+        The datetime to format.
+    nanos_precision : bool, default True
+        If True, use nanosecond precision. If False, use millisecond precision.
+
+    Returns
+    -------
+    str
+
+    """
+    Condition.type(dt, pd.Timestamp, "dt")
+
+    if nanos_precision:
+        return cstr_to_pystr(unix_nanos_to_iso8601_cstr(dt.value))
+    else:
+        return cstr_to_pystr(unix_nanos_to_iso8601_millis_cstr(dt.value))
+
+
+cpdef str format_optional_iso8601(datetime dt, bint nanos_precision = True):
+    """
+    Format the given optional datetime as an ISO 8601 (RFC 3339) specification string.
+
+    If value is `None` then will return the string "None".
+
+    Parameters
+    ----------
+    dt : pd.Timestamp, optional
+        The datetime to format.
+    nanos_precision : bool, default True
+        If True, use nanosecond precision. If False, use millisecond precision.
+
+    Returns
+    -------
+    str
+
+    """
+    if dt is None:
+        return str(None)
+
+    return format_iso8601(dt, nanos_precision)
+
+
 cpdef maybe_unix_nanos_to_dt(nanos):
     """
-    Return the datetime (UTC) from the given UNIX time (nanoseconds), or ``None``.
+    Return the datetime (UTC) from the given UNIX timestamp (nanoseconds), or ``None``.
 
-    If nanos is ``None``, then will return None.
+    If nanos is ``None``, then will return ``None``.
 
     Parameters
     ----------
     nanos : int, optional
-        The UNIX time (nanoseconds) to convert.
+        The UNIX timestamp (nanoseconds) to convert.
 
     Returns
     -------
@@ -229,9 +186,9 @@ cpdef maybe_unix_nanos_to_dt(nanos):
 
 cpdef maybe_dt_to_unix_nanos(dt: pd.Timestamp):
     """
-    Return the UNIX time (nanoseconds) from the given datetime, or ``None``.
+    Return the UNIX timestamp (nanoseconds) from the given datetime, or ``None``.
 
-    If dt is ``None``, then will return None.
+    If dt is ``None``, then will return ``None``.
 
     Parameters
     ----------
@@ -363,38 +320,134 @@ cpdef object as_utc_index(data: pd.DataFrame):
     if data.empty:
         return data
 
+    # Ensure the index is localized to UTC
     if data.index.tzinfo is None:  # tz-naive
-        return data.tz_localize(pytz.utc)
+        data = data.tz_localize(pytz.utc)
     elif data.index.tzinfo != pytz.utc:
-        return data.tz_convert(None).tz_localize(pytz.utc)
-    else:
-        return data  # Already UTC
+        data = data.tz_convert(None).tz_localize(pytz.utc)
+
+    # Check if the index is in nanosecond resolution, convert if not
+    if not is_datetime64_ns_dtype(data.index.dtype):
+        data.index = data.index.astype("datetime64[ns, UTC]")
+
+    return data
 
 
-cpdef str format_iso8601(datetime dt):
+cpdef datetime time_object_to_dt(time_object):
     """
-    Format the given datetime to a millisecond accurate ISO 8601 specification
-    string.
+    Return the datetime (UTC) from the given UNIX timestamp as integer (nanoseconds), string or pd.Timestamp.
 
     Parameters
     ----------
-    dt : datetime
-        The input datetime to format.
+    time_object : pd.Timestamp | str | int | None
+        The time object to convert.
 
     Returns
     -------
-    str
-        The formatted string.
+    pd.Timestamp or ``None``
+        Returns None if the input is None.
 
     """
-    Condition.not_none(datetime, "datetime")
+    if time_object is None:
+        return None
 
-    # Note the below is faster than `.isoformat()` or string formatting by 25%
-    # Have not tried char* manipulation
-    cdef str tz_stripped = str(dt).replace(' ', 'T', 1).rpartition('+')[0]
+    if isinstance(time_object, pd.Timestamp):
+        used_date = time_object
+    else:
+        used_date = pd.Timestamp(time_object)
 
-    if not PyUnicode_Contains(tz_stripped, '.'):
-        return f"{tz_stripped}.000Z"
+    return as_utc_timestamp(used_date)
 
-    cdef tuple dt_partitioned = tz_stripped.rpartition('.')
-    return f"{dt_partitioned[0]}.{dt_partitioned[2][:3]}Z"
+
+
+def max_date(date1: pd.Timestamp | str | int | None = None, date2: str | int | None = None) -> pd.Timestamp | None:
+    """
+    Return the maximum date as a datetime (UTC).
+
+    Parameters
+    ----------
+    date1 : pd.Timestamp | str | int | None, optional
+        The first date to compare. Can be a string, integer (timestamp), or None. Default is None.
+    date2 : pd.Timestamp | str | int | None, optional
+        The second date to compare. Can be a string, integer (timestamp), or None. Default is None.
+
+    Returns
+    -------
+    pd.Timestamp | None
+        The maximum date, or None if both input dates are None.
+
+    """
+    if date1 is None and date2 is None:
+        return None
+
+    if date1 is None:
+        return time_object_to_dt(date2)
+
+    if date2 is None:
+        return time_object_to_dt(date1)
+
+    return max(time_object_to_dt(date1), time_object_to_dt(date2))
+
+
+def min_date(date1: pd.Timestamp | str | int | None = None, date2: str | int | None = None) -> pd.Timestamp | None:
+    """
+    Return the minimum date as a datetime (UTC).
+
+    Parameters
+    ----------
+    date1 : pd.Timestamp | str | int | None, optional
+        The first date to compare. Can be a string, integer (timestamp), or None. Default is None.
+    date2 : pd.Timestamp | str | int | None, optional
+        The second date to compare. Can be a string, integer (timestamp), or None. Default is None.
+
+    Returns
+    -------
+    pd.Timestamp | None
+        The minimum date, or None if both input dates are None.
+
+    """
+    if date1 is None and date2 is None:
+        return None
+
+    if date1 is None:
+        return time_object_to_dt(date2)
+
+    if date2 is None:
+        return time_object_to_dt(date1)
+
+    return min(time_object_to_dt(date1), time_object_to_dt(date2))
+
+
+def ensure_pydatetime_utc(timestamp: pd.Timestamp) -> dt.datetime | None:
+    """
+    Convert an optional ``pandas.Timestamp`` to a timezone-aware ``datetime`` in UTC.
+
+    The underlying Python ``datetime`` type only supports microsecond precision. When
+    the provided ``timestamp`` contains non-zero nanoseconds these **cannot** be
+    represented and are therefore truncated to microseconds before the conversion
+    takes place.  This avoids the "Discarding nonzero nanoseconds in conversion"
+    ``UserWarning`` raised by pandas when calling :py:meth:`Timestamp.to_pydatetime`.
+
+    Parameters
+    ----------
+    timestamp : pd.Timestamp, optional
+        The timestamp to convert. If ``None`` the function immediately returns
+        ``None``.
+
+    Returns
+    -------
+    datetime.datetime | None
+        The converted timestamp with tz-info set to ``UTC`` or ``None`` if the
+        input was ``None``.
+
+    """
+    if timestamp is None:
+        return None
+
+    # ``to_pydatetime`` emits a warning when nanoseconds are present because the
+    # Python ``datetime`` type cannot store them.  We truncate to the closest
+    # microsecond to silence the warning while keeping deterministic behaviour.
+    if timestamp.nanosecond:
+        timestamp = timestamp.floor("us")
+
+    return timestamp.tz_convert("UTC").to_pydatetime()

@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,18 +13,16 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
-from typing import Optional
-
 import msgspec
 
 from nautilus_trader.adapters.binance.common.enums import BinanceAccountType
-from nautilus_trader.adapters.binance.common.enums import BinanceMethodType
 from nautilus_trader.adapters.binance.common.enums import BinanceSecurityType
-from nautilus_trader.adapters.binance.common.schemas.symbol import BinanceSymbol
 from nautilus_trader.adapters.binance.common.schemas.user import BinanceListenKey
+from nautilus_trader.adapters.binance.common.symbol import BinanceSymbol
 from nautilus_trader.adapters.binance.http.client import BinanceHttpClient
 from nautilus_trader.adapters.binance.http.endpoint import BinanceHttpEndpoint
 from nautilus_trader.core.correctness import PyCondition
+from nautilus_trader.core.nautilus_pyo3 import HttpMethod
 
 
 class BinanceListenKeyHttp(BinanceHttpEndpoint):
@@ -55,6 +53,7 @@ class BinanceListenKeyHttp(BinanceHttpEndpoint):
     https://binance-docs.github.io/apidocs/spot/en/#listen-key-margin
     https://binance-docs.github.io/apidocs/futures/en/#start-user-data-stream-user_stream
     https://binance-docs.github.io/apidocs/delivery/en/#start-user-data-stream-user_stream
+
     """
 
     def __init__(
@@ -63,9 +62,9 @@ class BinanceListenKeyHttp(BinanceHttpEndpoint):
         url_path: str,
     ):
         methods = {
-            BinanceMethodType.POST: BinanceSecurityType.USER_STREAM,
-            BinanceMethodType.PUT: BinanceSecurityType.USER_STREAM,
-            BinanceMethodType.DELETE: BinanceSecurityType.USER_STREAM,
+            HttpMethod.POST: BinanceSecurityType.USER_STREAM,
+            HttpMethod.PUT: BinanceSecurityType.USER_STREAM,
+            HttpMethod.DELETE: BinanceSecurityType.USER_STREAM,
         }
         super().__init__(
             client,
@@ -84,9 +83,10 @@ class BinanceListenKeyHttp(BinanceHttpEndpoint):
         ----------
         symbol : BinanceSymbol
             The trading pair. Only required for ISOLATED MARGIN accounts!
+
         """
 
-        symbol: Optional[BinanceSymbol] = None  # MARGIN_ISOLATED only, mandatory
+        symbol: BinanceSymbol | None = None  # MARGIN_ISOLATED only, mandatory
 
     class PutDeleteParameters(msgspec.Struct, omit_defaults=True, frozen=True):
         """
@@ -98,30 +98,31 @@ class BinanceListenKeyHttp(BinanceHttpEndpoint):
             The trading pair. Only required for ISOLATED MARGIN accounts!
         listenKey : str
             The listen key to manage. Only required for SPOT/MARGIN accounts!
+
         """
 
-        symbol: Optional[BinanceSymbol] = None  # MARGIN_ISOLATED only, mandatory
-        listenKey: Optional[str] = None  # SPOT/MARGIN only, mandatory
+        symbol: BinanceSymbol | None = None  # MARGIN_ISOLATED only, mandatory
+        listenKey: str | None = None  # SPOT/MARGIN only, mandatory
 
-    async def _post(self, parameters: Optional[PostParameters] = None) -> BinanceListenKey:
-        method_type = BinanceMethodType.POST
-        raw = await self._method(method_type, parameters)
+    async def _post(self, params: PostParameters | None = None) -> BinanceListenKey:
+        method_type = HttpMethod.POST
+        raw = await self._method(method_type, params)
         return self._post_resp_decoder.decode(raw)
 
-    async def _put(self, parameters: Optional[PutDeleteParameters] = None) -> dict:
-        method_type = BinanceMethodType.PUT
-        raw = await self._method(method_type, parameters)
+    async def _put(self, params: PutDeleteParameters | None = None) -> dict:
+        method_type = HttpMethod.PUT
+        raw = await self._method(method_type, params)
         return self._put_resp_decoder.decode(raw)
 
-    async def _delete(self, parameters: Optional[PutDeleteParameters] = None) -> dict:
-        method_type = BinanceMethodType.DELETE
-        raw = await self._method(method_type, parameters)
+    async def _delete(self, params: PutDeleteParameters | None = None) -> dict:
+        method_type = HttpMethod.DELETE
+        raw = await self._method(method_type, params)
         return self._delete_resp_decoder.decode(raw)
 
 
 class BinanceUserDataHttpAPI:
     """
-    Provides access to the `Binance` User HTTP REST API.
+    Provides access to the Binance User HTTP REST API.
 
     Parameters
     ----------
@@ -133,6 +134,7 @@ class BinanceUserDataHttpAPI:
     Warnings
     --------
     This class should not be used directly, but through a concrete subclass.
+
     """
 
     def __init__(
@@ -153,10 +155,10 @@ class BinanceUserDataHttpAPI:
         elif account_type == BinanceAccountType.ISOLATED_MARGIN:
             self.base_endpoint = "/sapi/v1/"
             listen_key_url = self.base_endpoint + "userDataStream/isolated"
-        elif account_type == BinanceAccountType.USDT_FUTURE:
+        elif account_type == BinanceAccountType.USDT_FUTURES:
             self.base_endpoint = "/fapi/v1/"
             listen_key_url = self.base_endpoint + "listenKey"
-        elif account_type == BinanceAccountType.COIN_FUTURE:
+        elif account_type == BinanceAccountType.COIN_FUTURES:
             self.base_endpoint = "/dapi/v1/"
             listen_key_url = self.base_endpoint + "listenKey"
         else:
@@ -168,38 +170,44 @@ class BinanceUserDataHttpAPI:
 
     async def create_listen_key(
         self,
-        symbol: Optional[str] = None,
+        symbol: str | None = None,
     ) -> BinanceListenKey:
-        """Create Binance ListenKey."""
+        """
+        Create Binance ListenKey.
+        """
         key = await self._endpoint_listenkey._post(
-            parameters=self._endpoint_listenkey.PostParameters(
-                symbol=BinanceSymbol(symbol),
+            params=self._endpoint_listenkey.PostParameters(
+                symbol=BinanceSymbol(symbol) if symbol else None,
             ),
         )
         return key
 
     async def keepalive_listen_key(
         self,
-        symbol: Optional[str] = None,
-        listen_key: Optional[str] = None,
+        symbol: str | None = None,
+        listen_key: str | None = None,
     ):
-        """Ping/Keepalive Binance ListenKey."""
+        """
+        Ping/Keepalive Binance ListenKey.
+        """
         await self._endpoint_listenkey._put(
-            parameters=self._endpoint_listenkey.PutDeleteParameters(
-                symbol=BinanceSymbol(symbol),
+            params=self._endpoint_listenkey.PutDeleteParameters(
+                symbol=BinanceSymbol(symbol) if symbol else None,
                 listenKey=listen_key,
             ),
         )
 
     async def delete_listen_key(
         self,
-        symbol: Optional[str] = None,
-        listen_key: Optional[str] = None,
+        symbol: str | None = None,
+        listen_key: str | None = None,
     ):
-        """Delete Binance ListenKey."""
+        """
+        Delete Binance ListenKey.
+        """
         await self._endpoint_listenkey._delete(
-            parameters=self._endpoint_listenkey.PutDeleteParameters(
-                symbol=BinanceSymbol(symbol),
+            params=self._endpoint_listenkey.PutDeleteParameters(
+                symbol=BinanceSymbol(symbol) if symbol else None,
                 listenKey=listen_key,
             ),
         )

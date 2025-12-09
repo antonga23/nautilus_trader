@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -18,9 +18,13 @@ from nautilus_trader.model.instruments.base cimport Instrument
 
 cdef class Equity(Instrument):
     cdef readonly str isin
+    """The instruments International Securities Identification Number (ISIN).\n\n:returns: `str` or ``None``"""
 
     @staticmethod
     cdef Equity from_dict_c(dict values)
 
     @staticmethod
     cdef dict to_dict_c(Equity obj)
+
+    @staticmethod
+    cdef Equity from_pyo3_c(pyo3_instrument)

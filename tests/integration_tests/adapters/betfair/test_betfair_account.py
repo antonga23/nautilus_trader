@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -22,4 +22,4 @@ def test_betting_instrument_notional_value(instrument):
         price=betfair_float_to_price(2.0),
         quantity=betfair_float_to_quantity(100.0),
     ).as_double()
-    assert notional == 50
+    assert notional == 100

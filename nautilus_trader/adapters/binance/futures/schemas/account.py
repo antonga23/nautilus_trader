@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -14,18 +14,19 @@
 # -------------------------------------------------------------------------------------------------
 
 from decimal import Decimal
-from typing import Optional
 
 import msgspec
 
+from nautilus_trader.adapters.binance.common.enums import BinanceFuturesPositionSide
 from nautilus_trader.adapters.binance.futures.enums import BinanceFuturesEnumParser
-from nautilus_trader.adapters.binance.futures.enums import BinanceFuturesPositionSide
 from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.execution.reports import PositionStatusReport
-from nautilus_trader.model.currency import Currency
+from nautilus_trader.model.enums import PositionSide
 from nautilus_trader.model.identifiers import AccountId
 from nautilus_trader.model.identifiers import InstrumentId
+from nautilus_trader.model.identifiers import PositionId
 from nautilus_trader.model.objects import AccountBalance
+from nautilus_trader.model.objects import Currency
 from nautilus_trader.model.objects import MarginBalance
 from nautilus_trader.model.objects import Money
 from nautilus_trader.model.objects import Quantity
@@ -38,7 +39,8 @@ from nautilus_trader.model.objects import Quantity
 
 class BinanceFuturesBalanceInfo(msgspec.Struct, frozen=True):
     """
-    HTTP response 'inner struct' from `Binance Futures` GET /fapi/v2/account (HMAC SHA256).
+    HTTP response 'inner struct' from Binance Futures GET /fapi/v2/account (HMAC
+    SHA256).
     """
 
     asset: str  # asset name
@@ -54,14 +56,18 @@ class BinanceFuturesBalanceInfo(msgspec.Struct, frozen=True):
     availableBalance: str  # available balance
     maxWithdrawAmount: str  # maximum amount for transfer out
     # whether the asset can be used as margin in Multi - Assets mode
-    marginAvailable: Optional[bool] = None
-    updateTime: Optional[int] = None  # last update time
+    marginAvailable: bool | None = None
+    updateTime: int | None = None  # last update time
 
     def parse_to_account_balance(self) -> AccountBalance:
         currency = Currency.from_str(self.asset)
+        # This calculation is currently mixing wallet cash balance and the available balance after
+        # considering margin collateral. As a temporary measure we're taking the `min` to
+        # disregard free amounts above the cash balance, but still considering where not all
+        # balance is available (so locked in some way, i.e. allocated as collateral).
         total = Decimal(self.walletBalance)
-        locked = Decimal(self.initialMargin) + Decimal(self.maintMargin)
-        free = total - locked
+        free = min(Decimal(self.availableBalance), total)
+        locked = total - free
         return AccountBalance(
             total=Money(total, currency),
             locked=Money(locked, currency),
@@ -78,7 +84,7 @@ class BinanceFuturesBalanceInfo(msgspec.Struct, frozen=True):
 
 class BinanceFuturesAccountInfo(msgspec.Struct, kw_only=True, frozen=True):
     """
-    HTTP response from `Binance Futures` GET /fapi/v2/account (HMAC SHA256).
+    HTTP response from Binance Futures GET /fapi/v2/account (HMAC SHA256).
     """
 
     feeTier: int  # account commission tier
@@ -86,22 +92,22 @@ class BinanceFuturesAccountInfo(msgspec.Struct, kw_only=True, frozen=True):
     canDeposit: bool  # if can transfer in asset
     canWithdraw: bool  # if can transfer out asset
     updateTime: int
-    totalInitialMargin: Optional[
-        str
-    ] = None  # total initial margin required with current mark price (useless with isolated positions), only for USDT asset
-    totalMaintMargin: Optional[str] = None  # total maintenance margin required, only for USDT asset
-    totalWalletBalance: Optional[str] = None  # total wallet balance, only for USDT asset
-    totalUnrealizedProfit: Optional[str] = None  # total unrealized profit, only for USDT asset
-    totalMarginBalance: Optional[str] = None  # total margin balance, only for USDT asset
+    totalInitialMargin: str | None = (
+        None  # total initial margin required with current mark price (useless with isolated positions), only for USDT
+    )
+    totalMaintMargin: str | None = None  # total maintenance margin required, only for USDT asset
+    totalWalletBalance: str | None = None  # total wallet balance, only for USDT asset
+    totalUnrealizedProfit: str | None = None  # total unrealized profit, only for USDT asset
+    totalMarginBalance: str | None = None  # total margin balance, only for USDT asset
     # initial margin required for positions with current mark price, only for USDT asset
-    totalPositionInitialMargin: Optional[str] = None
+    totalPositionInitialMargin: str | None = None
     # initial margin required for open orders with current mark price, only for USDT asset
-    totalOpenOrderInitialMargin: Optional[str] = None
-    totalCrossWalletBalance: Optional[str] = None  # crossed wallet balance, only for USDT asset
+    totalOpenOrderInitialMargin: str | None = None
+    totalCrossWalletBalance: str | None = None  # crossed wallet balance, only for USDT asset
     # unrealized profit of crossed positions, only for USDT asset
-    totalCrossUnPnl: Optional[str] = None
-    availableBalance: Optional[str] = None  # available balance, only for USDT asset
-    maxWithdrawAmount: Optional[str] = None  # maximum amount for transfer out, only for USDT asset
+    totalCrossUnPnl: str | None = None
+    availableBalance: str | None = None  # available balance, only for USDT asset
+    maxWithdrawAmount: str | None = None  # maximum amount for transfer out, only for USDT asset
     assets: list[BinanceFuturesBalanceInfo]
 
     def parse_to_account_balances(self) -> list[AccountBalance]:
@@ -113,22 +119,45 @@ class BinanceFuturesAccountInfo(msgspec.Struct, kw_only=True, frozen=True):
 
 class BinanceFuturesPositionRisk(msgspec.Struct, kw_only=True, frozen=True):
     """
-    HTTP response from ` Binance Futures` GET /fapi/v2/positionRisk (HMAC SHA256).
+    HTTP response from Binance Futures GET /fapi/v3/positionRisk (HMAC SHA256).
+
+    Supports both v2 and v3 schemas. v2 fields (marginType, isAutoAddMargin,
+    leverage, maxNotionalValue) are optional for backward compatibility.
+    v3 adds: breakEvenPrice, notional, marginAsset, isolatedWallet, initialMargin,
+    maintMargin, positionInitialMargin, openOrderInitialMargin, adl, bidNotional,
+    askNotional.
+
     """
 
-    entryPrice: str
-    marginType: str
-    isAutoAddMargin: str
-    isolatedMargin: str
-    leverage: str
-    liquidationPrice: str
-    markPrice: str
-    maxNotionalValue: Optional[str] = None
-    positionAmt: str
+    # Core fields (present in both v2 and v3)
     symbol: str
-    unRealizedProfit: str
     positionSide: BinanceFuturesPositionSide
+    positionAmt: str
+    entryPrice: str
+    markPrice: str
+    unRealizedProfit: str
+    liquidationPrice: str
+    isolatedMargin: str
     updateTime: int
+
+    # v2 fields (may not be present in v3)
+    marginType: str | None = None
+    isAutoAddMargin: str | None = None
+    leverage: str | None = None
+    maxNotionalValue: str | None = None
+
+    # v3-specific fields
+    breakEvenPrice: str | None = None
+    notional: str | None = None
+    marginAsset: str | None = None
+    isolatedWallet: str | None = None
+    initialMargin: str | None = None
+    maintMargin: str | None = None
+    positionInitialMargin: str | None = None
+    openOrderInitialMargin: str | None = None
+    adl: int | None = None
+    bidNotional: str | None = None
+    askNotional: str | None = None
 
     def parse_to_position_status_report(
         self,
@@ -138,10 +167,25 @@ class BinanceFuturesPositionRisk(msgspec.Struct, kw_only=True, frozen=True):
         report_id: UUID4,
         ts_init: int,
     ) -> PositionStatusReport:
-        position_side = enum_parser.parse_futures_position_side(
-            self.positionSide,
-        )
         net_size = Decimal(self.positionAmt)
+
+        venue_position_id: PositionId | None = None
+
+        if self.positionSide in (
+            BinanceFuturesPositionSide.LONG,
+            BinanceFuturesPositionSide.SHORT,
+        ):
+            position_side = (
+                PositionSide.LONG
+                if self.positionSide == BinanceFuturesPositionSide.LONG
+                else PositionSide.SHORT
+            )
+            venue_position_id = PositionId(f"{instrument_id}-{self.positionSide.value}")
+        else:
+            position_side = enum_parser.parse_futures_position_side(net_size)
+
+        avg_px_open = Decimal(self.entryPrice) if self.entryPrice else None
+
         return PositionStatusReport(
             account_id=account_id,
             instrument_id=instrument_id,
@@ -150,12 +194,63 @@ class BinanceFuturesPositionRisk(msgspec.Struct, kw_only=True, frozen=True):
             report_id=report_id,
             ts_last=ts_init,
             ts_init=ts_init,
+            venue_position_id=venue_position_id,
+            avg_px_open=avg_px_open,
         )
 
 
 class BinanceFuturesDualSidePosition(msgspec.Struct, frozen=True):
     """
-    HTTP response from `Binance Futures` GET /fapi/v1/positionSide/dual (HMAC SHA256).
+    HTTP response from Binance Futures GET /fapi/v1/positionSide/dual (HMAC SHA256).
     """
 
     dualSidePosition: bool
+
+
+class BinanceFuturesFeeRates(msgspec.Struct, frozen=True):
+    """
+    Represents a Binance Futures fee tier.
+
+    https://www.binance.com/en/fee/futureFee
+
+    """
+
+    feeTier: int
+    maker: str
+    taker: str
+
+
+class BinanceFuturesLeverage(msgspec.Struct, frozen=True):
+    """
+    HTTP response from Binance Futures POST /fapi/v1/leverage.
+    """
+
+    leverage: int
+    maxNotionalValue: str
+    symbol: str
+
+
+class BinanceFuturesSymbolConfig(msgspec.Struct, frozen=True):
+    """
+    HTTP response from Binance Futures GET /fapi/v1/symbolConfig.
+
+    References
+    ----------
+    https://developers.binance.com/docs/derivatives/usds-margined-futures/account/rest-api/Symbol-Config
+
+    """
+
+    symbol: str
+    marginType: str
+    isAutoAddMargin: bool
+    leverage: int
+    maxNotionalValue: str
+
+
+class BinanceFuturesMarginTypeResponse(msgspec.Struct, frozen=True):
+    """
+    HTTP response from Binance Futures `POST /fapi/v1/marginType`.
+    """
+
+    code: int
+    msg: str

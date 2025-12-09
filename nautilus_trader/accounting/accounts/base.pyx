@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,14 +13,18 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
-from typing import Optional
+from decimal import Decimal
 
 from nautilus_trader.accounting.error import AccountBalanceNegative
 
+from libc.stdint cimport uint64_t
+
+from nautilus_trader.core import nautilus_pyo3
 from nautilus_trader.core.correctness cimport Condition
-from nautilus_trader.model.enums_c cimport AccountType
-from nautilus_trader.model.enums_c cimport account_type_to_str
+from nautilus_trader.core.rust.model cimport AccountType
+from nautilus_trader.core.rust.model cimport OrderSide
 from nautilus_trader.model.events.account cimport AccountState
+from nautilus_trader.model.functions cimport account_type_to_str
 from nautilus_trader.model.instruments.base cimport Instrument
 from nautilus_trader.model.objects cimport AccountBalance
 
@@ -48,6 +52,8 @@ cdef class Account:
         self.update_balances(event.balances)
 
     def __eq__(self, Account other) -> bool:
+        if other is None:
+            return False
         return self.id == other.id
 
     def __hash__(self) -> int:
@@ -375,13 +381,13 @@ cdef class Account:
 
         if self.base_currency:
             # Single-currency account
-            Condition.true(len(event.balances) == 1, "single-currency account has multiple currency update")
+            Condition.is_true(len(event.balances) == 1, "single-currency account has multiple currency update")
             Condition.equal(event.balances[0].currency, self.base_currency, "event.balances[0].currency", "self.base_currency")
 
         self._events.append(event)
         self.update_balances(event.balances)
 
-    cpdef void update_balances(self, list balances, bint allow_zero=True):
+    cpdef void update_balances(self, list balances):
         """
         Update the account balances.
 
@@ -392,27 +398,22 @@ cdef class Account:
         ----------
         balances : list[AccountBalance]
             The balances for the update.
-        allow_zero : bool, default True
-            If zero balances are allowed (will then just clear the assets balance).
 
         Raises
         ------
         ValueError
             If `balances` is empty.
+        AccountBalanceNegative
+            If account type is ``CASH``, and balance is negative.
 
         """
         Condition.not_empty(balances, "balances")
 
         cdef AccountBalance balance
         for balance in balances:
-            if not balance.total._mem.raw > 0:
-                if balance.total._mem.raw < 0:
-                    raise AccountBalanceNegative(balance.total.as_decimal(), balance.currency)
-                if balance.total.is_zero() and not allow_zero:
-                    raise AccountBalanceNegative(balance.total.as_decimal(), balance.currency)
-                else:
-                    # Clear asset balance
-                    self._balances.pop(balance.currency, None)
+            if self.type == AccountType.CASH and balance.total._mem.raw < 0:
+                raise AccountBalanceNegative(balance.total.as_decimal(), balance.currency)
+
             self._balances[balance.currency] = balance
 
     cpdef void update_commissions(self, Money commission):
@@ -438,8 +439,40 @@ cdef class Account:
             return  # Nothing to update
 
         cdef Currency currency = commission.currency
-        cdef double total_commissions = self._commissions.get(currency, 0.0)
-        self._commissions[currency] = Money(total_commissions + commission.as_f64_c(), currency)
+        total_commissions = self._commissions.get(currency, Decimal(0))
+        self._commissions[currency] = Money(total_commissions + commission.as_decimal(), currency)
+
+    cpdef void purge_account_events(self, uint64_t ts_now, uint64_t lookback_secs = 0):
+        """
+        Purge all account state events which are outside the lookback window.
+
+        Guaranteed to retain at least the latest event.
+
+        Parameters
+        ----------
+        ts_now : uint64_t
+            The current UNIX timestamp (nanoseconds).
+        lookback_secs : uint64_t, default 0
+            The purge lookback window (seconds) from when the account state event occurred.
+            Only events which are outside the lookback window will be purged.
+            A value of 0 means purge all account state events.
+
+        """
+        cdef uint64_t lookback_ns = nautilus_pyo3.secs_to_nanos(lookback_secs)
+
+        cdef list[AccountState] retained_events = []
+
+        cdef:
+            AccountState event
+        for event in self._events:
+            if event.ts_event + lookback_ns > ts_now:
+                retained_events.append(event)
+
+        # Guarantee ≥ 1 event
+        if not retained_events and self._events:
+            retained_events.append(self._events[-1])
+
+        self._events = retained_events
 
 # -- CALCULATIONS ---------------------------------------------------------------------------------
 
@@ -457,10 +490,10 @@ cdef class Account:
         bool
 
         """
-        raise NotImplementedError("method must be implemented in the subclass")  # pragma: no cover
+        raise NotImplementedError("method `is_unleveraged` must be implemented in the subclass")  # pragma: no cover
 
     cdef void _recalculate_balance(self, Currency currency):
-        raise NotImplementedError("method must be implemented in the subclass")  # pragma: no cover
+        raise NotImplementedError("method `_recalculate_balance` must be implemented in the subclass")  # pragma: no cover
 
     cpdef Money calculate_commission(
         self,
@@ -470,12 +503,21 @@ cdef class Account:
         LiquiditySide liquidity_side,
         bint use_quote_for_inverse=False,
     ):
-        raise NotImplementedError("method must be implemented in the subclass")  # pragma: no cover
+        raise NotImplementedError("method `calculate_commission` must be implemented in the subclass")  # pragma: no cover
 
     cpdef list calculate_pnls(
         self,
         Instrument instrument,
         OrderFilled fill,
-        Position position: Optional[Position] = None,
+        Position position: Position | None = None,
     ):
-        raise NotImplementedError("method must be implemented in the subclass")  # pragma: no cover
+        raise NotImplementedError("method `calculate_pnls` must be implemented in the subclass")  # pragma: no cover
+
+    cpdef Money balance_impact(
+        self,
+        Instrument instrument,
+        Quantity quantity,
+        Price price,
+        OrderSide order_side,
+    ):
+        raise NotImplementedError("method `balance_impact` must be implemented in the subclass")  # pragma: no cover

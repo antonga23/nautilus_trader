@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,64 +13,66 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
-import asyncio
+import sys
 
 import msgspec
 import pytest
-from betfair_parser.spec.streaming.mcm import MCM
-from betfair_parser.spec.streaming.mcm import MarketChange
+from betfair_parser.spec.betting import MarketCatalogue
+from betfair_parser.spec.streaming import MCM
+from betfair_parser.spec.streaming import MarketChange
 
 from nautilus_trader.adapters.betfair.parsing.core import BetfairParser
 from nautilus_trader.adapters.betfair.providers import BetfairInstrumentProvider
+from nautilus_trader.adapters.betfair.providers import BetfairInstrumentProviderConfig
 from nautilus_trader.adapters.betfair.providers import load_markets
 from nautilus_trader.adapters.betfair.providers import load_markets_metadata
 from nautilus_trader.adapters.betfair.providers import make_instruments
 from nautilus_trader.adapters.betfair.providers import parse_market_catalog
-from nautilus_trader.common.clock import LiveClock
-from nautilus_trader.common.logging import Logger
-from nautilus_trader.model.enums import MarketStatus
-from nautilus_trader.test_kit.stubs.component import TestComponentStubs
+from nautilus_trader.common.component import LiveClock
+from nautilus_trader.model.enums import MarketStatusAction
 from tests.integration_tests.adapters.betfair.test_kit import BetfairResponses
 from tests.integration_tests.adapters.betfair.test_kit import BetfairStreaming
 from tests.integration_tests.adapters.betfair.test_kit import BetfairTestStubs
 
 
-pytestmark = pytest.mark.skip(reason="Repair order book parsing")
-
-
+@pytest.mark.skipif(sys.platform == "win32", reason="Failing on windows")
 class TestBetfairInstrumentProvider:
-    def setup(self):
+    @pytest.fixture(autouse=True)
+    def setup(self, request):
         # Fixture Setup
-        self.loop = asyncio.get_event_loop()
+        self.loop = request.getfixturevalue("event_loop")
         self.clock = LiveClock()
-        self.logger = Logger(clock=self.clock, bypass=True)
-        self.client = BetfairTestStubs.betfair_client(loop=self.loop, logger=self.logger)
+        self.client = BetfairTestStubs.betfair_client(loop=self.loop)
         self.provider = BetfairInstrumentProvider(
             client=self.client,
-            logger=TestComponentStubs.logger(),
+            config=BetfairInstrumentProviderConfig(account_currency="GBP"),
         )
+        self.parser = BetfairParser(currency="GBP")
 
-    @pytest.mark.asyncio()
+        return
+
+    @pytest.mark.asyncio
     async def test_load_markets(self):
-        markets = await load_markets(self.client, market_filter={})
+        markets = await load_markets(self.client)
         assert len(markets) == 13227
 
-        markets = await load_markets(self.client, market_filter={"event_type_name": "Basketball"})
+        markets = await load_markets(self.client, event_type_names=["Basketball"])
         assert len(markets) == 302
 
-        markets = await load_markets(self.client, market_filter={"event_type_name": "Tennis"})
+        markets = await load_markets(self.client, event_type_names=["Tennis"])
         assert len(markets) == 1958
 
-        markets = await load_markets(self.client, market_filter={"market_id": "1.177125728"})
+        # TODO: Fix symbology
+        markets = await load_markets(self.client, market_ids=["1.177125728"])
         assert len(markets) == 1
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_load_markets_metadata(self):
-        markets = await load_markets(self.client, market_filter={"event_type_name": "Basketball"})
+        markets = await load_markets(self.client, event_type_names=["Basketball"])
         market_metadata = await load_markets_metadata(client=self.client, markets=markets)
         assert len(market_metadata) == 169
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_make_instruments(self):
         # Arrange
         list_market_catalogue_data = [
@@ -85,50 +87,22 @@ class TestBetfairInstrumentProvider:
         instruments = [
             instrument
             for metadata in list_market_catalogue_data
-            for instrument in make_instruments(metadata, currency="GBP")
+            for instrument in make_instruments(metadata, currency="GBP", ts_event=0, ts_init=0)
         ]
 
         # Assert
         assert len(instruments) == 30412
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_load_all(self):
-        await self.provider.load_all_async({"event_type_name": "Tennis"})
+        await self.provider.load_all_async({"event_type_names": ["Tennis"]})
         assert len(self.provider.list_all()) == 4711
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_list_all(self):
-        await self.provider.load_all_async(market_filter={"event_type_name": "Basketball"})
+        await self.provider.load_all_async({"event_type_names": ["Basketball"]})
         instruments = self.provider.list_all()
         assert len(instruments) == 23908
-
-    @pytest.mark.asyncio()
-    async def test_search_instruments(self):
-        await self.provider.load_all_async(market_filter={"event_type_name": "Basketball"})
-        instruments = self.provider.search_instruments(
-            instrument_filter={"market_type": "MATCH_ODDS"},
-        )
-        assert len(instruments) == 104
-
-    @pytest.mark.asyncio()
-    async def test_get_betting_instrument(self):
-        await self.provider.load_all_async(market_filter={"market_id": ["1.180678317"]})
-        kw = {
-            "market_id": "1.180678317",
-            "selection_id": "11313157",
-            "handicap": 0.0,
-        }
-        instrument = self.provider.get_betting_instrument(**kw)
-        assert instrument.market_id == "1.180678317"
-
-        # Test throwing warning
-        kw["handicap"] = "-1000"
-        instrument = self.provider.get_betting_instrument(**kw)
-        assert instrument is None
-
-        # Test already in self._subscribed_instruments
-        instrument = self.provider.get_betting_instrument(**kw)
-        assert instrument is None
 
     def test_market_update_runner_removed(self) -> None:
         # Arrange
@@ -138,16 +112,49 @@ class TestBetfairInstrumentProvider:
         mc: MarketChange = update.mc[0]
         market_def = mc.market_definition
         market_def = msgspec.structs.replace(market_def, market_id=mc.id)
-        instruments = make_instruments(market_def, currency="GBP")
+        instruments = make_instruments(
+            market_def,
+            currency="GBP",
+            ts_event=0,
+            ts_init=0,
+        )
         self.provider.add_bulk(instruments)
 
         # Act
         results = []
-        parser = BetfairParser()
-        for data in parser.parse(update):
+        for data in self.parser.parse(update):
             results.append(data)
 
         # Assert
-        result = [r.status for r in results[:8]]
-        expected = [MarketStatus.PRE_OPEN] * 7 + [MarketStatus.CLOSED]
+        result = [r.action for r in results[8:16]]
+        expected = [MarketStatusAction.PRE_OPEN] * 7 + [MarketStatusAction.CLOSE]
+        assert result == expected
+
+    def test_list_market_catalogue_parsing(self):
+        # Arrange
+        raw = BetfairResponses.list_market_catalogue()
+        market_catalogue = msgspec.json.decode(msgspec.json.encode(raw), type=MarketCatalogue)
+
+        # Act
+        instruments = make_instruments(
+            market_catalogue,
+            currency="GBP",
+            ts_event=0,
+            ts_init=0,
+        )
+
+        # Assert
+        result = [ins.id.value for ins in instruments]
+        expected = [
+            "1-221718403-20075720-None.BETFAIR",
+            "1-221718403-10733147-None.BETFAIR",
+            "1-221718403-38666189-None.BETFAIR",
+            "1-221718403-11781146-None.BETFAIR",
+            "1-221718403-36709273-None.BETFAIR",
+            "1-221718403-51130740-None.BETFAIR",
+            "1-221718403-63132709-None.BETFAIR",
+            "1-221718403-18508590-None.BETFAIR",
+            "1-221718403-41921465-None.BETFAIR",
+        ]
+
         assert result == expected

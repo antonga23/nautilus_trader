@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,180 +13,301 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
-import datetime
+import hashlib
 from functools import lru_cache
-from typing import Optional, Union
+from typing import Literal
 
+import msgspec
 import pandas as pd
+from betfair_parser.spec.accounts.type_definitions import AccountDetailsResponse
+from betfair_parser.spec.accounts.type_definitions import AccountFundsResponse
+from betfair_parser.spec.betting.enums import PersistenceType
+from betfair_parser.spec.betting.orders import CancelOrders
+from betfair_parser.spec.betting.orders import PlaceInstruction
+from betfair_parser.spec.betting.orders import PlaceOrders
+from betfair_parser.spec.betting.orders import ReplaceInstruction
+from betfair_parser.spec.betting.orders import ReplaceOrders
+from betfair_parser.spec.betting.type_definitions import CancelInstruction
+from betfair_parser.spec.betting.type_definitions import CurrentOrderSummary
+from betfair_parser.spec.betting.type_definitions import LimitOnCloseOrder
+from betfair_parser.spec.betting.type_definitions import LimitOrder
+from betfair_parser.spec.betting.type_definitions import MarketOnCloseOrder
+from betfair_parser.spec.common import BetId
+from betfair_parser.spec.common import CustomerOrderRef
+from betfair_parser.spec.common import OrderStatus as BetfairOrderStatus
+from betfair_parser.spec.common import OrderType
+from betfair_parser.spec.streaming import Order as BetfairOrder
 
-from nautilus_trader.adapters.betfair.common import B2N_ORDER_STREAM_SIDE
+from nautilus_trader.adapters.betfair.common import B2N_ORDER_TYPE
 from nautilus_trader.adapters.betfair.common import B2N_TIME_IN_FORCE
 from nautilus_trader.adapters.betfair.common import BETFAIR_FLOAT_TO_PRICE
-from nautilus_trader.adapters.betfair.common import BETFAIR_QUANTITY_PRECISION
-from nautilus_trader.adapters.betfair.common import BETFAIR_VENUE
 from nautilus_trader.adapters.betfair.common import MAX_BET_PRICE
 from nautilus_trader.adapters.betfair.common import MIN_BET_PRICE
-from nautilus_trader.adapters.betfair.common import N2B_SIDE
+from nautilus_trader.adapters.betfair.common import N2B_PERSISTENCE
 from nautilus_trader.adapters.betfair.common import N2B_TIME_IN_FORCE
+from nautilus_trader.adapters.betfair.common import OrderSideParser
+from nautilus_trader.adapters.betfair.constants import BETFAIR_PRICE_PRECISION
+from nautilus_trader.adapters.betfair.constants import BETFAIR_QUANTITY_PRECISION
+from nautilus_trader.adapters.betfair.constants import BETFAIR_VENUE
+from nautilus_trader.adapters.betfair.parsing.common import min_fill_size
 from nautilus_trader.core.datetime import dt_to_unix_nanos
+from nautilus_trader.core.datetime import maybe_dt_to_unix_nanos
+from nautilus_trader.core.datetime import nanos_to_millis
 from nautilus_trader.execution.messages import CancelOrder
 from nautilus_trader.execution.messages import ModifyOrder
 from nautilus_trader.execution.messages import SubmitOrder
+from nautilus_trader.execution.reports import FillReport
 from nautilus_trader.execution.reports import OrderStatusReport
-from nautilus_trader.execution.reports import TradeReport
-from nautilus_trader.model.currency import Currency
 from nautilus_trader.model.enums import AccountType
 from nautilus_trader.model.enums import ContingencyType
 from nautilus_trader.model.enums import LiquiditySide
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.enums import OrderStatus
-from nautilus_trader.model.enums import TimeInForce
-from nautilus_trader.model.enums import order_type_from_str
-from nautilus_trader.model.events import AccountState
+from nautilus_trader.model.enums import TimeInForce as NautilusTimeInForce
+from nautilus_trader.model.events.account import AccountState
 from nautilus_trader.model.identifiers import AccountId
 from nautilus_trader.model.identifiers import ClientOrderId
 from nautilus_trader.model.identifiers import InstrumentId
-from nautilus_trader.model.identifiers import StrategyId
-from nautilus_trader.model.identifiers import Symbol
 from nautilus_trader.model.identifiers import TradeId
 from nautilus_trader.model.identifiers import VenueOrderId
 from nautilus_trader.model.instruments.betting import BettingInstrument
+from nautilus_trader.model.instruments.betting import null_handicap
 from nautilus_trader.model.objects import AccountBalance
+from nautilus_trader.model.objects import Currency
 from nautilus_trader.model.objects import Money
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
-from nautilus_trader.model.orders import LimitOrder
-from nautilus_trader.model.orders import MarketOrder
+from nautilus_trader.model.orders import LimitOrder as NautilusLimitOrder
+from nautilus_trader.model.orders import MarketOrder as NautilusMarketOrder
 
 
-def make_custom_order_ref(client_order_id: ClientOrderId, strategy_id: StrategyId) -> str:
-    return client_order_id.value.rsplit("-" + strategy_id.get_tag(), maxsplit=1)[0]
+def make_customer_order_ref(client_order_id: ClientOrderId) -> CustomerOrderRef:
+    """
+    User-set reference for the order.
+
+    From the Betfair docs:
+    An optional reference customers can set to identify instructions. No validation will be done on uniqueness and the
+    string is limited to 32 characters. If an empty string is provided it will be treated as null.
+
+    """
+    return client_order_id.value[:32]
 
 
-def _make_limit_order(order: LimitOrder):
-    price = order.price.as_double()
-    size = order.quantity.as_double()
+def nautilus_limit_to_place_instructions(
+    command: SubmitOrder,
+    instrument: BettingInstrument,
+) -> PlaceInstruction:
+    assert isinstance(command.order, NautilusLimitOrder)
+    instructions = PlaceInstruction(
+        order_type=OrderType.LIMIT,
+        selection_id=int(instrument.selection_id),
+        handicap=(
+            instrument.selection_handicap
+            if instrument.selection_handicap != null_handicap()
+            else None
+        ),
+        side=OrderSideParser.to_betfair(command.order.side),
+        limit_order=LimitOrder(
+            price=command.order.price.as_double(),
+            size=command.order.quantity.as_double(),
+            persistence_type=N2B_PERSISTENCE.get(
+                command.order.time_in_force,
+                PersistenceType.LAPSE,
+            ),
+            time_in_force=N2B_TIME_IN_FORCE.get(command.order.time_in_force),
+            min_fill_size=min_fill_size(command.order.time_in_force),
+        ),
+        customer_order_ref=make_customer_order_ref(
+            client_order_id=command.order.client_order_id,
+        ),
+    )
+    return instructions
 
-    if order.time_in_force == TimeInForce.AT_THE_OPEN:
-        return {
-            "orderType": "LIMIT_ON_CLOSE",
-            "limitOnCloseOrder": {"price": price, "liability": size},
-        }
-    elif order.time_in_force in (TimeInForce.GTC, TimeInForce.IOC, TimeInForce.FOK):
-        parsed = {
-            "orderType": "LIMIT",
-            "limitOrder": {"price": price, "size": size, "persistenceType": "PERSIST"},
-        }
-        if order.time_in_force in N2B_TIME_IN_FORCE:
-            parsed["limitOrder"]["timeInForce"] = N2B_TIME_IN_FORCE[order.time_in_force]  # type: ignore
-            parsed["limitOrder"]["persistenceType"] = "LAPSE"  # type: ignore
-        return parsed
+
+def nautilus_limit_on_close_to_place_instructions(
+    command: SubmitOrder,
+    instrument: BettingInstrument,
+) -> PlaceInstruction:
+    assert isinstance(command.order, NautilusLimitOrder)
+    instructions = PlaceInstruction(
+        order_type=OrderType.LIMIT_ON_CLOSE,
+        selection_id=int(instrument.selection_id),
+        handicap=(
+            instrument.selection_handicap
+            if instrument.selection_handicap != null_handicap()
+            else None
+        ),
+        side=OrderSideParser.to_betfair(command.order.side),
+        limit_on_close_order=LimitOnCloseOrder(
+            price=command.order.price.as_double(),
+            liability=command.order.quantity.as_double(),
+        ),
+        customer_order_ref=make_customer_order_ref(
+            client_order_id=command.order.client_order_id,
+        ),
+    )
+    return instructions
+
+
+def nautilus_market_to_place_instructions(
+    command: SubmitOrder,
+    instrument: BettingInstrument,
+) -> PlaceInstruction:
+    assert isinstance(command.order, NautilusMarketOrder)
+    price = MIN_BET_PRICE if command.order.side == OrderSide.BUY else MAX_BET_PRICE
+    instructions = PlaceInstruction(
+        order_type=OrderType.LIMIT,
+        selection_id=int(instrument.selection_id),
+        handicap=(
+            instrument.selection_handicap
+            if instrument.selection_handicap != null_handicap()
+            else None
+        ),
+        side=OrderSideParser.to_betfair(command.order.side),
+        limit_order=LimitOrder(
+            price=price.as_double(),
+            size=command.order.quantity.as_double(),
+            persistence_type=N2B_PERSISTENCE.get(
+                command.order.time_in_force,
+                PersistenceType.LAPSE,
+            ),
+            time_in_force=N2B_TIME_IN_FORCE.get(command.order.time_in_force),
+            min_fill_size=min_fill_size(command.order.time_in_force),
+        ),
+        customer_order_ref=make_customer_order_ref(
+            client_order_id=command.order.client_order_id,
+        ),
+    )
+    return instructions
+
+
+def nautilus_market_on_close_to_place_instructions(
+    command: SubmitOrder,
+    instrument: BettingInstrument,
+) -> PlaceInstruction:
+    assert isinstance(command.order, NautilusMarketOrder)
+    instructions = PlaceInstruction(
+        order_type=OrderType.MARKET_ON_CLOSE,
+        selection_id=int(instrument.selection_id),
+        handicap=(
+            instrument.selection_handicap
+            if instrument.selection_handicap != null_handicap()
+            else None
+        ),
+        side=OrderSideParser.to_betfair(command.order.side),
+        market_on_close_order=MarketOnCloseOrder(
+            liability=command.order.quantity.as_double(),
+        ),
+        customer_order_ref=make_customer_order_ref(
+            client_order_id=command.order.client_order_id,
+        ),
+    )
+    return instructions
+
+
+def nautilus_order_to_place_instructions(
+    command: SubmitOrder,
+    instrument: BettingInstrument,
+) -> PlaceInstruction:
+    if isinstance(command.order, NautilusLimitOrder):
+        if command.order.time_in_force in (
+            NautilusTimeInForce.AT_THE_OPEN,
+            NautilusTimeInForce.AT_THE_CLOSE,
+        ):
+            return nautilus_limit_on_close_to_place_instructions(
+                command=command,
+                instrument=instrument,
+            )
+        else:
+            return nautilus_limit_to_place_instructions(command=command, instrument=instrument)
+    elif isinstance(command.order, NautilusMarketOrder):
+        if command.order.time_in_force in (
+            NautilusTimeInForce.AT_THE_OPEN,
+            NautilusTimeInForce.AT_THE_CLOSE,
+        ):
+            return nautilus_market_on_close_to_place_instructions(
+                command=command,
+                instrument=instrument,
+            )
+        else:
+            return nautilus_market_to_place_instructions(command=command, instrument=instrument)
     else:
-        raise ValueError("Betfair only supports time_in_force of `GTC` or `AT_THE_OPEN`")
+        raise TypeError(f"Unknown order type: {type(command.order)}")
 
 
-def _make_market_order(order: MarketOrder):
-    if order.time_in_force == TimeInForce.AT_THE_OPEN:
-        return {
-            "orderType": "MARKET_ON_CLOSE",
-            "marketOnCloseOrder": {
-                "liability": str(order.quantity.as_double()),
-            },
-        }
-    elif order.time_in_force == TimeInForce.GTC:
-        # Betfair doesn't really support market orders, return a limit order with min/max price
-        limit_order = LimitOrder(
-            trader_id=order.trader_id,
-            strategy_id=order.strategy_id,
-            instrument_id=order.instrument_id,
-            client_order_id=order.client_order_id,
-            order_side=order.side,
-            quantity=order.quantity,
-            price=MIN_BET_PRICE if order.side == OrderSide.BUY else MAX_BET_PRICE,
-            time_in_force=TimeInForce.FOK,
-            init_id=order.init_id,
-            ts_init=order.ts_init,
-        )
-        limit_order = _make_limit_order(order=limit_order)
-        # We transform the size of a limit order inside `_make_limit_order` but for a market order we want to just use
-        # the size as is.
-        limit_order["limitOrder"]["size"] = order.quantity.as_double()
-        return limit_order
-    else:
-        raise ValueError("Betfair only supports time_in_force of `GTC` or `AT_THE_OPEN`")
-
-
-def make_order(order: Union[LimitOrder, MarketOrder]):
-    if isinstance(order, LimitOrder):
-        return _make_limit_order(order=order)
-    elif isinstance(order, MarketOrder):
-        return _make_market_order(order=order)
-    else:
-        raise TypeError(f"Unknown order type: {type(order)}")
-
-
-def order_submit_to_betfair(command: SubmitOrder, instrument: BettingInstrument) -> dict:
+def order_submit_to_place_order_params(
+    command: SubmitOrder,
+    instrument: BettingInstrument,
+) -> PlaceOrders:
     """
     Convert a SubmitOrder command into the data required by BetfairClient.
     """
-    order = make_order(command.order)
-
-    place_order = {
-        "market_id": instrument.market_id,
-        # Used to de-dupe orders on betfair server side
-        "customer_ref": command.id.value.replace("-", ""),
-        "customer_strategy_ref": command.strategy_id.value[:15],
-        "instructions": [
-            {
-                **order,
-                "selectionId": instrument.selection_id,
-                "side": N2B_SIDE[command.order.side],
-                "handicap": instrument.selection_handicap,
-                # Remove the strategy name from customer_order_ref; it has a limited size and don't control what
-                # length the strategy might be or what characters users might append
-                "customerOrderRef": make_custom_order_ref(
-                    client_order_id=command.order.client_order_id,
-                    strategy_id=command.strategy_id,
-                ),
-            },
-        ],
-    }
-    return place_order
+    return PlaceOrders.with_params(
+        market_id=instrument.market_id,
+        customer_ref=create_customer_ref(command),
+        customer_strategy_ref=create_customer_strategy_ref(
+            trader_id=command.trader_id.value,
+            strategy_id=command.strategy_id.value,
+        ),
+        instructions=[nautilus_order_to_place_instructions(command, instrument)],
+    )
 
 
-def order_update_to_betfair(
+def order_update_to_replace_order_params(
     command: ModifyOrder,
     venue_order_id: VenueOrderId,
-    side: OrderSide,
     instrument: BettingInstrument,
-):
+) -> ReplaceOrders:
     """
     Convert an ModifyOrder command into the data required by BetfairClient.
     """
-    return {
-        "market_id": instrument.market_id,
-        "customer_ref": command.id.value.replace("-", ""),
-        "instructions": [
-            {
-                "betId": venue_order_id.value,
-                "newPrice": command.price.as_double(),
-            },
+    return ReplaceOrders.with_params(
+        market_id=instrument.market_id,
+        customer_ref=create_customer_ref(command),
+        instructions=[
+            ReplaceInstruction(
+                bet_id=BetId(venue_order_id.value),
+                new_price=command.price.as_double(),
+            ),
         ],
-    }
+    )
 
 
-def order_cancel_to_betfair(command: CancelOrder, instrument: BettingInstrument):
+def order_update_to_cancel_order_params(
+    command: CancelOrder,
+    instrument: BettingInstrument,
+    size_reduction,
+) -> CancelOrders:
     """
     Convert a CancelOrder command into the data required by BetfairClient.
     """
-    return {
-        "market_id": instrument.market_id,
-        "customer_ref": command.id.value.replace("-", ""),
-        "instructions": [{"betId": command.venue_order_id.value}],
-    }
+    return CancelOrders.with_params(
+        market_id=instrument.market_id,
+        instructions=[
+            CancelInstruction(
+                bet_id=BetId(command.venue_order_id.value),
+                size_reduction=size_reduction,
+            ),
+        ],
+        customer_ref=create_customer_ref(command),
+    )
 
 
-def order_cancel_all_to_betfair(instrument: BettingInstrument):
+def order_cancel_to_cancel_order_params(
+    command: CancelOrder,
+    instrument: BettingInstrument,
+) -> CancelOrders:
+    """
+    Convert a CancelOrder command into the data required by BetfairClient.
+    """
+    return CancelOrders.with_params(
+        market_id=instrument.market_id,
+        instructions=[CancelInstruction(bet_id=BetId(command.venue_order_id.value))],
+        customer_ref=create_customer_ref(command),
+    )
+
+
+def order_cancel_all_to_betfair(instrument: BettingInstrument) -> dict[str, str]:
     """
     Convert a CancelAllOrders command into the data required by BetfairClient.
     """
@@ -196,25 +317,36 @@ def order_cancel_all_to_betfair(instrument: BettingInstrument):
 
 
 def betfair_account_to_account_state(
-    account_detail,
-    account_funds,
+    account_detail: AccountDetailsResponse,
+    account_funds: AccountFundsResponse,
     event_id,
     ts_event,
     ts_init,
+    reported,
     account_id="001",
+    fallback_currency: Currency | None = None,
 ) -> AccountState:
-    currency = Currency.from_str(account_detail["currencyCode"])
-    balance = float(account_funds["availableToBetBalance"])
-    locked = -float(account_funds["exposure"]) if account_funds["exposure"] else 0.0
-    free = balance - locked
+    currency_code = account_detail.currency_code
+    if currency_code:
+        currency = Currency.from_str(currency_code)
+    elif fallback_currency is not None:
+        currency = fallback_currency
+    else:
+        raise ValueError(
+            f"Cannot determine account currency: currency_code={currency_code!r}, "
+            f"fallback_currency={fallback_currency}",
+        )
+    free = float(account_funds.available_to_bet_balance)
+    locked = -float(account_funds.exposure)
+    total = free + locked
     return AccountState(
         account_id=AccountId(f"{BETFAIR_VENUE.value}-{account_id}"),
         account_type=AccountType.BETTING,
         base_currency=currency,
-        reported=False,
+        reported=reported,
         balances=[
             AccountBalance(
-                total=Money(balance, currency),
+                total=Money(total, currency),
                 locked=Money(locked, currency),
                 free=Money(free, currency),
             ),
@@ -227,53 +359,38 @@ def betfair_account_to_account_state(
     )
 
 
-async def generate_trades_list(
-    self,
+def bet_to_fill_report(
+    order: CurrentOrderSummary,
+    account_id: AccountId,
+    instrument_id: InstrumentId,
     venue_order_id: VenueOrderId,
-    symbol: Symbol,
-    since: datetime = None,  # type: ignore
-) -> list[TradeReport]:
-    filled = self.client().betting.list_cleared_orders(
-        bet_ids=[venue_order_id],
+    client_order_id: ClientOrderId,
+    base_currency: Currency,
+    ts_init,
+    report_id,
+) -> FillReport:
+    ts_event = pd.Timestamp(order.matched_date).value
+    trade_id = current_order_summary_to_trade_id(order)
+    return FillReport(
+        client_order_id=client_order_id,
+        instrument_id=instrument_id,
+        account_id=account_id,
+        venue_order_id=venue_order_id,
+        venue_position_id=None,  # Can be None
+        order_side=OrderSideParser.to_nautilus(order.side),
+        trade_id=trade_id,
+        last_qty=Quantity(order.size_matched, BETFAIR_QUANTITY_PRECISION),
+        last_px=Price(order.price_size.price, BETFAIR_PRICE_PRECISION),
+        commission=Money(0.0, base_currency),
+        liquidity_side=LiquiditySide.NO_LIQUIDITY_SIDE,
+        report_id=report_id,
+        ts_event=ts_event,
+        ts_init=ts_init,
     )
-    if not filled["clearedOrders"]:
-        self._log.warn(f"Found no existing order for {venue_order_id}")
-        return []
-    fill = filled["clearedOrders"][0]
-    ts_event = pd.Timestamp(fill["lastMatchedDate"]).value
-    return [
-        TradeReport(
-            client_order_id=self.venue_order_id_to_client_order_id[venue_order_id],
-            venue_order_id=VenueOrderId(fill["betId"]),
-            venue_position_id=None,  # Can be None
-            trade_id=TradeId(fill["lastMatchedDate"]),
-            last_qty=Quantity.from_str(str(fill["sizeSettled"])),  # TODO: Incorrect precision?
-            last_px=Price.from_str(str(fill["priceMatched"])),  # TODO: Incorrect precision?
-            commission=None,  # Can be None
-            liquidity_side=LiquiditySide.NO_LIQUIDITY_SIDE,
-            ts_event=ts_event,
-            ts_init=ts_event,
-        ),
-    ]
-
-
-@lru_cache(None)
-def parse_handicap(x) -> Optional[str]:
-    """
-    Ensure consistent parsing of the various handicap sources we get.
-    """
-    if x in (None, ""):
-        return "0.0"
-    if isinstance(x, (int, str)):
-        return str(float(x))
-    elif isinstance(x, float):
-        return str(x)
-    else:
-        raise TypeError(f"Unexpected type ({type(x)}) for handicap: {x}")
 
 
 def bet_to_order_status_report(
-    order,
+    order: CurrentOrderSummary,
     account_id: AccountId,
     instrument_id: InstrumentId,
     venue_order_id: VenueOrderId,
@@ -281,40 +398,204 @@ def bet_to_order_status_report(
     ts_init,
     report_id,
 ) -> OrderStatusReport:
+    is_bsp_order = order.price_size.size == 0.0 and order.bsp_liability != 0.0
+
+    if not is_bsp_order and order.price_size.size != 0.0:
+        qty = Quantity(order.price_size.size, BETFAIR_QUANTITY_PRECISION)
+        fill_qty = Quantity(order.size_matched, BETFAIR_QUANTITY_PRECISION)
+        price = BETFAIR_FLOAT_TO_PRICE[order.price_size.price]
+    elif is_bsp_order:
+        # BSP orders: bspLiability is in payout units, but size fields are in stake units
+        # Must use stake units consistently to avoid incorrect fill ratios
+        total_size = (
+            order.size_matched
+            + order.size_remaining
+            + order.size_cancelled
+            + order.size_lapsed
+            + order.size_voided
+        )
+        qty = Quantity(total_size, BETFAIR_QUANTITY_PRECISION)
+        fill_qty = Quantity(order.size_matched, BETFAIR_QUANTITY_PRECISION)
+
+        # BSP orders with limit price specified use price_size.price, pure BSP use average_price_matched
+        if order.price_size.price > 0.0:
+            price = BETFAIR_FLOAT_TO_PRICE[order.price_size.price]
+        elif order.average_price_matched > 0.0:
+            price = Price(order.average_price_matched, BETFAIR_PRICE_PRECISION)
+        else:
+            price = Price(0.0, BETFAIR_PRICE_PRECISION)
+    else:
+        raise ValueError(f"Unknown order size {order.price_size.size=}, {order.bsp_liability=}")
+
     return OrderStatusReport(
         account_id=account_id,
         instrument_id=instrument_id,
         venue_order_id=venue_order_id,
         client_order_id=client_order_id,
-        order_side=B2N_ORDER_STREAM_SIDE[order["side"]],
-        order_type=order_type_from_str(order["orderType"]),
+        order_side=OrderSideParser.to_nautilus(order.side),
+        order_type=B2N_ORDER_TYPE[order.order_type],
         contingency_type=ContingencyType.NO_CONTINGENCY,
-        time_in_force=B2N_TIME_IN_FORCE[order["persistenceType"]],
+        time_in_force=B2N_TIME_IN_FORCE[order.persistence_type],
         order_status=determine_order_status(order),
-        price=BETFAIR_FLOAT_TO_PRICE[order["priceSize"]["price"]],
-        quantity=Quantity(order["priceSize"]["size"], BETFAIR_QUANTITY_PRECISION),
-        filled_qty=Quantity(order["sizeMatched"], BETFAIR_QUANTITY_PRECISION),
+        price=price,
+        quantity=qty,
+        filled_qty=fill_qty,
         report_id=report_id,
-        ts_accepted=dt_to_unix_nanos(pd.Timestamp(order["placedDate"])),
+        ts_accepted=dt_to_unix_nanos(pd.Timestamp(order.placed_date)),
         ts_triggered=0,
-        ts_last=dt_to_unix_nanos(pd.Timestamp(order["matchedDate"]))
-        if "matchedDate" in order
-        else 0,
+        ts_last=dt_to_unix_nanos(pd.Timestamp(order.matched_date)) if order.matched_date else 0,
         ts_init=ts_init,
     )
 
 
-def determine_order_status(order: dict) -> OrderStatus:
-    order_size = order["priceSize"]["size"]
-    if order["status"] == "EXECUTION_COMPLETE":
-        if order_size == order["sizeMatched"]:
+def determine_order_status(order: CurrentOrderSummary) -> OrderStatus:
+    order_size = order.price_size.size
+
+    if order.status == BetfairOrderStatus.EXECUTION_COMPLETE:
+        if order_size == order.size_matched:
             return OrderStatus.FILLED
-        elif order["sizeCancelled"] > 0.0:
+        elif order.size_cancelled and order.size_cancelled > 0.0:
             return OrderStatus.CANCELED
         else:
             return OrderStatus.PARTIALLY_FILLED
-    elif order["status"] == "EXECUTABLE":
-        if order["sizeMatched"] == 0.0:
+    elif order.status == BetfairOrderStatus.EXECUTABLE:
+        if order.size_matched == 0.0:
             return OrderStatus.ACCEPTED
-        elif order["sizeMatched"] > 0.0:
+        elif order.size_matched and order.size_matched > 0.0:
             return OrderStatus.PARTIALLY_FILLED
+    elif order.status == BetfairOrderStatus.EXPIRED:
+        # Time in force requirement resulted in a cancel
+        if order.size_matched == 0.0:
+            return OrderStatus.CANCELED
+        else:
+            return OrderStatus.PARTIALLY_FILLED
+    elif order.status == BetfairOrderStatus.PENDING:
+        # Accepted, but yet to be processed
+        return OrderStatus.ACCEPTED
+
+    raise ValueError(f"Unknown order status {order.status=}")
+
+
+def create_customer_ref(command: SubmitOrder | ModifyOrder | CancelOrder) -> str:
+    """
+    Create a customer reference for the betfair API from order command.
+
+    From betfair docs (https://docs.developer.betfair.com/display/1smk3cen4v3lu3yomq5qye0ni/placeOrders):
+        Optional parameter allowing the client to pass a unique string (up to 32 chars) that is used to de-dupe
+        mistaken re-submissions.   customerRef can contain: upper/lower chars, digits, chars : - . _ + * : ; ~ only.
+
+        Please note: There is a time window associated with the de-duplication of duplicate submissions which is 60 seconds.
+
+        NB: This field does not persist into the placeOrders response/Order Stream API and should not be confused with
+        customerOrderRef, which is separate field that can be sent in the PlaceInstruction.
+
+    Parameters
+    ----------
+    command: SubmitOrder | ModifyOrder | CancelOrder
+        The order command
+
+    Returns
+    -------
+    str
+
+    """
+    return command.id.value.replace("-", "")[:32]
+
+
+@lru_cache
+def create_customer_strategy_ref(trader_id: str, strategy_id: str) -> str:
+    """
+    Betfair allow setting a strategy reference, limited to 15 chars. Produce a hash to
+    use as a strategy reference in the place order API.
+
+    From the docs:
+
+    "An optional reference customers can use to specify which strategy has sent the order.
+    The reference will be returned on order change messages through the stream API. The string is
+    limited to 15 characters. If an empty string is provided it will be treated as null."
+
+    Produce a hash to use as a strategy ID in the place order API.
+
+    https://docs.developer.betfair.com/display/1smk3cen4v3lu3yomq5qye0ni/placeOrders
+
+
+    Parameters
+    ----------
+    trader_id: str
+        The trader ID
+    strategy_id: str
+        The strategy ID
+
+    Returns
+    -------
+    str
+
+    """
+    data = {
+        "trader_id": trader_id,
+        "strategy_id": strategy_id,
+    }
+    return hashlib.shake_256(msgspec.json.encode(data)).hexdigest(8)[:15]
+
+
+def hashed_trade_id(
+    bet_id: BetId,
+    price: float,
+    size: float,
+    side: Literal["B", "L"],
+    persistence_type: Literal["L", "P", "MOC"],
+    order_type: Literal["L", "MOC", "LOC"],
+    placed_date: int,
+    matched_date: int | None = None,
+    average_price_matched: float | None = None,
+    size_matched: float | None = None,
+) -> TradeId:
+    data: bytes = msgspec.json.encode(
+        (
+            bet_id,
+            price,
+            size,
+            side,
+            persistence_type,
+            order_type,
+            placed_date,
+            matched_date,
+            average_price_matched,
+            size_matched,
+        ),
+    )
+    return TradeId(hashlib.shake_256(msgspec.json.encode(data)).hexdigest(18))
+
+
+def order_to_trade_id(uo: BetfairOrder) -> TradeId:
+    return hashed_trade_id(
+        bet_id=uo.id,
+        price=uo.p,
+        size=uo.s,
+        side=uo.side,
+        persistence_type=uo.pt,
+        order_type=uo.ot,
+        placed_date=uo.pd,
+        matched_date=uo.md,
+        average_price_matched=uo.avp,
+        size_matched=uo.sm,
+    )
+
+
+def current_order_summary_to_trade_id(order: CurrentOrderSummary) -> TradeId:
+    placed_date_ms = nanos_to_millis(dt_to_unix_nanos(order.placed_date))
+    matched_date_ns = maybe_dt_to_unix_nanos(order.matched_date)
+    matched_date_ms = nanos_to_millis(matched_date_ns) if matched_date_ns else None
+
+    return hashed_trade_id(
+        bet_id=order.bet_id,
+        price=order.price_size.price,
+        size=order.price_size.size,
+        side=order.side.value[0],
+        persistence_type=order.persistence_type.value,
+        order_type=order.order_type.value,
+        placed_date=placed_date_ms,
+        matched_date=matched_date_ms,
+        average_price_matched=order.average_price_matched,
+        size_matched=order.size_matched,
+    )

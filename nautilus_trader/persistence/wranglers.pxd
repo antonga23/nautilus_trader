@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -14,35 +14,46 @@
 # -------------------------------------------------------------------------------------------------
 
 from libc.stdint cimport int64_t
+from libc.stdint cimport uint8_t
 from libc.stdint cimport uint64_t
 
-from nautilus_trader.model.data.bar cimport Bar
-from nautilus_trader.model.data.bar cimport BarType
-from nautilus_trader.model.data.tick cimport QuoteTick
-from nautilus_trader.model.data.tick cimport TradeTick
-from nautilus_trader.model.enums_c cimport AggressorSide
+from nautilus_trader.core.rust.model cimport AggressorSide
+from nautilus_trader.core.rust.model cimport BookAction
+from nautilus_trader.core.rust.model cimport OrderSide
+from nautilus_trader.core.rust.model cimport PriceRaw
+from nautilus_trader.core.rust.model cimport QuantityRaw
+from nautilus_trader.model.data cimport Bar
+from nautilus_trader.model.data cimport BarType
+from nautilus_trader.model.data cimport OrderBookDelta
+from nautilus_trader.model.data cimport QuoteTick
+from nautilus_trader.model.data cimport TradeTick
 from nautilus_trader.model.instruments.base cimport Instrument
 
 
-cdef list capsule_to_data_list(object capsule)
-
-cdef class QuoteTickDataWrangler:
+cdef class OrderBookDeltaDataWrangler:
     cdef readonly Instrument instrument
 
-    cpdef QuoteTick _build_tick_from_raw(
+    cpdef OrderBookDelta _build_delta(
         self,
-        int64_t raw_bid,
-        int64_t raw_ask,
-        uint64_t raw_bid_size,
-        uint64_t raw_ask_size,
+        BookAction action,
+        OrderSide side,
+        double price,
+        double size,
+        uint64_t order_id,
+        uint8_t flags,
+        uint64_t sequence,
         uint64_t ts_event,
         uint64_t ts_init,
     )
 
+
+cdef class QuoteTickDataWrangler:
+    cdef readonly Instrument instrument
+
     cpdef QuoteTick _build_tick(
         self,
-        double bid,
-        double ask,
+        double bid_price,
+        double ask_price,
         double bid_size,
         double ask_size,
         uint64_t ts_event,
@@ -53,16 +64,6 @@ cdef class QuoteTickDataWrangler:
 cdef class TradeTickDataWrangler:
     cdef readonly Instrument instrument
     cdef readonly processed_data
-
-    cpdef TradeTick _build_tick_from_raw(
-        self,
-        int64_t raw_price,
-        uint64_t raw_size,
-        AggressorSide aggressor_side,
-        str trade_id,
-        uint64_t ts_event,
-        uint64_t ts_init,
-    )
 
     cpdef TradeTick _build_tick(
         self,

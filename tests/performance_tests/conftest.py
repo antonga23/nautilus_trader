@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -15,15 +15,9 @@
 
 import pytest
 
-from nautilus_trader.common.clock import TestClock
-from nautilus_trader.common.logging import Logger
+from nautilus_trader.common.component import LiveClock
 
 
-@pytest.fixture()
-def clock():
-    return TestClock()
-
-
-@pytest.fixture()
-def logger(clock):
-    return Logger(clock, bypass=True)
+@pytest.fixture(name="clock")
+def fixture_clock():
+    return LiveClock()

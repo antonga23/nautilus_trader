@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -14,54 +14,82 @@
 # -------------------------------------------------------------------------------------------------
 
 from decimal import Decimal
-from typing import Optional
 
-import msgspec
-
+from libc.math cimport floor
+from libc.math cimport pow
 from libc.stdint cimport uint64_t
 
+from nautilus_trader.core import nautilus_pyo3
+
 from nautilus_trader.core.correctness cimport Condition
+from nautilus_trader.core.rust.core cimport min_increment_precision_from_cstr
 from nautilus_trader.core.rust.model cimport AssetClass
-from nautilus_trader.core.rust.model cimport AssetType
-from nautilus_trader.model.currency cimport Currency
-from nautilus_trader.model.enums_c cimport asset_class_from_str
-from nautilus_trader.model.enums_c cimport asset_class_to_str
-from nautilus_trader.model.enums_c cimport asset_type_from_str
-from nautilus_trader.model.enums_c cimport asset_type_to_str
+from nautilus_trader.core.rust.model cimport InstrumentClass
+from nautilus_trader.core.string cimport pystr_to_cstr
+from nautilus_trader.model.functions cimport asset_class_from_str
+from nautilus_trader.model.functions cimport asset_class_to_str
+from nautilus_trader.model.functions cimport instrument_class_from_str
+from nautilus_trader.model.functions cimport instrument_class_to_str
 from nautilus_trader.model.identifiers cimport InstrumentId
+from nautilus_trader.model.instruments.betting cimport BettingInstrument
+from nautilus_trader.model.instruments.binary_option cimport BinaryOption
+from nautilus_trader.model.instruments.crypto_future cimport CryptoFuture
+from nautilus_trader.model.instruments.crypto_option cimport CryptoOption
+from nautilus_trader.model.instruments.crypto_perpetual cimport CryptoPerpetual
+from nautilus_trader.model.instruments.currency_pair cimport CurrencyPair
+from nautilus_trader.model.instruments.equity cimport Equity
+from nautilus_trader.model.instruments.futures_contract cimport FuturesContract
+from nautilus_trader.model.instruments.futures_spread cimport FuturesSpread
+from nautilus_trader.model.instruments.option_contract cimport OptionContract
+from nautilus_trader.model.instruments.option_spread cimport OptionSpread
+from nautilus_trader.model.objects cimport Currency
 from nautilus_trader.model.objects cimport Quantity
 from nautilus_trader.model.tick_scheme.base cimport TICK_SCHEMES
 from nautilus_trader.model.tick_scheme.base cimport get_tick_scheme
+
+
+EXPIRING_INSTRUMENT_CLASSES = {
+    InstrumentClass.FUTURE,
+    InstrumentClass.FUTURES_SPREAD,
+    InstrumentClass.OPTION,
+    InstrumentClass.OPTION_SPREAD,
+}
+
+NEGATIVE_PRICE_INSTRUMENT_CLASSES = (
+    InstrumentClass.OPTION,
+    InstrumentClass.FUTURES_SPREAD,
+    InstrumentClass.OPTION_SPREAD,
+)
 
 
 cdef class Instrument(Data):
     """
     The base class for all instruments.
 
-    Represents a tradable financial market instrument. This class can be used to
+    Represents a tradable instrument. This class can be used to
     define an instrument, or act as a parent class for more specific instruments.
 
     Parameters
     ----------
     instrument_id : InstrumentId
         The instrument ID for the instrument.
-    native_symbol : Symbol
-        The native/local symbol on the exchange for the instrument.
+    raw_symbol : Symbol
+        The raw/local/native symbol for the instrument, assigned by the venue.
     asset_class : AssetClass
         The instrument asset class.
-    asset_type : AssetType
-        The instrument asset type.
+    instrument_class : InstrumentClass
+        The instrument class.
     quote_currency : Currency
         The quote currency.
-    is_inverse : Currency
+    is_inverse : bool
         If the instrument costing is inverse (quantity expressed in quote currency units).
     price_precision : int
         The price decimal precision.
     size_precision : int
         The trading size decimal precision.
-    size_increment : Price
+    size_increment : Quantity
         The minimum size increment.
-    multiplier : Decimal
+    multiplier : Quantity
         The contract value multiplier (determines tick value).
     lot_size : Quantity, optional
         The rounded lot unit size (standard/board).
@@ -70,13 +98,13 @@ cdef class Instrument(Data):
     margin_maint : Decimal
         The maintenance (position) margin in percentage of position value.
     maker_fee : Decimal
-        The fee rate for liquidity makers as a percentage of order value.
+        The fee rate for liquidity makers as a percentage of order value (where 1.0 is 100%).
     taker_fee : Decimal
-        The fee rate for liquidity takers as a percentage of order value.
+        The fee rate for liquidity takers as a percentage of order value (where 1.0 is 100%).
     ts_event : uint64_t
-        The UNIX timestamp (nanoseconds) when the data event occurred.
+        UNIX timestamp (nanoseconds) when the data event occurred.
     ts_init : uint64_t
-        The UNIX timestamp (nanoseconds) when the data object was initialized.
+        UNIX timestamp (nanoseconds) when the data object was initialized.
     price_increment : Price, optional
         The minimum price increment (tick size).
     max_quantity : Quantity, optional
@@ -115,6 +143,10 @@ cdef class Instrument(Data):
     ValueError
         If `multiplier` is not positive (> 0).
     ValueError
+        If `margin_init` is negative (< 0).
+    ValueError
+        If `margin_maint` is negative (< 0).
+    ValueError
         If `lot size` is not positive (> 0).
     ValueError
         If `max_quantity` is not positive (> 0).
@@ -128,14 +160,15 @@ cdef class Instrument(Data):
         If `max_price` is not positive (> 0).
     ValueError
         If `min_price` is negative (< 0).
+
     """
 
     def __init__(
         self,
         InstrumentId instrument_id not None,
-        Symbol native_symbol not None,
+        Symbol raw_symbol not None,
         AssetClass asset_class,
-        AssetType asset_type,
+        InstrumentClass instrument_class,
         Currency quote_currency not None,
         bint is_inverse,
         int price_precision,
@@ -148,44 +181,56 @@ cdef class Instrument(Data):
         taker_fee not None: Decimal,
         uint64_t ts_event,
         uint64_t ts_init,
-        Price price_increment: Optional[Price] = None,
-        Quantity lot_size: Optional[Quantity] = None,
-        Quantity max_quantity: Optional[Quantity] = None,
-        Quantity min_quantity: Optional[Quantity] = None,
-        Money max_notional: Optional[Money] = None,
-        Money min_notional: Optional[Money] = None,
-        Price max_price: Optional[Price] = None,
-        Price min_price: Optional[Price] = None,
+        Price price_increment: Price | None = None,
+        Quantity lot_size: Quantity | None = None,
+        Quantity max_quantity: Quantity | None = None,
+        Quantity min_quantity: Quantity | None = None,
+        Money max_notional: Money | None = None,
+        Money min_notional: Money | None = None,
+        Price max_price: Price | None = None,
+        Price min_price: Price | None = None,
         str tick_scheme_name = None,
         dict info = None,
-    ):
+    ) -> None:
         Condition.not_negative_int(price_precision, "price_precision")
         Condition.not_negative_int(size_precision, "size_precision")
         Condition.positive(size_increment, "size_increment")
         Condition.equal(size_precision, size_increment.precision, "size_precision", "size_increment.precision")  # noqa
         Condition.positive(multiplier, "multiplier")
+        Condition.not_negative(margin_init, "margin_init")
+        Condition.not_negative(margin_maint, "margin_maint")
 
         if tick_scheme_name is not None:
             Condition.valid_string(tick_scheme_name, "tick_scheme_name")
             Condition.is_in(tick_scheme_name, TICK_SCHEMES, "tick_scheme_name", "TICK_SCHEMES")
+
         if price_increment is not None:
             Condition.positive(price_increment, "price_increment")
+
         if price_precision is not None and price_increment is not None:
             Condition.equal(price_precision, price_increment.precision, "price_precision", "price_increment.precision")  # noqa
+
         if lot_size is not None:
             Condition.positive(lot_size, "lot_size")
+
         if max_quantity is not None:
             Condition.positive(max_quantity, "max_quantity")
+
         if min_quantity is not None:
             Condition.not_negative(min_quantity, "min_quantity")
+
         if max_notional is not None:
             Condition.positive(max_notional, "max_notional")
+
         if min_notional is not None:
             Condition.not_negative(min_notional, "min_notional")
+
         if max_price is not None:
             Condition.positive(max_price, "max_price")
+
         if min_price is not None:
             Condition.not_negative(min_price, "min_price")
+
         Condition.type(margin_init, Decimal, "margin_init")
         Condition.not_negative(margin_init, "margin_init")
         Condition.type(margin_maint, Decimal, "margin_maint")
@@ -194,13 +239,13 @@ cdef class Instrument(Data):
         Condition.type(taker_fee, Decimal, "taker_fee")
 
         self.id = instrument_id
-        self.native_symbol = native_symbol
+        self.raw_symbol = raw_symbol
         self.asset_class = asset_class
-        self.asset_type = asset_type
+        self.instrument_class = instrument_class
         self.quote_currency = quote_currency
         self.is_inverse = is_inverse
         self.price_precision = price_precision
-        self.price_increment = price_increment
+        self.price_increment = price_increment or Price(pow(10.0, -price_precision), price_precision)
         self.tick_scheme_name = tick_scheme_name
         self.size_precision = size_precision
         self.size_increment = size_increment
@@ -220,23 +265,29 @@ cdef class Instrument(Data):
         self.ts_event = ts_event
         self.ts_init = ts_init
 
+        self._min_price_increment_precision = min_increment_precision_from_cstr(pystr_to_cstr(str(self.price_increment)))
+        self._min_size_increment_precision = min_increment_precision_from_cstr(pystr_to_cstr(str(self.size_increment)))
+        self._increment_pow10 = 10 ** -self._min_size_increment_precision
+
         # Assign tick scheme if named
         if self.tick_scheme_name is not None:
             self._tick_scheme = get_tick_scheme(self.tick_scheme_name)
 
     def __eq__(self, Instrument other) -> bool:
+        if other is None:
+            return False
         return self.id == other.id
 
     def __hash__(self) -> int:
         return hash(self.id)
 
-    def __repr__(self) -> str:  # TODO(cs): tick_scheme_name pending
+    def __repr__(self) -> str:  # TODO: tick_scheme_name pending
         return (
             f"{type(self).__name__}"
             f"(id={self.id.to_str()}, "
-            f"native_symbol={self.native_symbol}, "
+            f"raw_symbol={self.raw_symbol}, "
             f"asset_class={asset_class_to_str(self.asset_class)}, "
-            f"asset_type={asset_type_to_str(self.asset_type)}, "
+            f"instrument_class={instrument_class_to_str(self.instrument_class)}, "
             f"quote_currency={self.quote_currency}, "
             f"is_inverse={self.is_inverse}, "
             f"price_precision={self.price_precision}, "
@@ -261,12 +312,12 @@ cdef class Instrument(Data):
         cdef str min_n = values["min_notional"]
         cdef str max_p = values["max_price"]
         cdef str min_p = values["min_price"]
-        cdef bytes info = values["info"]
+
         return Instrument(
             instrument_id=InstrumentId.from_str_c(values["id"]),
-            native_symbol=Symbol(values["native_symbol"]),
+            raw_symbol=Symbol(values["raw_symbol"]),
             asset_class=asset_class_from_str(values["asset_class"]),
-            asset_type=asset_type_from_str(values["asset_type"]),
+            instrument_class=instrument_class_from_str(values["instrument_class"]),
             quote_currency=Currency.from_str_c(values["quote_currency"]),
             is_inverse=values["is_inverse"],
             price_precision=values["price_precision"],
@@ -287,7 +338,8 @@ cdef class Instrument(Data):
             taker_fee=Decimal(values["taker_fee"]),
             ts_event=values["ts_event"],
             ts_init=values["ts_init"],
-            info=msgspec.json.decode(info) if info is not None else None,
+            tick_scheme_name=values.get("tick_scheme_name"),
+            info=values["info"],
         )
 
     @staticmethod
@@ -295,9 +347,9 @@ cdef class Instrument(Data):
         return {
             "type": "Instrument",
             "id": obj.id.to_str(),
-            "native_symbol": obj.native_symbol.to_str(),
+            "raw_symbol": obj.raw_symbol.to_str(),
             "asset_class": asset_class_to_str(obj.asset_class),
-            "asset_type": asset_type_to_str(obj.asset_type),
+            "instrument_class": instrument_class_to_str(obj.instrument_class),
             "quote_currency": obj.quote_currency.code,
             "is_inverse": obj.is_inverse,
             "price_precision": obj.price_precision,
@@ -308,8 +360,8 @@ cdef class Instrument(Data):
             "lot_size": str(obj.lot_size) if obj.lot_size is not None else None,
             "max_quantity": str(obj.max_quantity) if obj.max_quantity is not None else None,
             "min_quantity": str(obj.min_quantity) if obj.min_quantity is not None else None,
-            "max_notional": obj.max_notional.to_str() if obj.max_notional is not None else None,
-            "min_notional": obj.min_notional.to_str() if obj.min_notional is not None else None,
+            "max_notional": str(obj.max_notional) if obj.max_notional is not None else None,
+            "min_notional": str(obj.min_notional) if obj.min_notional is not None else None,
             "max_price": str(obj.max_price) if obj.max_price is not None else None,
             "min_price": str(obj.min_price) if obj.min_price is not None else None,
             "margin_init": str(obj.margin_init),
@@ -318,7 +370,8 @@ cdef class Instrument(Data):
             "taker_fee": str(obj.taker_fee),
             "ts_event": obj.ts_event,
             "ts_init": obj.ts_init,
-            "info": msgspec.json.encode(obj.info) if obj.info is not None else None,
+            "tick_scheme_name": obj.tick_scheme_name,
+            "info": obj.info,
         }
 
     @staticmethod
@@ -374,6 +427,17 @@ cdef class Instrument(Data):
         """
         return self.id.venue
 
+    cpdef bint is_spread(self):
+        """
+        Return whether the instrument is a spread instrument.
+
+        Returns
+        -------
+        bool
+
+        """
+        return False
+
     cpdef Currency get_base_currency(self):
         """
         Return the instruments base currency (if applicable).
@@ -403,6 +467,49 @@ cdef class Instrument(Data):
         else:
             return self.quote_currency
 
+    cpdef Currency get_cost_currency(self):
+        """
+        Return the currency used for PnL calculations for the instrument.
+
+        - Standard linear instruments = quote_currency
+        - Inverse instruments = base_currency
+        - Quanto instruments TBD
+
+        Returns
+        -------
+        Currency
+
+        """
+        if self.is_inverse:
+            return self.base_currency
+        else:
+            return self.quote_currency
+
+    cpdef void set_tick_scheme(self, str tick_scheme_name):
+        """
+        Set the tick scheme for the instrument.
+
+        Sets both the `tick_scheme_name` and the corresponding tick scheme implementation
+        used for price rounding and tick calculations.
+
+        This will override any previously set tick scheme, including the `tick_scheme_name` field.
+
+        Parameters
+        ----------
+        tick_scheme_name : str
+            The name of the registered tick scheme.
+
+        Raises
+        ------
+        ValueError
+            If `tick_scheme_name` is not a valid string.
+        ValueError
+            If `tick_scheme_name` is not a registered tick scheme.
+
+        """
+        self.tick_scheme_name = tick_scheme_name
+        self._tick_scheme = get_tick_scheme(tick_scheme_name)
+
     cpdef Price make_price(self, value):
         """
         Return a new price from the given value using the instruments price
@@ -418,7 +525,9 @@ cdef class Instrument(Data):
         Price
 
         """
-        return Price(float(value), precision=self.price_precision)
+        cdef double rounded_value = round(float(value), self._min_price_increment_precision)
+
+        return Price(rounded_value, precision=self.price_precision)
 
     cpdef Price next_bid_price(self, double value, int num_ticks=0):
         """
@@ -440,10 +549,14 @@ cdef class Instrument(Data):
         Raises
         ------
         ValueError
-            If tick scheme is not registered.
+            If a tick scheme is not initialized.
 
         """
-        Condition.not_none(self._tick_scheme, "self._tick_scheme")
+        if self._tick_scheme is None:
+            raise ValueError(
+                f"No tick scheme for instrument {self.id.to_str()}. "
+                "You can specify a tick scheme by passing a `tick_scheme_name` at initialization."
+            )
 
         return self._tick_scheme.next_bid_price(value=value, n=num_ticks)
 
@@ -467,14 +580,125 @@ cdef class Instrument(Data):
         Raises
         ------
         ValueError
-            If tick scheme is not registered.
+            If a tick scheme is not initialized.
 
         """
-        Condition.not_none(self._tick_scheme, "self._tick_scheme")
+        if self._tick_scheme is None:
+            raise ValueError(
+                f"No tick scheme for instrument {self.id.to_str()}. "
+                "You can specify a tick scheme by passing a `tick_scheme_name` at initialization."
+            )
 
         return self._tick_scheme.next_ask_price(value=value, n=num_ticks)
 
-    cpdef Quantity make_qty(self, value):
+    cpdef list next_bid_prices(self, double value, int num_ticks=100):
+        """
+        Return a list of prices up to `num_ticks` bid ticks away from value.
+
+        If a given price is between two ticks, the first price will be the nearest bid tick.
+        Returns as many valid ticks as possible up to `num_ticks`. Will return an empty list
+        if no valid ticks can be generated.
+
+        Parameters
+        ----------
+        value : double
+            The reference value.
+        num_ticks : int, default 100
+            The number of ticks to return.
+
+        Returns
+        -------
+        list[Decimal]
+            A list of bid prices as Decimal values.
+
+        Raises
+        ------
+        ValueError
+            If a tick scheme is not initialized.
+        """
+        if self._tick_scheme is None:
+            raise ValueError(
+                f"No tick scheme for instrument {self.id.to_str()}. "
+                "You can specify a tick scheme by passing a `tick_scheme_name` at initialization."
+            )
+
+        if num_ticks <= 0:
+            return []
+
+        cdef:
+            list prices = []
+            Price price
+            int i
+        for i in range(num_ticks):
+            try:
+                price = self._tick_scheme.next_bid_price(value=value, n=i)
+
+                if price is None:
+                    break
+                if self.min_price is not None and price < self.min_price:
+                    break
+
+                prices.append(price.as_decimal())
+            except Exception:
+                break
+
+        return prices
+
+    cpdef list next_ask_prices(self, double value, int num_ticks=100):
+        """
+        Return a list of prices up to `num_ticks` ask ticks away from value.
+
+        If a given price is between two ticks, the first price will be the nearest ask tick.
+        Returns as many valid ticks as possible up to `num_ticks`. Will return an empty list
+        if no valid ticks can be generated.
+
+        Parameters
+        ----------
+        value : double
+            The reference value.
+        num_ticks : int, default 100
+            The number of ticks to return.
+
+        Returns
+        -------
+        list[Decimal]
+            A list of ask prices as Decimal values.
+
+        Raises
+        ------
+        ValueError
+            If a tick scheme is not initialized.
+        """
+        if self._tick_scheme is None:
+            raise ValueError(
+                f"No tick scheme for instrument {self.id.to_str()}. "
+                "You can specify a tick scheme by passing a `tick_scheme_name` at initialization."
+            )
+
+        if num_ticks <= 0:
+            return []
+
+        cdef:
+            list prices = []
+            Price price
+            int i
+        for i in range(num_ticks):
+            try:
+                price = self._tick_scheme.next_ask_price(value=value, n=i)
+
+                if price is None:
+                    break
+
+                if self.max_price is not None and price > self.max_price:
+                    break
+
+                prices.append(price.as_decimal())
+            except Exception:
+                break
+
+        return prices
+
+    cpdef Quantity make_qty(self, value, bint round_down=False):
         """
         Return a new quantity from the given value using the instruments size
         precision.
@@ -483,13 +707,41 @@ cdef class Instrument(Data):
         ----------
         value : integer, float, str or Decimal
             The value of the quantity.
+        round_down : bool, default False
+            If True, always rounds down to the nearest valid increment.
+            If False, uses the `round` function (banker's rounding) which
+            rounds to the nearest even digit when exactly halfway between two values.
 
         Returns
         -------
         Quantity
 
+        Raises
+        ------
+        ValueError
+            If a non zero `value` is rounded to zero due to the instruments size increment or size precision.
+
         """
-        return Quantity(float(value), precision=self.size_precision)
+        # Check if original_value is greater than zero and rounded_value is "effectively" zero
+        cdef double original_value = float(value)
+        cdef double inc_pow10 = self._increment_pow10
+        cdef double rounded_value = 0.0
+
+        if round_down:
+            # Round down to the nearest valid increment
+            rounded_value = floor(original_value / inc_pow10) *inc_pow10
+        else:
+            # Use standard rounding behavior (banker's rounding)
+            rounded_value = round(original_value, self._min_size_increment_precision)
+
+        if original_value > 0 and rounded_value < inc_pow10 * 0.1:
+            raise ValueError(
+                f"Invalid `value` for quantity: {value} was rounded to zero "
+                f"due to size increment {self.size_increment} "
+                f"and size precision {self.size_precision}",
+            )
+
+        return Quantity(rounded_value, precision=self.size_precision)
 
     cpdef Money notional_value(
         self,
@@ -524,6 +776,7 @@ cdef class Instrument(Data):
             if use_quote_for_inverse:
                 # Quantity is notional in quote currency
                 return Money(quantity, self.quote_currency)
+
             return Money(quantity.as_f64_c() * float(self.multiplier) * (1.0 / price.as_f64_c()), self.base_currency)
         else:
             return Money(quantity.as_f64_c() * float(self.multiplier) * price.as_f64_c(), self.quote_currency)
@@ -551,3 +804,35 @@ cdef class Instrument(Data):
         Condition.not_none(quantity, "quantity")
 
         return Quantity(quantity.as_f64_c() * (1.0 / last_px.as_f64_c()), self.size_precision)
+
+
+cpdef list[Instrument] instruments_from_pyo3(list pyo3_instruments):
+    cdef list[Instrument] instruments = []
+
+    for pyo3_instrument in pyo3_instruments:
+        if isinstance(pyo3_instrument, nautilus_pyo3.BettingInstrument):
+            instruments.append(BettingInstrument.from_pyo3_c(pyo3_instrument))
+        elif isinstance(pyo3_instrument, nautilus_pyo3.BinaryOption):
+            instruments.append(BinaryOption.from_pyo3_c(pyo3_instrument))
+        elif isinstance(pyo3_instrument, nautilus_pyo3.CryptoPerpetual):
+            instruments.append(CryptoPerpetual.from_pyo3_c(pyo3_instrument))
+        elif isinstance(pyo3_instrument, nautilus_pyo3.CryptoFuture):
+            instruments.append(CryptoFuture.from_pyo3_c(pyo3_instrument))
+        elif isinstance(pyo3_instrument, nautilus_pyo3.CryptoOption):
+            instruments.append(CryptoOption.from_pyo3_c(pyo3_instrument))
+        elif isinstance(pyo3_instrument, nautilus_pyo3.CurrencyPair):
+            instruments.append(CurrencyPair.from_pyo3_c(pyo3_instrument))
+        elif isinstance(pyo3_instrument, nautilus_pyo3.Equity):
+            instruments.append(Equity.from_pyo3_c(pyo3_instrument))
+        elif isinstance(pyo3_instrument, nautilus_pyo3.FuturesContract):
+            instruments.append(FuturesContract.from_pyo3_c(pyo3_instrument))
+        elif isinstance(pyo3_instrument, nautilus_pyo3.FuturesSpread):
+            instruments.append(FuturesSpread.from_pyo3_c(pyo3_instrument))
+        elif isinstance(pyo3_instrument, nautilus_pyo3.OptionContract):
+            instruments.append(OptionContract.from_pyo3_c(pyo3_instrument))
+        elif isinstance(pyo3_instrument, nautilus_pyo3.OptionSpread):
+            instruments.append(OptionSpread.from_pyo3_c(pyo3_instrument))
+        else:
+            RuntimeError(f"Instrument {pyo3_instrument} not supported")
+
+    return instruments

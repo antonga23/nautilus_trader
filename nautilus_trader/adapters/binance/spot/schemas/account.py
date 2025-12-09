@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -14,14 +14,13 @@
 # -------------------------------------------------------------------------------------------------
 
 from decimal import Decimal
-from typing import Optional
 
 import msgspec
 
 from nautilus_trader.adapters.binance.common.enums import BinanceAccountType
 from nautilus_trader.adapters.binance.common.schemas.account import BinanceOrder
-from nautilus_trader.model.currency import Currency
 from nautilus_trader.model.objects import AccountBalance
+from nautilus_trader.model.objects import Currency
 from nautilus_trader.model.objects import Money
 
 
@@ -32,7 +31,8 @@ from nautilus_trader.model.objects import Money
 
 class BinanceSpotBalanceInfo(msgspec.Struct, frozen=True):
     """
-    HTTP response 'inner struct' from `Binance Spot/Margin` GET /api/v3/account (HMAC SHA256).
+    HTTP response 'inner struct' from Binance Spot/Margin GET /api/v3/account (HMAC
+    SHA256).
     """
 
     asset: str
@@ -53,7 +53,7 @@ class BinanceSpotBalanceInfo(msgspec.Struct, frozen=True):
 
 class BinanceSpotAccountInfo(msgspec.Struct, frozen=True):
     """
-    HTTP response from `Binance Spot/Margin` GET /api/v3/account (HMAC SHA256).
+    HTTP response from Binance Spot/Margin GET /api/v3/account (HMAC SHA256).
     """
 
     makerCommission: int
@@ -74,9 +74,11 @@ class BinanceSpotAccountInfo(msgspec.Struct, frozen=True):
 
 class BinanceSpotOrderOco(msgspec.Struct, frozen=True):
     """
-    HTTP response from `Binance Spot/Margin` GET /api/v3/orderList (HMAC SHA256).
-    HTTP response from `Binance Spot/Margin` POST /api/v3/order/oco (HMAC SHA256).
-    HTTP response from `Binance Spot/Margin` DELETE /api/v3/orderList (HMAC SHA256).
+    HTTP response from Binance Spot/Margin GET /api/v3/orderList (HMAC SHA256).
+
+    HTTP response from Binance Spot/Margin POST /api/v3/order/oco (HMAC SHA256). HTTP
+    response from Binance Spot/Margin DELETE /api/v3/orderList (HMAC SHA256).
+
     """
 
     orderListId: int
@@ -86,5 +88,5 @@ class BinanceSpotOrderOco(msgspec.Struct, frozen=True):
     listClientOrderId: str
     transactionTime: int
     symbol: str
-    orders: Optional[list[BinanceOrder]] = None  # Included for ACK response type
-    orderReports: Optional[list[BinanceOrder]] = None  # Included for FULL & RESPONSE types
+    orders: list[BinanceOrder] | None = None  # Included for ACK response type
+    orderReports: list[BinanceOrder] | None = None  # Included for FULL & RESPONSE types

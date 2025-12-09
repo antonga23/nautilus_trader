@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,24 +13,33 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
-import itertools
-from typing import Optional
+from typing import Any
 
 import msgspec
 import pandas as pd
+import pyarrow as pa
+from pyarrow import RecordBatch
 
-from nautilus_trader.model.currency import Currency
 from nautilus_trader.model.events import AccountState
 from nautilus_trader.model.identifiers import InstrumentId
-from nautilus_trader.serialization.arrow.serializer import register_parquet
+from nautilus_trader.model.objects import Currency
 
 
-def serialize(state: AccountState):
-    result: dict[tuple[Currency, Optional[InstrumentId]], dict] = {}
+def serialize(state: AccountState) -> RecordBatch:
+    result: dict[tuple[Currency, InstrumentId | None], dict[str, Any]] = {}
 
     base = state.to_dict(state)
+
+    # Ensure 'info' is encoded as bytes
+    if "info" in base and isinstance(base["info"], dict):
+        base["info"] = msgspec.json.encode(base["info"])
+
+    encoded_balances = msgspec.json.encode(base["balances"])
+    encoded_margins = msgspec.json.encode(base["margins"])
+
     del base["balances"]
     del base["margins"]
+
     base.update(
         {
             "balance_total": None,
@@ -41,6 +50,8 @@ def serialize(state: AccountState):
             "margin_maintenance": None,
             "margin_currency": None,
             "margin_instrument_id": None,
+            "balances": encoded_balances,
+            "margins": encoded_margins,
         },
     )
 
@@ -66,67 +77,85 @@ def serialize(state: AccountState):
                 "margin_initial": margin.initial.as_double(),
                 "margin_maintenance": margin.maintenance.as_double(),
                 "margin_currency": margin.currency.code,
-                "margin_instrument_id": margin.instrument_id.value,
+                "margin_instrument_id": (
+                    margin.instrument_id.value if margin.instrument_id is not None else None
+                ),
             },
         )
 
-    return list(result.values())
+    return pa.RecordBatch.from_pylist(result.values(), schema=SCHEMA)
 
 
-def _deserialize(values):
-    balances = []
-    for v in values:
-        total = v.get("balance_total")
-        if total is None:
-            continue
-        balances.append(
-            {
-                "total": total,
-                "locked": v["balance_locked"],
-                "free": v["balance_free"],
-                "currency": v["balance_currency"],
-            },
-        )
+def _deserialize(values: list[Any]) -> AccountState:
+    # Reconstruct balances
+    balances = [
+        {
+            "total": v["balance_total"],
+            "locked": v["balance_locked"],
+            "free": v["balance_free"],
+            "currency": v["balance_currency"],
+        }
+        for v in values
+        if v.get("balance_total") is not None
+    ]
 
-    margins = []
-    for v in values:
-        initial = v.get("margin_initial")
-        if pd.isnull(initial):
-            continue
-        margins.append(
-            {
-                "initial": initial,
-                "maintenance": v["margin_maintenance"],
-                "currency": v["margin_currency"],
-                "instrument_id": v["margin_instrument_id"],
-            },
-        )
+    # Reconstruct margins
+    margins = [
+        {
+            "initial": v["margin_initial"],
+            "maintenance": v["margin_maintenance"],
+            "currency": v["margin_currency"],
+            "instrument_id": v["margin_instrument_id"],
+        }
+        for v in values
+        if not pd.isna(v.get("margin_initial"))
+    ]
 
     state = {
         k: v
         for k, v in values[0].items()
         if not k.startswith("balance_") and not k.startswith("margin_")
     }
-    state["balances"] = msgspec.json.encode(balances)
-    state["margins"] = msgspec.json.encode(margins)
+
+    state["balances"] = balances
+    state["margins"] = margins
+
+    # Ensure 'info' is decoded to a dict
+    if "info" in state:
+        state["info"] = msgspec.json.decode(state["info"])
+    else:
+        state["info"] = []
 
     return AccountState.from_dict(state)
 
 
-def deserialize(data: list[dict]):
-    results = []
-    for _, chunk in itertools.groupby(
-        sorted(data, key=lambda x: x["event_id"]),
-        key=lambda x: x["event_id"],
-    ):
-        chunk = list(chunk)  # type: ignore
-        results.append(_deserialize(values=chunk))
-    return sorted(results, key=lambda x: x.ts_init)
+def deserialize(data: pa.RecordBatch) -> list[AccountState]:
+    account_states = []
+    for event_id in data.column("event_id").unique().to_pylist():
+        event = data.filter(pa.compute.equal(data["event_id"], event_id))
+        account = _deserialize(values=event.to_pylist())
+        account_states.append(account)
+    return account_states
 
 
-register_parquet(
-    AccountState,
-    serializer=serialize,
-    deserializer=deserialize,
-    chunk=True,
+SCHEMA = pa.schema(
+    {
+        "account_id": pa.dictionary(pa.int16(), pa.string()),
+        "account_type": pa.dictionary(pa.int8(), pa.string()),
+        "base_currency": pa.dictionary(pa.int16(), pa.string()),
+        "balance_total": pa.float64(),
+        "balance_locked": pa.float64(),
+        "balance_free": pa.float64(),
+        "balance_currency": pa.dictionary(pa.int16(), pa.string()),
+        "margin_initial": pa.float64(),
+        "margin_maintenance": pa.float64(),
+        "margin_currency": pa.dictionary(pa.int16(), pa.string()),
+        "margin_instrument_id": pa.dictionary(pa.int64(), pa.string()),
+        "reported": pa.bool_(),
+        "info": pa.binary(),
+        "event_id": pa.string(),
+        "ts_event": pa.uint64(),
+        "ts_init": pa.uint64(),
+    },
+    metadata={"type": "AccountState"},
 )

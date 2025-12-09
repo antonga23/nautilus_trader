@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -14,15 +14,22 @@
 # -------------------------------------------------------------------------------------------------
 
 from decimal import Decimal
-from typing import Literal, Optional
+from typing import Final
+from typing import Literal
 
-from ibapi.common import UNSET_DECIMAL
+from ibapi.const import UNSET_DECIMAL
+from ibapi.contract import FundAssetType
+from ibapi.contract import FundDistributionPolicyIndicator
+from ibapi.tag_value import TagValue
 
-from nautilus_trader.config.common import NautilusConfig
+from nautilus_trader.config import NautilusConfig
+from nautilus_trader.model.identifiers import ClientId
 from nautilus_trader.model.identifiers import Venue
 
 
-IB_VENUE = Venue("InteractiveBrokers")
+IB: Final[str] = "INTERACTIVE_BROKERS"
+IB_VENUE: Final[Venue] = Venue(IB)
+IB_CLIENT_ID: Final[ClientId] = ClientId(IB)
 
 
 class ContractId(int):
@@ -74,7 +81,8 @@ class DeltaNeutralContract(NautilusConfig, frozen=True, repr_omit_defaults=True)
 
 class IBContract(NautilusConfig, frozen=True, repr_omit_defaults=True):
     """
-    Class describing an instrument's definition with additional fields for options/futures.
+    Class describing an instrument's definition with additional fields for
+    options/futures.
 
     Parameters
     ----------
@@ -84,21 +92,39 @@ class IBContract(NautilusConfig, frozen=True, repr_omit_defaults=True):
         Exchange where security is traded. Will be SMART for Stocks.
     primaryExchange: str
         Exchange where security is registered. Applies to Stocks.
-    localSymbol: str
+    symbol: str
         Unique Symbol registered in Exchange.
     build_options_chain: bool (default: None)
         Search for full option chain
     build_futures_chain: bool (default: None)
         Search for full futures chain
+    options_chain_exchange: str (default : None)
+        optional exchange for options chain, in place of underlying exchange
     min_expiry_days: int (default: None)
         Filters the options_chain and futures_chain which are expiring after number of days specified.
     max_expiry_days: int (default: None)
         Filters the options_chain and futures_chain which are expiring before number of days specified.
     lastTradeDateOrContractMonth: str (%Y%m%d or %Y%m) (default: '')
         Filters the options_chain and futures_chain specific for this expiry date
+    lastTradeDate: str (default: '')
+        The contract last trading day.
+
     """
 
-    secType: Literal["CASH", "STK", "OPT", "FUT", "FOP", "CONTFUT", "CRYPTO", ""] = ""
+    secType: Literal[
+        "CASH",
+        "STK",
+        "OPT",
+        "FUT",
+        "FOP",
+        "CONTFUT",
+        "CRYPTO",
+        "CFD",
+        "CMDTY",
+        "IND",
+        "BAG",
+        "",
+    ] = ""
     conId: int = 0
     exchange: str = ""
     primaryExchange: str = ""
@@ -109,6 +135,7 @@ class IBContract(NautilusConfig, frozen=True, repr_omit_defaults=True):
 
     # options and futures
     lastTradeDateOrContractMonth: str = ""
+    lastTradeDate: str = ""
     multiplier: str = ""
 
     # options
@@ -127,14 +154,15 @@ class IBContract(NautilusConfig, frozen=True, repr_omit_defaults=True):
 
     # combos
     comboLegsDescrip: str = ""
-    comboLegs: list[ComboLeg] = None
-    deltaNeutralContract: Optional[DeltaNeutralContract] = None
+    comboLegs: list[ComboLeg] | None = None
+    deltaNeutralContract: DeltaNeutralContract | None = None
 
     # nautilus specific parameters
-    build_futures_chain: Optional[bool] = None
-    build_options_chain: Optional[bool] = None
-    min_expiry_days: Optional[int] = None
-    max_expiry_days: Optional[int] = None
+    build_futures_chain: bool | None = None
+    build_options_chain: bool | None = None
+    options_chain_exchange: str | None = None
+    min_expiry_days: int | None = None
+    max_expiry_days: int | None = None
 
 
 class IBOrderTags(NautilusConfig, frozen=True, repr_omit_defaults=True):
@@ -162,9 +190,19 @@ class IBOrderTags(NautilusConfig, frozen=True, repr_omit_defaults=True):
     sweepToFill = False
     outsideRth: bool = False
 
+    # If set to true, the order will not be visible when viewing the market depth.
+    # This option only applies to orders routed to the NASDAQ exchange.
+    hidden: bool = False
+
+    # Order conditions
+    conditions: list[dict] = []  # List of condition dictionaries
+    conditionsCancelOrder: bool = (
+        False  # True = cancel order when condition met, False = transmit order
+    )
+
     @property
     def value(self):
-        return self.json().decode()
+        return f"IBOrderTags:{self.json().decode()}"
 
     def __str__(self):
         return self.value
@@ -172,15 +210,19 @@ class IBOrderTags(NautilusConfig, frozen=True, repr_omit_defaults=True):
 
 class IBContractDetails(NautilusConfig, frozen=True, repr_omit_defaults=True):
     """
-    ContractDetails class to be used internally in Nautilus for ease of encoding/decoding.
+    ContractDetails class to be used internally in Nautilus for ease of
+    encoding/decoding.
+
+    Reference: https://ibkrcampus.com/campus/ibkr-api-page/twsapi-ref/#contract-pub-func
+
     """
 
-    contract: IBContract = None
+    contract: IBContract | None = None
     marketName: str = ""
     minTick: float = 0
     orderTypes: str = ""
     validExchanges: str = ""
-    priceMagnifier: float = 0
+    priceMagnifier: int = 1
     underConId: int = 0
     longName: str = ""
     contractMonth: str = ""
@@ -191,13 +233,13 @@ class IBContractDetails(NautilusConfig, frozen=True, repr_omit_defaults=True):
     tradingHours: str = ""
     liquidHours: str = ""
     evRule: str = ""
-    evMultiplier: int = 0
+    evMultiplier: float = 0
     mdSizeMultiplier: int = 1  # obsolete
     aggGroup: int = 0
     underSymbol: str = ""
     underSecType: str = ""
     marketRuleIds: str = ""
-    secIdList: Optional[list] = None
+    secIdList: list[TagValue] | None = None
     realExpirationDate: str = ""
     lastTradeTime: str = ""
     stockType: str = ""
@@ -213,7 +255,7 @@ class IBContractDetails(NautilusConfig, frozen=True, repr_omit_defaults=True):
     couponType: str = ""
     callable: bool = False
     putable: bool = False
-    coupon: int = 0
+    coupon: float = 0
     convertible: bool = False
     maturity: str = ""
     issueDate: str = ""
@@ -221,3 +263,91 @@ class IBContractDetails(NautilusConfig, frozen=True, repr_omit_defaults=True):
     nextOptionType: str = ""
     nextOptionPartial: bool = False
     notes: str = ""
+
+    # FUND values
+    fundName: str = ""
+    fundFamily: str = ""
+    fundType: str = ""
+    fundFrontLoad: str = ""
+    fundBackLoad: str = ""
+    fundBackLoadTimeInterval: str = ""
+    fundManagementFee: str = ""
+    fundClosed: bool = False
+    fundClosedForNewInvestors: bool = False
+    fundClosedForNewMoney: bool = False
+    fundNotifyAmount: str = ""
+    fundMinimumInitialPurchase: str = ""
+    fundSubsequentMinimumPurchase: str = ""
+    fundBlueSkyStates: str = ""
+    fundBlueSkyTerritories: str = ""
+    fundDistributionPolicyIndicator: FundDistributionPolicyIndicator = (
+        FundDistributionPolicyIndicator.NoneItem
+    )
+    fundAssetType: FundAssetType = FundAssetType.NoneItem
+    ineligibilityReasonList: list = None
+
+
+def dict_to_contract_details(dict_details: dict) -> IBContractDetails:
+    details_copy = dict_details.copy()
+
+    if "contract" in details_copy and isinstance(details_copy["contract"], dict):
+        details_copy["contract"] = IBContract(**details_copy["contract"])
+
+    if details_copy.get("secIdList") and isinstance(details_copy["secIdList"], dict):
+        tag_values = [
+            TagValue(tag=tag, value=value) for tag, value in details_copy["secIdList"].items()
+        ]
+        details_copy["secIdList"] = tag_values
+
+    # Deserialize Decimal fields from strings back to Decimal objects
+    # These fields are known to be Decimal type in IBContractDetails
+    decimal_fields = ["minSize", "sizeIncrement", "suggestedSizeIncrement"]
+    for field in decimal_fields:
+        if field in details_copy and isinstance(details_copy[field], str):
+            try:
+                decimal_value = Decimal(details_copy[field])
+
+                # Check if this is the UNSET_DECIMAL value
+                if decimal_value == UNSET_DECIMAL:
+                    details_copy[field] = UNSET_DECIMAL
+                else:
+                    details_copy[field] = decimal_value
+            except (ValueError, TypeError):
+                # If conversion fails, keep the original value
+                pass
+
+    # Deserialize Enum fields from their values back to Enum members
+    # These fields are known to be Enum type in IBContractDetails
+    if "fundDistributionPolicyIndicator" in details_copy:
+        details_copy["fundDistributionPolicyIndicator"] = _deserialize_enum_from_value(
+            FundDistributionPolicyIndicator,
+            details_copy["fundDistributionPolicyIndicator"],
+        )
+
+    if "fundAssetType" in details_copy:
+        details_copy["fundAssetType"] = _deserialize_enum_from_value(
+            FundAssetType,
+            details_copy["fundAssetType"],
+        )
+
+    return IBContractDetails(**details_copy)
+
+
+def _deserialize_enum_from_value(enum_class, value):
+    """
+    Convert an enum value (tuple or string) back to the enum member.
+    """
+    if value is None:
+        return None
+
+    # If already an enum member, return as-is
+    if isinstance(value, enum_class):
+        return value
+
+    # Try to find enum member by matching value
+    for member in enum_class:
+        if member.value == value:
+            return member
+
+    # If not found, return the original value (might be invalid)
+    return value

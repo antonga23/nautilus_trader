@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -32,15 +32,10 @@ class MyStrategyConfig(StrategyConfig, frozen=True):
     ----------
     instrument_id : InstrumentId
         The instrument ID for the strategy.
-    order_id_tag : str
-        The unique order ID tag for the strategy. Must be unique
-        amongst all running strategies for a particular trader ID.
-    oms_type : OmsType
-        The order management system type for the strategy. This will determine
-        how the `ExecutionEngine` handles position IDs (see docs).
+
     """
 
-    instrument_id: str
+    instrument_id: InstrumentId
 
 
 class MyStrategy(Strategy):
@@ -51,24 +46,28 @@ class MyStrategy(Strategy):
     ----------
     config : MyStrategyConfig
         The configuration for the instance.
+
     """
 
     def __init__(self, config: MyStrategyConfig) -> None:
         super().__init__(config)
 
-        # Configuration
-        self.instrument_id = InstrumentId.from_str(config.instrument_id)
-
     def on_start(self) -> None:
-        """Actions to be performed when the strategy is started."""
+        """
+        Actions to be performed when the strategy is started.
+        """
         # Optionally implement
 
     def on_stop(self) -> None:
-        """Actions to be performed when the strategy is stopped."""
+        """
+        Actions to be performed when the strategy is stopped.
+        """
         # Optionally implement
 
     def on_reset(self) -> None:
-        """Actions to be performed when the strategy is reset."""
+        """
+        Actions to be performed when the strategy is reset.
+        """
         # Optionally implement
 
     def on_dispose(self) -> None:
@@ -110,8 +109,7 @@ class MyStrategy(Strategy):
 
     def on_instrument(self, instrument: Instrument) -> None:
         """
-        Actions to be performed when the strategy is running and receives an
-        instrument.
+        Actions to be performed when the strategy is running and receives an instrument.
 
         Parameters
         ----------
@@ -171,7 +169,7 @@ class MyStrategy(Strategy):
 
     def on_data(self, data: Data) -> None:
         """
-        Actions to be performed when the strategy is running and receives generic data.
+        Actions to be performed when the strategy is running and receives data.
 
         Parameters
         ----------

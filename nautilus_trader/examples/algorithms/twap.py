@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -17,15 +17,15 @@ import math
 from datetime import timedelta
 from decimal import ROUND_DOWN
 from decimal import Decimal
-from typing import Optional
 
 from nautilus_trader.common.enums import LogColor
-from nautilus_trader.common.timer import TimeEvent
-from nautilus_trader.config.common import ExecAlgorithmConfig
+from nautilus_trader.common.events import TimeEvent
+from nautilus_trader.config import ExecAlgorithmConfig
 from nautilus_trader.core.correctness import PyCondition
 from nautilus_trader.execution.algorithm import ExecAlgorithm
 from nautilus_trader.model.enums import OrderType
 from nautilus_trader.model.identifiers import ClientOrderId
+from nautilus_trader.model.identifiers import ExecAlgorithmId
 from nautilus_trader.model.instruments import Instrument
 from nautilus_trader.model.objects import Quantity
 from nautilus_trader.model.orders import MarketOrder
@@ -42,11 +42,12 @@ class TWAPExecAlgorithmConfig(ExecAlgorithmConfig, frozen=True):
 
     Parameters
     ----------
-    exec_algorithm_id : InstrumentId
+    exec_algorithm_id : ExecAlgorithmId
         The execution algorithm ID (will override default which is the class name).
+
     """
 
-    exec_algorithm_id: Optional[str] = "TWAP"
+    exec_algorithm_id: ExecAlgorithmId | None = ExecAlgorithmId("TWAP")
 
 
 class TWAPExecAlgorithm(ExecAlgorithm):
@@ -68,9 +69,10 @@ class TWAPExecAlgorithm(ExecAlgorithm):
     ----------
     config : TWAPExecAlgorithmConfig, optional
         The configuration for the instance.
+
     """
 
-    def __init__(self, config: Optional[TWAPExecAlgorithmConfig] = None) -> None:
+    def __init__(self, config: TWAPExecAlgorithmConfig | None = None) -> None:
         if config is None:
             config = TWAPExecAlgorithmConfig()
         super().__init__(config)
@@ -78,15 +80,21 @@ class TWAPExecAlgorithm(ExecAlgorithm):
         self._scheduled_sizes: dict[ClientOrderId, list[Quantity]] = {}
 
     def on_start(self) -> None:
-        """Actions to be performed when the algorithm component is started."""
+        """
+        Actions to be performed when the algorithm component is started.
+        """
         # Optionally implement
 
     def on_stop(self) -> None:
-        """Actions to be performed when the algorithm component is stopped."""
+        """
+        Actions to be performed when the algorithm component is stopped.
+        """
         self.clock.cancel_timers()
 
     def on_reset(self) -> None:
-        """Actions to be performed when the algorithm component is reset."""
+        """
+        Actions to be performed when the algorithm component is reset.
+        """
         self._scheduled_sizes.clear()
 
     def on_save(self) -> dict[str, bytes]:
@@ -120,7 +128,7 @@ class TWAPExecAlgorithm(ExecAlgorithm):
     def round_decimal_down(self, amount: Decimal, precision: int) -> Decimal:
         return amount.quantize(Decimal(f"1e-{precision}"), rounding=ROUND_DOWN)
 
-    def on_order(self, order: Order) -> None:  # noqa (too complex)
+    def on_order(self, order: Order) -> None:
         """
         Actions to be performed when running and receives an order.
 
@@ -144,14 +152,14 @@ class TWAPExecAlgorithm(ExecAlgorithm):
 
         if order.order_type != OrderType.MARKET:
             self.log.error(
-                f"Cannot execute order: only implemented for market orders, {order.order_type=}.",
+                f"Cannot execute order: only implemented for market orders, {order.order_type=}",
             )
             return
 
         instrument = self.cache.instrument(order.instrument_id)
         if not instrument:
             self.log.error(
-                f"Cannot execute order: instrument {order.instrument_id} not found.",
+                f"Cannot execute order: instrument {order.instrument_id} not found",
             )
             return
 
@@ -160,7 +168,7 @@ class TWAPExecAlgorithm(ExecAlgorithm):
         if not exec_params:
             self.log.error(
                 f"Cannot execute order: "
-                f"`exec_algorithm_params` not found for primary order {order!r}.",
+                f"`exec_algorithm_params` not found for primary order {order!r}",
             )
             return
 
@@ -168,7 +176,7 @@ class TWAPExecAlgorithm(ExecAlgorithm):
         if not horizon_secs:
             self.log.error(
                 f"Cannot execute order: "
-                f"`horizon_secs` not found in `exec_algorithm_params` {exec_params}.",
+                f"`horizon_secs` not found in `exec_algorithm_params` {exec_params}",
             )
             return
 
@@ -176,13 +184,13 @@ class TWAPExecAlgorithm(ExecAlgorithm):
         if not interval_secs:
             self.log.error(
                 f"Cannot execute order: "
-                f"`interval_secs` not found in `exec_algorithm_params` {exec_params}.",
+                f"`interval_secs` not found in `exec_algorithm_params` {exec_params}",
             )
             return
 
         if horizon_secs < interval_secs:
             self.log.error(
-                f"Cannot execute order: " f"{horizon_secs=} was less than {interval_secs=}.",
+                f"Cannot execute order: {horizon_secs=} was less than {interval_secs=}",
             )
             return
 
@@ -196,33 +204,22 @@ class TWAPExecAlgorithm(ExecAlgorithm):
         qty_per_interval = instrument.make_qty(qty_quotient)
         qty_remainder = order.quantity.as_decimal() - (floored_quotient * num_intervals)
 
-        if qty_per_interval < instrument.size_increment:
-            self.log.error(
-                f"Cannot execute order: "
-                f"{qty_per_interval=} less than {instrument.id} {instrument.size_increment}.",
-            )
-            return
-
-        if instrument.min_quantity and qty_per_interval < instrument.min_quantity:
-            self.log.error(
-                f"Cannot execute order: "
-                f"{qty_per_interval=} less than {instrument.id} {instrument.min_quantity=}.",
-            )
-            return
+        if (
+            qty_per_interval == order.quantity
+            or qty_per_interval < instrument.size_increment
+            or (instrument.min_quantity and qty_per_interval < instrument.min_quantity)
+        ):
+            # Immediately submit first order for entire size
+            self.log.warning(f"Submitting for entire size {qty_per_interval=}, {order.quantity=}")
+            self.submit_order(order)
+            return  # Done
 
         scheduled_sizes: list[Quantity] = [qty_per_interval] * num_intervals
-
         if qty_remainder:
             scheduled_sizes.append(instrument.make_qty(qty_remainder))
 
         assert sum(scheduled_sizes) == order.quantity
-        self.log.info(f"Order execution size schedule: {scheduled_sizes}.", LogColor.BLUE)
-
-        # Immediately submit first order
-        if qty_per_interval == order.quantity:
-            self.log.warning(f"Submitting for entire size {qty_per_interval=}, {order.quantity=}.")
-            self.submit_order(order)
-            return  # Done
+        self.log.info(f"Order execution size schedule: {scheduled_sizes}", LogColor.BLUE)
 
         self._scheduled_sizes[order.client_order_id] = scheduled_sizes
         first_qty: Quantity = scheduled_sizes.pop(0)
@@ -237,7 +234,7 @@ class TWAPExecAlgorithm(ExecAlgorithm):
 
         self.submit_order(spawned_order)
 
-        # Setup timer
+        # Set up timer
         self.clock.set_timer(
             name=order.client_order_id.value,
             interval=timedelta(seconds=interval_secs),
@@ -245,7 +242,7 @@ class TWAPExecAlgorithm(ExecAlgorithm):
         )
         self.log.info(
             f"Started TWAP execution for {order.client_order_id}: "
-            f"{horizon_secs=}, {interval_secs=}.",
+            f"{horizon_secs=}, {interval_secs=}",
             LogColor.BLUE,
         )
 
@@ -275,7 +272,7 @@ class TWAPExecAlgorithm(ExecAlgorithm):
         instrument: Instrument = self.cache.instrument(primary.instrument_id)
         if not instrument:
             self.log.error(
-                f"Cannot execute order: instrument {primary.instrument_id} not found.",
+                f"Cannot execute order: instrument {primary.instrument_id} not found",
             )
             return
 
@@ -317,4 +314,4 @@ class TWAPExecAlgorithm(ExecAlgorithm):
         if exec_spawn_id.value in self.clock.timer_names:
             self.clock.cancel_timer(exec_spawn_id.value)
         self._scheduled_sizes.pop(exec_spawn_id, None)
-        self.log.info(f"Completed TWAP execution for {exec_spawn_id}.", LogColor.BLUE)
+        self.log.info(f"Completed TWAP execution for {exec_spawn_id}", LogColor.BLUE)

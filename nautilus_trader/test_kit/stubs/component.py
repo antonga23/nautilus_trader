@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,28 +13,25 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
-import asyncio
-from typing import Optional
 
 from nautilus_trader.backtest.engine import BacktestEngine
 from nautilus_trader.backtest.engine import BacktestEngineConfig
 from nautilus_trader.backtest.models import FillModel
 from nautilus_trader.backtest.node import BacktestNode
 from nautilus_trader.cache.cache import Cache
-from nautilus_trader.common.clock import LiveClock
-from nautilus_trader.common.enums import LogLevel
+from nautilus_trader.common.component import LiveClock
+from nautilus_trader.common.component import MessageBus
 from nautilus_trader.common.factories import OrderFactory
-from nautilus_trader.common.logging import Logger
+from nautilus_trader.common.functions import get_event_loop
 from nautilus_trader.core.data import Data
 from nautilus_trader.model.currencies import USD
-from nautilus_trader.model.currency import Currency
 from nautilus_trader.model.enums import AccountType
 from nautilus_trader.model.enums import OmsType
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.instruments import Instrument
+from nautilus_trader.model.objects import Currency
 from nautilus_trader.model.objects import Money
-from nautilus_trader.msgbus.bus import MessageBus
 from nautilus_trader.persistence.catalog.parquet import ParquetDataCatalog
 from nautilus_trader.portfolio.portfolio import Portfolio
 from nautilus_trader.test_kit.mocks.engines import MockLiveDataEngine
@@ -51,27 +48,15 @@ class TestComponentStubs:
         return LiveClock()
 
     @staticmethod
-    def logger(level: LogLevel = LogLevel.INFO) -> Logger:
-        return Logger(
-            clock=TestComponentStubs.clock(),
-            level_stdout=level,
-            bypass=True,
-        )
-
-    @staticmethod
     def msgbus() -> MessageBus:
         return MessageBus(
             trader_id=TestIdStubs.trader_id(),
             clock=TestComponentStubs.clock(),
-            logger=TestComponentStubs.logger(),
         )
 
     @staticmethod
-    def cache(logger: Optional[Logger] = None) -> Cache:
-        return Cache(
-            database=None,
-            logger=logger or TestComponentStubs.logger(),
-        )
+    def cache() -> Cache:
+        return Cache(database=None)
 
     @staticmethod
     def portfolio() -> Portfolio:
@@ -79,7 +64,6 @@ class TestComponentStubs:
             msgbus=TestComponentStubs.msgbus(),
             clock=TestComponentStubs.clock(),
             cache=TestComponentStubs.cache(),
-            logger=TestComponentStubs.logger(),
         )
 
     @staticmethod
@@ -90,40 +74,42 @@ class TestComponentStubs:
             portfolio=TestComponentStubs.portfolio(),
             msgbus=TestComponentStubs.msgbus(),
             cache=TestComponentStubs.cache(),
-            logger=TestComponentStubs.logger(),
             clock=TestComponentStubs.clock(),
         )
         return strategy
 
     @staticmethod
     def mock_live_data_engine() -> MockLiveDataEngine:
+        loop = get_event_loop()
+
         return MockLiveDataEngine(
-            loop=asyncio.get_event_loop(),
+            loop=loop,
             msgbus=TestComponentStubs.msgbus(),
             cache=TestComponentStubs.cache(),
             clock=TestComponentStubs.clock(),
-            logger=TestComponentStubs.logger(),
         )
 
     @staticmethod
     def mock_live_exec_engine() -> MockLiveExecutionEngine:
+        loop = get_event_loop()
+
         return MockLiveExecutionEngine(
-            loop=asyncio.get_event_loop(),
+            loop=loop,
             msgbus=TestComponentStubs.msgbus(),
             cache=TestComponentStubs.cache(),
             clock=TestComponentStubs.clock(),
-            logger=TestComponentStubs.logger(),
         )
 
     @staticmethod
     def mock_live_risk_engine() -> MockLiveRiskEngine:
+        loop = get_event_loop()
+
         return MockLiveRiskEngine(
-            loop=asyncio.get_event_loop(),
+            loop=loop,
             portfolio=TestComponentStubs.portfolio(),
             msgbus=TestComponentStubs.msgbus(),
             cache=TestComponentStubs.cache(),
             clock=TestComponentStubs.clock(),
-            logger=TestComponentStubs.logger(),
         )
 
     @staticmethod
@@ -145,15 +131,15 @@ class TestComponentStubs:
 
     @staticmethod
     def backtest_engine(
-        config: Optional[BacktestEngineConfig] = None,
-        instrument: Optional[Instrument] = None,
-        ticks: Optional[list[Data]] = None,
-        venue: Optional[Venue] = None,
-        oms_type: Optional[OmsType] = None,
-        account_type: Optional[AccountType] = None,
-        base_currency: Optional[Currency] = None,
-        starting_balances: Optional[list[Money]] = None,
-        fill_model: Optional[FillModel] = None,
+        config: BacktestEngineConfig | None = None,
+        instrument: Instrument | None = None,
+        ticks: list[Data] | None = None,
+        venue: Venue | None = None,
+        oms_type: OmsType | None = None,
+        account_type: AccountType | None = None,
+        base_currency: Currency | None = None,
+        starting_balances: list[Money] | None = None,
+        fill_model: FillModel | None = None,
     ) -> BacktestEngine:
         engine = BacktestEngine(config=config)
         engine.add_venue(

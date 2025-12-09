@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2021 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,28 +13,20 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
-import datetime
 from unittest.mock import AsyncMock
 
-import msgspec.structs
 import pytest
 from ibapi.contract import ContractDetails
 
-# fmt: off
 from nautilus_trader.adapters.interactive_brokers.common import IBContract
 from nautilus_trader.model.enums import AssetClass
-from nautilus_trader.model.enums import AssetType
+from nautilus_trader.model.enums import InstrumentClass
 from nautilus_trader.model.enums import OptionKind
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import Symbol
 from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.objects import Price
-from tests.integration_tests.adapters.interactive_brokers.test_kit import IBTestProviderStubs
-
-
-# fmt: on
-
-pytestmark = pytest.mark.skip(reason="Skip due currently flaky mocks")
+from tests.integration_tests.adapters.interactive_brokers.test_kit import IBTestContractStubs
 
 
 def mock_ib_contract_calls(mocker, instrument_provider, contract_details: ContractDetails):
@@ -52,7 +44,7 @@ async def test_load_equity_contract_instrument(mocker, instrument_provider):
     mock_ib_contract_calls(
         mocker=mocker,
         instrument_provider=instrument_provider,
-        contract_details=IBTestProviderStubs.aapl_equity_contract_details(),
+        contract_details=IBTestContractStubs.aapl_equity_contract_details(),
     )
 
     # Act
@@ -60,12 +52,13 @@ async def test_load_equity_contract_instrument(mocker, instrument_provider):
         IBContract(secType="STK", symbol="AAPL", exchange="NASDAQ"),
     )
     equity = instrument_provider.find(instrument_id)
+    instrument_provider._client.stop()
 
     # Assert
     assert InstrumentId(symbol=Symbol("AAPL"), venue=Venue("NASDAQ")) == equity.id
     assert equity.asset_class == AssetClass.EQUITY
-    assert equity.asset_type == AssetType.SPOT
-    assert 1 == equity.multiplier
+    assert equity.instrument_class == InstrumentClass.SPOT
+    assert equity.multiplier == 1
     assert Price.from_str("0.01") == equity.price_increment
     assert 2, equity.price_precision
 
@@ -73,16 +66,17 @@ async def test_load_equity_contract_instrument(mocker, instrument_provider):
 @pytest.mark.asyncio
 async def test_load_futures_contract_instrument(mocker, instrument_provider):
     # Arrange
-    instrument_id = InstrumentId.from_str("CLZ23.NYMEX")
+    instrument_id = InstrumentId.from_str("CLZ3.NYMEX")
     mock_ib_contract_calls(
         mocker=mocker,
         instrument_provider=instrument_provider,
-        contract_details=IBTestProviderStubs.cl_future_contract_details(),
+        contract_details=IBTestContractStubs.cl_future_contract_details(),
     )
 
     # Act
     await instrument_provider.load_async(IBContract(secType="FUT", symbol="CLZ3", exchange="NYMEX"))
     future = instrument_provider.find(instrument_id)
+    instrument_provider._client.stop()
 
     # Assert
     assert future.id == instrument_id
@@ -93,13 +87,13 @@ async def test_load_futures_contract_instrument(mocker, instrument_provider):
 
 
 @pytest.mark.asyncio
-async def test_load_options_contract_instrument(mocker, instrument_provider):
+async def test_load_option_contract_instrument(mocker, instrument_provider):
     # Arrange
     instrument_id = InstrumentId.from_str("TSLA230120C00100000.MIAX")
     mock_ib_contract_calls(
         mocker=mocker,
         instrument_provider=instrument_provider,
-        contract_details=IBTestProviderStubs.tsla_option_contract_details(),
+        contract_details=IBTestContractStubs.tsla_option_contract_details(),
     )
 
     # Act
@@ -107,14 +101,15 @@ async def test_load_options_contract_instrument(mocker, instrument_provider):
         IBContract(secType="OPT", symbol="TSLA230120C00100000", exchange="MIAX"),
     )
     option = instrument_provider.find(instrument_id)
+    instrument_provider._client.stop()
 
     # Assert
     assert option.id == instrument_id
     assert option.asset_class == AssetClass.EQUITY
     assert option.multiplier == 100
-    assert option.expiry_date == datetime.date(2023, 1, 20)
+    assert option.expiration_ns == 1674172800000000000
     assert option.strike_price == Price.from_str("100.0")
-    assert option.kind == OptionKind.CALL
+    assert option.option_kind == OptionKind.CALL
     assert option.price_increment == Price.from_str("0.01")
     assert option.price_precision == 2
 
@@ -126,12 +121,13 @@ async def test_load_forex_contract_instrument(mocker, instrument_provider):
     mock_ib_contract_calls(
         mocker=mocker,
         instrument_provider=instrument_provider,
-        contract_details=IBTestProviderStubs.eurusd_forex_contract_details(),
+        contract_details=IBTestContractStubs.eurusd_forex_contract_details(),
     )
 
     # Act
     await instrument_provider.load_async(instrument_id)
     fx = instrument_provider.find(instrument_id)
+    instrument_provider._client.stop()
 
     # Assert
     assert fx.id == instrument_id
@@ -147,14 +143,15 @@ async def test_contract_id_to_instrument_id(mocker, instrument_provider):
     mock_ib_contract_calls(
         mocker=mocker,
         instrument_provider=instrument_provider,
-        contract_details=IBTestProviderStubs.cl_future_contract_details(),
+        contract_details=IBTestContractStubs.cl_future_contract_details(),
     )
 
     # Act
     await instrument_provider.load_async(IBContract(secType="FUT", symbol="CLZ3", exchange="NYMEX"))
+    instrument_provider._client.stop()
 
     # Assert
-    expected = {174230596: InstrumentId.from_str("CLZ23.NYMEX")}
+    expected = {174230596: InstrumentId.from_str("CLZ3.NYMEX")}
     assert instrument_provider.contract_id_to_instrument_id == expected
 
 
@@ -165,11 +162,12 @@ async def test_load_instrument_using_contract_id(mocker, instrument_provider):
     mock_ib_contract_calls(
         mocker=mocker,
         instrument_provider=instrument_provider,
-        contract_details=IBTestProviderStubs.eurusd_forex_contract_details(),
+        contract_details=IBTestContractStubs.eurusd_forex_contract_details(),
     )
 
     # Act
-    fx = await instrument_provider.find_with_contract_id(12087792)
+    fx = await instrument_provider.get_instrument(IBContract(conId=12087792))
+    instrument_provider._client.stop()
 
     # Assert
     assert fx.id == instrument_id
@@ -180,46 +178,52 @@ async def test_load_instrument_using_contract_id(mocker, instrument_provider):
 
 
 @pytest.mark.asyncio
-async def test_none_filters(instrument_provider):
-    # Act, Arrange, Assert
-    instrument_provider.load_all(None)
+async def test_bag_contract_loading_invalid_no_combo_legs(instrument_provider):
+    """
+    Test that loading BAG contract without combo legs raises error.
+    """
+    # Arrange
+    bag_contract = IBContract(
+        conId=12345,
+        secType="BAG",
+        symbol="ES",
+        exchange="SMART",
+        currency="USD",
+    )
+
+    # Act & Assert
+    with pytest.raises(ValueError, match="Invalid BAG contract"):
+        await instrument_provider._load_bag_contract(bag_contract)
 
 
 @pytest.mark.asyncio
-async def test_instrument_filter_callable_none(mocker, instrument_provider):
-    # Arrange
-    mock_ib_contract_calls(
-        mocker=mocker,
-        instrument_provider=instrument_provider,
-        contract_details=IBTestProviderStubs.aapl_equity_contract_details(),
+async def test_bag_contract_venue_determination(instrument_provider):
+    """
+    Test venue determination for BAG contracts.
+    """
+    # Test with SMART exchange (should use primaryExchange)
+    bag_contract_smart = IBContract(
+        conId=12345,
+        secType="BAG",
+        symbol="ES",
+        exchange="SMART",
+        primaryExchange="CME",
+        currency="USD",
+    )
+
+    # Test with direct exchange
+    bag_contract_direct = IBContract(
+        conId=12346,
+        secType="BAG",
+        symbol="SPY",
+        exchange="ARCA",
+        currency="USD",
     )
 
     # Act
-    await instrument_provider.load_async(
-        IBContract(secType="STK", symbol="AAPL", exchange="NASDAQ"),
-    )
+    venue_smart = instrument_provider.determine_venue_from_contract(bag_contract_smart)
+    venue_direct = instrument_provider.determine_venue_from_contract(bag_contract_direct)
 
     # Assert
-    assert len(instrument_provider.get_all()) == 1
-
-
-@pytest.mark.asyncio
-async def test_instrument_filter_callable_option_filter(mocker, instrument_provider):
-    # Arrange
-    mock_ib_contract_calls(
-        mocker=mocker,
-        instrument_provider=instrument_provider,
-        contract_details=IBTestProviderStubs.tsla_option_contract_details(),
-    )
-
-    # Act
-    new_cb = "tests.integration_tests.adapters.interactive_brokers.test_kit:filter_out_options"
-    instrument_provider.config = msgspec.structs.replace(
-        instrument_provider.config,
-        filter_callable=new_cb,
-    )
-    await instrument_provider.load_async(instrument_id=None)
-    option_instruments = instrument_provider.get_all()
-
-    # Assert
-    assert len(option_instruments) == 0
+    assert venue_smart == "CME"  # Should use primaryExchange when exchange is SMART
+    assert venue_direct == "ARCA"  # Should use exchange directly

@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -15,67 +15,59 @@
 
 from datetime import timedelta
 
-from nautilus_trader.common.clock import LiveClock
-from nautilus_trader.common.clock import TestClock
-from nautilus_trader.test_kit.performance import PerformanceHarness
+import pandas as pd
+import pytest
+
+from nautilus_trader.common.component import LiveClock
+from nautilus_trader.common.component import TestClock
+from nautilus_trader.common.events import TimeEvent
 
 
-live_clock = LiveClock()
-test_clock = TestClock()
+_LIVE_CLOCK = LiveClock()
+_TEST_CLOCK = TestClock()
 
 
-class TestLiveClockPerformance(PerformanceHarness):
-    def test_utc_now(self):
-        self.benchmark.pedantic(
-            target=live_clock.timestamp_ns,
-            iterations=100_000,
-            rounds=1,
-        )
-        # ~0.0ms / ~1.3μs / 1330ns minimum of 100,000 runs @ 1 iteration each run.
-
-    def test_unix_timestamp(self):
-        self.benchmark.pedantic(
-            target=live_clock.timestamp,
-            iterations=100_000,
-            rounds=1,
-        )
-        # ~0.0ms / ~0.1μs / 101ns minimum of 100,000 runs @ 1 iteration each run.
-
-    def test_unix_timestamp_ns(self):
-        self.benchmark.pedantic(
-            target=live_clock.timestamp_ns,
-            iterations=100_000,
-            rounds=1,
-        )
-        # ~0.0ms / ~0.1μs / 101ns minimum of 100,000 runs @ 1 iteration each run.
+def test_live_clock_utc_now(benchmark) -> None:
+    benchmark(_LIVE_CLOCK.utc_now)
 
 
-class TestClockHarness:
-    @staticmethod
-    def iteratively_advance_time():
+def test_live_clock_unix_timestamp(benchmark) -> None:
+    benchmark(_LIVE_CLOCK.timestamp)
+
+
+def test_live_clock_timestamp_ns(benchmark) -> None:
+    benchmark(_LIVE_CLOCK.timestamp_ns)
+
+
+def test_live_clock_timestamp_us(benchmark) -> None:
+    benchmark(_LIVE_CLOCK.timestamp_us)
+
+
+def test_live_clock_timestamp_ms(benchmark) -> None:
+    benchmark(_LIVE_CLOCK.timestamp_ms)
+
+
+@pytest.mark.skip
+def test_live_clock_cancel(benchmark) -> None:
+    def _start_and_cancel():
+        _LIVE_CLOCK.set_timer("timer1", pd.Timedelta(microseconds=10), callback=print)
+        _LIVE_CLOCK.cancel_timer("timer1")
+
+    benchmark(_start_and_cancel)
+
+
+def test_advance_time(benchmark) -> None:
+    benchmark(_TEST_CLOCK.advance_time, 0)
+
+
+def test_iteratively_advance_time(benchmark) -> None:
+    store: list[TimeEvent] = []
+    _TEST_CLOCK.set_timer("test", timedelta(seconds=1), callback=store.append)
+
+    def _iteratively_advance_time():
         test_time = 0
-        for _ in range(100000):
+        for _ in range(100_000):
             test_time += 1
-        test_clock.advance_time(to_time_ns=test_time)
+        _TEST_CLOCK.advance_time(to_time_ns=test_time)
 
-
-class TestClockPerformanceTests(PerformanceHarness):
-    def test_advance_time(self):
-        self.benchmark.pedantic(
-            target=test_clock.advance_time,
-            args=(0,),
-            iterations=100_000,
-            rounds=1,
-        )
-        # ~0.0ms / ~0.2μs / 175ns minimum of 100,000 runs @ 1 iteration each run.
-
-    def test_iteratively_advance_time(self):
-        store = []
-        test_clock.set_timer("test", timedelta(seconds=1), callback=store.append)
-        self.benchmark.pedantic(
-            target=TestClockHarness.iteratively_advance_time,
-            iterations=1,
-            rounds=1,
-        )
-        # ~320.1ms                       minimum of 1 runs @ 1 iteration each run. (100000 advances)
-        # ~3.7ms / ~3655.1μs / 3655108ns minimum of 1 runs @ 1 iteration each run.
+    benchmark(_iteratively_advance_time)

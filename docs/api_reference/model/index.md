@@ -10,14 +10,13 @@
    :glob:
    :titlesonly:
    :hidden:
-   
-   currency.md
+
+   book.md
    data.md
    events.md
    identifiers.md
    instruments.md
    objects.md
-   orderbook.md
    orders.md
    position.md
    tick_scheme.md

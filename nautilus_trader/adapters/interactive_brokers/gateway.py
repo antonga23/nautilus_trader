@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -13,21 +13,15 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
-import logging
 import os
-import warnings
+import sys
 from enum import IntEnum
 from time import sleep
-from typing import Optional
+from typing import ClassVar
 
-
-try:
-    import docker
-except ImportError as e:
-    warnings.warn(
-        f"Docker required for Gateway, install manually via `pip install docker` ({e})",
-    )
-    docker = None
+from nautilus_trader.adapters.interactive_brokers.config import DockerizedIBGatewayConfig
+from nautilus_trader.common.component import Logger as NautilusLogger
+from nautilus_trader.common.secure import SecureString
 
 
 class ContainerStatus(IntEnum):
@@ -40,55 +34,74 @@ class ContainerStatus(IntEnum):
     UNKNOWN = 7
 
 
-class InteractiveBrokersGateway:
+class DockerizedIBGateway:
     """
-    A class to manage starting an Interactive Brokers Gateway docker container
+    A class to manage starting an Interactive Brokers Gateway docker container.
     """
 
-    IMAGE = "ghcr.io/unusualalpha/ib-gateway:stable"
-    CONTAINER_NAME = "nautilus-ib-gateway"
-    PORTS = {"paper": 4002, "live": 4001}
+    CONTAINER_NAME: ClassVar[str] = "nautilus-ib-gateway"
+    PORTS_INTERNAL: ClassVar[dict[str, int]] = {"paper": 4002, "live": 4001}
+    PORTS_EXTERNAL: ClassVar[dict[str, int]] = {"paper": 4004, "live": 4003}
+    VNC_PORT_INTERNAL: ClassVar[int] = 5900
 
-    def __init__(
-        self,
-        username: str,
-        password: str,
-        host: Optional[str] = "localhost",
-        port: Optional[int] = None,
-        trading_mode: Optional[str] = "paper",
-        start: bool = False,
-        read_only_api: bool = True,
-        timeout: int = 90,
-        logger: Optional[logging.Logger] = None,
-    ):
-        username = username if username is not None else os.environ["TWS_USERNAME"]
-        password = password if password is not None else os.environ["TWS_PASSWORD"]
-        assert username is not None, "`username` not set nor available in env `TWS_USERNAME`"
-        assert password is not None, "`password` not set nor available in env `TWS_PASSWORD`"
-        self.username = username
-        self.password = password
-        self.trading_mode = trading_mode
-        self.read_only_api = read_only_api
-        self.host = host
-        self.port = port or self.PORTS[trading_mode]
-        if docker is None:
-            raise RuntimeError("Docker not installed")
+    def __init__(self, config: DockerizedIBGatewayConfig):
+        self.log = NautilusLogger(repr(self))
+        self.username = config.username or os.getenv("TWS_USERNAME")
+
+        password = config.password or os.getenv("TWS_PASSWORD")
+        if self.username is None:
+            self.log.error("`username` not set nor available in env `TWS_USERNAME`")
+            raise ValueError("`username` not set nor available in env `TWS_USERNAME`")
+
+        if password is None:
+            self.log.error("`password` not set nor available in env `TWS_PASSWORD`")
+            raise ValueError("`password` not set nor available in env `TWS_PASSWORD`")
+
+        self.password = SecureString(password, name="tws_password")
+
+        self.trading_mode = config.trading_mode
+        self.read_only_api = config.read_only_api
+        self.host = "127.0.0.1"
+        self.port = self.PORTS_INTERNAL[config.trading_mode]
+        self.timeout = config.timeout
+        self.container_image = config.container_image
+        self.vnc_port = config.vnc_port
+
+        try:
+            import docker
+
+            self._docker_module = docker
+        except ImportError as e:
+            raise RuntimeError(
+                "Docker required for Gateway, install via `pip install docker`",
+            ) from e
+
         self._docker = docker.from_env()
         self._container = None
-        self.log = logger or logging.getLogger("nautilus_trader")
-        if start:
-            self.start(timeout)
 
-    @classmethod
-    def from_container(cls, **kwargs):
-        """Connect to an already running container - don't stop/start"""
-        self = cls(username="", password="", **kwargs)
-        assert self.container, "Container does not exist"
-        return self
+    def __repr__(self):
+        return f"{type(self).__name__}"
+
+    @property
+    def container_name(self) -> str:
+        """
+        Return the name of the Docker container for the IB Gateway instance.
+
+        Returns
+        -------
+        str
+            The container name, which is constructed using the base container name and the trading mode
+            corresponding to the current trading mode.
+
+            e.g. "nautilus-ib-gateway-paper" or "nautilus-ib-gateway-live"
+
+        """
+        return f"{self.CONTAINER_NAME}-{self.trading_mode}"
 
     @property
     def container_status(self) -> ContainerStatus:
         container = self.container
+
         if container is None:
             return ContainerStatus.NO_CONTAINER
         elif container.status == "running":
@@ -105,7 +118,8 @@ class InteractiveBrokersGateway:
     def container(self):
         if self._container is None:
             all_containers = {c.name: c for c in self._docker.containers.list(all=True)}
-            self._container = all_containers.get(f"{self.CONTAINER_NAME}-{self.port}")
+            self._container = all_containers.get(self.container_name)
+
         return self._container
 
     @staticmethod
@@ -114,15 +128,16 @@ class InteractiveBrokersGateway:
             logs = container.logs()
         except NoContainer:
             return False
+
         return any(b"Forking :::" in line for line in logs.split(b"\n"))
 
-    def start(self, wait: Optional[int] = 90):
+    def start(self, wait: int | None = None) -> None:
         """
         Start the gateway.
 
         Parameters
         ----------
-        wait : int, default 90
+        wait : int, optional
             The seconds to wait until container is ready.
 
         """
@@ -132,9 +147,9 @@ class InteractiveBrokersGateway:
             ContainerStatus.CONTAINER_CREATED,
             ContainerStatus.UNKNOWN,
         )
-
         self.log.info("Ensuring gateway is running")
         status = self.container_status
+
         if status == ContainerStatus.NO_CONTAINER:
             self.log.debug("No container, starting")
         elif status in broken_statuses:
@@ -145,43 +160,50 @@ class InteractiveBrokersGateway:
             return
 
         self.log.debug("Starting new container")
+
+        ports = {
+            str(self.PORTS_EXTERNAL[self.trading_mode]): (self.host, self.port),
+        }
+
+        if self.vnc_port is not None:
+            ports[str(self.VNC_PORT_INTERNAL)] = (self.host, self.vnc_port)
+
         self._container = self._docker.containers.run(
-            image=self.IMAGE,
-            name=f"{self.CONTAINER_NAME}-{self.port}",
+            image=self.container_image,
+            name=self.container_name,
             restart_policy={"Name": "always"},
             detach=True,
-            ports={str(self.port): self.PORTS[self.trading_mode], str(self.port + 100): "5900"},
+            ports=ports,
             platform="amd64",
             environment={
                 "TWS_USERID": self.username,
-                "TWS_PASSWORD": self.password,
+                "TWS_PASSWORD": self.password.get_value(),
                 "TRADING_MODE": self.trading_mode,
                 "READ_ONLY_API": {True: "yes", False: "no"}[self.read_only_api],
             },
         )
-        self.log.info(f"Container `{self.CONTAINER_NAME}-{self.port}` starting, waiting for ready")
+        self.log.info(f"Container `{self.container_name}` starting, waiting for ready")
 
-        if wait is not None:
-            for _ in range(wait):
-                if self.is_logged_in(container=self._container):
-                    break
-                else:
-                    self.log.debug("Waiting for IB Gateway to start ..")
-                    sleep(1)
-            else:
-                raise GatewayLoginFailure
+        for _ in range(wait or self.timeout):
+            if self.is_logged_in(container=self._container):
+                break
+
+            self.log.debug("Waiting for IB Gateway to start")
+            sleep(1)
+        else:
+            raise RuntimeError(f"Gateway `{self.container_name}` not ready")
 
         self.log.info(
-            f"Gateway `{self.CONTAINER_NAME}-{self.port}` ready. VNC port is {self.port+100}",
+            f"Gateway `{self.container_name}` ready. VNC port is {self.vnc_port}",
         )
 
-    def safe_start(self, wait: int = 90):
+    def safe_start(self, wait: int | None = None) -> None:
         try:
             self.start(wait=wait)
-        except ContainerExists:
-            return
+        except self._docker_module.errors.APIError as e:
+            raise RuntimeError("Container already exists") from e
 
-    def stop(self):
+    def stop(self) -> None:
         if self.container:
             self.container.stop()
             self.container.remove()
@@ -189,8 +211,11 @@ class InteractiveBrokersGateway:
     def __enter__(self):
         self.start()
 
-    def __exit__(self, type, value, traceback):
-        self.stop()
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        try:
+            self.stop()
+        except Exception as e:
+            print(f"Error stopping container: {e}", file=sys.stderr)
 
 
 # -- Exceptions -----------------------------------------------------------------------------------
@@ -212,4 +237,4 @@ class GatewayLoginFailure(Exception):
     pass
 
 
-__all__ = ["InteractiveBrokersGateway"]
+__all__ = ["DockerizedIBGateway"]

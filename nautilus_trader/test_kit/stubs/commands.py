@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2023 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -12,8 +12,6 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
-
-from typing import Optional
 
 from nautilus_trader.execution.messages import CancelOrder
 from nautilus_trader.execution.messages import ModifyOrder
@@ -54,12 +52,12 @@ class TestCommandStubs:
 
     @staticmethod
     def modify_order_command(
-        price: Optional[Price] = None,
-        quantity: Optional[Quantity] = None,
-        instrument_id: Optional[InstrumentId] = None,
-        client_order_id: Optional[ClientOrderId] = None,
-        venue_order_id: Optional[VenueOrderId] = None,
-        order: Optional[Order] = None,
+        price: Price | None = None,
+        quantity: Quantity | None = None,
+        instrument_id: InstrumentId | None = None,
+        client_order_id: ClientOrderId | None = None,
+        venue_order_id: VenueOrderId | None = None,
+        order: Order | None = None,
     ) -> ModifyOrder:
         assert price or quantity
         if order is not None:
@@ -91,10 +89,10 @@ class TestCommandStubs:
 
     @staticmethod
     def cancel_order_command(
-        instrument_id: Optional[InstrumentId] = None,
-        client_order_id: Optional[ClientOrderId] = None,
-        venue_order_id: Optional[VenueOrderId] = None,
-        order: Optional[Order] = None,
+        instrument_id: InstrumentId | None = None,
+        client_order_id: ClientOrderId | None = None,
+        venue_order_id: VenueOrderId | None = None,
+        order: Order | None = None,
     ) -> CancelOrder:
         if order is not None:
             return CancelOrder(
