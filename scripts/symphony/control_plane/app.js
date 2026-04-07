@@ -806,7 +806,12 @@ async function loadOverview({ preserveSelection = true } = {}) {
   if (preserveSelection && state.selectedRunId) {
     const stillExists = overview.runs.some((run) => run.runId === state.selectedRunId);
     if (stillExists) {
-      await loadRunDetail(state.selectedRunId, { preserveLog: true });
+      await loadRunDetail(state.selectedRunId, {
+        preserveLog: true,
+        reconnectStream: false,
+        restartLogPolling: false,
+        reloadLog: false
+      });
     } else {
       clearRunSelection('Selected run is no longer available in the local run store.');
     }
@@ -854,7 +859,15 @@ function clearRunSelection(message = 'Select a run to inspect the orchestration 
   connectEventStream();
 }
 
-async function loadRunDetail(runId, { preserveLog = false } = {}) {
+async function loadRunDetail(
+  runId,
+  {
+    preserveLog = false,
+    reconnectStream = true,
+    restartLogPolling = true,
+    reloadLog = true
+  } = {}
+) {
   state.selectedRunId = runId;
   const detail = await getJson(`/control/api/runs/${encodeURIComponent(runId)}`);
   state.selectedRunDetail = detail;
@@ -866,9 +879,15 @@ async function loadRunDetail(runId, { preserveLog = false } = {}) {
   renderRunDetail(detail);
   renderRuns(state.overview || { runs: [] });
   await loadTimeline();
-  connectEventStream();
-  startLogPolling();
-  await loadSelectedLogStream(true);
+  if (reconnectStream) {
+    connectEventStream();
+  }
+  if (restartLogPolling) {
+    startLogPolling();
+  }
+  if (reloadLog) {
+    await loadSelectedLogStream(true);
+  }
 }
 
 async function loadSelectedLogStream(reset = false) {
@@ -1073,10 +1092,15 @@ function scheduleStreamRefresh() {
     window.clearTimeout(state.streamRefreshTimer);
   }
   state.streamRefreshTimer = window.setTimeout(async () => {
-    await loadOverview();
+    await loadOverview({ preserveSelection: false });
     await loadTimeline();
     if (state.selectedRunId) {
-      await loadRunDetail(state.selectedRunId, { preserveLog: true });
+      await loadRunDetail(state.selectedRunId, {
+        preserveLog: true,
+        reconnectStream: false,
+        restartLogPolling: false,
+        reloadLog: false
+      });
     }
     if (state.selectedIssue) {
       await loadIssueDetail(state.selectedIssue);
