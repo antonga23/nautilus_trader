@@ -1,5 +1,9 @@
 name: build
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 permissions: # Principle of least privilege
   contents: read
   actions: read
@@ -12,6 +16,7 @@ on:
 
 jobs:
   pre-commit:
+    timeout-minutes: 30
     runs-on: ubuntu-22.04 # (glibc 2.35) wider runtime range than 24.04/glibc 2.39
     steps:
       # https://github.com/step-security/harden-runner
@@ -43,6 +48,7 @@ jobs:
   # Dependency license, advisory, and ban checks
   # https://embarkstudios.github.io/cargo-deny/
   cargo-deny:
+    timeout-minutes: 15
     runs-on: ubuntu-22.04
     steps:
       # https://github.com/step-security/harden-runner
@@ -67,6 +73,7 @@ jobs:
   # Supply chain security auditing
   # https://mozilla.github.io/cargo-vet/configuring-ci.html
   cargo-vet:
+    timeout-minutes: 15
     runs-on: ubuntu-22.04
     steps:
       # https://github.com/step-security/harden-runner
@@ -89,6 +96,7 @@ jobs:
         run: cargo vet --locked
 
   build-linux-x86:
+    timeout-minutes: 90
     if: github.ref != 'refs/heads/test-pre-commit'
     strategy:
       fail-fast: false
@@ -185,6 +193,7 @@ jobs:
         uses: ./.github/actions/upload-artifact-wheel
 
   build-linux-arm:
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
@@ -289,6 +298,7 @@ jobs:
         uses: ./.github/actions/upload-artifact-wheel
 
   build-macos:
+    timeout-minutes: 90
     if: github.ref != 'refs/heads/test-pre-commit'
     strategy:
       fail-fast: false
@@ -348,6 +358,7 @@ jobs:
         uses: ./.github/actions/upload-artifact-wheel
 
   build-windows:
+    timeout-minutes: 90
     if: github.ref != 'refs/heads/test-pre-commit'
     strategy:
       fail-fast: false
