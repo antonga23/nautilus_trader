@@ -2,7 +2,11 @@ name: build
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # Do not cancel release/publish pushes mid-flight.
+  cancel-in-progress: >-
+    ${{ github.event_name == 'pull_request' ||
+    github.ref == 'refs/heads/test-ci' ||
+    github.ref == 'refs/heads/test-pre-commit' }}
 
 permissions: # Principle of least privilege
   contents: read
