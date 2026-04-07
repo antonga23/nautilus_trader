@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Symphony Control Plane</title>
+    <link rel="stylesheet" href="/control.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Betting Arbitrage Control Plane</p>
+        <h1>Symphony Mission Control</h1>
+        <p class="subtitle">
+          Unified operator surface for Symphony, Linear, GitHub, provider auth, Codex workers, and in-flight run control.
+        </p>
+      </div>
+      <nav class="topnav">
+        <span id="stream-status" class="stream-status stream-status-disconnected" role="status" aria-live="polite">
+          Disconnected
+        </span>
+        <a href="/" aria-current="page">Control Plane</a>
+        <a href="/symphony/">Symphony</a>
+        <button type="button" id="refresh-button">Refresh now</button>
+      </nav>
+    </header>
+
+    <main class="layout">
+      <section class="grid metrics" id="metrics"></section>
+
+      <section class="two-column">
+        <section class="panel">
+          <div class="panel-header">
+            <div>
+              <h2>Alerts</h2>
+              <p class="subtle">Operator-visible blockers, run failures, and host pressure.</p>
+            </div>
+            <p class="subtle" id="generated-at">Waiting for state...</p>
+          </div>
+          <div id="alerts"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <div>
+              <h2>Control Settings</h2>
+              <p class="subtle">Global prompt delivery policy and raw-log retention.</p>
+            </div>
+          </div>
+          <div id="settings-panel"></div>
+        </section>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <div>
+            <h2>Human Inbox</h2>
+            <p class="subtle">Issues waiting on a human, credentials, or manual intervention.</p>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Issue</th>
+                <th>State</th>
+                <th>Updated</th>
+                <th>PR</th>
+              </tr>
+            </thead>
+            <tbody id="human-inbox-rows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <div>
+            <h2>Runs</h2>
+            <p class="subtle">Recent Codex-backed runs with live operator-control entry points.</p>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Run</th>
+                <th>Status</th>
+                <th>Issue</th>
+                <th>Worker</th>
+                <th>Model</th>
+                <th>Started</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="run-rows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <div>
+            <h2>Timeline</h2>
+            <p class="subtle">Filterable event history across issues, workers, and runs.</p>
+          </div>
+        </div>
+        <div id="timeline-filters"></div>
+        <div id="timeline-events" class="timeline-list"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <div>
+            <h2>Run Detail</h2>
+            <p class="subtle">Temporal-style mission-control view, queue controls, and live logs.</p>
+          </div>
+        </div>
+        <div id="run-detail" class="issue-detail empty">
+          Select a run to inspect the orchestration timeline, queue prompts, interrupt, and tail logs.
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <div>
+            <h2>Auth & Providers</h2>
+            <p class="subtle">Configure remote worker identities, OAuth brokers, shared model keys, and persisted runtime policy.</p>
+          </div>
+        </div>
+        <div id="provider-panels" class="provider-grid"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <div>
+            <h2>Workers</h2>
+            <p class="subtle">One ChatGPT auth identity per isolated Linux user.</p>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Worker</th>
+                <th>Status</th>
+                <th>Issue</th>
+                <th>Email</th>
+                <th>Codex Runtime</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="worker-rows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <div>
+            <h2>Issues</h2>
+            <p class="subtle">Project issues with current run, PR status, and issue-level controls.</p>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Issue</th>
+                <th>State</th>
+                <th>Runtime</th>
+                <th>Updated</th>
+                <th>PR</th>
+              </tr>
+            </thead>
+            <tbody id="issue-rows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <div>
+            <h2>Issue Detail</h2>
+            <p class="subtle">Workpad summary, recent comments, and linked runs.</p>
+          </div>
+        </div>
+        <div id="issue-detail" class="issue-detail empty">
+          Select an issue to inspect comments, workpad state, and linked run attempts.
+        </div>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
