@@ -10,6 +10,7 @@ postgres_container="${network_name}-postgres"
 redis_container="${network_name}-redis"
 runner_home="$cache_root/home"
 runner_workspace="$cache_root/workspace"
+preflight_summary="$runner_workspace/preflight-summary.md"
 
 mkdir -p "$runner_home" "$runner_workspace"
 
@@ -88,7 +89,7 @@ docker run --rm \
   -e PGUSER=nautilus \
   -e PGDATABASE=nautilus \
   -e REDIS_HOST="$redis_container" \
-  -e GITHUB_STEP_SUMMARY=/workspace/tests/results/preflight-summary.md \
+  -e GITHUB_STEP_SUMMARY=/runner-workspace/preflight-summary.md \
   -v "$workspace_root:/workspace" \
   -v "$runner_home:/runner-home" \
   -v "$runner_workspace:/runner-workspace" \
@@ -129,3 +130,9 @@ docker run --rm \
     bash scripts/ci/initialize_database_schema.sh
     bash scripts/ci/run_python_test_suites.sh
   '
+
+if [[ -f "$preflight_summary" ]]; then
+  echo
+  echo "==== Preflight Summary ===="
+  cat "$preflight_summary"
+fi
