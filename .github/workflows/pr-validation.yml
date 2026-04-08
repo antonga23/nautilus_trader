@@ -55,7 +55,12 @@ jobs:
   build-linux-x86-py312:
     name: build-linux-x86-py312
     timeout-minutes: 60
-    if: github.ref != 'refs/heads/test-pre-commit'
+    if: >-
+      github.ref != 'refs/heads/test-pre-commit' &&
+      (
+        github.event_name != 'pull_request' ||
+        github.event.pull_request.head.repo.full_name == github.repository
+      )
     needs: [pre-commit-fast]
     runs-on: [self-hosted, linux, x64]
     container:
@@ -173,7 +178,12 @@ jobs:
   python-tests:
     name: python-tests
     timeout-minutes: 90
-    if: github.ref != 'refs/heads/test-pre-commit'
+    if: >-
+      github.ref != 'refs/heads/test-pre-commit' &&
+      (
+        github.event_name != 'pull_request' ||
+        github.event.pull_request.head.repo.full_name == github.repository
+      )
     needs:
       - pre-commit-fast
       - build-linux-x86-py312

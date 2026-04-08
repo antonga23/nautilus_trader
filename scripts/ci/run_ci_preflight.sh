@@ -12,6 +12,36 @@ runner_workspace="$cache_root/workspace"
 
 mkdir -p "$runner_home" "$runner_workspace"
 
+wait_for_postgres() {
+  local attempts="${1:-30}"
+  local delay="${2:-2}"
+  local i
+  for ((i = 1; i <= attempts; i++)); do
+    if docker exec "$postgres_container" pg_isready -U nautilus -d nautilus >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep "$delay"
+  done
+
+  echo "Postgres did not become ready in time" >&2
+  return 1
+}
+
+wait_for_redis() {
+  local attempts="${1:-30}"
+  local delay="${2:-2}"
+  local i
+  for ((i = 1; i <= attempts; i++)); do
+    if docker exec "$redis_container" redis-cli ping >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep "$delay"
+  done
+
+  echo "Redis did not become ready in time" >&2
+  return 1
+}
+
 cleanup() {
   docker rm -f "$postgres_container" "$redis_container" >/dev/null 2>&1 || true
   docker network rm "$network_name" >/dev/null 2>&1 || true
@@ -39,6 +69,9 @@ docker run -d --rm \
   --name "$redis_container" \
   --network "$network_name" \
   public.ecr.aws/docker/library/redis:7.4.5-alpine3.21@sha256:bb186d083732f669da90be8b0f975a37812b15e913465bb14d845db72a4e3e08 >/dev/null
+
+wait_for_postgres
+wait_for_redis
 
 docker run --rm \
   --name "${network_name}-runner" \
@@ -69,6 +102,7 @@ docker run --rm \
     bash scripts/ci/ensure_ci_container_build_deps.sh
 
     wheel_key="$(python3 scripts/ci/compute_test_wheel_cache_key.py)"
+    rm -rf dist
     bash scripts/ci/self_hosted_wheel_cache.sh restore "$wheel_key" || true
 
     uv sync --all-groups --all-extras --no-install-package nautilus_trader
