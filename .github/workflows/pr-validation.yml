@@ -1,0 +1,305 @@
+name: pr-validation
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+  packages: read
+
+on:
+  pull_request:
+    branches: ['*']
+  push:
+    branches: [test-ci, test-pre-commit]
+  workflow_dispatch:
+
+jobs:
+  pre-commit-fast:
+    timeout-minutes: 15
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Common setup
+        uses: ./.github/actions/common-setup
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          python-version: "3.13"
+          free-disk-space: "false"
+          build-type: "pre-commit"
+          skip-rust: "true"
+          skip-uv: "true"
+          skip-capnp: "true"
+
+      - name: Run pre-commit-fast
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_BASE_REF: ${{ github.base_ref }}
+          GITHUB_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GITHUB_EVENT_BEFORE: ${{ github.event.before }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: bash scripts/ci/run_pre_commit_fast.sh
+
+  build-linux-x86-py312:
+    name: build-linux-x86-py312
+    timeout-minutes: 60
+    if: >-
+      github.ref != 'refs/heads/test-pre-commit' &&
+      (
+        github.event_name != 'pull_request' ||
+        github.event.pull_request.head.repo.full_name == github.repository
+      )
+    needs: [pre-commit-fast]
+    runs-on: [self-hosted, linux, x64]
+    container:
+      image: >-
+        ghcr.io/antonga23/cloudbet-market-maker/ci-runner@sha256:ed46e808744508e5627f3f8d32fc3eff6b0c047129af03db70a8a6225346235b
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    permissions:
+      contents: read
+      packages: read
+    env:
+      UV_PYTHON: "3.12"
+      CARGO_HOME: ${{ github.workspace }}/.cache/cargo-home
+    steps:
+      - uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Trust workspace
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Common setup
+        uses: ./.github/actions/common-setup
+        with:
+          python-version: "3.12"
+          build-type: "test"
+          skip-rust: "true"
+          skip-uv: "true"
+          skip-capnp: "true"
+          skip-install-deps: "true"
+          skip-setup-python: "true"
+
+      - name: Ensure CI container build dependencies
+        run: bash scripts/ci/ensure_ci_container_build_deps.sh
+
+      - name: Verify self-hosted build toolchain
+        run: |
+          python3 --version
+          uv --version
+          git --version
+
+      - name: Compute wheel cache key
+        id: wheel-key
+        run: echo "key=$(python3 scripts/ci/compute_test_wheel_cache_key.py)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore self-hosted wheel cache
+        id: local-wheel-cache
+        run: bash scripts/ci/self_hosted_wheel_cache.sh restore "${{ steps.wheel-key.outputs.key }}"
+
+      - name: Cache wheel
+        id: wheel-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: dist/
+          key: wheel-py3.12-tests-v1-${{ steps.wheel-key.outputs.key }}
+
+      - name: Cache UV artifacts
+        id: uv-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cache/uv
+            .venv
+          key: uv-py3.12-${{ hashFiles('uv.lock', 'pyproject.toml') }}
+
+      - name: Cache Cargo home
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: .cache/cargo-home
+          key: cargo-home-linux-x64-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+
+      - name: Install dependencies
+        run: uv sync --all-groups --all-extras --no-install-package nautilus_trader
+
+      - name: Build wheel (on cache miss)
+        if: steps.local-wheel-cache.outputs.cache-hit != 'true' && steps.wheel-cache.outputs.cache-hit != 'true'
+        env:
+          BUILD_MODE: release
+        run: |
+          uv build --wheel --python 3.12
+          ls -lh dist/
+
+      - name: Install wheel
+        run: uv pip install dist/*.whl
+
+      - name: Save self-hosted wheel cache
+        if: steps.local-wheel-cache.outputs.cache-hit != 'true'
+        run: bash scripts/ci/self_hosted_wheel_cache.sh save "${{ steps.wheel-key.outputs.key }}"
+
+      - name: Run smoke tests
+        run: |
+          uv run --no-sync python - <<'PY'
+          import nautilus_trader
+          from nautilus_trader.core import nautilus_pyo3
+
+          print(nautilus_trader.__file__)
+          print(nautilus_pyo3.__file__)
+          PY
+
+      - name: Upload built wheel
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: nautilus-trader-wheel-py312-linux-x64
+          path: dist/nautilus_trader-*.whl
+          if-no-files-found: error
+
+  python-tests:
+    name: python-tests
+    timeout-minutes: 90
+    if: >-
+      github.ref != 'refs/heads/test-pre-commit' &&
+      (
+        github.event_name != 'pull_request' ||
+        github.event.pull_request.head.repo.full_name == github.repository
+      )
+    needs:
+      - pre-commit-fast
+      - build-linux-x86-py312
+    runs-on: [self-hosted, linux, x64]
+    container:
+      image: >-
+        ghcr.io/antonga23/cloudbet-market-maker/ci-runner@sha256:ed46e808744508e5627f3f8d32fc3eff6b0c047129af03db70a8a6225346235b
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      REDIS_HOST: redis
+      PGHOST: postgres
+      UV_PYTHON: "3.12"
+      PYTEST_XDIST_WORKERS: "6"
+      CARGO_HOME: ${{ github.workspace }}/.cache/cargo-home
+      PGPASSWORD: pass
+      PGUSER: nautilus
+      PGDATABASE: nautilus
+    services:
+      postgres:
+        image: postgres@sha256:f30e3de0ac9cc938dac627ef2231099867c694b5f949fadb924c8c977428c399
+        env:
+          POSTGRES_USER: nautilus
+          POSTGRES_PASSWORD: pass
+          POSTGRES_DB: nautilus
+        options: >-
+          --health-cmd "pg_isready -U nautilus"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: >-
+          public.ecr.aws/docker/library/redis:7.4.5-alpine3.21@sha256:bb186d083732f669da90be8b0f975a37812b15e913465bb14d845db72a4e3e08
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Trust workspace
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Common setup
+        uses: ./.github/actions/common-setup
+        with:
+          python-version: "3.12"
+          build-type: "test"
+          skip-rust: "true"
+          skip-uv: "true"
+          skip-capnp: "true"
+          skip-install-deps: "true"
+          skip-setup-python: "true"
+
+      - name: Ensure CI container build dependencies
+        run: bash scripts/ci/ensure_ci_container_build_deps.sh
+
+      - name: Verify self-hosted test toolchain
+        run: |
+          python3 --version
+          uv --version
+          git --version
+
+      - name: Cache UV artifacts
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cache/uv
+            .venv
+          key: uv-py3.12-${{ hashFiles('uv.lock', 'pyproject.toml') }}
+
+      - name: Install dependencies
+        run: uv sync --all-groups --all-extras --no-install-package nautilus_trader
+
+      - name: Download built wheel
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          name: nautilus-trader-wheel-py312-linux-x64
+          path: dist
+
+      - name: Install wheel
+        run: uv pip install dist/*.whl
+
+      - name: Cached test data
+        uses: ./.github/actions/common-test-data
+
+      - name: Inject compiled extensions into source tree
+        run: python3 scripts/ci/extract_compiled_extensions_from_wheel.py dist/*.whl
+
+      - name: Initialize Database Schema
+        run: bash scripts/ci/initialize_database_schema.sh
+
+      - name: Run Python test suites
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: bash scripts/ci/run_python_test_suites.sh
+
+      - name: Upload Python test artifacts
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: python-tests-results
+          path: tests/results
+          if-no-files-found: ignore

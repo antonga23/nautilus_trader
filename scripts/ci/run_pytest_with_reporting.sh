@@ -48,7 +48,9 @@ if not path.exists():
 
 root = ET.parse(path).getroot()
 if root.tag == "testsuites":
-    suites = [root]
+    suites = list(root.findall("testsuite"))
+    if not suites:
+        suites = [root]
 else:
     suites = [root]
 

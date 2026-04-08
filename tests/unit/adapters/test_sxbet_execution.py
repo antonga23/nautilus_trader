@@ -38,6 +38,7 @@ def _fixed_expiry(hours: int = 24) -> int:
 @pytest.mark.asyncio
 async def test_submit_order_rejects_missing_order_hash(monkeypatch):
     config = SimpleNamespace(
+        api_key="api-key",
         wallet_address="0x" + "12" * 20,
         private_key="0x" + "34" * 32,
         base_currency="USDC",
@@ -118,6 +119,7 @@ async def test_submit_order_rejects_missing_order_hash(monkeypatch):
 @pytest.mark.asyncio
 async def test_submit_order_rejects_signing_import_error(monkeypatch):
     config = SimpleNamespace(
+        api_key="api-key",
         wallet_address="0x" + "12" * 20,
         private_key="0x" + "34" * 32,
         base_currency="USDC",
@@ -199,6 +201,7 @@ async def test_submit_order_rejects_signing_import_error(monkeypatch):
 @pytest.mark.asyncio
 async def test_generate_order_status_report_uses_command_and_cached_venue_id():
     config = SimpleNamespace(
+        api_key="api-key",
         wallet_address="0x" + "12" * 20,
         private_key="0x" + "34" * 32,
         base_currency="USDC",
@@ -269,6 +272,7 @@ async def test_generate_order_status_report_uses_command_and_cached_venue_id():
 @pytest.mark.asyncio
 async def test_connect_uses_usdc_token_address():
     config = SimpleNamespace(
+        api_key="api-key",
         wallet_address="0x" + "12" * 20,
         private_key="0x" + "34" * 32,
         base_currency="USDC",
@@ -303,6 +307,7 @@ async def test_connect_uses_usdc_token_address():
 
 def test_init_rejects_non_usdc_base_currency():
     config = SimpleNamespace(
+        api_key="api-key",
         wallet_address="0x" + "12" * 20,
         private_key="0x" + "34" * 32,
         base_currency="UNKNOWN",

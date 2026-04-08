@@ -37,8 +37,9 @@ else
   git ls-files > "$changes_file"
 fi
 
-rust_pattern='^(crates/|Cargo\.toml$|Cargo\.lock$|deny\.toml$|supply-chain/|rust-toolchain\.toml$|capnp-version$|schema/|\.pre-commit-config\.yaml$|\.pre-commit-hooks/|\.github/workflows/(build|build-v2)\.yml$|\.github/actions/(common-setup|cargo-tool-install)/action\.yml$|scripts/ci/(detect_changed_surfaces|install-rust|run_pre_commit_fast|run_rust_policy)\.sh$)'
-python_pattern='^(nautilus_trader/|tests/|crates/|Cargo\.toml$|Cargo\.lock$|pyproject\.toml$|uv\.lock$|build\.py$|schema/|capnp-version$|rust-toolchain\.toml$|\.github/workflows/build\.yml$|\.github/actions/common-setup/action\.yml$|scripts/ci/(detect_changed_surfaces|run_pytest_with_reporting)\.sh$|scripts/test(-coverage|-performance)?\.sh$)'
+ripgrep_pattern='^(nautilus_trader/|tests/|crates/|Cargo\.toml$|Cargo\.lock$|pyproject\.toml$|uv\.lock$|build\.py$|schema/|capnp-version$|rust-toolchain\.toml$|\.github/workflows/(pr-validation|release-publish|rust-policy|build-v2)\.yml$|\.github/actions/(common-setup|cargo-tool-install)/action\.yml$|scripts/ci/(detect_changed_surfaces|run_pre_commit_fast|run_pytest_with_reporting|run_python_test_suites|run_ci_preflight|initialize_database_schema)\.sh$|scripts/test(-coverage|-performance)?\.sh$)'
+rust_pattern='^(crates/|Cargo\.toml$|Cargo\.lock$|deny\.toml$|supply-chain/|rust-toolchain\.toml$|capnp-version$|schema/|\.pre-commit-config\.yaml$|\.pre-commit-hooks/|\.github/workflows/(rust-policy|build-v2)\.yml$|\.github/actions/(common-setup|cargo-tool-install)/action\.yml$|scripts/ci/(detect_changed_surfaces|install-rust|run_rust_policy)\.sh$)'
+python_pattern="$ripgrep_pattern"
 full_suite_pattern='^(nautilus_trader/|tests/|crates/|Cargo\.toml$|Cargo\.lock$|pyproject\.toml$|uv\.lock$|build\.py$|schema/|capnp-version$|rust-toolchain\.toml$)'
 package_builds_pattern='^(nautilus_trader/|crates/|Cargo\.toml$|Cargo\.lock$|pyproject\.toml$|build\.py$|schema/|capnp-version$|rust-toolchain\.toml$)'
 

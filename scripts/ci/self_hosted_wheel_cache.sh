@@ -11,7 +11,7 @@ cache_key="$2"
 workspace_root="${RUNNER_WORKSPACE:-${GITHUB_WORKSPACE%/*}}"
 cache_root="${SELF_HOSTED_WHEEL_CACHE_ROOT:-$workspace_root/.ci-cache/wheels}"
 cache_dir="${cache_root}/${cache_key}"
-dist_dir="${GITHUB_WORKSPACE:-$PWD}/dist"
+dist_dir="${WHEEL_DIST_DIR:-${GITHUB_WORKSPACE:-$PWD}/dist}"
 
 emit_cache_hit() {
   local value="$1"
