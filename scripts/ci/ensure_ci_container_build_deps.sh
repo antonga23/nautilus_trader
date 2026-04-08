@@ -4,6 +4,8 @@ set -euo pipefail
 required_commands=(
   gcc
   g++
+  git
+  make
   pkg-config
   psql
 )

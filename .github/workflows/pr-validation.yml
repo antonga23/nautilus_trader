@@ -210,8 +210,6 @@ jobs:
           POSTGRES_USER: nautilus
           POSTGRES_PASSWORD: pass
           POSTGRES_DB: nautilus
-        ports:
-          - 5432:5432
         options: >-
           --health-cmd "pg_isready -U nautilus"
           --health-interval 10s
@@ -221,8 +219,6 @@ jobs:
       redis:
         image: >-
           public.ecr.aws/docker/library/redis:7.4.5-alpine3.21@sha256:bb186d083732f669da90be8b0f975a37812b15e913465bb14d845db72a4e3e08
-        ports:
-          - 6379:6379
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 10s

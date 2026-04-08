@@ -96,9 +96,14 @@ docker run --rm \
   "$runner_image" \
   bash -lc '
     set -euo pipefail
+    preflight_dist_dir="/runner-workspace/dist"
+    export WHEEL_DIST_DIR="$preflight_dist_dir"
+    mkdir -p "$WHEEL_DIST_DIR"
+
     clean_stale_build_outputs() {
-      rm -rf dist
-      find build -maxdepth 1 -type d \( -name "lib.*" -o -name "bdist.*" \) -exec rm -rf {} +
+      if [[ -d build ]]; then
+        find build -maxdepth 1 -type d \( -name "lib.*" -o -name "bdist.*" \) -exec rm -rf {} +
+      fi
       find nautilus_trader -type f \( -name "*.so" -o -name "*.pyd" -o -name "*.dylib" \) -delete
     }
     git config --global --add safe.directory "$GITHUB_WORKSPACE"
@@ -113,14 +118,14 @@ docker run --rm \
 
     uv sync --all-groups --all-extras --no-install-package nautilus_trader
 
-    if ! compgen -G "dist/*.whl" > /dev/null; then
+    if ! compgen -G "${WHEEL_DIST_DIR}/*.whl" > /dev/null; then
       clean_stale_build_outputs
-      BUILD_MODE=release uv build --wheel --python 3.12
+      BUILD_MODE=release uv build --wheel --python 3.12 --out-dir "$WHEEL_DIST_DIR"
       bash scripts/ci/self_hosted_wheel_cache.sh save "$wheel_key"
     fi
 
-    uv pip install dist/*.whl
-    python3 scripts/ci/extract_compiled_extensions_from_wheel.py dist/*.whl
+    uv pip install "${WHEEL_DIST_DIR}"/*.whl
+    python3 scripts/ci/extract_compiled_extensions_from_wheel.py "${WHEEL_DIST_DIR}"/*.whl
     bash scripts/ci/initialize_database_schema.sh
     bash scripts/ci/run_python_test_suites.sh
   '
