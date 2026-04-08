@@ -6,7 +6,7 @@ pg_user="${PGUSER:-nautilus}"
 pg_database="${PGDATABASE:-nautilus}"
 
 cat schema/sql/types.sql \
-  schema/sql/tables.sql \
-  schema/sql/functions.sql \
-  schema/sql/partitions.sql \
-  | psql -h "$pg_host" -U "$pg_user" -d "$pg_database"
+	schema/sql/tables.sql \
+	schema/sql/functions.sql \
+	schema/sql/partitions.sql |
+	psql -h "$pg_host" -U "$pg_user" -d "$pg_database"
