@@ -105,7 +105,7 @@ jobs:
       - name: Common setup
         with:
           python-version: "3.13"
-          free-disk-space: "true"
+          free-disk-space: "false"
           build-type: "rust-policy"
           skip-uv: "true"
         uses: ./.github/actions/common-setup

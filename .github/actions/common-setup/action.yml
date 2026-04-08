@@ -33,6 +33,10 @@ inputs:
     description: Skip actions/setup-python and use the runner Python
     required: false
     default: "false"
+  force-rustup-update:
+    description: Force a rustup self-update before selecting the pinned toolchain
+    required: false
+    default: "false"
 
 runs:
   using: "composite"
@@ -66,8 +70,17 @@ runs:
     - name: Install runner dependencies
       if: runner.os == 'Linux' && inputs.skip-install-deps != 'true'
       shell: bash
+      env:
+        BUILD_TYPE: ${{ inputs.build-type }}
       run: |
-        packages=(curl clang git make pkg-config ripgrep python3-dev libpython3-dev)
+        packages=(curl git make pkg-config)
+
+        if [[ "$BUILD_TYPE" == "pre-commit" ]]; then
+          packages+=(ripgrep)
+        else
+          packages+=(clang ripgrep python3-dev libpython3-dev)
+        fi
+
         missing_packages=()
 
         for package in "${packages[@]}"; do
@@ -138,11 +151,8 @@ runs:
 
     # > --------------------------------------------------
     # > Rust
-    # GitHub runners come with a pre-installed Rust toolchain, this step forces an update
-    # to ensure we have the latest version before setting our specific toolchain.
-    # setup-rust-toolchain should handle this with override: true, but doesn't seem to work.
     - name: Reset and update Rust toolchain
-      if: inputs.skip-rust != 'true'
+      if: inputs.skip-rust != 'true' && inputs.force-rustup-update == 'true'
       shell: bash
       run: bash scripts/ci/install-rust.sh
 
@@ -242,8 +252,6 @@ runs:
         key: >-
           ${{ runner.os }}-${{ runner.arch }}-${{ inputs.python-version
           }}-pre-commit-tool-${{ env.PRE_COMMIT_VERSION }}
-        restore-keys: |
-          ${{ runner.os }}-${{ runner.arch }}-${{ inputs.python-version }}-pre-commit-tool-
 
     - name: Install pre-commit
       if: inputs.build-type == 'pre-commit' || inputs.build-type == 'rust-policy'
@@ -262,7 +270,7 @@ runs:
 
         if [[ ! -x "${pre_commit_bin}" || ! -x "${pre_commit_python}" ]]; then
           rm -rf "${pre_commit_tool_dir}"
-          python3 -m venv "${pre_commit_venv}"
+          python3 -m venv --copies "${pre_commit_venv}"
           "${pre_commit_python}" -m pip install --upgrade pip
           "${pre_commit_python}" -m pip install "pre-commit==${PRE_COMMIT_VERSION}"
         fi
