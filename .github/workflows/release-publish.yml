@@ -155,6 +155,9 @@ jobs:
           skip-install-deps: "true"
           skip-setup-python: "true"
 
+      - name: Ensure CI container build dependencies
+        run: bash scripts/ci/ensure_ci_container_build_deps.sh
+
       - name: Verify self-hosted test toolchain
         run: |
           python3 --version

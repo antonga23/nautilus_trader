@@ -43,7 +43,6 @@ docker run -d --rm \
 docker run --rm \
   --name "${network_name}-runner" \
   --network "$network_name" \
-  --user "$(id -u):$(id -g)" \
   -e HOME=/runner-home \
   -e GITHUB_WORKSPACE=/workspace \
   -e RUNNER_WORKSPACE=/runner-workspace \
@@ -67,6 +66,7 @@ docker run --rm \
     python3 --version
     uv --version
     git --version
+    bash scripts/ci/ensure_ci_container_build_deps.sh
 
     wheel_key="$(python3 scripts/ci/compute_test_wheel_cache_key.py)"
     bash scripts/ci/self_hosted_wheel_cache.sh restore "$wheel_key" || true
