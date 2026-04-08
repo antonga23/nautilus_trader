@@ -1,0 +1,582 @@
+name: release-publish
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+  packages: read
+
+on:
+  push:
+    branches: [develop, master, nightly]
+  workflow_dispatch:
+
+jobs:
+  build-linux-x86-py312:
+    name: build-linux-x86-py312
+    timeout-minutes: 90
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      actions: read
+    env:
+      BUILD_MODE: release
+      RUST_BACKTRACE: 1
+    services:
+      redis:
+        image: public.ecr.aws/docker/library/redis:7.4.5-alpine3.21@sha256:bb186d083732f669da90be8b0f975a37812b15e913465bb14d845db72a4e3e08
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      postgres:
+        image: public.ecr.aws/docker/library/postgres:16.4-alpine@sha256:5660c2cbfea50c7a9127d17dc4e48543eedd3d7a41a595a2dfa572471e37e64c
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: pass
+          POSTGRES_DB: nautilus
+        ports:
+          - 5432:5432
+        options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+    steps:
+      - uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+
+      - name: Common setup
+        uses: ./.github/actions/common-setup
+        with:
+          python-version: "3.12"
+          free-disk-space: "false"
+
+      - name: Cached test data
+        uses: ./.github/actions/common-test-data
+
+      - name: Build and install wheel
+        uses: ./.github/actions/common-wheel-build
+        with:
+          python-version: "3.12"
+          github_ref: ${{ github.ref }}
+
+      - name: Run smoke tests
+        run: |
+          uv run --no-sync python - <<'PY'
+          import nautilus_trader
+          from nautilus_trader.core import nautilus_pyo3
+
+          print(nautilus_trader.__file__)
+          print(nautilus_pyo3.__file__)
+          PY
+
+      - name: Upload wheel artifact
+        uses: ./.github/actions/upload-artifact-wheel
+
+  python-tests:
+    name: python-tests
+    timeout-minutes: 90
+    needs: [build-linux-x86-py312]
+    runs-on: [self-hosted, linux, x64]
+    container:
+      image: >-
+        ghcr.io/antonga23/cloudbet-market-maker/ci-runner@sha256:ed46e808744508e5627f3f8d32fc3eff6b0c047129af03db70a8a6225346235b
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      REDIS_HOST: redis
+      PGHOST: postgres
+      UV_PYTHON: "3.12"
+      PYTEST_XDIST_WORKERS: "6"
+      CARGO_HOME: ${{ github.workspace }}/.cache/cargo-home
+      PGPASSWORD: pass
+      PGUSER: nautilus
+      PGDATABASE: nautilus
+    services:
+      postgres:
+        image: postgres@sha256:f30e3de0ac9cc938dac627ef2231099867c694b5f949fadb924c8c977428c399
+        env:
+          POSTGRES_USER: nautilus
+          POSTGRES_PASSWORD: pass
+          POSTGRES_DB: nautilus
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U nautilus"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: public.ecr.aws/docker/library/redis:7.4.5-alpine3.21@sha256:bb186d083732f669da90be8b0f975a37812b15e913465bb14d845db72a4e3e08
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+          ref: ${{ github.sha }}
+
+      - name: Trust workspace
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Common setup
+        uses: ./.github/actions/common-setup
+        with:
+          python-version: "3.12"
+          build-type: "test"
+          skip-rust: "true"
+          skip-uv: "true"
+          skip-capnp: "true"
+          skip-install-deps: "true"
+          skip-setup-python: "true"
+
+      - name: Verify self-hosted test toolchain
+        run: |
+          python3 --version
+          uv --version
+          git --version
+
+      - name: Cache UV artifacts
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cache/uv
+            .venv
+          key: uv-py3.12-${{ hashFiles('uv.lock', 'pyproject.toml') }}
+
+      - name: Install dependencies
+        run: uv sync --all-groups --all-extras --no-install-package nautilus_trader
+
+      - name: Download built wheel
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          path: dist
+          pattern: "nautilus_trader-*.whl"
+          merge-multiple: true
+
+      - name: Install wheel
+        run: uv pip install dist/*.whl
+
+      - name: Cached test data
+        uses: ./.github/actions/common-test-data
+
+      - name: Inject compiled extensions into source tree
+        run: python3 scripts/ci/extract_compiled_extensions_from_wheel.py dist/*.whl
+
+      - name: Initialize Database Schema
+        run: bash scripts/ci/initialize_database_schema.sh
+
+      - name: Run Python test suites
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: bash scripts/ci/run_python_test_suites.sh
+
+      - name: Upload Python test artifacts
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: python-tests-results
+          path: tests/results
+          if-no-files-found: ignore
+
+  publish-wheels-develop:
+    name: publish-wheels-develop
+    runs-on: ubuntu-latest
+    environment: r2-develop
+    permissions:
+      actions: write
+      contents: read
+      id-token: write
+      attestations: write
+    needs:
+      - build-linux-x86-py312
+      - python-tests
+    if: github.ref == 'refs/heads/develop'
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      CLOUDFLARE_R2_URL: ${{ secrets.CLOUDFLARE_R2_URL }}
+      CLOUDFLARE_R2_REGION: "auto"
+      CLOUDFLARE_R2_BUCKET_NAME: "packages"
+    steps:
+      - uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
+        with:
+          egress-policy: audit
+          allowed-endpoints: |
+            ${{ vars.COMMON_ALLOWED_ENDPOINTS }}
+            ${{ secrets.CLOUDFLARE_R2_ALLOWED_HOST }}:443
+
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+
+      - name: Download built wheels
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          path: dist
+          pattern: "nautilus_trader-*.whl"
+          merge-multiple: true
+
+      - name: Attest wheel provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        with:
+          subject-path: 'dist/nautilus_trader-*.whl'
+
+      - name: Publish wheels to Cloudflare R2
+        uses: ./.github/actions/publish-wheels
+
+      - name: Fetch and delete artifacts for current run
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash ./scripts/ci/publish-wheels-delete-artifacts.sh
+
+  publish-wheels-nightly:
+    name: publish-wheels-nightly
+    runs-on: ubuntu-latest
+    environment: r2-nightly
+    permissions:
+      actions: write
+      contents: read
+      id-token: write
+      attestations: write
+    needs:
+      - build-linux-x86-py312
+      - python-tests
+    if: github.ref == 'refs/heads/nightly'
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      CLOUDFLARE_R2_URL: ${{ secrets.CLOUDFLARE_R2_URL }}
+      CLOUDFLARE_R2_REGION: "auto"
+      CLOUDFLARE_R2_BUCKET_NAME: "packages"
+    steps:
+      - uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
+        with:
+          egress-policy: audit
+          allowed-endpoints: |
+            ${{ vars.COMMON_ALLOWED_ENDPOINTS }}
+            ${{ secrets.CLOUDFLARE_R2_ALLOWED_HOST }}:443
+
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+
+      - name: Download built wheels
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          path: dist
+          pattern: "nautilus_trader-*.whl"
+          merge-multiple: true
+
+      - name: Attest wheel provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        with:
+          subject-path: 'dist/nautilus_trader-*.whl'
+
+      - name: Publish wheels to Cloudflare R2
+        uses: ./.github/actions/publish-wheels
+
+      - name: Fetch and delete artifacts for current run
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash ./scripts/ci/publish-wheels-delete-artifacts.sh
+
+  tag-release:
+    needs:
+      - build-linux-x86-py312
+      - python-tests
+    permissions:
+      contents: write
+      actions: write
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    outputs:
+      upload_url: ${{ steps.create-release.outputs.upload_url }}
+      tag_name: ${{ env.TAG_NAME }}
+    steps:
+      - uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
+        with:
+          egress-policy: audit
+          allowed-endpoints: |
+            ${{ vars.COMMON_ALLOWED_ENDPOINTS }}
+
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: true
+          fetch-depth: 2
+          fetch-tags: true
+
+      - name: Set up Python environment
+        uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Create git tag
+        uses: salsify/action-detect-and-tag-new-version@b1778166f13188a9d478e2d1198f993011ba9864 # v2.0.3
+        with:
+          version-command: ./scripts/package-version.sh
+
+      - name: Set output
+        id: vars
+        run: |
+          echo "TAG_NAME=v$(./scripts/package-version.sh)" >> "$GITHUB_ENV"
+          echo "RELEASE_NAME=NautilusTrader $(./scripts/package-version.sh) Beta" >> "$GITHUB_ENV"
+          sed -n '/^#/,$ {p;/^---/q}; w RELEASE.md' RELEASES.md
+
+      - name: Create GitHub release
+        id: create-release
+        uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ env.TAG_NAME }}
+          name: ${{ env.RELEASE_NAME }}
+          draft: false
+          prerelease: false
+          body_path: RELEASE.md
+
+  publish-wheels-master:
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+      actions: write
+      id-token: write
+      attestations: write
+    needs:
+      - build-linux-x86-py312
+      - python-tests
+      - tag-release
+    if: github.ref == 'refs/heads/master'
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      CLOUDFLARE_R2_URL: ${{ secrets.CLOUDFLARE_R2_URL }}
+      CLOUDFLARE_R2_REGION: "auto"
+      CLOUDFLARE_R2_BUCKET_NAME: "packages"
+    steps:
+      - uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
+        with:
+          egress-policy: audit
+          allowed-endpoints: |
+            ${{ vars.COMMON_ALLOWED_ENDPOINTS }}
+            pypi.org:443
+            files.pythonhosted.org:443
+            upload.pypi.org:443
+            ${{ secrets.CLOUDFLARE_R2_ALLOWED_HOST }}:443
+
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+
+      - name: Get uv version
+        shell: bash
+        run: echo "UV_VERSION=$(cat uv-version)" >> "$GITHUB_ENV"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@3259c6206f993105e3a61b142c2d97bf4b9ef83d # v7.1.0
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Download built wheels for PyPI and GitHub release
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          path: dist
+          pattern: "nautilus_trader-*.whl"
+          merge-multiple: true
+
+      - name: Attest wheel provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        with:
+          subject-path: 'dist/nautilus_trader-*.whl'
+
+      - name: Publish wheels to Cloudflare R2
+        uses: ./.github/actions/publish-wheels
+
+      - name: Upload wheels to GitHub release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.tag-release.outputs.tag_name }}
+        run: |
+          set +e
+          success=false
+          for i in {1..5}; do
+            gh release upload "$TAG_NAME" dist/nautilus_trader-*.whl --clobber --repo "$GITHUB_REPOSITORY"
+            status=$?
+            if [ $status -eq 0 ]; then
+              success=true
+              break
+            else
+              echo "gh upload (wheels) failed (exit=$status), retry ($i/5)"
+              sleep $((2**i))
+            fi
+          done
+          set -e
+          if [ "$success" = false ]; then echo "Failed to upload wheels to release after retries"; exit 1; fi
+
+      - name: Publish to PyPI
+        if: success()
+        env:
+          UV_PUBLISH_USERNAME: ${{ secrets.PYPI_USERNAME }}
+          UV_PUBLISH_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+        run: |
+          set +e
+          success=false
+          for i in {1..5}; do
+            uv publish --check-url https://pypi.org/simple/
+            status=$?
+            if [ $status -eq 0 ]; then
+              success=true
+              break
+            else
+              echo "uv publish failed (exit=$status), retry ($i/5)"
+              sleep $((2**i))
+            fi
+          done
+          set -e
+          if [ "$success" = false ]; then
+            echo "Failed to publish wheels to PyPI after retries"
+            exit 1
+          fi
+
+      - name: Fetch and delete artifacts for current run
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash ./scripts/ci/publish-wheels-delete-artifacts.sh
+
+  publish-sdist:
+    needs: [tag-release]
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      COPY_TO_SOURCE: false
+    steps:
+      - uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
+        with:
+          egress-policy: audit
+          allowed-endpoints: |
+            ${{ vars.COMMON_ALLOWED_ENDPOINTS }}
+            pypi.org:443
+            files.pythonhosted.org:443
+            upload.pypi.org:443
+
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+
+      - name: Common setup
+        uses: ./.github/actions/common-setup
+        with:
+          python-version: "3.13"
+          free-disk-space: "false"
+
+      - name: Build sdist
+        run: uv build --sdist
+
+      - name: Attest sdist provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        with:
+          subject-path: 'dist/*.tar.gz'
+
+      - name: Set release output
+        id: vars
+        run: |
+          if [ ! -d "./dist" ]; then
+            echo "Error: dist directory not found"
+            exit 1
+          fi
+
+          ASSET_PATH=$(find ./dist -name "*.tar.gz" -type f -print0 | xargs -0 ls -t 2>/dev/null | head -n 1)
+
+          if [ -z "$ASSET_PATH" ]; then
+            echo "Error: No .tar.gz files found in dist directory"
+            exit 1
+          fi
+
+          echo "ASSET_PATH=$ASSET_PATH" >> "$GITHUB_ENV"
+          echo "ASSET_NAME=$(basename "$ASSET_PATH")" >> "$GITHUB_ENV"
+
+      - name: Upload release asset
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.tag-release.outputs.tag_name }}
+          ASSET_PATH: ${{ env.ASSET_PATH }}
+        run: |
+          set +e
+          success=false
+          for i in {1..5}; do
+            gh release upload "$TAG_NAME" "$ASSET_PATH" --clobber --repo "$GITHUB_REPOSITORY"
+            status=$?
+            if [ $status -eq 0 ]; then
+              success=true
+              break
+            else
+              echo "gh upload (sdist) failed (exit=$status), retry ($i/5)"
+              sleep $((2**i))
+            fi
+          done
+          set -e
+          if [ "$success" = false ]; then echo "Failed to upload sdist to release after retries"; exit 1; fi
+
+      - name: Publish to PyPI
+        if: success()
+        env:
+          UV_PUBLISH_USERNAME: ${{ secrets.PYPI_USERNAME }}
+          UV_PUBLISH_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+        run: |
+          set +e
+          success=false
+          for i in {1..5}; do
+            uv publish --check-url https://pypi.org/simple/
+            status=$?
+            if [ $status -eq 0 ]; then
+              success=true
+              break
+            else
+              echo "uv publish failed (exit=$status), retry ($i/5)"
+              sleep $((2**i))
+            fi
+          done
+          set -e
+          if [ "$success" = false ]; then
+            echo "Failed to publish sdist to PyPI after retries"
+            exit 1
+          fi

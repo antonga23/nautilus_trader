@@ -1,0 +1,93 @@
+name: rust-policy
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+on:
+  pull_request:
+    branches: ['*']
+    paths:
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'deny.toml'
+      - 'supply-chain/**'
+      - 'rust-toolchain.toml'
+      - 'capnp-version'
+      - '.pre-commit-config.yaml'
+      - '.pre-commit-hooks/**'
+      - '.github/workflows/rust-policy.yml'
+      - '.github/actions/common-setup/action.yml'
+      - '.github/actions/cargo-tool-install/action.yml'
+      - 'scripts/ci/install-rust.sh'
+      - 'scripts/ci/run_rust_policy.sh'
+  push:
+    branches: [develop, master, nightly]
+    paths:
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'deny.toml'
+      - 'supply-chain/**'
+      - 'rust-toolchain.toml'
+      - 'capnp-version'
+      - '.pre-commit-config.yaml'
+      - '.pre-commit-hooks/**'
+      - '.github/workflows/rust-policy.yml'
+      - '.github/actions/common-setup/action.yml'
+      - '.github/actions/cargo-tool-install/action.yml'
+      - 'scripts/ci/install-rust.sh'
+      - 'scripts/ci/run_rust_policy.sh'
+  workflow_dispatch:
+
+jobs:
+  rust-policy:
+    timeout-minutes: 30
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Common setup
+        uses: ./.github/actions/common-setup
+        with:
+          python-version: "3.13"
+          free-disk-space: "false"
+          build-type: "rust-policy"
+          skip-uv: "true"
+
+      - name: Install cargo-deny
+        uses: ./.github/actions/cargo-tool-install
+        with:
+          tool-name: cargo-deny
+
+      - name: Install cargo-vet
+        uses: ./.github/actions/cargo-tool-install
+        with:
+          tool-name: cargo-vet
+
+      - name: Run rust policy
+        env:
+          CI_ARTIFACTS_DIR: artifacts/rust-policy
+          RUN_CAPNP_SCHEMAS: "true"
+        run: bash scripts/ci/run_rust_policy.sh
+
+      - name: Upload rust policy artifacts
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: rust-policy-artifacts
+          path: artifacts/rust-policy
+          if-no-files-found: ignore
