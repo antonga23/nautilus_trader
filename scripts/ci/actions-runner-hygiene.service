@@ -1,0 +1,9 @@
+[Unit]
+Description=Cloudbet self-hosted runner hygiene cleanup
+After=network.target docker.service
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/srv/symphony/control-repo
+ExecStart=/bin/bash /srv/symphony/control-repo/scripts/ci/self_hosted_runner_cleanup.sh

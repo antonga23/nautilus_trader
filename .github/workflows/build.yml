@@ -18,10 +18,78 @@ on:
   pull_request:
     branches: ['*']
 
+
 jobs:
-  pre-commit:
-    timeout-minutes: 30
+  changes:
+    runs-on: ubuntu-22.04
+    outputs:
+      rust_policy: ${{ steps.changed.outputs.rust_policy }}
+      python_tests: ${{ steps.changed.outputs.python_tests }}
+      full_suite: ${{ steps.changed.outputs.full_suite }}
+      package_builds: ${{ steps.changed.outputs.package_builds }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Detect changed surfaces
+        id: changed
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_BASE_REF: ${{ github.base_ref }}
+          GITHUB_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GITHUB_EVENT_BEFORE: ${{ github.event.before }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: bash scripts/ci/detect_changed_surfaces.sh
+
+  pre-commit-fast:
+    needs: [changes]
+    timeout-minutes: 15
     runs-on: ubuntu-22.04 # (glibc 2.35) wider runtime range than 24.04/glibc 2.39
+    steps:
+      # https://github.com/step-security/harden-runner
+      - uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        # https://github.com/actions/checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Common setup
+        uses: ./.github/actions/common-setup
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          python-version: "3.13"
+          free-disk-space: "false"
+          build-type: "pre-commit"
+          skip-rust: "true"
+          skip-uv: "true"
+          skip-capnp: "true"
+
+      - name: Run pre-commit-fast
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_BASE_REF: ${{ github.base_ref }}
+          GITHUB_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GITHUB_EVENT_BEFORE: ${{ github.event.before }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: bash scripts/ci/run_pre_commit_fast.sh
+
+  rust-policy:
+    needs: [changes]
+    if: >
+      github.event_name == 'pull_request' &&
+      github.base_ref == 'develop' &&
+      needs.changes.outputs.rust_policy == 'true'
+    timeout-minutes: 30
+    runs-on: ubuntu-22.04
     steps:
       # https://github.com/step-security/harden-runner
       - uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
@@ -35,73 +103,50 @@ jobs:
           persist-credentials: false
 
       - name: Common setup
-        uses: ./.github/actions/common-setup
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           python-version: "3.13"
           free-disk-space: "true"
-          build-type: "pre-commit"
-
-      - name: Run pre-commit
-        run: pre-commit run --all-files
-
-      - name: Verify capnp schemas are up-to-date
-        run: make check-capnp-schemas
-
-  # Dependency license, advisory, and ban checks
-  # https://embarkstudios.github.io/cargo-deny/
-  cargo-deny:
-    timeout-minutes: 15
-    runs-on: ubuntu-22.04
-    steps:
-      # https://github.com/step-security/harden-runner
-      - uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
-        with:
-          egress-policy: audit
-
-      - name: Checkout repository
-        # https://github.com/actions/checkout
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
-        with:
-          persist-credentials: false
+          build-type: "rust-policy"
+          skip-uv: "true"
+        uses: ./.github/actions/common-setup
 
       - name: Install cargo-deny
         uses: ./.github/actions/cargo-tool-install
         with:
           tool-name: cargo-deny
 
-      - name: Run cargo-deny (advisories, licenses, sources, bans)
-        run: cargo deny --all-features check advisories licenses sources bans
-
-  # Supply chain security auditing
-  # https://mozilla.github.io/cargo-vet/configuring-ci.html
-  cargo-vet:
-    timeout-minutes: 15
-    runs-on: ubuntu-22.04
-    steps:
-      # https://github.com/step-security/harden-runner
-      - uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
-        with:
-          egress-policy: audit
-
-      - name: Checkout repository
-        # https://github.com/actions/checkout
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
-        with:
-          persist-credentials: false
-
       - name: Install cargo-vet
         uses: ./.github/actions/cargo-tool-install
         with:
           tool-name: cargo-vet
 
-      - name: Run cargo-vet
-        run: cargo vet --locked
+      - name: Run rust policy
+        env:
+          CI_ARTIFACTS_DIR: artifacts/rust-policy
+          RUN_CAPNP_SCHEMAS: ${{ needs.changes.outputs.rust_policy }}
+        run: bash scripts/ci/run_rust_policy.sh
+
+      - name: Upload rust policy artifacts
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: rust-policy-artifacts
+          path: artifacts/rust-policy
+          if-no-files-found: ignore
 
   build-linux-x86:
     timeout-minutes: 90
-    if: github.ref != 'refs/heads/test-pre-commit'
+    if: >
+      always() &&
+      github.ref != 'refs/heads/test-pre-commit' &&
+      (
+        github.ref == 'refs/heads/master' ||
+        github.ref == 'refs/heads/nightly' ||
+        github.ref == 'refs/heads/develop' ||
+        needs.changes.outputs.package_builds == 'true'
+      ) &&
+      needs.pre-commit-fast.result == 'success' &&
+      (needs.rust-policy.result == 'success' || needs.rust-policy.result == 'skipped')
     strategy:
       fail-fast: false
       matrix:
@@ -117,9 +162,9 @@ jobs:
     name: build - python ${{ matrix.python-version }} (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     needs:
-      - cargo-deny
-      - cargo-vet
-      - pre-commit
+      - changes
+      - pre-commit-fast
+      - rust-policy
     env:
       BUILD_MODE: release
       RUST_BACKTRACE: 1
@@ -188,49 +233,66 @@ jobs:
           python-version: ${{ matrix.python-version }}
           github_ref: ${{ github.ref }}
 
-      - name: Run tests
+      - name: Run smoke tests
         run: |
-          uv run --no-sync pytest --ignore=tests/performance_tests \
-            -n logical --dist=loadgroup --reruns 2 --reruns-delay 1
+          uv run --no-sync python - <<'PY'
+          import nautilus_trader
+          from nautilus_trader.core import nautilus_pyo3
+
+          print(nautilus_trader.__file__)
+          print(nautilus_pyo3.__file__)
+          PY
 
       - name: Upload wheel artifact
         uses: ./.github/actions/upload-artifact-wheel
 
-  build-linux-arm:
-    timeout-minutes: 120
-    strategy:
-      fail-fast: false
-      matrix:
-        os:
-          - ubuntu-22.04-arm
-        python-version:
-          - "3.12"
-          - "3.13"
-          - "3.14"
-    defaults:
-      run:
-        shell: bash
-    name: build - python ${{ matrix.python-version }} (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    # Pause job on develop branch (takes ~1-1.5 hrs)
-    # - test-pre-commit: only run linting jobs
+  python-tests-custom:
+    timeout-minutes: 45
+    needs:
+      - changes
+      - pre-commit-fast
+      - rust-policy
     if: >
-      !(
-        (github.event_name == 'push' &&
-          (github.ref_name == 'develop' || github.ref_name == 'test-pre-commit'))
-        || (github.event_name == 'pull_request' &&
-          github.base_ref == 'develop')
-      )
-    needs:
-      - cargo-deny
-      - cargo-vet
-      - pre-commit
+      always() &&
+      github.ref != 'refs/heads/test-pre-commit' &&
+      (
+        (github.event_name == 'pull_request' && github.base_ref == 'develop') ||
+        github.ref == 'refs/heads/develop' ||
+        github.ref == 'refs/heads/master' ||
+        github.ref == 'refs/heads/nightly'
+      ) &&
+      needs.changes.outputs.python_tests == 'true' &&
+      needs.pre-commit-fast.result == 'success' &&
+      (needs.rust-policy.result == 'success' || needs.rust-policy.result == 'skipped')
+    runs-on: [self-hosted, linux, x64]
+    container:
+      image: >-
+        ghcr.io/antonga23/cloudbet-market-maker/ci-runner@sha256:ed46e808744508e5627f3f8d32fc3eff6b0c047129af03db70a8a6225346235b
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     env:
-      BUILD_MODE: release
-      RUST_BACKTRACE: 1
-      CARGO_BUILD_JOBS: 1
+      REDIS_HOST: redis
+      PGHOST: postgres
+      UV_PYTHON: "3.12"
+      PYTEST_XDIST_WORKERS: "6"
+      CARGO_HOME: ${{ github.workspace }}/.cache/cargo-home
     # yamllint disable rule:line-length
     services:
+      postgres:
+        image: postgres@sha256:f30e3de0ac9cc938dac627ef2231099867c694b5f949fadb924c8c977428c399
+        env:
+          POSTGRES_USER: nautilus
+          POSTGRES_PASSWORD: pass
+          POSTGRES_DB: nautilus
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U nautilus"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
       redis:
         image: public.ecr.aws/docker/library/redis:7.4.5-alpine3.21@sha256:bb186d083732f669da90be8b0f975a37812b15e913465bb14d845db72a4e3e08
         ports:
@@ -240,189 +302,357 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-      postgres:
-        image: public.ecr.aws/docker/library/postgres:16.4-alpine@sha256:5660c2cbfea50c7a9127d17dc4e48543eedd3d7a41a595a2dfa572471e37e64c
+    # yamllint enable rule:line-length
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Trust workspace
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Common setup
+        uses: ./.github/actions/common-setup
+        with:
+          python-version: "3.12"
+          build-type: "test"
+          skip-rust: "true"
+          skip-uv: "true"
+          skip-capnp: "true"
+          skip-install-deps: "true"
+          skip-setup-python: "true"
+
+      - name: Verify self-hosted test toolchain
+        run: |
+          python3 --version
+          uv --version
+          git --version
+
+      - name: Compute wheel cache key
+        id: wheel-key
+        run: echo "key=$(python3 scripts/ci/compute_test_wheel_cache_key.py)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore self-hosted wheel cache
+        id: local-wheel-cache
+        run: bash scripts/ci/self_hosted_wheel_cache.sh restore "${{ steps.wheel-key.outputs.key }}"
+
+      - name: Cache wheel
+        id: wheel-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: dist/
+          key: wheel-py3.12-tests-v1-${{ steps.wheel-key.outputs.key }}
+
+      - name: Cache UV artifacts
+        id: uv-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cache/uv
+            .venv
+          key: uv-py3.12-${{ hashFiles('uv.lock', 'pyproject.toml') }}
+
+      - name: Cache Cargo home
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: .cache/cargo-home
+          key: cargo-home-linux-x64-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+
+      - name: Install dependencies
+        run: uv sync --all-groups --all-extras --no-install-package nautilus_trader
+
+      - name: Build wheel (on cache miss)
+        if: steps.local-wheel-cache.outputs.cache-hit != 'true' && steps.wheel-cache.outputs.cache-hit != 'true'
         env:
-          POSTGRES_USER: postgres
+          BUILD_MODE: release
+        run: |
+          uv build --wheel --python 3.12
+          ls -lh dist/
+
+      - name: Install wheel
+        run: uv pip install dist/*.whl
+
+      - name: Save self-hosted wheel cache
+        if: steps.local-wheel-cache.outputs.cache-hit != 'true'
+        run: bash scripts/ci/self_hosted_wheel_cache.sh save "${{ steps.wheel-key.outputs.key }}"
+
+      - name: Cached test data
+        uses: ./.github/actions/common-test-data
+
+      - name: Install Nautilus CLI
+        run: bash scripts/ci/install-nautilus-cli.sh
+
+      - name: Inject compiled extensions into source tree
+        run: python3 scripts/ci/extract_compiled_extensions_from_wheel.py dist/*.whl
+
+      - name: Initialize Database Schema
+        run: nautilus database init --schema ${{ github.workspace }}/schema/sql
+        env:
+          POSTGRES_HOST: postgres
+          POSTGRES_PORT: 5432
+          POSTGRES_USERNAME: nautilus
+          POSTGRES_PASSWORD: pass
+          POSTGRES_DATABASE: nautilus
+
+      - name: Run custom logic tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          mkdir -p tests/results/custom
+          bash scripts/ci/run_pytest_with_reporting.sh \
+            "Custom logic tests (parallel)" \
+            tests/results/custom/junit-parallel.xml \
+            tests/results/custom/pytest-parallel.log \
+            tests/integration_tests \
+            tests/unit_tests/live \
+            tests/unit_tests/persistence \
+            --ignore=tests/integration_tests/infrastructure/test_cache_database_postgres.py \
+            --tb=line \
+            -ra \
+            -n "$PYTEST_XDIST_WORKERS" \
+            --dist=loadgroup \
+            --maxfail=10 \
+            --durations=20 \
+            --durations-min=5.0
+
+      - name: Run Postgres cache integration tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          mkdir -p tests/results/custom
+          bash scripts/ci/run_pytest_with_reporting.sh \
+            "Postgres cache integration tests" \
+            tests/results/custom/junit-postgres.xml \
+            tests/results/custom/pytest-postgres.log \
+            tests/integration_tests/infrastructure/test_cache_database_postgres.py \
+            --tb=line \
+            -ra \
+            -p no:xdist \
+            --maxfail=1 \
+            --durations=20 \
+            --durations-min=5.0
+
+      - name: Upload custom test artifacts
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: python-tests-custom-results
+          path: tests/results/custom
+          if-no-files-found: ignore
+
+  python-tests-full:
+    timeout-minutes: 90
+    needs:
+      - changes
+      - pre-commit-fast
+      - rust-policy
+      - python-tests-custom
+    if: >
+      always() &&
+      github.ref != 'refs/heads/test-pre-commit' &&
+      (
+        (github.event_name == 'pull_request' && github.base_ref == 'develop') ||
+        github.ref == 'refs/heads/develop' ||
+        github.ref == 'refs/heads/master' ||
+        github.ref == 'refs/heads/nightly'
+      ) &&
+      needs.changes.outputs.full_suite == 'true' &&
+      needs.pre-commit-fast.result == 'success' &&
+      (needs.rust-policy.result == 'success' || needs.rust-policy.result == 'skipped') &&
+      needs.python-tests-custom.result == 'success'
+    runs-on: [self-hosted, linux, x64]
+    container:
+      image: >-
+        ghcr.io/antonga23/cloudbet-market-maker/ci-runner@sha256:ed46e808744508e5627f3f8d32fc3eff6b0c047129af03db70a8a6225346235b
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      REDIS_HOST: redis
+      PGHOST: postgres
+      UV_PYTHON: "3.12"
+      PYTEST_XDIST_WORKERS: "6"
+      CARGO_HOME: ${{ github.workspace }}/.cache/cargo-home
+    # yamllint disable rule:line-length
+    services:
+      postgres:
+        image: postgres@sha256:f30e3de0ac9cc938dac627ef2231099867c694b5f949fadb924c8c977428c399
+        env:
+          POSTGRES_USER: nautilus
           POSTGRES_PASSWORD: pass
           POSTGRES_DB: nautilus
         ports:
           - 5432:5432
-        options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+        options: >-
+          --health-cmd "pg_isready -U nautilus"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: public.ecr.aws/docker/library/redis:7.4.5-alpine3.21@sha256:bb186d083732f669da90be8b0f975a37812b15e913465bb14d845db72a4e3e08
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     # yamllint enable rule:line-length
+    permissions:
+      contents: read
+      packages: read
     steps:
-      # https://github.com/step-security/harden-runner
       - uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
         with:
           egress-policy: audit
 
       - name: Checkout repository
-        # https://github.com/actions/checkout
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           persist-credentials: false
+          fetch-depth: 1
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Trust workspace
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: Common setup
         uses: ./.github/actions/common-setup
         with:
-          python-version: ${{ matrix.python-version }}
-          free-disk-space: "true"
+          python-version: "3.12"
+          build-type: "test"
+          skip-rust: "true"
+          skip-uv: "true"
+          skip-capnp: "true"
+          skip-install-deps: "true"
+          skip-setup-python: "true"
+
+      - name: Verify self-hosted test toolchain
+        run: |
+          python3 --version
+          uv --version
+          git --version
+
+      - name: Compute wheel cache key
+        id: wheel-key
+        run: echo "key=$(python3 scripts/ci/compute_test_wheel_cache_key.py)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore self-hosted wheel cache
+        id: local-wheel-cache
+        run: bash scripts/ci/self_hosted_wheel_cache.sh restore "${{ steps.wheel-key.outputs.key }}"
+
+      - name: Cache wheel
+        id: wheel-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: dist/
+          key: wheel-py3.12-tests-v1-${{ steps.wheel-key.outputs.key }}
+
+      - name: Cache UV artifacts
+        id: uv-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cache/uv
+            .venv
+          key: uv-py3.12-${{ hashFiles('uv.lock', 'pyproject.toml') }}
+
+      - name: Cache Cargo home
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: .cache/cargo-home
+          key: cargo-home-linux-x64-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+
+      - name: Install dependencies
+        run: uv sync --all-groups --all-extras --no-install-package nautilus_trader
+
+      - name: Build wheel (on cache miss)
+        if: steps.local-wheel-cache.outputs.cache-hit != 'true' && steps.wheel-cache.outputs.cache-hit != 'true'
+        env:
+          BUILD_MODE: release
+        run: |
+          uv build --wheel --python 3.12
+          ls -lh dist/
+
+      - name: Install wheel
+        run: uv pip install dist/*.whl
+
+      - name: Save self-hosted wheel cache
+        if: steps.local-wheel-cache.outputs.cache-hit != 'true'
+        run: bash scripts/ci/self_hosted_wheel_cache.sh save "${{ steps.wheel-key.outputs.key }}"
+
+      - name: Cached test data
+        uses: ./.github/actions/common-test-data
 
       - name: Install Nautilus CLI
-        env:
-          NAUTILUS_CLI_FORCE_SOURCE: ${{ github.ref == 'refs/heads/nightly' && '1' || '0' }}
         run: bash scripts/ci/install-nautilus-cli.sh
 
-      - name: Init postgres schema
+      - name: Inject compiled extensions into source tree
+        run: python3 scripts/ci/extract_compiled_extensions_from_wheel.py dist/*.whl
+
+      - name: Initialize Database Schema
         run: nautilus database init --schema ${{ github.workspace }}/schema/sql
         env:
-          POSTGRES_HOST: localhost
+          POSTGRES_HOST: postgres
           POSTGRES_PORT: 5432
-          POSTGRES_USERNAME: postgres
+          POSTGRES_USERNAME: nautilus
           POSTGRES_PASSWORD: pass
           POSTGRES_DATABASE: nautilus
 
-      - name: Cached test data
-        uses: ./.github/actions/common-test-data
-
-      - name: Run Rust tests
-        run: make cargo-test EXTRA_FEATURES="capnp"
-
-      - name: Build and install wheel
-        uses: ./.github/actions/common-wheel-build
-        with:
-          python-version: ${{ matrix.python-version }}
-          github_ref: ${{ github.ref }}
-
-      - name: Run tests
+      - name: Run full suite
+        env:
+          PYTHONPATH: ${{ github.workspace }}
         run: |
-          uv run --no-sync pytest --ignore=tests/performance_tests --reruns 2 --reruns-delay 1
+          mkdir -p tests/results/full
+          bash scripts/ci/run_pytest_with_reporting.sh \
+            "Full Python suite (parallel)" \
+            tests/results/full/junit-parallel.xml \
+            tests/results/full/pytest-parallel.log \
+            --ignore=tests/performance_tests \
+            --ignore=tests/integration_tests/infrastructure/test_cache_database_postgres.py \
+            --tb=line \
+            -ra \
+            -n "$PYTEST_XDIST_WORKERS" \
+            --dist=loadgroup \
+            --maxfail=50 \
+            --durations=25 \
+            --durations-min=5.0
 
-      - name: Upload wheel artifact
-        uses: ./.github/actions/upload-artifact-wheel
-
-  build-macos:
-    timeout-minutes: 90
-    if: github.ref != 'refs/heads/test-pre-commit'
-    strategy:
-      fail-fast: false
-      matrix:
-        os:
-          - macos-latest
-        python-version:
-          - "3.12"
-          - "3.13"
-          - "3.14"
-    defaults:
-      run:
-        shell: bash
-    name: build - python ${{ matrix.python-version }} (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    needs:
-      - cargo-deny
-      - cargo-vet
-      - pre-commit
-    env:
-      BUILD_MODE: release
-      RUST_BACKTRACE: 1
-    steps:
-      # https://github.com/step-security/harden-runner
-      - uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
-        with:
-          egress-policy: audit
-
-      - name: Checkout repository
-        # https://github.com/actions/checkout
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
-        with:
-          persist-credentials: false
-
-      - name: Common setup
-        uses: ./.github/actions/common-setup
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Cached test data
-        uses: ./.github/actions/common-test-data
-
-      - name: Run Rust tests
-        run: make cargo-test EXTRA_FEATURES="capnp,hypersync"
-
-      - name: Build and install wheel
-        uses: ./.github/actions/common-wheel-build
-        with:
-          python-version: ${{ matrix.python-version }}
-          github_ref: ${{ github.ref }}
-
-      - name: Run tests
+      - name: Run Postgres cache integration tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}
         run: |
-          uv run --no-sync pytest --ignore=tests/performance_tests --reruns 2 --reruns-delay 1
+          mkdir -p tests/results/full
+          bash scripts/ci/run_pytest_with_reporting.sh \
+            "Postgres cache integration tests" \
+            tests/results/full/junit-postgres.xml \
+            tests/results/full/pytest-postgres.log \
+            tests/integration_tests/infrastructure/test_cache_database_postgres.py \
+            --tb=line \
+            -ra \
+            -p no:xdist \
+            --maxfail=1 \
+            --durations=20 \
+            --durations-min=5.0
 
-      - name: Upload wheel artifact
-        uses: ./.github/actions/upload-artifact-wheel
-
-  build-windows:
-    timeout-minutes: 90
-    if: github.ref != 'refs/heads/test-pre-commit'
-    strategy:
-      fail-fast: false
-      matrix:
-        os:
-          - windows-latest
-        python-version:
-          - "3.12"
-          - "3.13"
-          - "3.14"
-    defaults:
-      run:
-        shell: bash
-    name: build - python ${{ matrix.python-version }} (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    needs:
-      - cargo-deny
-      - cargo-vet
-      - pre-commit
-    env:
-      BUILD_MODE: release
-      HIGH_PRECISION: false
-      PARALLEL_BUILD: false
-      RUST_BACKTRACE: 1
-    steps:
-      # https://github.com/step-security/harden-runner
-      - uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
+      - name: Upload full-suite artifacts
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
-          egress-policy: audit
-
-      - name: Checkout repository
-        # https://github.com/actions/checkout
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
-        with:
-          persist-credentials: false
-
-      - name: Common setup
-        uses: ./.github/actions/common-setup
-        with:
-          python-version: ${{ matrix.python-version }}
-          free-disk-space: "true"
-
-      - name: Build and install wheel
-        uses: ./.github/actions/common-wheel-build
-        with:
-          python-version: ${{ matrix.python-version }}
-          github_ref: ${{ github.ref }}
-
-      - name: Cached test data
-        uses: ./.github/actions/common-test-data
-
-      - name: Install test dependencies
-        run: make install-just-deps
-
-      - name: Run tests
-        run: |
-          uv run --no-sync python -m pytest --ignore=tests/performance_tests --reruns 2 --reruns-delay 1
-
-      - name: Upload wheel artifact
-        uses: ./.github/actions/upload-artifact-wheel
+          name: python-tests-full-results
+          path: tests/results/full
+          if-no-files-found: ignore
 
   publish-wheels-develop:
     name: publish-wheels-develop
@@ -435,11 +665,14 @@ jobs:
       attestations: write # Required for attestations
     needs:
       - build-linux-x86
-      - build-macos
-      - build-windows
-      # - build-linux-arm # Keep for nightly only (slow build)
+      - python-tests-custom
+      - python-tests-full
     if: >
-      github.event_name == 'push' && github.ref == 'refs/heads/develop'
+      always() &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/develop' &&
+      (needs.python-tests-custom.result == 'success' || needs.python-tests-custom.result == 'skipped') &&
+      (needs.python-tests-full.result == 'success' || needs.python-tests-full.result == 'skipped')
     env:
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -495,11 +728,14 @@ jobs:
       attestations: write # Required for attestations
     needs:
       - build-linux-x86
-      - build-linux-arm
-      - build-macos
-      - build-windows
+      - python-tests-custom
+      - python-tests-full
     if: >
-      github.event_name == 'push' && github.ref == 'refs/heads/nightly'
+      always() &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/nightly' &&
+      (needs.python-tests-custom.result == 'success' || needs.python-tests-custom.result == 'skipped') &&
+      (needs.python-tests-full.result == 'success' || needs.python-tests-full.result == 'skipped')
     env:
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -554,12 +790,15 @@ jobs:
       attestations: write # Required for attestations
     needs:
       - build-linux-x86
-      - build-linux-arm
-      - build-macos
-      - build-windows
+      - python-tests-custom
+      - python-tests-full
       - tag-release
     if: >
-      github.event_name == 'push' && github.ref == 'refs/heads/master'
+      always() &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/master' &&
+      (needs.python-tests-custom.result == 'success' || needs.python-tests-custom.result == 'skipped') &&
+      (needs.python-tests-full.result == 'success' || needs.python-tests-full.result == 'skipped')
     env:
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -668,13 +907,17 @@ jobs:
   tag-release:
     needs:
       - build-linux-x86
-      - build-linux-arm
-      - build-macos
-      - build-windows
+      - python-tests-custom
+      - python-tests-full
     permissions:
       contents: write # Required for pushing tags and upload release assets
       actions: write  # Required for creating releases
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    if: >
+      always() &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/master' &&
+      (needs.python-tests-custom.result == 'success' || needs.python-tests-custom.result == 'skipped') &&
+      (needs.python-tests-full.result == 'success' || needs.python-tests-full.result == 'skipped')
     runs-on: ubuntu-latest
     outputs:
       upload_url: ${{ steps.create-release.outputs.upload_url }}

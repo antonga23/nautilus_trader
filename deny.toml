@@ -37,6 +37,21 @@ ignore = [
   { id = "RUSTSEC-2025-0098", reason = "unic-ucd-version unmaintained, transitive via pyo3-stub-gen (dev tool only)" },
   { id = "RUSTSEC-2025-0100", reason = "unic-common unmaintained, transitive via pyo3-stub-gen (dev tool only)" },
 
+  # Temporary CI waivers for inherited upstream advisories tracked in docs/ci/cargo-deny-triage.md.
+  { id = "RUSTSEC-2026-0044", reason = "temporary CI waiver for inherited aws-lc-sys advisory cluster pending dependency upgrades" },
+  { id = "RUSTSEC-2026-0045", reason = "temporary CI waiver for inherited aws-lc-sys advisory cluster pending dependency upgrades" },
+  { id = "RUSTSEC-2026-0046", reason = "temporary CI waiver for inherited aws-lc-sys advisory cluster pending dependency upgrades" },
+  { id = "RUSTSEC-2026-0047", reason = "temporary CI waiver for inherited aws-lc-sys advisory cluster pending dependency upgrades" },
+  { id = "RUSTSEC-2026-0048", reason = "temporary CI waiver for inherited aws-lc-sys advisory cluster pending dependency upgrades" },
+  { id = "RUSTSEC-2026-0049", reason = "temporary CI waiver for inherited rustls-webpki advisory pending upstream dependency updates" },
+  { id = "RUSTSEC-2025-0141", reason = "temporary CI waiver for inherited bincode 1.x lifecycle advisory pending migration planning" },
+  { id = "RUSTSEC-2026-0007", reason = "temporary CI waiver for inherited bytes advisory pending upstream dependency updates" },
+  { id = "RUSTSEC-2025-0143", reason = "temporary CI waiver for inherited capnp advisory pending upstream dependency updates" },
+  { id = "RUSTSEC-2026-0012", reason = "temporary CI waiver for inherited keccak advisory pending upstream dependency updates" },
+  { id = "RUSTSEC-2026-0002", reason = "temporary CI waiver for inherited lru advisory pending upstream dependency updates" },
+  { id = "RUSTSEC-2026-0041", reason = "temporary CI waiver for inherited lz4_flex advisory pending upstream dependency updates" },
+  { id = "RUSTSEC-2026-0009", reason = "temporary CI waiver for inherited time advisory pending upstream dependency updates" },
+
 ]
 
 # =============================================================================

@@ -13,6 +13,26 @@ inputs:
     description: Type of build (pre-commit, test, release)
     required: false
     default: "release"
+  skip-rust:
+    description: Skip Rust toolchain setup
+    required: false
+    default: "false"
+  skip-uv:
+    description: Skip UV installation and cache setup
+    required: false
+    default: "false"
+  skip-capnp:
+    description: Skip Cap'n Proto installation
+    required: false
+    default: "false"
+  skip-install-deps:
+    description: Skip Linux runner dependency bootstrapping
+    required: false
+    default: "false"
+  skip-setup-python:
+    description: Skip actions/setup-python and use the runner Python
+    required: false
+    default: "false"
 
 runs:
   using: "composite"
@@ -44,17 +64,30 @@ runs:
         fi
 
     - name: Install runner dependencies
-      if: runner.os == 'Linux'
+      if: runner.os == 'Linux' && inputs.skip-install-deps != 'true'
       shell: bash
       run: |
+        packages=(curl clang git make pkg-config ripgrep python3-dev libpython3-dev)
+        missing_packages=()
+
+        for package in "${packages[@]}"; do
+          if ! dpkg -s "$package" >/dev/null 2>&1; then
+            missing_packages+=("$package")
+          fi
+        done
+
+        if [ "${#missing_packages[@]}" -eq 0 ]; then
+          echo "Runner dependencies already available"
+          exit 0
+        fi
+
         sudo apt-get update -o Acquire::Retries=5
-        sudo apt-get install -y curl clang git make pkg-config ripgrep -o Acquire::Retries=5
-        sudo apt-get install -y python3-dev libpython3-dev -o Acquire::Retries=5
+        sudo apt-get install -y "${missing_packages[@]}" -o Acquire::Retries=5
         sudo apt-get clean
         sudo rm -rf /var/lib/apt/lists/*
 
     - name: Install capnp and ripgrep (macOS)
-      if: runner.os == 'macOS'
+      if: runner.os == 'macOS' && inputs.skip-capnp != 'true'
       shell: bash
       run: |
         brew update || { sleep 5; brew update; }
@@ -62,25 +95,26 @@ runs:
         brew cleanup
 
     - name: Set Cap'n Proto install prefix (Linux)
-      if: runner.os == 'Linux'
+      if: runner.os == 'Linux' && inputs.skip-capnp != 'true'
       shell: bash
       run: |
         echo "CAPNP_PREFIX=$GITHUB_WORKSPACE/.cache/capnp" >> $GITHUB_ENV
         echo "$GITHUB_WORKSPACE/.cache/capnp/bin" >> $GITHUB_PATH
 
     - name: Get Linux version
-      if: runner.os == 'Linux'
+      if: runner.os == 'Linux' && inputs.skip-capnp != 'true'
       id: linux-version
       shell: bash
       run: echo "release=$(lsb_release -rs)" >> "$GITHUB_OUTPUT"
 
     - name: Get capnp version from capnp-version
+      if: inputs.skip-capnp != 'true'
       shell: bash
       run: |
         echo "CAPNP_VERSION=$(cat capnp-version)" >> $GITHUB_ENV
 
     - name: Cache Cap'n Proto (Linux)
-      if: runner.os == 'Linux'
+      if: runner.os == 'Linux' && inputs.skip-capnp != 'true'
       id: cache-capnp
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
@@ -88,12 +122,12 @@ runs:
         key: capnp-linux-${{ steps.linux-version.outputs.release }}-${{ env.CAPNP_VERSION }}-${{ runner.arch }}
 
     - name: Install capnp
-      if: runner.os == 'Linux'
+      if: runner.os == 'Linux' && inputs.skip-capnp != 'true'
       shell: bash
       run: bash scripts/install-capnp.sh
 
     - name: Install capnp (Windows)
-      if: runner.os == 'Windows'
+      if: runner.os == 'Windows' && inputs.skip-capnp != 'true'
       shell: bash
       run: |
         choco install capnproto ripgrep -y || {
@@ -108,10 +142,12 @@ runs:
     # to ensure we have the latest version before setting our specific toolchain.
     # setup-rust-toolchain should handle this with override: true, but doesn't seem to work.
     - name: Reset and update Rust toolchain
+      if: inputs.skip-rust != 'true'
       shell: bash
       run: bash scripts/ci/install-rust.sh
 
     - name: Get Rust toolchain version
+      if: inputs.skip-rust != 'true'
       id: rust-toolchain
       shell: bash
       run: |
@@ -119,6 +155,7 @@ runs:
 
     # https://github.com/actions-rust-lang/setup-rust-toolchain
     - name: Set up Rust toolchain
+      if: inputs.skip-rust != 'true'
       uses: actions-rust-lang/setup-rust-toolchain@1780873c7b576612439a134613cc4cc74ce5538c # v1.15.2
       with:
         toolchain: ${{ env.TOOLCHAIN }}
@@ -126,7 +163,7 @@ runs:
         override: true
 
     - name: Install cargo-nextest
-      if: inputs.build-type != 'pre-commit'
+      if: inputs.build-type == 'test' || inputs.build-type == 'release'
       # https://github.com/taiki-e/install-action # v2.53.2
       uses: taiki-e/install-action@d12e869b89167df346dd0ff65da342d1fb1202fb
       with:
@@ -135,7 +172,7 @@ runs:
     # > --------------------------------------------------
     # > sccache
     - name: Set sccache env vars (common)
-      if: inputs.build-type != 'pre-commit'
+      if: inputs.build-type == 'test' || inputs.build-type == 'release'
       shell: bash
       run: |
         echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
@@ -149,7 +186,7 @@ runs:
         echo "CARGO_INCREMENTAL=0" >> $GITHUB_ENV
 
     - name: Set sccache env vars (non-Windows)
-      if: runner.os != 'Windows' && inputs.build-type != 'pre-commit'
+      if: runner.os != 'Windows' && (inputs.build-type == 'test' || inputs.build-type == 'release')
       shell: bash
       run: |
         echo "SCCACHE_DIR=$GITHUB_WORKSPACE/.cache/sccache" >> $GITHUB_ENV
@@ -157,7 +194,7 @@ runs:
         echo "CXX=sccache clang++" >> $GITHUB_ENV
 
     - name: Set sccache env vars (Windows)
-      if: runner.os == 'Windows' && inputs.build-type != 'pre-commit'
+      if: runner.os == 'Windows' && (inputs.build-type == 'test' || inputs.build-type == 'release')
       shell: bash
       run: |
         echo SCCACHE_DIR="C:\.cache\sccache" >> $GITHUB_ENV
@@ -165,7 +202,7 @@ runs:
         echo CMAKE_CXX_COMPILER_LAUNCHER=sccache >> $GITHUB_ENV
 
     - name: Run sccache
-      if: inputs.build-type != 'pre-commit'
+      if: inputs.build-type == 'test' || inputs.build-type == 'release'
       # https://github.com/Mozilla-Actions/sccache-action
       uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
       continue-on-error: true # Build continues without cache if sccache setup fails
@@ -173,6 +210,7 @@ runs:
     # > --------------------------------------------------
     # > Python
     - name: Set up Python environment
+      if: inputs.skip-setup-python != 'true'
       # https://github.com/actions/setup-python
       uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
       with:
@@ -189,38 +227,71 @@ runs:
         echo "PYTHON_VERSION=$(bash scripts/python-version.sh)" >> $GITHUB_ENV
 
     - name: Get pre-commit version
+      if: inputs.build-type == 'pre-commit' || inputs.build-type == 'rust-policy'
       shell: bash
       run: |
         echo "PRE_COMMIT_VERSION=$(bash scripts/pre-commit-version.sh)" >> $GITHUB_ENV
 
-    - name: Cache Python site-packages
-      id: cached-site-packages
+    - name: Cache pre-commit tool environment
+      if: inputs.build-type == 'pre-commit' || inputs.build-type == 'rust-policy'
+      id: cached-pre-commit-tool
       # https://github.com/actions/cache
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
-        path: ~/.local/lib/python${{ inputs.python-version }}/site-packages
-        key: ${{ runner.os }}-${{ inputs.python-version }}-site-packages
+        path: ~/.cache/pre-commit-tool
+        key: >-
+          ${{ runner.os }}-${{ runner.arch }}-${{ inputs.python-version
+          }}-pre-commit-tool-${{ env.PRE_COMMIT_VERSION }}
         restore-keys: |
-          ${{ runner.os }}-site-packages-
+          ${{ runner.os }}-${{ runner.arch }}-${{ inputs.python-version }}-pre-commit-tool-
 
     - name: Install pre-commit
+      if: inputs.build-type == 'pre-commit' || inputs.build-type == 'rust-policy'
       shell: bash
-      run: pip install pre-commit==${{ env.PRE_COMMIT_VERSION }}
+      env:
+        PRE_COMMIT_VERSION: ${{ env.PRE_COMMIT_VERSION }}
+        PRE_COMMIT_PYTHON_VERSION: ${{ inputs.python-version }}
+      run: |
+        pre_commit_tool_root="${HOME}/.cache/pre-commit-tool"
+        pre_commit_tool_dir="${pre_commit_tool_root}/py${PRE_COMMIT_PYTHON_VERSION}-${PRE_COMMIT_VERSION}"
+        pre_commit_venv="${pre_commit_tool_dir}/venv"
+        pre_commit_python="${pre_commit_venv}/bin/python"
+        pre_commit_bin="${pre_commit_venv}/bin/pre-commit"
+
+        mkdir -p "${pre_commit_tool_root}"
+
+        if [[ ! -x "${pre_commit_bin}" || ! -x "${pre_commit_python}" ]]; then
+          rm -rf "${pre_commit_tool_dir}"
+          python3 -m venv "${pre_commit_venv}"
+          "${pre_commit_python}" -m pip install --upgrade pip
+          "${pre_commit_python}" -m pip install "pre-commit==${PRE_COMMIT_VERSION}"
+        fi
+
+        installed_version="$("${pre_commit_python}" -m pre_commit --version | awk '{print $2}')"
+        if [[ "${installed_version}" != "${PRE_COMMIT_VERSION}" ]]; then
+          echo "Expected pre-commit ${PRE_COMMIT_VERSION}, got ${installed_version}" >&2
+          exit 1
+        fi
+
+        echo "${pre_commit_venv}/bin" >> "${GITHUB_PATH}"
 
     # > --------------------------------------------------
     # > UV
     - name: Get uv version from uv-version
+      if: inputs.skip-uv != 'true'
       shell: bash
       run: |
         echo "UV_VERSION=$(cat uv-version)" >> $GITHUB_ENV
 
     - name: Install uv
+      if: inputs.skip-uv != 'true'
       # https://github.com/astral-sh/setup-uv
       uses: astral-sh/setup-uv@3259c6206f993105e3a61b142c2d97bf4b9ef83d # v7.1.0
       with:
         version: ${{ env.UV_VERSION }}
 
     - name: Set uv cache-dir
+      if: inputs.skip-uv != 'true'
       shell: bash
       run: |
         echo "UV_CACHE_DIR=$(uv cache dir)" >> $GITHUB_ENV
@@ -228,7 +299,7 @@ runs:
     - name: Cached uv
       # Skip on macOS: hashFiles() broken in composite actions after Nov 20 runner update
       # See: https://github.com/actions/runner/issues/3765
-      if: runner.os != 'macOS'
+      if: runner.os != 'macOS' && inputs.skip-uv != 'true'
       id: cached-uv
       # https://github.com/actions/cache
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -241,7 +312,7 @@ runs:
     - name: Cached pre-commit
       # Skip on macOS: hashFiles() broken in composite actions after Nov 20 runner update
       # See: https://github.com/actions/runner/issues/3765
-      if: runner.os != 'macOS'
+      if: runner.os != 'macOS' && (inputs.build-type == 'pre-commit' || inputs.build-type == 'rust-policy')
       id: cached-pre-commit
       # https://github.com/actions/cache
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
