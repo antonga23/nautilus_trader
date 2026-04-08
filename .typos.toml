@@ -29,6 +29,7 @@ BadAloPx = "BadAloPx" # Hyperliquid API: rejection code for post-only orders
 # Blockchain names (official branding)
 Superseed = "Superseed" # Superseed blockchain (chain ID 10001)
 SUPERSEED = "SUPERSEED" # Superseed blockchain constant
+Serie = "Serie" # Italian football league naming (Serie A)
 
 # Test data and hex/encoded strings
 ba = "ba" # Hex digit in UUID test strings

@@ -1,0 +1,448 @@
+# -------------------------------------------------------------------------------------------------
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
+#  https://nautechsystems.io
+#
+#  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
+#  You may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at https://www.gnu.org/licenses/lgpl-3.0.en.html
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
+# -------------------------------------------------------------------------------------------------
+"""
+SX.bet HTTP client for REST API interactions.
+"""
+
+import asyncio
+import secrets
+from datetime import UTC
+from datetime import datetime
+from email.utils import parsedate_to_datetime
+from typing import Any
+
+import aiohttp
+
+from nautilus_trader.adapters.sxbet.constants import SXBET_API_BASE_URL
+from nautilus_trader.adapters.sxbet.constants import SXBET_ENDPOINTS
+from nautilus_trader.common.component import Logger
+
+
+HTTP_STATUS_OK_MIN = 200
+HTTP_STATUS_REDIRECT_MIN = 300
+HTTP_STATUS_TOO_MANY_REQUESTS = 429
+
+
+class SXBetHttpClientError(Exception):
+    """
+    Exception raised for SX.bet API errors.
+    """
+
+    def __init__(self, message: str, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class SXBetHttpClientSessionError(SXBetHttpClientError):
+    """
+    Raised when the HTTP client cannot initialize its underlying session.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("Failed to initialize SX.bet HTTP session")
+
+
+class SXBetHttpClientRateLimitError(SXBetHttpClientError):
+    """
+    Raised when SX.bet continues returning rate-limit responses after retries.
+    """
+
+    def __init__(self, max_retries: int, status_code: int) -> None:
+        super().__init__(
+            f"Rate limit exceeded after {max_retries} retries",
+            status_code=status_code,
+        )
+
+
+class SXBetHttpClientAuthenticationError(SXBetHttpClientError):
+    """
+    Raised when an authenticated SX.bet endpoint is called without an API key.
+    """
+
+    def __init__(self, operation: str) -> None:
+        super().__init__(f"API key required for {operation}")
+
+
+class SXBetHttpClient:
+    """
+    HTTP client for SX.bet REST API.
+
+    Parameters
+    ----------
+    api_key : str, optional
+        The SX.bet API key (not required for market data).
+    api_url : str, optional
+        The API base URL. Defaults to production.
+    logger : Logger, optional
+        The logger instance.
+
+    """
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        api_url: str | None = None,
+        max_retries: int = 5,
+        request_timeout_secs: float = 30.0,
+        logger: Logger | None = None,
+    ) -> None:
+        self._api_key = api_key
+        self._api_url = api_url or SXBET_API_BASE_URL
+        self._max_retries = max_retries
+        self._request_timeout_secs = request_timeout_secs
+        self._log = logger
+        self._session: Any = None
+        self._request_timeout: Any = None
+
+    @property
+    def headers(self) -> dict[str, str]:
+        """
+        Get request headers with authentication.
+        """
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }
+        if self._api_key:
+            headers["x-api-key"] = self._api_key
+        return headers
+
+    async def connect(self) -> None:
+        """
+        Connect to the API (initialize session).
+        """
+        self._request_timeout = aiohttp.ClientTimeout(total=self._request_timeout_secs)
+        self._session = aiohttp.ClientSession(
+            headers=self.headers,
+            timeout=self._request_timeout,
+        )
+        if self._log:
+            self._log.info("SXBetHttpClient connected")
+
+    async def disconnect(self) -> None:
+        """
+        Disconnect from the API (close session).
+        """
+        if self._session:
+            await self._session.close()
+            self._session = None
+        if self._log:
+            self._log.info("SXBetHttpClient disconnected")
+
+    def _raise_api_error(self, method: str, endpoint: str, status_code: int) -> None:
+        error_message = f"SX.bet API request failed with status {status_code}"
+        if self._log:
+            self._log.error(f"{error_message} for {method} {endpoint}")
+        raise SXBetHttpClientError(error_message, status_code=status_code)
+
+    async def _ensure_session(self) -> Any:
+        if not self._session:
+            await self.connect()
+            if self._session is None:
+                raise SXBetHttpClientSessionError
+        return self._session
+
+    def _require_api_key(self, operation: str) -> None:
+        if not self._api_key:
+            raise SXBetHttpClientAuthenticationError(operation)
+
+    def _raise_rate_limit_error(self, status_code: int) -> None:
+        raise SXBetHttpClientRateLimitError(
+            max_retries=self._max_retries,
+            status_code=status_code,
+        )
+
+    @staticmethod
+    def _parse_retry_after(value: str | None) -> float:
+        if value is None:
+            return 1.0
+
+        normalized = value.strip()
+        if not normalized:
+            return 1.0
+
+        try:
+            return max(float(normalized), 1.0)
+        except ValueError:
+            pass
+
+        try:
+            retry_at = parsedate_to_datetime(normalized)
+        except (TypeError, ValueError, IndexError, OverflowError):
+            return 1.0
+
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=UTC)
+        else:
+            retry_at = retry_at.astimezone(UTC)
+
+        delay = (retry_at - datetime.now(UTC)).total_seconds()
+        return max(delay, 1.0)
+
+    async def _request(
+        self,
+        method: str,
+        endpoint: str,
+        params: dict | None = None,
+        data: Any | None = None,
+    ) -> dict[str, Any]:
+        """
+        Make an HTTP request to the API.
+        """
+        session = await self._ensure_session()
+
+        url = f"{self._api_url}{endpoint}"
+
+        attempt = 0
+        while True:
+            try:
+                async with session.request(
+                    method=method,
+                    url=url,
+                    params=params,
+                    json=data,
+                    timeout=self._request_timeout,
+                ) as response:
+                    if response.status == HTTP_STATUS_TOO_MANY_REQUESTS:
+                        # Rate limited
+                        if attempt >= self._max_retries:
+                            self._raise_rate_limit_error(response.status)
+                        retry_after = self._parse_retry_after(response.headers.get("Retry-After"))
+                        if self._log:
+                            self._log.warning(
+                                f"Rate limited, waiting {retry_after}s (attempt {attempt + 1})",
+                            )
+                        jitter = secrets.randbelow(500) / 1000
+                        await asyncio.sleep(retry_after + jitter)
+                        attempt += 1
+                        continue
+
+                    if not HTTP_STATUS_OK_MIN <= response.status < HTTP_STATUS_REDIRECT_MIN:
+                        await response.text()
+                        self._raise_api_error(method, endpoint, response.status)
+
+                    return await response.json()
+
+            except SXBetHttpClientError:
+                raise
+            except Exception as e:
+                if self._log:
+                    self._log.error(
+                        f"Request failed for {method} {endpoint}: {type(e).__name__}",
+                    )
+                raise
+
+    async def get_sports(self) -> dict[str, Any]:
+        """
+        Get list of available sports.
+        """
+        return await self._request("GET", SXBET_ENDPOINTS["sports"])
+
+    async def get_active_sports(self) -> dict[str, Any]:
+        """
+        Get list of sports with active markets.
+        """
+        return await self._request("GET", SXBET_ENDPOINTS["active_sports"])
+
+    async def get_leagues(self, sport_id: int | None = None) -> dict[str, Any]:
+        """
+        Get leagues, optionally filtered by sport.
+        """
+        params = {}
+        if sport_id:
+            params["sportId"] = sport_id
+        return await self._request("GET", SXBET_ENDPOINTS["leagues"], params=params)
+
+    async def get_active_leagues(self) -> dict[str, Any]:
+        """
+        Get leagues with active markets.
+        """
+        return await self._request("GET", SXBET_ENDPOINTS["active_leagues"])
+
+    async def get_fixtures(
+        self,
+        sport_id: int | None = None,
+        league_id: int | None = None,
+        from_time: int | None = None,
+        to_time: int | None = None,
+    ) -> dict[str, Any]:
+        """
+        Get fixtures/events.
+
+        Parameters
+        ----------
+        sport_id : int, optional
+            Filter by sport.
+        league_id : int, optional
+            Filter by league.
+        from_time : int, optional
+            Start time (Unix timestamp).
+        to_time : int, optional
+            End time (Unix timestamp).
+
+        """
+        params = {}
+        if sport_id:
+            params["sportId"] = sport_id
+        if league_id:
+            params["leagueId"] = league_id
+        if from_time:
+            params["from"] = from_time
+        if to_time:
+            params["to"] = to_time
+
+        return await self._request("GET", SXBET_ENDPOINTS["fixtures"], params=params)
+
+    async def get_markets(
+        self,
+        sport_id: int | None = None,
+        league_id: int | None = None,
+        fixture_id: str | None = None,
+        only_active: bool = True,
+    ) -> dict[str, Any]:
+        """
+        Get betting markets.
+
+        Parameters
+        ----------
+        sport_id : int, optional
+            Filter by sport.
+        league_id : int, optional
+            Filter by league.
+        fixture_id : str, optional
+            Filter by fixture.
+        only_active : bool, default True
+            Only return active markets.
+
+        """
+        params: dict[str, Any] = {"onlyActive": str(only_active).lower()}
+        if sport_id:
+            params["sportId"] = sport_id
+        if league_id:
+            params["leagueId"] = league_id
+        if fixture_id:
+            params["fixtureId"] = fixture_id
+
+        return await self._request("GET", SXBET_ENDPOINTS["markets"], params=params)
+
+    async def get_market(self, market_hash: str) -> dict[str, Any]:
+        """
+        Get a specific market by hash.
+        """
+        endpoint = SXBET_ENDPOINTS["market_by_id"].format(market_hash=market_hash)
+        return await self._request("GET", endpoint)
+
+    async def get_order_book(
+        self,
+        market_hash: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Get active orders.
+
+        Parameters
+        ----------
+        market_hash : str, optional
+            Filter by market hash.
+
+        """
+        if market_hash:
+            endpoint = SXBET_ENDPOINTS["market_orders"].format(market_hash=market_hash)
+        else:
+            endpoint = SXBET_ENDPOINTS["order_book"]
+
+        return await self._request("GET", endpoint)
+
+    async def place_order(  # pylint: disable=too-many-arguments
+        self,
+        market_hash: str,
+        total_bet_size: int,
+        percentage_odds: int,
+        expiry: int,
+        salt: int,
+        is_maker_betting_outcome_one: bool,
+        signature: str,
+        base_token: str,
+    ) -> dict[str, Any]:
+        """
+        Place a new order.
+
+        Parameters
+        ----------
+        market_hash : str
+            The market hash.
+        total_bet_size : int
+            Total bet size in wei.
+        percentage_odds : int
+            Percentage odds (implied probability * 10000).
+        expiry : int
+            Order expiry timestamp.
+        salt : int
+            Random salt for order uniqueness.
+        is_maker_betting_outcome_one : bool
+            If True, maker bets on outcome 1.
+        signature : str
+            EIP712 signature.
+        base_token : str
+            Token address for betting.
+
+        """
+        self._require_api_key("placing orders")
+
+        data = {
+            "marketHash": market_hash,
+            "totalBetSize": str(total_bet_size),
+            "percentageOdds": str(percentage_odds),
+            "expiry": expiry,
+            "salt": str(salt),
+            "isMakerBettingOutcomeOne": is_maker_betting_outcome_one,
+            "signature": signature,
+            "baseToken": base_token,
+        }
+
+        return await self._request("POST", SXBET_ENDPOINTS["place_order"], data=data)
+
+    async def cancel_order(self, order_hash: str) -> dict[str, Any]:
+        """
+        Cancel an order.
+        """
+        self._require_api_key("cancelling orders")
+
+        data = {"orderHash": order_hash}
+        return await self._request("POST", SXBET_ENDPOINTS["cancel_order"], data=data)
+
+    async def get_user_orders(self, wallet_address: str) -> dict[str, Any]:
+        """
+        Get orders for a specific wallet.
+        """
+        self._require_api_key("user orders")
+
+        params = {"address": wallet_address}
+        return await self._request("GET", SXBET_ENDPOINTS["user_orders"], params=params)
+
+    async def get_user_trades(self, wallet_address: str) -> dict[str, Any]:
+        """
+        Get trades for a specific wallet.
+        """
+        self._require_api_key("user trades")
+
+        params = {"address": wallet_address}
+        return await self._request("GET", SXBET_ENDPOINTS["user_trades"], params=params)
+
+    async def get_balance(self, wallet_address: str, token: str) -> dict[str, Any]:
+        """
+        Get token balance for a wallet.
+        """
+        params = {"address": wallet_address, "token": token}
+        return await self._request("GET", SXBET_ENDPOINTS["balance"], params=params)

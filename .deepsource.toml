@@ -1,0 +1,46 @@
+version = 1
+
+test_patterns = [
+  "tests/unit/adapters/**",
+  "tests/integration/**",
+  "nautilus_trader/examples/strategies/run_arbitrage_example.py",
+  "nautilus_trader/examples/strategies/betting_arbitrage.py",
+]
+
+exclude_patterns = [
+  "tests/performance_tests/**",
+  "tests/integration_tests/**",
+  "nautilus_trader/adapters/betfair/**",
+  "nautilus_trader/adapters/binance/**",
+  "nautilus_trader/adapters/bitmex/**",
+  "nautilus_trader/adapters/bybit/**",
+  "nautilus_trader/adapters/cloudbet/**",
+  "nautilus_trader/adapters/coinbase_intx/**",
+  "nautilus_trader/adapters/databento/**",
+  "nautilus_trader/adapters/deribit/**",
+  "nautilus_trader/adapters/dydx/**",
+  "nautilus_trader/adapters/dydx_v4/**",
+  "nautilus_trader/adapters/hyperliquid/**",
+  "nautilus_trader/adapters/interactive_brokers/**",
+  "nautilus_trader/adapters/kraken/**",
+  "nautilus_trader/adapters/okx/**",
+  "nautilus_trader/adapters/sandbox/**",
+  "nautilus_trader/adapters/tardis/**",
+]
+
+[[analyzers]]
+name = "python"
+enabled = true
+
+[analyzers.meta]
+max_line_length = 100
+skip_doc_coverage = ["magic", "init", "class", "module", "nonpublic"]
+runtime_version = "3.x.x"
+
+[[analyzers]]
+name = "rust"
+enabled = true
+
+[[transformers]]
+name = "ruff"
+enabled = true

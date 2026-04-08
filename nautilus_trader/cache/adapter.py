@@ -60,7 +60,7 @@ class CachePostgresAdapter(CacheDatabaseFacade):
         self,
         config: CacheConfig | None = None,
     ) -> None:
-        if config:
+        if config is None:
             config = CacheConfig()
         super().__init__(config)
         self._backing: PostgresCacheDatabase = PostgresCacheDatabase.connect()
