@@ -17,7 +17,7 @@ trap cleanup EXIT
 
 (
   cd "$smoke_dir"
-  GITHUB_WORKSPACE="$workspace_root" "$python_bin" - <<'PY'
+  GITHUB_WORKSPACE="$workspace_root" "$python_bin" - << 'PY'
 import os
 from pathlib import Path
 
