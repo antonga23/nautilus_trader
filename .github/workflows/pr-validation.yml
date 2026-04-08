@@ -159,14 +159,7 @@ jobs:
         run: bash scripts/ci/self_hosted_wheel_cache.sh save "${{ steps.wheel-key.outputs.key }}"
 
       - name: Run smoke tests
-        run: |
-          uv run --no-sync python - <<'PY'
-          import nautilus_trader
-          from nautilus_trader.core import nautilus_pyo3
-
-          print(nautilus_trader.__file__)
-          print(nautilus_pyo3.__file__)
-          PY
+        run: bash scripts/ci/run_installed_wheel_smoke_test.sh
 
       - name: Upload built wheel
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
