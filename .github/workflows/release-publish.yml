@@ -324,7 +324,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       upload_url: ${{ steps.create-release.outputs.upload_url }}
-      tag_name: ${{ env.TAG_NAME }}
+      tag_name: ${{ steps.vars.outputs.tag_name }}
     steps:
       - uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
         with:
@@ -352,8 +352,12 @@ jobs:
       - name: Set output
         id: vars
         run: |
-          echo "TAG_NAME=v$(./scripts/package-version.sh)" >> "$GITHUB_ENV"
-          echo "RELEASE_NAME=NautilusTrader $(./scripts/package-version.sh) Beta" >> "$GITHUB_ENV"
+          tag_name="v$(./scripts/package-version.sh)"
+          release_name="NautilusTrader $(./scripts/package-version.sh) Beta"
+          echo "TAG_NAME=$tag_name" >> "$GITHUB_ENV"
+          echo "RELEASE_NAME=$release_name" >> "$GITHUB_ENV"
+          echo "tag_name=$tag_name" >> "$GITHUB_OUTPUT"
+          echo "release_name=$release_name" >> "$GITHUB_OUTPUT"
           sed -n '/^#/,$ {p;/^---/q}; w RELEASE.md' RELEASES.md
 
       - name: Create GitHub release
@@ -362,8 +366,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag_name: ${{ env.TAG_NAME }}
-          name: ${{ env.RELEASE_NAME }}
+          tag_name: ${{ steps.vars.outputs.tag_name }}
+          name: ${{ steps.vars.outputs.release_name }}
           draft: false
           prerelease: false
           body_path: RELEASE.md
