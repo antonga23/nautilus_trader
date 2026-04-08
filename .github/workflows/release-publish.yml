@@ -530,7 +530,16 @@ jobs:
             exit 1
           fi
 
-          ASSET_PATH=$(find ./dist -name "*.tar.gz" -type f -print0 | xargs -0 ls -t 2>/dev/null | head -n 1)
+          shopt -s nullglob
+          artifacts=(dist/*.tar.gz)
+          shopt -u nullglob
+
+          if [ "${#artifacts[@]}" -eq 0 ]; then
+            echo "Error: No .tar.gz files found in dist directory"
+            exit 1
+          fi
+
+          ASSET_PATH=$(printf '%s\n' "${artifacts[@]}" | xargs ls -t | head -n 1)
 
           if [ -z "$ASSET_PATH" ]; then
             echo "Error: No .tar.gz files found in dist directory"
