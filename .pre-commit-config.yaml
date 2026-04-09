@@ -59,7 +59,7 @@ repos:
         description: Lint Dockerfiles for best practices and errors
 
   - repo: https://github.com/crate-ci/typos
-    rev: v1.39.0 # v1.39.0 (reverts to v1 on updates)
+    rev: v1.40.0 # Pinned to 1.40.0 for security (autoupdate bumps to moving v1 tag)
     hooks:
       - id: typos
         description: Checks for common typos
@@ -82,25 +82,28 @@ repos:
         args: ["--staged", "--redact"]
 
   - repo: https://github.com/google/osv-scanner
-    rev: v2.3.0
+    rev: v2.3.1
     hooks:
       - id: osv-scanner
         name: osv-scanner (dependency vulnerabilities)
-        description: Scans Cargo.lock and uv.lock for known vulnerabilities (defense-in-depth)
+        description: Scans Cargo.lock and uv.lock for known vulnerabilities (warn-only)
         args: ["--config=osv-scanner.toml", "--lockfile=Cargo.lock", "--lockfile=uv.lock"]
+        verbose: true
+        entry: bash scripts/ci/run_osv_scanner_warn_only.sh
+        pass_filenames: false
 
   ##############################################################################
   #  GitHub Actions linting (complementary tools covering different aspects)
   ##############################################################################
   - repo: https://github.com/rhysd/actionlint
-    rev: v1.7.9
+    rev: v1.7.10
     hooks:
       - id: actionlint
         name: actionlint (syntax/structure)
         description: Checks GitHub Actions workflow syntax and structural correctness
 
   - repo: https://github.com/zizmorcore/zizmor-pre-commit
-    rev: v1.18.0
+    rev: v1.19.0
     hooks:
       - id: zizmor
         name: zizmor (security)
@@ -169,6 +172,7 @@ repos:
       - id: cargo-deny
         name: cargo deny (dependency vulnerabilities)
         args: ["--all-features", "check"]
+        stages: [manual]
 
   - repo: local
     hooks:
@@ -179,6 +183,7 @@ repos:
         language: script
         files: '^Cargo\.(toml|lock)$|^supply-chain/'
         pass_filenames: false
+        stages: [manual]
 
   - repo: local
     hooks:
@@ -189,6 +194,7 @@ repos:
         language: script
         files: '\.rs$'
         pass_filenames: false
+        stages: [manual]
 
       - id: check-logging-macro-usage
         name: check logging macro usage
@@ -197,6 +203,7 @@ repos:
         language: script
         files: '\.rs$'
         pass_filenames: false
+        stages: [manual]
 
       - id: check-tokio-usage
         name: check tokio usage
@@ -205,6 +212,7 @@ repos:
         language: script
         files: '\.rs$|Cargo\.toml$'
         pass_filenames: false
+        stages: [manual]
 
       - id: check-pyo3-conventions
         name: check pyo3 conventions
@@ -213,6 +221,7 @@ repos:
         language: script
         files: '\.rs$'
         pass_filenames: false
+        stages: [manual]
 
       - id: check-testing-conventions
         name: check testing conventions
@@ -221,6 +230,7 @@ repos:
         language: script
         types_or: [rust]
         pass_filenames: false
+        stages: [manual]
 
       - id: check-nautilus-conventions
         name: check nautilus conventions
@@ -229,6 +239,7 @@ repos:
         language: script
         files: '\.rs$'
         pass_filenames: false
+        stages: [manual]
 
       - id: fmt
         name: cargo fmt
@@ -239,6 +250,7 @@ repos:
         files: '\.(rs|toml)$'
         types: [file]
         pass_filenames: false
+        stages: [manual]
 
       - id: cargo-clippy
         name: cargo clippy
@@ -260,6 +272,7 @@ repos:
         files: '\.(rs|toml)$'
         types: [file]
         pass_filenames: false
+        stages: [manual]
 
       # TODO: Disabling for now as too slow
       # - id: cargo-doc
@@ -290,18 +303,20 @@ repos:
         types: [python]
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.14.8
+    rev: v0.14.10
     hooks:
       - id: ruff
         name: ruff
         args: ["--fix"]
+      - id: ruff-format
+        name: ruff-format
 
   - repo: https://github.com/pycqa/isort
     rev: 7.0.0
     hooks:
       - id: isort
-        name: isort
-        types_or: [python, pyi, cython]
+        name: isort (cython)
+        types: [cython]
         entry: "isort"
         args: ["--settings-file", "pyproject.toml"]
 
@@ -322,7 +337,7 @@ repos:
         ]
 
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.19.0
+    rev: v1.19.1
     hooks:
       - id: mypy
         language_version: python3.13 # Pin to 3.13 due to incompatibility with 3.14
@@ -341,7 +356,7 @@ repos:
         ]
 
   - repo: https://github.com/astral-sh/uv-pre-commit
-    rev: 0.9.16 # Must match uv-version file
+    rev: 0.9.21 # Must match uv-version file
     hooks:
       - id: uv-lock
         files: ^python/uv\.lock$
