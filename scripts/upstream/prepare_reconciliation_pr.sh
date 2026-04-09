@@ -1,0 +1,205 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+require_env() {
+  local name="$1"
+  if [[ -z "${!name:-}" ]]; then
+    echo "Missing required env: $name" >&2
+    exit 64
+  fi
+}
+
+require_env REPO
+require_env SOURCE_BRANCH
+require_env TARGET_BRANCH
+require_env SYNC_BRANCH
+require_env PR_TITLE
+require_env GH_TOKEN
+
+origin_remote="${ORIGIN_REMOTE:-origin}"
+summary_path="${GITHUB_STEP_SUMMARY:-}"
+issue_title="${ISSUE_TITLE:-Upstream sync conflict: ${SOURCE_BRANCH} -> ${TARGET_BRANCH}}"
+labels_csv="${LABELS_CSV:-upstream-sync,automated}"
+
+git fetch "$origin_remote" "$SOURCE_BRANCH" "$TARGET_BRANCH" --prune
+
+source_ref="refs/remotes/${origin_remote}/${SOURCE_BRANCH}"
+target_ref="refs/remotes/${origin_remote}/${TARGET_BRANCH}"
+
+source_sha="$(git rev-parse "$source_ref")"
+target_sha="$(git rev-parse "$target_ref")"
+merge_base="$(git merge-base "$source_ref" "$target_ref")"
+
+ensure_label() {
+  local label="$1"
+  gh label create "$label" --repo "$REPO" --color C5DEF5 --force >/dev/null 2>&1 || true
+}
+
+IFS=',' read -r -a labels <<< "$labels_csv"
+for label in "${labels[@]}"; do
+  ensure_label "$label"
+done
+
+existing_pr="$(
+  gh pr list --repo "$REPO" --state open --base "$TARGET_BRANCH" --head "$SYNC_BRANCH" \
+    --json number --jq '.[0].number // ""'
+)"
+existing_issue="$(
+  gh issue list --repo "$REPO" --state open --search "$issue_title in:title" \
+    --json number,title --jq ".[] | select(.title == \"$issue_title\") | .number" | head -n1
+)"
+
+close_existing_pr() {
+  if [[ -n "$existing_pr" ]]; then
+    gh pr close "$existing_pr" --repo "$REPO" \
+      --comment "Closing because ${SOURCE_BRANCH} is already fully reconciled into ${TARGET_BRANCH}." >/dev/null
+  fi
+}
+
+close_existing_issue() {
+  if [[ -n "$existing_issue" ]]; then
+    gh issue close "$existing_issue" --repo "$REPO" \
+      --comment "Closing because the reconciliation is now clean." >/dev/null
+  fi
+}
+
+if git merge-base --is-ancestor "$source_ref" "$target_ref"; then
+  close_existing_pr
+  close_existing_issue
+  if [[ -n "$summary_path" ]]; then
+    {
+      echo "### ${SOURCE_BRANCH} -> ${TARGET_BRANCH}"
+      echo
+      echo "- status: already-reconciled"
+      echo "- source: ${source_sha}"
+      echo "- target: ${target_sha}"
+      echo
+    } >> "$summary_path"
+  fi
+  exit 0
+fi
+
+tmp_branch="__sync_tmp_${TARGET_BRANCH//\//_}"
+git checkout --detach "$target_ref" >/dev/null 2>&1
+git branch -D "$tmp_branch" >/dev/null 2>&1 || true
+git checkout -b "$tmp_branch" "$target_ref" >/dev/null 2>&1
+
+set +e
+git merge --no-ff --no-commit "$source_ref" >/tmp/sync-merge.log 2>&1
+merge_status=$?
+set -e
+
+if [[ $merge_status -ne 0 ]]; then
+  conflict_files="$(git diff --name-only --diff-filter=U | sed '/^$/d')"
+  git merge --abort >/dev/null 2>&1 || true
+
+  issue_body=$(
+    cat <<EOF
+Automated upstream reconciliation detected merge conflicts.
+
+- source branch: \`${SOURCE_BRANCH}\`
+- target branch: \`${TARGET_BRANCH}\`
+- source sha: \`${source_sha}\`
+- target sha: \`${target_sha}\`
+- merge base: \`${merge_base}\`
+
+## Conflict files
+\`\`\`text
+${conflict_files:-No file list captured}
+\`\`\`
+
+## Merge output
+\`\`\`text
+$(tail -n 80 /tmp/sync-merge.log)
+\`\`\`
+EOF
+  )
+
+  if [[ -n "$existing_issue" ]]; then
+    gh issue edit "$existing_issue" --repo "$REPO" --body "$issue_body" >/dev/null
+  else
+    create_args=(issue create --repo "$REPO" --title "$issue_title" --body "$issue_body")
+    for label in "${labels[@]}"; do
+      create_args+=(--label "$label")
+    done
+    gh "${create_args[@]}" >/dev/null
+  fi
+
+  close_existing_pr
+
+  if [[ -n "$summary_path" ]]; then
+    {
+      echo "### ${SOURCE_BRANCH} -> ${TARGET_BRANCH}"
+      echo
+      echo "- status: conflict"
+      echo "- source: ${source_sha}"
+      echo "- target: ${target_sha}"
+      echo "- merge base: ${merge_base}"
+      echo
+    } >> "$summary_path"
+  fi
+  exit 0
+fi
+
+if git diff --cached --quiet; then
+  git merge --abort >/dev/null 2>&1 || true
+  close_existing_pr
+  close_existing_issue
+  exit 0
+fi
+
+git commit -m "chore(sync): merge ${SOURCE_BRANCH} into ${TARGET_BRANCH}" >/dev/null
+changed_files_count="$(git diff --name-only "${target_sha}..HEAD" | sed '/^$/d' | wc -l | tr -d ' ')"
+rust_policy_required="false"
+if git diff --name-only "${target_sha}..HEAD" | grep -Eq '^(crates/|Cargo\.toml$|Cargo\.lock$|deny\.toml$|supply-chain/|rust-toolchain\.toml$|capnp-version$|\.pre-commit-config\.yaml$|\.pre-commit-hooks/|scripts/ci/run_rust_policy\.sh$|\.github/workflows/rust-policy\.yml$)'; then
+  rust_policy_required="true"
+fi
+
+git branch -M "$SYNC_BRANCH"
+git push --force-with-lease "$origin_remote" "HEAD:refs/heads/$SYNC_BRANCH"
+
+pr_body=$(
+  cat <<EOF
+Automated upstream reconciliation PR.
+
+- source branch: \`${SOURCE_BRANCH}\`
+- target branch: \`${TARGET_BRANCH}\`
+- source sha: \`${source_sha}\`
+- target sha: \`${target_sha}\`
+- merge base: \`${merge_base}\`
+- changed files: \`${changed_files_count}\`
+- rust-policy expected: \`${rust_policy_required}\`
+
+This PR was generated by the nightly upstream sync workflow. It uses a merge commit workflow only. Do not squash and do not delete the sync branch after merge.
+EOF
+  )
+
+if [[ -n "$existing_pr" ]]; then
+  edit_args=(pr edit "$existing_pr" --repo "$REPO" --title "$PR_TITLE" --body "$pr_body")
+  for label in "${labels[@]}"; do
+    edit_args+=(--add-label "$label")
+  done
+  gh "${edit_args[@]}" >/dev/null
+else
+  create_args=(pr create --repo "$REPO" --base "$TARGET_BRANCH" --head "$SYNC_BRANCH" --title "$PR_TITLE" --body "$pr_body")
+  for label in "${labels[@]}"; do
+    create_args+=(--label "$label")
+  done
+  gh "${create_args[@]}" >/dev/null
+fi
+
+close_existing_issue
+
+if [[ -n "$summary_path" ]]; then
+  {
+    echo "### ${SOURCE_BRANCH} -> ${TARGET_BRANCH}"
+    echo
+    echo "- status: pr-opened"
+    echo "- source: ${source_sha}"
+    echo "- target: ${target_sha}"
+    echo "- merge base: ${merge_base}"
+    echo "- changed files: ${changed_files_count}"
+    echo "- rust-policy expected: ${rust_policy_required}"
+    echo
+  } >> "$summary_path"
+fi
