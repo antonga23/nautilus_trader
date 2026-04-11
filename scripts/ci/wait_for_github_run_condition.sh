@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
 usage() {
   cat <<'EOF' >&2
 Usage: wait_for_github_run_condition.sh --repo <owner/repo> --run-id <id> [options]
