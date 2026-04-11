@@ -1,9 +1,8 @@
 ---
 name: review
 description:
-  Sweep a pull request for human and bot feedback, explicitly trigger a fresh
-  Qodo review after code changes, and drive the push-review-fix loop until the
-  PR is clear.
+  Sweep a pull request for human and bot feedback, and drive the push-review-fix
+  loop until the PR is clear.
 ---
 
 # Review
@@ -12,7 +11,8 @@ description:
 
 - Treat PR review as a repeatable control loop, not a one-off check.
 - Capture all actionable feedback from humans, CI, and `qodo-code-review`.
-- Ensure the latest PR head SHA has a fresh Qodo pass after any code change.
+- Keep Qodo review optional unless the user or repo policy explicitly requires
+  it.
 
 ## When To Use
 
@@ -41,12 +41,12 @@ Sweep these channels every time:
 ## Qodo Rules
 
 - Reviewer login is `qodo-code-review`.
-- After any code change on the PR, explicitly request a fresh Qodo review on the
-  latest head SHA with:
-  - `gh pr comment "$pr_number" --body "/review"`
-- Do not treat an older Qodo review on a previous SHA as sufficient.
+- Only request a fresh Qodo review when the user explicitly asks for it or the
+  active repo policy requires it.
+- Do not assume an older Qodo review on a previous SHA is sufficient if a fresh
+  Qodo pass is actually required.
 - Treat Qodo items labeled or described as bugs, rule violations, or required
-  actions as blocking by default.
+  actions as blocking only when a Qodo review is in scope.
 - Treat recommendation-only comments as non-blocking if the concern is verified
   false or explicitly out of scope.
 - Never dismiss a Qodo finding silently. Either:
@@ -67,7 +67,7 @@ Sweep these channels every time:
 4. Prioritize blocking feedback first:
    - CI failures,
    - human defect reports,
-   - `qodo-code-review` bug/rule/action items,
+   - `qodo-code-review` bug/rule/action items when Qodo is in scope,
    - mergeability problems.
 5. For each blocking item:
    - verify whether the issue is real,
@@ -75,12 +75,13 @@ Sweep these channels every time:
    - otherwise reply with concrete rationale and evidence.
 6. Run targeted validation for each batch of fixes.
 7. Push the branch update.
-8. Request a fresh Qodo review on the latest SHA.
+8. If Qodo is in scope, request a fresh Qodo review on the latest SHA.
 9. Re-run this skill and stop only when:
    - there are no unresolved blocking comments,
    - CI is green,
    - mergeability is clean,
-   - the latest SHA has a fresh Qodo pass or no new Qodo issues.
+   - if Qodo is in scope, the latest SHA has a fresh Qodo pass or no new Qodo
+     issues.
 
 ## Commands
 
@@ -94,7 +95,6 @@ gh api "repos/antonga23/cloudbet-market-maker/issues/$pr_number/comments?per_pag
 gh api "repos/antonga23/cloudbet-market-maker/pulls/$pr_number/comments?per_page=100"
 gh pr view "$pr_number" --json reviews,comments,latestReviews,headRefOid
 gh pr checks "$pr_number"
-gh pr comment "$pr_number" --body "/review"
 ```
 
 ## Output
@@ -102,7 +102,7 @@ gh pr comment "$pr_number" --body "/review"
 Record the current sweep in the Linear `## Codex Workpad` comment:
 
 - PR head SHA
-- whether a fresh Qodo review was requested for that SHA
+- whether Qodo is in scope for that SHA
 - open blocking findings
 - fixed findings in this pass
 - validation run
