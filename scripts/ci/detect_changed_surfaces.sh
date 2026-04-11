@@ -27,6 +27,11 @@ if [[ "$event_name" == "pull_request" ]]; then
   fi
 elif [[ -n "$before_sha" && "$before_sha" != "$null_sha" ]]; then
   diff_target="$before_sha...$current_sha"
+elif git rev-parse --verify --quiet "${current_sha}^1" > /dev/null; then
+  # workflow_dispatch and similar manual runs do not provide a base SHA.
+  # Fall back to the current commit against its first parent instead of linting
+  # the entire repository.
+  diff_target="${current_sha}^1...$current_sha"
 else
   diff_target=""
 fi
