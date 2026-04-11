@@ -34,6 +34,7 @@ extension-module = [
 hypersync = ["hypersync-client", "hypersync-schema"]
 python = [
   "nautilus-infrastructure/python",
+  "nautilus-live/streaming",
   "nautilus-network/python",
   "nautilus-system/python",
   "pyo3",
@@ -73,7 +74,6 @@ serde_json = { workspace = true }
 sqlx = { workspace = true }
 strum = { workspace = true }
 thiserror = { workspace = true }
-thousands = { workspace = true }
 tokio = { workspace = true }
 tokio-tungstenite = { workspace = true }
 tokio-util = { workspace = true }
@@ -94,8 +94,10 @@ turmoil = { workspace = true }
 name = "node_test"
 path = "bin/node_test.rs"
 required-features = ["hypersync"]
+doc = false
 
 [[bin]]
 name = "node_wallet"
 path = "bin/node_wallet.rs"
 required-features = ["hypersync"]
+doc = false

@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -49,9 +49,12 @@ class KrakenDataClientConfig(LiveDataClientConfig, frozen=True):
     base_url_http_futures : str, optional
         The base URL for Kraken Futures HTTP API.
         If ``None`` then will use the default URL based on environment.
-    base_url_ws : str, optional
-        The base URL for Kraken WebSocket API.
-        If ``None`` then will use the default URL based on environment and product_type.
+    base_url_ws_spot : str, optional
+        The base URL for Kraken Spot WebSocket API.
+        If ``None`` then will use the default URL based on environment.
+    base_url_ws_futures : str, optional
+        The base URL for Kraken Futures WebSocket API.
+        If ``None`` then will use the default URL based on environment.
     http_proxy_url : str, optional
         Optional HTTP proxy URL.
     ws_proxy_url : str, optional
@@ -68,6 +71,9 @@ class KrakenDataClientConfig(LiveDataClientConfig, frozen=True):
         The timeout in seconds for HTTP requests.
     ws_heartbeat_secs : PositiveInt, default 30
         The WebSocket heartbeat interval in seconds.
+    max_requests_per_second : PositiveInt, optional
+        The maximum number of requests per second for rate limiting.
+        If ``None`` then will use the default of 5 requests per second.
 
     """
 
@@ -77,7 +83,8 @@ class KrakenDataClientConfig(LiveDataClientConfig, frozen=True):
     product_types: tuple[KrakenProductType, ...] | None = None
     base_url_http_spot: str | None = None
     base_url_http_futures: str | None = None
-    base_url_ws: str | None = None
+    base_url_ws_spot: str | None = None
+    base_url_ws_futures: str | None = None
     http_proxy_url: str | None = None
     ws_proxy_url: str | None = None
     update_instruments_interval_mins: PositiveInt | None = 60
@@ -86,6 +93,7 @@ class KrakenDataClientConfig(LiveDataClientConfig, frozen=True):
     retry_delay_max_ms: PositiveInt | None = None
     http_timeout_secs: PositiveInt | None = None
     ws_heartbeat_secs: PositiveInt = 30
+    max_requests_per_second: PositiveInt | None = None
 
 
 class KrakenExecClientConfig(LiveExecClientConfig, frozen=True):
@@ -138,6 +146,9 @@ class KrakenExecClientConfig(LiveExecClientConfig, frozen=True):
         The timeout in seconds for HTTP requests.
     ws_heartbeat_secs : PositiveInt, default 30
         The WebSocket heartbeat interval in seconds.
+    max_requests_per_second : PositiveInt, optional
+        The maximum number of requests per second for rate limiting.
+        If ``None`` then will use the default of 5 requests per second.
     use_spot_position_reports : bool, default False
         If True, wallet balances for SPOT instruments will be reported as positions:
         - Positive balances are reported as LONG positions.
@@ -165,5 +176,6 @@ class KrakenExecClientConfig(LiveExecClientConfig, frozen=True):
     retry_delay_max_ms: PositiveInt | None = None
     http_timeout_secs: PositiveInt | None = None
     ws_heartbeat_secs: PositiveInt = 30
+    max_requests_per_second: PositiveInt | None = None
     use_spot_position_reports: bool = False
     spot_positions_quote_currency: str = "USDT"

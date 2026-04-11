@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -15,8 +15,7 @@
 
 use bytes::Bytes;
 use nautilus_common::{
-    cache::database::CacheDatabaseAdapter, custom::CustomData, live::runtime::get_runtime,
-    signal::Signal,
+    cache::database::CacheDatabaseAdapter, custom::CustomData, live::get_runtime, signal::Signal,
 };
 use nautilus_core::python::to_pyruntime_err;
 use nautilus_model::{

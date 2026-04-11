@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -37,6 +37,7 @@ use nautilus_model::{
     identifiers::{ClientId, TraderId, Venue},
     instruments::{CurrencyPair, InstrumentAny, stubs::*},
     orderbook::OrderBook,
+    stubs::TestDefault,
     types::{Price, Quantity},
 };
 use rstest::*;
@@ -59,8 +60,8 @@ use crate::{
     component::Component,
     logging::{logger::LogGuard, logging_is_initialized},
     messages::data::{
-        BarsResponse, BookResponse, CustomDataResponse, InstrumentResponse, InstrumentsResponse,
-        QuotesResponse, TradesResponse,
+        BarsResponse, BookResponse, CustomDataResponse, DataResponse, InstrumentResponse,
+        InstrumentsResponse, QuotesResponse, TradesResponse,
     },
     msgbus::{
         self, MessageBus, get_message_bus,
@@ -285,7 +286,7 @@ fn switchboard() -> Arc<MessagingSwitchboard> {
 
 #[fixture]
 fn trader_id() -> TraderId {
-    TraderId::from("TRADER-000")
+    TraderId::test_default()
 }
 
 #[fixture]
@@ -773,7 +774,8 @@ fn test_request_instrument(
         None,
     );
 
-    msgbus::response(&request_id, response.as_any());
+    let data_response = DataResponse::Instrument(Box::new(response));
+    msgbus::send_response(&request_id, &data_response);
 
     assert_eq!(actor.received_instruments.len(), 1);
     assert_eq!(actor.received_instruments[0], instrument);
@@ -791,7 +793,7 @@ fn test_request_instruments(
     let mut actor = get_actor_unchecked::<TestDataActor>(&actor_id);
     actor.start().unwrap();
 
-    let venue = Venue::from("SIM");
+    let venue = Venue::test_default();
     let request_id = actor
         .request_instruments(Some(venue), None, None, None, None)
         .unwrap();
@@ -812,7 +814,8 @@ fn test_request_instruments(
         None,
     );
 
-    msgbus::response(&request_id, response.as_any());
+    let data_response = DataResponse::Instruments(response);
+    msgbus::send_response(&request_id, &data_response);
 
     assert_eq!(actor.received_instruments.len(), 2);
     assert_eq!(actor.received_instruments[0], instrument1);
@@ -849,7 +852,8 @@ fn test_request_quotes(
         None,
     );
 
-    msgbus::response(&request_id, response.as_any());
+    let data_response = DataResponse::Quotes(response);
+    msgbus::send_response(&request_id, &data_response);
 
     assert_eq!(actor.received_quotes.len(), 1);
     assert_eq!(actor.received_quotes[0], quote);
@@ -885,7 +889,8 @@ fn test_request_trades(
         None,
     );
 
-    msgbus::response(&request_id, response.as_any());
+    let data_response = DataResponse::Trades(response);
+    msgbus::send_response(&request_id, &data_response);
 
     assert_eq!(actor.received_trades.len(), 1);
     assert_eq!(actor.received_trades[0], trade);
@@ -923,7 +928,8 @@ fn test_request_bars(
         None,
     );
 
-    msgbus::response(&request_id, response.as_any());
+    let data_response = DataResponse::Bars(response);
+    msgbus::send_response(&request_id, &data_response);
 
     assert_eq!(actor.received_bars.len(), 1);
     assert_eq!(actor.received_bars[0], bar);
@@ -941,7 +947,7 @@ fn test_subscribe_and_receive_instruments(
     let mut actor = get_actor_unchecked::<TestDataActor>(&actor_id);
     actor.start().unwrap();
 
-    let venue = Venue::from("SIM");
+    let venue = Venue::test_default();
     actor.subscribe_instruments(venue, None, None);
 
     let topic = get_instruments_topic(venue);
@@ -1130,7 +1136,7 @@ fn test_unsubscribe_instruments(
     let mut actor = get_actor_unchecked::<TestDataActor>(&actor_id);
     actor.start().unwrap();
 
-    let venue = Venue::from("SIM");
+    let venue = Venue::test_default();
     actor.subscribe_instruments(venue, None, None);
 
     let topic = get_instruments_topic(venue);
@@ -1396,7 +1402,8 @@ fn test_request_book_snapshot(
         ts_init,
         None,
     );
-    msgbus::response(&request_id, response.as_any());
+    let data_response = DataResponse::Book(response);
+    msgbus::send_response(&request_id, &data_response);
 
     // Should trigger on_book and record the book
     assert_eq!(actor.received_books.len(), 1);
@@ -1440,7 +1447,8 @@ fn test_request_data(
     );
 
     // Publish the response
-    msgbus::response(&request_id, response.as_any());
+    let data_response = DataResponse::Data(response);
+    msgbus::send_response(&request_id, &data_response);
 
     // Actor should receive the custom data
     assert_eq!(actor.received_data.len(), 1);

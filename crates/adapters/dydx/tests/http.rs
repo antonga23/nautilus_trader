@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -25,7 +25,7 @@ use axum::{
     routing::get,
 };
 use chrono::{Duration as ChronoDuration, Utc};
-use nautilus_common::testing::wait_until_async;
+use nautilus_common::{live::get_runtime, testing::wait_until_async};
 use nautilus_dydx::{
     common::enums::DydxCandleResolution,
     http::client::{DydxHttpClient, DydxRawHttpClient},
@@ -1010,10 +1010,6 @@ async fn test_orders_with_limit() {
     assert_eq!(result.len(), 0);
 }
 
-// ================================================================================
-// Additional tests: Authentication, concurrency, edge cases
-// ================================================================================
-
 #[rstest]
 #[tokio::test]
 async fn test_http_401_unauthorized() {
@@ -1399,9 +1395,7 @@ async fn test_concurrent_requests() {
     let mut handles = vec![];
     for _ in 0..5 {
         let client_clone = client.clone();
-        handles.push(tokio::spawn(
-            async move { client_clone.get_markets().await },
-        ));
+        handles.push(get_runtime().spawn(async move { client_clone.get_markets().await }));
     }
 
     let mut success_count = 0;

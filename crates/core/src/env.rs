@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -56,10 +56,6 @@ pub fn get_or_env_var(value: Option<String>, key: &str) -> anyhow::Result<String
 pub fn get_or_env_var_opt(value: Option<String>, key: &str) -> Option<String> {
     value.or_else(|| std::env::var(key).ok())
 }
-
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
 
 #[cfg(test)]
 mod tests {

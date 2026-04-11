@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -18,8 +18,6 @@
 //! Re-exports proto definitions from the `dydx_proto` crate which includes both
 //! Cosmos SDK and dYdX protocol-specific messages.
 
-// Re-export commonly used proto types
-// Re-export entire modules for comprehensive access
 pub use dydx_proto::{
     ToAny, cosmos_sdk_proto,
     cosmos_sdk_proto::cosmos::{

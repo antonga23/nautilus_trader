@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -479,8 +479,11 @@ def create_tearsheet_from_stats(
     >>> stats_pnls = {"PnL (total)": 10000.0, ...}
     >>> returns = pd.Series([0.01, -0.02, ...])
     >>> html = create_tearsheet_from_stats(
-    ...     stats_pnls, stats_returns, stats_general, returns,
-    ...     output_path=None  # Return HTML instead of saving
+    ...     stats_pnls,
+    ...     stats_returns,
+    ...     stats_general,
+    ...     returns,
+    ...     output_path=None,  # Return HTML instead of saving
     ... )
 
     """
@@ -1604,6 +1607,8 @@ def create_bars_with_fills(
     engine: BacktestEngine,
     bar_type: BarType,
     title: str | None = None,
+    theme: str = "plotly_white",
+    output_path: str | None = None,
 ) -> go.Figure:
     """
     Create a candlestick chart with order fills overlaid as bar charts.
@@ -1619,6 +1624,10 @@ def create_bars_with_fills(
         The bar type to visualize.
     title : str, optional
         Plot title. If None, uses bar_type string.
+    theme : str, default "plotly_white"
+        Theme name for styling.
+    output_path : str, optional
+        Path to save HTML plot. If None, plot is not saved.
 
     Returns
     -------
@@ -1638,8 +1647,13 @@ def create_bars_with_fills(
         )
         raise ImportError(msg)
 
+    from nautilus_trader.analysis.themes import get_theme
+
     PyCondition.not_none(engine, "engine")
     PyCondition.not_none(bar_type, "bar_type")
+
+    # Get theme configuration
+    theme_config = _normalize_theme_config(get_theme(theme))
 
     # Get bars for the bar type
     bars = engine.cache.bars(bar_type)
@@ -1666,13 +1680,14 @@ def create_bars_with_fills(
         engine=engine,
         bar_type=bar_type,
         title=title,
+        theme_config=theme_config,
     )
 
     # Update layout
     fig.update_layout(
         title=title or f"{bar_type} - Bars with Order Fills",
         yaxis_title="Price",
-        template="plotly_white",
+        template=theme_config["template"],
         height=800,
         showlegend=True,
         xaxis1={
@@ -1685,16 +1700,20 @@ def create_bars_with_fills(
     # Update y-axes to allow zooming
     fig.update_yaxes(fixedrange=False, row=1, col=1)
 
+    if output_path:
+        fig.write_html(output_path)
+
     return fig
 
 
-def _render_bars_with_fills(
+def _render_bars_with_fills(  # noqa: C901
     fig: go.Figure,
     row: int,
     col: int,
     engine=None,
     bar_type=None,
     title: str | None = None,
+    theme_config: dict[str, Any] | None = None,
     **kwargs: Any,
 ) -> None:
     """
@@ -1714,12 +1733,20 @@ def _render_bars_with_fills(
         The bar type to visualize. Can be a string or BarType object.
     title : str, optional
         Chart title override.
+    theme_config : dict[str, Any], optional
+        Theme configuration dictionary. If None, defaults to plotly_white theme.
     **kwargs : Any
         Additional keyword arguments (ignored).
 
     """
     if engine is None:
         return
+
+    # Get theme configuration with fallback
+    if theme_config is None:
+        from nautilus_trader.analysis.themes import get_theme
+
+        theme_config = _normalize_theme_config(get_theme("plotly_white"))
 
     # Convert bar_type string to BarType if needed
     if bar_type is None:
@@ -1780,28 +1807,36 @@ def _render_bars_with_fills(
     # Add order fills as scatter markers if available
     if not fills_df.empty and "ts_init" in fills_df.columns:
         # Separate buy and sell fills
-        buy_fills = fills_df[fills_df["side"] == "BUY"] if "side" in fills_df.columns else pd.DataFrame()
-        sell_fills = fills_df[fills_df["side"] == "SELL"] if "side" in fills_df.columns else pd.DataFrame()
+        buy_fills = (
+            fills_df[fills_df["side"] == "BUY"] if "side" in fills_df.columns else pd.DataFrame()
+        )
+        sell_fills = (
+            fills_df[fills_df["side"] == "SELL"] if "side" in fills_df.columns else pd.DataFrame()
+        )
 
-        # Add buy fills (green markers)
+        # Get theme colors for fills
+        positive_color = theme_config["colors"]["positive"]
+        negative_color = theme_config["colors"]["negative"]
+
+        # Add buy fills (using theme positive color)
         _add_fill_scatter_trace(
             fig=fig,
             fills_df=buy_fills,
             row=row,
             col=col,
             marker_symbol="triangle-up",
-            marker_color="rgba(0,255,0,0.7)",
+            marker_color=_hex_to_rgba(positive_color, 0.7),
             name="Buy Fills",
         )
 
-        # Add sell fills (red markers)
+        # Add sell fills (using theme negative color)
         _add_fill_scatter_trace(
             fig=fig,
             fills_df=sell_fills,
             row=row,
             col=col,
             marker_symbol="triangle-down",
-            marker_color="rgba(255,0,0,0.7)",
+            marker_color=_hex_to_rgba(negative_color, 0.7),
             name="Sell Fills",
         )
 
@@ -1828,7 +1863,15 @@ def _add_fill_scatter_trace(
     if fills_df.empty or "avg_px" not in fills_df.columns or "filled_qty" not in fills_df.columns:
         return
 
-    required_cols = ["strategy_id", "instrument_id", "type", "side", "filled_qty", "avg_px", "ts_init"]
+    required_cols = [
+        "strategy_id",
+        "instrument_id",
+        "type",
+        "side",
+        "filled_qty",
+        "avg_px",
+        "ts_init",
+    ]
     has_all_cols = all(col in fills_df.columns for col in required_cols)
 
     fig.add_trace(
@@ -1855,12 +1898,7 @@ def _add_fill_scatter_trace(
                 "<extra></extra>"
             )
             if has_all_cols
-            else (
-                "<b>%{x}</b><br>"
-                "Price: %{y:.2f}<br>"
-                "Quantity: %{customdata}<br>"
-                "<extra></extra>"
-            ),
+            else ("<b>%{x}</b><br>Price: %{y:.2f}<br>Quantity: %{customdata}<br><extra></extra>"),
             showlegend=True,
         ),
         row=row,
@@ -1998,4 +2036,9 @@ _register_tearsheet_chart(
     _render_rolling_sharpe,
 )
 _register_tearsheet_chart("yearly_returns", "bar", "Yearly Returns", _render_yearly_returns)
-_register_tearsheet_chart("bars_with_fills", "scatter", "Bars with Order Fills", _render_bars_with_fills)
+_register_tearsheet_chart(
+    "bars_with_fills",
+    "scatter",
+    "Bars with Order Fills",
+    _render_bars_with_fills,
+)

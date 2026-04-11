@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -437,6 +437,21 @@ cdef class Instrument(Data):
 
         """
         return False
+
+    cpdef list legs(self):
+        """
+        Return the list of leg tuples (instrument_id, ratio) for this spread.
+
+        Base implementation returns an empty list. Override in spread instrument
+        classes to return the actual legs.
+
+        Returns
+        -------
+        list[tuple[InstrumentId, int]]
+            List of tuples containing (instrument_id, ratio) for each leg.
+
+        """
+        return [(self.id, 1)]
 
     cpdef Currency get_base_currency(self):
         """

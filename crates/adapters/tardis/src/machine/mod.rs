@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -29,6 +29,7 @@ use std::{
 use async_stream::stream;
 use futures_util::{SinkExt, Stream, StreamExt, stream::SplitSink};
 use message::WsMessage;
+use nautilus_common::live::get_runtime;
 use tokio::net::TcpStream;
 use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream, connect_async,
@@ -130,7 +131,7 @@ async fn stream_from_websocket(
 
     Ok(stream! {
         let (writer, mut reader) = ws_stream.split();
-        tokio::spawn(heartbeat(writer));
+        get_runtime().spawn(heartbeat(writer));
 
         // Timeout awaiting the next record before checking signal
         let timeout = Duration::from_millis(10);

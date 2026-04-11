@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -129,10 +129,6 @@ pub const DYDX_TESTNET_GRPC_URL: &str = DYDX_TESTNET_GRPC_URLS[0];
 pub const fn should_retry_error_code(status: &StatusCode) -> bool {
     matches!(status.as_u16(), 429 | 500..=599)
 }
-
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
 
 #[cfg(test)]
 mod tests {

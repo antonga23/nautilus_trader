@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -20,7 +20,7 @@ import msgspec
 
 from nautilus_trader.adapters.polymarket.common.enums import PolymarketLiquiditySide
 from nautilus_trader.adapters.polymarket.common.enums import PolymarketOrderSide
-from nautilus_trader.adapters.polymarket.common.parsing import parse_order_side
+from nautilus_trader.adapters.polymarket.common.parsing import determine_order_side
 from nautilus_trader.adapters.polymarket.schemas.user import PolymarketMakerOrder
 from nautilus_trader.core.datetime import secs_to_nanos
 from nautilus_trader.core.stats import basis_points_as_percentage
@@ -87,18 +87,29 @@ class PolymarketTradeReport(msgspec.Struct, frozen=True):
 
         raise ValueError(f"Invalid maker order ID {filled_user_order_id}")
 
+    def get_asset_id(self, filled_user_order_id: str) -> str:
+        # - For taker fills, returns the taker's asset_id.
+        # - For maker fills, returns the maker order's asset_id (which may differ
+        # from the taker's asset_id in cross-asset matches).
+        if self.trader_side == PolymarketLiquiditySide.TAKER:
+            return self.asset_id
+        else:
+            order = self.get_maker_order(filled_user_order_id)
+            return order.asset_id
+
     def liquidity_side(self) -> LiquiditySide:
         if self.trader_side == PolymarketLiquiditySide.TAKER:
             return LiquiditySide.TAKER
         else:
             return LiquiditySide.MAKER
 
-    def order_side(self) -> OrderSide:
-        order_side = parse_order_side(self.side)
-        if self.trader_side == PolymarketLiquiditySide.TAKER:
-            return order_side
-        else:
-            return OrderSide.BUY if order_side == OrderSide.SELL else OrderSide.SELL
+    def order_side(self, filled_user_order_id: str) -> OrderSide:
+        return determine_order_side(
+            trader_side=self.trader_side,
+            trade_side=self.side,
+            taker_asset_id=self.asset_id,
+            maker_asset_id=self.get_asset_id(filled_user_order_id),
+        )
 
     def venue_order_id(self, filled_user_order_id: str) -> VenueOrderId:
         if self.trader_side == PolymarketLiquiditySide.TAKER:
@@ -153,7 +164,7 @@ class PolymarketTradeReport(msgspec.Struct, frozen=True):
             client_order_id=client_order_id,
             venue_order_id=self.venue_order_id(filled_user_order_id),
             trade_id=TradeId(self.id),
-            order_side=self.order_side(),
+            order_side=self.order_side(filled_user_order_id),
             last_qty=last_qty,
             last_px=last_px,
             commission=Money(commission, USDC_POS),

@@ -1,0 +1,267 @@
+# -------------------------------------------------------------------------------------------------
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
+#  https://nautechsystems.io
+#
+#  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
+#  You may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at https://www.gnu.org/licenses/lgpl-3.0.en.html
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
+# -------------------------------------------------------------------------------------------------
+"""
+SX.bet market data client.
+"""
+
+import asyncio
+import contextlib
+
+from nautilus_trader.adapters.betting.common.enums import Outcome
+from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
+from nautilus_trader.adapters.sxbet.config import SXBetDataClientConfig
+from nautilus_trader.adapters.sxbet.constants import SXBET_VENUE
+from nautilus_trader.adapters.sxbet.http_client import SXBetHttpClient
+from nautilus_trader.adapters.sxbet.http_client import SXBetHttpClientError
+from nautilus_trader.adapters.sxbet.providers import SXBetInstrumentProvider
+from nautilus_trader.adapters.sxbet.signing import percentage_to_decimal_odds
+from nautilus_trader.cache.cache import Cache
+from nautilus_trader.common.component import LiveClock
+from nautilus_trader.common.component import Logger
+from nautilus_trader.common.component import MessageBus
+from nautilus_trader.live.data_client import LiveMarketDataClient
+from nautilus_trader.model.data import DataType
+from nautilus_trader.model.data import QuoteTick
+from nautilus_trader.model.identifiers import ClientId
+from nautilus_trader.model.identifiers import InstrumentId
+from nautilus_trader.model.objects import Price
+from nautilus_trader.model.objects import Quantity
+
+
+class SXBetDataClient(LiveMarketDataClient):
+    """
+    Provides a data client for the SX.bet venue.
+
+    Uses polling for order book updates (WebSocket would be preferred).
+
+    """
+
+    def __init__(  # pylint: disable=too-many-arguments
+        self,
+        loop: asyncio.AbstractEventLoop,
+        http_client: SXBetHttpClient,
+        instrument_provider: SXBetInstrumentProvider,
+        msgbus: MessageBus,
+        cache: Cache,
+        clock: LiveClock,
+        logger: Logger,
+        config: SXBetDataClientConfig,
+    ) -> None:
+        super().__init__(
+            loop=loop,
+            client_id=ClientId(SXBET_VENUE.value),
+            venue=SXBET_VENUE,
+            msgbus=msgbus,
+            cache=cache,
+            clock=clock,
+            instrument_provider=instrument_provider,
+        )
+
+        self._http_client = http_client
+        self._config = config
+        self._instrument_provider = instrument_provider
+        self._subscribed_instruments: set[InstrumentId] = set()
+        self._polling_task: asyncio.Task | None = None
+        self._polling_interval = 3.0  # Faster polling for SX.bet
+        self._running = False
+        self._logger = logger
+
+    async def _connect(self) -> None:
+        """
+        Connect to the data source.
+        """
+        self._log.info("Connecting SXBetDataClient...")
+        await self._http_client.connect()
+
+        # Load instruments
+        filters = {}
+        if self._config.sport_ids:
+            filters["sport_ids"] = self._config.sport_ids
+
+        await self._instrument_provider.load_all_async(filters)
+
+        self._log.info("SXBetDataClient connected")
+
+    async def _disconnect(self) -> None:
+        """
+        Disconnect from the data source.
+        """
+        self._log.info("Disconnecting SXBetDataClient...")
+
+        self._running = False
+
+        if self._polling_task and not self._polling_task.done():
+            self._polling_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._polling_task
+
+        await self._http_client.disconnect()
+        self._log.info("SXBetDataClient disconnected")
+
+    async def _subscribe_quote_ticks(self, instrument_id: InstrumentId) -> None:
+        """
+        Subscribe to quote ticks for an instrument.
+        """
+        self._subscribed_instruments.add(instrument_id)
+        msg = f"Subscribed to quote ticks: {instrument_id}"
+        self._log.debug(msg)
+
+        if not self._running:
+            self._running = True
+            self._polling_task = asyncio.create_task(self._poll_order_books())
+
+    async def _unsubscribe_quote_ticks(self, instrument_id: InstrumentId) -> None:
+        """
+        Unsubscribe from quote ticks.
+        """
+        self._subscribed_instruments.discard(instrument_id)
+        msg = f"Unsubscribed from quote ticks: {instrument_id}"
+        self._log.debug(msg)
+
+        if not self._subscribed_instruments:
+            self._running = False
+
+    async def _poll_order_books(self) -> None:
+        """
+        Poll for order book updates.
+        """
+        self._log.debug("Starting order book polling loop")
+
+        while self._running:
+            try:
+                # Get unique market hashes
+                market_hashes = set()
+                for instrument_id in list(self._subscribed_instruments):
+                    instrument = self._instrument_provider.find(instrument_id)
+                    if isinstance(instrument, CryptoBettingInstrument):
+                        market_hashes.add(instrument.event_id)
+
+                # Poll each market
+                for market_hash in market_hashes:
+                    await self._fetch_and_publish_quotes(market_hash)
+
+                await asyncio.sleep(self._polling_interval)
+
+            except asyncio.CancelledError:
+                break
+            except (RuntimeError, ValueError, TypeError, KeyError, SXBetHttpClientError) as e:
+                msg = f"Error in order book polling: {e}"
+                self._log.error(msg)
+                await asyncio.sleep(self._polling_interval)
+
+        self._log.debug("Stopped order book polling loop")
+
+    async def _fetch_and_publish_quotes(self, market_hash: str) -> None:
+        """
+        Fetch and publish quotes for a market.
+        """
+        try:
+            order_book = await self._http_client.get_order_book(market_hash)
+            orders = order_book.get("data", {}).get("orders", [])
+
+            # Find instruments for this market
+            instruments = self._instrument_provider.find_by_market_hash(market_hash)  # type: ignore[attr-defined]
+
+            for instrument in instruments:
+                if instrument.id not in self._subscribed_instruments:
+                    continue
+
+                is_outcome_one = self._instrument_is_outcome_one(instrument)
+                best_bid, best_ask = self._best_bid_ask(orders, is_outcome_one)
+
+                if best_bid <= 0 and best_ask <= 0:
+                    continue
+
+                if best_bid > 0 and best_ask > 0 and not self._has_valid_spread(best_bid, best_ask):
+                    self._log.warning(
+                        f"Skipping locked/crossed SX.bet quote for {instrument.id}: "
+                        f"bid={best_bid}, ask={best_ask}",
+                    )
+                    continue
+
+                quote = QuoteTick(
+                    instrument_id=instrument.id,
+                    bid_price=Price(best_bid, precision=2),
+                    ask_price=Price(best_ask, precision=2),
+                    bid_size=Quantity.from_int(100) if best_bid > 0 else Quantity.zero(),
+                    ask_size=Quantity.from_int(100) if best_ask > 0 else Quantity.zero(),
+                    ts_event=self._clock.timestamp_ns(),
+                    ts_init=self._clock.timestamp_ns(),
+                )
+                self._handle_data(quote)
+
+        except (ValueError, TypeError, KeyError, SXBetHttpClientError) as e:
+            msg = f"Failed to fetch quotes for {market_hash}: {e}"
+            self._log.warning(msg)
+
+    @staticmethod
+    def _instrument_is_outcome_one(instrument: CryptoBettingInstrument) -> bool:
+        info = getattr(instrument, "info", None)
+        if isinstance(info, dict) and "outcome_one" in info:
+            return bool(info["outcome_one"])
+
+        outcome = Outcome.from_string(instrument.outcome)
+        if outcome in {Outcome.HOME, Outcome.OVER, Outcome.YES}:
+            return True
+        if outcome in {Outcome.AWAY, Outcome.UNDER, Outcome.NO}:
+            return False
+
+        params = instrument.params or ""
+        if not isinstance(params, str):
+            params = str(params)
+        return "outcome_one=True" in params
+
+    @staticmethod
+    def _best_bid_ask(orders: list[dict], is_outcome_one: bool) -> tuple[float, float]:
+        best_bid = 0.0
+
+        for order in orders:
+            percentage = int(order.get("percentageOdds", 0))
+            if percentage <= 0:
+                continue
+            odds = percentage_to_decimal_odds(percentage)
+            if order.get("isMakerBettingOutcomeOne") == is_outcome_one:
+                best_bid = max(best_bid, odds)
+
+        return best_bid, 0.0
+
+    @staticmethod
+    def _has_valid_spread(best_bid: float, best_ask: float) -> bool:
+        return best_bid > 0 and best_ask > 0 and best_bid < best_ask
+
+    async def _subscribe_instrument(self, instrument_id: InstrumentId) -> None:
+        """
+        Subscribe to instrument updates.
+        """
+        self._log.debug(f"Ignoring direct instrument subscription for {instrument_id}")
+
+    async def _subscribe_instruments(self, command: object = None) -> None:
+        """
+        Subscribe to all instruments.
+        """
+        self._log.debug(f"Ignoring bulk instrument subscription request: {command!r}")
+
+    async def _request_data(self, data_type: DataType) -> None:
+        """
+        Request custom data.
+        """
+        msg = f"Unsupported data type request: {data_type}"
+        self._log.warning(msg)
+
+    def subscribed_quote_ticks(self) -> set[InstrumentId]:
+        """
+        Return set of subscribed quote tick instrument IDs.
+        """
+        return self._subscribed_instruments.copy()

@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -32,7 +32,7 @@ use super::models::{
     BitmexExecution, BitmexInstrument, BitmexOrder, BitmexPosition, BitmexTrade, BitmexTradeBin,
 };
 use crate::common::{
-    enums::{BitmexExecInstruction, BitmexExecType, BitmexInstrumentType},
+    enums::{BitmexExecInstruction, BitmexExecType, BitmexInstrumentState, BitmexInstrumentType},
     parse::{
         clean_reason, convert_contract_quantity, derive_contract_decimal_and_increment,
         map_bitmex_currency, normalize_trade_bin_prices, normalize_trade_bin_volume,
@@ -41,6 +41,29 @@ use crate::common::{
         parse_signed_contracts_quantity,
     },
 };
+
+/// Result of attempting to parse a BitMEX instrument.
+#[derive(Debug)]
+pub enum InstrumentParseResult {
+    /// Successfully parsed into a Nautilus instrument.
+    Ok(Box<InstrumentAny>),
+    /// Instrument type is not yet supported (intentionally skipped).
+    Unsupported {
+        symbol: String,
+        instrument_type: BitmexInstrumentType,
+    },
+    /// Instrument is not tradeable (delisted, settled, unlisted).
+    Inactive {
+        symbol: String,
+        state: BitmexInstrumentState,
+    },
+    /// Failed to parse due to an error.
+    Failed {
+        symbol: String,
+        instrument_type: BitmexInstrumentType,
+        error: String,
+    },
+}
 
 /// Returns the appropriate position multiplier for a BitMEX instrument.
 ///
@@ -62,73 +85,89 @@ fn get_position_multiplier(definition: &BitmexInstrument) -> Option<f64> {
 pub fn parse_instrument_any(
     instrument: &BitmexInstrument,
     ts_init: UnixNanos,
-) -> Option<InstrumentAny> {
+) -> InstrumentParseResult {
+    let symbol = instrument.symbol.to_string();
+    let instrument_type = instrument.instrument_type;
+
+    match instrument.state {
+        BitmexInstrumentState::Open | BitmexInstrumentState::Closed => {}
+        state @ (BitmexInstrumentState::Unlisted
+        | BitmexInstrumentState::Settled
+        | BitmexInstrumentState::Delisted) => {
+            return InstrumentParseResult::Inactive { symbol, state };
+        }
+    }
+
     match instrument.instrument_type {
-        BitmexInstrumentType::Spot => parse_spot_instrument(instrument, ts_init)
-            .map_err(|e| {
-                tracing::warn!("Failed to parse spot instrument {}: {e}", instrument.symbol);
-                e
-            })
-            .ok(),
+        BitmexInstrumentType::Spot => match parse_spot_instrument(instrument, ts_init) {
+            Ok(inst) => InstrumentParseResult::Ok(Box::new(inst)),
+            Err(e) => InstrumentParseResult::Failed {
+                symbol,
+                instrument_type,
+                error: e.to_string(),
+            },
+        },
         BitmexInstrumentType::PerpetualContract | BitmexInstrumentType::PerpetualContractFx => {
             // Handle both crypto and FX perpetuals the same way
-            parse_perpetual_instrument(instrument, ts_init)
-                .map_err(|e| {
-                    tracing::warn!(
-                        "Failed to parse perpetual instrument {}: {e}",
-                        instrument.symbol,
-                    );
-                    e
-                })
-                .ok()
+            match parse_perpetual_instrument(instrument, ts_init) {
+                Ok(inst) => InstrumentParseResult::Ok(Box::new(inst)),
+                Err(e) => InstrumentParseResult::Failed {
+                    symbol,
+                    instrument_type,
+                    error: e.to_string(),
+                },
+            }
         }
-        BitmexInstrumentType::Futures => parse_futures_instrument(instrument, ts_init)
-            .map_err(|e| {
-                tracing::warn!(
-                    "Failed to parse futures instrument {}: {e}",
-                    instrument.symbol,
-                );
-                e
-            })
-            .ok(),
+        BitmexInstrumentType::Futures => match parse_futures_instrument(instrument, ts_init) {
+            Ok(inst) => InstrumentParseResult::Ok(Box::new(inst)),
+            Err(e) => InstrumentParseResult::Failed {
+                symbol,
+                instrument_type,
+                error: e.to_string(),
+            },
+        },
         BitmexInstrumentType::PredictionMarket => {
             // Prediction markets work similarly to futures (bounded 0-100, cash settled)
-            parse_futures_instrument(instrument, ts_init)
-                .map_err(|e| {
-                    tracing::warn!(
-                        "Failed to parse prediction market instrument {}: {e}",
-                        instrument.symbol,
-                    );
-                    e
-                })
-                .ok()
+            match parse_futures_instrument(instrument, ts_init) {
+                Ok(inst) => InstrumentParseResult::Ok(Box::new(inst)),
+                Err(e) => InstrumentParseResult::Failed {
+                    symbol,
+                    instrument_type,
+                    error: e.to_string(),
+                },
+            }
         }
         BitmexInstrumentType::BasketIndex
         | BitmexInstrumentType::CryptoIndex
         | BitmexInstrumentType::FxIndex
         | BitmexInstrumentType::LendingIndex
-        | BitmexInstrumentType::VolatilityIndex => {
+        | BitmexInstrumentType::VolatilityIndex
+        | BitmexInstrumentType::StockIndex
+        | BitmexInstrumentType::YieldIndex => {
             // Parse index instruments as perpetuals for cache purposes
             // They need to be in cache for WebSocket price updates
-            parse_index_instrument(instrument, ts_init)
-                .map_err(|e| {
-                    tracing::warn!(
-                        "Failed to parse index instrument {}: {}",
-                        instrument.symbol,
-                        e
-                    );
-                    e
-                })
-                .ok()
+            match parse_index_instrument(instrument, ts_init) {
+                Ok(inst) => InstrumentParseResult::Ok(Box::new(inst)),
+                Err(e) => InstrumentParseResult::Failed {
+                    symbol,
+                    instrument_type,
+                    error: e.to_string(),
+                },
+            }
         }
-        _ => {
-            tracing::warn!(
-                "Unsupported instrument type {:?} for symbol {}",
-                instrument.instrument_type,
-                instrument.symbol
-            );
-            None
-        }
+
+        // Explicitly list unsupported types for clarity
+        BitmexInstrumentType::StockPerpetual
+        | BitmexInstrumentType::CallOption
+        | BitmexInstrumentType::PutOption
+        | BitmexInstrumentType::SwapRate
+        | BitmexInstrumentType::ReferenceBasket
+        | BitmexInstrumentType::LegacyFutures
+        | BitmexInstrumentType::LegacyFuturesN
+        | BitmexInstrumentType::FuturesSpreads => InstrumentParseResult::Unsupported {
+            symbol,
+            instrument_type,
+        },
     }
 }
 
@@ -924,10 +963,6 @@ pub fn get_currency(code: &str) -> Currency {
     Currency::get_or_create_crypto(code)
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
-
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
@@ -1114,7 +1149,10 @@ mod tests {
         let instrument: BitmexInstrument = serde_json::from_str(&instrument_json).unwrap();
 
         let ts_init = UnixNanos::from(1u64);
-        let instrument_any = parse_instrument_any(&instrument, ts_init).expect("instrument parsed");
+        let instrument_any = match parse_instrument_any(&instrument, ts_init) {
+            InstrumentParseResult::Ok(inst) => inst,
+            other => panic!("Expected Ok, got {other:?}"),
+        };
 
         let spec = BarSpecification::new(1, BarAggregation::Minute, PriceType::Last);
         let bar_type = BarType::new(instrument_any.id(), spec, AggregationSource::External);
@@ -1140,7 +1178,10 @@ mod tests {
         let instrument: BitmexInstrument = serde_json::from_str(&instrument_json).unwrap();
 
         let ts_init = UnixNanos::from(1u64);
-        let instrument_any = parse_instrument_any(&instrument, ts_init).expect("instrument parsed");
+        let instrument_any = match parse_instrument_any(&instrument, ts_init) {
+            InstrumentParseResult::Ok(inst) => inst,
+            other => panic!("Expected Ok, got {other:?}"),
+        };
 
         let spec = BarSpecification::new(1, BarAggregation::Minute, PriceType::Last);
         let bar_type = BarType::new(instrument_any.id(), spec, AggregationSource::External);
@@ -2274,10 +2315,6 @@ mod tests {
         assert!((report.quantity.as_f64() - 0.1).abs() < 1e-9);
     }
 
-    // ========================================================================
-    // Test Fixtures for Instrument Parsing
-    // ========================================================================
-
     fn create_test_spot_instrument() -> BitmexInstrument {
         BitmexInstrument {
             symbol: Ustr::from("XBTUSD"),
@@ -2631,10 +2668,6 @@ mod tests {
             prev_total_volume: None,
         }
     }
-
-    // ========================================================================
-    // Instrument Parsing Tests
-    // ========================================================================
 
     #[rstest]
     fn test_parse_spot_instrument() {

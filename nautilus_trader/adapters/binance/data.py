@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -288,7 +288,11 @@ class BinanceCommonDataClient(LiveMarketDataClient):
         await self._ws_client.disconnect()
 
     def _should_retry(self, error_code: BinanceErrorCode, retries: int) -> bool:
-        return not (error_code not in self._retry_errors or not self._max_retries or retries > self._max_retries)
+        return not (
+            error_code not in self._retry_errors
+            or not self._max_retries
+            or retries > self._max_retries
+        )
 
     # -- SUBSCRIPTIONS ----------------------------------------------------------------------------
 

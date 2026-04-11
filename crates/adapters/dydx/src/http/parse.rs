@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -44,10 +44,12 @@ use nautilus_model::{
 use rust_decimal::Decimal;
 
 use super::models::PerpetualMarket;
+#[cfg(test)]
+use crate::common::enums::DydxTransferType;
 use crate::{
     common::{
         enums::{DydxMarketStatus, DydxOrderExecution, DydxOrderType, DydxTimeInForce},
-        parse::{get_currency, parse_decimal, parse_instrument_id, parse_price, parse_quantity},
+        parse::{parse_decimal, parse_instrument_id, parse_price, parse_quantity},
     },
     websocket::messages::DydxSubaccountInfo,
 };
@@ -81,18 +83,10 @@ pub fn parse_ticker_currencies(ticker: &str) -> anyhow::Result<(&str, &str)> {
     Ok((parts[0], parts[1]))
 }
 
-/// Validates that a market is active and tradable.
-///
-/// # Errors
-///
-/// Returns an error if the market status is not Active.
-pub fn validate_market_active(ticker: &str, status: &DydxMarketStatus) -> anyhow::Result<()> {
-    if *status != DydxMarketStatus::Active {
-        anyhow::bail!(
-            "Market '{ticker}' is not active (status: {status:?}). Only active markets can be parsed."
-        );
-    }
-    Ok(())
+/// Returns true if the market status is Active.
+#[must_use]
+pub const fn is_market_active(status: &DydxMarketStatus) -> bool {
+    matches!(status, DydxMarketStatus::Active)
 }
 
 /// Calculate time-in-force for conditional orders.
@@ -208,21 +202,19 @@ pub fn validate_conditional_order(
 /// # Errors
 ///
 /// Returns an error if:
-/// - Market status is not Active.
 /// - Ticker format is invalid (not BASE-QUOTE).
 /// - Required fields are missing or invalid.
 /// - Price or quantity values cannot be parsed.
 /// - Currency parsing fails.
 /// - Margin fractions are out of valid range.
+///
+/// Note: Callers should pre-filter inactive markets using [`is_market_active`].
 pub fn parse_instrument_any(
     definition: &PerpetualMarket,
     maker_fee: Option<rust_decimal::Decimal>,
     taker_fee: Option<rust_decimal::Decimal>,
     ts_init: UnixNanos,
 ) -> anyhow::Result<InstrumentAny> {
-    // Validate market status - only parse active markets
-    validate_market_active(&definition.ticker, &definition.status)?;
-
     // Parse instrument ID with Nautilus perpetual suffix and keep raw symbol as venue ticker
     let instrument_id = parse_instrument_id(&definition.ticker);
     let raw_symbol = Symbol::from(definition.ticker.as_str());
@@ -231,8 +223,8 @@ pub fn parse_instrument_any(
     let (base_str, quote_str) = parse_ticker_currencies(&definition.ticker)
         .context(format!("Failed to parse ticker '{}'", definition.ticker))?;
 
-    let base_currency = get_currency(base_str);
-    let quote_currency = get_currency(quote_str);
+    let base_currency = Currency::get_or_create_crypto_with_context(base_str, None);
+    let quote_currency = Currency::get_or_create_crypto_with_context(quote_str, None);
     let settlement_currency = quote_currency; // dYdX perpetuals settle in quote currency
 
     // Parse price and size increments with context
@@ -316,10 +308,6 @@ pub fn parse_instrument_any(
     Ok(InstrumentAny::CryptoPerpetual(instrument))
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
-
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
@@ -397,13 +385,13 @@ mod tests {
     }
 
     #[rstest]
-    fn test_parse_instrument_any_inactive_market() {
-        let mut market = create_test_market();
-        market.status = DydxMarketStatus::Paused;
-
-        let result = parse_instrument_any(&market, None, None, UnixNanos::default());
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not active"));
+    fn test_is_market_active() {
+        assert!(is_market_active(&DydxMarketStatus::Active));
+        assert!(!is_market_active(&DydxMarketStatus::Paused));
+        assert!(!is_market_active(&DydxMarketStatus::CancelOnly));
+        assert!(!is_market_active(&DydxMarketStatus::PostOnly));
+        assert!(!is_market_active(&DydxMarketStatus::Initializing));
+        assert!(!is_market_active(&DydxMarketStatus::FinalSettlement));
     }
 
     #[rstest]
@@ -462,15 +450,6 @@ mod tests {
     fn test_parse_ticker_currencies_invalid() {
         assert!(parse_ticker_currencies("INVALID").is_err());
         assert!(parse_ticker_currencies("BTC-USD-PERP").is_err());
-    }
-
-    #[rstest]
-    fn test_validate_market_active() {
-        assert!(validate_market_active("BTC-USD", &DydxMarketStatus::Active).is_ok());
-
-        assert!(validate_market_active("BTC-USD", &DydxMarketStatus::Paused).is_err());
-        assert!(validate_market_active("BTC-USD", &DydxMarketStatus::CancelOnly).is_err());
-        assert!(validate_market_active("BTC-USD", &DydxMarketStatus::PostOnly).is_err());
     }
 
     #[rstest]
@@ -761,7 +740,7 @@ mod tests {
         let first_order = &response[0];
         assert_eq!(first_order.id, "0f0981cb-152e-57d3-bea9-4d8e0dd5ed35");
         assert_eq!(first_order.side, OrderSide::Buy);
-        assert_eq!(first_order.order_type, "LIMIT");
+        assert_eq!(first_order.order_type, DydxOrderType::Limit);
         assert!(first_order.reduce_only);
 
         let second_order = &response[1];
@@ -792,9 +771,37 @@ mod tests {
         assert_eq!(response.transfers.len(), 1);
 
         let deposit = &response.transfers[0];
-        assert_eq!(deposit.transfer_type, "DEPOSIT");
+        assert_eq!(deposit.transfer_type, DydxTransferType::Deposit);
         assert_eq!(deposit.asset, "USDC");
         assert_eq!(deposit.amount.to_string(), "45.334703");
+    }
+
+    #[rstest]
+    fn test_transfer_type_enum_serde() {
+        // Test all transfer type variants serialize/deserialize correctly
+        let test_cases = vec![
+            (DydxTransferType::Deposit, "\"DEPOSIT\""),
+            (DydxTransferType::Withdrawal, "\"WITHDRAWAL\""),
+            (DydxTransferType::TransferIn, "\"TRANSFER_IN\""),
+            (DydxTransferType::TransferOut, "\"TRANSFER_OUT\""),
+        ];
+
+        for (variant, expected_json) in test_cases {
+            // Test serialization
+            let serialized = serde_json::to_string(&variant).expect("Failed to serialize");
+            assert_eq!(
+                serialized, expected_json,
+                "Serialization failed for {variant:?}"
+            );
+
+            // Test deserialization
+            let deserialized: DydxTransferType =
+                serde_json::from_str(&serialized).expect("Failed to deserialize");
+            assert_eq!(
+                deserialized, variant,
+                "Deserialization failed for {variant:?}"
+            );
+        }
     }
 }
 
@@ -850,8 +857,7 @@ pub fn parse_order_status_report(
     };
 
     // Parse order type and time-in-force
-    let dydx_order_type = DydxOrderType::from_str(&order.order_type)?;
-    let order_type = dydx_order_type.into();
+    let order_type = order.order_type.into();
 
     let execution = order.execution.or({
         // Infer execution type from post_only flag if not explicitly set
@@ -862,7 +868,7 @@ pub fn parse_order_status_report(
         }
     });
     let time_in_force = calculate_time_in_force(
-        dydx_order_type,
+        order.order_type,
         order.time_in_force,
         order.reduce_only,
         execution,
@@ -1128,7 +1134,7 @@ pub fn parse_account_state(
     ))?;
 
     // dYdX uses USDC as the settlement currency
-    let currency = get_currency("USDC");
+    let currency = Currency::get_or_create_crypto_with_context("USDC", None);
 
     let total = Money::new(equity_f64, currency);
     let free = Money::new(free_collateral_f64, currency);
@@ -1344,7 +1350,7 @@ mod reconciliation_tests {
             total_filled: dec!(1.0),
             price: dec!(50000.0),
             status: DydxOrderStatus::PartiallyFilled,
-            order_type: "Limit".to_string(), // EnumString uses PascalCase
+            order_type: DydxOrderType::Limit,
             time_in_force: DydxTimeInForce::Gtt,
             reduce_only: false,
             post_only: false,
@@ -1394,7 +1400,7 @@ mod reconciliation_tests {
             total_filled: dec!(0.0),
             price: dec!(51000.0),
             status: DydxOrderStatus::Untriggered,
-            order_type: "StopLimit".to_string(), // EnumString uses PascalCase
+            order_type: DydxOrderType::StopLimit,
             time_in_force: DydxTimeInForce::Gtt,
             reduce_only: true,
             post_only: false,
@@ -1572,7 +1578,7 @@ mod reconciliation_tests {
             total_filled: dec!(0.0),
             price: dec!(50000.0),
             status: DydxOrderStatus::Open,
-            order_type: "Limit".to_string(),
+            order_type: DydxOrderType::Limit,
             time_in_force: DydxTimeInForce::Gtt,
             reduce_only: false,
             post_only: false,
@@ -1619,7 +1625,7 @@ mod reconciliation_tests {
             total_filled: dec!(0.75),
             price: dec!(50000.0),
             status: DydxOrderStatus::PartiallyFilled,
-            order_type: "Limit".to_string(),
+            order_type: DydxOrderType::Limit,
             time_in_force: DydxTimeInForce::Gtt,
             reduce_only: false,
             post_only: false,

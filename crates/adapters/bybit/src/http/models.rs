@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -41,7 +41,7 @@ use crate::common::{
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.adapters")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.bybit")
 )]
 pub struct BybitOrderCursorList {
     /// Collection of orders returned by the endpoint.
@@ -92,7 +92,7 @@ impl BybitOrderCursorList {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.adapters")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.bybit")
 )]
 #[serde(rename_all = "camelCase")]
 pub struct BybitServerTime {
@@ -446,15 +446,16 @@ impl<'de> Deserialize<'de> for BybitKline {
     where
         D: serde::Deserializer<'de>,
     {
-        let arr: [String; 7] = Deserialize::deserialize(deserializer)?;
+        let [start, open, high, low, close, volume, turnover]: [String; 7] =
+            Deserialize::deserialize(deserializer)?;
         Ok(Self {
-            start: arr[0].clone(),
-            open: arr[1].clone(),
-            high: arr[2].clone(),
-            low: arr[3].clone(),
-            close: arr[4].clone(),
-            volume: arr[5].clone(),
-            turnover: arr[6].clone(),
+            start,
+            open,
+            high,
+            low,
+            close,
+            volume,
+            turnover,
         })
     }
 }
@@ -632,7 +633,7 @@ pub type BybitInstrumentOptionResponse = BybitCursorListResponse<BybitInstrument
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.adapters")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.bybit")
 )]
 pub struct BybitFeeRate {
     pub symbol: Ustr,
@@ -749,7 +750,7 @@ pub type BybitWalletBalanceResponse = BybitListResponse<BybitWalletBalance>;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.adapters")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.bybit")
 )]
 #[serde(rename_all = "camelCase")]
 pub struct BybitOrder {
@@ -1274,7 +1275,7 @@ pub type BybitNoConvertRepayResponse = BybitResponse<BybitNoConvertRepayResult>;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.adapters")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.bybit")
 )]
 #[serde(rename_all = "PascalCase")]
 pub struct BybitApiKeyPermissions {
@@ -1304,7 +1305,7 @@ pub struct BybitApiKeyPermissions {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.adapters")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.bybit")
 )]
 #[serde(rename_all = "camelCase")]
 pub struct BybitAccountDetails {
@@ -1463,10 +1464,6 @@ impl BybitAccountDetails {
 ///
 /// - <https://bybit-exchange.github.io/docs/v5/user/apikey-info>
 pub type BybitAccountDetailsResponse = BybitResponse<BybitAccountDetails>;
-
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
 
 #[cfg(test)]
 mod tests {

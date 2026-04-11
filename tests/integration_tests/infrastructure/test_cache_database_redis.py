@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -12,8 +12,8 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
-
 import asyncio
+import os
 import sys
 import time
 from decimal import Decimal
@@ -132,7 +132,12 @@ class TestCacheDatabaseAdapter:
             trader_id=self.trader_id,
             instance_id=UUID4(),
             serializer=MsgSpecSerializer(encoding=msgspec.msgpack, timestamps_as_str=True),
-            config=CacheConfig(database=DatabaseConfig()),
+            config=CacheConfig(
+                database=DatabaseConfig(
+                    host=os.getenv("REDIS_HOST", "localhost"),
+                    port=int(os.getenv("REDIS_PORT", "6379")),
+                ),
+            ),
         )
 
     def teardown(self):
@@ -1152,7 +1157,12 @@ class TestRedisCacheDatabaseIntegrity:
         config = BacktestEngineConfig(
             logging=LoggingConfig(bypass_logging=True),
             run_analysis=False,
-            cache=CacheConfig(database=DatabaseConfig()),  # default redis
+            cache=CacheConfig(
+                database=DatabaseConfig(
+                    host=os.getenv("REDIS_HOST", "localhost"),
+                    port=int(os.getenv("REDIS_PORT", "6379")),
+                ),
+            ),
         )
 
         self.engine = BacktestEngine(config=config)
@@ -1180,7 +1190,12 @@ class TestRedisCacheDatabaseIntegrity:
             trader_id=self.trader_id,
             instance_id=UUID4(),
             serializer=MsgSpecSerializer(encoding=msgspec.msgpack, timestamps_as_str=True),
-            config=CacheConfig(database=DatabaseConfig()),
+            config=CacheConfig(
+                database=DatabaseConfig(
+                    host=os.getenv("REDIS_HOST", "localhost"),
+                    port=int(os.getenv("REDIS_PORT", "6379")),
+                ),
+            ),
         )
 
     def teardown(self):

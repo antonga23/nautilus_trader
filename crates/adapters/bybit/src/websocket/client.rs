@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -29,7 +29,7 @@ use std::{
 use ahash::AHashMap;
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
-use nautilus_common::live::runtime::get_runtime;
+use nautilus_common::live::get_runtime;
 use nautilus_core::{UUID4, consts::NAUTILUS_USER_AGENT, env::get_or_env_var_opt};
 use nautilus_model::{
     enums::{OrderSide, OrderType, TimeInForce},
@@ -128,6 +128,7 @@ pub struct BybitWebSocketClient {
     is_authenticated: Arc<AtomicBool>,
     account_id: Option<AccountId>,
     mm_level: Arc<AtomicU8>,
+    bars_timestamp_on_close: bool,
     instruments_cache: Arc<DashMap<Ustr, InstrumentAny>>,
     funding_cache: FundingCache,
     cancellation_token: CancellationToken,
@@ -165,6 +166,7 @@ impl Clone for BybitWebSocketClient {
             is_authenticated: Arc::clone(&self.is_authenticated),
             account_id: self.account_id,
             mm_level: Arc::clone(&self.mm_level),
+            bars_timestamp_on_close: self.bars_timestamp_on_close,
             instruments_cache: Arc::clone(&self.instruments_cache),
             funding_cache: Arc::clone(&self.funding_cache),
             cancellation_token: self.cancellation_token.clone(),
@@ -217,9 +219,10 @@ impl BybitWebSocketClient {
             is_authenticated: Arc::new(AtomicBool::new(false)),
             instruments_cache: Arc::new(DashMap::new()),
             account_id: None,
+            mm_level: Arc::new(AtomicU8::new(0)),
+            bars_timestamp_on_close: true,
             funding_cache: Arc::new(tokio::sync::RwLock::new(AHashMap::new())),
             cancellation_token: CancellationToken::new(),
-            mm_level: Arc::new(AtomicU8::new(0)),
         }
     }
 
@@ -265,9 +268,10 @@ impl BybitWebSocketClient {
             is_authenticated: Arc::new(AtomicBool::new(false)),
             instruments_cache: Arc::new(DashMap::new()),
             account_id: None,
+            mm_level: Arc::new(AtomicU8::new(0)),
+            bars_timestamp_on_close: true,
             funding_cache: Arc::new(tokio::sync::RwLock::new(AHashMap::new())),
             cancellation_token: CancellationToken::new(),
-            mm_level: Arc::new(AtomicU8::new(0)),
         }
     }
 
@@ -313,9 +317,10 @@ impl BybitWebSocketClient {
             is_authenticated: Arc::new(AtomicBool::new(false)),
             instruments_cache: Arc::new(DashMap::new()),
             account_id: None,
+            mm_level: Arc::new(AtomicU8::new(0)),
+            bars_timestamp_on_close: true,
             funding_cache: Arc::new(tokio::sync::RwLock::new(AHashMap::new())),
             cancellation_token: CancellationToken::new(),
-            mm_level: Arc::new(AtomicU8::new(0)),
         }
     }
 
@@ -344,10 +349,8 @@ impl BybitWebSocketClient {
         let config = WebSocketConfig {
             url: self.url.clone(),
             headers: Self::default_headers(),
-            message_handler: Some(raw_handler),
             heartbeat: self.heartbeat,
             heartbeat_msg: Some(ping_msg),
-            ping_handler: Some(ping_handler),
             reconnect_timeout_ms: Some(5_000),
             reconnect_delay_initial_ms: Some(500),
             reconnect_delay_max_ms: Some(5_000),
@@ -378,7 +381,14 @@ impl BybitWebSocketClient {
 
             match tokio::time::timeout(
                 Duration::from_secs(CONNECTION_TIMEOUT_SECS),
-                WebSocketClient::connect(config.clone(), None, vec![], None),
+                WebSocketClient::connect(
+                    config.clone(),
+                    Some(raw_handler.clone()),
+                    Some(ping_handler.clone()),
+                    None,
+                    vec![],
+                    None,
+                ),
             )
             .await
             {
@@ -462,6 +472,7 @@ impl BybitWebSocketClient {
         let funding_cache = Arc::clone(&self.funding_cache);
         let account_id = self.account_id;
         let product_type = self.product_type;
+        let bars_timestamp_on_close = self.bars_timestamp_on_close;
         let mm_level = Arc::clone(&self.mm_level);
         let cmd_tx_for_reconnect = cmd_tx.clone();
         let auth_tracker = self.auth_tracker.clone();
@@ -475,6 +486,7 @@ impl BybitWebSocketClient {
                 out_tx.clone(),
                 account_id,
                 product_type,
+                bars_timestamp_on_close,
                 mm_level.clone(),
                 auth_tracker,
                 subscriptions.clone(),
@@ -885,6 +897,14 @@ impl BybitWebSocketClient {
     /// Sets the account market maker level.
     pub fn set_mm_level(&self, mm_level: u8) {
         self.mm_level.store(mm_level, Ordering::Relaxed);
+    }
+
+    /// Sets whether bar timestamps should use the close time.
+    ///
+    /// When `true` (default), bar `ts_event` is set to the bar's close time.
+    /// When `false`, bar `ts_event` is set to the bar's open time.
+    pub fn set_bars_timestamp_on_close(&mut self, value: bool) {
+        self.bars_timestamp_on_close = value;
     }
 
     /// Returns a reference to the instruments cache.
@@ -2110,10 +2130,6 @@ impl BybitWebSocketClient {
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
-
 #[cfg(test)]
 mod tests {
     use rstest::rstest;
@@ -2121,15 +2137,14 @@ mod tests {
     use super::*;
     use crate::{
         common::testing::load_test_json,
-        websocket::{handler::FeedHandler, messages::BybitWsMessage},
+        websocket::{classify_bybit_message, messages::BybitWsMessage},
     };
 
     #[rstest]
     fn classify_orderbook_snapshot() {
         let json: Value = serde_json::from_str(&load_test_json("ws_orderbook_snapshot.json"))
             .expect("invalid fixture");
-        let message =
-            FeedHandler::classify_bybit_message(&json).expect("expected orderbook message");
+        let message = classify_bybit_message(json);
         assert!(matches!(message, BybitWsMessage::Orderbook(_)));
     }
 
@@ -2137,7 +2152,7 @@ mod tests {
     fn classify_trade_snapshot() {
         let json: Value =
             serde_json::from_str(&load_test_json("ws_public_trade.json")).expect("invalid fixture");
-        let message = FeedHandler::classify_bybit_message(&json).expect("expected trade message");
+        let message = classify_bybit_message(json);
         assert!(matches!(message, BybitWsMessage::Trade(_)));
     }
 
@@ -2145,7 +2160,7 @@ mod tests {
     fn classify_ticker_linear_snapshot() {
         let json: Value = serde_json::from_str(&load_test_json("ws_ticker_linear.json"))
             .expect("invalid fixture");
-        let message = FeedHandler::classify_bybit_message(&json).expect("expected ticker message");
+        let message = classify_bybit_message(json);
         assert!(matches!(message, BybitWsMessage::TickerLinear(_)));
     }
 
@@ -2153,7 +2168,7 @@ mod tests {
     fn classify_ticker_option_snapshot() {
         let json: Value = serde_json::from_str(&load_test_json("ws_ticker_option.json"))
             .expect("invalid fixture");
-        let message = FeedHandler::classify_bybit_message(&json).expect("expected ticker message");
+        let message = classify_bybit_message(json);
         assert!(matches!(message, BybitWsMessage::TickerOption(_)));
     }
 

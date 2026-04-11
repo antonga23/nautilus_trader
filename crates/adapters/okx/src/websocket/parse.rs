@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -287,17 +287,24 @@ pub fn parse_order_event(
     }
 }
 
+/// Case-insensitive substring check.
+#[inline]
+fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .any(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
+}
+
 /// Determines if a Canceled order is actually an Expired order based on cancel reason.
 fn is_order_expired_by_reason(msg: &OKXOrderMsg) -> bool {
-    if let Some(ref reason) = msg.cancel_source_reason {
-        let reason_lower = reason.to_lowercase();
-        if reason_lower.contains("expir")
-            || reason_lower.contains("gtd")
-            || reason_lower.contains("timeout")
-            || reason_lower.contains("time_expired")
-        {
-            return true;
-        }
+    if let Some(ref reason) = msg.cancel_source_reason
+        && (contains_ignore_ascii_case(reason, "expir")
+            || contains_ignore_ascii_case(reason, "gtd")
+            || contains_ignore_ascii_case(reason, "timeout")
+            || contains_ignore_ascii_case(reason, "time_expired"))
+    {
+        return true;
     }
 
     // OKX cancel source codes that indicate expiration
@@ -1674,9 +1681,6 @@ pub fn parse_ws_message_data(
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
 #[cfg(test)]
 mod tests {
     use ahash::AHashMap;
@@ -2115,7 +2119,13 @@ mod tests {
     #[rstest]
     fn test_parse_ws_account_message() {
         let json_data = load_test_json("ws_account.json");
-        let accounts: Vec<OKXAccount> = serde_json::from_str(&json_data).unwrap();
+        let msg: OKXWsMessage = serde_json::from_str(&json_data).unwrap();
+
+        let OKXWsMessage::Data { data, .. } = msg else {
+            panic!("Expected OKXWsMessage::Data");
+        };
+
+        let accounts: Vec<OKXAccount> = serde_json::from_value(data).unwrap();
 
         assert_eq!(accounts.len(), 1);
         let account = &accounts[0];
@@ -3987,10 +3997,6 @@ mod tests {
         assert_eq!(data[0].inst_id, Ustr::from("BTC-USD"));
     }
 
-    // ========================================================================
-    // Tests for parse_order_event and related functions
-    // ========================================================================
-
     fn create_order_msg_for_event_test(
         state: OKXOrderStatus,
         cl_ord_id: &str,
@@ -4338,10 +4344,6 @@ mod tests {
         }
     }
 
-    // ========================================================================
-    // Tests for is_order_expired_by_reason
-    // ========================================================================
-
     #[rstest]
     fn test_is_order_expired_by_reason_gtd_in_reason() {
         let mut msg =
@@ -4397,10 +4399,6 @@ mod tests {
             create_order_msg_for_event_test(OKXOrderStatus::Canceled, "test", "123", "100", "1");
         assert!(!is_order_expired_by_reason(&msg));
     }
-
-    // ========================================================================
-    // Tests for is_order_updated
-    // ========================================================================
 
     // Regression test: PartiallyFilled order with price change should emit Updated, not StatusOnly
     #[rstest]

@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -99,7 +99,7 @@ pub unsafe fn cstr_to_bytes<'a>(ptr: *const c_char) -> &'a [u8] {
 ///
 /// # Panics
 ///
-/// Panics if `ptr` is null.
+/// Panics if `ptr` is not null but not a valid UTF-8 C string.
 #[must_use]
 pub unsafe fn optional_cstr_to_ustr(ptr: *const c_char) -> Option<Ustr> {
     if ptr.is_null() {
@@ -178,9 +178,6 @@ pub unsafe extern "C" fn cstr_drop(ptr: *const c_char) {
     });
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
 #[cfg(test)]
 mod tests {
     #[cfg(feature = "python")]

@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -41,3 +41,13 @@ pub const BYBIT_WS_TESTNET_PUBLIC_URL: &str = "wss://stream-testnet.bybit.com/v5
 pub const BYBIT_WS_TESTNET_PRIVATE_URL: &str = "wss://stream-testnet.bybit.com/v5/private";
 
 pub const BYBIT_WS_TOPIC_DELIMITER: char = '.';
+
+pub const BYBIT_TOPIC_ORDERBOOK: &str = "orderbook";
+pub const BYBIT_TOPIC_TRADE: &str = "trade";
+pub const BYBIT_TOPIC_PUBLIC_TRADE: &str = "publicTrade";
+pub const BYBIT_TOPIC_KLINE: &str = "kline";
+pub const BYBIT_TOPIC_TICKERS: &str = "tickers";
+pub const BYBIT_TOPIC_ORDER: &str = "order";
+pub const BYBIT_TOPIC_EXECUTION: &str = "execution";
+pub const BYBIT_TOPIC_WALLET: &str = "wallet";
+pub const BYBIT_TOPIC_POSITION: &str = "position";

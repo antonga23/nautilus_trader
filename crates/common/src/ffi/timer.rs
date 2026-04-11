@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -139,7 +139,7 @@ impl From<TimeEventHandlerV2> for TimeEventHandler {
                     callback_ptr: raw_ptr,
                 }
             }
-            TimeEventCallback::Rust(_) => {
+            TimeEventCallback::Rust(_) | TimeEventCallback::RustLocal(_) => {
                 panic!("Legacy time event handler is not supported for Rust callbacks")
             }
         }
@@ -237,7 +237,7 @@ impl From<TimeEventHandlerV2> for TimeEventHandler {
     fn from(value: TimeEventHandlerV2) -> Self {
         // Only Rust callbacks are supported in non-python builds
         match value.callback {
-            TimeEventCallback::Rust(_) => TimeEventHandler {
+            TimeEventCallback::Rust(_) | TimeEventCallback::RustLocal(_) => TimeEventHandler {
                 event: value.event,
                 callback_ptr: std::ptr::null_mut(),
             },

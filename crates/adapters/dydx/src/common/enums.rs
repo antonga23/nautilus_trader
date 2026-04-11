@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -166,6 +166,7 @@ impl From<DydxOrderSide> for OrderSide {
     Deserialize,
 )]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+#[strum(serialize_all = "SCREAMING_SNAKE_CASE")]
 #[cfg_attr(
     feature = "python",
     pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.dydx", eq, eq_int)
@@ -553,6 +554,37 @@ pub enum DydxTradeType {
     TakeProfitLimit,
 }
 
+/// dYdX transfer types.
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    Display,
+    PartialEq,
+    Eq,
+    Hash,
+    AsRefStr,
+    EnumIter,
+    EnumString,
+    Serialize,
+    Deserialize,
+)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.dydx", eq, eq_int)
+)]
+pub enum DydxTransferType {
+    /// Transfer into the account.
+    TransferIn,
+    /// Transfer out of the account.
+    TransferOut,
+    /// Deposit from external wallet.
+    Deposit,
+    /// Withdrawal to external wallet.
+    Withdrawal,
+}
+
 /// dYdX candlestick resolution.
 #[derive(
     Copy,
@@ -570,6 +602,10 @@ pub enum DydxTradeType {
 )]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 #[derive(Default)]
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.dydx", eq, eq_int)
+)]
 pub enum DydxCandleResolution {
     /// 1 minute candles.
     #[serde(rename = "1MIN")]
@@ -601,10 +637,6 @@ pub enum DydxCandleResolution {
     #[strum(serialize = "1DAY")]
     OneDay,
 }
-
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
 
 #[cfg(test)]
 mod tests {

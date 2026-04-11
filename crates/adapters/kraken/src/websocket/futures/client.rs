@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -21,7 +21,7 @@ use std::sync::{
 };
 
 use arc_swap::ArcSwap;
-use nautilus_common::live::runtime::get_runtime;
+use nautilus_common::live::get_runtime;
 use nautilus_model::{
     identifiers::{
         AccountId, ClientOrderId, InstrumentId, StrategyId, Symbol, TraderId, VenueOrderId,
@@ -49,10 +49,11 @@ pub const KRAKEN_FUTURES_WS_TOPIC_DELIMITER: char = ':';
 
 const WS_PING_MSG: &str = r#"{"event":"ping"}"#;
 
+/// WebSocket client for the Kraken Futures v1 streaming API.
 #[derive(Debug)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.adapters")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.kraken")
 )]
 pub struct KrakenFuturesWebSocketClient {
     url: String,
@@ -91,12 +92,13 @@ impl Clone for KrakenFuturesWebSocketClient {
 }
 
 impl KrakenFuturesWebSocketClient {
+    /// Creates a new client with the given URL.
     #[must_use]
     pub fn new(url: String, heartbeat_secs: Option<u64>) -> Self {
         Self::with_credentials(url, heartbeat_secs, None)
     }
 
-    /// Create a new client with API credentials for authenticated feeds.
+    /// Creates a new client with API credentials for authenticated feeds.
     #[must_use]
     pub fn with_credentials(
         url: String,
@@ -130,24 +132,27 @@ impl KrakenFuturesWebSocketClient {
         self.credential.is_some()
     }
 
+    /// Returns the WebSocket URL.
     #[must_use]
     pub fn url(&self) -> &str {
         &self.url
     }
 
+    /// Returns true if the connection is closed.
     #[must_use]
     pub fn is_closed(&self) -> bool {
         ConnectionMode::from_u8(self.connection_mode.load().load(Ordering::Relaxed))
             == ConnectionMode::Closed
     }
 
+    /// Returns true if the connection is active.
     #[must_use]
     pub fn is_active(&self) -> bool {
         ConnectionMode::from_u8(self.connection_mode.load().load(Ordering::Relaxed))
             == ConnectionMode::Active
     }
 
-    /// Wait until the WebSocket connection is active.
+    /// Waits until the WebSocket connection is active or timeout.
     pub async fn wait_until_active(&self, timeout_secs: f64) -> Result<(), KrakenWsError> {
         let timeout = tokio::time::Duration::from_secs_f64(timeout_secs);
 
@@ -166,7 +171,7 @@ impl KrakenFuturesWebSocketClient {
         Ok(())
     }
 
-    /// Authenticate the WebSocket connection for private feeds.
+    /// Authenticates the WebSocket connection for private feeds.
     ///
     /// This sends a challenge request, waits for the response, signs it,
     /// and stores the credentials for use in private subscriptions.
@@ -217,7 +222,7 @@ impl KrakenFuturesWebSocketClient {
         Ok(())
     }
 
-    /// Cache instruments for price precision lookup (bulk replace).
+    /// Caches instruments for price precision lookup (bulk replace).
     ///
     /// Must be called after `connect()` when the handler is ready to receive commands.
     pub fn cache_instruments(&self, instruments: Vec<InstrumentAny>) {
@@ -228,7 +233,7 @@ impl KrakenFuturesWebSocketClient {
         }
     }
 
-    /// Cache a single instrument for price precision lookup (upsert).
+    /// Caches a single instrument for price precision lookup (upsert).
     ///
     /// Must be called after `connect()` when the handler is ready to receive commands.
     pub fn cache_instrument(&self, instrument: InstrumentAny) {
@@ -239,6 +244,7 @@ impl KrakenFuturesWebSocketClient {
         }
     }
 
+    /// Connects to the WebSocket server.
     pub async fn connect(&mut self) -> Result<(), KrakenWsError> {
         tracing::debug!("Connecting to Futures WebSocket: {}", self.url);
 
@@ -249,8 +255,6 @@ impl KrakenFuturesWebSocketClient {
         let ws_config = WebSocketConfig {
             url: self.url.clone(),
             headers: vec![],
-            message_handler: Some(raw_handler),
-            ping_handler: None,
             heartbeat: self.heartbeat_secs,
             heartbeat_msg: Some(WS_PING_MSG.to_string()),
             reconnect_timeout_ms: Some(5_000),
@@ -261,9 +265,10 @@ impl KrakenFuturesWebSocketClient {
             reconnect_max_attempts: None,
         };
 
-        let ws_client = WebSocketClient::connect(ws_config, None, vec![], None)
-            .await
-            .map_err(|e| KrakenWsError::ConnectionError(e.to_string()))?;
+        let ws_client =
+            WebSocketClient::connect(ws_config, Some(raw_handler), None, None, vec![], None)
+                .await
+                .map_err(|e| KrakenWsError::ConnectionError(e.to_string()))?;
 
         self.connection_mode
             .store(ws_client.connection_mode_atomic());
@@ -463,6 +468,7 @@ impl KrakenFuturesWebSocketClient {
         Ok(())
     }
 
+    /// Disconnects from the WebSocket server.
     pub async fn disconnect(&mut self) -> Result<(), KrakenWsError> {
         tracing::debug!("Disconnecting Futures WebSocket");
 
@@ -497,11 +503,12 @@ impl KrakenFuturesWebSocketClient {
         Ok(())
     }
 
+    /// Closes the WebSocket connection.
     pub async fn close(&mut self) -> Result<(), KrakenWsError> {
         self.disconnect().await
     }
 
-    /// Subscribe to mark price updates for the given instrument.
+    /// Subscribes to mark price updates for the given instrument.
     pub async fn subscribe_mark_price(
         &self,
         instrument_id: InstrumentId,
@@ -518,7 +525,7 @@ impl KrakenFuturesWebSocketClient {
         self.ensure_ticker_subscribed(symbol).await
     }
 
-    /// Unsubscribe from mark price updates for the given instrument.
+    /// Unsubscribes from mark price updates for the given instrument.
     pub async fn unsubscribe_mark_price(
         &self,
         instrument_id: InstrumentId,
@@ -535,7 +542,7 @@ impl KrakenFuturesWebSocketClient {
         self.maybe_unsubscribe_ticker(symbol).await
     }
 
-    /// Subscribe to index price updates for the given instrument.
+    /// Subscribes to index price updates for the given instrument.
     pub async fn subscribe_index_price(
         &self,
         instrument_id: InstrumentId,
@@ -552,7 +559,7 @@ impl KrakenFuturesWebSocketClient {
         self.ensure_ticker_subscribed(symbol).await
     }
 
-    /// Unsubscribe from index price updates for the given instrument.
+    /// Unsubscribes from index price updates for the given instrument.
     pub async fn unsubscribe_index_price(
         &self,
         instrument_id: InstrumentId,
@@ -569,7 +576,7 @@ impl KrakenFuturesWebSocketClient {
         self.maybe_unsubscribe_ticker(symbol).await
     }
 
-    /// Subscribe to quote updates for the given instrument.
+    /// Subscribes to quote updates for the given instrument.
     ///
     /// Uses the order book channel for low-latency top-of-book quotes.
     pub async fn subscribe_quotes(&self, instrument_id: InstrumentId) -> Result<(), KrakenWsError> {
@@ -587,7 +594,7 @@ impl KrakenFuturesWebSocketClient {
         self.ensure_book_subscribed(symbol).await
     }
 
-    /// Unsubscribe from quote updates for the given instrument.
+    /// Unsubscribes from quote updates for the given instrument.
     pub async fn unsubscribe_quotes(
         &self,
         instrument_id: InstrumentId,
@@ -604,7 +611,7 @@ impl KrakenFuturesWebSocketClient {
         self.maybe_unsubscribe_book(symbol).await
     }
 
-    /// Subscribe to trade updates for the given instrument.
+    /// Subscribes to trade updates for the given instrument.
     pub async fn subscribe_trades(&self, instrument_id: InstrumentId) -> Result<(), KrakenWsError> {
         let symbol = instrument_id.symbol;
         let key = format!("trades:{symbol}");
@@ -625,7 +632,7 @@ impl KrakenFuturesWebSocketClient {
         Ok(())
     }
 
-    /// Unsubscribe from trade updates for the given instrument.
+    /// Unsubscribes from trade updates for the given instrument.
     pub async fn unsubscribe_trades(
         &self,
         instrument_id: InstrumentId,
@@ -649,7 +656,7 @@ impl KrakenFuturesWebSocketClient {
         Ok(())
     }
 
-    /// Subscribe to order book updates for the given instrument.
+    /// Subscribes to order book updates for the given instrument.
     ///
     /// Note: The `depth` parameter is accepted for API compatibility with spot client but is
     /// not used by Kraken Futures (full book is always returned).
@@ -677,7 +684,7 @@ impl KrakenFuturesWebSocketClient {
         Ok(())
     }
 
-    /// Unsubscribe from order book updates for the given instrument.
+    /// Unsubscribes from order book updates for the given instrument.
     pub async fn unsubscribe_book(&self, instrument_id: InstrumentId) -> Result<(), KrakenWsError> {
         let symbol = instrument_id.symbol;
         let key = format!("book:{symbol}");
@@ -698,7 +705,7 @@ impl KrakenFuturesWebSocketClient {
         Ok(())
     }
 
-    /// Ensure ticker feed is subscribed for the given symbol.
+    /// Ensures ticker feed is subscribed for the given symbol.
     async fn ensure_ticker_subscribed(&self, symbol: Symbol) -> Result<(), KrakenWsError> {
         let ticker_key = format!("ticker:{symbol}");
 
@@ -716,7 +723,7 @@ impl KrakenFuturesWebSocketClient {
         Ok(())
     }
 
-    /// Unsubscribe from ticker if no more dependent subscriptions.
+    /// Unsubscribes from ticker if no more dependent subscriptions.
     async fn maybe_unsubscribe_ticker(&self, symbol: Symbol) -> Result<(), KrakenWsError> {
         let ticker_key = format!("ticker:{symbol}");
 
@@ -734,7 +741,7 @@ impl KrakenFuturesWebSocketClient {
         Ok(())
     }
 
-    /// Ensure book feed is subscribed for the given symbol (for quotes).
+    /// Ensures book feed is subscribed for the given symbol (for quotes).
     async fn ensure_book_subscribed(&self, symbol: Symbol) -> Result<(), KrakenWsError> {
         let book_key = format!("book:{symbol}");
 
@@ -752,7 +759,7 @@ impl KrakenFuturesWebSocketClient {
         Ok(())
     }
 
-    /// Unsubscribe from book if no more dependent subscriptions.
+    /// Unsubscribes from book if no more dependent subscriptions.
     async fn maybe_unsubscribe_book(&self, symbol: Symbol) -> Result<(), KrakenWsError> {
         let book_key = format!("book:{symbol}");
 
@@ -770,7 +777,7 @@ impl KrakenFuturesWebSocketClient {
         Ok(())
     }
 
-    /// Get the output receiver for processed messages.
+    /// Gets the output receiver for processed messages.
     pub fn take_output_rx(
         &mut self,
     ) -> Option<tokio::sync::mpsc::UnboundedReceiver<KrakenFuturesWsMessage>> {
@@ -789,7 +796,7 @@ impl KrakenFuturesWebSocketClient {
         }
     }
 
-    /// Cache a client order ID mapping for order tracking.
+    /// Caches a client order ID mapping for order tracking.
     ///
     /// This caches the trader_id, strategy_id, and instrument_id for an order,
     /// allowing the handler to emit proper order events with correct identifiers
@@ -815,7 +822,7 @@ impl KrakenFuturesWebSocketClient {
         }
     }
 
-    /// Request a challenge from the WebSocket for authentication.
+    /// Requests a challenge from the WebSocket for authentication.
     ///
     /// After calling this, listen for the challenge response message and then
     /// call `authenticate_with_challenge()` to complete authentication.
@@ -889,7 +896,7 @@ impl KrakenFuturesWebSocketClient {
             .await
     }
 
-    /// Subscribe to open orders feed (private, requires authentication).
+    /// Subscribes to open orders feed (private, requires authentication).
     pub async fn subscribe_open_orders(&self) -> Result<(), KrakenWsError> {
         if self.original_challenge.read().await.is_none() {
             return Err(KrakenWsError::AuthenticationError(
@@ -914,7 +921,7 @@ impl KrakenFuturesWebSocketClient {
         Ok(())
     }
 
-    /// Subscribe to fills feed (private, requires authentication).
+    /// Subscribes to fills feed (private, requires authentication).
     pub async fn subscribe_fills(&self) -> Result<(), KrakenWsError> {
         if self.original_challenge.read().await.is_none() {
             return Err(KrakenWsError::AuthenticationError(
@@ -939,7 +946,7 @@ impl KrakenFuturesWebSocketClient {
         Ok(())
     }
 
-    /// Subscribe to both open orders and fills (convenience method).
+    /// Subscribes to both open orders and fills (convenience method).
     pub async fn subscribe_executions(&self) -> Result<(), KrakenWsError> {
         self.subscribe_open_orders().await?;
         self.subscribe_fills().await?;

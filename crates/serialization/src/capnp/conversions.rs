@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -109,10 +109,6 @@ where
     }
 }
 
-// ================================================================================================
-// Base Types
-// ================================================================================================
-
 impl<'a> ToCapnp<'a> for nautilus_core::UUID4 {
     type Builder = base_capnp::u_u_i_d4::Builder<'a>;
 
@@ -184,10 +180,6 @@ impl<'a> FromCapnp<'a> for Decimal {
         Ok(decimal_from_parts(lo, mid, hi, flags))
     }
 }
-
-// ================================================================================================
-// Identifiers
-// ================================================================================================
 
 impl<'a> ToCapnp<'a> for TraderId {
     type Builder = identifiers_capnp::trader_id::Builder<'a>;
@@ -2242,10 +2234,6 @@ impl<'a> FromCapnp<'a> for OrderBookDepth10 {
     }
 }
 
-// ================================================================================================
-// Order Events
-// ================================================================================================
-
 impl<'a> ToCapnp<'a> for OrderDenied {
     type Builder = order_capnp::order_denied::Builder<'a>;
 
@@ -3929,10 +3917,6 @@ impl<'a> FromCapnp<'a> for OrderInitialized {
     }
 }
 
-// ================================================================================================
-// Position Events
-// ================================================================================================
-
 // PositionOpened
 impl<'a> ToCapnp<'a> for PositionOpened {
     type Builder = position_capnp::position_opened::Builder<'a>;
@@ -4696,9 +4680,9 @@ mod tests {
 
     #[rstest]
     fn test_account_balance_roundtrip() {
-        let total = Money::from_raw(100_000, Currency::USD());
-        let locked = Money::from_raw(10_000, Currency::USD());
-        let free = Money::from_raw(90_000, Currency::USD());
+        let total = Money::new(100.0, Currency::USD());
+        let locked = Money::new(10.0, Currency::USD());
+        let free = Money::new(90.0, Currency::USD());
         let balance = AccountBalance::new(total, locked, free);
         let bytes = serialize_account_balance(&balance).unwrap();
         let decoded = deserialize_account_balance(&bytes).unwrap();
@@ -4707,8 +4691,8 @@ mod tests {
 
     #[rstest]
     fn test_margin_balance_roundtrip() {
-        let initial = Money::from_raw(500_000, Currency::USD());
-        let maintenance = Money::from_raw(250_000, Currency::USD());
+        let initial = Money::new(500.0, Currency::USD());
+        let maintenance = Money::new(250.0, Currency::USD());
         let instrument_id = InstrumentId::from("BTC-USD-PERP.BINANCE");
         let balance = MarginBalance::new(initial, maintenance, instrument_id);
         let bytes = serialize_margin_balance(&balance).unwrap();

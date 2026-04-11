@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -379,9 +379,6 @@ impl QuoteTick {
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
 #[cfg(test)]
 mod tests {
     use nautilus_core::python::IntoPyObjectNautilusExt;
@@ -396,16 +393,16 @@ mod tests {
 
     #[rstest]
     #[case(
-    Price::from_raw(10_000_000, 6),
-    Price::from_raw(10_001_000, 7), // Mismatched precision
-    Quantity::from_raw(1_000_000, 6),
-    Quantity::from_raw(1_000_000, 6),
+    Price::new(0.010000, 6),
+    Price::new(0.0100010, 7), // Mismatched precision
+    Quantity::new(0.001000, 6),
+    Quantity::new(0.001000, 6),
 )]
     #[case(
-    Price::from_raw(10_000_000, 6),
-    Price::from_raw(10_001_000, 6),
-    Quantity::from_raw(1_000_000, 6),
-    Quantity::from_raw(1_000_000, 7), // Mismatched precision
+    Price::new(0.010000, 6),
+    Price::new(0.010001, 6),
+    Quantity::new(0.001000, 6),
+    Quantity::new(0.0010000, 7), // Mismatched precision
 )]
     fn test_quote_tick_py_new_invalid_precisions(
         #[case] bid_price: Price,

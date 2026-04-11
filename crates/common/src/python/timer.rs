@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -59,7 +59,7 @@ impl From<TimeEventHandlerV2> for TimeEventHandler_Py {
             callback: match value.callback {
                 #[cfg(feature = "python")]
                 TimeEventCallback::Python(callback) => callback,
-                TimeEventCallback::Rust(_) => {
+                TimeEventCallback::Rust(_) | TimeEventCallback::RustLocal(_) => {
                     panic!("Python time event handler is not supported for Rust callbacks")
                 }
             },

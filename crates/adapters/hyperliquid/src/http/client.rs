@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -101,7 +101,7 @@ pub static HYPERLIQUID_REST_QUOTA: LazyLock<Quota> =
 #[derive(Debug, Clone)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.adapters")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.hyperliquid")
 )]
 pub struct HyperliquidRawHttpClient {
     client: HttpClient,
@@ -691,7 +691,7 @@ impl HyperliquidRawHttpClient {
 #[derive(Debug, Clone)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.adapters")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.hyperliquid")
 )]
 pub struct HyperliquidHttpClient {
     pub(crate) inner: Arc<HyperliquidRawHttpClient>,
@@ -1164,6 +1164,10 @@ impl HyperliquidHttpClient {
     /// # Errors
     ///
     /// Returns an error if the API request fails or parsing fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `account_id` is not set on the client.
     pub async fn request_order_status_reports(
         &self,
         user: &str,
@@ -1210,7 +1214,7 @@ impl HyperliquidHttpClient {
                 &order,
                 &status,
                 &instrument,
-                self.account_id.unwrap_or_default(),
+                self.account_id.expect("account_id not set"),
                 ts_init,
             ) {
                 Ok(report) => reports.push(report),
@@ -1232,6 +1236,10 @@ impl HyperliquidHttpClient {
     /// # Errors
     ///
     /// Returns an error if the API request fails or parsing fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `account_id` is not set on the client.
     pub async fn request_fill_reports(
         &self,
         user: &str,
@@ -1260,7 +1268,7 @@ impl HyperliquidHttpClient {
             match crate::http::parse::parse_fill_report(
                 &fill,
                 &instrument,
-                self.account_id.unwrap_or_default(),
+                self.account_id.expect("account_id not set"),
                 ts_init,
             ) {
                 Ok(report) => reports.push(report),
@@ -1282,6 +1290,10 @@ impl HyperliquidHttpClient {
     /// # Errors
     ///
     /// Returns an error if the API request fails or parsing fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `account_id` has not been set on the client.
     pub async fn request_position_status_reports(
         &self,
         user: &str,
@@ -1325,7 +1337,7 @@ impl HyperliquidHttpClient {
             match crate::http::parse::parse_position_status_report(
                 &position_value,
                 &instrument,
-                self.account_id.unwrap_or_default(),
+                self.account_id.expect("account_id not set"),
                 ts_init,
             ) {
                 Ok(report) => reports.push(report),
@@ -1886,10 +1898,6 @@ impl HyperliquidHttpClient {
         }
     }
 }
-
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
 
 #[cfg(test)]
 mod tests {

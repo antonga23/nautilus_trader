@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Cloudbet self-hosted runner hygiene cleanup hourly
+
+[Timer]
+OnBootSec=10m
+OnUnitActiveSec=1h
+Persistent=true
+Unit=actions-runner-hygiene.service
+
+[Install]
+WantedBy=timers.target

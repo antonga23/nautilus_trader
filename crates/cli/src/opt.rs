@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -15,10 +15,7 @@
 
 use clap::Parser;
 
-/// Main CLI structure for parsing command-line arguments and options.
-///
-/// This is the entry point for the NautilusTrader command-line interface,
-/// providing access to various system management and operational commands.
+/// Command-line interface for NautilusTrader.
 #[derive(Debug, Parser)]
 #[clap(version, about, author)]
 pub struct NautilusCli {

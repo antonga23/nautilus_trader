@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -1617,7 +1617,7 @@ impl TimeBarAggregator {
                 .clone()
         };
 
-        let callback = TimeEventCallback::Rust(Rc::new(move |event: TimeEvent| {
+        let callback = TimeEventCallback::RustLocal(Rc::new(move |event: TimeEvent| {
             if let Some(agg) = aggregator_weak.upgrade() {
                 agg.borrow_mut().build_bar(event);
             }
@@ -1881,9 +1881,6 @@ impl BarAggregator for TimeBarAggregator {
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
@@ -3270,10 +3267,6 @@ mod tests {
         assert_eq!(bar.ts_event, UnixNanos::default());
         assert_eq!(bar.ts_init, ts2);
     }
-
-    // ========================================================================
-    // RenkoBarAggregator Tests
-    // ========================================================================
 
     #[rstest]
     fn test_renko_bar_aggregator_initialization(audusd_sim: CurrencyPair) {

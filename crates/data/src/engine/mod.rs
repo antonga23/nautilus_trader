@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -67,7 +67,7 @@ use nautilus_core::{
     correctness::{
         FAILED, check_key_in_map, check_key_not_in_map, check_predicate_false, check_predicate_true,
     },
-    datetime::millis_to_nanos,
+    datetime::millis_to_nanos_unchecked,
 };
 #[cfg(feature = "defi")]
 use nautilus_model::defi::DefiData;
@@ -81,6 +81,7 @@ use nautilus_model::{
     instruments::{Instrument, InstrumentAny, SyntheticInstrument},
     orderbook::OrderBook,
 };
+#[cfg(feature = "streaming")]
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 use ustr::Ustr;
 
@@ -107,6 +108,7 @@ pub struct DataEngine {
     pub(crate) external_clients: AHashSet<ClientId>,
     clients: IndexMap<ClientId, DataClientAdapter>,
     default_client: Option<DataClientAdapter>,
+    #[cfg(feature = "streaming")]
     catalogs: AHashMap<Ustr, ParquetDataCatalog>,
     routing_map: IndexMap<Venue, ClientId>,
     book_intervals: AHashMap<NonZeroUsize, AHashSet<InstrumentId>>,
@@ -152,6 +154,7 @@ impl DataEngine {
             external_clients,
             clients: IndexMap::new(),
             default_client: None,
+            #[cfg(feature = "streaming")]
             catalogs: AHashMap::new(),
             routing_map: IndexMap::new(),
             book_intervals: AHashMap::new(),
@@ -198,6 +201,7 @@ impl DataEngine {
     /// # Panics
     ///
     /// Panics if a catalog with the same `name` has already been registered.
+    #[cfg(feature = "streaming")]
     pub fn register_catalog(&mut self, catalog: ParquetDataCatalog, name: Option<String>) {
         let name = Ustr::from(name.as_deref().unwrap_or("catalog_0"));
 
@@ -228,15 +232,15 @@ impl DataEngine {
 
         if let Some(routing) = routing {
             self.routing_map.insert(routing, client_id);
-            log::info!("Set client {client_id} routing for {routing}");
+            log::debug!("Set client {client_id} routing for {routing}");
         }
 
         if client.venue.is_none() && self.default_client.is_none() {
             self.default_client = Some(client);
-            log::info!("Registered client {client_id} for default routing");
+            log::debug!("Registered client {client_id} for default routing");
         } else {
             self.clients.insert(client_id, client);
-            log::info!("Registered client {client_id}");
+            log::debug!("Registered client {client_id}");
         }
     }
 
@@ -273,7 +277,7 @@ impl DataEngine {
         let client_id = client.client_id();
 
         self.default_client = Some(client);
-        log::info!("Registered default client {client_id}");
+        log::debug!("Registered default client {client_id}");
     }
 
     /// Starts all registered data clients.
@@ -726,7 +730,8 @@ impl DataEngine {
             DataResponse::Quotes(resp) => self.handle_quotes(&resp.data),
             DataResponse::Trades(resp) => self.handle_trades(&resp.data),
             DataResponse::Bars(resp) => self.handle_bars(&resp.data),
-            _ => todo!(),
+            DataResponse::Book(resp) => self.handle_book_response(&resp.data),
+            _ => todo!("Handle other response types"),
         }
 
         msgbus::send_response(resp.correlation_id(), &resp);
@@ -964,7 +969,7 @@ impl DataEngine {
 
         if first_for_interval {
             // Initialize snapshotter and schedule its timer
-            let interval_ns = millis_to_nanos(cmd.interval_ms.get() as f64);
+            let interval_ns = millis_to_nanos_unchecked(cmd.interval_ms.get() as f64);
             let topic = switchboard::get_book_snapshots_topic(cmd.instrument_id, cmd.interval_ms);
 
             let snap_info = BookSnapshotInfo {
@@ -1185,6 +1190,18 @@ impl DataEngine {
 
     fn handle_bars(&self, bars: &[Bar]) {
         if let Err(e) = self.cache.as_ref().borrow_mut().add_bars(bars) {
+            log_error_on_cache_insert(&e);
+        }
+    }
+
+    fn handle_book_response(&self, book: &OrderBook) {
+        log::debug!("Adding order book {} to cache", book.instrument_id);
+        if let Err(e) = self
+            .cache
+            .as_ref()
+            .borrow_mut()
+            .add_order_book(book.clone())
+        {
             log_error_on_cache_insert(&e);
         }
     }

@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -117,7 +117,8 @@ class KrakenDataClient(LiveMarketDataClient):
         self._log.info(f"product_types={self._product_types}", LogColor.BLUE)
         self._log.info(f"{config.base_url_http_spot=}", LogColor.BLUE)
         self._log.info(f"{config.base_url_http_futures=}", LogColor.BLUE)
-        self._log.info(f"{config.base_url_ws=}", LogColor.BLUE)
+        self._log.info(f"{config.base_url_ws_spot=}", LogColor.BLUE)
+        self._log.info(f"{config.base_url_ws_futures=}", LogColor.BLUE)
         self._log.info(f"{config.update_instruments_interval_mins=}", LogColor.BLUE)
         self._log.info(f"{config.ws_heartbeat_secs=}", LogColor.BLUE)
 
@@ -142,7 +143,7 @@ class KrakenDataClient(LiveMarketDataClient):
         if KrakenProductType.SPOT in self._product_types:
             self._ws_client_spot = nautilus_pyo3.KrakenSpotWebSocketClient(
                 environment=environment,
-                base_url=config.base_url_ws,
+                base_url=config.base_url_ws_spot,
                 heartbeat_secs=config.ws_heartbeat_secs,
             )
             self._log.info(f"Spot WebSocket URL {self._ws_client_spot.url}", LogColor.BLUE)
@@ -153,6 +154,7 @@ class KrakenDataClient(LiveMarketDataClient):
         if KrakenProductType.FUTURES in self._product_types:
             self._ws_client_futures = nautilus_pyo3.KrakenFuturesWebSocketClient(
                 environment=environment,
+                base_url=config.base_url_ws_futures,
                 heartbeat_secs=config.ws_heartbeat_secs,
             )
             self._log.info(f"Futures WebSocket URL {self._ws_client_futures.url}", LogColor.BLUE)
@@ -180,9 +182,7 @@ class KrakenDataClient(LiveMarketDataClient):
         self,
         symbol: str,
     ) -> (
-        nautilus_pyo3.KrakenSpotWebSocketClient
-        | nautilus_pyo3.KrakenFuturesWebSocketClient
-        | None
+        nautilus_pyo3.KrakenSpotWebSocketClient | nautilus_pyo3.KrakenFuturesWebSocketClient | None
     ):
         product_type = nautilus_pyo3.kraken_product_type_from_symbol(symbol)
         if product_type == KrakenProductType.SPOT:
@@ -213,7 +213,10 @@ class KrakenDataClient(LiveMarketDataClient):
             instruments_pyo3 = self.instrument_provider.instruments_pyo3()
             await self._ws_client_futures.connect(instruments_pyo3, self._handle_msg)
             self._ws_client_futures_connected = True
-            self._log.info(f"Connected to futures websocket {self._ws_client_futures.url}", LogColor.BLUE)
+            self._log.info(
+                f"Connected to futures websocket {self._ws_client_futures.url}",
+                LogColor.BLUE,
+            )
 
         if self._config.update_instruments_interval_mins:
             self._update_instruments_task = self.create_task(
@@ -358,11 +361,35 @@ class KrakenDataClient(LiveMarketDataClient):
         await ws_client.subscribe_trades(pyo3_instrument_id)
 
     async def _subscribe_bars(self, command: SubscribeBars) -> None:
-        self._log.error(
-            f"Cannot subscribe to {command.bar_type} bars: "
-            f"WebSocket bar streaming not yet implemented. "
-            f"Use request_bars for historical bar data instead.",
-        )
+        if not command.bar_type.is_externally_aggregated():
+            self._log.warning(
+                f"Cannot subscribe to {command.bar_type} bars: "
+                f"only EXTERNAL bars are supported, use INTERNAL aggregation instead",
+            )
+            return
+
+        if not command.bar_type.spec.is_time_aggregated():
+            self._log.warning(
+                f"Cannot subscribe to {command.bar_type} bars: "
+                f"only time-based bars are aggregated by Kraken",
+            )
+            return
+
+        symbol = command.bar_type.instrument_id.symbol.value
+        if symbol.startswith(("PI_", "PF_", "PV_", "FI_", "FF_")):
+            self._log.warning(
+                f"Cannot subscribe to {command.bar_type} bars: "
+                f"Kraken Futures does not support EXTERNAL bar streaming, "
+                f"use INTERNAL aggregation instead",
+            )
+            return
+
+        if self._ws_client_spot is None:
+            self._log.error(f"No spot WebSocket client configured for {command.bar_type}")
+            return
+
+        pyo3_bar_type = nautilus_pyo3.BarType.from_str(str(command.bar_type))
+        await self._ws_client_spot.subscribe_bars(pyo3_bar_type)
 
     async def _subscribe_instruments(self, command: SubscribeInstruments) -> None:
         if self._config.update_instruments_interval_mins:
@@ -425,8 +452,16 @@ class KrakenDataClient(LiveMarketDataClient):
         await ws_client.unsubscribe_trades(pyo3_instrument_id)
 
     async def _unsubscribe_bars(self, command: UnsubscribeBars) -> None:
-        # Bar subscriptions are not supported, nothing to unsubscribe
-        pass
+        symbol = command.bar_type.instrument_id.symbol.value
+        if symbol.startswith(("PI_", "PF_", "PV_", "FI_", "FF_")):
+            # Futures bars were never subscribed
+            return
+
+        if self._ws_client_spot is None:
+            return
+
+        pyo3_bar_type = nautilus_pyo3.BarType.from_str(str(command.bar_type))
+        await self._ws_client_spot.unsubscribe_bars(pyo3_bar_type)
 
     async def _unsubscribe_instruments(self, command: UnsubscribeInstruments) -> None:
         # Instruments are updated via polling task, no WebSocket unsubscribe needed
@@ -541,7 +576,7 @@ class KrakenDataClient(LiveMarketDataClient):
         instruments = []
         for pyo3_instrument in all_pyo3_instruments:
             if isinstance(pyo3_instrument, KRAKEN_INSTRUMENT_TYPES):
-                self._handle_instrument_update(pyo3_instrument)
+                self._cache_instrument(pyo3_instrument)
             instrument = transform_instrument_from_pyo3(pyo3_instrument)
             instruments.append(instrument)
 
@@ -569,7 +604,7 @@ class KrakenDataClient(LiveMarketDataClient):
                 request.instrument_id.value,
             ):
                 if isinstance(pyo3_instrument, KRAKEN_INSTRUMENT_TYPES):
-                    self._handle_instrument_update(pyo3_instrument)
+                    self._cache_instrument(pyo3_instrument)
                 instrument = transform_instrument_from_pyo3(pyo3_instrument)
                 self._handle_instrument(
                     instrument,
@@ -698,7 +733,7 @@ class KrakenDataClient(LiveMarketDataClient):
         except Exception as e:
             self._log.exception("Error handling websocket message", e)
 
-    def _handle_instrument_update(self, pyo3_instrument: KrakenInstrument) -> None:
+    def _cache_instrument(self, pyo3_instrument: KrakenInstrument) -> None:
         client = self._get_http_client_for_symbol(str(pyo3_instrument.raw_symbol))
         if client:
             client.cache_instrument(pyo3_instrument)
@@ -708,6 +743,9 @@ class KrakenDataClient(LiveMarketDataClient):
 
         if self._ws_client_futures is not None and self._ws_client_futures_connected:
             self._ws_client_futures.cache_instrument(pyo3_instrument)
+
+    def _handle_instrument_update(self, pyo3_instrument: KrakenInstrument) -> None:
+        self._cache_instrument(pyo3_instrument)
 
         instrument = transform_instrument_from_pyo3(pyo3_instrument)
 

@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -48,7 +48,6 @@ pub mod handler;
 pub mod messages;
 pub mod parse;
 
-// Re-exports
 pub use client::DydxWebSocketClient;
 pub use enums::{
     DydxWsChannel, DydxWsMessage, DydxWsMessageType, DydxWsOperation, NautilusWsMessage,

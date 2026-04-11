@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -90,7 +90,11 @@ impl MessageHandler for BookUpdater {
                         log::error!("Failed to apply deltas: {e}");
                     }
                 }
-                Data::Depth10(depth) => book.apply_depth(depth),
+                Data::Depth10(depth) => {
+                    if let Err(e) = book.apply_depth(depth) {
+                        log::error!("Failed to apply depth: {e}");
+                    }
+                }
                 _ => log::error!("Invalid data type for book update, was {data:?}"),
             }
         }

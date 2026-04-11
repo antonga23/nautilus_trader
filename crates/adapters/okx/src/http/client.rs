@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -22,10 +22,10 @@
 //! Key responsibilities handled internally:
 //! • Request signing and header composition for private routes (HMAC-SHA256).
 //! • Rate-limiting based on the public OKX specification.
-//! • Zero-copy deserialization of large JSON payloads into domain models.
+//! • Deserialization of JSON payloads into domain models.
 //! • Conversion of raw exchange errors into the rich [`OKXHttpError`] enum.
 //!
-//! # Official documentation
+//! # Official Documentation
 //!
 //! | Endpoint                             | Reference                                              |
 //! |--------------------------------------|--------------------------------------------------------|
@@ -35,7 +35,7 @@
 
 use std::{
     collections::HashMap,
-    fmt::{Debug, Formatter},
+    fmt::Debug,
     num::NonZeroU32,
     str::FromStr,
     sync::{
@@ -159,7 +159,7 @@ impl Default for OKXRawHttpClient {
 }
 
 impl Debug for OKXRawHttpClient {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let credential = self.credential.as_ref().map(|_| "<redacted>");
         f.debug_struct(stringify!(OKXRawHttpClient))
             .field("base_url", &self.base_url)
@@ -410,15 +410,18 @@ impl OKXRawHttpClient {
         authenticate: bool,
     ) -> Result<Vec<T>, OKXHttpError> {
         let url = format!("{}{path}", self.base_url);
-        let endpoint = path.to_string();
-        let method_clone = method.clone();
-        let body_clone = body.clone();
+
+        // Pre-compute rate limit keys once outside the retry closure
+        let rate_keys: Vec<String> = Self::rate_limit_keys(path)
+            .into_iter()
+            .map(|k| k.to_string())
+            .collect();
 
         let operation = || {
             let url = url.clone();
-            let method = method_clone.clone();
-            let body = body_clone.clone();
-            let endpoint = endpoint.clone();
+            let method = method.clone();
+            let body = body.clone();
+            let rate_keys = rate_keys.clone();
 
             async move {
                 // Serialize params to query string for signing (if needed)
@@ -432,9 +435,9 @@ impl OKXRawHttpClient {
 
                 // Build full path with query string for signing
                 let full_path = if query_string.is_empty() {
-                    endpoint.clone()
+                    path.to_string()
                 } else {
-                    format!("{endpoint}?{query_string}")
+                    format!("{path}?{query_string}")
                 };
 
                 let mut headers = if authenticate {
@@ -448,10 +451,6 @@ impl OKXRawHttpClient {
                     headers.insert("Content-Type".to_string(), "application/json".to_string());
                 }
 
-                let rate_keys = Self::rate_limit_keys(endpoint.as_str())
-                    .into_iter()
-                    .map(|k| k.to_string())
-                    .collect();
                 let resp = self
                     .client
                     .request_with_params(
@@ -537,7 +536,7 @@ impl OKXRawHttpClient {
 
         self.retry_manager
             .execute_with_retry_with_cancel(
-                endpoint.as_str(),
+                path,
                 operation,
                 should_retry,
                 create_error,
@@ -983,7 +982,7 @@ impl OKXRawHttpClient {
 #[derive(Debug)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.adapters")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.okx")
 )]
 pub struct OKXHttpClient {
     pub(crate) inner: Arc<OKXRawHttpClient>,

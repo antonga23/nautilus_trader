@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -2121,6 +2121,96 @@ class TestActor:
         assert actor.calls == ["on_start", "on_order_filled"]
         assert actor.store[0] == fill
 
+    def test_subscribe_order_cancels(self) -> None:
+        # Arrange
+        actor = MockActor()
+        actor.register_base(
+            portfolio=self.portfolio,
+            msgbus=self.msgbus,
+            cache=self.cache,
+            clock=self.clock,
+        )
+
+        # Act
+        actor.subscribe_order_cancels(AUDUSD_SIM.id)
+
+        # Assert
+        # Order cancels are msgbus-only subscriptions (no data engine command)
+        subscriptions = self.msgbus.subscriptions(f"events.cancels.{AUDUSD_SIM.id}")
+        assert len(subscriptions) == 1
+
+    def test_unsubscribe_order_cancels(self) -> None:
+        # Arrange
+        actor = MockActor()
+        actor.register_base(
+            portfolio=self.portfolio,
+            msgbus=self.msgbus,
+            cache=self.cache,
+            clock=self.clock,
+        )
+
+        actor.subscribe_order_cancels(AUDUSD_SIM.id)
+
+        # Act
+        actor.unsubscribe_order_cancels(AUDUSD_SIM.id)
+
+        # Assert
+        subscriptions = self.msgbus.subscriptions(f"events.cancels.{AUDUSD_SIM.id}")
+        assert len(subscriptions) == 0
+
+    def test_handle_order_canceled_when_not_running_does_not_send_to_on_order_canceled(
+        self,
+    ) -> None:
+        # Arrange
+        actor = MockActor()
+        actor.register_base(
+            portfolio=self.portfolio,
+            msgbus=self.msgbus,
+            cache=self.cache,
+            clock=self.clock,
+        )
+
+        actor.subscribe_order_cancels(AUDUSD_SIM.id)
+
+        order = TestExecStubs.market_order()
+        canceled = TestEventStubs.order_canceled(order)
+
+        # Act
+        self.msgbus.publish(
+            topic=f"events.cancels.{AUDUSD_SIM.id}",
+            msg=canceled,
+        )
+
+        # Assert
+        assert actor.calls == []
+        assert actor.store == []
+
+    def test_handle_order_canceled_when_running_sends_to_on_order_canceled(self) -> None:
+        # Arrange
+        actor = MockActor()
+        actor.register_base(
+            portfolio=self.portfolio,
+            msgbus=self.msgbus,
+            cache=self.cache,
+            clock=self.clock,
+        )
+
+        actor.subscribe_order_cancels(AUDUSD_SIM.id)
+        actor.start()
+
+        order = TestExecStubs.market_order()
+        canceled = TestEventStubs.order_canceled(order)
+
+        # Act
+        self.msgbus.publish(
+            topic=f"events.cancels.{AUDUSD_SIM.id}",
+            msg=canceled,
+        )
+
+        # Assert
+        assert actor.calls == ["on_start", "on_order_canceled"]
+        assert actor.store[0] == canceled
+
     def assert_successful_request(self, actor, request_id, method_name):
         """
         Do assert the request is successful.
@@ -2130,18 +2220,18 @@ class TestActor:
         """
         method_info = f" for method '{method_name}'"
         assert request_id is not None, f"Request ID should not be None{method_info}"
-        assert (
-            self.data_engine.request_count == 1
-        ), f"Expected 1 request in data engine{method_info}, was {self.data_engine.request_count}"
-        assert (
-            not actor.has_pending_requests()
-        ), f"Actor should not have pending requests{method_info}"
+        assert self.data_engine.request_count == 1, (
+            f"Expected 1 request in data engine{method_info}, was {self.data_engine.request_count}"
+        )
+        assert not actor.has_pending_requests(), (
+            f"Actor should not have pending requests{method_info}"
+        )
         assert not actor.is_pending_request(
             request_id,
         ), f"Request {request_id} should not be pending{method_info}"
-        assert (
-            request_id not in actor.pending_requests()
-        ), f"Request {request_id} should not be in pending requests list{method_info}"
+        assert request_id not in actor.pending_requests(), (
+            f"Request {request_id} should not be in pending requests list{method_info}"
+        )
 
     def test_request_data_sends_request_to_data_engine(self) -> None:
         # Arrange
@@ -2362,6 +2452,67 @@ class TestActor:
 
         # Assert
         self.assert_successful_request(actor, request_id, "request_order_book_depth")
+
+    def test_request_order_book_snapshot_sends_request_to_data_engine(self) -> None:
+        # Arrange
+        actor = MockActor()
+        actor.register_base(
+            portfolio=self.portfolio,
+            msgbus=self.msgbus,
+            cache=self.cache,
+            clock=self.clock,
+        )
+
+        # Act
+        request_id = actor.request_order_book_snapshot(
+            AUDUSD_SIM.id,
+            limit=10,
+        )
+
+        # Assert
+        # Note: Unlike date-range requests (bars, quotes, trades), order book snapshot
+        # requests don't auto-respond with empty data when there's no client data.
+        # The request remains pending until a response is received.
+        assert request_id is not None
+        assert self.data_engine.request_count == 1
+
+    def test_request_order_book_snapshot_with_registered_callback(self) -> None:
+        # Arrange
+        handler: list[UUID4] = []
+        actor = MockActor()
+        actor.register_base(
+            portfolio=self.portfolio,
+            msgbus=self.msgbus,
+            cache=self.cache,
+            clock=self.clock,
+        )
+
+        deltas = TestDataStubs.order_book_deltas(AUDUSD_SIM.id)
+
+        # Act
+        request_id = actor.request_order_book_snapshot(
+            AUDUSD_SIM.id,
+            limit=10,
+            callback=handler.append,
+        )
+
+        response = DataResponse(
+            client_id=ClientId("SIM"),
+            venue=Venue("SIM"),
+            data_type=DataType(OrderBookDeltas, metadata={"instrument_id": AUDUSD_SIM.id}),
+            data=[deltas],
+            correlation_id=request_id,
+            response_id=UUID4(),
+            start=None,
+            end=None,
+            ts_init=self.clock.timestamp_ns(),
+        )
+
+        self.msgbus.response(response)
+
+        # Assert
+        self.assert_successful_request(actor, request_id, "request_order_book_snapshot")
+        assert request_id in handler
 
     def test_request_bars_with_registered_callback(self) -> None:
         # Arrange

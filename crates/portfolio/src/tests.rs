@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -37,6 +37,7 @@ use nautilus_model::{
     },
     orders::{Order, OrderAny, OrderTestBuilder},
     position::Position,
+    stubs::TestDefault,
     types::{AccountBalance, Currency, Money, Price, Quantity},
 };
 use rstest::{fixture, rstest};
@@ -59,7 +60,7 @@ fn clock() -> TestClock {
 
 #[fixture]
 fn venue() -> Venue {
-    Venue::new("SIM")
+    Venue::test_default()
 }
 
 #[fixture]
@@ -71,7 +72,7 @@ fn instrument_audusd(audusd_sim: CurrencyPair) -> InstrumentAny {
 fn instrument_gbpusd() -> InstrumentAny {
     InstrumentAny::CurrencyPair(default_fx_ccy(
         Symbol::from("GBP/USD"),
-        Some(Venue::from("SIM")),
+        Some(Venue::test_default()),
     ))
 }
 
@@ -343,7 +344,6 @@ fn get_close_position(position: &Position) -> PositionClosed {
     }
 }
 
-// Tests
 #[rstest]
 fn test_account_when_account_returns_the_account_facade(mut portfolio: Portfolio) {
     let account_id = "BINANCE-1513111";
@@ -515,7 +515,7 @@ fn test_exceed_free_balance_multi_currency_raises_account_balance_negative_excep
     let account = portfolio
         .cache
         .borrow_mut()
-        .account_for_venue(&Venue::from("SIM"))
+        .account_for_venue(&Venue::test_default())
         .unwrap()
         .clone();
 
@@ -582,7 +582,7 @@ fn test_update_orders_open_cash_account(
 
     assert_eq!(
         portfolio
-            .balances_locked(&Venue::from("SIM"))
+            .balances_locked(&Venue::test_default())
             .get(&Currency::USD())
             .unwrap()
             .as_decimal(),
@@ -833,7 +833,7 @@ fn test_opening_one_long_position_updates_portfolio(
 
     assert_eq!(
         portfolio
-            .net_exposures(&Venue::from("SIM"))
+            .net_exposures(&Venue::test_default())
             .unwrap()
             .get(&Currency::USD())
             .unwrap()
@@ -842,7 +842,7 @@ fn test_opening_one_long_position_updates_portfolio(
     );
     assert_eq!(
         portfolio
-            .unrealized_pnls(&Venue::from("SIM"))
+            .unrealized_pnls(&Venue::test_default())
             .get(&Currency::USD())
             .unwrap()
             .as_decimal(),
@@ -850,7 +850,7 @@ fn test_opening_one_long_position_updates_portfolio(
     );
     assert!(
         portfolio
-            .realized_pnls(&Venue::from("SIM"))
+            .realized_pnls(&Venue::test_default())
             .get(&Currency::USD())
             .unwrap()
             .is_zero(),
@@ -917,7 +917,7 @@ fn test_opening_one_long_position_updates_portfolio_with_bar(
 
     assert_eq!(
         portfolio
-            .net_exposures(&Venue::from("SIM"))
+            .net_exposures(&Venue::test_default())
             .unwrap()
             .get(&Currency::USD())
             .unwrap()
@@ -926,7 +926,7 @@ fn test_opening_one_long_position_updates_portfolio_with_bar(
     );
     assert_eq!(
         portfolio
-            .unrealized_pnls(&Venue::from("SIM"))
+            .unrealized_pnls(&Venue::test_default())
             .get(&Currency::USD())
             .unwrap()
             .as_decimal(),
@@ -934,7 +934,7 @@ fn test_opening_one_long_position_updates_portfolio_with_bar(
     );
     assert!(
         portfolio
-            .realized_pnls(&Venue::from("SIM"))
+            .realized_pnls(&Venue::test_default())
             .get(&Currency::USD())
             .unwrap()
             .is_zero(),
@@ -1022,7 +1022,7 @@ fn test_opening_one_short_position_updates_portfolio(
 
     assert_eq!(
         portfolio
-            .net_exposures(&Venue::from("SIM"))
+            .net_exposures(&Venue::test_default())
             .unwrap()
             .get(&Currency::USD())
             .unwrap()
@@ -1031,7 +1031,7 @@ fn test_opening_one_short_position_updates_portfolio(
     );
     assert_eq!(
         portfolio
-            .unrealized_pnls(&Venue::from("SIM"))
+            .unrealized_pnls(&Venue::test_default())
             .get(&Currency::USD())
             .unwrap()
             .as_decimal(),
@@ -1039,7 +1039,7 @@ fn test_opening_one_short_position_updates_portfolio(
     );
     assert_eq!(
         portfolio
-            .realized_pnls(&Venue::from("SIM"))
+            .realized_pnls(&Venue::test_default())
             .get(&Currency::USD())
             .unwrap()
             .as_decimal(),
@@ -1150,7 +1150,7 @@ fn test_opening_positions_with_multi_asset_account(
     // TODO: fix
     // assert!(
     //     portfolio
-    //         .margins_maint(&Venue::from("SIM"))
+    //         .margins_maint(&Venue::test_default())
     //         .get(&instrument_audusd.id())
     //         .unwrap()
     //         .is_zero(),
@@ -1338,7 +1338,7 @@ fn test_opening_several_positions_updates_portfolio(
 
     assert_eq!(
         portfolio
-            .net_exposures(&Venue::from("SIM"))
+            .net_exposures(&Venue::test_default())
             .unwrap()
             .get(&Currency::USD())
             .unwrap()
@@ -1348,7 +1348,7 @@ fn test_opening_several_positions_updates_portfolio(
 
     assert_eq!(
         portfolio
-            .unrealized_pnls(&Venue::from("SIM"))
+            .unrealized_pnls(&Venue::test_default())
             .get(&Currency::USD())
             .unwrap()
             .as_decimal(),
@@ -1357,7 +1357,7 @@ fn test_opening_several_positions_updates_portfolio(
 
     assert_eq!(
         portfolio
-            .realized_pnls(&Venue::from("SIM"))
+            .realized_pnls(&Venue::test_default())
             .get(&Currency::USD())
             .unwrap()
             .as_decimal(),
@@ -1365,7 +1365,7 @@ fn test_opening_several_positions_updates_portfolio(
     );
     // FIX: TODO: should not be empty
     assert_eq!(
-        portfolio.margins_maint(&Venue::from("SIM")),
+        portfolio.margins_maint(&Venue::test_default()),
         AHashMap::new()
     );
     assert_eq!(
@@ -1507,7 +1507,7 @@ fn test_modifying_position_updates_portfolio(
 
     assert_eq!(
         portfolio
-            .net_exposures(&Venue::from("SIM"))
+            .net_exposures(&Venue::test_default())
             .unwrap()
             .get(&Currency::USD())
             .unwrap()
@@ -1517,7 +1517,7 @@ fn test_modifying_position_updates_portfolio(
 
     assert_eq!(
         portfolio
-            .unrealized_pnls(&Venue::from("SIM"))
+            .unrealized_pnls(&Venue::test_default())
             .get(&Currency::USD())
             .unwrap()
             .as_decimal(),
@@ -1526,7 +1526,7 @@ fn test_modifying_position_updates_portfolio(
 
     assert_eq!(
         portfolio
-            .realized_pnls(&Venue::from("SIM"))
+            .realized_pnls(&Venue::test_default())
             .get(&Currency::USD())
             .unwrap()
             .as_decimal(),
@@ -1534,7 +1534,7 @@ fn test_modifying_position_updates_portfolio(
     );
     // FIX: TODO: should not be empty
     assert_eq!(
-        portfolio.margins_maint(&Venue::from("SIM")),
+        portfolio.margins_maint(&Venue::test_default()),
         AHashMap::new()
     );
     assert_eq!(
@@ -1698,15 +1698,15 @@ fn test_closing_position_updates_portfolio(
     portfolio.update_position(&PositionEvent::PositionClosed(position_closed));
 
     // Check portfolio state after position closure
-    let net_exposures = portfolio.net_exposures(&Venue::from("SIM"));
+    let net_exposures = portfolio.net_exposures(&Venue::test_default());
     assert!(net_exposures.is_none() || net_exposures.unwrap().is_empty()); // No net exposures
-    let unrealized_pnls_venue = portfolio.unrealized_pnls(&Venue::from("SIM"));
+    let unrealized_pnls_venue = portfolio.unrealized_pnls(&Venue::test_default());
     // Unrealized PnL should be zero for closed positions
     if let Some(usd_unrealized) = unrealized_pnls_venue.get(&Currency::USD()) {
         assert_eq!(usd_unrealized.as_decimal(), dec!(0.0));
     }
 
-    let realized_pnls = portfolio.realized_pnls(&Venue::from("SIM"));
+    let realized_pnls = portfolio.realized_pnls(&Venue::test_default());
     assert_eq!(
         realized_pnls.get(&Currency::USD()).unwrap().as_decimal(),
         dec!(6.0) // Expected realized PnL: 10 USD profit - 4 USD commission = 6 USD
@@ -1724,7 +1724,7 @@ fn test_closing_position_updates_portfolio(
     );
 
     assert_eq!(
-        portfolio.margins_maint(&Venue::from("SIM")),
+        portfolio.margins_maint(&Venue::test_default()),
         AHashMap::new()
     ); // No maintenance margins
 
@@ -1739,7 +1739,7 @@ fn test_closing_position_updates_portfolio(
     assert_eq!(realized_pnl.unwrap().as_decimal(), dec!(6.0)); // 6 USD realized profit (after commission)
 
     // Calculate total PnLs manually (realized + unrealized for venue)
-    let realized_pnls_venue_final = portfolio.realized_pnls(&Venue::from("SIM"));
+    let realized_pnls_venue_final = portfolio.realized_pnls(&Venue::test_default());
     assert_eq!(
         realized_pnls_venue_final
             .get(&Currency::USD())
@@ -1922,7 +1922,7 @@ fn test_several_positions_with_different_instruments_updates_portfolio(
 
     assert_eq!(
         portfolio
-            .net_exposures(&Venue::from("SIM"))
+            .net_exposures(&Venue::test_default())
             .unwrap()
             .get(&Currency::USD())
             .unwrap()
@@ -1931,21 +1931,21 @@ fn test_several_positions_with_different_instruments_updates_portfolio(
     );
     assert!(
         portfolio
-            .unrealized_pnls(&Venue::from("SIM"))
+            .unrealized_pnls(&Venue::test_default())
             .get(&Currency::USD())
             .unwrap()
             .is_zero(),
     );
     assert!(
         portfolio
-            .realized_pnls(&Venue::from("SIM"))
+            .realized_pnls(&Venue::test_default())
             .get(&Currency::USD())
             .unwrap()
             .is_zero(),
     );
     // FIX: TODO: should not be empty
     assert_eq!(
-        portfolio.margins_maint(&Venue::from("SIM")),
+        portfolio.margins_maint(&Venue::test_default()),
         AHashMap::new()
     );
 }

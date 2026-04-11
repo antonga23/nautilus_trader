@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -73,18 +73,19 @@ use nautilus_model::{
     enums::{BookType, PriceType},
     identifiers::{ClientId, TraderId, Venue},
     instruments::{CurrencyPair, Instrument, InstrumentAny, stubs::audusd_sim},
+    stubs::TestDefault,
     types::Price,
 };
 use rstest::*;
 
 #[fixture]
 fn client_id() -> ClientId {
-    ClientId::default()
+    ClientId::test_default()
 }
 
 #[fixture]
 fn venue() -> Venue {
-    Venue::default()
+    Venue::test_default()
 }
 
 #[fixture]
@@ -99,7 +100,7 @@ fn cache() -> Rc<RefCell<Cache>> {
 
 #[fixture]
 fn stub_msgbus() -> Rc<RefCell<MessageBus>> {
-    MessageBus::new(TraderId::default(), UUID4::new(), None, None).register_message_bus()
+    MessageBus::new(TraderId::test_default(), UUID4::new(), None, None).register_message_bus()
 }
 
 #[fixture]
@@ -176,7 +177,7 @@ fn test_register_default_client_twice_panics(
             clock.clone(),
             cache.clone(),
             client_id,
-            Some(Venue::default()),
+            Some(Venue::test_default()),
         )),
     );
     let data_client2 = DataClientAdapter::new(
@@ -188,7 +189,7 @@ fn test_register_default_client_twice_panics(
             clock,
             cache,
             client_id,
-            Some(Venue::default()),
+            Some(Venue::test_default()),
         )),
     );
 
@@ -206,7 +207,7 @@ fn test_register_client_duplicate_id_panics(
     let mut data_engine = data_engine.borrow_mut();
 
     let client_id = ClientId::new("DUPLICATE");
-    let venue = Venue::default();
+    let venue = Venue::test_default();
 
     let data_client1 = DataClientAdapter::new(
         client_id,
@@ -217,7 +218,7 @@ fn test_register_client_duplicate_id_panics(
             clock.clone(),
             cache.clone(),
             client_id,
-            Some(Venue::default()),
+            Some(Venue::test_default()),
         )),
     );
     let data_client2 = DataClientAdapter::new(
@@ -229,7 +230,7 @@ fn test_register_client_duplicate_id_panics(
             clock,
             cache,
             client_id,
-            Some(Venue::default()),
+            Some(Venue::test_default()),
         )),
     );
 
@@ -246,7 +247,7 @@ fn test_register_and_deregister_client(
     let mut data_engine = data_engine.borrow_mut();
 
     let client_id1 = ClientId::new("C1");
-    let venue1 = Venue::default();
+    let venue1 = Venue::test_default();
 
     let data_client1 = DataClientAdapter::new(
         client_id1,
@@ -306,7 +307,7 @@ fn test_register_default_client(
             clock,
             cache,
             default_id,
-            Some(Venue::default()),
+            Some(Venue::test_default()),
         )),
     );
     data_engine.register_default_client(default_client);

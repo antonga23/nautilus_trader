@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -15,9 +15,11 @@
 
 //! Cap'n Proto serialization for trading commands.
 
+use indexmap::IndexMap;
 use nautilus_core::{UUID4, UnixNanos};
 use nautilus_model::identifiers::{ClientId, InstrumentId, StrategyId, TraderId};
 use nautilus_serialization::{
+    base_capnp,
     capnp::{ToCapnp, order_side_to_capnp},
     trading_capnp,
 };
@@ -27,11 +29,24 @@ use crate::messages::execution::{
     SubmitOrder, SubmitOrderList, TradingCommand,
 };
 
+/// Helper function to populate a StringMap builder from an IndexMap
+fn populate_string_map<'a>(
+    builder: base_capnp::string_map::Builder<'a>,
+    params: &IndexMap<String, String>,
+) {
+    let mut entries_builder = builder.init_entries(params.len() as u32);
+    for (i, (key, value)) in params.iter().enumerate() {
+        let mut entry_builder = entries_builder.reborrow().get(i as u32);
+        entry_builder.set_key(key.as_str());
+        entry_builder.set_value(value.as_str());
+    }
+}
+
 /// Helper function to populate a TradingCommandHeader builder
 fn populate_trading_command_header<'a>(
     mut builder: trading_capnp::trading_command_header::Builder<'a>,
     trader_id: &TraderId,
-    client_id: &ClientId,
+    client_id: Option<&ClientId>,
     strategy_id: &StrategyId,
     instrument_id: &InstrumentId,
     command_id: &UUID4,
@@ -40,8 +55,10 @@ fn populate_trading_command_header<'a>(
     let trader_id_builder = builder.reborrow().init_trader_id();
     trader_id.to_capnp(trader_id_builder);
 
-    let client_id_builder = builder.reborrow().init_client_id();
-    client_id.to_capnp(client_id_builder);
+    if let Some(client_id) = client_id {
+        let client_id_builder = builder.reborrow().init_client_id();
+        client_id.to_capnp(client_id_builder);
+    }
 
     let strategy_id_builder = builder.reborrow().init_strategy_id();
     strategy_id.to_capnp(strategy_id_builder);
@@ -64,7 +81,7 @@ impl<'a> ToCapnp<'a> for CancelOrder {
         populate_trading_command_header(
             header_builder,
             &self.trader_id,
-            &self.client_id,
+            self.client_id.as_ref(),
             &self.strategy_id,
             &self.instrument_id,
             &self.command_id,
@@ -74,8 +91,15 @@ impl<'a> ToCapnp<'a> for CancelOrder {
         let client_order_id_builder = builder.reborrow().init_client_order_id();
         self.client_order_id.to_capnp(client_order_id_builder);
 
-        let venue_order_id_builder = builder.reborrow().init_venue_order_id();
-        self.venue_order_id.to_capnp(venue_order_id_builder);
+        if let Some(ref venue_order_id) = self.venue_order_id {
+            let venue_order_id_builder = builder.reborrow().init_venue_order_id();
+            venue_order_id.to_capnp(venue_order_id_builder);
+        }
+
+        if let Some(ref params) = self.params {
+            let params_builder = builder.reborrow().init_params();
+            populate_string_map(params_builder, params);
+        }
     }
 }
 
@@ -87,7 +111,7 @@ impl<'a> ToCapnp<'a> for CancelAllOrders {
         populate_trading_command_header(
             header_builder,
             &self.trader_id,
-            &self.client_id,
+            self.client_id.as_ref(),
             &self.strategy_id,
             &self.instrument_id,
             &self.command_id,
@@ -95,6 +119,11 @@ impl<'a> ToCapnp<'a> for CancelAllOrders {
         );
 
         builder.set_order_side(order_side_to_capnp(self.order_side));
+
+        if let Some(ref params) = self.params {
+            let params_builder = builder.reborrow().init_params();
+            populate_string_map(params_builder, params);
+        }
     }
 }
 
@@ -106,7 +135,7 @@ impl<'a> ToCapnp<'a> for BatchCancelOrders {
         populate_trading_command_header(
             header_builder,
             &self.trader_id,
-            &self.client_id,
+            self.client_id.as_ref(),
             &self.strategy_id,
             &self.instrument_id,
             &self.command_id,
@@ -120,6 +149,11 @@ impl<'a> ToCapnp<'a> for BatchCancelOrders {
             let cancel_builder = cancellations_builder.reborrow().get(i as u32);
             cancel.to_capnp(cancel_builder);
         }
+
+        if let Some(ref params) = self.params {
+            let params_builder = builder.reborrow().init_params();
+            populate_string_map(params_builder, params);
+        }
     }
 }
 
@@ -131,7 +165,7 @@ impl<'a> ToCapnp<'a> for ModifyOrder {
         populate_trading_command_header(
             header_builder,
             &self.trader_id,
-            &self.client_id,
+            self.client_id.as_ref(),
             &self.strategy_id,
             &self.instrument_id,
             &self.command_id,
@@ -141,8 +175,10 @@ impl<'a> ToCapnp<'a> for ModifyOrder {
         let client_order_id_builder = builder.reborrow().init_client_order_id();
         self.client_order_id.to_capnp(client_order_id_builder);
 
-        let venue_order_id_builder = builder.reborrow().init_venue_order_id();
-        self.venue_order_id.to_capnp(venue_order_id_builder);
+        if let Some(ref venue_order_id) = self.venue_order_id {
+            let venue_order_id_builder = builder.reborrow().init_venue_order_id();
+            venue_order_id.to_capnp(venue_order_id_builder);
+        }
 
         if let Some(ref quantity) = self.quantity {
             let quantity_builder = builder.reborrow().init_quantity();
@@ -158,6 +194,11 @@ impl<'a> ToCapnp<'a> for ModifyOrder {
             let trigger_price_builder = builder.reborrow().init_trigger_price();
             trigger_price.to_capnp(trigger_price_builder);
         }
+
+        if let Some(ref params) = self.params {
+            let params_builder = builder.reborrow().init_params();
+            populate_string_map(params_builder, params);
+        }
     }
 }
 
@@ -169,7 +210,7 @@ impl<'a> ToCapnp<'a> for QueryOrder {
         populate_trading_command_header(
             header_builder,
             &self.trader_id,
-            &self.client_id,
+            self.client_id.as_ref(),
             &self.strategy_id,
             &self.instrument_id,
             &self.command_id,
@@ -179,8 +220,10 @@ impl<'a> ToCapnp<'a> for QueryOrder {
         let client_order_id_builder = builder.reborrow().init_client_order_id();
         self.client_order_id.to_capnp(client_order_id_builder);
 
-        let venue_order_id_builder = builder.reborrow().init_venue_order_id();
-        self.venue_order_id.to_capnp(venue_order_id_builder);
+        if let Some(ref venue_order_id) = self.venue_order_id {
+            let venue_order_id_builder = builder.reborrow().init_venue_order_id();
+            venue_order_id.to_capnp(venue_order_id_builder);
+        }
     }
 }
 
@@ -210,7 +253,7 @@ impl<'a> ToCapnp<'a> for SubmitOrder {
         populate_trading_command_header(
             header_builder,
             &self.trader_id,
-            &self.client_id,
+            self.client_id.as_ref(),
             &self.strategy_id,
             &self.instrument_id,
             &self.command_id,
@@ -225,6 +268,11 @@ impl<'a> ToCapnp<'a> for SubmitOrder {
             let position_id_builder = builder.reborrow().init_position_id();
             position_id.to_capnp(position_id_builder);
         }
+
+        if let Some(ref params) = self.params {
+            let params_builder = builder.reborrow().init_params();
+            populate_string_map(params_builder, params);
+        }
     }
 }
 
@@ -236,7 +284,7 @@ impl<'a> ToCapnp<'a> for SubmitOrderList {
         populate_trading_command_header(
             header_builder,
             &self.trader_id,
-            &self.client_id,
+            self.client_id.as_ref(),
             &self.strategy_id,
             &self.instrument_id,
             &self.command_id,
@@ -255,6 +303,11 @@ impl<'a> ToCapnp<'a> for SubmitOrderList {
         if let Some(ref position_id) = self.position_id {
             let position_id_builder = builder.reborrow().init_position_id();
             position_id.to_capnp(position_id_builder);
+        }
+
+        if let Some(ref params) = self.params {
+            let params_builder = builder.reborrow().init_params();
+            populate_string_map(params_builder, params);
         }
     }
 }
@@ -300,18 +353,17 @@ impl<'a> ToCapnp<'a> for TradingCommand {
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
-
 #[cfg(test)]
 mod tests {
     use capnp::message::Builder;
     use nautilus_core::UnixNanos;
     use nautilus_model::{
         enums::{OrderSide, OrderType},
-        identifiers::{AccountId, ClientId, ClientOrderId, InstrumentId, OrderListId},
+        identifiers::{
+            AccountId, ClientId, ClientOrderId, InstrumentId, OrderListId, StrategyId, TraderId,
+        },
         orders::{Order, OrderList, OrderTestBuilder},
+        stubs::TestDefault,
         types::{Price, Quantity},
     };
     use rstest::*;
@@ -322,6 +374,26 @@ mod tests {
         modify::ModifyOrderBuilder,
         query::{QueryAccountBuilder, QueryOrderBuilder},
     };
+
+    #[fixture]
+    fn trader_id() -> TraderId {
+        TraderId::test_default()
+    }
+
+    #[fixture]
+    fn strategy_id() -> StrategyId {
+        StrategyId::test_default()
+    }
+
+    #[fixture]
+    fn instrument_id() -> InstrumentId {
+        InstrumentId::test_default()
+    }
+
+    #[fixture]
+    fn client_order_id() -> ClientOrderId {
+        ClientOrderId::test_default()
+    }
 
     #[fixture]
     fn command_id() -> UUID4 {
@@ -339,10 +411,25 @@ mod tests {
     }
 
     #[rstest]
-    fn test_cancel_order_serialization(command_id: UUID4, ts_init: UnixNanos) {
+    fn test_cancel_order_serialization(
+        trader_id: TraderId,
+        client_id: ClientId,
+        strategy_id: StrategyId,
+        instrument_id: InstrumentId,
+        client_order_id: ClientOrderId,
+        command_id: UUID4,
+        ts_init: UnixNanos,
+    ) {
         let command = CancelOrderBuilder::default()
+            .trader_id(trader_id)
+            .client_id(Some(client_id))
+            .strategy_id(strategy_id)
+            .instrument_id(instrument_id)
+            .client_order_id(client_order_id)
+            .venue_order_id(None)
             .command_id(command_id)
             .ts_init(ts_init)
+            .params(None)
             .build()
             .unwrap();
 
@@ -368,11 +455,22 @@ mod tests {
     }
 
     #[rstest]
-    fn test_cancel_all_orders_serialization(command_id: UUID4, ts_init: UnixNanos) {
+    fn test_cancel_all_orders_serialization(
+        trader_id: TraderId,
+        strategy_id: StrategyId,
+        instrument_id: InstrumentId,
+        command_id: UUID4,
+        ts_init: UnixNanos,
+    ) {
         let command = CancelAllOrdersBuilder::default()
+            .trader_id(trader_id)
+            .client_id(None)
+            .strategy_id(strategy_id)
+            .instrument_id(instrument_id)
             .order_side(OrderSide::Buy)
             .command_id(command_id)
             .ts_init(ts_init)
+            .params(None)
             .build()
             .unwrap();
 
@@ -390,25 +488,48 @@ mod tests {
     }
 
     #[rstest]
-    fn test_batch_cancel_orders_serialization(command_id: UUID4, ts_init: UnixNanos) {
+    fn test_batch_cancel_orders_serialization(
+        trader_id: TraderId,
+        strategy_id: StrategyId,
+        instrument_id: InstrumentId,
+        command_id: UUID4,
+        ts_init: UnixNanos,
+    ) {
         let cancel1 = CancelOrderBuilder::default()
+            .trader_id(trader_id)
+            .client_id(None)
+            .strategy_id(strategy_id)
+            .instrument_id(instrument_id)
             .client_order_id(ClientOrderId::new("O-001"))
+            .venue_order_id(None)
             .command_id(UUID4::new())
             .ts_init(ts_init)
+            .params(None)
             .build()
             .unwrap();
 
         let cancel2 = CancelOrderBuilder::default()
+            .trader_id(trader_id)
+            .client_id(None)
+            .strategy_id(strategy_id)
+            .instrument_id(instrument_id)
             .client_order_id(ClientOrderId::new("O-002"))
+            .venue_order_id(None)
             .command_id(UUID4::new())
             .ts_init(ts_init)
+            .params(None)
             .build()
             .unwrap();
 
         let command = BatchCancelOrdersBuilder::default()
+            .trader_id(trader_id)
+            .client_id(None)
+            .strategy_id(strategy_id)
+            .instrument_id(instrument_id)
             .cancels(vec![cancel1, cancel2])
             .command_id(command_id)
             .ts_init(ts_init)
+            .params(None)
             .build()
             .unwrap();
 
@@ -428,13 +549,27 @@ mod tests {
     }
 
     #[rstest]
-    fn test_modify_order_serialization(command_id: UUID4, ts_init: UnixNanos) {
+    fn test_modify_order_serialization(
+        trader_id: TraderId,
+        strategy_id: StrategyId,
+        instrument_id: InstrumentId,
+        client_order_id: ClientOrderId,
+        command_id: UUID4,
+        ts_init: UnixNanos,
+    ) {
         let command = ModifyOrderBuilder::default()
+            .trader_id(trader_id)
+            .client_id(None)
+            .strategy_id(strategy_id)
+            .instrument_id(instrument_id)
+            .client_order_id(client_order_id)
+            .venue_order_id(None)
             .quantity(Some(Quantity::new(100.0, 0)))
             .price(Some(Price::new(50_000.0, 2)))
             .trigger_price(Some(Price::new(49_000.0, 2)))
             .command_id(command_id)
             .ts_init(ts_init)
+            .params(None)
             .build()
             .unwrap();
 
@@ -455,8 +590,21 @@ mod tests {
     }
 
     #[rstest]
-    fn test_query_order_serialization(command_id: UUID4, ts_init: UnixNanos) {
+    fn test_query_order_serialization(
+        trader_id: TraderId,
+        strategy_id: StrategyId,
+        instrument_id: InstrumentId,
+        client_order_id: ClientOrderId,
+        command_id: UUID4,
+        ts_init: UnixNanos,
+    ) {
         let command = QueryOrderBuilder::default()
+            .trader_id(trader_id)
+            .client_id(None)
+            .strategy_id(strategy_id)
+            .instrument_id(instrument_id)
+            .client_order_id(client_order_id)
+            .venue_order_id(None)
             .command_id(command_id)
             .ts_init(ts_init)
             .build()
@@ -476,8 +624,14 @@ mod tests {
     }
 
     #[rstest]
-    fn test_query_account_serialization(command_id: UUID4, ts_init: UnixNanos) {
+    fn test_query_account_serialization(
+        trader_id: TraderId,
+        command_id: UUID4,
+        ts_init: UnixNanos,
+    ) {
         let command = QueryAccountBuilder::default()
+            .trader_id(trader_id)
+            .client_id(None)
             .account_id(AccountId::new("ACC-001"))
             .command_id(command_id)
             .ts_init(ts_init)
@@ -509,19 +663,16 @@ mod tests {
 
         let command = SubmitOrder::new(
             order.trader_id(),
-            client_id,
+            Some(client_id),
             order.strategy_id(),
             order.instrument_id(),
-            order.client_order_id(),
-            order.venue_order_id().unwrap_or_default(),
             order,
             None,
             None,
             None,
             command_id,
             ts_init,
-        )
-        .unwrap();
+        );
 
         let mut message = Builder::new_default();
         {
@@ -567,18 +718,16 @@ mod tests {
 
         let command = SubmitOrderList::new(
             order1.trader_id(),
-            client_id,
+            Some(client_id),
             order1.strategy_id(),
             order1.instrument_id(),
-            order1.client_order_id(),
-            order1.venue_order_id().unwrap_or_default(),
             order_list,
+            None,
             None,
             None,
             command_id,
             ts_init,
-        )
-        .unwrap();
+        );
 
         let mut message = Builder::new_default();
         {
@@ -596,10 +745,24 @@ mod tests {
     }
 
     #[rstest]
-    fn test_trading_command_enum_serialization(command_id: UUID4, ts_init: UnixNanos) {
+    fn test_trading_command_enum_serialization(
+        trader_id: TraderId,
+        strategy_id: StrategyId,
+        instrument_id: InstrumentId,
+        client_order_id: ClientOrderId,
+        command_id: UUID4,
+        ts_init: UnixNanos,
+    ) {
         let cancel = CancelOrderBuilder::default()
+            .trader_id(trader_id)
+            .client_id(None)
+            .strategy_id(strategy_id)
+            .instrument_id(instrument_id)
+            .client_order_id(client_order_id)
+            .venue_order_id(None)
             .command_id(command_id)
             .ts_init(ts_init)
+            .params(None)
             .build()
             .unwrap();
 

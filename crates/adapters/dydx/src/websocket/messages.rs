@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -25,13 +25,9 @@ use ustr::Ustr;
 
 use super::enums::{DydxWsChannel, DydxWsMessageType, DydxWsOperation};
 use crate::common::enums::{
-    DydxFillType, DydxLiquidity, DydxOrderStatus, DydxOrderType, DydxPositionStatus,
-    DydxTickerType, DydxTimeInForce,
+    DydxCandleResolution, DydxFillType, DydxLiquidity, DydxOrderStatus, DydxOrderType,
+    DydxPositionStatus, DydxTickerType, DydxTimeInForce, DydxTradeType,
 };
-
-// ------------------------------------------------------------------------------------------------
-// Subscription messages
-// ------------------------------------------------------------------------------------------------
 
 /// dYdX WebSocket subscription message.
 ///
@@ -78,10 +74,6 @@ pub struct DydxWsConnectedMsg {
     /// The message sequence number.
     pub message_id: u64,
 }
-
-// ------------------------------------------------------------------------------------------------
-// Channel data messages
-// ------------------------------------------------------------------------------------------------
 
 /// Single channel data update message.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -139,7 +131,128 @@ pub struct DydxWsMessageGeneral {
     pub message: Option<String>,
 }
 
-/// Generic message structure for initial classification.
+/// Two-level WebSocket message envelope matching dYdX protocol.
+///
+/// First level: Routes by channel field (v4_subaccounts, v4_orderbook, etc.)
+/// Second level: Each channel variant contains type-tagged messages
+///
+/// # References
+///
+/// <https://github.com/dydxprotocol/v4-clients/blob/main/v4-client-rs/client/src/indexer/sock/messages.rs#L253>
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "channel")]
+pub enum DydxWsFeedMessage {
+    /// Subaccount updates (orders, fills, positions).
+    #[serde(rename = "v4_subaccounts")]
+    Subaccounts(DydxWsSubaccountsMessage),
+    /// Order book snapshots and updates.
+    #[serde(rename = "v4_orderbook")]
+    Orderbook(DydxWsOrderbookMessage),
+    /// Trade stream for specific market.
+    #[serde(rename = "v4_trades")]
+    Trades(DydxWsTradesMessage),
+    /// Market data for all markets.
+    #[serde(rename = "v4_markets")]
+    Markets(DydxWsMarketsMessage),
+    /// Candlestick/kline data.
+    #[serde(rename = "v4_candles")]
+    Candles(DydxWsCandlesMessage),
+    /// Parent subaccount updates (for isolated positions).
+    #[serde(rename = "v4_parent_subaccounts")]
+    ParentSubaccounts(DydxWsParentSubaccountsMessage),
+    /// Block height updates from chain.
+    #[serde(rename = "v4_block_height")]
+    BlockHeight(DydxWsBlockHeightMessage),
+}
+
+/// Subaccounts channel messages (second level, type-tagged).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum DydxWsSubaccountsMessage {
+    /// Initial subscription confirmation.
+    #[serde(rename = "subscribed")]
+    Subscribed(DydxWsSubaccountsSubscribed),
+    /// Channel data update.
+    #[serde(rename = "channel_data")]
+    ChannelData(DydxWsSubaccountsChannelData),
+}
+
+/// Orderbook channel messages (second level, type-tagged).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum DydxWsOrderbookMessage {
+    /// Initial subscription confirmation.
+    #[serde(rename = "subscribed")]
+    Subscribed(DydxWsChannelDataMsg),
+    /// Channel data update.
+    #[serde(rename = "channel_data")]
+    ChannelData(DydxWsChannelDataMsg),
+    /// Batch channel data.
+    #[serde(rename = "channel_batch_data")]
+    ChannelBatchData(DydxWsChannelBatchDataMsg),
+}
+
+/// Trades channel messages (second level, type-tagged).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum DydxWsTradesMessage {
+    /// Initial subscription confirmation.
+    #[serde(rename = "subscribed")]
+    Subscribed(DydxWsChannelDataMsg),
+    /// Channel data update.
+    #[serde(rename = "channel_data")]
+    ChannelData(DydxWsChannelDataMsg),
+}
+
+/// Markets channel messages (second level, type-tagged).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum DydxWsMarketsMessage {
+    /// Initial subscription confirmation.
+    #[serde(rename = "subscribed")]
+    Subscribed(DydxWsChannelDataMsg),
+    /// Channel data update.
+    #[serde(rename = "channel_data")]
+    ChannelData(DydxWsChannelDataMsg),
+}
+
+/// Candles channel messages (second level, type-tagged).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum DydxWsCandlesMessage {
+    /// Initial subscription confirmation.
+    #[serde(rename = "subscribed")]
+    Subscribed(DydxWsChannelDataMsg),
+    /// Channel data update.
+    #[serde(rename = "channel_data")]
+    ChannelData(DydxWsChannelDataMsg),
+}
+
+/// Parent subaccounts channel messages (second level, type-tagged).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum DydxWsParentSubaccountsMessage {
+    /// Initial subscription confirmation.
+    #[serde(rename = "subscribed")]
+    Subscribed(DydxWsChannelDataMsg),
+    /// Channel data update.
+    #[serde(rename = "channel_data")]
+    ChannelData(DydxWsChannelDataMsg),
+}
+
+/// Block height channel messages (second level, type-tagged).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum DydxWsBlockHeightMessage {
+    /// Initial subscription confirmation.
+    #[serde(rename = "subscribed")]
+    Subscribed(DydxWsBlockHeightSubscribedData),
+    /// Channel data update.
+    #[serde(rename = "channel_data")]
+    ChannelData(DydxWsBlockHeightChannelData),
+}
+
+/// Generic message structure for initial classification (fallback for non-channel messages).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DydxWsGenericMsg {
     /// The message type.
@@ -206,10 +319,6 @@ impl DydxWsGenericMsg {
     }
 }
 
-// ------------------------------------------------------------------------------------------------
-// Block height channel
-// ------------------------------------------------------------------------------------------------
-
 /// Block height subscription confirmed contents.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DydxBlockHeightSubscribedContents {
@@ -249,10 +358,6 @@ pub struct DydxWsBlockHeightChannelData {
     pub version: String,
     pub contents: DydxBlockHeightChannelContents,
 }
-
-// ------------------------------------------------------------------------------------------------
-// Markets channel
-// ------------------------------------------------------------------------------------------------
 
 /// Oracle price data for a market (full format from subscribed message).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -316,10 +421,6 @@ pub struct DydxMarketsContents {
     pub oracle_prices: Option<HashMap<String, DydxOraclePriceMarket>>,
 }
 
-// ------------------------------------------------------------------------------------------------
-// Trades channel
-// ------------------------------------------------------------------------------------------------
-
 /// Trade message from v4_trades channel.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -334,9 +435,9 @@ pub struct DydxTrade {
     pub price: String,
     /// Trade timestamp.
     pub created_at: DateTime<Utc>,
-    /// Order type.
+    /// Trade type.
     #[serde(rename = "type")]
-    pub order_type: String,
+    pub trade_type: DydxTradeType,
     /// Block height (optional).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created_at_height: Option<String>,
@@ -348,10 +449,6 @@ pub struct DydxTradeContents {
     /// Array of trades.
     pub trades: Vec<DydxTrade>,
 }
-
-// ------------------------------------------------------------------------------------------------
-// Candles channel
-// ------------------------------------------------------------------------------------------------
 
 /// Candle/bar data from v4_candles channel.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -368,7 +465,7 @@ pub struct DydxCandle {
     /// Open price.
     pub open: String,
     /// Resolution/timeframe.
-    pub resolution: String,
+    pub resolution: DydxCandleResolution,
     /// Start time.
     pub started_at: DateTime<Utc>,
     /// Starting open interest.
@@ -386,10 +483,6 @@ pub struct DydxCandle {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub orderbook_mid_price_open: Option<String>,
 }
-
-// ------------------------------------------------------------------------------------------------
-// Orderbook channel
-// ------------------------------------------------------------------------------------------------
 
 /// Order book price level (price, size tuple).
 pub type PriceLevel = (String, String);
@@ -424,10 +517,6 @@ pub struct DydxOrderbookSnapshotContents {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub asks: Option<Vec<DydxPriceLevel>>,
 }
-
-// ------------------------------------------------------------------------------------------------
-// Subaccounts channel
-// ------------------------------------------------------------------------------------------------
 
 /// Subaccount balance update.
 #[derive(Debug, Clone, Serialize, Deserialize)]

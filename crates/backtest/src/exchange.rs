@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -21,7 +21,7 @@
 
 use std::{
     cell::RefCell,
-    collections::{BinaryHeap, HashMap, VecDeque},
+    collections::{BinaryHeap, VecDeque},
     fmt::Debug,
     rc::Rc,
 };
@@ -59,15 +59,15 @@ use crate::modules::SimulationModule;
 /// earliest timestamp having the highest priority in the queue.
 #[derive(Debug, Eq, PartialEq)]
 struct InflightCommand {
-    ts: UnixNanos,
+    timestamp: UnixNanos,
     counter: u32,
     command: TradingCommand,
 }
 
 impl InflightCommand {
-    const fn new(ts: UnixNanos, counter: u32, command: TradingCommand) -> Self {
+    const fn new(timestamp: UnixNanos, counter: u32, command: TradingCommand) -> Self {
         Self {
-            ts,
+            timestamp,
             counter,
             command,
         }
@@ -78,8 +78,8 @@ impl Ord for InflightCommand {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         // Reverse ordering for min-heap (earliest timestamp first then lowest counter)
         other
-            .ts
-            .cmp(&self.ts)
+            .timestamp
+            .cmp(&self.timestamp)
             .then_with(|| other.counter.cmp(&self.counter))
     }
 }
@@ -116,17 +116,19 @@ pub struct SimulatedExchange {
     pub base_currency: Option<Currency>,
     fee_model: FeeModelAny,
     fill_model: FillModel,
-    latency_model: Option<LatencyModel>,
-    instruments: HashMap<InstrumentId, InstrumentAny>,
-    matching_engines: HashMap<InstrumentId, OrderMatchingEngine>,
-    leverages: HashMap<InstrumentId, Decimal>,
+    latency_model: Option<Box<dyn LatencyModel>>,
+    instruments: AHashMap<InstrumentId, InstrumentAny>,
+    matching_engines: AHashMap<InstrumentId, OrderMatchingEngine>,
+    leverages: AHashMap<InstrumentId, Decimal>,
     modules: Vec<Box<dyn SimulationModule>>,
     clock: Rc<RefCell<dyn Clock>>,
     cache: Rc<RefCell<Cache>>,
     message_queue: VecDeque<TradingCommand>,
     inflight_queue: BinaryHeap<InflightCommand>,
-    inflight_counter: HashMap<UnixNanos, u32>,
+    inflight_counter: AHashMap<UnixNanos, u32>,
     bar_execution: bool,
+    trade_execution: bool,
+    liquidity_consumption: bool,
     reject_stop_orders: bool,
     support_gtd_orders: bool,
     support_contingent_orders: bool,
@@ -164,15 +166,17 @@ impl SimulatedExchange {
         starting_balances: Vec<Money>,
         base_currency: Option<Currency>,
         default_leverage: Decimal,
-        leverages: HashMap<InstrumentId, Decimal>,
+        leverages: AHashMap<InstrumentId, Decimal>,
         modules: Vec<Box<dyn SimulationModule>>,
         cache: Rc<RefCell<Cache>>,
         clock: Rc<RefCell<dyn Clock>>,
         fill_model: FillModel,
         fee_model: FeeModelAny,
         book_type: BookType,
-        latency_model: Option<LatencyModel>,
+        latency_model: Option<Box<dyn LatencyModel>>,
         bar_execution: Option<bool>,
+        trade_execution: Option<bool>,
+        liquidity_consumption: Option<bool>,
         reject_stop_orders: Option<bool>,
         support_gtd_orders: Option<bool>,
         support_contingent_orders: Option<bool>,
@@ -203,16 +207,18 @@ impl SimulatedExchange {
             fee_model,
             fill_model,
             latency_model,
-            instruments: HashMap::new(),
-            matching_engines: HashMap::new(),
+            instruments: AHashMap::new(),
+            matching_engines: AHashMap::new(),
             leverages,
             modules,
             clock,
             cache,
             message_queue: VecDeque::new(),
             inflight_queue: BinaryHeap::new(),
-            inflight_counter: HashMap::new(),
+            inflight_counter: AHashMap::new(),
             bar_execution: bar_execution.unwrap_or(true),
+            trade_execution: trade_execution.unwrap_or(true),
+            liquidity_consumption: liquidity_consumption.unwrap_or(true),
             reject_stop_orders: reject_stop_orders.unwrap_or(true),
             support_gtd_orders: support_gtd_orders.unwrap_or(true),
             support_contingent_orders: support_contingent_orders.unwrap_or(true),
@@ -242,7 +248,7 @@ impl SimulatedExchange {
         self.fill_model = fill_model;
     }
 
-    pub const fn set_latency_model(&mut self, latency_model: LatencyModel) {
+    pub fn set_latency_model(&mut self, latency_model: Box<dyn LatencyModel>) {
         self.latency_model = Some(latency_model);
     }
 
@@ -285,6 +291,8 @@ impl SimulatedExchange {
 
         let matching_engine_config = OrderMatchingEngineConfig::new(
             self.bar_execution,
+            self.trade_execution,
+            self.liquidity_consumption,
             self.reject_stop_orders,
             self.support_gtd_orders,
             self.support_contingent_orders,
@@ -341,13 +349,13 @@ impl SimulatedExchange {
     }
 
     #[must_use]
-    pub const fn get_matching_engines(&self) -> &HashMap<InstrumentId, OrderMatchingEngine> {
+    pub const fn get_matching_engines(&self) -> &AHashMap<InstrumentId, OrderMatchingEngine> {
         &self.matching_engines
     }
 
     #[must_use]
-    pub fn get_books(&self) -> HashMap<InstrumentId, OrderBook> {
-        let mut books = HashMap::new();
+    pub fn get_books(&self) -> AHashMap<InstrumentId, OrderBook> {
+        let mut books = AHashMap::new();
         for (instrument_id, matching_engine) in &self.matching_engines {
             books.insert(*instrument_id, matching_engine.get_book().clone());
         }
@@ -466,9 +474,9 @@ impl SimulatedExchange {
         } else if self.latency_model.is_none() {
             self.message_queue.push_back(command);
         } else {
-            let (ts, counter) = self.generate_inflight_command(&command);
+            let (timestamp, counter) = self.generate_inflight_command(&command);
             self.inflight_queue
-                .push(InflightCommand::new(ts, counter, command));
+                .push(InflightCommand::new(timestamp, counter, command));
         }
     }
 
@@ -479,15 +487,15 @@ impl SimulatedExchange {
         if let Some(latency_model) = &self.latency_model {
             let ts = match command {
                 TradingCommand::SubmitOrder(_) | TradingCommand::SubmitOrderList(_) => {
-                    command.ts_init() + latency_model.insert_latency_nanos
+                    command.ts_init() + latency_model.get_insert_latency()
                 }
                 TradingCommand::ModifyOrder(_) => {
-                    command.ts_init() + latency_model.update_latency_nanos
+                    command.ts_init() + latency_model.get_update_latency()
                 }
                 TradingCommand::CancelOrder(_)
                 | TradingCommand::CancelAllOrders(_)
                 | TradingCommand::BatchCancelOrders(_) => {
-                    command.ts_init() + latency_model.delete_latency_nanos
+                    command.ts_init() + latency_model.get_delete_latency()
                 }
                 _ => panic!("Cannot handle command: {command:?}"),
             };
@@ -696,7 +704,7 @@ impl SimulatedExchange {
 
         // Process inflight commands
         while let Some(inflight) = self.inflight_queue.peek() {
-            if inflight.ts > ts_now {
+            if inflight.timestamp > ts_now {
                 // Future commands remain in the queue
                 break;
             }
@@ -795,19 +803,11 @@ impl SimulatedExchange {
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
-
 #[cfg(test)]
 mod tests {
-    use std::{
-        cell::RefCell,
-        collections::{BinaryHeap, HashMap},
-        rc::Rc,
-        sync::LazyLock,
-    };
+    use std::{cell::RefCell, collections::BinaryHeap, rc::Rc};
 
+    use ahash::AHashMap;
     use nautilus_common::{
         cache::Cache,
         clock::TestClock,
@@ -817,11 +817,11 @@ mod tests {
             stubs::{get_message_saving_handler, get_saved_messages},
         },
     };
-    use nautilus_core::{AtomicTime, UUID4, UnixNanos};
+    use nautilus_core::{UUID4, UnixNanos};
     use nautilus_execution::models::{
         fee::{FeeModelAny, MakerTakerFeeModel},
         fill::FillModel,
-        latency::LatencyModel,
+        latency::StaticLatencyModel,
     };
     use nautilus_model::{
         accounts::{AccountAny, MarginAccount},
@@ -834,12 +834,10 @@ mod tests {
             OmsType, OrderSide, OrderType,
         },
         events::AccountState,
-        identifiers::{
-            AccountId, ClientId, ClientOrderId, InstrumentId, StrategyId, TradeId, TraderId, Venue,
-            VenueOrderId,
-        },
+        identifiers::{AccountId, InstrumentId, StrategyId, TradeId, TraderId, Venue},
         instruments::{CryptoPerpetual, InstrumentAny, stubs::crypto_perpetual_ethusdt},
         orders::OrderTestBuilder,
+        stubs::TestDefault,
         types::{AccountBalance, Currency, Money, Price, Quantity},
     };
     use rstest::rstest;
@@ -848,9 +846,6 @@ mod tests {
         exchange::{InflightCommand, SimulatedExchange},
         execution_client::BacktestExecutionClient,
     };
-
-    static ATOMIC_TIME: LazyLock<AtomicTime> =
-        LazyLock::new(|| AtomicTime::new(true, UnixNanos::default()));
 
     fn get_exchange(
         venue: Venue,
@@ -868,33 +863,35 @@ mod tests {
                 vec![Money::new(1000.0, Currency::USD())],
                 None,
                 1.into(),
-                HashMap::new(),
+                AHashMap::new(),
                 vec![],
                 cache.clone(),
                 clock,
                 FillModel::default(),
                 FeeModelAny::MakerTaker(MakerTakerFeeModel),
                 book_type,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
+                None, // latency_model
+                None, // bar_execution
+                None, // trade_execution
+                None, // liquidity_consumption
+                None, // reject_stop_orders
+                None, // support_gtd_orders
+                None, // support_contingent_orders
+                None, // use_position_ids
+                None, // use_random_ids
+                None, // use_reduce_only
+                None, // use_message_queue
+                None, // allow_cash_borrowing
+                None, // frozen_account
+                None, // price_protection_points
             )
             .unwrap(),
         ));
 
         let clock = TestClock::new();
         let execution_client = BacktestExecutionClient::new(
-            TraderId::default(),
-            AccountId::default(),
+            TraderId::test_default(),
+            AccountId::test_default(),
             exchange.clone(),
             cache,
             Rc::new(RefCell::new(clock)),
@@ -914,23 +911,18 @@ mod tests {
             .instrument_id(instrument_id)
             .quantity(Quantity::from(1))
             .build();
-        TradingCommand::SubmitOrder(
-            SubmitOrder::new(
-                TraderId::default(),
-                ClientId::default(),
-                StrategyId::default(),
-                instrument_id,
-                ClientOrderId::default(),
-                VenueOrderId::default(),
-                order,
-                None,
-                None,
-                None, // params
-                UUID4::default(),
-                ts_init,
-            )
-            .unwrap(),
-        )
+        TradingCommand::SubmitOrder(SubmitOrder::new(
+            TraderId::test_default(),
+            None,
+            StrategyId::test_default(),
+            instrument_id,
+            order,
+            None,
+            None,
+            None, // params
+            UUID4::default(),
+            ts_init,
+        ))
     }
 
     #[rstest]
@@ -979,10 +971,10 @@ mod tests {
         // process tick
         let quote_tick = QuoteTick::new(
             crypto_perpetual_ethusdt.id,
-            Price::from("1000"),
-            Price::from("1001"),
-            Quantity::from(1),
-            Quantity::from(1),
+            Price::from("1000.00"),
+            Price::from("1001.00"),
+            Quantity::from("1.000"),
+            Quantity::from("1.000"),
             UnixNanos::default(),
             UnixNanos::default(),
         );
@@ -991,11 +983,11 @@ mod tests {
         let best_bid_price = exchange
             .borrow()
             .best_bid_price(crypto_perpetual_ethusdt.id);
-        assert_eq!(best_bid_price, Some(Price::from("1000")));
+        assert_eq!(best_bid_price, Some(Price::from("1000.00")));
         let best_ask_price = exchange
             .borrow()
             .best_ask_price(crypto_perpetual_ethusdt.id);
-        assert_eq!(best_ask_price, Some(Price::from("1001")));
+        assert_eq!(best_ask_price, Some(Price::from("1001.00")));
     }
 
     #[rstest]
@@ -1014,8 +1006,8 @@ mod tests {
         // process tick
         let trade_tick = TradeTick::new(
             crypto_perpetual_ethusdt.id,
-            Price::from("1000"),
-            Quantity::from(1),
+            Price::from("1000.00"),
+            Quantity::from("1.000"),
             AggressorSide::Buyer,
             TradeId::from("1"),
             UnixNanos::default(),
@@ -1026,11 +1018,11 @@ mod tests {
         let best_bid_price = exchange
             .borrow()
             .best_bid_price(crypto_perpetual_ethusdt.id);
-        assert_eq!(best_bid_price, Some(Price::from("1000")));
+        assert_eq!(best_bid_price, Some(Price::from("1000.00")));
         let best_ask = exchange
             .borrow()
             .best_ask_price(crypto_perpetual_ethusdt.id);
-        assert_eq!(best_ask, Some(Price::from("1000")));
+        assert_eq!(best_ask, Some(Price::from("1000.00")));
     }
 
     #[rstest]
@@ -1053,7 +1045,7 @@ mod tests {
             Price::from("1505.00"),
             Price::from("1490.00"),
             Price::from("1502.00"),
-            Quantity::from(100),
+            Quantity::from("100.000"),
             UnixNanos::default(),
             UnixNanos::default(),
         );
@@ -1091,7 +1083,7 @@ mod tests {
             Price::from("1505.00"),
             Price::from("1490.00"),
             Price::from("1502.00"),
-            Quantity::from(100),
+            Quantity::from("100.000"),
             UnixNanos::from(1),
             UnixNanos::from(1),
         );
@@ -1101,7 +1093,7 @@ mod tests {
             Price::from("1506.00"),
             Price::from("1491.00"),
             Price::from("1503.00"),
-            Quantity::from(100),
+            Quantity::from("100.000"),
             UnixNanos::from(1),
             UnixNanos::from(1),
         );
@@ -1138,7 +1130,12 @@ mod tests {
         let delta_buy = OrderBookDelta::new(
             crypto_perpetual_ethusdt.id,
             BookAction::Add,
-            BookOrder::new(OrderSide::Buy, Price::from("1000.00"), Quantity::from(1), 1),
+            BookOrder::new(
+                OrderSide::Buy,
+                Price::from("1000.00"),
+                Quantity::from("1.000"),
+                1,
+            ),
             0,
             0,
             UnixNanos::from(1),
@@ -1150,7 +1147,7 @@ mod tests {
             BookOrder::new(
                 OrderSide::Sell,
                 Price::from("1001.00"),
-                Quantity::from(1),
+                Quantity::from("1.000"),
                 1,
             ),
             0,
@@ -1201,7 +1198,7 @@ mod tests {
             BookOrder::new(
                 OrderSide::Sell,
                 Price::from("1000.00"),
-                Quantity::from(3),
+                Quantity::from("3.000"),
                 1,
             ),
             0,
@@ -1215,7 +1212,7 @@ mod tests {
             BookOrder::new(
                 OrderSide::Sell,
                 Price::from("1001.00"),
-                Quantity::from(1),
+                Quantity::from("1.000"),
                 1,
             ),
             0,
@@ -1381,11 +1378,11 @@ mod tests {
         let second = inflight_heap.pop().unwrap();
         let third = inflight_heap.pop().unwrap();
 
-        assert_eq!(first.ts, UnixNanos::from(100));
+        assert_eq!(first.timestamp, UnixNanos::from(100));
         assert_eq!(first.counter, 1);
-        assert_eq!(second.ts, UnixNanos::from(100));
+        assert_eq!(second.timestamp, UnixNanos::from(100));
         assert_eq!(second.counter, 2);
-        assert_eq!(third.ts, UnixNanos::from(200));
+        assert_eq!(third.timestamp, UnixNanos::from(200));
         assert_eq!(third.counter, 2);
     }
 
@@ -1420,7 +1417,9 @@ mod tests {
 
     #[rstest]
     fn test_process_with_latency_model(crypto_perpetual_ethusdt: CryptoPerpetual) {
-        let latency_model = LatencyModel::new(
+        // StaticLatencyModel adds base_latency to each operation latency
+        // base=100, insert=200 -> effective insert latency = 300
+        let latency_model = StaticLatencyModel::new(
             UnixNanos::from(100),
             UnixNanos::from(200),
             UnixNanos::from(300),
@@ -1432,7 +1431,9 @@ mod tests {
             BookType::L2_MBP,
             None,
         );
-        exchange.borrow_mut().set_latency_model(latency_model);
+        exchange
+            .borrow_mut()
+            .set_latency_model(Box::new(latency_model));
 
         let instrument = InstrumentAny::CryptoPerpetual(crypto_perpetual_ethusdt);
         exchange.borrow_mut().add_instrument(instrument).unwrap();
@@ -1445,24 +1446,42 @@ mod tests {
         // Verify that inflight queue has 2 commands and message queue is empty
         assert_eq!(exchange.borrow().message_queue.len(), 0);
         assert_eq!(exchange.borrow().inflight_queue.len(), 2);
-        // First inflight command should have timestamp at 100 and 200 insert latency
+        // First inflight command: ts_init=100 + effective_insert_latency=300 = 400
         assert_eq!(
-            exchange.borrow().inflight_queue.iter().next().unwrap().ts,
-            UnixNanos::from(300)
+            exchange
+                .borrow()
+                .inflight_queue
+                .iter()
+                .next()
+                .unwrap()
+                .timestamp,
+            UnixNanos::from(400)
         );
-        // Second inflight command should have timestamp at 150 and 200 insert latency
+        // Second inflight command: ts_init=150 + effective_insert_latency=300 = 450
         assert_eq!(
-            exchange.borrow().inflight_queue.iter().nth(1).unwrap().ts,
-            UnixNanos::from(350)
+            exchange
+                .borrow()
+                .inflight_queue
+                .iter()
+                .nth(1)
+                .unwrap()
+                .timestamp,
+            UnixNanos::from(450)
         );
 
-        // Process at timestamp 350, and test that only first command is processed
-        exchange.borrow_mut().process(UnixNanos::from(320));
+        // Process at timestamp 420, and test that only first command is processed
+        exchange.borrow_mut().process(UnixNanos::from(420));
         assert_eq!(exchange.borrow().message_queue.len(), 0);
         assert_eq!(exchange.borrow().inflight_queue.len(), 1);
         assert_eq!(
-            exchange.borrow().inflight_queue.iter().next().unwrap().ts,
-            UnixNanos::from(350)
+            exchange
+                .borrow()
+                .inflight_queue
+                .iter()
+                .next()
+                .unwrap()
+                .timestamp,
+            UnixNanos::from(450)
         );
     }
 }

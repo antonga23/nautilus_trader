@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -22,14 +22,16 @@ use std::{
 
 use async_trait::async_trait;
 use nautilus_common::messages::execution::{
-    BatchCancelOrders, CancelAllOrders, CancelOrder, ModifyOrder, QueryAccount, QueryOrder,
-    SubmitOrder, SubmitOrderList,
+    BatchCancelOrders, CancelAllOrders, CancelOrder, GenerateFillReports,
+    GenerateOrderStatusReport, GenerateOrderStatusReports, GeneratePositionStatusReports,
+    ModifyOrder, QueryAccount, QueryOrder, SubmitOrder, SubmitOrderList,
 };
 use nautilus_core::UnixNanos;
 use nautilus_model::{
     accounts::AccountAny,
     enums::OmsType,
     identifiers::{AccountId, ClientId, Venue},
+    reports::{ExecutionMassStatus, FillReport, OrderStatusReport, PositionStatusReport},
     types::{AccountBalance, MarginBalance},
 };
 
@@ -37,7 +39,7 @@ pub mod base;
 
 /// Defines the interface for an execution client managing order operations.
 ///
-/// # Thread safety
+/// # Thread Safety
 ///
 /// Client instances are not intended to be sent across threads. The `?Send` bound
 /// allows implementations to hold non-Send state for any Python interop.
@@ -174,6 +176,71 @@ pub trait ExecutionClient {
         log_not_implemented(cmd);
         Ok(())
     }
+
+    /// Generates a single order status report.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if report generation fails.
+    async fn generate_order_status_report(
+        &self,
+        cmd: &GenerateOrderStatusReport,
+    ) -> anyhow::Result<Option<OrderStatusReport>> {
+        log_not_implemented(cmd);
+        Ok(None)
+    }
+
+    /// Generates multiple order status reports.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if report generation fails.
+    async fn generate_order_status_reports(
+        &self,
+        cmd: &GenerateOrderStatusReports,
+    ) -> anyhow::Result<Vec<OrderStatusReport>> {
+        log_not_implemented(cmd);
+        Ok(Vec::new())
+    }
+
+    /// Generates fill reports based on execution results.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if fill report generation fails.
+    async fn generate_fill_reports(
+        &self,
+        cmd: GenerateFillReports,
+    ) -> anyhow::Result<Vec<FillReport>> {
+        log_not_implemented(&cmd);
+        Ok(Vec::new())
+    }
+
+    /// Generates position status reports.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if generation fails.
+    async fn generate_position_status_reports(
+        &self,
+        cmd: &GeneratePositionStatusReports,
+    ) -> anyhow::Result<Vec<PositionStatusReport>> {
+        log_not_implemented(cmd);
+        Ok(Vec::new())
+    }
+
+    /// Generates mass status for executions.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if status generation fails.
+    async fn generate_mass_status(
+        &self,
+        lookback_mins: Option<u64>,
+    ) -> anyhow::Result<Option<ExecutionMassStatus>> {
+        log_not_implemented(&lookback_mins);
+        Ok(None)
+    }
 }
 
 #[inline(always)]
@@ -249,5 +316,65 @@ impl ExecutionClientAdapter {
     /// Returns an error if disconnection fails.
     pub async fn disconnect(&mut self) -> anyhow::Result<()> {
         self.client.disconnect().await
+    }
+
+    /// Generates a single order status report.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if report generation fails.
+    pub async fn generate_order_status_report(
+        &self,
+        cmd: &GenerateOrderStatusReport,
+    ) -> anyhow::Result<Option<OrderStatusReport>> {
+        self.client.generate_order_status_report(cmd).await
+    }
+
+    /// Generates multiple order status reports.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if report generation fails.
+    pub async fn generate_order_status_reports(
+        &self,
+        cmd: &GenerateOrderStatusReports,
+    ) -> anyhow::Result<Vec<OrderStatusReport>> {
+        self.client.generate_order_status_reports(cmd).await
+    }
+
+    /// Generates fill reports based on execution results.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if fill report generation fails.
+    pub async fn generate_fill_reports(
+        &self,
+        cmd: GenerateFillReports,
+    ) -> anyhow::Result<Vec<FillReport>> {
+        self.client.generate_fill_reports(cmd).await
+    }
+
+    /// Generates position status reports.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if generation fails.
+    pub async fn generate_position_status_reports(
+        &self,
+        cmd: &GeneratePositionStatusReports,
+    ) -> anyhow::Result<Vec<PositionStatusReport>> {
+        self.client.generate_position_status_reports(cmd).await
+    }
+
+    /// Generates mass status for executions.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if status generation fails.
+    pub async fn generate_mass_status(
+        &self,
+        lookback_mins: Option<u64>,
+    ) -> anyhow::Result<Option<ExecutionMassStatus>> {
+        self.client.generate_mass_status(lookback_mins).await
     }
 }

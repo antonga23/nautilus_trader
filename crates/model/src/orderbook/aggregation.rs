@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -50,35 +50,33 @@ fn price_to_order_id(price_raw: i128) -> u64 {
     build_hasher.hash_one(price_raw)
 }
 
+/// Returns a price-based order ID for MBP aggregation.
+#[inline]
+fn price_based_order_id(order: &BookOrder) -> u64 {
+    #[cfg(feature = "high-precision")]
+    {
+        price_to_order_id(order.price.raw)
+    }
+    #[cfg(not(feature = "high-precision"))]
+    {
+        price_to_order_id(order.price.raw as i128)
+    }
+}
+
 pub(crate) fn pre_process_order(book_type: BookType, mut order: BookOrder, flags: u8) -> BookOrder {
     match book_type {
         BookType::L1_MBP => order.order_id = order.side as u64,
-        #[cfg(feature = "high-precision")]
-        BookType::L2_MBP => order.order_id = price_to_order_id(order.price.raw),
-        #[cfg(not(feature = "high-precision"))]
-        BookType::L2_MBP => order.order_id = price_to_order_id(order.price.raw as i128),
+        BookType::L2_MBP => order.order_id = price_based_order_id(&order),
         BookType::L3_MBO => {
-            if flags == 0 {
-            } else if RecordFlag::F_TOB.matches(flags) {
+            if RecordFlag::F_TOB.matches(flags) {
                 order.order_id = order.side as u64;
             } else if RecordFlag::F_MBP.matches(flags) {
-                #[cfg(feature = "high-precision")]
-                {
-                    order.order_id = price_to_order_id(order.price.raw);
-                }
-                #[cfg(not(feature = "high-precision"))]
-                {
-                    order.order_id = price_to_order_id(order.price.raw as i128);
-                }
+                order.order_id = price_based_order_id(&order);
             }
         }
     };
     order
 }
-
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
 
 #[cfg(test)]
 mod tests {

@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -20,6 +20,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use nautilus_common::live::get_runtime;
 use nautilus_core::python::to_pyvalue_err;
 use nautilus_model::{
     data::BarType,
@@ -114,7 +115,7 @@ impl DydxWebSocketClient {
             // Take the receiver for messages
             if let Some(mut rx) = client.take_receiver() {
                 // Spawn task to process messages and call Python callback
-                tokio::spawn(async move {
+                get_runtime().spawn(async move {
                     let _client = client; // Keep client alive in spawned task
 
                     while let Some(msg) = rx.recv().await {

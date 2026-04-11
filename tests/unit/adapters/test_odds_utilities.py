@@ -1,0 +1,158 @@
+# -------------------------------------------------------------------------------------------------
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
+#
+#  Unit tests for betting adapter odds utilities.
+# -------------------------------------------------------------------------------------------------
+
+from decimal import Decimal
+
+import pytest
+
+from nautilus_trader.adapters.betting.common.odds import calculate_arbitrage_stakes
+from nautilus_trader.adapters.betting.common.odds import decimal_to_american
+from nautilus_trader.adapters.betting.common.odds import decimal_to_fractional
+from nautilus_trader.adapters.betting.common.odds import decimal_to_probability
+from nautilus_trader.adapters.betting.common.odds import is_arbitrage_opportunity
+
+
+FAVORITE_MONEYLINE = -200
+SMALL_UNDERDOG_MONEYLINE = 150
+LARGE_UNDERDOG_MONEYLINE = 200
+
+
+class TestOddsConversion:
+    """
+    Test odds conversion utilities.
+    """
+
+    def test_decimal_to_probability(self):
+        """
+        Test converting decimal odds to probability.
+        """
+        assert decimal_to_probability(Decimal("2.0")) == Decimal("0.5")
+        assert float(decimal_to_probability(Decimal("3.0"))) == pytest.approx(
+            0.333333,
+            rel=1e-5,
+        )
+        assert float(decimal_to_probability(Decimal("1.5"))) == pytest.approx(
+            0.666667,
+            rel=1e-5,
+        )
+
+    def test_decimal_to_american(self):
+        """
+        Test converting decimal to American odds.
+        """
+        # Favorites (< 2.0)
+        assert decimal_to_american(Decimal("1.5")) == FAVORITE_MONEYLINE
+        assert decimal_to_american(Decimal("1.91")) == pytest.approx(-110, rel=1e-1)
+
+        # Underdogs (> 2.0)
+        assert decimal_to_american(Decimal("2.5")) == SMALL_UNDERDOG_MONEYLINE
+        assert decimal_to_american(Decimal("3.0")) == LARGE_UNDERDOG_MONEYLINE
+
+    def test_decimal_to_fractional(self):
+        """
+        Test converting decimal to fractional odds.
+        """
+        assert decimal_to_fractional(Decimal("2.0")) == (1, 1)
+        assert decimal_to_fractional(Decimal("3.0")) == (2, 1)
+        assert decimal_to_fractional(Decimal("1.5")) == (1, 2)
+
+
+class TestArbitrageCalculations:
+    """
+    Test arbitrage calculation functions.
+    """
+
+    def test_calculate_arbitrage_stakes_basic(self):
+        """
+        Test basic arbitrage stake calculation.
+        """
+        stake_a, stake_b, profit = calculate_arbitrage_stakes(
+            odds_a=Decimal("2.1"),
+            odds_b=Decimal("2.0"),
+            total_stake=Decimal(1000),
+        )
+
+        # Stakes should sum to total
+        assert stake_a + stake_b == Decimal(1000)
+
+        # Both outcomes should yield same return
+        return_a = stake_a * Decimal("2.1")
+        return_b = stake_b * Decimal("2.0")
+        assert pytest.approx(float(return_a), rel=1e-2) == pytest.approx(float(return_b), rel=1e-2)
+
+        # Profit should be positive for arbitrage
+        assert profit > 0
+
+    def test_is_arbitrage_opportunity(self):
+        """
+        Test arbitrage opportunity detection.
+        """
+        # Valid arbitrage
+        odds_a = Decimal("2.1")
+        odds_b = Decimal("2.05")
+        is_arb, margin = is_arbitrage_opportunity(odds_a=odds_a, odds_b=odds_b)
+        assert is_arb is True
+        total_prob = (Decimal(1) / odds_a) + (Decimal(1) / odds_b)
+        expected_margin = (Decimal(1) / total_prob) - Decimal(1)
+        assert pytest.approx(float(expected_margin), rel=1e-6) == float(margin)
+
+        # No arbitrage
+        is_arb, margin = is_arbitrage_opportunity(
+            odds_a=Decimal("1.9"),
+            odds_b=Decimal("1.9"),
+        )
+        assert is_arb is False
+        assert margin == Decimal(0)
+
+    def test_calculate_arbitrage_stakes_equal_odds(self):
+        """
+        Test stake calculation with equal odds.
+        """
+        stake_a, stake_b, profit = calculate_arbitrage_stakes(
+            odds_a=Decimal("2.0"),
+            odds_b=Decimal("2.0"),
+            total_stake=Decimal(1000),
+        )
+
+        # Equal odds should result in equal stakes
+        assert stake_a == stake_b == Decimal(500)
+
+        # No profit with equal odds
+        assert profit == Decimal(0)
+
+    def test_calculate_arbitrage_stakes_profit_matches_rounded_stakes(self):
+        """
+        Test the returned profit is computed from the executable rounded stakes.
+        """
+        odds_a = Decimal("2.1")
+        odds_b = Decimal("2.0")
+        total = Decimal(1000)
+
+        stake_a, stake_b, profit = calculate_arbitrage_stakes(
+            odds_a=odds_a,
+            odds_b=odds_b,
+            total_stake=total,
+        )
+
+        realized_profit = min(stake_a * odds_a, stake_b * odds_b) - total
+
+        assert stake_a + stake_b == total
+        assert profit == realized_profit.quantize(Decimal("0.01"))
+
+    def test_calculate_arbitrage_stakes_uses_equal_return_split(self):
+        """
+        Test asymmetric odds still split stakes to the same realized return.
+        """
+        stake_a, stake_b, profit = calculate_arbitrage_stakes(
+            odds_a=Decimal("4.0"),
+            odds_b=Decimal("2.0"),
+            total_stake=Decimal(120),
+        )
+
+        assert stake_a == Decimal("40.00")
+        assert stake_b == Decimal("80.00")
+        assert stake_a * Decimal("4.0") == stake_b * Decimal("2.0")
+        assert profit == Decimal("40.00")

@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -654,15 +654,6 @@ impl DataClient for MockDataClient {
     }
 }
 
-// SAFETY: MockDataClient contains Rc<RefCell<...>> fields which are not thread-safe.
-// These implementations exist to satisfy trait bounds but the type must only be used
-// on a single thread. Tests ensure single-threaded access.
-// WARNING: Actually sending this type across threads is undefined behavior.
-#[allow(unsafe_code)]
-unsafe impl Send for MockDataClient {}
-#[allow(unsafe_code)]
-unsafe impl Sync for MockDataClient {}
-
 /// A mock data client that fails on connect for testing error propagation.
 pub struct FailingMockDataClient {
     pub client_id: ClientId,
@@ -728,10 +719,3 @@ impl DataClient for FailingMockDataClient {
         true
     }
 }
-
-// Note: FailingMockDataClient only contains Send+Sync types (ClientId, Venue, String),
-// so these impls may be redundant. Kept for consistency with MockDataClient.
-#[allow(unsafe_code)]
-unsafe impl Send for FailingMockDataClient {}
-#[allow(unsafe_code)]
-unsafe impl Sync for FailingMockDataClient {}

@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -26,7 +26,7 @@ use nautilus_blockchain::{
 use nautilus_common::{
     actor::{DataActor, DataActorCore, data_actor::DataActorConfig},
     enums::{Environment, LogColor},
-    live::runtime::get_runtime,
+    live::get_runtime,
     log_warn,
     logging::log_info,
 };
@@ -36,23 +36,22 @@ use nautilus_live::node::LiveNode;
 use nautilus_model::{
     defi::{Block, Blockchain, DexType, Pool, PoolLiquidityUpdate, PoolSwap, chain::chains},
     identifiers::{ClientId, InstrumentId, TraderId},
+    stubs::TestDefault,
 };
 
 // Requires capnp installed on the machine
 // Run with `cargo run -p nautilus-blockchain --bin node_test --features hypersync`
 // To see additional tracing logs `export RUST_LOG=debug,h2=off`
 
-// ================================================================================================
 // IMPORTANT: The actor definitions below are EXAMPLE CODE for demonstration purposes.
 // They should NOT be moved to the main library as they are specific to this test scenario.
 // If you need production-ready actors, create them in a separate production module.
-// ================================================================================================
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenvy::dotenv().ok();
 
     let environment = Environment::Live;
-    let trader_id = TraderId::default();
+    let trader_id = TraderId::test_default();
     let node_name = "TESTER-001".to_string();
 
     let chain = chains::ARBITRUM.clone();
@@ -75,7 +74,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(PostgresConnectOptions::default()),
     );
 
-    let mut node = LiveNode::builder(node_name, trader_id, environment)?
+    let mut node = LiveNode::builder(trader_id, environment)?
+        .with_name(node_name)
         .with_load_state(false)
         .with_save_state(false)
         .add_data_client(

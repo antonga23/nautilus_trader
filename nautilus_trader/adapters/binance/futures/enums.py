@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -20,7 +20,6 @@ References
 https://binance-docs.github.io/apidocs/futures/en/#public-endpoints-info
 
 """
-
 
 from decimal import Decimal
 from enum import Enum
@@ -48,6 +47,7 @@ class BinanceFuturesContractType(Enum):
     NEXT_QUARTER = "NEXT_QUARTER"
     PERPETUAL_DELIVERING = "PERPETUAL_DELIVERING"
     CURRENT_QUARTER_DELIVERING = "CURRENT_QUARTER DELIVERING"  # Underscore omission intentional
+    TRADIFI_PERPETUAL = "TRADIFI_PERPETUAL"  # TradFi-Perps (stock/commodity perpetuals)
 
 
 @unique
@@ -126,6 +126,7 @@ class BinanceFuturesEventType(Enum):
     STRATEGY_UPDATE = "STRATEGY_UPDATE"
     GRID_UPDATE = "GRID_UPDATE"
     CONDITIONAL_ORDER_TRIGGER_REJECT = "CONDITIONAL_ORDER_TRIGGER_REJECT"
+    ALGO_UPDATE = "ALGO_UPDATE"
 
 
 class BinanceFuturesEnumParser(BinanceEnumParser):

@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -25,14 +25,13 @@ use nautilus_common::{
         ExecutionEvent, ExecutionReport as NautilusExecutionReport,
         execution::{
             BatchCancelOrders, CancelAllOrders, CancelOrder, GenerateFillReports,
-            GenerateOrderStatusReport, GeneratePositionReports, ModifyOrder, QueryAccount,
-            QueryOrder, SubmitOrder, SubmitOrderList,
+            GenerateOrderStatusReport, GenerateOrderStatusReports, GeneratePositionStatusReports,
+            ModifyOrder, QueryAccount, QueryOrder, SubmitOrder, SubmitOrderList,
         },
     },
 };
 use nautilus_core::{MUTEX_POISONED, UnixNanos, time::get_atomic_clock_realtime};
 use nautilus_execution::client::{ExecutionClient, base::ExecutionClientCore};
-use nautilus_live::execution::client::LiveExecutionClient;
 use nautilus_model::{
     accounts::AccountAny,
     enums::{OmsType, OrderType},
@@ -554,12 +553,20 @@ impl ExecutionClient for HyperliquidExecutionClient {
         tracing::debug!("Modifying order: {:?}", command);
 
         // Parse venue_order_id as u64
-        let oid: u64 = match command.venue_order_id.as_str().parse() {
+        let venue_order_id = match command.venue_order_id {
+            Some(id) => id,
+            None => {
+                tracing::warn!("Cannot modify order: venue_order_id is None");
+                return Ok(());
+            }
+        };
+
+        let oid: u64 = match venue_order_id.as_str().parse() {
             Ok(id) => id,
             Err(e) => {
                 tracing::warn!(
                     "Failed to parse venue_order_id '{}' as u64: {}",
-                    command.venue_order_id,
+                    venue_order_id,
                     e
                 );
                 return Ok(());
@@ -889,10 +896,7 @@ impl ExecutionClient for HyperliquidExecutionClient {
         tracing::info!(client_id = %self.core.client_id, "Disconnected");
         Ok(())
     }
-}
 
-#[async_trait(?Send)]
-impl LiveExecutionClient for HyperliquidExecutionClient {
     async fn generate_order_status_report(
         &self,
         _cmd: &GenerateOrderStatusReport,
@@ -906,7 +910,7 @@ impl LiveExecutionClient for HyperliquidExecutionClient {
 
     async fn generate_order_status_reports(
         &self,
-        cmd: &GenerateOrderStatusReport,
+        cmd: &GenerateOrderStatusReports,
     ) -> anyhow::Result<Vec<OrderStatusReport>> {
         let user_address = self.get_user_address()?;
 
@@ -916,18 +920,26 @@ impl LiveExecutionClient for HyperliquidExecutionClient {
             .await
             .context("failed to generate order status reports")?;
 
-        // Filter by client_order_id if specified
-        let reports = if let Some(client_order_id) = cmd.client_order_id {
+        // Filter by open_only if specified
+        let reports = if cmd.open_only {
             reports
                 .into_iter()
-                .filter(|r| r.client_order_id == Some(client_order_id))
+                .filter(|r| r.order_status.is_open())
                 .collect()
         } else {
             reports
         };
 
-        // Note: cmd.venue_order_id is Option<ClientOrderId> in the struct definition,
-        // but report venue_order_id is VenueOrderId - type mismatch prevents filtering here
+        // Filter by time range if specified
+        let reports = match (cmd.start, cmd.end) {
+            (Some(start), Some(end)) => reports
+                .into_iter()
+                .filter(|r| r.ts_last >= start && r.ts_last <= end)
+                .collect(),
+            (Some(start), None) => reports.into_iter().filter(|r| r.ts_last >= start).collect(),
+            (None, Some(end)) => reports.into_iter().filter(|r| r.ts_last <= end).collect(),
+            (None, None) => reports,
+        };
 
         tracing::info!("Generated {} order status reports", reports.len());
         Ok(reports)
@@ -968,7 +980,7 @@ impl LiveExecutionClient for HyperliquidExecutionClient {
 
     async fn generate_position_status_reports(
         &self,
-        cmd: &GeneratePositionReports,
+        cmd: &GeneratePositionStatusReports,
     ) -> anyhow::Result<Vec<PositionStatusReport>> {
         let user_address = self.get_user_address()?;
 

@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -102,10 +102,6 @@ pub const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 // Max 100 inflight WS post messages per Hyperliquid docs
 pub const INFLIGHT_MAX: usize = 100;
 pub const QUEUE_MAX: usize = 1000;
-
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
 
 #[cfg(test)]
 mod tests {

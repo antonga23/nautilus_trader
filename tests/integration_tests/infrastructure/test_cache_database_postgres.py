@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -72,12 +72,13 @@ pytestmark = pytest.mark.skipif(
 @pytest.mark.xdist_group(name="postgres_integration")
 class TestCachePostgresAdapter:
     def setup(self) -> None:
-        # set envs
-        os.environ["POSTGRES_HOST"] = "localhost"
-        os.environ["POSTGRES_PORT"] = "5432"
-        os.environ["POSTGRES_USERNAME"] = "nautilus"
-        os.environ["POSTGRES_PASSWORD"] = "pass"
-        os.environ["POSTGRES_DATABASE"] = "nautilus"
+        # Respect CI-provided PG* variables (e.g. service host alias) and only
+        # fall back to local defaults when nothing is provided.
+        os.environ.setdefault("POSTGRES_HOST", os.getenv("PGHOST", "localhost"))
+        os.environ.setdefault("POSTGRES_PORT", os.getenv("PGPORT", "5432"))
+        os.environ.setdefault("POSTGRES_USERNAME", os.getenv("PGUSER", "nautilus"))
+        os.environ.setdefault("POSTGRES_PASSWORD", os.getenv("PGPASSWORD", "pass"))
+        os.environ.setdefault("POSTGRES_DATABASE", os.getenv("PGDATABASE", "nautilus"))
         try:
             self.database: CachePostgresAdapter = CachePostgresAdapter()
             # reset database

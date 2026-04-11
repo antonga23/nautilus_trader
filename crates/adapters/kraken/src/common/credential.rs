@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -22,6 +22,7 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_urlencoded;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
+/// API credentials for Kraken authentication.
 #[derive(Clone, Debug, Zeroize, ZeroizeOnDrop)]
 pub struct KrakenCredential {
     api_key: String,
@@ -29,6 +30,7 @@ pub struct KrakenCredential {
 }
 
 impl KrakenCredential {
+    /// Creates a new credential with the given API key and secret.
     pub fn new(api_key: impl Into<String>, api_secret: impl Into<String>) -> Self {
         Self {
             api_key: api_key.into(),
@@ -102,6 +104,7 @@ impl KrakenCredential {
         }
     }
 
+    /// Returns the API key.
     pub fn api_key(&self) -> &str {
         &self.api_key
     }
@@ -226,10 +229,6 @@ impl KrakenCredential {
         nautilus_core::string::mask_api_key(&self.api_key)
     }
 }
-
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
 
 #[cfg(test)]
 mod tests {

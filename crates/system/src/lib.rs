@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -33,14 +33,15 @@
 //! NautilusTrader's design, architecture, and implementation philosophy prioritizes software correctness and safety at the
 //! highest level, with the aim of supporting mission-critical, trading system backtesting and live deployment workloads.
 //!
-//! # Feature flags
+//! # Feature Flags
 //!
 //! This crate provides feature flags to control source code inclusion during compilation,
 //! depending on the intended use case, i.e. whether to provide Python bindings
 //! for the [nautilus_trader](https://pypi.org/project/nautilus_trader) Python package,
 //! or as part of a Rust only build.
 //!
-//! - `python`: Enables Python bindings from [PyO3](https://pyo3.rs).
+//! - `streaming`: Enables `persistence` dependency for streaming configuration.
+//! - `python`: Enables Python bindings from [PyO3](https://pyo3.rs) (auto-enables `streaming`).
 //! - `extension-module`: Builds the crate as a Python extension module.
 
 #![warn(rustc::all)]
@@ -63,7 +64,7 @@ pub mod python;
 
 // Re-exports
 pub use builder::NautilusKernelBuilder;
-pub use config::NautilusKernelConfig;
+pub use config::{NautilusKernelConfig, RotationConfig, StreamingConfig};
 pub use factories::{ClientConfig, DataClientFactory, ExecutionClientFactory};
 pub use kernel::NautilusKernel;
 #[cfg(feature = "python")]

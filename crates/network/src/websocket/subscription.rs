@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -123,6 +123,21 @@ impl SubscriptionState {
         self.confirmed.is_empty()
             && self.pending_subscribe.is_empty()
             && self.pending_unsubscribe.is_empty()
+    }
+
+    /// Returns true if a channel:symbol pair is subscribed (confirmed or pending subscribe).
+    pub fn is_subscribed(&self, channel: &Ustr, symbol: &Ustr) -> bool {
+        if let Some(symbols) = self.confirmed.get(channel)
+            && symbols.contains(symbol)
+        {
+            return true;
+        }
+        if let Some(symbols) = self.pending_subscribe.get(channel)
+            && symbols.contains(symbol)
+        {
+            return true;
+        }
+        false
     }
 
     /// Marks a topic as pending subscription.
@@ -402,10 +417,6 @@ fn is_tracked(map: &DashMap<Ustr, AHashSet<Ustr>>, channel: &str, symbol: Option
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
-
 #[cfg(test)]
 mod tests {
     use rstest::rstest;
@@ -454,6 +465,66 @@ mod tests {
 
         assert!(state.pending_subscribe_topics().is_empty());
         assert_eq!(state.len(), 1);
+    }
+
+    #[rstest]
+    fn test_is_subscribed_empty_state() {
+        let state = SubscriptionState::new('.');
+        let channel = Ustr::from("tickers");
+        let symbol = Ustr::from("BTCUSDT");
+
+        assert!(!state.is_subscribed(&channel, &symbol));
+    }
+
+    #[rstest]
+    fn test_is_subscribed_pending() {
+        let state = SubscriptionState::new('.');
+        let channel = Ustr::from("tickers");
+        let symbol = Ustr::from("BTCUSDT");
+
+        state.mark_subscribe("tickers.BTCUSDT");
+
+        assert!(state.is_subscribed(&channel, &symbol));
+    }
+
+    #[rstest]
+    fn test_is_subscribed_confirmed() {
+        let state = SubscriptionState::new('.');
+        let channel = Ustr::from("tickers");
+        let symbol = Ustr::from("BTCUSDT");
+
+        state.mark_subscribe("tickers.BTCUSDT");
+        state.confirm_subscribe("tickers.BTCUSDT");
+
+        assert!(state.is_subscribed(&channel, &symbol));
+    }
+
+    #[rstest]
+    fn test_is_subscribed_after_unsubscribe() {
+        let state = SubscriptionState::new('.');
+        let channel = Ustr::from("tickers");
+        let symbol = Ustr::from("BTCUSDT");
+
+        state.mark_subscribe("tickers.BTCUSDT");
+        state.confirm_subscribe("tickers.BTCUSDT");
+        state.mark_unsubscribe("tickers.BTCUSDT");
+
+        // Pending unsubscribe should not count as subscribed
+        assert!(!state.is_subscribed(&channel, &symbol));
+    }
+
+    #[rstest]
+    fn test_is_subscribed_after_confirm_unsubscribe() {
+        let state = SubscriptionState::new('.');
+        let channel = Ustr::from("tickers");
+        let symbol = Ustr::from("BTCUSDT");
+
+        state.mark_subscribe("tickers.BTCUSDT");
+        state.confirm_subscribe("tickers.BTCUSDT");
+        state.mark_unsubscribe("tickers.BTCUSDT");
+        state.confirm_unsubscribe("tickers.BTCUSDT");
+
+        assert!(!state.is_subscribed(&channel, &symbol));
     }
 
     #[rstest]

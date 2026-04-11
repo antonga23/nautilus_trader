@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -64,13 +64,11 @@ pub fn parse_ws_order_report(
     account_id: AccountId,
     ts_init: UnixNanos,
 ) -> anyhow::Result<OrderStatusReport> {
-    // Parse clob_pair_id from string
     let clob_pair_id: u32 = ws_order.clob_pair_id.parse().context(format!(
         "Failed to parse clob_pair_id '{}'",
         ws_order.clob_pair_id
     ))?;
 
-    // Lookup instrument by clob_pair_id
     let instrument_id = *clob_pair_id_to_instrument
         .get(&clob_pair_id)
         .ok_or_else(|| {
@@ -90,10 +88,7 @@ pub fn parse_ws_order_report(
         .value()
         .clone();
 
-    // Convert WebSocket order to HTTP Order format
     let http_order = convert_ws_order_to_http(ws_order)?;
-
-    // Delegate to existing HTTP parser
     let mut report = parse_order_status_report(&http_order, &instrument, account_id, ts_init)?;
 
     // For untriggered conditional orders with an explicit trigger price we
@@ -114,7 +109,6 @@ pub fn parse_ws_order_report(
 fn convert_ws_order_to_http(
     ws_order: &DydxWsOrderSubaccountMessageContents,
 ) -> anyhow::Result<Order> {
-    // Parse numeric fields
     let clob_pair_id: u32 = ws_order
         .clob_pair_id
         .parse()
@@ -137,17 +131,16 @@ fn convert_ws_order_to_http(
         .parse()
         .context("Failed to parse created_at_height")?;
 
-    let order_flags: u32 = ws_order
-        .order_flags
-        .parse()
-        .context("Failed to parse order_flags")?;
-
     let client_metadata: u32 = ws_order
         .client_metadata
         .parse()
         .context("Failed to parse client_metadata")?;
 
-    // Parse optional fields
+    let order_flags: u32 = ws_order
+        .order_flags
+        .parse()
+        .context("Failed to parse order_flags")?;
+
     let good_til_block = ws_order
         .good_til_block
         .as_ref()
@@ -177,10 +170,6 @@ fn convert_ws_order_to_http(
         .as_ref()
         .and_then(|s| s.parse::<u64>().ok());
 
-    // Convert order type to string using Display (gives PascalCase like "Limit", "Market")
-    let order_type = ws_order.order_type.to_string();
-
-    // Calculate total filled from size - remaining_size
     let total_filled = size.checked_sub(remaining_size).unwrap_or(Decimal::ZERO);
 
     Ok(Order {
@@ -193,7 +182,7 @@ fn convert_ws_order_to_http(
         total_filled,
         price,
         status: ws_order.status,
-        order_type,
+        order_type: ws_order.order_type,
         time_in_force: ws_order.time_in_force,
         reduce_only: ws_order.reduce_only,
         post_only: ws_order.post_only,
@@ -231,7 +220,6 @@ pub fn parse_ws_fill_report(
     account_id: AccountId,
     ts_init: UnixNanos,
 ) -> anyhow::Result<FillReport> {
-    // Lookup instrument by market symbol
     let instrument = instruments
         .iter()
         .find(|entry| entry.value().id().symbol.as_str() == ws_fill.market.as_str())
@@ -249,10 +237,7 @@ pub fn parse_ws_fill_report(
         .value()
         .clone();
 
-    // Convert WebSocket fill to HTTP Fill format
     let http_fill = convert_ws_fill_to_http(ws_fill)?;
-
-    // Delegate to existing HTTP parser
     parse_fill_report(&http_fill, &instrument, account_id, ts_init)
 }
 
@@ -262,7 +247,6 @@ pub fn parse_ws_fill_report(
 ///
 /// Returns an error if any field parsing fails.
 fn convert_ws_fill_to_http(ws_fill: &DydxWsFillSubaccountMessageContents) -> anyhow::Result<Fill> {
-    // Parse numeric fields
     let price: Decimal = ws_fill.price.parse().context("Failed to parse price")?;
 
     let size: Decimal = ws_fill.size.parse().context("Failed to parse size")?;
@@ -279,7 +263,6 @@ fn convert_ws_fill_to_http(ws_fill: &DydxWsFillSubaccountMessageContents) -> any
         .parse()
         .context("Failed to parse client_metadata")?;
 
-    // Parse timestamp
     let created_at = DateTime::parse_from_rfc3339(&ws_fill.created_at)
         .context("Failed to parse created_at")?
         .with_timezone(&Utc);
@@ -318,7 +301,6 @@ pub fn parse_ws_position_report(
     account_id: AccountId,
     ts_init: UnixNanos,
 ) -> anyhow::Result<PositionStatusReport> {
-    // Lookup instrument by market symbol
     let instrument = instruments
         .iter()
         .find(|entry| entry.value().id().symbol.as_str() == ws_position.market.as_str())
@@ -336,10 +318,7 @@ pub fn parse_ws_position_report(
         .value()
         .clone();
 
-    // Convert WebSocket position to HTTP PerpetualPosition format
     let http_position = convert_ws_position_to_http(ws_position)?;
-
-    // Delegate to existing HTTP parser
     parse_position_status_report(&http_position, &instrument, account_id, ts_init)
 }
 
@@ -351,7 +330,6 @@ pub fn parse_ws_position_report(
 fn convert_ws_position_to_http(
     ws_position: &DydxPerpetualPosition,
 ) -> anyhow::Result<PerpetualPosition> {
-    // Parse numeric fields
     let size: Decimal = ws_position.size.parse().context("Failed to parse size")?;
 
     let max_size: Decimal = ws_position
@@ -396,7 +374,6 @@ fn convert_ws_position_to_http(
         .parse()
         .context("Failed to parse net_funding")?;
 
-    // Parse timestamps
     let created_at = DateTime::parse_from_rfc3339(&ws_position.created_at)
         .context("Failed to parse created_at")?
         .with_timezone(&Utc);
@@ -434,10 +411,6 @@ fn convert_ws_position_to_http(
         closed_at,
     })
 }
-
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
 
 #[cfg(test)]
 mod tests {
@@ -619,8 +592,6 @@ mod tests {
         );
     }
 
-    // ========== Fill Parsing Tests ==========
-
     #[rstest]
     fn test_convert_ws_fill_to_http() {
         use crate::{
@@ -743,8 +714,6 @@ mod tests {
                 .contains("No instrument cached for market")
         );
     }
-
-    // ========== Position Parsing Tests ==========
 
     #[rstest]
     fn test_convert_ws_position_to_http() {
@@ -1012,7 +981,7 @@ mod tests {
             time_in_force: DydxTimeInForce::Gtt,
             post_only: false,
             reduce_only: true,
-            order_flags: "32".to_string(), // Conditional flag
+            order_flags: "32".to_string(),
             good_til_block: None,
             good_til_block_time: Some("2024-12-31T23:59:59Z".to_string()),
             created_at_height: "1000".to_string(),

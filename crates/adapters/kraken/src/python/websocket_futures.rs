@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -15,6 +15,7 @@
 
 //! Python bindings for the Kraken Futures WebSocket client.
 
+use nautilus_common::live::get_runtime;
 use nautilus_core::python::to_pyruntime_err;
 use nautilus_model::{
     data::{Data, OrderBookDeltas_API},
@@ -148,7 +149,7 @@ impl KrakenFuturesWebSocketClient {
 
             // Take ownership of the receiver
             if let Some(mut rx) = client.take_output_rx() {
-                tokio::spawn(async move {
+                get_runtime().spawn(async move {
                     while let Some(msg) = rx.recv().await {
                         Python::attach(|py| match msg {
                             KrakenFuturesWsMessage::MarkPrice(update) => {

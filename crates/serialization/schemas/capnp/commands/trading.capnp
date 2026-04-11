@@ -15,6 +15,7 @@ struct TradingCommandHeader {
     instrumentId @3 :Identifiers.InstrumentId;
     commandId @4 :Base.UUID4;
     tsInit @5 :Base.UnixNanos;
+    correlationId @6 :Base.UUID4;  # Optional
 }
 
 # Order snapshot - bag of values representing current order state
@@ -165,6 +166,11 @@ struct TradingCommand {
         batchCancelOrders @5 :BatchCancelOrders;
         queryOrder @6 :QueryOrder;
         queryAccount @7 :QueryAccount;
+        generateOrderStatusReport @8 :GenerateOrderStatusReport;
+        generateOrderStatusReports @9 :GenerateOrderStatusReports;
+        generateFillReports @10 :GenerateFillReports;
+        generatePositionStatusReports @11 :GeneratePositionStatusReports;
+        generateExecutionMassStatus @12 :GenerateExecutionMassStatus;
     }
 }
 
@@ -172,12 +178,14 @@ struct SubmitOrder {
     header @0 :TradingCommandHeader;
     orderInit @1 :OrderEvents.OrderInitialized;
     positionId @2 :Identifiers.PositionId;
+    params @3 :Base.StringMap;
 }
 
 struct SubmitOrderList {
     header @0 :TradingCommandHeader;
     orderInits @1 :List(OrderEvents.OrderInitialized);
     positionId @2 :Identifiers.PositionId;
+    params @3 :Base.StringMap;
 }
 
 struct ModifyOrder {
@@ -187,22 +195,26 @@ struct ModifyOrder {
     quantity @3 :Types.Quantity;
     price @4 :Types.Price;
     triggerPrice @5 :Types.Price;
+    params @6 :Base.StringMap;
 }
 
 struct CancelOrder {
     header @0 :TradingCommandHeader;
     clientOrderId @1 :Identifiers.ClientOrderId;
     venueOrderId @2 :Identifiers.VenueOrderId;
+    params @3 :Base.StringMap;
 }
 
 struct CancelAllOrders {
     header @0 :TradingCommandHeader;
     orderSide @1 :Enums.OrderSide;
+    params @2 :Base.StringMap;
 }
 
 struct BatchCancelOrders {
     header @0 :TradingCommandHeader;
     cancellations @1 :List(CancelOrder);
+    params @2 :Base.StringMap;
 }
 
 struct QueryOrder {
@@ -216,4 +228,59 @@ struct QueryAccount {
     accountId @1 :Identifiers.AccountId;
     commandId @2 :Base.UUID4;
     tsInit @3 :Base.UnixNanos;
+    params @4 :Base.StringMap;
+    correlationId @5 :Base.UUID4;  # Optional
+}
+
+# Execution report commands
+struct GenerateOrderStatusReport {
+    commandId @0 :Base.UUID4;
+    tsInit @1 :Base.UnixNanos;
+    instrumentId @2 :Identifiers.InstrumentId;  # Optional
+    clientOrderId @3 :Identifiers.ClientOrderId;  # Optional
+    venueOrderId @4 :Identifiers.ClientOrderId;  # Optional
+    params @5 :Base.StringMap;
+    correlationId @6 :Base.UUID4;  # Optional
+}
+
+struct GenerateOrderStatusReports {
+    commandId @0 :Base.UUID4;
+    tsInit @1 :Base.UnixNanos;
+    openOnly @2 :Bool;
+    instrumentId @3 :Identifiers.InstrumentId;  # Optional
+    start @4 :Base.UnixNanos;  # Optional
+    end @5 :Base.UnixNanos;  # Optional
+    params @6 :Base.StringMap;
+    correlationId @7 :Base.UUID4;  # Optional
+}
+
+struct GenerateFillReports {
+    commandId @0 :Base.UUID4;
+    tsInit @1 :Base.UnixNanos;
+    instrumentId @2 :Identifiers.InstrumentId;  # Optional
+    venueOrderId @3 :Identifiers.ClientOrderId;  # Optional
+    start @4 :Base.UnixNanos;  # Optional
+    end @5 :Base.UnixNanos;  # Optional
+    params @6 :Base.StringMap;
+    correlationId @7 :Base.UUID4;  # Optional
+}
+
+struct GeneratePositionStatusReports {
+    commandId @0 :Base.UUID4;
+    tsInit @1 :Base.UnixNanos;
+    instrumentId @2 :Identifiers.InstrumentId;  # Optional
+    start @3 :Base.UnixNanos;  # Optional
+    end @4 :Base.UnixNanos;  # Optional
+    params @5 :Base.StringMap;
+    correlationId @6 :Base.UUID4;  # Optional
+}
+
+struct GenerateExecutionMassStatus {
+    traderId @0 :Identifiers.TraderId;
+    clientId @1 :Identifiers.ClientId;
+    venue @2 :Identifiers.Venue;  # Optional
+    commandId @3 :Base.UUID4;
+    tsInit @4 :Base.UnixNanos;
+    params @5 :Base.StringMap;
+    correlationId @6 :Base.UUID4;  # Optional
 }

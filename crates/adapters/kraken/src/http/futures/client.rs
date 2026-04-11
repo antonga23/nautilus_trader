@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -17,10 +17,10 @@
 
 use std::{
     collections::HashMap,
-    fmt::{Debug, Formatter},
+    fmt::Debug,
     num::NonZeroU32,
     sync::{
-        Arc, LazyLock,
+        Arc,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -56,7 +56,7 @@ use crate::{
         credential::KrakenCredential,
         enums::{
             KrakenApiResult, KrakenEnvironment, KrakenFuturesOrderType, KrakenOrderSide,
-            KrakenProductType,
+            KrakenProductType, KrakenSendStatus,
         },
         parse::{
             bar_type_to_futures_resolution, parse_bar, parse_futures_fill_report,
@@ -69,12 +69,13 @@ use crate::{
     http::{error::KrakenHttpError, models::OhlcData},
 };
 
-/// Default Kraken Futures REST API rate limit.
-pub static KRAKEN_FUTURES_REST_QUOTA: LazyLock<Quota> = LazyLock::new(|| {
-    Quota::per_second(NonZeroU32::new(5).expect("Should be a valid non-zero u32"))
-});
+/// Default Kraken Futures REST API rate limit (requests per second).
+pub const KRAKEN_FUTURES_DEFAULT_RATE_LIMIT_PER_SECOND: u32 = 5;
 
 const KRAKEN_GLOBAL_RATE_KEY: &str = "kraken:futures:global";
+
+/// Maximum orders per batch cancel request for Kraken Futures API.
+const BATCH_CANCEL_LIMIT: usize = 50;
 
 /// Raw HTTP client for low-level Kraken Futures API operations.
 ///
@@ -101,13 +102,14 @@ impl Default for KrakenFuturesRawHttpClient {
             None,
             None,
             None,
+            None,
         )
         .expect("Failed to create default KrakenFuturesRawHttpClient")
     }
 }
 
 impl Debug for KrakenFuturesRawHttpClient {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct(stringify!(KrakenFuturesRawHttpClient))
             .field("base_url", &self.base_url)
             .field("has_credentials", &self.credential.is_some())
@@ -126,6 +128,7 @@ impl KrakenFuturesRawHttpClient {
         retry_delay_ms: Option<u64>,
         retry_delay_max_ms: Option<u64>,
         proxy_url: Option<String>,
+        max_requests_per_second: Option<u32>,
     ) -> anyhow::Result<Self> {
         let retry_config = RetryConfig {
             max_retries: max_retries.unwrap_or(3),
@@ -143,13 +146,16 @@ impl KrakenFuturesRawHttpClient {
             get_kraken_http_base_url(KrakenProductType::Futures, environment).to_string()
         });
 
+        let rate_limit =
+            max_requests_per_second.unwrap_or(KRAKEN_FUTURES_DEFAULT_RATE_LIMIT_PER_SECOND);
+
         Ok(Self {
             base_url,
             client: HttpClient::new(
                 Self::default_headers(),
                 vec![],
-                Self::rate_limiter_quotas(),
-                Some(*KRAKEN_FUTURES_REST_QUOTA),
+                Self::rate_limiter_quotas(rate_limit),
+                Some(Self::default_quota(rate_limit)),
                 timeout_secs,
                 proxy_url,
             )
@@ -174,6 +180,7 @@ impl KrakenFuturesRawHttpClient {
         retry_delay_ms: Option<u64>,
         retry_delay_max_ms: Option<u64>,
         proxy_url: Option<String>,
+        max_requests_per_second: Option<u32>,
     ) -> anyhow::Result<Self> {
         let retry_config = RetryConfig {
             max_retries: max_retries.unwrap_or(3),
@@ -191,13 +198,16 @@ impl KrakenFuturesRawHttpClient {
             get_kraken_http_base_url(KrakenProductType::Futures, environment).to_string()
         });
 
+        let rate_limit =
+            max_requests_per_second.unwrap_or(KRAKEN_FUTURES_DEFAULT_RATE_LIMIT_PER_SECOND);
+
         Ok(Self {
             base_url,
             client: HttpClient::new(
                 Self::default_headers(),
                 vec![],
-                Self::rate_limiter_quotas(),
-                Some(*KRAKEN_FUTURES_REST_QUOTA),
+                Self::rate_limiter_quotas(rate_limit),
+                Some(Self::default_quota(rate_limit)),
                 timeout_secs,
                 proxy_url,
             )
@@ -210,7 +220,7 @@ impl KrakenFuturesRawHttpClient {
         })
     }
 
-    /// Generate a unique nonce for Kraken Futures API requests.
+    /// Generates a unique nonce for Kraken Futures API requests.
     ///
     /// Uses `AtomicTime` for strict monotonicity. The nanosecond timestamp
     /// guarantees uniqueness even for rapid consecutive calls.
@@ -218,18 +228,22 @@ impl KrakenFuturesRawHttpClient {
         self.clock.get_time_ns().as_u64()
     }
 
+    /// Returns the base URL for this client.
     pub fn base_url(&self) -> &str {
         &self.base_url
     }
 
+    /// Returns the credential for this client, if set.
     pub fn credential(&self) -> Option<&KrakenCredential> {
         self.credential.as_ref()
     }
 
+    /// Cancels all pending HTTP requests.
     pub fn cancel_all_requests(&self) {
         self.cancellation_token.cancel();
     }
 
+    /// Returns the cancellation token for this client.
     pub fn cancellation_token(&self) -> &CancellationToken {
         &self.cancellation_token
     }
@@ -238,10 +252,16 @@ impl KrakenFuturesRawHttpClient {
         HashMap::from([(USER_AGENT.to_string(), NAUTILUS_USER_AGENT.to_string())])
     }
 
-    fn rate_limiter_quotas() -> Vec<(String, Quota)> {
+    fn default_quota(max_requests_per_second: u32) -> Quota {
+        Quota::per_second(NonZeroU32::new(max_requests_per_second).unwrap_or_else(|| {
+            NonZeroU32::new(KRAKEN_FUTURES_DEFAULT_RATE_LIMIT_PER_SECOND).unwrap()
+        }))
+    }
+
+    fn rate_limiter_quotas(max_requests_per_second: u32) -> Vec<(String, Quota)> {
         vec![(
             KRAKEN_GLOBAL_RATE_KEY.to_string(),
-            *KRAKEN_FUTURES_REST_QUOTA,
+            Self::default_quota(max_requests_per_second),
         )]
     }
 
@@ -361,7 +381,7 @@ impl KrakenFuturesRawHttpClient {
             .await
     }
 
-    /// Send authenticated GET request with query parameters included in signature.
+    /// Sends authenticated GET request with query parameters included in signature.
     ///
     /// For Kraken Futures, GET requests with query params must include them in postData
     /// for signing: message = postData + nonce + endpoint
@@ -449,7 +469,7 @@ impl KrakenFuturesRawHttpClient {
         self.send_authenticated_post(endpoint, post_data).await
     }
 
-    /// Send a request with typed parameters (serializable struct).
+    /// Sends a request with typed parameters (serializable struct).
     async fn send_request_with_params<P: serde::Serialize, T: DeserializeOwned>(
         &self,
         endpoint: &str,
@@ -532,18 +552,13 @@ impl KrakenFuturesRawHttpClient {
             KrakenHttpError::ParseError(format!("Failed to parse response as UTF-8: {e}"))
         })?;
 
-        tracing::debug!("Response from {}: {}", endpoint, response_text);
-
         serde_json::from_str(&response_text).map_err(|e| {
-            tracing::error!(
-                "Failed to parse response from {}: {}",
-                endpoint,
-                response_text
-            );
+            tracing::error!("Failed to parse response from {endpoint}: {response_text}");
             KrakenHttpError::ParseError(format!("Failed to deserialize response: {e}"))
         })
     }
 
+    /// Requests tradable instruments from Kraken Futures.
     pub async fn get_instruments(
         &self,
     ) -> anyhow::Result<FuturesInstrumentsResponse, KrakenHttpError> {
@@ -553,6 +568,7 @@ impl KrakenFuturesRawHttpClient {
         self.send_request(Method::GET, endpoint, url, false).await
     }
 
+    /// Requests ticker information for all futures instruments.
     pub async fn get_tickers(&self) -> anyhow::Result<FuturesTickersResponse, KrakenHttpError> {
         let endpoint = "/derivatives/api/v3/tickers";
         let url = format!("{}{endpoint}", self.base_url);
@@ -560,6 +576,7 @@ impl KrakenFuturesRawHttpClient {
         self.send_request(Method::GET, endpoint, url, false).await
     }
 
+    /// Requests OHLC candlestick data for a futures symbol.
     pub async fn get_ohlc(
         &self,
         tick_type: &str,
@@ -588,7 +605,7 @@ impl KrakenFuturesRawHttpClient {
         self.send_request(Method::GET, &endpoint, url, false).await
     }
 
-    /// Get public execution events (trades) for a futures symbol.
+    /// Gets public execution events (trades) for a futures symbol.
     pub async fn get_public_executions(
         &self,
         symbol: &str,
@@ -623,6 +640,7 @@ impl KrakenFuturesRawHttpClient {
         self.send_request(Method::GET, &endpoint, url, false).await
     }
 
+    /// Requests all open orders (requires authentication).
     pub async fn get_open_orders(
         &self,
     ) -> anyhow::Result<FuturesOpenOrdersResponse, KrakenHttpError> {
@@ -638,6 +656,7 @@ impl KrakenFuturesRawHttpClient {
         self.send_request(Method::GET, endpoint, url, true).await
     }
 
+    /// Requests historical order events (requires authentication).
     pub async fn get_order_events(
         &self,
         before: Option<i64>,
@@ -676,6 +695,7 @@ impl KrakenFuturesRawHttpClient {
         self.send_get_with_query(endpoint, url, &query_string).await
     }
 
+    /// Requests fill/trade history (requires authentication).
     pub async fn get_fills(
         &self,
         last_fill_time: Option<&str>,
@@ -701,6 +721,7 @@ impl KrakenFuturesRawHttpClient {
         self.send_get_with_query(endpoint, url, &query_string).await
     }
 
+    /// Requests open positions (requires authentication).
     pub async fn get_open_positions(
         &self,
     ) -> anyhow::Result<FuturesOpenPositionsResponse, KrakenHttpError> {
@@ -716,7 +737,7 @@ impl KrakenFuturesRawHttpClient {
         self.send_request(Method::GET, endpoint, url, true).await
     }
 
-    /// Get all accounts (cash and margin) with balances and margin info.
+    /// Requests all accounts (cash and margin) with balances and margin info.
     pub async fn get_accounts(&self) -> anyhow::Result<FuturesAccountsResponse, KrakenHttpError> {
         if self.credential.is_none() {
             return Err(KrakenHttpError::AuthenticationError(
@@ -730,6 +751,7 @@ impl KrakenFuturesRawHttpClient {
         self.send_request(Method::GET, endpoint, url, true).await
     }
 
+    /// Submits a new order (requires authentication).
     pub async fn send_order(
         &self,
         params: HashMap<String, String>,
@@ -744,7 +766,7 @@ impl KrakenFuturesRawHttpClient {
         self.send_request_with_body(endpoint, params).await
     }
 
-    /// Send an order using typed parameters.
+    /// Submits a new order using typed parameters (requires authentication).
     pub async fn send_order_params(
         &self,
         params: &KrakenFuturesSendOrderParams,
@@ -759,6 +781,7 @@ impl KrakenFuturesRawHttpClient {
         self.send_request_with_params(endpoint, params).await
     }
 
+    /// Cancels an open order (requires authentication).
     pub async fn cancel_order(
         &self,
         order_id: Option<String>,
@@ -782,9 +805,10 @@ impl KrakenFuturesRawHttpClient {
         self.send_request_with_body(endpoint, params).await
     }
 
+    /// Edits an existing order (requires authentication).
     pub async fn edit_order(
         &self,
-        params: HashMap<String, String>,
+        params: &KrakenFuturesEditOrderParams,
     ) -> anyhow::Result<FuturesEditOrderResponse, KrakenHttpError> {
         if self.credential.is_none() {
             return Err(KrakenHttpError::AuthenticationError(
@@ -793,9 +817,10 @@ impl KrakenFuturesRawHttpClient {
         }
 
         let endpoint = "/derivatives/api/v3/editorder";
-        self.send_request_with_body(endpoint, params).await
+        self.send_request_with_params(endpoint, params).await
     }
 
+    /// Submits multiple orders in a single batch request (requires authentication).
     pub async fn batch_order(
         &self,
         params: HashMap<String, String>,
@@ -810,10 +835,7 @@ impl KrakenFuturesRawHttpClient {
         self.send_request_with_body(endpoint, params).await
     }
 
-    /// Cancel multiple orders in a single batch request.
-    ///
-    /// # Parameters
-    /// - `order_ids` - List of venue order IDs to cancel.
+    /// Cancels multiple orders in a single batch request (requires authentication).
     pub async fn cancel_orders_batch(
         &self,
         order_ids: Vec<String>,
@@ -838,6 +860,7 @@ impl KrakenFuturesRawHttpClient {
         self.send_authenticated_post(endpoint, post_data).await
     }
 
+    /// Cancels all open orders, optionally filtered by symbol (requires authentication).
     pub async fn cancel_all_orders(
         &self,
         symbol: Option<String>,
@@ -858,10 +881,6 @@ impl KrakenFuturesRawHttpClient {
     }
 }
 
-// =============================================================================
-// Domain Client
-// =============================================================================
-
 /// High-level HTTP client for the Kraken Futures REST API.
 ///
 /// This client wraps the raw client and provides Nautilus domain types.
@@ -869,7 +888,7 @@ impl KrakenFuturesRawHttpClient {
 /// into Nautilus domain objects.
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.adapters")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.kraken")
 )]
 pub struct KrakenFuturesHttpClient {
     pub(crate) inner: Arc<KrakenFuturesRawHttpClient>,
@@ -897,13 +916,14 @@ impl Default for KrakenFuturesHttpClient {
             None,
             None,
             None,
+            None,
         )
         .expect("Failed to create default KrakenFuturesHttpClient")
     }
 }
 
 impl Debug for KrakenFuturesHttpClient {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct(stringify!(KrakenFuturesHttpClient))
             .field("inner", &self.inner)
             .finish()
@@ -921,6 +941,7 @@ impl KrakenFuturesHttpClient {
         retry_delay_ms: Option<u64>,
         retry_delay_max_ms: Option<u64>,
         proxy_url: Option<String>,
+        max_requests_per_second: Option<u32>,
     ) -> anyhow::Result<Self> {
         Ok(Self {
             inner: Arc::new(KrakenFuturesRawHttpClient::new(
@@ -931,6 +952,7 @@ impl KrakenFuturesHttpClient {
                 retry_delay_ms,
                 retry_delay_max_ms,
                 proxy_url,
+                max_requests_per_second,
             )?),
             instruments_cache: Arc::new(DashMap::new()),
             cache_initialized: Arc::new(AtomicBool::new(false)),
@@ -949,6 +971,7 @@ impl KrakenFuturesHttpClient {
         retry_delay_ms: Option<u64>,
         retry_delay_max_ms: Option<u64>,
         proxy_url: Option<String>,
+        max_requests_per_second: Option<u32>,
     ) -> anyhow::Result<Self> {
         Ok(Self {
             inner: Arc::new(KrakenFuturesRawHttpClient::with_credentials(
@@ -961,6 +984,7 @@ impl KrakenFuturesHttpClient {
                 retry_delay_ms,
                 retry_delay_max_ms,
                 proxy_url,
+                max_requests_per_second,
             )?),
             instruments_cache: Arc::new(DashMap::new()),
             cache_initialized: Arc::new(AtomicBool::new(false)),
@@ -982,6 +1006,7 @@ impl KrakenFuturesHttpClient {
         retry_delay_ms: Option<u64>,
         retry_delay_max_ms: Option<u64>,
         proxy_url: Option<String>,
+        max_requests_per_second: Option<u32>,
     ) -> anyhow::Result<Self> {
         let demo = environment == KrakenEnvironment::Demo;
 
@@ -997,6 +1022,7 @@ impl KrakenFuturesHttpClient {
                 retry_delay_ms,
                 retry_delay_max_ms,
                 proxy_url,
+                max_requests_per_second,
             )
         } else {
             Self::new(
@@ -1007,24 +1033,29 @@ impl KrakenFuturesHttpClient {
                 retry_delay_ms,
                 retry_delay_max_ms,
                 proxy_url,
+                max_requests_per_second,
             )
         }
     }
 
+    /// Cancels all pending HTTP requests.
     pub fn cancel_all_requests(&self) {
         self.inner.cancel_all_requests();
     }
 
+    /// Returns the cancellation token for this client.
     pub fn cancellation_token(&self) -> &CancellationToken {
         self.inner.cancellation_token()
     }
 
+    /// Caches an instrument for symbol lookup.
     pub fn cache_instrument(&self, instrument: InstrumentAny) {
         self.instruments_cache
             .insert(instrument.symbol().inner(), instrument);
         self.cache_initialized.store(true, Ordering::Release);
     }
 
+    /// Caches multiple instruments for symbol lookup.
     pub fn cache_instruments(&self, instruments: Vec<InstrumentAny>) {
         for instrument in instruments {
             self.instruments_cache
@@ -1033,6 +1064,7 @@ impl KrakenFuturesHttpClient {
         self.cache_initialized.store(true, Ordering::Release);
     }
 
+    /// Gets an instrument from the cache by symbol.
     pub fn get_cached_instrument(&self, symbol: &Ustr) -> Option<InstrumentAny> {
         self.instruments_cache
             .get(symbol)
@@ -1050,6 +1082,7 @@ impl KrakenFuturesHttpClient {
         get_atomic_clock_realtime().get_time_ns()
     }
 
+    /// Requests tradable instruments from Kraken Futures.
     pub async fn request_instruments(&self) -> anyhow::Result<Vec<InstrumentAny>, KrakenHttpError> {
         let ts_init = self.generate_ts_init();
         let response = self.inner.get_instruments().await?;
@@ -1072,6 +1105,7 @@ impl KrakenFuturesHttpClient {
         Ok(instruments)
     }
 
+    /// Requests the mark price for an instrument.
     pub async fn request_mark_price(
         &self,
         instrument_id: InstrumentId,
@@ -1250,6 +1284,158 @@ impl KrakenFuturesHttpClient {
         }
 
         Ok(bars)
+    }
+
+    /// Requests account state from the Kraken Futures exchange.
+    ///
+    /// This queries the accounts endpoint and converts the response into a
+    /// Nautilus `AccountState` event containing balances and margin info.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Credentials are missing.
+    /// - The request fails.
+    /// - Response parsing fails.
+    pub async fn request_account_state(
+        &self,
+        account_id: AccountId,
+    ) -> anyhow::Result<AccountState> {
+        let accounts_response = self.inner.get_accounts().await?;
+
+        if accounts_response.result != KrakenApiResult::Success {
+            let error_msg = accounts_response
+                .error
+                .unwrap_or_else(|| "Unknown error".to_string());
+            anyhow::bail!("Failed to get futures accounts: {error_msg}");
+        }
+
+        let ts_init = self.generate_ts_init();
+
+        let mut balances: Vec<AccountBalance> = Vec::new();
+
+        for account in accounts_response.accounts.values() {
+            match account.account_type.as_str() {
+                "multiCollateralMarginAccount" => {
+                    for (currency_code, currency_info) in &account.currencies {
+                        if currency_info.quantity == 0.0 {
+                            continue;
+                        }
+
+                        let currency = Currency::new(
+                            currency_code.as_str(),
+                            8,
+                            0,
+                            currency_code.as_str(),
+                            CurrencyType::Crypto,
+                        );
+
+                        let total_amount = currency_info.quantity;
+                        let total = Money::new(total_amount, currency);
+
+                        // Available can exceed quantity with positive PnL, cap to satisfy invariant
+                        let available_amount = currency_info
+                            .available
+                            .unwrap_or(total_amount)
+                            .min(total_amount);
+                        let locked_amount = (total_amount - available_amount).max(0.0);
+                        let locked = Money::new(locked_amount, currency);
+                        // Compute free from total - locked to guarantee the invariant holds
+                        let free = total - locked;
+
+                        balances.push(AccountBalance::new(total, locked, free));
+                    }
+
+                    // Add USD balance from portfolio value for margin calculations.
+                    // Multi-collateral accounts track margin in USD even though the
+                    // actual collateral is held in various crypto currencies.
+                    if let Some(portfolio_value) = account.portfolio_value
+                        && portfolio_value > 0.0
+                    {
+                        let usd_currency = Currency::USD();
+                        let total_usd = Money::new(portfolio_value, usd_currency);
+                        let available_usd = account
+                            .available_margin
+                            .unwrap_or(portfolio_value)
+                            .min(portfolio_value);
+                        // Compute locked = total - available to guarantee the invariant holds
+                        let locked_usd =
+                            Money::new((portfolio_value - available_usd).max(0.0), usd_currency);
+                        let free_usd = total_usd - locked_usd;
+
+                        balances.push(AccountBalance::new(total_usd, locked_usd, free_usd));
+                    }
+                }
+                "marginAccount" => {
+                    for (currency_code, &amount) in &account.balances {
+                        if amount == 0.0 {
+                            continue;
+                        }
+
+                        let currency = Currency::new(
+                            currency_code.as_str(),
+                            8,
+                            0,
+                            currency_code.as_str(),
+                            CurrencyType::Crypto,
+                        );
+
+                        let total = Money::new(amount, currency);
+
+                        // Available can exceed balance with positive PnL, cap to satisfy invariant
+                        let available = account
+                            .auxiliary
+                            .as_ref()
+                            .and_then(|aux| aux.af)
+                            .unwrap_or(amount)
+                            .min(amount);
+                        let locked = amount - available;
+
+                        balances.push(AccountBalance::new(
+                            total,
+                            Money::new(locked, currency),
+                            Money::new(available, currency),
+                        ));
+                    }
+                }
+                "cashAccount" => {
+                    for (currency_code, &amount) in &account.balances {
+                        if amount == 0.0 {
+                            continue;
+                        }
+
+                        let currency = Currency::new(
+                            currency_code.as_str(),
+                            8,
+                            0,
+                            currency_code.as_str(),
+                            CurrencyType::Crypto,
+                        );
+
+                        let total = Money::new(amount, currency);
+                        let locked = Money::new(0.0, currency);
+
+                        balances.push(AccountBalance::new(total, locked, total));
+                    }
+                }
+                _ => {
+                    let account_type = &account.account_type;
+                    tracing::debug!("Unknown account type: {account_type}");
+                }
+            }
+        }
+
+        Ok(AccountState::new(
+            account_id,
+            AccountType::Margin,
+            balances,
+            vec![],
+            true,
+            UUID4::new(),
+            ts_init,
+            ts_init,
+            None,
+        ))
     }
 
     pub async fn request_order_status_reports(
@@ -1444,7 +1630,7 @@ impl KrakenFuturesHttpClient {
         Ok(all_reports)
     }
 
-    /// Submit a new order to the Kraken Futures exchange.
+    /// Submits a new order to the Kraken Futures exchange.
     ///
     /// # Errors
     ///
@@ -1491,6 +1677,9 @@ impl KrakenFuturesHttpClient {
                         TimeInForce::Ioc => KrakenFuturesOrderType::Ioc,
                         TimeInForce::Fok => {
                             anyhow::bail!("FOK not supported by Kraken Futures, use IOC instead")
+                        }
+                        TimeInForce::Gtd => {
+                            anyhow::bail!("GTD not supported by Kraken Futures, use GTC instead")
                         }
                         _ => KrakenFuturesOrderType::Limit, // GTC is default
                     }
@@ -1674,7 +1863,77 @@ impl KrakenFuturesHttpClient {
         )
     }
 
-    /// Cancel an order on the Kraken Futures exchange.
+    /// Modifies an existing order on the Kraken Futures exchange.
+    ///
+    /// Returns the new venue order ID assigned to the modified order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Neither `client_order_id` nor `venue_order_id` is provided.
+    /// - The instrument is not found in cache.
+    /// - The request fails.
+    /// - The edit fails on the exchange.
+    pub async fn modify_order(
+        &self,
+        instrument_id: InstrumentId,
+        client_order_id: Option<ClientOrderId>,
+        venue_order_id: Option<VenueOrderId>,
+        quantity: Option<Quantity>,
+        price: Option<Price>,
+        trigger_price: Option<Price>,
+    ) -> anyhow::Result<VenueOrderId> {
+        let _ = self
+            .get_cached_instrument(&instrument_id.symbol.inner())
+            .ok_or_else(|| anyhow::anyhow!("Instrument not found in cache: {instrument_id}"))?;
+
+        let order_id = venue_order_id.as_ref().map(|id| id.to_string());
+        let cli_ord_id = client_order_id.as_ref().map(|id| id.to_string());
+
+        if order_id.is_none() && cli_ord_id.is_none() {
+            anyhow::bail!("Either client_order_id or venue_order_id must be provided");
+        }
+
+        let mut builder = KrakenFuturesEditOrderParamsBuilder::default();
+
+        if let Some(ref id) = order_id {
+            builder.order_id(id.clone());
+        }
+        if let Some(ref id) = cli_ord_id {
+            builder.cli_ord_id(id.clone());
+        }
+        if let Some(qty) = quantity {
+            builder.size(qty.to_string());
+        }
+        if let Some(p) = price {
+            builder.limit_price(p.to_string());
+        }
+        if let Some(tp) = trigger_price {
+            builder.stop_price(tp.to_string());
+        }
+
+        let params = builder
+            .build()
+            .map_err(|e| anyhow::anyhow!("Failed to build edit order params: {e}"))?;
+
+        let response = self.inner.edit_order(&params).await?;
+
+        if response.result != KrakenApiResult::Success {
+            let status = &response.edit_status.status;
+            anyhow::bail!("Order modification failed: {status}");
+        }
+
+        // Return the new order_id from the response, or fall back to the original
+        let new_venue_order_id = response
+            .edit_status
+            .order_id
+            .or(order_id)
+            .ok_or_else(|| anyhow::anyhow!("No order ID in edit order response"))?;
+
+        Ok(VenueOrderId::new(&new_venue_order_id))
+    }
+
+    /// Cancels an order on the Kraken Futures exchange.
     ///
     /// # Errors
     ///
@@ -1711,13 +1970,15 @@ impl KrakenFuturesHttpClient {
         Ok(())
     }
 
-    /// Cancel multiple orders on the Kraken Futures exchange in a single batch request.
+    /// Cancels multiple orders on the Kraken Futures exchange.
+    ///
+    /// Automatically chunks requests into batches of 50 orders.
     ///
     /// # Parameters
     /// - `venue_order_ids` - List of venue order IDs to cancel.
     ///
     /// # Returns
-    /// The number of successfully cancelled orders.
+    /// The total number of successfully cancelled orders.
     pub async fn cancel_orders_batch(
         &self,
         venue_order_ids: Vec<VenueOrderId>,
@@ -1726,184 +1987,34 @@ impl KrakenFuturesHttpClient {
             return Ok(0);
         }
 
-        let order_ids: Vec<String> = venue_order_ids.iter().map(|id| id.to_string()).collect();
-        let response = self.inner.cancel_orders_batch(order_ids).await?;
+        let mut total_cancelled = 0;
 
-        if response.result != KrakenApiResult::Success {
-            let error_msg = response.error.as_deref().unwrap_or("Unknown error");
-            anyhow::bail!("Batch cancel failed: {error_msg}");
-        }
+        for chunk in venue_order_ids.chunks(BATCH_CANCEL_LIMIT) {
+            let order_ids: Vec<String> = chunk.iter().map(|id| id.to_string()).collect();
+            let response = self.inner.cancel_orders_batch(order_ids).await?;
 
-        let success_count = response
-            .batch_status
-            .iter()
-            .filter(|s| {
-                s.status.as_deref() == Some("cancelled")
-                    || s.cancel_status
-                        .as_ref()
-                        .is_some_and(|cs| cs.status == "cancelled")
-            })
-            .count();
-
-        Ok(success_count)
-    }
-
-    /// Request account state from the Kraken Futures exchange.
-    ///
-    /// This queries the accounts endpoint and converts the response into a
-    /// Nautilus `AccountState` event containing balances and margin info.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - Credentials are missing.
-    /// - The request fails.
-    /// - Response parsing fails.
-    pub async fn request_account_state(
-        &self,
-        account_id: AccountId,
-    ) -> anyhow::Result<AccountState> {
-        let accounts_response = self.inner.get_accounts().await?;
-
-        if accounts_response.result != KrakenApiResult::Success {
-            let error_msg = accounts_response
-                .error
-                .unwrap_or_else(|| "Unknown error".to_string());
-            anyhow::bail!("Failed to get futures accounts: {error_msg}");
-        }
-
-        let ts_init = self.generate_ts_init();
-
-        let mut balances: Vec<AccountBalance> = Vec::new();
-
-        for account in accounts_response.accounts.values() {
-            match account.account_type.as_str() {
-                "multiCollateralMarginAccount" => {
-                    for (currency_code, currency_info) in &account.currencies {
-                        if currency_info.quantity == 0.0 {
-                            continue;
-                        }
-
-                        let currency = Currency::new(
-                            currency_code.as_str(),
-                            8,
-                            0,
-                            currency_code.as_str(),
-                            CurrencyType::Crypto,
-                        );
-
-                        let total_amount = currency_info.quantity;
-                        let total = Money::new(total_amount, currency);
-
-                        // Available can exceed quantity with positive PnL, cap to satisfy invariant
-                        let available_amount = currency_info
-                            .available
-                            .unwrap_or(total_amount)
-                            .min(total_amount);
-                        let locked_amount = (total_amount - available_amount).max(0.0);
-                        let locked = Money::new(locked_amount, currency);
-                        // Compute free from total - locked to guarantee the invariant holds
-                        let free = total - locked;
-
-                        balances.push(AccountBalance::new(total, locked, free));
-                    }
-
-                    // Add USD balance from portfolio value for margin calculations.
-                    // Multi-collateral accounts track margin in USD even though the
-                    // actual collateral is held in various crypto currencies.
-                    if let Some(portfolio_value) = account.portfolio_value
-                        && portfolio_value > 0.0
-                    {
-                        let usd_currency = Currency::USD();
-                        let total_usd = Money::new(portfolio_value, usd_currency);
-                        let available_usd = account
-                            .available_margin
-                            .unwrap_or(portfolio_value)
-                            .min(portfolio_value);
-                        // Compute locked = total - available to guarantee the invariant holds
-                        let locked_usd =
-                            Money::new((portfolio_value - available_usd).max(0.0), usd_currency);
-                        let free_usd = total_usd - locked_usd;
-
-                        balances.push(AccountBalance::new(total_usd, locked_usd, free_usd));
-                    }
-                }
-                "marginAccount" => {
-                    for (currency_code, &amount) in &account.balances {
-                        if amount == 0.0 {
-                            continue;
-                        }
-
-                        let currency = Currency::new(
-                            currency_code.as_str(),
-                            8,
-                            0,
-                            currency_code.as_str(),
-                            CurrencyType::Crypto,
-                        );
-
-                        let total = Money::new(amount, currency);
-
-                        // Available can exceed balance with positive PnL, cap to satisfy invariant
-                        let available = account
-                            .auxiliary
-                            .as_ref()
-                            .and_then(|aux| aux.af)
-                            .unwrap_or(amount)
-                            .min(amount);
-                        let locked = amount - available;
-
-                        balances.push(AccountBalance::new(
-                            total,
-                            Money::new(locked, currency),
-                            Money::new(available, currency),
-                        ));
-                    }
-                }
-                "cashAccount" => {
-                    for (currency_code, &amount) in &account.balances {
-                        if amount == 0.0 {
-                            continue;
-                        }
-
-                        let currency = Currency::new(
-                            currency_code.as_str(),
-                            8,
-                            0,
-                            currency_code.as_str(),
-                            CurrencyType::Crypto,
-                        );
-
-                        let total = Money::new(amount, currency);
-                        let locked = Money::new(0.0, currency);
-
-                        balances.push(AccountBalance::new(total, locked, total));
-                    }
-                }
-                _ => {
-                    let account_type = &account.account_type;
-                    tracing::debug!("Unknown account type: {account_type}");
-                }
+            if response.result != KrakenApiResult::Success {
+                let error_msg = response.error.as_deref().unwrap_or("Unknown error");
+                anyhow::bail!("Batch cancel failed: {error_msg}");
             }
+
+            let success_count = response
+                .batch_status
+                .iter()
+                .filter(|s| {
+                    s.status == Some(KrakenSendStatus::Cancelled)
+                        || s.cancel_status
+                            .as_ref()
+                            .is_some_and(|cs| cs.status == KrakenSendStatus::Cancelled)
+                })
+                .count();
+
+            total_cancelled += success_count;
         }
 
-        Ok(AccountState::new(
-            account_id,
-            AccountType::Margin,
-            balances,
-            vec![],
-            true,
-            UUID4::new(),
-            ts_init,
-            ts_init,
-            None,
-        ))
+        Ok(total_cancelled)
     }
 }
-
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
 
 #[cfg(test)]
 mod tests {
@@ -1930,6 +2041,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         assert!(client.credential.is_some());
@@ -1947,6 +2059,7 @@ mod tests {
             "test_key".to_string(),
             "test_secret".to_string(),
             KrakenEnvironment::Mainnet,
+            None,
             None,
             None,
             None,

@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -1313,8 +1313,7 @@ class NautilusKernel:
 
     async def _await_engines_disconnected(self) -> None:
         self._log.info(
-            f"Awaiting engine disconnections "
-            f"({self._config.timeout_disconnection}s timeout)...",
+            f"Awaiting engine disconnections ({self._config.timeout_disconnection}s timeout)...",
             color=LogColor.BLUE,
         )
 

@@ -54,6 +54,7 @@ nautilus-execution = { workspace = true }
 nautilus-live = { workspace = true }
 nautilus-model = { workspace = true }
 nautilus-network = { workspace = true }
+nautilus-system = { workspace = true }
 
 ahash = { workspace = true }
 anyhow = { workspace = true }
@@ -65,11 +66,8 @@ cosmrs = { workspace = true }
 dashmap = { workspace = true }
 derive_builder = { workspace = true }
 dydx-proto = { workspace = true }
-futures-util = { workspace = true }
 hex = { workspace = true }
 prost = { workspace = true }
-prost-types = { workspace = true }
-rand = { workspace = true }
 rust_decimal = { workspace = true }
 rustls = { workspace = true }
 serde = { workspace = true }
@@ -102,23 +100,29 @@ indexmap = { workspace = true }
 [[bin]]
 name = "dydx-http-public"
 path = "bin/http_public.rs"
+doc = false
 
 [[bin]]
 name = "dydx-http-private"
 path = "bin/http_private.rs"
+doc = false
 
 [[bin]]
 name = "dydx-ws-data"
 path = "bin/ws_data.rs"
+doc = false
 
 [[bin]]
 name = "dydx-live-integration"
 path = "bin/live_integration.rs"
+doc = false
 
 [[bin]]
 name = "dydx-grpc-exec"
 path = "bin/grpc_exec.rs"
+doc = false
 
 [[bin]]
 name = "dydx-ws-exec"
 path = "bin/ws_exec.rs"
+doc = false

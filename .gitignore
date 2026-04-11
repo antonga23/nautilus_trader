@@ -72,6 +72,7 @@ dist/
 env/
 *.bak
 *.sh
+!scripts/**/*.sh
 *tmp/
 *temp/
 

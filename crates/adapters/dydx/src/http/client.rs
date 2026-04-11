@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -42,7 +42,7 @@
 //! as query parameters. Order submission and trading operations use gRPC with blockchain
 //! transaction signing, not REST API.
 //!
-//! # Official documentation
+//! # Official Documentation
 //!
 //! | Endpoint                             | Reference                                              |
 //! |--------------------------------------|--------------------------------------------------------|
@@ -52,7 +52,7 @@
 
 use std::{
     collections::HashMap,
-    fmt::{Debug, Formatter},
+    fmt::Debug,
     num::NonZeroU32,
     sync::{
         Arc, LazyLock,
@@ -133,7 +133,7 @@ impl Default for DydxRawHttpClient {
 }
 
 impl Debug for DydxRawHttpClient {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct(stringify!(DydxRawHttpClient))
             .field("base_url", &self.base_url)
             .field("is_testnet", &self.is_testnet)
@@ -392,10 +392,6 @@ impl DydxRawHttpClient {
         })
     }
 
-    // ========================================================================
-    // Markets Endpoints
-    // ========================================================================
-
     /// Fetch all perpetual markets from dYdX.
     ///
     /// # Errors
@@ -429,25 +425,33 @@ impl DydxRawHttpClient {
         let ts_init = get_atomic_clock_realtime().get_time_ns();
 
         let mut instruments = Vec::new();
-        let mut skipped = 0;
+        let mut skipped_inactive = 0;
 
         for (ticker, market) in markets_response.markets {
+            if !super::parse::is_market_active(&market.status) {
+                tracing::debug!(
+                    "Skipping inactive market {ticker} (status: {:?})",
+                    market.status
+                );
+                skipped_inactive += 1;
+                continue;
+            }
+
             match super::parse::parse_instrument_any(&market, maker_fee, taker_fee, ts_init) {
                 Ok(instrument) => {
                     instruments.push(instrument);
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to parse instrument {ticker}: {e}");
-                    skipped += 1;
+                    tracing::error!("Failed to parse instrument {ticker}: {e}");
                 }
             }
         }
 
-        if skipped > 0 {
+        if skipped_inactive > 0 {
             tracing::info!(
-                "Parsed {} instruments, skipped {} (inactive or invalid)",
+                "Parsed {} instruments, skipped {} inactive",
                 instruments.len(),
-                skipped
+                skipped_inactive
             );
         } else {
             tracing::info!("Parsed {} instruments", instruments.len());
@@ -455,10 +459,6 @@ impl DydxRawHttpClient {
 
         Ok(instruments)
     }
-
-    // ========================================================================
-    // Account Endpoints
-    // ========================================================================
 
     /// Fetch orderbook for a specific market.
     ///
@@ -519,10 +519,6 @@ impl DydxRawHttpClient {
         self.send_request(Method::GET, &endpoint, Some(&query))
             .await
     }
-
-    // ========================================================================
-    // Account Endpoints
-    // ========================================================================
 
     /// Fetch subaccount information.
     ///
@@ -615,10 +611,6 @@ impl DydxRawHttpClient {
         self.send_request(Method::GET, endpoint, Some(&query)).await
     }
 
-    // ========================================================================
-    // Utility Endpoints
-    // ========================================================================
-
     /// Get current server time.
     ///
     /// # Errors
@@ -656,7 +648,7 @@ impl DydxRawHttpClient {
 #[derive(Debug)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.adapters")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.dydx")
 )]
 pub struct DydxHttpClient {
     /// Raw HTTP client wrapped in Arc for efficient cloning.
@@ -756,7 +748,7 @@ impl DydxHttpClient {
         let ts_init = get_atomic_clock_realtime().get_time_ns();
 
         let mut instruments = Vec::new();
-        let mut skipped = 0;
+        let mut skipped_inactive = 0;
 
         for (ticker, market) in markets_response.markets {
             // Filter by symbol if specified
@@ -766,23 +758,30 @@ impl DydxHttpClient {
                 continue;
             }
 
-            // Parse using http/parse.rs
+            if !super::parse::is_market_active(&market.status) {
+                tracing::debug!(
+                    "Skipping inactive market {ticker} (status: {:?})",
+                    market.status
+                );
+                skipped_inactive += 1;
+                continue;
+            }
+
             match super::parse::parse_instrument_any(&market, maker_fee, taker_fee, ts_init) {
                 Ok(instrument) => {
                     instruments.push(instrument);
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to parse instrument {ticker}: {e}");
-                    skipped += 1;
+                    tracing::error!("Failed to parse instrument {ticker}: {e}");
                 }
             }
         }
 
-        if skipped > 0 {
+        if skipped_inactive > 0 {
             tracing::info!(
-                "Parsed {} instruments, skipped {} (inactive or invalid)",
+                "Parsed {} instruments, skipped {} inactive",
                 instruments.len(),
-                skipped
+                skipped_inactive
             );
         } else {
             tracing::debug!("Parsed {} instruments", instruments.len());
@@ -796,58 +795,70 @@ impl DydxHttpClient {
     /// This is a convenience method that fetches instruments and populates both
     /// the symbol-based and CLOB pair ID-based caches.
     ///
+    /// On success, existing caches are cleared and repopulated atomically.
+    /// On failure, existing caches are preserved (no partial updates).
+    ///
     /// # Errors
     ///
-    /// Returns an error if the HTTP request or parsing fails.
+    /// Returns an error if the HTTP request fails.
     pub async fn fetch_and_cache_instruments(&self) -> anyhow::Result<()> {
         use nautilus_core::time::get_atomic_clock_realtime;
 
-        self.instruments_cache.clear();
-        self.clob_pair_id_to_instrument.clear();
-        self.market_params_cache.clear();
-
+        // Fetch first - preserve existing cache on network failure
         let markets_response = self.inner.get_markets().await?;
         let ts_init = get_atomic_clock_realtime().get_time_ns();
 
-        let mut instruments = Vec::new();
-        let mut skipped = 0;
+        let mut parsed_instruments = Vec::new();
+        let mut parsed_markets = Vec::new();
+        let mut skipped_inactive = 0;
 
         for (ticker, market) in markets_response.markets {
-            // Parse using http/parse.rs
+            if !super::parse::is_market_active(&market.status) {
+                tracing::debug!(
+                    "Skipping inactive market {ticker} (status: {:?})",
+                    market.status
+                );
+                skipped_inactive += 1;
+                continue;
+            }
+
             match super::parse::parse_instrument_any(&market, None, None, ts_init) {
                 Ok(instrument) => {
-                    let instrument_id = instrument.id();
-                    let symbol = instrument_id.symbol.inner();
-                    self.instruments_cache.insert(symbol, instrument.clone());
-
-                    // Also cache by clob_pair_id for efficient WebSocket lookups
-                    self.clob_pair_id_to_instrument
-                        .insert(market.clob_pair_id, instrument_id);
-
-                    // Cache raw market data for market params extraction
-                    self.market_params_cache.insert(instrument_id, market);
-
-                    instruments.push(instrument);
+                    parsed_instruments.push(instrument);
+                    parsed_markets.push(market);
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to parse instrument {ticker}: {e}");
-                    skipped += 1;
+                    tracing::error!("Failed to parse instrument {ticker}: {e}");
                 }
             }
         }
 
-        if !instruments.is_empty() {
+        // Only clear and repopulate caches after successful fetch and parse
+        self.instruments_cache.clear();
+        self.clob_pair_id_to_instrument.clear();
+        self.market_params_cache.clear();
+
+        for (instrument, market) in parsed_instruments.iter().zip(parsed_markets.into_iter()) {
+            let instrument_id = instrument.id();
+            let symbol = instrument_id.symbol.inner();
+            self.instruments_cache.insert(symbol, instrument.clone());
+            self.clob_pair_id_to_instrument
+                .insert(market.clob_pair_id, instrument_id);
+            self.market_params_cache.insert(instrument_id, market);
+        }
+
+        if !parsed_instruments.is_empty() {
             self.cache_initialized.store(true, Ordering::Release);
         }
 
-        if skipped > 0 {
+        if skipped_inactive > 0 {
             tracing::info!(
-                "Cached {} instruments, skipped {} (inactive or invalid)",
-                instruments.len(),
-                skipped
+                "Cached {} instruments, skipped {} inactive",
+                parsed_instruments.len(),
+                skipped_inactive
             );
         } else {
-            tracing::info!("Cached {} instruments", instruments.len());
+            tracing::info!("Cached {} instruments", parsed_instruments.len());
         }
 
         Ok(())
@@ -1290,7 +1301,7 @@ impl DydxHttpClient {
         for fill in fills_response.fills {
             // Get instrument by market ticker
             let market = &fill.market;
-            let symbol = ustr::Ustr::from(&format!("{market}-PERP"));
+            let symbol = Ustr::from(&format!("{market}-PERP"));
             let instrument = match self.get_instrument(&symbol) {
                 Some(inst) => inst,
                 None => {
@@ -1345,7 +1356,7 @@ impl DydxHttpClient {
 
         for (market, position) in subaccount_response.subaccount.open_perpetual_positions {
             // Get instrument by market ticker
-            let symbol = ustr::Ustr::from(&format!("{market}-PERP"));
+            let symbol = Ustr::from(&format!("{market}-PERP"));
             let instrument = match self.get_instrument(&symbol) {
                 Some(inst) => inst,
                 None => {
@@ -1379,10 +1390,6 @@ impl DydxHttpClient {
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
-
 #[cfg(test)]
 mod tests {
     use nautilus_core::UnixNanos;
@@ -1390,10 +1397,6 @@ mod tests {
 
     use super::*;
     use crate::http::error;
-
-    // ========================================================================
-    // Raw Client Tests
-    // ========================================================================
 
     #[tokio::test]
     async fn test_raw_client_creation() {
@@ -1414,10 +1417,6 @@ mod tests {
         assert!(client.is_testnet());
         assert_eq!(client.base_url(), DYDX_TESTNET_HTTP_URL);
     }
-
-    // ========================================================================
-    // Domain Client Tests
-    // ========================================================================
 
     #[tokio::test]
     async fn test_domain_client_creation() {

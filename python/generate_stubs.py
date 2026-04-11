@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -24,12 +24,12 @@ This script can be used as:
 """
 
 import argparse
+from dataclasses import dataclass
+from pathlib import Path
 import re
 import subprocess
 import sys
 import tomllib
-from dataclasses import dataclass
-from pathlib import Path
 
 
 def run_command(cmd, cwd=None, check=True):

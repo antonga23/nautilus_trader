@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -397,7 +397,6 @@ def test_create_tearsheet_from_stats_saves_file(sample_returns, sample_stats, tm
     assert output_path.exists()
 
 
-
 def test_get_theme_with_valid_name():
     # Arrange
     # Act
@@ -539,7 +538,6 @@ def test_theme_normalization_handles_dark_backgrounds():
     assert normalized["colors"]["table_text"] == "#eeeeee"
 
 
-
 def test_register_chart_and_retrieve():
     # Arrange
     def custom_chart(returns, output_path=None, title="Custom", theme="plotly_white"):
@@ -585,7 +583,6 @@ def test_list_charts_returns_all_registered_charts():
     assert "distribution" in charts
     assert "rolling_sharpe" in charts
     assert "yearly_returns" in charts
-
 
 
 def test_tearsheet_config_with_defaults():
@@ -653,7 +650,6 @@ def test_tearsheet_config_with_grid_layout():
     assert config.layout.cols == 2
 
 
-
 def test_single_currency_pnl_stats(sample_returns):
     # Arrange
     stats_pnls = {
@@ -696,7 +692,6 @@ def test_multi_currency_pnl_stats(sample_returns):
     # Assert
     assert html is not None
     assert isinstance(html, str)
-
 
 
 def test_run_info_filtered_when_no_metadata(sample_returns):
@@ -776,7 +771,6 @@ def test_run_info_kept_when_account_info_provided(sample_returns):
     # Assert
     assert html is not None
     assert "Starting Balance" in html or "1,000,000 USD" in html
-
 
 
 def test_tearsheet_with_benchmark_overlay(sample_returns):

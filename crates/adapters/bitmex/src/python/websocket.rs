@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -42,6 +42,7 @@
 //! - `RwLock` is preferred over Mutex (many reads, few writes).
 
 use futures_util::StreamExt;
+use nautilus_common::live::get_runtime;
 use nautilus_core::python::{to_pyruntime_err, to_pyvalue_err};
 use nautilus_model::{
     data::bar::BarType,
@@ -149,7 +150,7 @@ impl BitmexWebSocketClient {
 
             let stream = client.stream();
 
-            tokio::spawn(async move {
+            get_runtime().spawn(async move {
                 let _client = client; // Keep client alive for the entire duration
                 tokio::pin!(stream);
 

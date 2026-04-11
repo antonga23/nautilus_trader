@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -24,7 +24,9 @@ use arrow::record_batch::RecordBatch;
 use chrono::{DateTime, Duration, NaiveDate};
 use futures_util::{StreamExt, future::join_all, pin_mut};
 use heck::ToSnakeCase;
-use nautilus_core::{UnixNanos, datetime::unix_nanos_to_iso8601, parsing::precision_from_str};
+use nautilus_core::{
+    UnixNanos, datetime::unix_nanos_to_iso8601, formatting::Separable, parsing::precision_from_str,
+};
 use nautilus_model::{
     data::{
         Bar, BarType, Data, OrderBookDelta, OrderBookDeltas_API, OrderBookDepth10, QuoteTick,
@@ -38,7 +40,6 @@ use nautilus_serialization::arrow::{
     trades_to_arrow_record_batch_bytes,
 };
 use parquet::{arrow::ArrowWriter, basic::Compression, file::properties::WriterProperties};
-use thousands::Separable;
 use ustr::Ustr;
 
 use super::{enums::TardisExchange, http::models::TardisInstrumentInfo};
@@ -584,9 +585,6 @@ fn write_parquet_local(batch: RecordBatch, file_path: &Path) -> anyhow::Result<(
     Ok(())
 }
 
-///////////////////////////////////////////////////////////////////////////////////////////////////
-// Tests
-///////////////////////////////////////////////////////////////////////////////////////////////////
 #[cfg(test)]
 mod tests {
     use chrono::{TimeZone, Utc};

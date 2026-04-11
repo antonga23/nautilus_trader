@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -57,7 +57,7 @@ use crate::defi::client as _;
 
 /// Defines the interface for a data client, managing connections, subscriptions, and requests.
 ///
-/// # Thread safety
+/// # Thread Safety
 ///
 /// Client instances are not intended to be sent across threads. The `?Send` bound
 /// allows implementations to hold non-Send state for any Python interop.

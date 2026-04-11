@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -29,17 +29,19 @@
 /// ```
 #[must_use]
 pub fn mask_api_key(key: &str) -> String {
-    let len = key.len();
-    if len <= 8 {
-        "*".repeat(len)
-    } else {
-        format!("{}...{}", &key[..4], &key[len - 4..])
-    }
-}
+    // Work with Unicode scalars to avoid panicking on multibyte characters.
+    let chars: Vec<char> = key.chars().collect();
+    let len = chars.len();
 
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
+    if len <= 8 {
+        return "*".repeat(len);
+    }
+
+    let first: String = chars[..4].iter().collect();
+    let last: String = chars[len - 4..].iter().collect();
+
+    format!("{first}...{last}")
+}
 
 #[cfg(test)]
 mod tests {

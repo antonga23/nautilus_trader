@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -31,6 +31,7 @@ use nautilus_live::node::LiveNode;
 use nautilus_model::{
     data::{QuoteTick, TradeTick},
     identifiers::{ClientId, InstrumentId, TraderId},
+    stubs::TestDefault,
 };
 
 // Run with `cargo run --bin databento-node-test --features high-precision`
@@ -40,7 +41,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenvy::dotenv().ok();
 
     let environment = Environment::Live;
-    let trader_id = TraderId::default();
+    let trader_id = TraderId::test_default();
     let node_name = "DATABENTO-TESTER-001".to_string();
 
     // Get Databento API key from environment
@@ -76,7 +77,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ];
 
     // Build the live node with Databento data client
-    let mut node = LiveNode::builder(node_name, trader_id, environment)?
+    let mut node = LiveNode::builder(trader_id, environment)?
+        .with_name(node_name)
         .with_load_state(false)
         .with_save_state(false)
         .add_data_client(None, Box::new(client_factory), Box::new(databento_config))?

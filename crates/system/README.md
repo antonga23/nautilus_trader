@@ -32,7 +32,8 @@ depending on the intended use case, i.e. whether to provide Python bindings
 for the [nautilus_trader](https://pypi.org/project/nautilus_trader) Python package,
 or as part of a Rust only build.
 
-- `python`: Enables Python bindings from [PyO3](https://pyo3.rs).
+- `streaming`: Enables `persistence` dependency for streaming configuration.
+- `python`: Enables Python bindings from [PyO3](https://pyo3.rs) (auto-enables `streaming`).
 - `extension-module`: Builds the crate as a Python extension module.
 
 ## Documentation
@@ -52,4 +53,4 @@ For more information, visit <https://nautilustrader.io>.
 
 <img src="https://github.com/nautechsystems/nautilus_trader/raw/develop/assets/nautilus-logo-white.png" alt="logo" width="400" height="auto"/>
 
-© 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+© 2015-2026 Nautech Systems Pty Ltd. All rights reserved.

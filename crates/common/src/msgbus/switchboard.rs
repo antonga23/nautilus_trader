@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -218,6 +218,10 @@ define_switchboard! {
     get_order_fills_topic(instrument_id: InstrumentId) -> instrument_id,
     "events.fills.{}", instrument_id;
 
+    order_cancels_topics: InstrumentId,
+    get_order_cancels_topic(instrument_id: InstrumentId) -> instrument_id,
+    "events.cancels.{}", instrument_id;
+
     order_snapshots_topics: ClientOrderId,
     get_order_snapshots_topic(client_order_id: ClientOrderId) -> client_order_id,
     "order.snapshots.{}", client_order_id;
@@ -271,15 +275,12 @@ define_wrappers! {
     get_instrument_status_topic(instrument_id: InstrumentId) -> MStr<Topic>,
     get_instrument_close_topic(instrument_id: InstrumentId) -> MStr<Topic>,
     get_order_fills_topic(instrument_id: InstrumentId) -> MStr<Topic>,
+    get_order_cancels_topic(instrument_id: InstrumentId) -> MStr<Topic>,
     get_order_snapshots_topic(client_order_id: ClientOrderId) -> MStr<Topic>,
     get_positions_snapshots_topic(position_id: PositionId) -> MStr<Topic>,
     get_event_orders_topic(strategy_id: StrategyId) -> MStr<Topic>,
     get_event_positions_topic(strategy_id: StrategyId) -> MStr<Topic>,
 }
-
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
 
 #[cfg(test)]
 mod tests {

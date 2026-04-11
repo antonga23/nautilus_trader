@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -132,17 +132,18 @@ impl OrderBook {
 
     #[pyo3(name = "apply_delta")]
     fn py_apply_delta(&mut self, delta: &OrderBookDelta) -> PyResult<()> {
-        self.apply_delta(delta).map_err(to_pyruntime_err)
+        self.apply_delta_unchecked(delta).map_err(to_pyruntime_err)
     }
 
     #[pyo3(name = "apply_deltas")]
     fn py_apply_deltas(&mut self, deltas: &OrderBookDeltas) -> PyResult<()> {
-        self.apply_deltas(deltas).map_err(to_pyruntime_err)
+        self.apply_deltas_unchecked(deltas)
+            .map_err(to_pyruntime_err)
     }
 
     #[pyo3(name = "apply_depth")]
-    fn py_apply_depth(&mut self, depth: &OrderBookDepth10) {
-        self.apply_depth(depth);
+    fn py_apply_depth(&mut self, depth: &OrderBookDepth10) -> PyResult<()> {
+        self.apply_depth_unchecked(depth).map_err(to_pyruntime_err)
     }
 
     #[pyo3(name = "check_integrity")]

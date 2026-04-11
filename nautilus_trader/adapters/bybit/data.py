@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -149,6 +149,7 @@ class BybitDataClient(LiveMarketDataClient):
                 url=config.base_url_http,
                 heartbeat=None,
             )
+            ws_client.set_bars_timestamp_on_close(self._bars_timestamp_on_close)
             self._ws_clients[product_type] = ws_client
 
         self._depths: dict[nautilus_pyo3.InstrumentId, int] = {}

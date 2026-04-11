@@ -49,7 +49,7 @@ To build with Cap'n Proto serialization enabled:
 cargo build -p nautilus-serialization --features capnp
 ```
 
-The Cap'n Proto compiler can be installed from [capnproto.org](https://capnproto.org/install.html).
+The Cap'n Proto compiler is required. See the [Environment Setup](../../docs/developer_guide/environment_setup.md#capn-proto) guide for installation instructions. The required version is specified in the `capnp-version` file in the repository root.
 
 ## Cap'n Proto schemas
 
@@ -251,4 +251,4 @@ For more information, visit <https://nautilustrader.io>.
 
 <img src="https://github.com/nautechsystems/nautilus_trader/raw/develop/assets/nautilus-logo-white.png" alt="logo" width="400" height="auto"/>
 
-© 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+© 2015-2026 Nautech Systems Pty Ltd. All rights reserved.

@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -17,6 +17,3 @@
 //!
 //! This module provides Python access to dYdX-specific enum types
 //! used throughout the adapter.
-
-// Re-export enums that should be available in Python
-// The #[pyclass] attributes in the enum definitions will make them available

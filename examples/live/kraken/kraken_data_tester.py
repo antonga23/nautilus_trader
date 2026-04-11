@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -86,14 +86,14 @@ config_tester = DataTesterConfig(
     instrument_ids=[instrument_id],
     bar_types=[BarType.from_str(f"{instrument_id.value}-1-MINUTE-LAST-EXTERNAL")],
     subscribe_instrument=True,
+    # subscribe_book_deltas=True,
+    # subscribe_book_depth=True,
+    # subscribe_book_at_interval=True,
     subscribe_quotes=True,
     subscribe_trades=True,
     subscribe_mark_prices=product_type == KrakenProductType.FUTURES,
     subscribe_index_prices=product_type == KrakenProductType.FUTURES,
-    # subscribe_bars=True,
-    # subscribe_book_deltas=True,
-    # subscribe_book_depth=True,
-    # subscribe_book_at_interval=True,
+    subscribe_bars=True,
     # book_depth=10,
     # book_interval_ms=10,
     # requests_start_delta=pd.Timedelta(days=1),

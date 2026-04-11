@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -16,7 +16,6 @@
 from nautilus_trader.accounting.margin_models import LeveragedMarginModel
 from nautilus_trader.accounting.margin_models import MarginModel
 from nautilus_trader.accounting.margin_models import StandardMarginModel
-from nautilus_trader.backtest.models.aggregator import SpreadQuoteAggregator
 from nautilus_trader.backtest.models.fee import FeeModel
 from nautilus_trader.backtest.models.fee import FixedFeeModel
 from nautilus_trader.backtest.models.fee import MakerTakerFeeModel
@@ -52,7 +51,6 @@ __all__ = [
     "PerContractFeeModel",
     "ProbabilisticFillModel",
     "SizeAwareFillModel",
-    "SpreadQuoteAggregator",
     "StandardMarginModel",
     "ThreeTierFillModel",
     "TwoTierFillModel",

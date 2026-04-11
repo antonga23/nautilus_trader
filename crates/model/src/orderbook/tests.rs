@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -33,12 +33,9 @@ use crate::{
         analysis::book_check_integrity,
         own::{OwnBookLadder, OwnBookLevel, OwnOrderBook},
     },
+    stubs::TestDefault,
     types::{Price, Quantity},
 };
-
-////////////////////////////////////////////////////////////////////////////////
-// OrderBook
-////////////////////////////////////////////////////////////////////////////////
 
 #[rstest]
 #[case::valid_book(
@@ -380,9 +377,9 @@ fn test_book_get_price_for_exposure_no_market() {
 #[rstest]
 fn test_book_get_price_for_exposure(stub_depth10: OrderBookDepth10) {
     let depth = stub_depth10;
-    let instrument_id = InstrumentId::from("ETHUSDT-PERP.BINANCE");
+    let instrument_id = InstrumentId::from("AAPL.XNAS"); // Must match stub_depth10's instrument_id
     let mut book = OrderBook::new(instrument_id, BookType::L2_MBP);
-    book.apply_depth(&depth);
+    book.apply_depth(&depth).unwrap();
 
     let qty = Quantity::from(1);
 
@@ -403,7 +400,7 @@ fn test_book_apply_depth(stub_depth10: OrderBookDepth10) {
     let instrument_id = InstrumentId::from("AAPL.XNAS");
     let mut book = OrderBook::new(instrument_id, BookType::L2_MBP);
 
-    book.apply_depth(&depth);
+    book.apply_depth(&depth).unwrap();
 
     assert_eq!(book.best_bid_price().unwrap(), Price::from("99.00"));
     assert_eq!(book.best_ask_price().unwrap(), Price::from("100.00"));
@@ -417,7 +414,7 @@ fn test_book_apply_depth_all_levels(stub_depth10: OrderBookDepth10) {
     let instrument_id = InstrumentId::from("AAPL.XNAS");
     let mut book = OrderBook::new(instrument_id, BookType::L2_MBP);
 
-    book.apply_depth(&depth);
+    book.apply_depth(&depth).unwrap();
 
     // Verify exactly 10 bid levels
     let bid_levels: Vec<_> = book.bids(None).collect();
@@ -515,7 +512,7 @@ fn test_book_apply_depth_empty_snapshot() {
         UnixNanos::from(2000),
     );
 
-    book.apply_depth(&depth);
+    book.apply_depth(&depth).unwrap();
 
     // Verify no phantom levels at price 0
     assert_eq!(
@@ -613,7 +610,7 @@ fn test_book_apply_depth_partial_snapshot() {
         UnixNanos::from(4000),
     );
 
-    book.apply_depth(&depth);
+    book.apply_depth(&depth).unwrap();
 
     // Verify exactly 3 levels on each side
     let bid_levels: Vec<_> = book.bids(None).collect();
@@ -649,7 +646,7 @@ fn test_book_apply_depth_updates_metadata_once(stub_depth10: OrderBookDepth10) {
     let instrument_id = InstrumentId::from("AAPL.XNAS");
     let mut book = OrderBook::new(instrument_id, BookType::L2_MBP);
 
-    book.apply_depth(&depth);
+    book.apply_depth(&depth).unwrap();
 
     // Verify metadata updated exactly once (not 20 times for 20 orders)
     assert_eq!(book.sequence, depth.sequence);
@@ -658,6 +655,28 @@ fn test_book_apply_depth_updates_metadata_once(stub_depth10: OrderBookDepth10) {
         book.update_count, 1,
         "Should increment update_count exactly once"
     );
+}
+
+#[rstest]
+fn test_book_apply_depth_instrument_mismatch(stub_depth10: OrderBookDepth10) {
+    let depth = stub_depth10; // Uses AAPL.XNAS
+    let instrument_id = InstrumentId::from("ETHUSDT-PERP.BINANCE"); // Different instrument
+    let mut book = OrderBook::new(instrument_id, BookType::L2_MBP);
+
+    let result = book.apply_depth(&depth);
+
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        BookIntegrityError::InstrumentMismatch(book_id, delta_id) => {
+            assert_eq!(book_id.to_string(), "ETHUSDT-PERP.BINANCE");
+            assert_eq!(delta_id.to_string(), "AAPL.XNAS");
+        }
+        other => panic!("Expected InstrumentMismatch error, was {other:?}"),
+    }
+
+    assert_eq!(book.update_count, 0);
+    assert!(!book.has_bid());
+    assert!(!book.has_ask());
 }
 
 #[rstest]
@@ -1095,7 +1114,7 @@ fn test_book_filtered_book_with_own_orders() {
 
     // Add own orders - half the size of public orders at the same levels
     let own_bid_order = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("BID-1"),
         Some(VenueOrderId::from("1")),
         OrderSideSpecified::Buy,
@@ -1111,7 +1130,7 @@ fn test_book_filtered_book_with_own_orders() {
     );
 
     let own_ask_order = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("ASK-1"),
         Some(VenueOrderId::from("1")),
         OrderSideSpecified::Sell,
@@ -1165,7 +1184,7 @@ fn test_book_filtered_with_own_orders_exact_size() {
 
     // Add own orders with exact same size as public orders
     let own_bid_order = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("BID-1"),
         Some(VenueOrderId::from("1")),
         OrderSideSpecified::Buy,
@@ -1181,7 +1200,7 @@ fn test_book_filtered_with_own_orders_exact_size() {
     );
 
     let own_ask_order = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("ASK-1"),
         Some(VenueOrderId::from("1")),
         OrderSideSpecified::Sell,
@@ -1233,7 +1252,7 @@ fn test_book_filtered_with_own_orders_larger_size() {
 
     // Add own orders with larger size than public orders
     let own_bid_order = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("BID-1"),
         Some(VenueOrderId::from("1")),
         OrderSideSpecified::Buy,
@@ -1249,7 +1268,7 @@ fn test_book_filtered_with_own_orders_larger_size() {
     );
 
     let own_ask_order = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("ASK-1"),
         Some(VenueOrderId::from("1")),
         OrderSideSpecified::Sell,
@@ -1301,7 +1320,7 @@ fn test_book_filtered_with_own_orders_different_level() {
 
     // Add own orders at different price levels
     let own_bid_order = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("BID-1"),
         Some(VenueOrderId::from("1")),
         OrderSideSpecified::Buy,
@@ -1317,7 +1336,7 @@ fn test_book_filtered_with_own_orders_different_level() {
     );
 
     let own_ask_order = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("ASK-1"),
         Some(VenueOrderId::from("1")),
         OrderSideSpecified::Sell,
@@ -1369,7 +1388,7 @@ fn test_book_filtered_with_status_filter() {
 
     // Add multiple own orders with different statuses at same price
     let own_bid_accepted = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("BID-1"),
         Some(VenueOrderId::from("1")),
         OrderSideSpecified::Buy,
@@ -1385,7 +1404,7 @@ fn test_book_filtered_with_status_filter() {
     );
 
     let own_bid_submitted = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("BID-2"),
         Some(VenueOrderId::from("2")),
         OrderSideSpecified::Buy,
@@ -1401,7 +1420,7 @@ fn test_book_filtered_with_status_filter() {
     );
 
     let own_ask_accepted = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("ASK-1"),
         Some(VenueOrderId::from("1")),
         OrderSideSpecified::Sell,
@@ -1417,7 +1436,7 @@ fn test_book_filtered_with_status_filter() {
     );
 
     let own_ask_submitted = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("ASK-2"),
         Some(VenueOrderId::from("2")),
         OrderSideSpecified::Sell,
@@ -1518,7 +1537,7 @@ fn test_book_filtered_with_depth_limit() {
 
     // Add own orders at some levels
     let own_bid_order = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("BID-1"),
         Some(VenueOrderId::from("1")),
         OrderSideSpecified::Buy,
@@ -1534,7 +1553,7 @@ fn test_book_filtered_with_depth_limit() {
     );
 
     let own_ask_order = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("ASK-1"),
         Some(VenueOrderId::from("1")),
         OrderSideSpecified::Sell,
@@ -1599,7 +1618,7 @@ fn test_book_filtered_with_accepted_buffer() {
     // Add own orders with ACCEPTED status at different times
     // This order was accepted at time 900 ns (100 ns ago)
     let own_bid_recent = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("BID-RECENT"),
         Some(VenueOrderId::from("1")),
         OrderSideSpecified::Buy,
@@ -1616,7 +1635,7 @@ fn test_book_filtered_with_accepted_buffer() {
 
     // This order was accepted at time 500 ns (500 ns ago)
     let own_bid_older = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("BID-OLDER"),
         Some(VenueOrderId::from("2")),
         OrderSideSpecified::Buy,
@@ -1633,7 +1652,7 @@ fn test_book_filtered_with_accepted_buffer() {
 
     // This order was accepted at time 900 ns (100 ns ago)
     let own_ask_recent = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("ASK-RECENT"),
         Some(VenueOrderId::from("3")),
         OrderSideSpecified::Sell,
@@ -1650,7 +1669,7 @@ fn test_book_filtered_with_accepted_buffer() {
 
     // This order was accepted at time 500 ns (500 ns ago)
     let own_ask_older = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("ASK-OLDER"),
         Some(VenueOrderId::from("4")),
         OrderSideSpecified::Sell,
@@ -1767,7 +1786,7 @@ fn test_book_filtered_with_accepted_buffer_mixed_statuses() {
 
     // Add own orders with different statuses
     let own_bid_accepted = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("BID-ACCEPTED"),
         Some(VenueOrderId::from("1")),
         OrderSideSpecified::Buy,
@@ -1783,7 +1802,7 @@ fn test_book_filtered_with_accepted_buffer_mixed_statuses() {
     );
 
     let own_bid_submitted = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("BID-SUBMITTED"),
         None,
         OrderSideSpecified::Buy,
@@ -1957,7 +1976,7 @@ fn test_book_group_bids_filtered_with_own_book() {
 
     // Add own orders
     let own_bid_order1 = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("BID-1"),
         Some(VenueOrderId::from("1")),
         OrderSideSpecified::Buy,
@@ -1973,7 +1992,7 @@ fn test_book_group_bids_filtered_with_own_book() {
     );
 
     let own_bid_order2 = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("BID-2"),
         Some(VenueOrderId::from("2")),
         OrderSideSpecified::Buy,
@@ -2025,7 +2044,7 @@ fn test_book_group_asks_filtered_with_own_book() {
 
     // Add own orders
     let own_ask_order1 = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("ASK-1"),
         Some(VenueOrderId::from("1")),
         OrderSideSpecified::Sell,
@@ -2041,7 +2060,7 @@ fn test_book_group_asks_filtered_with_own_book() {
     );
 
     let own_ask_order2 = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("ASK-2"),
         Some(VenueOrderId::from("2")),
         OrderSideSpecified::Sell,
@@ -2086,7 +2105,7 @@ fn test_book_group_with_status_filter() {
 
     // Add own orders with different statuses
     let own_accepted = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("BID-1"),
         Some(VenueOrderId::from("1")),
         OrderSideSpecified::Buy,
@@ -2102,7 +2121,7 @@ fn test_book_group_with_status_filter() {
     );
 
     let own_submitted = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("BID-2"),
         Some(VenueOrderId::from("2")),
         OrderSideSpecified::Buy,
@@ -2874,13 +2893,9 @@ fn test_book_clear_stale_levels_l1_mbp() {
     assert_eq!(book.update_count, initial_update_count);
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// OwnOrderBook
-////////////////////////////////////////////////////////////////////////////////
-
 #[fixture]
 fn own_order() -> OwnBookOrder {
-    let trader_id = TraderId::from("TRADER-001");
+    let trader_id = TraderId::test_default();
     let client_order_id = ClientOrderId::from("O-123456789");
     let venue_order_id = None;
     let side = OrderSideSpecified::Buy;
@@ -2928,7 +2943,7 @@ fn test_own_order_exposure(own_order: OwnBookOrder) {
 fn test_own_order_signed_size(own_order: OwnBookOrder) {
     let own_order_buy = own_order;
     let own_order_sell = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("O-123456789"),
         Some(VenueOrderId::from("1")),
         OrderSideSpecified::Sell,
@@ -2989,7 +3004,7 @@ fn test_client_order_ids_with_orders() {
     let ask_id2 = ClientOrderId::from("O-ASK-2");
 
     let bid_order1 = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         bid_id1,
         Some(VenueOrderId::from("1")),
         OrderSideSpecified::Buy,
@@ -3005,7 +3020,7 @@ fn test_client_order_ids_with_orders() {
     );
 
     let bid_order2 = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         bid_id2,
         Some(VenueOrderId::from("2")),
         OrderSideSpecified::Buy,
@@ -3021,7 +3036,7 @@ fn test_client_order_ids_with_orders() {
     );
 
     let ask_order1 = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ask_id1,
         Some(VenueOrderId::from("3")),
         OrderSideSpecified::Sell,
@@ -3037,7 +3052,7 @@ fn test_client_order_ids_with_orders() {
     );
 
     let ask_order2 = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ask_id2,
         Some(VenueOrderId::from("4")),
         OrderSideSpecified::Sell,
@@ -3085,7 +3100,7 @@ fn test_client_order_ids_after_operations() {
 
     let client_order_id = ClientOrderId::from("O-BID-1");
     let order = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         client_order_id,
         Some(VenueOrderId::from("1")),
         OrderSideSpecified::Buy,
@@ -3117,7 +3132,7 @@ fn test_own_book_update_missing_order_errors() {
     let mut book = OwnOrderBook::new(instrument_id);
 
     let missing_order = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("O-MISSING"),
         None,
         OrderSideSpecified::Buy,
@@ -3142,7 +3157,7 @@ fn test_own_book_delete_missing_order_errors() {
     let mut book = OwnOrderBook::new(instrument_id);
 
     let missing_order = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("O-MISSING"),
         None,
         OrderSideSpecified::Sell,
@@ -3177,7 +3192,7 @@ fn test_own_book_pprint() {
     let mut book = OwnOrderBook::new(instrument_id);
 
     let order1 = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("O-1"),
         Some(VenueOrderId::from("1")),
         OrderSideSpecified::Buy,
@@ -3192,7 +3207,7 @@ fn test_own_book_pprint() {
         UnixNanos::default(),
     );
     let order2 = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("O-2"),
         Some(VenueOrderId::from("2")),
         OrderSideSpecified::Buy,
@@ -3207,7 +3222,7 @@ fn test_own_book_pprint() {
         UnixNanos::default(),
     );
     let order3 = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("O-3"),
         Some(VenueOrderId::from("3")),
         OrderSideSpecified::Buy,
@@ -3222,7 +3237,7 @@ fn test_own_book_pprint() {
         UnixNanos::default(),
     );
     let order4 = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("O-4"),
         Some(VenueOrderId::from("4")),
         OrderSideSpecified::Sell,
@@ -3237,7 +3252,7 @@ fn test_own_book_pprint() {
         UnixNanos::default(),
     );
     let order5 = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("O-5"),
         Some(VenueOrderId::from("5")),
         OrderSideSpecified::Sell,
@@ -3252,7 +3267,7 @@ fn test_own_book_pprint() {
         UnixNanos::default(),
     );
     let order6 = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("O-6"),
         Some(VenueOrderId::from("6")),
         OrderSideSpecified::Sell,
@@ -3301,7 +3316,7 @@ fn test_own_book_level_size_and_exposure() {
         OrderSideSpecified::Buy,
     ));
     let order1 = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("O-1"),
         Some(VenueOrderId::from("1")),
         OrderSideSpecified::Buy,
@@ -3316,7 +3331,7 @@ fn test_own_book_level_size_and_exposure() {
         UnixNanos::default(),
     );
     let order2 = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("O-2"),
         Some(VenueOrderId::from("2")),
         OrderSideSpecified::Buy,
@@ -3345,7 +3360,7 @@ fn test_own_book_level_add_update_delete() {
         OrderSideSpecified::Buy,
     ));
     let order = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("O-1"),
         Some(VenueOrderId::from("1")),
         OrderSideSpecified::Buy,
@@ -3364,7 +3379,7 @@ fn test_own_book_level_add_update_delete() {
 
     // Update the order to a new size
     let updated = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("O-1"),
         Some(VenueOrderId::from("1")),
         OrderSideSpecified::Buy,
@@ -3391,7 +3406,7 @@ fn test_own_book_level_add_update_delete() {
 fn test_own_book_ladder_add_update_delete() {
     let mut ladder = OwnBookLadder::new(OrderSideSpecified::Buy);
     let order1 = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("O-1"),
         Some(VenueOrderId::from("1")),
         OrderSideSpecified::Buy,
@@ -3406,7 +3421,7 @@ fn test_own_book_ladder_add_update_delete() {
         UnixNanos::default(),
     );
     let order2 = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("O-2"),
         Some(VenueOrderId::from("2")),
         OrderSideSpecified::Buy,
@@ -3427,7 +3442,7 @@ fn test_own_book_ladder_add_update_delete() {
 
     // Update order2 to a larger size
     let order2_updated = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("O-2"),
         Some(VenueOrderId::from("2")),
         OrderSideSpecified::Buy,
@@ -3454,7 +3469,7 @@ fn test_own_order_book_add_update_delete_clear() {
     let instrument_id = InstrumentId::from("AAPL.XNAS");
     let mut book = OwnOrderBook::new(instrument_id);
     let order_buy = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("O-1"),
         Some(VenueOrderId::from("1")),
         OrderSideSpecified::Buy,
@@ -3469,7 +3484,7 @@ fn test_own_order_book_add_update_delete_clear() {
         UnixNanos::default(),
     );
     let order_sell = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("O-2"),
         Some(VenueOrderId::from("2")),
         OrderSideSpecified::Sell,
@@ -3492,7 +3507,7 @@ fn test_own_order_book_add_update_delete_clear() {
 
     // Update buy order
     let order_buy_updated = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("O-1"),
         Some(VenueOrderId::from("1")),
         OrderSideSpecified::Buy,
@@ -3523,7 +3538,7 @@ fn test_own_order_book_bids_and_asks_as_map() {
     let instrument_id = InstrumentId::from("AAPL.XNAS");
     let mut book = OwnOrderBook::new(instrument_id);
     let order1 = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("O-1"),
         Some(VenueOrderId::from("1")),
         OrderSideSpecified::Buy,
@@ -3538,7 +3553,7 @@ fn test_own_order_book_bids_and_asks_as_map() {
         UnixNanos::default(),
     );
     let order2 = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("O-2"),
         Some(VenueOrderId::from("2")),
         OrderSideSpecified::Sell,
@@ -3589,7 +3604,7 @@ fn test_own_order_book_bid_ask_quantity() {
 
     // Add multiple orders at the same price level (bids)
     let bid_order1 = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("O-1"),
         Some(VenueOrderId::from("1")),
         OrderSideSpecified::Buy,
@@ -3604,7 +3619,7 @@ fn test_own_order_book_bid_ask_quantity() {
         UnixNanos::default(),
     );
     let bid_order2 = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("O-2"),
         Some(VenueOrderId::from("2")),
         OrderSideSpecified::Buy,
@@ -3620,7 +3635,7 @@ fn test_own_order_book_bid_ask_quantity() {
     );
     // Add an order at a different price level (bids)
     let bid_order3 = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("O-3"),
         Some(VenueOrderId::from("3")),
         OrderSideSpecified::Buy,
@@ -3637,7 +3652,7 @@ fn test_own_order_book_bid_ask_quantity() {
 
     // Add orders at different price levels (asks)
     let ask_order1 = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("O-4"),
         Some(VenueOrderId::from("4")),
         OrderSideSpecified::Sell,
@@ -3652,7 +3667,7 @@ fn test_own_order_book_bid_ask_quantity() {
         UnixNanos::default(),
     );
     let ask_order2 = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("O-5"),
         Some(VenueOrderId::from("5")),
         OrderSideSpecified::Sell,
@@ -3690,7 +3705,7 @@ fn test_status_filtering_bids_as_map() {
 
     // Create orders with different statuses
     let submitted = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("O-1"),
         None,
         OrderSideSpecified::Buy,
@@ -3706,7 +3721,7 @@ fn test_status_filtering_bids_as_map() {
     );
 
     let accepted = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("O-2"),
         Some(VenueOrderId::from("2")),
         OrderSideSpecified::Buy,
@@ -3722,7 +3737,7 @@ fn test_status_filtering_bids_as_map() {
     );
 
     let canceled = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("O-3"),
         Some(VenueOrderId::from("3")),
         OrderSideSpecified::Buy,
@@ -3785,7 +3800,7 @@ fn test_status_filtering_asks_as_map() {
 
     // Create orders with different statuses
     let submitted = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("O-1"),
         None,
         OrderSideSpecified::Sell,
@@ -3801,7 +3816,7 @@ fn test_status_filtering_asks_as_map() {
     );
 
     let accepted = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("O-2"),
         Some(VenueOrderId::from("2")),
         OrderSideSpecified::Sell,
@@ -3843,7 +3858,7 @@ fn test_status_filtering_bid_quantity() {
 
     // Create orders with different statuses at same price
     let submitted = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("O-1"),
         None,
         OrderSideSpecified::Buy,
@@ -3859,7 +3874,7 @@ fn test_status_filtering_bid_quantity() {
     );
 
     let accepted = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("O-2"),
         Some(VenueOrderId::from("2")),
         OrderSideSpecified::Buy,
@@ -3875,7 +3890,7 @@ fn test_status_filtering_bid_quantity() {
     );
 
     let canceled = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("O-3"),
         Some(VenueOrderId::from("3")),
         OrderSideSpecified::Buy,
@@ -3932,7 +3947,7 @@ fn test_status_filtering_ask_quantity() {
 
     // Create orders with different statuses
     let submitted = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("O-1"),
         None,
         OrderSideSpecified::Sell,
@@ -3948,7 +3963,7 @@ fn test_status_filtering_ask_quantity() {
     );
 
     let accepted = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("O-2"),
         Some(VenueOrderId::from("2")),
         OrderSideSpecified::Sell,
@@ -3964,7 +3979,7 @@ fn test_status_filtering_ask_quantity() {
     );
 
     let canceled = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("O-3"),
         Some(VenueOrderId::from("3")),
         OrderSideSpecified::Sell,
@@ -4032,7 +4047,7 @@ fn test_own_book_group_price_levels() {
 
     // Add several orders at different price levels on the bid side
     let bid_order1 = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("BID-1"),
         Some(VenueOrderId::from("1")),
         OrderSideSpecified::Buy,
@@ -4048,7 +4063,7 @@ fn test_own_book_group_price_levels() {
     );
 
     let bid_order2 = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("BID-2"),
         Some(VenueOrderId::from("2")),
         OrderSideSpecified::Buy,
@@ -4064,7 +4079,7 @@ fn test_own_book_group_price_levels() {
     );
 
     let bid_order3 = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("BID-3"),
         Some(VenueOrderId::from("3")),
         OrderSideSpecified::Buy,
@@ -4081,7 +4096,7 @@ fn test_own_book_group_price_levels() {
 
     // Add several orders at different price levels on the ask side
     let ask_order1 = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("ASK-1"),
         Some(VenueOrderId::from("4")),
         OrderSideSpecified::Sell,
@@ -4097,7 +4112,7 @@ fn test_own_book_group_price_levels() {
     );
 
     let ask_order2 = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("ASK-2"),
         Some(VenueOrderId::from("5")),
         OrderSideSpecified::Sell,
@@ -4113,7 +4128,7 @@ fn test_own_book_group_price_levels() {
     );
 
     let ask_order3 = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("ASK-3"),
         Some(VenueOrderId::from("6")),
         OrderSideSpecified::Sell,
@@ -4159,7 +4174,7 @@ fn test_own_book_group_with_depth_limit() {
     let orders = [
         // Bid orders
         OwnBookOrder::new(
-            TraderId::from("TRADER-001"),
+            TraderId::test_default(),
             ClientOrderId::from("BID-1"),
             Some(VenueOrderId::from("1")),
             OrderSideSpecified::Buy,
@@ -4174,7 +4189,7 @@ fn test_own_book_group_with_depth_limit() {
             UnixNanos::default(),
         ),
         OwnBookOrder::new(
-            TraderId::from("TRADER-001"),
+            TraderId::test_default(),
             ClientOrderId::from("BID-2"),
             Some(VenueOrderId::from("2")),
             OrderSideSpecified::Buy,
@@ -4189,7 +4204,7 @@ fn test_own_book_group_with_depth_limit() {
             UnixNanos::default(),
         ),
         OwnBookOrder::new(
-            TraderId::from("TRADER-001"),
+            TraderId::test_default(),
             ClientOrderId::from("BID-3"),
             Some(VenueOrderId::from("3")),
             OrderSideSpecified::Buy,
@@ -4205,7 +4220,7 @@ fn test_own_book_group_with_depth_limit() {
         ),
         // Ask orders
         OwnBookOrder::new(
-            TraderId::from("TRADER-001"),
+            TraderId::test_default(),
             ClientOrderId::from("ASK-1"),
             Some(VenueOrderId::from("4")),
             OrderSideSpecified::Sell,
@@ -4220,7 +4235,7 @@ fn test_own_book_group_with_depth_limit() {
             UnixNanos::default(),
         ),
         OwnBookOrder::new(
-            TraderId::from("TRADER-001"),
+            TraderId::test_default(),
             ClientOrderId::from("ASK-2"),
             Some(VenueOrderId::from("5")),
             OrderSideSpecified::Sell,
@@ -4235,7 +4250,7 @@ fn test_own_book_group_with_depth_limit() {
             UnixNanos::default(),
         ),
         OwnBookOrder::new(
-            TraderId::from("TRADER-001"),
+            TraderId::test_default(),
             ClientOrderId::from("ASK-3"),
             Some(VenueOrderId::from("6")),
             OrderSideSpecified::Sell,
@@ -4279,7 +4294,7 @@ fn test_own_book_group_with_multiple_orders_at_same_level() {
 
     // Add multiple orders at the same price level
     let bid_order1 = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("BID-1"),
         Some(VenueOrderId::from("1")),
         OrderSideSpecified::Buy,
@@ -4295,7 +4310,7 @@ fn test_own_book_group_with_multiple_orders_at_same_level() {
     );
 
     let bid_order2 = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("BID-2"),
         Some(VenueOrderId::from("2")),
         OrderSideSpecified::Buy,
@@ -4311,7 +4326,7 @@ fn test_own_book_group_with_multiple_orders_at_same_level() {
     );
 
     let ask_order1 = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("ASK-1"),
         Some(VenueOrderId::from("3")),
         OrderSideSpecified::Sell,
@@ -4327,7 +4342,7 @@ fn test_own_book_group_with_multiple_orders_at_same_level() {
     );
 
     let ask_order2 = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("ASK-2"),
         Some(VenueOrderId::from("4")),
         OrderSideSpecified::Sell,
@@ -4367,7 +4382,7 @@ fn test_own_book_group_with_larger_group_size() {
     // Add orders at different price levels
     let bid_orders = [
         OwnBookOrder::new(
-            TraderId::from("TRADER-001"),
+            TraderId::test_default(),
             ClientOrderId::from("BID-1"),
             Some(VenueOrderId::from("1")),
             OrderSideSpecified::Buy,
@@ -4382,7 +4397,7 @@ fn test_own_book_group_with_larger_group_size() {
             UnixNanos::default(),
         ),
         OwnBookOrder::new(
-            TraderId::from("TRADER-001"),
+            TraderId::test_default(),
             ClientOrderId::from("BID-2"),
             Some(VenueOrderId::from("2")),
             OrderSideSpecified::Buy,
@@ -4397,7 +4412,7 @@ fn test_own_book_group_with_larger_group_size() {
             UnixNanos::default(),
         ),
         OwnBookOrder::new(
-            TraderId::from("TRADER-001"),
+            TraderId::test_default(),
             ClientOrderId::from("BID-3"),
             Some(VenueOrderId::from("3")),
             OrderSideSpecified::Buy,
@@ -4415,7 +4430,7 @@ fn test_own_book_group_with_larger_group_size() {
 
     let ask_orders = [
         OwnBookOrder::new(
-            TraderId::from("TRADER-001"),
+            TraderId::test_default(),
             ClientOrderId::from("ASK-1"),
             Some(VenueOrderId::from("4")),
             OrderSideSpecified::Sell,
@@ -4430,7 +4445,7 @@ fn test_own_book_group_with_larger_group_size() {
             UnixNanos::default(),
         ),
         OwnBookOrder::new(
-            TraderId::from("TRADER-001"),
+            TraderId::test_default(),
             ClientOrderId::from("ASK-2"),
             Some(VenueOrderId::from("5")),
             OrderSideSpecified::Sell,
@@ -4445,7 +4460,7 @@ fn test_own_book_group_with_larger_group_size() {
             UnixNanos::default(),
         ),
         OwnBookOrder::new(
-            TraderId::from("TRADER-001"),
+            TraderId::test_default(),
             ClientOrderId::from("ASK-3"),
             Some(VenueOrderId::from("6")),
             OrderSideSpecified::Sell,
@@ -4492,7 +4507,7 @@ fn test_own_book_group_with_fractional_group_size() {
     // Add orders at various precise price levels
     let bid_orders = [
         OwnBookOrder::new(
-            TraderId::from("TRADER-001"),
+            TraderId::test_default(),
             ClientOrderId::from("BID-1"),
             Some(VenueOrderId::from("1")),
             OrderSideSpecified::Buy,
@@ -4507,7 +4522,7 @@ fn test_own_book_group_with_fractional_group_size() {
             UnixNanos::default(),
         ),
         OwnBookOrder::new(
-            TraderId::from("TRADER-001"),
+            TraderId::test_default(),
             ClientOrderId::from("BID-2"),
             Some(VenueOrderId::from("2")),
             OrderSideSpecified::Buy,
@@ -4522,7 +4537,7 @@ fn test_own_book_group_with_fractional_group_size() {
             UnixNanos::default(),
         ),
         OwnBookOrder::new(
-            TraderId::from("TRADER-001"),
+            TraderId::test_default(),
             ClientOrderId::from("BID-3"),
             Some(VenueOrderId::from("3")),
             OrderSideSpecified::Buy,
@@ -4540,7 +4555,7 @@ fn test_own_book_group_with_fractional_group_size() {
 
     let ask_orders = [
         OwnBookOrder::new(
-            TraderId::from("TRADER-001"),
+            TraderId::test_default(),
             ClientOrderId::from("ASK-1"),
             Some(VenueOrderId::from("4")),
             OrderSideSpecified::Sell,
@@ -4555,7 +4570,7 @@ fn test_own_book_group_with_fractional_group_size() {
             UnixNanos::default(),
         ),
         OwnBookOrder::new(
-            TraderId::from("TRADER-001"),
+            TraderId::test_default(),
             ClientOrderId::from("ASK-2"),
             Some(VenueOrderId::from("5")),
             OrderSideSpecified::Sell,
@@ -4570,7 +4585,7 @@ fn test_own_book_group_with_fractional_group_size() {
             UnixNanos::default(),
         ),
         OwnBookOrder::new(
-            TraderId::from("TRADER-001"),
+            TraderId::test_default(),
             ClientOrderId::from("ASK-3"),
             Some(VenueOrderId::from("6")),
             OrderSideSpecified::Sell,
@@ -4619,7 +4634,7 @@ fn test_own_book_group_with_status_and_buffer() {
 
     // Add orders with different acceptance times
     let own_recent = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("BID-1"),
         Some(VenueOrderId::from("1")),
         OrderSideSpecified::Buy,
@@ -4635,7 +4650,7 @@ fn test_own_book_group_with_status_and_buffer() {
     );
 
     let own_older = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("BID-2"),
         Some(VenueOrderId::from("2")),
         OrderSideSpecified::Buy,
@@ -4690,7 +4705,7 @@ fn test_own_book_audit_open_orders_no_removals() {
     let mut own_book = OwnOrderBook::new(instrument_id);
 
     let bid_order = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("BID-1"),
         Some(VenueOrderId::from("1")),
         OrderSideSpecified::Buy,
@@ -4706,7 +4721,7 @@ fn test_own_book_audit_open_orders_no_removals() {
     );
 
     let ask_order = OwnBookOrder::new(
-        TraderId::from("TRADER-001"),
+        TraderId::test_default(),
         ClientOrderId::from("ASK-1"),
         Some(VenueOrderId::from("2")),
         OrderSideSpecified::Sell,
@@ -4746,7 +4761,7 @@ fn test_own_book_audit_open_orders_with_removals() {
 
     let orders = [
         OwnBookOrder::new(
-            TraderId::from("TRADER-001"),
+            TraderId::test_default(),
             ClientOrderId::from("BID-1"),
             Some(VenueOrderId::from("1")),
             OrderSideSpecified::Buy,
@@ -4761,7 +4776,7 @@ fn test_own_book_audit_open_orders_with_removals() {
             UnixNanos::default(),
         ),
         OwnBookOrder::new(
-            TraderId::from("TRADER-001"),
+            TraderId::test_default(),
             ClientOrderId::from("BID-2"),
             Some(VenueOrderId::from("2")),
             OrderSideSpecified::Buy,
@@ -4776,7 +4791,7 @@ fn test_own_book_audit_open_orders_with_removals() {
             UnixNanos::default(),
         ),
         OwnBookOrder::new(
-            TraderId::from("TRADER-001"),
+            TraderId::test_default(),
             ClientOrderId::from("ASK-1"),
             Some(VenueOrderId::from("3")),
             OrderSideSpecified::Sell,
@@ -4791,7 +4806,7 @@ fn test_own_book_audit_open_orders_with_removals() {
             UnixNanos::default(),
         ),
         OwnBookOrder::new(
-            TraderId::from("TRADER-001"),
+            TraderId::test_default(),
             ClientOrderId::from("ASK-2"),
             Some(VenueOrderId::from("4")),
             OrderSideSpecified::Sell,
@@ -4850,33 +4865,44 @@ enum OrderBookOperation {
 }
 
 fn price_strategy() -> impl Strategy<Value = Price> {
-    use crate::types::price::PriceRaw;
+    use crate::types::{fixed::FIXED_PRECISION, price::PriceRaw};
+
+    // For precision P, raw values must be multiples of 10^(FIXED_PRECISION - P)
+    // Generate a base value and multiply by the scale to ensure valid raw values
+    let scale_prec2 = 10i64.pow(u32::from(FIXED_PRECISION - 2)) as PriceRaw; // 10^7
+    let scale_prec8 = 10i64.pow(u32::from(FIXED_PRECISION - 8)) as PriceRaw; // 10^1
+
     prop_oneof![
-        // Normal positive prices
-        (1i64..=1000000i64).prop_map(|raw| Price::from_raw(raw as PriceRaw, 2)),
-        // Edge case: very small prices
-        (1i64..=100i64).prop_map(|raw| Price::from_raw(raw as PriceRaw, 8)),
-        // Edge case: large prices
-        (1000000i64..=10000000i64).prop_map(|raw| Price::from_raw(raw as PriceRaw, 2)),
-        // Financial edge case: negative prices (options, spreads)
-        prop::num::i64::ANY.prop_filter_map("valid negative price", |raw| {
-            if raw < 0 && raw > i64::MIN + 1000000 {
-                Some(Price::from_raw(raw as PriceRaw, 2))
-            } else {
-                None
-            }
-        }),
+        // Normal positive prices (precision 2): 0.01 to 100.00
+        (1i64..=10000i64).prop_map(move |base| Price::from_raw(base as PriceRaw * scale_prec2, 2)),
+        // Very small prices (precision 8): 0.00000001 to 0.00000100
+        (1i64..=100i64).prop_map(move |base| Price::from_raw(base as PriceRaw * scale_prec8, 8)),
+        // Large prices (precision 2): 100.00 to 10000.00
+        (10000i64..=1000000i64)
+            .prop_map(move |base| Price::from_raw(base as PriceRaw * scale_prec2, 2)),
+        // Negative prices for options/spreads (precision 2)
+        (-10000i64..=-1i64)
+            .prop_map(move |base| Price::from_raw(base as PriceRaw * scale_prec2, 2)),
     ]
 }
 
 fn quantity_strategy() -> impl Strategy<Value = Quantity> {
+    use crate::types::{fixed::FIXED_PRECISION, quantity::QuantityRaw};
+
+    // For precision P, raw values must be multiples of 10^(FIXED_PRECISION - P)
+    let scale_prec2 = 10u64.pow(u32::from(FIXED_PRECISION - 2)) as QuantityRaw; // 10^7
+    let scale_prec8 = 10u64.pow(u32::from(FIXED_PRECISION - 8)) as QuantityRaw; // 10^1
+
     prop_oneof![
-        // Normal quantities
-        (1u64..=1000000u64).prop_map(|raw| Quantity::from_raw(raw.into(), 2)),
-        // Small quantities
-        (1u64..=100u64).prop_map(|raw| Quantity::from_raw(raw.into(), 8)),
-        // Large quantities
-        (1000000u64..=100000000u64).prop_map(|raw| Quantity::from_raw(raw.into(), 2)),
+        // Normal quantities (precision 2): 0.01 to 100.00
+        (1u64..=10000u64)
+            .prop_map(move |base| Quantity::from_raw(base as QuantityRaw * scale_prec2, 2)),
+        // Small quantities (precision 8): 0.00000001 to 0.00000100
+        (1u64..=100u64)
+            .prop_map(move |base| Quantity::from_raw(base as QuantityRaw * scale_prec8, 8)),
+        // Large quantities (precision 2): 100.00 to 10000.00
+        (10000u64..=1000000u64)
+            .prop_map(move |base| Quantity::from_raw(base as QuantityRaw * scale_prec2, 2)),
     ]
 }
 
@@ -4906,19 +4932,24 @@ fn positive_book_order_strategy() -> impl Strategy<Value = BookOrder> {
 }
 
 fn positive_quantity_strategy() -> impl Strategy<Value = Quantity> {
-    use crate::types::quantity::QuantityRaw;
+    use crate::types::{fixed::FIXED_PRECISION, quantity::QuantityRaw};
+
+    // For precision P, raw values must be multiples of 10^(FIXED_PRECISION - P)
+    let scale_prec2 = 10u64.pow(u32::from(FIXED_PRECISION - 2)) as QuantityRaw;
+    let scale_prec3 = 10u64.pow(u32::from(FIXED_PRECISION - 3)) as QuantityRaw;
+
     prop_oneof![
-        // Small positive quantities
+        // Small positive quantities (precision 2): 0.01 to 10.00
         (1u64..=1000u64)
-            .prop_map(|raw| Quantity::from_raw(raw as QuantityRaw, 2))
+            .prop_map(move |base| Quantity::from_raw(base as QuantityRaw * scale_prec2, 2))
             .prop_filter("quantity must be positive", |q| q.is_positive()),
-        // Medium positive quantities
+        // Medium positive quantities (precision 3): 1.000 to 100.000
         (1000u64..=100000u64)
-            .prop_map(|raw| Quantity::from_raw(raw as QuantityRaw, 3))
+            .prop_map(move |base| Quantity::from_raw(base as QuantityRaw * scale_prec3, 3))
             .prop_filter("quantity must be positive", |q| q.is_positive()),
-        // Large positive quantities
-        (100000u64..=10000000u64)
-            .prop_map(|raw| Quantity::from_raw(raw as QuantityRaw, 2))
+        // Large positive quantities (precision 2): 100.00 to 10000.00
+        (10000u64..=1000000u64)
+            .prop_map(move |base| Quantity::from_raw(base as QuantityRaw * scale_prec2, 2))
             .prop_filter("quantity must be positive", |q| q.is_positive()),
     ]
 }
@@ -5504,21 +5535,27 @@ enum L1Operation {
 }
 
 fn l1_operation_strategy() -> impl Strategy<Value = L1Operation> {
+    use crate::types::{fixed::FIXED_PRECISION, price::PriceRaw, quantity::QuantityRaw};
+
+    // For precision 2, raw values must be multiples of 10^(FIXED_PRECISION - 2)
+    let price_scale = 10i64.pow(u32::from(FIXED_PRECISION - 2)) as PriceRaw;
+    let qty_scale = 10u64.pow(u32::from(FIXED_PRECISION - 2)) as QuantityRaw;
+
     prop_oneof![
         7 => {
-            // Use consistent precision for quotes
+            // Use consistent precision for quotes: 0.01 to 100.00
             (
-                (1i64..=1000000i64).prop_map(|raw| Price::from_raw(raw.into(), 2)),
-                (1u64..=1000000u64).prop_map(|raw| Quantity::from_raw(raw.into(), 2)),
-                (1i64..=1000000i64).prop_map(|raw| Price::from_raw(raw.into(), 2)),
-                (1u64..=1000000u64).prop_map(|raw| Quantity::from_raw(raw.into(), 2)),
+                (1i64..=10000i64).prop_map(move |base| Price::from_raw(base as PriceRaw * price_scale, 2)),
+                (1u64..=10000u64).prop_map(move |base| Quantity::from_raw(base as QuantityRaw * qty_scale, 2)),
+                (1i64..=10000i64).prop_map(move |base| Price::from_raw(base as PriceRaw * price_scale, 2)),
+                (1u64..=10000u64).prop_map(move |base| Quantity::from_raw(base as QuantityRaw * qty_scale, 2)),
             ).prop_map(|(bid_price, bid_size, ask_price, ask_size)| {
                 L1Operation::QuoteUpdate(bid_price, bid_size, ask_price, ask_size)
             })
         },
         3 => (
-            (1i64..=1000000i64).prop_map(|raw| Price::from_raw(raw.into(), 2)),
-            (1u64..=1000000u64).prop_map(|raw| Quantity::from_raw(raw.into(), 2)),
+            (1i64..=10000i64).prop_map(move |base| Price::from_raw(base as PriceRaw * price_scale, 2)),
+            (1u64..=10000u64).prop_map(move |base| Quantity::from_raw(base as QuantityRaw * qty_scale, 2)),
             prop::sample::select(vec![AggressorSide::Buyer, AggressorSide::Seller])
         ).prop_map(|(price, size, aggressor)| {
             L1Operation::TradeUpdate(price, size, aggressor)
@@ -5859,4 +5896,323 @@ fn test_apply_delta_no_order_side_with_zero_order_id_for_clear() {
     // Book should be cleared
     assert_eq!(book.bids(None).count(), 0);
     assert_eq!(book.asks(None).count(), 0);
+}
+
+#[rstest]
+fn test_l1_snapshot_tardis_style_selects_best_prices() {
+    // Simulates Tardis snapshot format: Clear + bids + asks with F_LAST only on last ask
+    // Verifies L1_MBP correctly accumulates all levels and selects best prices
+    let instrument_id = InstrumentId::from("BTCUSDT-PERP.BINANCE");
+    let mut book = OrderBook::new(instrument_id, BookType::L1_MBP);
+
+    // Tardis snapshot format:
+    // 1. Clear delta (F_SNAPSHOT)
+    // 2. Bid deltas (F_SNAPSHOT)
+    // 3. Ask deltas (F_SNAPSHOT, last one has F_LAST)
+
+    let mut deltas = Vec::new();
+
+    // Clear delta
+    deltas.push(OrderBookDelta::clear(instrument_id, 0, 0.into(), 0.into()));
+
+    // Bid levels: 99, 100, 101 (best bid should be 101)
+    for price in ["99.00", "100.00", "101.00"] {
+        let order = BookOrder::new(
+            OrderSide::Buy,
+            Price::from(price),
+            Quantity::from("10"),
+            0, // order_id will be normalized by pre_process_order
+        );
+        deltas.push(OrderBookDelta::new(
+            instrument_id,
+            BookAction::Add,
+            order,
+            RecordFlag::F_SNAPSHOT as u8,
+            0,
+            0.into(),
+            0.into(),
+        ));
+    }
+
+    // Ask levels: 105, 104, 103, 102 (best ask should be 102)
+    let ask_prices = ["105.00", "104.00", "103.00", "102.00"];
+    for (i, price) in ask_prices.iter().enumerate() {
+        let order = BookOrder::new(
+            OrderSide::Sell,
+            Price::from(*price),
+            Quantity::from("10"),
+            0,
+        );
+        // Last ask gets F_LAST
+        let flags = if i == ask_prices.len() - 1 {
+            RecordFlag::F_SNAPSHOT as u8 | RecordFlag::F_LAST as u8
+        } else {
+            RecordFlag::F_SNAPSHOT as u8
+        };
+        deltas.push(OrderBookDelta::new(
+            instrument_id,
+            BookAction::Add,
+            order,
+            flags,
+            0,
+            0.into(),
+            0.into(),
+        ));
+    }
+
+    // Apply all deltas
+    let order_book_deltas = OrderBookDeltas::new(instrument_id, deltas);
+    book.apply_deltas(&order_book_deltas).unwrap();
+
+    // Verify best prices
+    assert_eq!(
+        book.best_bid_price(),
+        Some(Price::from("101.00")),
+        "L1 snapshot should select best bid (101) from all bid levels"
+    );
+    assert_eq!(
+        book.best_ask_price(),
+        Some(Price::from("102.00")),
+        "L1 snapshot should select best ask (102) from all ask levels"
+    );
+}
+
+#[rstest]
+fn test_l1_consecutive_snapshots_clear_between() {
+    // Verifies that consecutive Tardis-style snapshots correctly clear previous state
+    let instrument_id = InstrumentId::from("BTCUSDT-PERP.BINANCE");
+    let mut book = OrderBook::new(instrument_id, BookType::L1_MBP);
+
+    // First snapshot: bids at 100, 101; asks at 102, 103
+    let mut deltas1 = Vec::new();
+    deltas1.push(OrderBookDelta::clear(instrument_id, 0, 0.into(), 0.into()));
+    for price in ["100.00", "101.00"] {
+        deltas1.push(OrderBookDelta::new(
+            instrument_id,
+            BookAction::Add,
+            BookOrder::new(OrderSide::Buy, Price::from(price), Quantity::from("10"), 0),
+            RecordFlag::F_SNAPSHOT as u8,
+            0,
+            0.into(),
+            0.into(),
+        ));
+    }
+    for (i, price) in ["103.00", "102.00"].iter().enumerate() {
+        let flags = if i == 1 {
+            RecordFlag::F_SNAPSHOT as u8 | RecordFlag::F_LAST as u8
+        } else {
+            RecordFlag::F_SNAPSHOT as u8
+        };
+        deltas1.push(OrderBookDelta::new(
+            instrument_id,
+            BookAction::Add,
+            BookOrder::new(
+                OrderSide::Sell,
+                Price::from(*price),
+                Quantity::from("10"),
+                0,
+            ),
+            flags,
+            0,
+            0.into(),
+            0.into(),
+        ));
+    }
+
+    book.apply_deltas(&OrderBookDeltas::new(instrument_id, deltas1))
+        .unwrap();
+    assert_eq!(book.best_bid_price(), Some(Price::from("101.00")));
+    assert_eq!(book.best_ask_price(), Some(Price::from("102.00")));
+
+    // Second snapshot: worse prices - bids at 95, 96; asks at 108, 107
+    let mut deltas2 = Vec::new();
+    deltas2.push(OrderBookDelta::clear(instrument_id, 0, 1.into(), 1.into()));
+    for price in ["95.00", "96.00"] {
+        deltas2.push(OrderBookDelta::new(
+            instrument_id,
+            BookAction::Add,
+            BookOrder::new(OrderSide::Buy, Price::from(price), Quantity::from("10"), 0),
+            RecordFlag::F_SNAPSHOT as u8,
+            0,
+            1.into(),
+            1.into(),
+        ));
+    }
+    for (i, price) in ["108.00", "107.00"].iter().enumerate() {
+        let flags = if i == 1 {
+            RecordFlag::F_SNAPSHOT as u8 | RecordFlag::F_LAST as u8
+        } else {
+            RecordFlag::F_SNAPSHOT as u8
+        };
+        deltas2.push(OrderBookDelta::new(
+            instrument_id,
+            BookAction::Add,
+            BookOrder::new(
+                OrderSide::Sell,
+                Price::from(*price),
+                Quantity::from("10"),
+                0,
+            ),
+            flags,
+            0,
+            1.into(),
+            1.into(),
+        ));
+    }
+
+    book.apply_deltas(&OrderBookDeltas::new(instrument_id, deltas2))
+        .unwrap();
+
+    // Should have new (worse) prices, not old prices
+    assert_eq!(
+        book.best_bid_price(),
+        Some(Price::from("96.00")),
+        "Second snapshot should clear first, best bid is 96"
+    );
+    assert_eq!(
+        book.best_ask_price(),
+        Some(Price::from("107.00")),
+        "Second snapshot should clear first, best ask is 107"
+    );
+}
+
+#[rstest]
+#[case::buy_crosses_all_asks(
+    OrderSide::Buy,
+    "2.020",  // price above all asks
+    vec![("2.000", 1.0), ("2.010", 2.0), ("2.011", 3.0)],  // expected: all 3 ask levels
+)]
+#[case::buy_crosses_some_asks(
+    OrderSide::Buy,
+    "2.010",  // price at middle ask
+    vec![("2.000", 1.0), ("2.010", 2.0)],  // expected: 2 ask levels
+)]
+#[case::buy_crosses_one_ask(
+    OrderSide::Buy,
+    "2.005",  // price between first and second ask
+    vec![("2.000", 1.0)],  // expected: 1 ask level
+)]
+#[case::buy_crosses_no_asks(
+    OrderSide::Buy,
+    "1.999",  // price below all asks
+    vec![],  // expected: no levels
+)]
+#[case::sell_crosses_all_bids(
+    OrderSide::Sell,
+    "0.980",  // price below all bids
+    vec![("1.000", 1.0), ("0.990", 2.0), ("0.989", 3.0)],  // expected: all 3 bid levels
+)]
+#[case::sell_crosses_some_bids(
+    OrderSide::Sell,
+    "0.990",  // price at middle bid
+    vec![("1.000", 1.0), ("0.990", 2.0)],  // expected: 2 bid levels
+)]
+#[case::sell_crosses_one_bid(
+    OrderSide::Sell,
+    "0.995",  // price between first and second bid
+    vec![("1.000", 1.0)],  // expected: 1 bid level
+)]
+#[case::sell_crosses_no_bids(
+    OrderSide::Sell,
+    "1.001",  // price above all bids
+    vec![],  // expected: no levels
+)]
+fn test_get_all_crossed_levels(
+    #[case] order_side: OrderSide,
+    #[case] price_str: &str,
+    #[case] expected: Vec<(&str, f64)>,
+) {
+    let instrument_id = InstrumentId::from("ETHUSDT-PERP.BINANCE");
+    let mut book = OrderBook::new(instrument_id, BookType::L2_MBP);
+
+    // Add asks
+    book.add(
+        BookOrder::new(
+            OrderSide::Sell,
+            Price::from("2.011"),
+            Quantity::from("3.0"),
+            0,
+        ),
+        0,
+        0,
+        1.into(),
+    );
+    book.add(
+        BookOrder::new(
+            OrderSide::Sell,
+            Price::from("2.010"),
+            Quantity::from("2.0"),
+            0,
+        ),
+        0,
+        1,
+        2.into(),
+    );
+    book.add(
+        BookOrder::new(
+            OrderSide::Sell,
+            Price::from("2.000"),
+            Quantity::from("1.0"),
+            0,
+        ),
+        0,
+        2,
+        3.into(),
+    );
+
+    // Add bids
+    book.add(
+        BookOrder::new(
+            OrderSide::Buy,
+            Price::from("1.000"),
+            Quantity::from("1.0"),
+            0,
+        ),
+        0,
+        3,
+        4.into(),
+    );
+    book.add(
+        BookOrder::new(
+            OrderSide::Buy,
+            Price::from("0.990"),
+            Quantity::from("2.0"),
+            0,
+        ),
+        0,
+        4,
+        5.into(),
+    );
+    book.add(
+        BookOrder::new(
+            OrderSide::Buy,
+            Price::from("0.989"),
+            Quantity::from("3.0"),
+            0,
+        ),
+        0,
+        5,
+        6.into(),
+    );
+
+    let price = Price::from(price_str);
+    let size_precision = 1;
+    let levels = book.get_all_crossed_levels(order_side, price, size_precision);
+
+    assert_eq!(
+        levels.len(),
+        expected.len(),
+        "Expected {} levels, got {}",
+        expected.len(),
+        levels.len()
+    );
+
+    for (i, (exp_price, exp_size)) in expected.iter().enumerate() {
+        assert_eq!(
+            levels[i].0,
+            Price::from(*exp_price),
+            "Level {i} price mismatch"
+        );
+        assert_eq!(levels[i].1.as_f64(), *exp_size, "Level {i} size mismatch");
+    }
 }

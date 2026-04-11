@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -115,21 +115,21 @@ def test_imply_vol_and_greeks_accuracy_call():
 
     tolerance = 1e-5
     assert abs(implied_result.vol - sigma) < tolerance, "Vol difference exceeds tolerance"
-    assert (
-        abs(implied_result.price - base_greeks.price) < tolerance
-    ), "Price difference exceeds tolerance"
-    assert (
-        abs(implied_result.delta - base_greeks.delta) < tolerance
-    ), "Delta difference exceeds tolerance"
-    assert (
-        abs(implied_result.gamma - base_greeks.gamma) < tolerance
-    ), "Gamma difference exceeds tolerance"
-    assert (
-        abs(implied_result.vega - base_greeks.vega) < tolerance
-    ), "Vega difference exceeds tolerance"
-    assert (
-        abs(implied_result.theta - base_greeks.theta) < tolerance
-    ), "Theta difference exceeds tolerance"
+    assert abs(implied_result.price - base_greeks.price) < tolerance, (
+        "Price difference exceeds tolerance"
+    )
+    assert abs(implied_result.delta - base_greeks.delta) < tolerance, (
+        "Delta difference exceeds tolerance"
+    )
+    assert abs(implied_result.gamma - base_greeks.gamma) < tolerance, (
+        "Gamma difference exceeds tolerance"
+    )
+    assert abs(implied_result.vega - base_greeks.vega) < tolerance, (
+        "Vega difference exceeds tolerance"
+    )
+    assert abs(implied_result.theta - base_greeks.theta) < tolerance, (
+        "Theta difference exceeds tolerance"
+    )
 
 
 def test_imply_vol_and_greeks_accuracy_put():
@@ -148,18 +148,18 @@ def test_imply_vol_and_greeks_accuracy_put():
 
     tolerance = 1e-5
     assert abs(implied_result.vol - sigma) < tolerance, "Vol difference exceeds tolerance"
-    assert (
-        abs(implied_result.price - base_greeks.price) < tolerance
-    ), "Price difference exceeds tolerance"
-    assert (
-        abs(implied_result.delta - base_greeks.delta) < tolerance
-    ), "Delta difference exceeds tolerance"
-    assert (
-        abs(implied_result.gamma - base_greeks.gamma) < tolerance
-    ), "Gamma difference exceeds tolerance"
-    assert (
-        abs(implied_result.vega - base_greeks.vega) < tolerance
-    ), "Vega difference exceeds tolerance"
-    assert (
-        abs(implied_result.theta - base_greeks.theta) < tolerance
-    ), "Theta difference exceeds tolerance"
+    assert abs(implied_result.price - base_greeks.price) < tolerance, (
+        "Price difference exceeds tolerance"
+    )
+    assert abs(implied_result.delta - base_greeks.delta) < tolerance, (
+        "Delta difference exceeds tolerance"
+    )
+    assert abs(implied_result.gamma - base_greeks.gamma) < tolerance, (
+        "Gamma difference exceeds tolerance"
+    )
+    assert abs(implied_result.vega - base_greeks.vega) < tolerance, (
+        "Vega difference exceeds tolerance"
+    )
+    assert abs(implied_result.theta - base_greeks.theta) < tolerance, (
+        "Theta difference exceeds tolerance"
+    )

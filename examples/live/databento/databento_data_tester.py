@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -34,7 +34,7 @@ from nautilus_trader.test_kit.strategies.tester_data import DataTesterConfig
 # subscribed for as part of the data client configuration
 instrument_ids = [
     # InstrumentId.from_str("ES.c.0.GLBX"),  # TODO: Continuous contracts only work with GLBX for now
-    InstrumentId.from_str("ESZ5.XCME"),
+    InstrumentId.from_str("ESH6.XCME"),
     # InstrumentId.from_str("ES.FUT.XCME"),
     # InstrumentId.from_str("CL.FUT.NYMEX"),
     # InstrumentId.from_str("LO.OPT.NYMEX"),

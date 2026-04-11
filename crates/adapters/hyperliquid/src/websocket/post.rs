@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -24,6 +24,7 @@ use std::{
 
 use derive_builder::Builder;
 use futures_util::future::BoxFuture;
+use nautilus_common::live::get_runtime;
 use tokio::{
     sync::{Mutex, OwnedSemaphorePermit, Semaphore, mpsc, oneshot},
     time,
@@ -194,7 +195,7 @@ impl PostBatcher {
         let (tx_normal, rx_normal) = mpsc::channel::<ScheduledPost>(4096);
 
         // ALO lane: batchy tick, low jitter
-        tokio::spawn(Self::run_lane(
+        get_runtime().spawn(Self::run_lane(
             "ALO",
             rx_alo,
             Duration::from_millis(100),
@@ -202,7 +203,7 @@ impl PostBatcher {
         ));
 
         // NORMAL lane: faster tick; adjust as needed
-        tokio::spawn(Self::run_lane(
+        get_runtime().spawn(Self::run_lane(
             "NORMAL",
             rx_normal,
             Duration::from_millis(50),
@@ -645,10 +646,6 @@ impl WsSender {
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
-
 #[cfg(test)]
 mod tests {
     use rstest::rstest;
@@ -756,7 +753,7 @@ mod tests {
         let (done_tx, done_rx) = oneshot::channel::<()>();
         let (check_tx, check_rx) = oneshot::channel::<()>(); // separate channel for checking
 
-        tokio::spawn(async move {
+        get_runtime().spawn(async move {
             let _ = entered_tx.send(());
             let _rx = router2.register(9_999_999).await.unwrap();
             let _ = done_tx.send(());
@@ -766,7 +763,7 @@ mod tests {
         entered_rx.await.unwrap();
 
         // …and that it doesn't complete yet (still blocked on permit).
-        tokio::spawn(async move {
+        get_runtime().spawn(async move {
             if done_rx.await.is_ok() {
                 let _ = check_tx.send(());
             }

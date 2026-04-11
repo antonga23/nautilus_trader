@@ -9,7 +9,9 @@ IMAGE_FULL?=$(IMAGE):$(GIT_TAG)
 # Tool versions from Cargo.toml [workspace.metadata.tools]
 CARGO_AUDIT_VERSION := $(shell grep '^cargo-audit *= *"' Cargo.toml | awk -F\" '{print $$2}')
 CARGO_DENY_VERSION := $(shell grep '^cargo-deny *= *"' Cargo.toml | awk -F\" '{print $$2}')
+CARGO_EDIT_VERSION := $(shell grep '^cargo-edit *= *"' Cargo.toml | awk -F\" '{print $$2}')
 CARGO_LLVM_COV_VERSION := $(shell grep '^cargo-llvm-cov *= *"' Cargo.toml | awk -F\" '{print $$2}')
+CARGO_MACHETE_VERSION := $(shell grep '^cargo-machete *= *"' Cargo.toml | awk -F\" '{print $$2}')
 CARGO_NEXTEST_VERSION := $(shell grep '^cargo-nextest *= *"' Cargo.toml | awk -F\" '{print $$2}')
 CARGO_VET_VERSION := $(shell grep '^cargo-vet *= *"' Cargo.toml | awk -F\" '{print $$2}')
 LYCHEE_VERSION := $(shell grep '^lychee *= *"' Cargo.toml | awk -F\" '{print $$2}')
@@ -207,8 +209,9 @@ distclean: clean  #-- Nuclear clean - remove all untracked files (requires FORCE
 #== Code Quality
 
 .PHONY: format
-format:  #-- Format Rust code using nightly formatter
+format:  #-- Format Rust (with nightly) and Python code
 	cargo +nightly fmt
+	uv run --active --no-sync ruff format .
 
 .PHONY: pre-commit
 pre-commit:  #-- Run all pre-commit hooks on all files
@@ -234,7 +237,7 @@ pre-flight:  #-- Run comprehensive pre-flight checks (format, check-code, cargo-
 	fi
 	@$(MAKE) --no-print-directory format
 	@$(MAKE) --no-print-directory check-code
-	@$(MAKE) --no-print-directory cargo-test
+	@$(MAKE) --no-print-directory cargo-test-extras
 	@$(MAKE) --no-print-directory build-debug
 	@$(MAKE) --no-print-directory pytest
 	@printf "$(GREEN)All pre-flight checks passed$(RESET)\n"
@@ -270,7 +273,7 @@ outdated: check-edit-installed  #-- Check for outdated dependencies
 	uv tree --outdated --depth 1 --all-groups
 	@printf "\n$(CYAN)Checking tool versions...$(RESET)\n"
 	@outdated_count=0; \
-	for tool in cargo-audit:$(CARGO_AUDIT_VERSION) cargo-deny:$(CARGO_DENY_VERSION) cargo-llvm-cov:$(CARGO_LLVM_COV_VERSION) cargo-nextest:$(CARGO_NEXTEST_VERSION) cargo-vet:$(CARGO_VET_VERSION) lychee:$(LYCHEE_VERSION); do \
+	for tool in cargo-audit:$(CARGO_AUDIT_VERSION) cargo-deny:$(CARGO_DENY_VERSION) cargo-edit:$(CARGO_EDIT_VERSION) cargo-llvm-cov:$(CARGO_LLVM_COV_VERSION) cargo-machete:$(CARGO_MACHETE_VERSION) cargo-nextest:$(CARGO_NEXTEST_VERSION) cargo-vet:$(CARGO_VET_VERSION) lychee:$(LYCHEE_VERSION); do \
 		name=$${tool%%:*}; current=$${tool##*:}; \
 		latest=$$(cargo search $$name --limit 1 2>/dev/null | head -1 | awk -F\" '{print $$2}'); \
 		if [ "$$current" != "$$latest" ]; then \
@@ -287,6 +290,8 @@ update: cargo-update  #-- Update all dependencies (cargo and uv)
 .PHONY: install-tools
 install-tools:  #-- Install required development tools (Rust tools from Cargo.toml, uv from uv-version)
 	cargo install cargo-deny --version $(CARGO_DENY_VERSION) --locked \
+	&& cargo install cargo-edit --version $(CARGO_EDIT_VERSION) --locked \
+	&& cargo install cargo-machete --version $(CARGO_MACHETE_VERSION) --locked \
 	&& cargo install cargo-nextest --version $(CARGO_NEXTEST_VERSION) --locked \
 	&& cargo install cargo-llvm-cov --version $(CARGO_LLVM_COV_VERSION) --locked \
 	&& cargo install cargo-audit --version $(CARGO_AUDIT_VERSION) --locked \

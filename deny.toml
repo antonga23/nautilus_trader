@@ -27,12 +27,6 @@ ignore = [
   # TODO: Monitor upstream TLS dependencies for migration
   { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile unmaintained, transitive via nautilus-network (not a security vulnerability)" },
 
-  # fast-float has soundness issues and is unmaintained, pulled in via hypersync-client
-  # hypersync-client is optional (feature flag), so advisory only applies when feature is enabled
-  # TODO: Monitor https://github.com/enviodev/hypersync-client-rust for polars upgrade
-  { id = "RUSTSEC-2024-0379", reason = "fast-float is transitive via hypersync-client→polars-arrow (optional dependency)" },
-  { id = "RUSTSEC-2025-0003", reason = "fast-float is transitive via hypersync-client→polars-arrow (optional dependency)" },
-
   # unic-* crates are unmaintained, pulled in via pyo3-stub-gen→rustpython-parser
   # This is dev-time only for generating .pyi stub files, not a runtime security risk
   # TODO: Monitor https://github.com/Jij-Inc/pyo3-stub-gen for migration away from rustpython-parser
@@ -43,11 +37,21 @@ ignore = [
   { id = "RUSTSEC-2025-0098", reason = "unic-ucd-version unmaintained, transitive via pyo3-stub-gen (dev tool only)" },
   { id = "RUSTSEC-2025-0100", reason = "unic-common unmaintained, transitive via pyo3-stub-gen (dev tool only)" },
 
-  # rsa crate timing sidechannel (Marvin Attack) - transitive via sqlx-mysql
-  # We only use PostgreSQL, not MySQL, so this advisory does not affect us
-  # No fix available upstream
-  # TODO: Monitor https://github.com/RustCrypto/RSA for constant-time implementation
-  { id = "RUSTSEC-2023-0071", reason = "rsa via sqlx-mysql, we use PostgreSQL only (not affected)" },
+  # Temporary CI waivers for inherited upstream advisories tracked in docs/ci/cargo-deny-triage.md.
+  { id = "RUSTSEC-2026-0044", reason = "temporary CI waiver for inherited aws-lc-sys advisory cluster pending dependency upgrades" },
+  { id = "RUSTSEC-2026-0045", reason = "temporary CI waiver for inherited aws-lc-sys advisory cluster pending dependency upgrades" },
+  { id = "RUSTSEC-2026-0046", reason = "temporary CI waiver for inherited aws-lc-sys advisory cluster pending dependency upgrades" },
+  { id = "RUSTSEC-2026-0047", reason = "temporary CI waiver for inherited aws-lc-sys advisory cluster pending dependency upgrades" },
+  { id = "RUSTSEC-2026-0048", reason = "temporary CI waiver for inherited aws-lc-sys advisory cluster pending dependency upgrades" },
+  { id = "RUSTSEC-2026-0049", reason = "temporary CI waiver for inherited rustls-webpki advisory pending upstream dependency updates" },
+  { id = "RUSTSEC-2025-0141", reason = "temporary CI waiver for inherited bincode 1.x lifecycle advisory pending migration planning" },
+  { id = "RUSTSEC-2026-0007", reason = "temporary CI waiver for inherited bytes advisory pending upstream dependency updates" },
+  { id = "RUSTSEC-2025-0143", reason = "temporary CI waiver for inherited capnp advisory pending upstream dependency updates" },
+  { id = "RUSTSEC-2026-0012", reason = "temporary CI waiver for inherited keccak advisory pending upstream dependency updates" },
+  { id = "RUSTSEC-2026-0002", reason = "temporary CI waiver for inherited lru advisory pending upstream dependency updates" },
+  { id = "RUSTSEC-2026-0041", reason = "temporary CI waiver for inherited lz4_flex advisory pending upstream dependency updates" },
+  { id = "RUSTSEC-2026-0009", reason = "temporary CI waiver for inherited time advisory pending upstream dependency updates" },
+
 ]
 
 # =============================================================================
@@ -148,14 +152,9 @@ skip = [
   { crate = "darling_macro" },
   { crate = "derive_more" },
   { crate = "derive_more-impl" },
-  { crate = "syn" },
 
   # Case conversion - version fragmentation via derive_more
   { crate = "convert_case" },
-
-  # Compression crates - version fragmentation between polars and parquet
-  { crate = "brotli" },
-  { crate = "brotli-decompressor" },
 
   # Common utility crates with version fragmentation across ecosystem
   { crate = "base64" },
@@ -174,6 +173,9 @@ skip = [
   # Error handling - thiserror 1.x vs 2.x transition in progress
   { crate = "thiserror" },
   { crate = "thiserror-impl" },
+
+  # HTTP client - reqwest 0.12 vs 0.13 transition (databento, hypersync, object_store on 0.12)
+  { crate = "reqwest" },
 
   # TLS roots - version fragmentation in TLS ecosystem
   { crate = "webpki-roots" },

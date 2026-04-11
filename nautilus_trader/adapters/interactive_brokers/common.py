@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -199,6 +199,9 @@ class IBOrderTags(NautilusConfig, frozen=True, repr_omit_defaults=True):
     conditionsCancelOrder: bool = (
         False  # True = cancel order when condition met, False = transmit order
     )
+
+    # Smart combo routing parameters (for combo orders)
+    NonGuaranteed: bool = False  # True = non-guaranteed combo order, False = guaranteed combo order
 
     @property
     def value(self):

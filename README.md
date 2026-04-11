@@ -16,10 +16,10 @@
 
 | Platform           | Rust   | Python    |
 | :----------------- | :----- | :-------- |
-| `Linux (x86_64)`   | 1.91.1 | 3.12-3.14 |
-| `Linux (ARM64)`    | 1.91.1 | 3.12-3.14 |
-| `macOS (ARM64)`    | 1.91.1 | 3.12-3.14 |
-| `Windows (x86_64)` | 1.91.1 | 3.12-3.14 |
+| `Linux (x86_64)`   | 1.92.0 | 3.12-3.14 |
+| `Linux (ARM64)`    | 1.92.0 | 3.12-3.14 |
+| `macOS (ARM64)`    | 1.92.0 | 3.12-3.14 |
+| `Windows (x86_64)` | 1.92.0 | 3.12-3.14 |
 
 - **Docs**: <https://nautilustrader.io/docs/>
 - **Website**: <https://nautilustrader.io>
@@ -96,8 +96,9 @@ Not only that, Python has become the *de facto lingua franca* of data science, m
 concurrency. Rust is "blazingly fast" and memory-efficient (comparable to C and C++) with no garbage collector.
 It can power mission-critical systems, run on embedded devices, and easily integrates with other languages.
 
-Rust’s rich type system and ownership model guarantees memory-safety and thread-safety deterministically —
-eliminating many classes of bugs at compile-time.
+Rust's rich type system and ownership model guarantee memory-safety and thread-safety in safe code,
+eliminating many classes of bugs at compile-time. Overall safety in this project also depends on
+correctly upheld invariants in unsafe blocks and FFI boundaries.
 
 The project increasingly utilizes Rust for core performance-critical components. Python bindings are implemented via Cython and [PyO3](https://pyo3.rs)—no Rust toolchain is required at install time.
 
@@ -127,10 +128,11 @@ The following integrations are currently supported; see [docs/integrations/](htt
 | [Coinbase International](https://www.coinbase.com/en/international-exchange) | `COINBASE_INTX`       | Crypto Exchange (CEX)   | ![status](https://img.shields.io/badge/stable-green)    | [Guide](docs/integrations/coinbase_intx.md) |
 | [Databento](https://databento.com)                                           | `DATABENTO`           | Data Provider           | ![status](https://img.shields.io/badge/stable-green)    | [Guide](docs/integrations/databento.md)     |
 | [Deribit](https://www.deribit.com)                                           | `DERIBIT`             | Crypto Exchange (CEX)   | ![status](https://img.shields.io/badge/building-orange) | [Guide](docs/integrations/deribit.md)       |
-| [dYdX](https://dydx.exchange/)                                               | `DYDX`                | Crypto Exchange (DEX)   | ![status](https://img.shields.io/badge/stable-green)    | [Guide](docs/integrations/dydx.md)          |
+| [dYdX v3](https://dydx.exchange/)                                            | `DYDX`                | Crypto Exchange (DEX)   | ![status](https://img.shields.io/badge/stable-green)    | [Guide](docs/integrations/dydx.md)          |
+| [dYdX v4](https://dydx.exchange/)                                            | `DYDX`                | Crypto Exchange (DEX)   | ![status](https://img.shields.io/badge/building-orange) | [Guide](docs/integrations/dydx.md)          |
 | [Hyperliquid](https://hyperliquid.xyz)                                       | `HYPERLIQUID`         | Crypto Exchange (DEX)   | ![status](https://img.shields.io/badge/building-orange) | [Guide](docs/integrations/hyperliquid.md)   |
 | [Interactive Brokers](https://www.interactivebrokers.com)                    | `INTERACTIVE_BROKERS` | Brokerage (multi-venue) | ![status](https://img.shields.io/badge/stable-green)    | [Guide](docs/integrations/ib.md)            |
-| [Kraken](https://kraken.com)                                                 | `KRAKEN`              | Crypto Exchange (CEX)   | ![status](https://img.shields.io/badge/building-orange) | [Guide](docs/integrations/kraken.md)        |
+| [Kraken](https://kraken.com)                                                 | `KRAKEN`              | Crypto Exchange (CEX)   | ![status](https://img.shields.io/badge/beta-yellow)     | [Guide](docs/integrations/kraken.md)        |
 | [OKX](https://okx.com)                                                       | `OKX`                 | Crypto Exchange (CEX)   | ![status](https://img.shields.io/badge/stable-green)    | [Guide](docs/integrations/okx.md)           |
 | [Polymarket](https://polymarket.com)                                         | `POLYMARKET`          | Prediction Market (DEX) | ![status](https://img.shields.io/badge/stable-green)    | [Guide](docs/integrations/polymarket.md)    |
 | [Tardis](https://tardis.dev)                                                 | `TARDIS`              | Crypto Data Provider    | ![status](https://img.shields.io/badge/stable-green)    | [Guide](docs/integrations/tardis.md)        |
@@ -407,8 +409,8 @@ It's possible to install from source using pip if you first install the build de
 6. Set environment variables for PyO3 compilation (Linux and macOS only):
 
     ```bash
-    # Set the library path for the Python interpreter (in this case Python 3.13.4)
-    export LD_LIBRARY_PATH="$HOME/.local/share/uv/python/cpython-3.13.4-linux-x86_64-gnu/lib:$LD_LIBRARY_PATH"
+    # Linux only: Set the library path for the Python interpreter
+    export LD_LIBRARY_PATH="$(python -c 'import sys; print(sys.base_prefix)')/lib:$LD_LIBRARY_PATH"
 
     # Set the Python executable path for PyO3
     export PYO3_PYTHON=$(pwd)/.venv/bin/python
@@ -419,8 +421,7 @@ It's possible to install from source using pip if you first install the build de
 
 > [!NOTE]
 >
-> Adjust the Python version and architecture in the `LD_LIBRARY_PATH` to match your system.
-> Use `uv python list` to find the exact path for your Python installation.
+> The `LD_LIBRARY_PATH` export is Linux-specific and not needed on macOS.
 >
 > The `PYTHONHOME` variable is required when running `make cargo-test` with a `uv`-installed Python.
 > Without it, tests that depend on PyO3 may fail to locate the Python runtime.
@@ -582,7 +583,7 @@ NautilusTrader™ is developed and maintained by Nautech Systems, a technology
 company specializing in the development of high-performance trading systems.
 For more information, visit <https://nautilustrader.io>.
 
-© 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+© 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 
 ![nautechsystems](https://github.com/nautechsystems/nautilus_trader/raw/develop/assets/ns-logo.png "nautechsystems")
 <img src="https://github.com/nautechsystems/nautilus_trader/raw/develop/assets/ferris.png" width="128">

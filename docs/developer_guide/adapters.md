@@ -1010,6 +1010,24 @@ tests/integration_tests/adapters/your_adapter/
 All adapter documentation—module-level docs, doc comments, and inline comments—should follow the [Documentation Style Guide](docs.md).
 Consistent documentation helps maintainers and users understand adapter behavior without reading implementation details.
 
+### Rust documentation requirements
+
+Every Rust module, struct, and public method must have documentation comments.
+Use third-person declarative voice (e.g., "Returns the account ID" not "Return the account ID").
+
+- **Modules**: Use `//!` doc comments at the top of each file (after the license header) to describe the module's purpose.
+- **Structs**: Use `///` doc comments above struct definitions. Keep descriptions concise—one sentence is often sufficient.
+- **Public methods**: Every `pub fn` and `pub async fn` must have a `///` doc comment describing what the method does.
+  Do not document individual parameters in a separate `# Arguments` section—the type signatures and names should be self-explanatory.
+  Parameters may be mentioned in the description when behavior is complex or non-obvious.
+
+**What NOT to document**:
+
+- Private methods and fields (unless complex logic warrants it).
+- Individual parameters/arguments (use descriptive names instead).
+- Implementation details that are obvious from the code.
+- Files in the `python/` module (PyO3 bindings)—documentation conventions are TBD (*may* use numpydoc specification).
+
 ---
 
 ## Python adapter layer
@@ -1241,44 +1259,44 @@ class TemplateLiveMarketDataClient(LiveMarketDataClient):
         raise NotImplementedError("implement `_request_order_book_depth` in your adapter subclass")
 ```
 
-| Method                             | Description                                            |
-|------------------------------------|--------------------------------------------------------|
-| `_connect`                         | Establishes a connection to the venue APIs.            |
-| `_disconnect`                      | Closes the connection to the venue APIs.               |
-| `_subscribe`                       | Subscribes to generic data (base for custom types).    |
-| `_unsubscribe`                     | Unsubscribes from generic data (base for custom types).|
-| `_request`                         | Requests generic data (base for custom types).         |
-| `_subscribe_instruments`           | Subscribes to market data for multiple instruments.    |
-| `_unsubscribe_instruments`         | Unsubscribes from market data for multiple instruments.|
-| `_subscribe_instrument`            | Subscribes to market data for a single instrument.     |
-| `_unsubscribe_instrument`          | Unsubscribes from market data for a single instrument. |
-| `_subscribe_order_book_deltas`     | Subscribes to order book delta updates.                |
-| `_unsubscribe_order_book_deltas`   | Unsubscribes from order book delta updates.            |
-| `_subscribe_order_book_snapshots`  | Subscribes to order book snapshot updates.             |
-| `_unsubscribe_order_book_snapshots`| Unsubscribes from order book snapshot updates.         |
-| `_subscribe_quote_ticks`           | Subscribes to top-of-book quote updates.               |
-| `_unsubscribe_quote_ticks`         | Unsubscribes from quote tick updates.                  |
-| `_subscribe_trade_ticks`           | Subscribes to trade tick updates.                      |
-| `_unsubscribe_trade_ticks`         | Unsubscribes from trade tick updates.                  |
-| `_subscribe_mark_prices`           | Subscribes to mark price updates.                      |
-| `_unsubscribe_mark_prices`         | Unsubscribes from mark price updates.                  |
-| `_subscribe_index_prices`          | Subscribes to index price updates.                     |
-| `_unsubscribe_index_prices`        | Unsubscribes from index price updates.                 |
-| `_subscribe_funding_rates`         | Subscribes to funding rate updates.                    |
-| `_unsubscribe_funding_rates`       | Unsubscribes from funding rate updates.                |
-| `_subscribe_bars`                  | Subscribes to bar/candlestick updates.                 |
-| `_unsubscribe_bars`                | Unsubscribes from bar updates.                         |
-| `_subscribe_instrument_status`     | Subscribes to instrument status updates.               |
-| `_unsubscribe_instrument_status`   | Unsubscribes from instrument status updates.           |
-| `_subscribe_instrument_close`      | Subscribes to instrument close price updates.          |
-| `_unsubscribe_instrument_close`    | Unsubscribes from instrument close price updates.      |
-| `_request_instrument`              | Requests historical data for a single instrument.      |
-| `_request_instruments`             | Requests historical data for multiple instruments.     |
-| `_request_quote_ticks`             | Requests historical quote tick data.                   |
-| `_request_trade_ticks`             | Requests historical trade tick data.                   |
-| `_request_bars`                    | Requests historical bar data.                          |
-| `_request_order_book_snapshot`     | Requests an order book snapshot.                       |
-| `_request_order_book_depth`        | Requests order book depth.                             |
+| Method                             | Description                                             |
+|------------------------------------|---------------------------------------------------------|
+| `_connect`                         | Establishes a connection to the venue APIs.             |
+| `_disconnect`                      | Closes the connection to the venue APIs.                |
+| `_subscribe`                       | Subscribes to generic data (base for custom types).     |
+| `_unsubscribe`                     | Unsubscribes from generic data (base for custom types). |
+| `_request`                         | Requests generic data (base for custom types).          |
+| `_subscribe_instruments`           | Subscribes to market data for multiple instruments.     |
+| `_unsubscribe_instruments`         | Unsubscribes from market data for multiple instruments. |
+| `_subscribe_instrument`            | Subscribes to market data for a single instrument.      |
+| `_unsubscribe_instrument`          | Unsubscribes from market data for a single instrument.  |
+| `_subscribe_order_book_deltas`     | Subscribes to order book delta updates.                 |
+| `_unsubscribe_order_book_deltas`   | Unsubscribes from order book delta updates.             |
+| `_subscribe_order_book_snapshots`  | Subscribes to order book snapshot updates.              |
+| `_unsubscribe_order_book_snapshots`| Unsubscribes from order book snapshot updates.          |
+| `_subscribe_quote_ticks`           | Subscribes to top-of-book quote updates.                |
+| `_unsubscribe_quote_ticks`         | Unsubscribes from quote tick updates.                   |
+| `_subscribe_trade_ticks`           | Subscribes to trade tick updates.                       |
+| `_unsubscribe_trade_ticks`         | Unsubscribes from trade tick updates.                   |
+| `_subscribe_mark_prices`           | Subscribes to mark price updates.                       |
+| `_unsubscribe_mark_prices`         | Unsubscribes from mark price updates.                   |
+| `_subscribe_index_prices`          | Subscribes to index price updates.                      |
+| `_unsubscribe_index_prices`        | Unsubscribes from index price updates.                  |
+| `_subscribe_funding_rates`         | Subscribes to funding rate updates.                     |
+| `_unsubscribe_funding_rates`       | Unsubscribes from funding rate updates.                 |
+| `_subscribe_bars`                  | Subscribes to bar/candlestick updates.                  |
+| `_unsubscribe_bars`                | Unsubscribes from bar updates.                          |
+| `_subscribe_instrument_status`     | Subscribes to instrument status updates.                |
+| `_unsubscribe_instrument_status`   | Unsubscribes from instrument status updates.            |
+| `_subscribe_instrument_close`      | Subscribes to instrument close price updates.           |
+| `_unsubscribe_instrument_close`    | Unsubscribes from instrument close price updates.       |
+| `_request_instrument`              | Requests historical data for a single instrument.       |
+| `_request_instruments`             | Requests historical data for multiple instruments.      |
+| `_request_quote_ticks`             | Requests historical quote tick data.                    |
+| `_request_trade_ticks`             | Requests historical trade tick data.                    |
+| `_request_bars`                    | Requests historical bar data.                           |
+| `_request_order_book_snapshot`     | Requests an order book snapshot.                        |
+| `_request_order_book_depth`        | Requests order book depth.                              |
 
 ### ExecutionClient
 
@@ -1297,6 +1315,7 @@ from nautilus_trader.execution.messages import GeneratePositionStatusReports
 from nautilus_trader.execution.messages import ModifyOrder
 from nautilus_trader.execution.messages import SubmitOrder
 from nautilus_trader.execution.messages import SubmitOrderList
+from nautilus_trader.execution.reports import ExecutionMassStatus
 from nautilus_trader.execution.reports import FillReport
 from nautilus_trader.execution.reports import OrderStatusReport
 from nautilus_trader.execution.reports import PositionStatusReport
@@ -1353,22 +1372,29 @@ class TemplateLiveExecutionClient(LiveExecutionClient):
         command: GeneratePositionStatusReports,
     ) -> list[PositionStatusReport]:
         raise NotImplementedError("method `generate_position_status_reports` must be implemented in the subclass")
+
+    async def generate_mass_status(
+        self,
+        lookback_mins: int | None = None,
+    ) -> ExecutionMassStatus | None:
+        raise NotImplementedError("method `generate_mass_status` must be implemented in the subclass")
 ```
 
-| Method                           | Description                                             |
-|----------------------------------|---------------------------------------------------------|
-| `_connect`                       | Establishes a connection to the venue APIs.             |
-| `_disconnect`                    | Closes the connection to the venue APIs.                |
-| `_submit_order`                  | Submits a new order to the venue.                       |
-| `_submit_order_list`             | Submits a list of orders to the venue.                  |
-| `_modify_order`                  | Modifies an existing order on the venue.                |
-| `_cancel_order`                  | Cancels a specific order on the venue.                  |
-| `_cancel_all_orders`             | Cancels all orders for an instrument on the venue.      |
-| `_batch_cancel_orders`           | Cancels a batch of orders for an instrument on the venue.|
-| `generate_order_status_report`   | Generates a report for a specific order on the venue.   |
-| `generate_order_status_reports`  | Generates reports for all orders on the venue.          |
-| `generate_fill_reports`          | Generates reports for filled orders on the venue.       |
-| `generate_position_status_reports`| Generates reports for position status on the venue.    |
+| Method                             | Description                                               |
+|------------------------------------|-----------------------------------------------------------|
+| `_connect`                         | Establishes a connection to the venue APIs.               |
+| `_disconnect`                      | Closes the connection to the venue APIs.                  |
+| `_submit_order`                    | Submits a new order to the venue.                         |
+| `_submit_order_list`               | Submits a list of orders to the venue.                    |
+| `_modify_order`                    | Modifies an existing order on the venue.                  |
+| `_cancel_order`                    | Cancels a specific order on the venue.                    |
+| `_cancel_all_orders`               | Cancels all orders for an instrument on the venue.        |
+| `_batch_cancel_orders`             | Cancels a batch of orders for an instrument on the venue. |
+| `generate_order_status_report`     | Generates a report for a specific order on the venue.     |
+| `generate_order_status_reports`    | Generates reports for all orders on the venue.            |
+| `generate_fill_reports`            | Generates reports for filled orders on the venue.         |
+| `generate_position_status_reports` | Generates reports for position status on the venue.       |
+| `generate_mass_status`             | Generates execution mass status reports.                  |
 
 ### Configuration
 

@@ -16,7 +16,7 @@ CI/CD, testing, publishing, and automation within the NautilusTrader repository.
 
 ## Workflows (`.github/workflows`)
 
-- **build.yml**: main CI pipeline - pre-commit, cargo-deny, Rust tests, Python tests, wheel builds, and artifact uploads.
+- **build.yml**: main CI pipeline - changed-surface detection, `pre-commit-fast`, conditional `rust-policy`, Rust tests, Python tests, wheel builds, and artifact uploads.
 - **build-v2.yml**: CI pipeline for the v2 Rust-native system.
 - **build-docs.yml**: dispatches documentation build on `master` and `nightly` pushes.
 - **cli-binaries.yml**: builds and publishes CLI binaries for multiple platforms.
@@ -29,6 +29,11 @@ CI/CD, testing, publishing, and automation within the NautilusTrader repository.
 - **trigger-reindexing.yml**: triggers documentation reindexing for search.
 
 ## Security
+
+## CI Docs
+
+- [`docs/ci/rust-policy-triggers.md`](../docs/ci/rust-policy-triggers.md): exact path set that enables the conditional `rust-policy` job.
+- [`docs/ci/cargo-deny-triage.md`](../docs/ci/cargo-deny-triage.md): current `cargo-deny` findings grouped into decision buckets.
 
 ### Access controls
 

@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -97,7 +97,7 @@ class TestPersistenceStreaming:
             "ComponentStateChanged": 34,
             "OrderAccepted": 192,
             "OrderBookDelta": 1307,
-            "OrderCanceled": 100,
+            "OrderCanceled": 200,  # Doubled due to publishing to both events.order.* and events.cancels.*
             "OrderFilled": 188,  # Doubled due to publishing to both events.order.* and events.fills.*
             "OrderInitialized": 193,
             "OrderSubmitted": 193,
@@ -451,7 +451,7 @@ class TestPersistenceStreaming:
             "ComponentStateChanged": 34,
             "OrderAccepted": 192,
             "OrderBookDelta": 1307,
-            "OrderCanceled": 100,
+            "OrderCanceled": 200,  # Doubled due to publishing to both events.order.* and events.cancels.*
             "OrderFilled": 188,  # Doubled due to publishing to both events.order.* and events.fills.*
             "OrderInitialized": 193,
             "OrderSubmitted": 193,
@@ -650,7 +650,11 @@ class TestPersistenceStreaming:
         writer.close()
 
         # Verify feather file was created
-        feather_files = list(self.catalog.fs.glob(f"{self.catalog.path}/backtest/{instance_id}/crypto_perpetual*.feather"))
+        feather_files = list(
+            self.catalog.fs.glob(
+                f"{self.catalog.path}/backtest/{instance_id}/crypto_perpetual*.feather",
+            ),
+        )
         assert len(feather_files) >= 1, "No feather files found for crypto_perpetual"
 
         # Convert feather to parquet

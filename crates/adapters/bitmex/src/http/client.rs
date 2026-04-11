@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -26,7 +26,7 @@ use std::{
     collections::HashMap,
     num::NonZeroU32,
     sync::{
-        Arc,
+        Arc, LazyLock,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -83,8 +83,8 @@ use crate::{
     },
     http::{
         parse::{
-            parse_fill_report, parse_instrument_any, parse_order_status_report,
-            parse_position_report, parse_trade, parse_trade_bin,
+            InstrumentParseResult, parse_fill_report, parse_instrument_any,
+            parse_order_status_report, parse_position_report, parse_trade, parse_trade_bin,
         },
         query::{DeleteAllOrdersParamsBuilder, GetOrderParamsBuilder, PutOrderParamsBuilder},
     },
@@ -102,6 +102,13 @@ const BITMEX_DEFAULT_RATE_LIMIT_PER_MINUTE_UNAUTHENTICATED: u32 = 30;
 
 const BITMEX_GLOBAL_RATE_KEY: &str = "bitmex:global";
 const BITMEX_MINUTE_RATE_KEY: &str = "bitmex:minute";
+
+static RATE_LIMIT_KEYS: LazyLock<Vec<Ustr>> = LazyLock::new(|| {
+    vec![
+        Ustr::from(BITMEX_GLOBAL_RATE_KEY),
+        Ustr::from(BITMEX_MINUTE_RATE_KEY),
+    ]
+});
 
 /// Represents a BitMEX HTTP response.
 #[derive(Debug, Serialize, Deserialize)]
@@ -295,10 +302,7 @@ impl BitmexRawHttpClient {
     }
 
     fn rate_limit_keys() -> Vec<Ustr> {
-        vec![
-            Ustr::from(BITMEX_GLOBAL_RATE_KEY),
-            Ustr::from(BITMEX_MINUTE_RATE_KEY),
-        ]
+        RATE_LIMIT_KEYS.clone()
     }
 
     /// Cancel all pending HTTP requests.
@@ -376,14 +380,9 @@ impl BitmexRawHttpClient {
             None
         };
 
-        let full_endpoint = if let Some(ref query) = params_str {
-            if query.is_empty() {
-                endpoint.clone()
-            } else {
-                format!("{endpoint}?{query}")
-            }
-        } else {
-            endpoint.clone()
+        let full_endpoint = match params_str {
+            Some(ref query) if !query.is_empty() => format!("{endpoint}?{query}"),
+            _ => endpoint.clone(),
         };
 
         let url = format!("{}{}", self.base_url, full_endpoint);
@@ -755,7 +754,7 @@ impl BitmexRawHttpClient {
 #[derive(Debug)]
 #[cfg_attr(
     feature = "python",
-    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.adapters")
+    pyo3::pyclass(module = "nautilus_trader.core.nautilus_pyo3.bitmex")
 )]
 pub struct BitmexHttpClient {
     inner: Arc<BitmexRawHttpClient>,
@@ -1177,7 +1176,7 @@ impl BitmexHttpClient {
     /// # Errors
     ///
     /// Returns `Ok(Some(..))` when the venue returns a definition that parses
-    /// successfully, `Ok(None)` when the instrument is unknown or the payload
+    /// successfully, `Ok(None)` when the instrument is unknown, unsupported, or the payload
     /// cannot be converted into a Nautilus `Instrument`.
     pub async fn request_instrument(
         &self,
@@ -1195,7 +1194,32 @@ impl BitmexHttpClient {
 
         let ts_init = self.generate_ts_init();
 
-        Ok(parse_instrument_any(&instrument, ts_init))
+        match parse_instrument_any(&instrument, ts_init) {
+            InstrumentParseResult::Ok(inst) => Ok(Some(*inst)),
+            InstrumentParseResult::Unsupported {
+                symbol,
+                instrument_type,
+            } => {
+                tracing::debug!(
+                    "Instrument {symbol} has unsupported type {instrument_type:?}, returning None"
+                );
+                Ok(None)
+            }
+            InstrumentParseResult::Inactive { symbol, state } => {
+                tracing::debug!("Instrument {symbol} is inactive (state={state}), returning None");
+                Ok(None)
+            }
+            InstrumentParseResult::Failed {
+                symbol,
+                instrument_type,
+                error,
+            } => {
+                tracing::error!(
+                    "Failed to parse instrument {symbol} (type={instrument_type:?}): {error}"
+                );
+                Ok(None)
+            }
+        }
     }
 
     /// Request all available instruments and parse them into Nautilus types.
@@ -1211,28 +1235,57 @@ impl BitmexHttpClient {
         let ts_init = self.generate_ts_init();
 
         let mut parsed_instruments = Vec::new();
+        let mut skipped_count = 0;
+        let mut inactive_count = 0;
         let mut failed_count = 0;
         let total_count = instruments.len();
 
         for inst in instruments {
-            if let Some(instrument_any) = parse_instrument_any(&inst, ts_init) {
-                parsed_instruments.push(instrument_any);
-            } else {
-                failed_count += 1;
-                tracing::error!(
-                    "Failed to parse instrument: symbol={}, type={:?}, state={:?} - instrument will not be cached",
-                    inst.symbol,
-                    inst.instrument_type,
-                    inst.state
-                );
+            match parse_instrument_any(&inst, ts_init) {
+                InstrumentParseResult::Ok(instrument_any) => {
+                    parsed_instruments.push(*instrument_any);
+                }
+                InstrumentParseResult::Unsupported {
+                    symbol,
+                    instrument_type,
+                } => {
+                    skipped_count += 1;
+                    tracing::debug!(
+                        "Skipping unsupported instrument type: symbol={symbol}, type={instrument_type:?}"
+                    );
+                }
+                InstrumentParseResult::Inactive { symbol, state } => {
+                    inactive_count += 1;
+                    tracing::debug!("Skipping inactive instrument: symbol={symbol}, state={state}");
+                }
+                InstrumentParseResult::Failed {
+                    symbol,
+                    instrument_type,
+                    error,
+                } => {
+                    failed_count += 1;
+                    tracing::error!(
+                        "Failed to parse instrument: symbol={symbol}, type={instrument_type:?}, error={error}"
+                    );
+                }
             }
+        }
+
+        if skipped_count > 0 {
+            tracing::info!(
+                "Skipped {skipped_count} unsupported instrument type(s) out of {total_count} total"
+            );
+        }
+
+        if inactive_count > 0 {
+            tracing::info!(
+                "Skipped {inactive_count} inactive instrument(s) out of {total_count} total"
+            );
         }
 
         if failed_count > 0 {
             tracing::error!(
-                "Instrument parse failures: {} failed out of {} total ({}  successfully parsed)",
-                failed_count,
-                total_count,
+                "Instrument parse failures: {failed_count} failed out of {total_count} total ({} successfully parsed)",
                 parsed_instruments.len()
             );
         }
@@ -2158,10 +2211,6 @@ impl BitmexHttpClient {
         parse_position_report(response, &instrument, ts_init)
     }
 }
-
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
 
 #[cfg(test)]
 mod tests {

@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -4420,7 +4420,19 @@ cdef class Cache(CacheFacade):
         if not client_order_ids:
             return []
 
-        return [self._orders[client_order_id] for client_order_id in client_order_ids]
+        # An order can be missing when a position indexed by a virtual client_order_id
+        # has been created after a spread order fill
+        cdef list orders = []
+        for client_order_id in client_order_ids:
+            if client_order_id in self._orders:
+                orders.append(self._orders[client_order_id])
+            else:
+                self._log.warning(
+                    f"Order {client_order_id} missing in cache for position {position_id}. "
+                    "Valid for spread leg fills."
+                )
+
+        return orders
 
     cpdef bint order_exists(self, ClientOrderId client_order_id):
         """

@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -32,10 +32,9 @@ use nautilus_model::{
     identifiers::{ClientId, InstrumentId, TraderId},
     types::Currency,
 };
-use nautilus_persistence::config::StreamingConfig;
 use nautilus_portfolio::config::PortfolioConfig;
 use nautilus_risk::engine::config::RiskEngineConfig;
-use nautilus_system::config::NautilusKernelConfig;
+use nautilus_system::config::{NautilusKernelConfig, StreamingConfig};
 use ustr::Ustr;
 
 /// Configuration for ``BacktestEngine`` instances.

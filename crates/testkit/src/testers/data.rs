@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -22,6 +22,7 @@ use std::{
 };
 
 use ahash::{AHashMap, AHashSet};
+use chrono::Duration as ChronoDuration;
 use nautilus_common::{
     actor::{DataActor, DataActorConfig, DataActorCore},
     enums::LogColor,
@@ -85,9 +86,10 @@ pub struct DataTesterConfig {
     // TODO: Support request_trades when historical data requests are available
     /// Whether to request historical trades (not yet implemented).
     pub request_trades: bool,
-    // TODO: Support request_bars when historical data requests are available
-    /// Whether to request historical bars (not yet implemented).
+    /// Whether to request historical bars.
     pub request_bars: bool,
+    /// Whether to request order book snapshots.
+    pub request_book_snapshot: bool,
     // TODO: Support requests_start_delta when we implement historical data requests
     /// Book type for order book subscriptions.
     pub book_type: BookType,
@@ -109,18 +111,11 @@ pub struct DataTesterConfig {
 impl DataTesterConfig {
     /// Creates a new [`DataTesterConfig`] instance with minimal settings.
     ///
-    /// For subscribing to quotes and trades on specified instruments.
-    ///
     /// # Panics
     ///
     /// Panics if `NonZeroUsize::new(1000)` fails (which should never happen).
     #[must_use]
-    pub fn new(
-        client_id: ClientId,
-        instrument_ids: Vec<InstrumentId>,
-        subscribe_quotes: bool,
-        subscribe_trades: bool,
-    ) -> Self {
+    pub fn new(client_id: ClientId, instrument_ids: Vec<InstrumentId>) -> Self {
         Self {
             base: DataActorConfig::default(),
             instrument_ids,
@@ -129,12 +124,13 @@ impl DataTesterConfig {
             subscribe_book_deltas: false,
             subscribe_book_depth: false,
             subscribe_book_at_interval: false,
-            subscribe_quotes,
-            subscribe_trades,
+            subscribe_quotes: false,
+            subscribe_trades: false,
             subscribe_mark_prices: false,
             subscribe_index_prices: false,
             subscribe_funding_rates: false,
             subscribe_bars: false,
+
             subscribe_instrument: false,
             subscribe_instrument_status: false,
             subscribe_instrument_close: false,
@@ -143,11 +139,12 @@ impl DataTesterConfig {
             request_quotes: false,
             request_trades: false,
             request_bars: false,
+            request_book_snapshot: false,
             book_type: BookType::L2_MBP,
             book_depth: None,
             book_interval_ms: NonZeroUsize::new(1000).unwrap(),
             book_levels_to_print: 10,
-            manage_book: false,
+            manage_book: true,
             log_data: true,
             stats_interval_secs: 5,
         }
@@ -174,6 +171,18 @@ impl DataTesterConfig {
     #[must_use]
     pub fn with_subscribe_book_at_interval(mut self, subscribe: bool) -> Self {
         self.subscribe_book_at_interval = subscribe;
+        self
+    }
+
+    #[must_use]
+    pub fn with_subscribe_quotes(mut self, subscribe: bool) -> Self {
+        self.subscribe_quotes = subscribe;
+        self
+    }
+
+    #[must_use]
+    pub fn with_subscribe_trades(mut self, subscribe: bool) -> Self {
+        self.subscribe_trades = subscribe;
         self
     }
 
@@ -256,6 +265,24 @@ impl DataTesterConfig {
     }
 
     #[must_use]
+    pub fn with_request_trades(mut self, request: bool) -> Self {
+        self.request_trades = request;
+        self
+    }
+
+    #[must_use]
+    pub fn with_request_bars(mut self, request: bool) -> Self {
+        self.request_bars = request;
+        self
+    }
+
+    #[must_use]
+    pub fn with_request_book_snapshot(mut self, request: bool) -> Self {
+        self.request_book_snapshot = request;
+        self
+    }
+
+    #[must_use]
     pub fn with_can_unsubscribe(mut self, can_unsubscribe: bool) -> Self {
         self.can_unsubscribe = can_unsubscribe;
         self
@@ -292,6 +319,7 @@ impl Default for DataTesterConfig {
             request_quotes: false,
             request_trades: false,
             request_bars: false,
+            request_book_snapshot: false,
             book_type: BookType::L2_MBP,
             book_depth: None,
             book_interval_ms: NonZeroUsize::new(1000).unwrap(),
@@ -427,10 +455,30 @@ impl DataActor for DataTester {
             //     self.request_quote_ticks(...);
             // }
 
-            // TODO: Implement historical data requests
-            // if self.config.request_trades {
-            //     self.request_trade_ticks(...);
-            // }
+            // Request historical trades (default to last 1 hour)
+            if self.config.request_trades {
+                let start = self.clock().utc_now() - ChronoDuration::hours(1);
+                if let Err(e) = self.request_trades(
+                    instrument_id,
+                    Some(start),
+                    None, // end: None means "now"
+                    None, // limit: None means use API default
+                    client_id,
+                    None, // params
+                ) {
+                    log::error!("Failed to request trades for {instrument_id}: {e}");
+                }
+            }
+
+            // Request order book snapshot if configured
+            if self.config.request_book_snapshot {
+                let _ = self.request_book_snapshot(
+                    instrument_id,
+                    self.config.book_depth,
+                    client_id,
+                    None,
+                );
+            }
         }
 
         // Subscribe to bars
@@ -440,10 +488,20 @@ impl DataActor for DataTester {
                     self.subscribe_bars(bar_type, client_id, None);
                 }
 
-                // TODO: Implement historical data requests
-                // if self.config.request_bars {
-                //     self.request_bars(...);
-                // }
+                // Request historical bars (default to last 1 hour)
+                if self.config.request_bars {
+                    let start = self.clock().utc_now() - ChronoDuration::hours(1);
+                    if let Err(e) = self.request_bars(
+                        bar_type,
+                        Some(start),
+                        None, // end: None means "now"
+                        None, // limit: None means use API default
+                        client_id,
+                        None, // params
+                    ) {
+                        log::error!("Failed to request bars for {bar_type}: {e}");
+                    }
+                }
             }
         }
 
@@ -546,6 +604,17 @@ impl DataActor for DataTester {
         Ok(())
     }
 
+    fn on_book(&mut self, book: &OrderBook) -> anyhow::Result<()> {
+        if self.config.log_data {
+            let levels = self.config.book_levels_to_print;
+            let instrument_id = book.instrument_id;
+            let book_str = book.pprint(levels, None);
+            log_info!("\n{instrument_id}\n{book_str}", color = LogColor::Cyan);
+        }
+
+        Ok(())
+    }
+
     fn on_book_deltas(&mut self, deltas: &OrderBookDeltas) -> anyhow::Result<()> {
         if self.config.manage_book {
             if let Some(book) = self.books.get_mut(&deltas.instrument_id) {
@@ -619,6 +688,48 @@ impl DataActor for DataTester {
         }
         Ok(())
     }
+
+    fn on_historical_trades(&mut self, trades: &[TradeTick]) -> anyhow::Result<()> {
+        if self.config.log_data {
+            log_info!(
+                "Received {} historical trades",
+                trades.len(),
+                color = LogColor::Cyan
+            );
+            for trade in trades.iter().take(5) {
+                log_info!("  {trade:?}", color = LogColor::Cyan);
+            }
+            if trades.len() > 5 {
+                log_info!(
+                    "  ... and {} more trades",
+                    trades.len() - 5,
+                    color = LogColor::Cyan
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn on_historical_bars(&mut self, bars: &[Bar]) -> anyhow::Result<()> {
+        if self.config.log_data {
+            log_info!(
+                "Received {} historical bars",
+                bars.len(),
+                color = LogColor::Cyan
+            );
+            for bar in bars.iter().take(5) {
+                log_info!("  {bar:?}", color = LogColor::Cyan);
+            }
+            if bars.len() > 5 {
+                log_info!(
+                    "  ... and {} more bars",
+                    bars.len() - 5,
+                    color = LogColor::Cyan
+                );
+            }
+        }
+        Ok(())
+    }
 }
 
 impl DataTester {
@@ -632,10 +743,6 @@ impl DataTester {
         }
     }
 }
-
-////////////////////////////////////////////////////////////////////////////////
-// Tests
-////////////////////////////////////////////////////////////////////////////////
 
 #[cfg(test)]
 mod tests {
@@ -659,14 +766,17 @@ mod tests {
             InstrumentId::from("BTC-USDT.TEST"),
             InstrumentId::from("ETH-USDT.TEST"),
         ];
-        DataTesterConfig::new(client_id, instrument_ids, true, true)
+        DataTesterConfig::new(client_id, instrument_ids)
+            .with_subscribe_quotes(true)
+            .with_subscribe_trades(true)
     }
 
     #[rstest]
     fn test_config_creation() {
         let client_id = ClientId::new("TEST");
         let instrument_ids = vec![InstrumentId::from("BTC-USDT.TEST")];
-        let config = DataTesterConfig::new(client_id, instrument_ids.clone(), true, false);
+        let config =
+            DataTesterConfig::new(client_id, instrument_ids.clone()).with_subscribe_quotes(true);
 
         assert_eq!(config.client_id, Some(client_id));
         assert_eq!(config.instrument_ids, instrument_ids);

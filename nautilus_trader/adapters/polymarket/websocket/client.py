@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -155,13 +155,14 @@ class PolymarketWebSocketClient:
 
         config = WebSocketConfig(
             url=self._ws_url,
-            handler=self._handler,
-            heartbeat=10,
             headers=[],
+            heartbeat=10,
         )
 
         self._client = await WebSocketClient.connect(
+            loop_=self._loop,
             config=config,
+            handler=self._handler,
             post_reconnection=self.reconnect,
         )
         self._is_connecting = False

@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------------------------------------
-#  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
 #  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -78,12 +78,11 @@ class BinanceDataClientConfig(LiveDataClientConfig, frozen=True):
         The venue for the client.
     api_key : str, optional
         The Binance API public key.
-        If ``None`` then will source the `BINANCE_API_KEY` or
-        `BINANCE_TESTNET_API_KEY` environment variables.
+        If ``None``, the client will work for public market data only.
+        Providing an API key may improve rate limits.
     api_secret : str, optional
         The Binance API secret key.
-        If ``None`` then will source the `BINANCE_API_SECRET` or
-        `BINANCE_TESTNET_API_SECRET` environment variables.
+        If ``None``, the client will work for public market data only.
     key_type : BinanceKeyType, default 'HMAC'
         The private key cryptographic algorithm type.
     account_type : BinanceAccountType, default BinanceAccountType.SPOT

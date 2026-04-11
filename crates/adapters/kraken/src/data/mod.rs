@@ -1,5 +1,5 @@
 // -------------------------------------------------------------------------------------------------
-//  Copyright (C) 2015-2025 Nautech Systems Pty Ltd. All rights reserved.
+//  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 //  https://nautechsystems.io
 //
 //  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
@@ -15,4 +15,5 @@
 
 //! Data client integration module.
 //!
-//! This will integrate the HTTP and WebSocket clients for market data streaming.
+//! Provides market data streaming for Kraken Spot and Futures markets via Rust
+//! HTTP and WebSocket clients exposed to Python.
