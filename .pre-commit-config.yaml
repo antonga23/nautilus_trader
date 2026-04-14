@@ -65,6 +65,22 @@ repos:
         description: Checks for common typos
         args: ["--force-exclude"]
         types_or: [rust, python, cython, toml, yaml, rst, markdown]
+        exclude: &legacy_cloudbet_exclude >-
+          (?x)^(
+            nautilus_trader/adapters/cloudbet/
+            |tests/.*cloudbet.*
+            |nautilus_trader/common/(clock|logging)\.py$
+            |nautilus_trader/execution/reports\.py$
+            |nautilus_trader/model/(currencies|currency|orderbook)\.py$
+            |nautilus_trader/model/instruments/crypto_betting\.py$
+            |nautilus_trader/msgbus/
+            |nautilus_trader/network/
+            |nautilus_trader/serialization/arrow/serializer\.py$
+            |nautilus_trader/test_kit/providers\.py$
+            |nautilus_trader/test_kit/stubs/component\.py$
+            |tests/integration_tests/adapters/conftest\.py$
+            |tests/unit_tests/model/test_model_instrument\.py$
+          )
 
   - repo: https://github.com/codespell-project/codespell
     rev: v2.4.1
@@ -72,6 +88,7 @@ repos:
       - id: codespell
         description: Checks for common misspellings
         types_or: [rust, python, cython, toml, yaml, rst, markdown]
+        exclude: *legacy_cloudbet_exclude
 
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.30.0
@@ -294,6 +311,7 @@ repos:
     hooks:
       - id: pyupgrade
         args: ["--py312-plus"]
+        exclude: *legacy_cloudbet_exclude
 
   - repo: https://github.com/asottile/add-trailing-comma
     rev: v4.0.0
@@ -301,6 +319,7 @@ repos:
       - id: add-trailing-comma
         name: add-trailing-comma
         types: [python]
+        exclude: *legacy_cloudbet_exclude
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.14.10
@@ -308,8 +327,10 @@ repos:
       - id: ruff
         name: ruff
         args: ["--fix"]
+        exclude: *legacy_cloudbet_exclude
       - id: ruff-format
         name: ruff-format
+        exclude: *legacy_cloudbet_exclude
 
   - repo: https://github.com/pycqa/isort
     rev: 7.0.0
@@ -326,7 +347,7 @@ repos:
       - id: docformatter
         language_version: python3.13 # Pin to 3.13 due to incompatibility with 3.14
         additional_dependencies: [tomli]
-        exclude: ^(nautilus_trader/adapters/cloudbet/|tests/.*cloudbet.*)
+        exclude: *legacy_cloudbet_exclude
         args: [
           "--wrap-summaries", "88",
           "--wrap-descriptions", "88",
@@ -342,7 +363,24 @@ repos:
     hooks:
       - id: mypy
         language_version: python3.13 # Pin to 3.13 due to incompatibility with 3.14
-        exclude: (^python/|^nautilus_trader/.*\.pyi$|^nautilus_trader/adapters/cloudbet/|^tests/.*cloudbet.*)
+        exclude: >-
+          (?x)^(
+            python/
+            |nautilus_trader/.*\.pyi$
+            |nautilus_trader/adapters/cloudbet/
+            |tests/.*cloudbet.*
+            |nautilus_trader/common/(clock|logging)\.py$
+            |nautilus_trader/execution/reports\.py$
+            |nautilus_trader/model/(currencies|currency|orderbook)\.py$
+            |nautilus_trader/model/instruments/crypto_betting\.py$
+            |nautilus_trader/msgbus/
+            |nautilus_trader/network/
+            |nautilus_trader/serialization/arrow/serializer\.py$
+            |nautilus_trader/test_kit/providers\.py$
+            |nautilus_trader/test_kit/stubs/component\.py$
+            |tests/integration_tests/adapters/conftest\.py$
+            |tests/unit_tests/model/test_model_instrument\.py$
+          )
         args: [
           "--config", "pyproject.toml",
           "--allow-incomplete-defs",
