@@ -2,8 +2,9 @@
 name: background-monitor
 description:
   Use when monitoring CI, logs, builds, remote scripts, deploys, or long-running
-  commands; run a background watcher that exits only when the desired condition
-  is met instead of polling in the conversation.
+  commands, especially when a wait is likely to exceed 60 seconds; run a
+  background watcher that exits only when the desired condition is met instead
+  of polling in the conversation.
 ---
 
 # Background Monitor
@@ -36,6 +37,9 @@ tail loops from the conversation.
 4. Do not keep issuing `sleep && gh ...` or `tail` polling commands in chat.
 5. When the watcher completes, inspect only the emitted summary and relevant
    logs.
+6. For GitHub validation work in this repository, run the EC2-side
+   `ci-preflight` slice before dispatching a new Actions run when the runner is
+   reachable.
 
 ## Codex Desktop Call Shape
 
@@ -112,3 +116,5 @@ wrapper above.
   unless needed.
 - Kill or replace stale watchers before starting a new watcher for the same
   branch or run.
+- If the watcher exists to guard a GitHub run, do not dispatch that run until
+  local or EC2 preflight has already covered the minimal reproducible slice.

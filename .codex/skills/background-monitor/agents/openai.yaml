@@ -1,0 +1,6 @@
+interface:
+  display_name: "Background Monitor"
+  short_description: "Watch long-running tasks without chat polling"
+  default_prompt: >-
+    Use $background-monitor to watch this long-running task and wake only on
+    failure or terminal completion.

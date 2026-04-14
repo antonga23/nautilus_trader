@@ -15,7 +15,7 @@
 
 from typing import Optional
 
-from nautilus_trader.model.currency import Currency
+from nautilus_trader.model.objects import Currency
 
 from nautilus_trader.config import LiveDataClientConfig, InstrumentProviderConfig, RoutingConfig
 from nautilus_trader.config import LiveExecClientConfig
@@ -34,12 +34,13 @@ class CloudbetDataClientConfig(LiveDataClientConfig, frozen=True):
     market_filter : tuple, optional
     """
 
-    instrument_provider: InstrumentProviderConfig = InstrumentProviderConfig()
+    instrument_provider: InstrumentProviderConfig = InstrumentProviderConfig(load_all=True)
     routing: RoutingConfig = RoutingConfig()
     api_key: Optional[str] = None
     api_url: Optional[str] = None
     market_filter: Optional[tuple] = None
     handle_revised_bars: bool = False
+
 
 class CloudbetInstrumentProviderConfig(InstrumentProviderConfig, frozen=True):
     """
@@ -71,6 +72,7 @@ class CloudbetInstrumentProviderConfig(InstrumentProviderConfig, frozen=True):
     filters = None
     filter_callable = None
     log_warnings = True
+
 
 # TODO: pass this typed config to LiveCloudbetExecClient constructor
 class CloudbetExecClientConfig(LiveExecClientConfig, kw_only=True, frozen=True):

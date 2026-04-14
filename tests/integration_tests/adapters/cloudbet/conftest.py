@@ -2,16 +2,23 @@ from typing import Optional, Union, List
 
 import pytest
 from nautilus_trader.model.currency import Currency
+from nautilus_trader.model.currencies import PLAY_EUR
 
 from nautilus_trader.model.events.account import AccountState
 from nautilus_trader.model.identifiers import Venue, AccountId, TradeId, StrategyId, ClientOrderId
 
 from nautilus_trader.adapters.cloudbet.client.core import CloudbetClient
 from nautilus_trader.adapters.cloudbet.common import VENUE
-from nautilus_trader.adapters.cloudbet.config import CloudbetDataClientConfig, CloudbetExecClientConfig
+from nautilus_trader.adapters.cloudbet.config import (
+    CloudbetDataClientConfig,
+    CloudbetExecClientConfig,
+)
 from nautilus_trader.adapters.cloudbet.data_client import CloudbetDataClient
 from nautilus_trader.adapters.cloudbet.execution import CloudbetLiveExecutionClient
-from nautilus_trader.adapters.cloudbet.factories import CloudbetLiveDataClientFactory, CloudbetLiveExecClientFactory
+from nautilus_trader.adapters.cloudbet.factories import (
+    CloudbetLiveDataClientFactory,
+    CloudbetLiveExecClientFactory,
+)
 from nautilus_trader.adapters.cloudbet.sockets import CloudbetStreamClient
 from nautilus_trader.config import LiveExecClientConfig
 from nautilus_trader.model.instruments.crypto_betting import CryptoBettingInstrument
@@ -25,9 +32,9 @@ from dotenv import dotenv_values, load_dotenv
 from pathlib import Path
 
 project_root = Path(__file__).parents[5]
-env_path = project_root / 'nautilus_trader/adapters/cloudbet/.cloudbet_env'
+env_path = project_root / "nautilus_trader/adapters/cloudbet/.cloudbet_env"
 
-env_path = Path(__file__).parents[4] / '.cloudbet_env'
+env_path = Path(__file__).parents[4] / ".cloudbet_env"
 
 # Loading the environment variables from .cloudbet_env
 # load_dotenv(dotenv_path=env_path)
@@ -36,15 +43,20 @@ cloudbet_secrets = dotenv_values(env_path)
 
 
 @pytest.fixture()
-def exec_client_config(api_key=None, api_url=None, base_currency: Currency = None,
-                       market_filter: Optional[dict] = None) -> CloudbetExecClientConfig:
+def exec_client_config(
+    api_key=None,
+    api_url=None,
+    base_currency: Currency = PLAY_EUR,
+    market_filter: Optional[dict] = None,
+) -> CloudbetExecClientConfig:
     config = CloudbetExecClientConfig(
-        api_key=api_key or cloudbet_secrets.get('CLOUDBET_API_KEY'),  # read from secrets
-        api_url=api_url or cloudbet_secrets.get('CLOUDBET_API_URL'),
+        api_key=api_key or cloudbet_secrets.get("CLOUDBET_API_KEY"),  # read from secrets
+        api_url=api_url or cloudbet_secrets.get("CLOUDBET_API_URL"),
         base_currency=base_currency,
-        market_filter=market_filter
+        market_filter=market_filter,
     )
     return config
+
 
 @pytest.fixture()
 def venue() -> Venue:
@@ -81,6 +93,7 @@ def cloudbet_client(event_loop, logger):
 #     instrument = self.provider.selection_to_instrument(selection)
 #     return instrument
 
+
 @pytest.fixture(autouse=True)
 def instrument():
     return TestInstrumentProvider.crypto_betting_instrument()
@@ -111,12 +124,16 @@ def data_client(
     msgbus,
     cache,
     clock,
-    logger
+    logger,
 ) -> CloudbetDataClient:
-    mocker.patch("nautilus_trader.adapters.cloudbet.factories.get_cached_cloudbet_client",
-                 return_value=cloudbet_client)
-    mocker.patch("nautilus_trader.adapters.cloudbet.factories.get_cached_cloudbet_instrument_provider",
-                 return_value=instrument_provider)
+    mocker.patch(
+        "nautilus_trader.adapters.cloudbet.factories.get_cached_cloudbet_client",
+        return_value=cloudbet_client,
+    )
+    mocker.patch(
+        "nautilus_trader.adapters.cloudbet.factories.get_cached_cloudbet_instrument_provider",
+        return_value=instrument_provider,
+    )
     # instrument_provider.add(instrument)
     data_client = CloudbetLiveDataClientFactory.create(
         loop=event_loop,
@@ -142,12 +159,16 @@ def exec_client(
     cache,
     clock,
     logger,
-    exec_client_config
+    exec_client_config,
 ) -> CloudbetLiveExecutionClient:
-    mocker.patch("nautilus_trader.adapters.cloudbet.factories.get_cached_cloudbet_client",
-                 return_value=cloudbet_client)
-    mocker.patch("nautilus_trader.adapters.cloudbet.factories.get_cached_cloudbet_instrument_provider",
-                 return_value=instrument_provider)
+    mocker.patch(
+        "nautilus_trader.adapters.cloudbet.factories.get_cached_cloudbet_client",
+        return_value=cloudbet_client,
+    )
+    mocker.patch(
+        "nautilus_trader.adapters.cloudbet.factories.get_cached_cloudbet_instrument_provider",
+        return_value=instrument_provider,
+    )
     instrument_provider.add(instrument)
     exec_client = CloudbetLiveExecClientFactory.create(
         loop=event_loop,
@@ -183,48 +204,59 @@ def exec_client(
 #         logger=logger,
 #         message_handler="some callable"
 
+
 @pytest.fixture()
 def account_state() -> AccountState:
     return TestEventStubs.betting_account_state(account_id=AccountId("CLOUDBET-001"))
 
 
 @pytest.fixture(autouse=False)
-def limit_order(instrument_id=None,
-                order_side=None,
-                price=None,
-                quantity=None,
-                time_in_force=None,
-                trader_id: Optional[TradeId] = None,
-                strategy_id: Optional[StrategyId] = None,
-                client_order_id: Optional[ClientOrderId] = None,
-                expire_time=None,
-                tags=None) -> LimitOrder:
-    limit_order = TestExecStubs.limit_order(instrument_id=instrument_id,
-                                            order_side=order_side,
-                                            price=price,
-                                            quantity=quantity,
-                                            time_in_force=time_in_force,
-                                            trader_id=trader_id,
-                                            strategy_id=strategy_id,
-                                            client_order_id=client_order_id,
-                                            expire_time=expire_time,
-                                            tags=tags)
+def limit_order(
+    instrument,
+    instrument_id=None,
+    order_side=None,
+    price=None,
+    quantity=None,
+    time_in_force=None,
+    trader_id: Optional[TradeId] = None,
+    strategy_id: Optional[StrategyId] = None,
+    client_order_id: Optional[ClientOrderId] = None,
+    expire_time=None,
+    tags=None,
+) -> LimitOrder:
+    limit_order = TestExecStubs.limit_order(
+        instrument=instrument,
+        order_side=order_side,
+        price=price,
+        quantity=quantity,
+        time_in_force=time_in_force,
+        trader_id=trader_id,
+        strategy_id=strategy_id,
+        client_order_id=client_order_id,
+        expire_time=expire_time,
+        tags=tags,
+    )
     return limit_order
 
 
 @pytest.fixture(autouse=False)
-def market_order(instrument_id=None,
-                 order_side=None,
-                 quantity=None,
-                 trader_id: Optional[TradeId] = None,
-                 strategy_id: Optional[StrategyId] = None,
-                 client_order_id: Optional[ClientOrderId] = None,
-                 time_in_force=None) -> MarketOrder:
-    market_order = TestExecStubs.market_order(instrument_id=instrument_id,
-                                              order_side=order_side,
-                                              quantity=quantity,
-                                              trader_id=trader_id,
-                                              strategy_id=strategy_id,
-                                              client_order_id=client_order_id,
-                                              time_in_force=time_in_force)
+def market_order(
+    instrument,
+    instrument_id=None,
+    order_side=None,
+    quantity=None,
+    trader_id: Optional[TradeId] = None,
+    strategy_id: Optional[StrategyId] = None,
+    client_order_id: Optional[ClientOrderId] = None,
+    time_in_force=None,
+) -> MarketOrder:
+    market_order = TestExecStubs.market_order(
+        instrument=instrument,
+        order_side=order_side,
+        quantity=quantity,
+        trader_id=trader_id,
+        strategy_id=strategy_id,
+        client_order_id=client_order_id,
+        time_in_force=time_in_force,
+    )
     return market_order

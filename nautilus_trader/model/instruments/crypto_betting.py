@@ -18,12 +18,14 @@ from decimal import Decimal
 from typing import Union, Optional, Any
 
 from nautilus_trader.core.correctness import PyCondition
+
 # from nautilus_trader.core.correctness cimport Condition
 from nautilus_trader.core.rust.model import AssetClass
-from nautilus_trader.core.rust.model import AssetType
-from nautilus_trader.model.currency import Currency
+from nautilus_trader.core.rust.model import InstrumentClass
 from nautilus_trader.model.instruments.base import Instrument
+
 # from nautilus_trader.model.objects cimport Money
+from nautilus_trader.model.objects import Currency
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
 from nautilus_trader.model.objects import Money
@@ -34,7 +36,7 @@ from nautilus_trader.model.identifiers import Venue
 
 
 class CryptoBettingInstrument(Instrument):
-    #TODO: test creation using greyhounds and horse racing
+    # TODO: test creation using greyhounds and horse racing
     """
     Represents an instrument in a crypto betting market.
 
@@ -126,7 +128,9 @@ class CryptoBettingInstrument(Instrument):
         start_time: Optional[str] = None,
         end_time: Optional[str] = None,
         fees: Optional[Any] = None,
-        handicap: Optional[Any] = None, #TODO: Fix a handicap type...eg. tuple[outcome, handicap_value, etc]
+        handicap: Optional[
+            Any
+        ] = None,  # TODO: Fix a handicap type...eg. tuple[outcome, handicap_value, etc]
         trading_status: Optional[str] = None,
         # NB: event_id should be a unique per event but the same across all venues
         event_id: Optional[str] = None,
@@ -167,14 +171,20 @@ class CryptoBettingInstrument(Instrument):
         self.trading_status = trading_status
         self.fees = fees
         self.handicap = handicap
-        self._typed_currency = self.currency if isinstance(self.currency, Currency) else Currency.from_internal_map(currency) #TODO: redundant => currency is already typed as Currency
-        instrument_id = cloudbet_instrument_id(event_id=event_id, market_name=market_name, outcome=outcome, params=params)
+        self._typed_currency = (
+            self.currency
+            if isinstance(self.currency, Currency)
+            else Currency.from_internal_map(currency)
+        )  # TODO: redundant => currency is already typed as Currency
+        instrument_id = cloudbet_instrument_id(
+            event_id=event_id, market_name=market_name, outcome=outcome, params=params
+        )
 
         super().__init__(
             instrument_id=instrument_id,
-            native_symbol=instrument_id.symbol,
-            asset_class=AssetClass.SPORTS_BETTING,
-            asset_type=AssetType.SPOT,
+            raw_symbol=instrument_id.symbol,
+            asset_class=AssetClass.ALTERNATIVE,
+            instrument_class=InstrumentClass.SPORTS_BETTING,
             quote_currency=self._typed_currency,
             is_inverse=False,
             size_precision=4,
@@ -183,23 +193,30 @@ class CryptoBettingInstrument(Instrument):
             size_increment=Quantity(1e-4, precision=4),
             multiplier=Quantity.from_int(1),
             lot_size=Quantity.from_int(1),
-            max_quantity=Quantity(self.max_size, precision=2) if max_size else None, # or float(max_size) != 0 else None,
-            min_quantity=Quantity(self.min_size, precision=2) if min_size else None, # or float(min_size) != 0 else None,
-            max_notional=Money(self.max_size, self._typed_currency) if max_size else None, # or float(max_size) != 0 else None,
-            min_notional=Money(self.min_size, self._typed_currency) if min_size else None, # and float(min_size) != 0 else None,
-            max_price=Price.from_int(100),      # Can be None
+            max_quantity=Quantity(self.max_size, precision=2)
+            if max_size
+            else None,  # or float(max_size) != 0 else None,
+            min_quantity=Quantity(self.min_size, precision=2)
+            if min_size
+            else None,  # or float(min_size) != 0 else None,
+            max_notional=Money(self.max_size, self._typed_currency)
+            if max_size
+            else None,  # or float(max_size) != 0 else None,
+            min_notional=Money(self.min_size, self._typed_currency)
+            if min_size
+            else None,  # and float(min_size) != 0 else None,
+            max_price=Price.from_int(100),  # Can be None
             min_price=Price.from_str(str(price)),
             margin_init=Decimal(1),
             margin_maint=Decimal(1),
             maker_fee=Decimal(0),
             taker_fee=Decimal(0),
             ts_event=time.time_ns(),
-            ts_init=time.time_ns()
+            ts_init=time.time_ns(),
         )
 
-
     @staticmethod
-    def from_dict(values: dict[str, Any]) -> 'CryptoBettingInstrument':
+    def from_dict(values: dict[str, Any]) -> "CryptoBettingInstrument":
         """
         Creates a new `CryptoBettingInstrument` from a dictionary.
 
@@ -215,21 +232,25 @@ class CryptoBettingInstrument(Instrument):
         """
         # Condition.not_none(values, "values")
         # check the type of max_size and min_size
-        if values.get('max_size'):
-            values['max_size'] = float(values['max_size'])
-        if values.get('min_size'):
-            values['min_size'] = float(values['min_size'])
+        if values.get("max_size"):
+            values["max_size"] = float(values["max_size"])
+        if values.get("min_size"):
+            values["min_size"] = float(values["min_size"])
         # typecast the currency
-        if values.get('currency'):
-            values['currency'] = Currency.from_internal_map(values['currency'])
-        if values.get('side'):
-            values['side'] = SelectionSide(values['side'])
+        if values.get("currency"):
+            values["currency"] = Currency.from_internal_map(values["currency"])
+        if values.get("side"):
+            values["side"] = SelectionSide(values["side"])
         data = values.copy()
-        return CryptoBettingInstrument(**{k: v for k, v in data.items() if k not in ('id', 'type')})
+        return CryptoBettingInstrument(**{k: v for k, v in data.items() if k not in ("id", "type")})
 
     # ToDO: add test
     @staticmethod
-    def to_dict(obj: "CryptoBettingInstrument") -> dict[str, Any]: # to allow serialization for Cython use explict type "obj : 'CryptoBettingInstrument'" instead of self
+    def to_dict(
+        obj: "CryptoBettingInstrument",
+    ) -> dict[
+        str, Any
+    ]:  # to allow serialization for Cython use explict type "obj : 'CryptoBettingInstrument'" instead of self
         """
         Converts a `CryptoBettingInstrument` to a dictionary.
 
@@ -238,7 +259,7 @@ class CryptoBettingInstrument(Instrument):
         dict[str, object]
         """
         return {
-            "type": CryptoBettingInstrument.__name__, # necessary for serialization to cache see: nautilus_trader/serialization/base.pyx
+            "type": CryptoBettingInstrument.__name__,  # necessary for serialization to cache see: nautilus_trader/serialization/base.pyx
             "home_name": obj.home_name,
             "away_name": obj.away_name,
             "sport_name": obj.sport_name,
@@ -271,7 +292,7 @@ class CryptoBettingInstrument(Instrument):
 
     @staticmethod
     # TODO: implement venue specific creation helper method
-    def from_venue(venue: Venue, **kwargs) -> 'CryptoBettingInstrument':
+    def from_venue(venue: Venue, **kwargs) -> "CryptoBettingInstrument":
         """
         Creates a new `CryptoBettingInstrument` from a venue.
 
@@ -287,12 +308,10 @@ class CryptoBettingInstrument(Instrument):
         """
         PyCondition.not_none(venue, "venue")
         if venue == Venue.CLOUDBET:
-            if kwargs.get('evevnt'):
-                event = kwargs['event']
-            if kwargs.get('odds'):
-                odds = kwargs['odds']
+            if kwargs.get("evevnt"):
+                event = kwargs["event"]
+            if kwargs.get("odds"):
+                odds = kwargs["odds"]
             # TODO: implement this
         else:
             raise ValueError(f"Unsupported venue: {venue}")
-
-

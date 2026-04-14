@@ -9,7 +9,10 @@ from nautilus_trader.common.logging import Logger
 from nautilus_trader.common.logging import LoggerAdapter
 
 from nautilus_trader.adapters.cloudbet.client.core import CloudbetClient
-from nautilus_trader.adapters.cloudbet.config import CloudbetDataClientConfig, CloudbetExecClientConfig
+from nautilus_trader.adapters.cloudbet.config import (
+    CloudbetDataClientConfig,
+    CloudbetExecClientConfig,
+)
 from nautilus_trader.adapters.cloudbet.data_client import CloudbetDataClient
 from nautilus_trader.adapters.cloudbet.execution import CloudbetLiveExecutionClient
 from nautilus_trader.adapters.cloudbet.providers import CloudbetInstrumentProvider
@@ -18,7 +21,7 @@ from nautilus_trader.live.factories import LiveDataClientFactory
 from nautilus_trader.live.factories import LiveExecClientFactory
 from nautilus_trader.msgbus.bus import MessageBus
 
-from nautilus_trader.model.currency import Currency
+from nautilus_trader.model.objects import Currency
 
 CLIENTS: dict[str, CloudbetClient] = {}
 INSTRUMENT_PROVIDER = None
@@ -147,14 +150,12 @@ class CloudbetLiveDataClientFactory(LiveDataClientFactory):
 
         # Create client
         client = get_cached_cloudbet_client(
-            loop=loop,
-            logger=logger,
-            api_key=config.api_key,
-            api_url=config.api_url
+            loop=loop, logger=logger, api_key=config.api_key, api_url=config.api_url
         )
         provider = get_cached_cloudbet_instrument_provider(
             client=client,
             logger=logger,
+            config=config.instrument_provider,
         )
 
         data_client = CloudbetDataClient(
@@ -166,6 +167,7 @@ class CloudbetLiveDataClientFactory(LiveDataClientFactory):
             logger=logger,
             market_filter=dict(market_filter),
             instrument_provider=provider,
+            config=config,
         )
         return data_client
 
@@ -214,16 +216,10 @@ class CloudbetLiveExecClientFactory(LiveExecClientFactory):
         market_filter: tuple = dict or ()
 
         client = get_cached_cloudbet_client(
-            loop=loop,
-            logger=logger,
-            api_key=config.api_key,
-            api_url=config.api_url
+            loop=loop, logger=logger, api_key=config.api_key, api_url=config.api_url
         )
 
-        provider = get_cached_cloudbet_instrument_provider(
-            client=client,
-            logger=logger
-        )
+        provider = get_cached_cloudbet_instrument_provider(client=client, logger=logger)
 
         # Create client
         exec_client = CloudbetLiveExecutionClient(
@@ -236,6 +232,6 @@ class CloudbetLiveExecClientFactory(LiveExecClientFactory):
             logger=logger,
             market_filter=market_filter,
             instrument_provider=provider,
-            config=config.dict(),
+            config=config,
         )
         return exec_client

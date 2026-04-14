@@ -133,4 +133,4 @@ USDT: Final[Currency] = Currency.from_internal_map("USDT")
 WSB: Final[Currency] = Currency.from_internal_map("WSB")
 XEC: Final[Currency] = Currency.from_internal_map("XEC")
 ZEC: Final[Currency] = Currency.from_internal_map("ZEC")
-PLAY_EUR = Final[Currency] = Currency.from_internal_map("PLAY_EUR") # CLOUDBET TEST CURRENCY
+PLAY_EUR: Final[Currency] = Currency.from_internal_map("PLAY_EUR")  # Cloudbet test currency

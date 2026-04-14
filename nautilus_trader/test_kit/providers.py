@@ -90,8 +90,8 @@ NANOSECONDS_IN_SECOND = 1_000_000_000  # 1 billion nanoseconds in a second
 # from tests.integration_tests.adapters.cloudbet.test_kit import CloudbetTestStubs
 from tests import TESTS_PACKAGE_ROOT
 
-TEST_PATH = pathlib.Path(TESTS_PACKAGE_ROOT + "/integration_tests/adapters/cloudbet/resources/")
-DATA_PATH = pathlib.Path(TESTS_PACKAGE_ROOT + "/test_data/cloudbet")
+TEST_PATH = TESTS_PACKAGE_ROOT / "integration_tests" / "adapters" / "cloudbet" / "resources"
+DATA_PATH = TESTS_PACKAGE_ROOT / "test_data" / "cloudbet"
 
 
 class TestInstrumentProvider:
@@ -581,7 +581,7 @@ class TestInstrumentProvider:
             quote_currency=Currency.from_str(quote_currency),
             price_precision=price_precision,
             size_precision=0,
-            price_increment=Price(1 / 10 ** price_precision, price_precision),
+            price_increment=Price(1 / 10**price_precision, price_precision),
             size_increment=Quantity.from_int(1),
             lot_size=Quantity.from_str("1000"),
             max_quantity=Quantity.from_str("1e7"),
@@ -793,7 +793,9 @@ class TestInstrumentProvider:
     def crypto_betting_instrument(venue: Venue = CLOUDBET_VENUE) -> CryptoBettingInstrument:
         if venue != CLOUDBET_VENUE:
             # TODO: Implement other venues
-            raise NotImplementedError("Getting instruments for venues other than Cloudbet is not yet implemented")
+            raise NotImplementedError(
+                "Getting instruments for venues other than Cloudbet is not yet implemented"
+            )
         else:
             # instrument = CloudbetTestStubs.get_instrument()
             # TODO: fix circular import issue when import from another test kit.
@@ -808,8 +810,9 @@ class TestInstrumentProvider:
             return instrument
 
     @staticmethod
-    def crypto_betting_instruments(venue: Venue = CLOUDBET_VENUE, count=100, sports=None) -> list[
-        CryptoBettingInstrument]:
+    def crypto_betting_instruments(
+        venue: Venue = CLOUDBET_VENUE, count=100, sports=None
+    ) -> list[CryptoBettingInstrument]:
         """
         Retrieves a list of crypto betting instruments from the specified venue.
 
@@ -824,7 +827,9 @@ class TestInstrumentProvider:
         """
         assert count < 553, "count should be less than 554"
         if venue != CLOUDBET_VENUE:
-            raise NotImplementedError("Getting instruments for venues other than Cloudbet is not yet implemented")
+            raise NotImplementedError(
+                "Getting instruments for venues other than Cloudbet is not yet implemented"
+            )
         else:
             # instrument = CloudbetTestStubs.get_instruments()
             # for now we duplicate the code here
@@ -833,12 +838,13 @@ class TestInstrumentProvider:
                 instruments = json.load(json_file)
             # Filter by sports if sports list is provided
             if sports is not None:
-                instruments = [inst for inst in instruments if inst.get('sport_name') in sports]
+                instruments = [inst for inst in instruments if inst.get("sport_name") in sports]
             # type cast the instrument to a CryptoBettingInstrument
             # randomly select an instrument from the array
             instruments = random.sample(instruments, k=min(count, len(instruments)))
-            instruments: List[CryptoBettingInstrument] = [CryptoBettingInstrument.from_dict(instrument) for instrument
-                                                          in instruments]
+            instruments: List[CryptoBettingInstrument] = [
+                CryptoBettingInstrument.from_dict(instrument) for instrument in instruments
+            ]
         return instruments
 
     @staticmethod
@@ -979,7 +985,9 @@ class TestInstrumentProvider:
         )
 
     @staticmethod
-    def matched_crypto_betting_instruments(venue: Venue = CLOUDBET_VENUE, count=5469, sports=None) -> List[List[CryptoBettingInstrument]]:
+    def matched_crypto_betting_instruments(
+        venue: Venue = CLOUDBET_VENUE, count=5469, sports=None
+    ) -> List[List[CryptoBettingInstrument]]:
         """
         Retrieves a list of "matched" crypto betting instruments from the specified venue.
 
@@ -994,14 +1002,19 @@ class TestInstrumentProvider:
         """
         assert count < 5470, "count should be less than 5470"
         if venue != CLOUDBET_VENUE:
-            raise NotImplementedError("Getting instruments for venues other than Cloudbet is not yet implemented")
+            raise NotImplementedError(
+                "Getting instruments for venues other than Cloudbet is not yet implemented"
+            )
         else:
             with open(TEST_PATH / "matching_instruments.json") as json_file:
                 json_instruments = json.load(json_file)
-            matched_instrument_list : List[List[CryptoBettingInstrument]] = []
+            matched_instrument_list: List[List[CryptoBettingInstrument]] = []
             for k in json_instruments:
                 matched_instruments: List[dict[CryptoBettingInstrument]] = k.get(list(k.keys())[0])
-                matched_instruments: List[CryptoBettingInstrument] = [CryptoBettingInstrument.from_dict(matched_instrument) for matched_instrument in matched_instruments]
+                matched_instruments: List[CryptoBettingInstrument] = [
+                    CryptoBettingInstrument.from_dict(matched_instrument)
+                    for matched_instrument in matched_instruments
+                ]
                 matched_instrument_list.append(matched_instruments)
             # Filter by sports if sports list is provided
             if sports is not None:
@@ -1009,7 +1022,9 @@ class TestInstrumentProvider:
                 raise NotImplementedError("Filtering instruments by sport is not yet implemented")
             # type cast the instrument to a CryptoBettingInstrument
             # randomly select an instrument from the array
-            matched_instrument_list = random.sample(matched_instrument_list, k=min(count, len(matched_instrument_list)))
+            matched_instrument_list = random.sample(
+                matched_instrument_list, k=min(count, len(matched_instrument_list))
+            )
         return matched_instrument_list
 
 
