@@ -28,6 +28,7 @@ from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.data.engine import DataEngine
 from nautilus_trader.execution.engine import ExecutionEngine
 from nautilus_trader.live.execution_engine import LiveExecutionEngine
+from nautilus_trader.common.logging import Logger
 from nautilus_trader.model.events import AccountState
 from nautilus_trader.model.events import OrderCanceled
 from nautilus_trader.model.events import OrderFilled
@@ -66,6 +67,11 @@ def clock(request):
 def live_clock():
     clock = LiveClock()
     return clock
+
+
+@pytest.fixture
+def logger():
+    return Logger(name="TEST_LOGGER")
 
 
 @pytest.fixture

@@ -15,9 +15,14 @@ from nautilus_trader.core.uuid import UUID4
 
 from nautilus_trader.accounting.accounts.base import Account
 
-from nautilus_trader.adapters.cloudbet.client.util import cb_bet_to_order_status_report, \
-    cloudbet_timestamp_to_unix_nanos, make_symbol, cloudbet_instrument_id, bet_to_trade_report, \
-    cb_bet_to_position_report
+from nautilus_trader.adapters.cloudbet.client.util import (
+    cb_bet_to_order_status_report,
+    cloudbet_timestamp_to_unix_nanos,
+    make_symbol,
+    cloudbet_instrument_id,
+    bet_to_trade_report,
+    cb_bet_to_position_report,
+)
 from nautilus_trader.adapters.cloudbet.execution import CloudbetLiveExecutionClient
 from nautilus_trader.model.currency import Currency
 
@@ -33,9 +38,18 @@ from nautilus_trader.model.events import AccountState, OrderFilled
 from nautilus_trader.model.instruments import Instrument
 
 from nautilus_trader.adapters.cloudbet.client.core import CloudbetClient
-from nautilus_trader.adapters.cloudbet.client.schema import GetLatestOddsResponse, SelectionStatus, GetEventResponse, \
-    EventStatus, GetAccountInfoResponse, GetAccountCurrencies, GetAccountBalance, GetBetResponse, GetBetHistoryResponse, \
-    BetStatus
+from nautilus_trader.adapters.cloudbet.client.schema import (
+    GetLatestOddsResponse,
+    SelectionStatus,
+    GetEventResponse,
+    EventStatus,
+    GetAccountInfoResponse,
+    GetAccountCurrencies,
+    GetAccountBalance,
+    GetBetResponse,
+    GetBetHistoryResponse,
+    BetStatus,
+)
 from nautilus_trader.adapters.cloudbet.common import CLOUDBET_VENUE
 from nautilus_trader.model.enums import AccountType
 from nautilus_trader.adapters.cloudbet.data_client import CloudbetDataClient
@@ -44,20 +58,23 @@ from nautilus_trader.common.clock import LiveClock, TestClock
 from nautilus_trader.common.enums import LogLevel
 from nautilus_trader.common.logging import Logger
 from nautilus_trader.model.data import BookOrder
-from nautilus_trader.model.data import GenericData
 from nautilus_trader.model.data import InstrumentClose
-from nautilus_trader.model.data import InstrumentStatusUpdate
 from nautilus_trader.model.data import OrderBookDelta
 from nautilus_trader.model.data import OrderBookDeltas
-from nautilus_trader.model.data import Ticker
 from nautilus_trader.model.data import TradeTick
 from nautilus_trader.model.enums import BookAction
 from nautilus_trader.model.enums import BookType
 from nautilus_trader.model.enums import InstrumentCloseType
 from nautilus_trader.model.enums import MarketStatus
 from nautilus_trader.model.enums import OrderSide
-from nautilus_trader.model.identifiers import InstrumentId, AccountId, VenueOrderId, ClientOrderId, PositionId, \
-    StrategyId
+from nautilus_trader.model.identifiers import (
+    InstrumentId,
+    AccountId,
+    VenueOrderId,
+    ClientOrderId,
+    PositionId,
+    StrategyId,
+)
 from nautilus_trader.model.identifiers import Symbol
 from nautilus_trader.model.objects import Price, Money, AccountBalance, Quantity
 
@@ -78,17 +95,21 @@ class TestCloudbetExecutionClient:
     @pytest.mark.asyncio()
     async def test_exec_client_fixture(self, exec_client):
         assert exec_client is not None, f"Expected exec client to be not None, got {exec_client}"
-        assert isinstance(exec_client,
-                          CloudbetLiveExecutionClient), f"Expected exec client to be CloudbetLiveExecutionClient, got {type(exec_client)}"
+        assert isinstance(exec_client, CloudbetLiveExecutionClient), (
+            f"Expected exec client to be CloudbetLiveExecutionClient, got {type(exec_client)}"
+        )
 
     @pytest.mark.asyncio
-    @patch.object(CloudbetClient, 'login', new_callable=AsyncMock, return_value=CloudbetResponses.login())
+    @patch.object(
+        CloudbetClient, "login", new_callable=AsyncMock, return_value=CloudbetResponses.login()
+    )
     async def test_set_account_id_not_none(self, mock_login, exec_client):
         # Call the method under test
         await exec_client.set_account_id(account_id=None)
 
         expected_account_id: AccountId = AccountId(
-            f"{CLOUDBET_VENUE.value}-{mock_login.return_value.uuid.split('-')[0]}")
+            f"{CLOUDBET_VENUE.value}-{mock_login.return_value.uuid.split('-')[0]}"
+        )
         # Assert that the account ID is set correctly
         assert exec_client.account_id == expected_account_id
 
@@ -106,19 +127,23 @@ class TestCloudbetExecutionClient:
             None
         """
         # Mock the necessary methods and responses
-        mock_login = mocker.patch.object(CloudbetClient, 'login')
+        mock_login = mocker.patch.object(CloudbetClient, "login")
         mock_login.return_value = CloudbetResponses.login()
 
-        mock_get_account_currencies = mocker.patch.object(CloudbetClient, 'get_account_currencies')
-        mock_get_account_currencies.return_value = CloudbetResponses.get_account_currencies_success()
+        mock_get_account_currencies = mocker.patch.object(CloudbetClient, "get_account_currencies")
+        mock_get_account_currencies.return_value = (
+            CloudbetResponses.get_account_currencies_success()
+        )
 
-        mock_get_balances = mocker.patch.object(CloudbetClient, 'get_balances')
+        mock_get_balances = mocker.patch.object(CloudbetClient, "get_balances")
         mock_get_balances.side_effect = [
             CloudbetResponses.get_account_balances(),
-            CloudbetResponses.get_account_balances()
+            CloudbetResponses.get_account_balances(),
         ]
 
-        expected_account_id = AccountId(f"{CLOUDBET_VENUE.value}-{mock_login.return_value.uuid.split('-')[0]}")
+        expected_account_id = AccountId(
+            f"{CLOUDBET_VENUE.value}-{mock_login.return_value.uuid.split('-')[0]}"
+        )
         # Assert that no account exists in cache yet
         assert exec_client._cache.account(expected_account_id) is None
 
@@ -128,10 +153,7 @@ class TestCloudbetExecutionClient:
         # Assert that the necessary methods were called with the correct arguments
         # mock_login.assert_called_once()
         mock_get_account_currencies.assert_called_once()
-        mock_get_balances.assert_has_calls([
-            mocker.call('PLAY_EUR'),
-            mocker.call('USDT')
-        ])
+        mock_get_balances.assert_has_calls([mocker.call("PLAY_EUR"), mocker.call("USDT")])
         # when _send_account_state is called, the account state will be sent to the client and an account will be added to the cache
         # we need to check that the account state was sent belonging to the correct account id
         cached_account: Account = exec_client._cache.account(expected_account_id)
@@ -158,19 +180,23 @@ class TestCloudbetExecutionClient:
             None
         """
         # Mock the necessary methods and responses
-        mock_login = mocker.patch.object(CloudbetClient, 'login')
+        mock_login = mocker.patch.object(CloudbetClient, "login")
         mock_login.return_value = CloudbetResponses.login()
 
-        mock_get_account_currencies = mocker.patch.object(CloudbetClient, 'get_account_currencies')
-        mock_get_account_currencies.return_value = CloudbetResponses.get_account_currencies_success()
+        mock_get_account_currencies = mocker.patch.object(CloudbetClient, "get_account_currencies")
+        mock_get_account_currencies.return_value = (
+            CloudbetResponses.get_account_currencies_success()
+        )
 
-        mock_get_balances = mocker.patch.object(CloudbetClient, 'get_balances')
+        mock_get_balances = mocker.patch.object(CloudbetClient, "get_balances")
         mock_get_balances.side_effect = [
             CloudbetResponses.get_account_balances(),
-            Exception("Unable to retrieve balance for currency")
+            Exception("Unable to retrieve balance for currency"),
         ]
 
-        expected_account_id = AccountId(f"{CLOUDBET_VENUE.value}-{mock_login.return_value.uuid.split('-')[0]}")
+        expected_account_id = AccountId(
+            f"{CLOUDBET_VENUE.value}-{mock_login.return_value.uuid.split('-')[0]}"
+        )
         # Assert that no account exists in cache yet
         assert exec_client._cache.account(expected_account_id) is None
         _ = exec_client._cache.account(expected_account_id)
@@ -185,29 +211,54 @@ class TestCloudbetExecutionClient:
         assert (exec_client._cache.account(expected_account_id)).id == expected_account_id
         typed_currency = Currency.from_str(mock_get_account_currencies.return_value.currencies[0])
         balance_amount: str = CloudbetResponses.get_account_balances().amount
-        assert exec_client._cache.account(expected_account_id).balance(typed_currency) == AccountBalance(
+        assert exec_client._cache.account(expected_account_id).balance(
+            typed_currency
+        ) == AccountBalance(
             total=Money(balance_amount, typed_currency),
             locked=Money(0, typed_currency),
             free=Money(balance_amount, typed_currency),
         )
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("login_result, currencies_result, balances_result", [
-        (Exception("Unable to login"), CloudbetResponses.get_account_currencies_success(),
-         CloudbetResponses.get_account_balances()),
-        (CloudbetResponses.login(), Exception("Unable to get account currencies"),
-         CloudbetResponses.get_account_balances()),
-        (CloudbetResponses.login(), Exception("Unable to get account currencies"),
-         Exception("Unable to get balances currencies")),
-        (CloudbetResponses.login(), CloudbetResponses.get_account_balances(),
-         Exception("Unable to retrieve balance for currency")),
-    ])
-    @patch.object(CloudbetClient, 'login', new_callable=AsyncMock)
-    @patch.object(CloudbetClient, 'get_account_currencies', new_callable=AsyncMock)
-    @patch.object(CloudbetClient, 'get_balances', new_callable=AsyncMock)
-    async def test_fails_retrieves_account_info_client_exceptions(self, login, get_account_currencies, get_balances,
-                                                                  login_result, currencies_result, balances_result,
-                                                                  exec_client, mocker):
+    @pytest.mark.parametrize(
+        "login_result, currencies_result, balances_result",
+        [
+            (
+                Exception("Unable to login"),
+                CloudbetResponses.get_account_currencies_success(),
+                CloudbetResponses.get_account_balances(),
+            ),
+            (
+                CloudbetResponses.login(),
+                Exception("Unable to get account currencies"),
+                CloudbetResponses.get_account_balances(),
+            ),
+            (
+                CloudbetResponses.login(),
+                Exception("Unable to get account currencies"),
+                Exception("Unable to get balances currencies"),
+            ),
+            (
+                CloudbetResponses.login(),
+                CloudbetResponses.get_account_balances(),
+                Exception("Unable to retrieve balance for currency"),
+            ),
+        ],
+    )
+    @patch.object(CloudbetClient, "login", new_callable=AsyncMock)
+    @patch.object(CloudbetClient, "get_account_currencies", new_callable=AsyncMock)
+    @patch.object(CloudbetClient, "get_balances", new_callable=AsyncMock)
+    async def test_fails_retrieves_account_info_client_exceptions(
+        self,
+        login,
+        get_account_currencies,
+        get_balances,
+        login_result,
+        currencies_result,
+        balances_result,
+        exec_client,
+        mocker,
+    ):
         """
         Test case for retrieving account state and balances, gracefully handling any errors.
 
@@ -234,8 +285,11 @@ class TestCloudbetExecutionClient:
         result = await exec_client.connection_account_state()
 
         # Check if the method returned None when it was supposed to
-        if isinstance(login_result, Exception) or isinstance(currencies_result, Exception) or isinstance(
-            balances_result, Exception):
+        if (
+            isinstance(login_result, Exception)
+            or isinstance(currencies_result, Exception)
+            or isinstance(balances_result, Exception)
+        ):
             assert result is None
         else:
             assert result is not None
@@ -244,7 +298,6 @@ class TestCloudbetExecutionClient:
 
 
 class TestCloudbetExecutionReports:
-
     def setup(self):
         # Fixture Setup
         self.trader_id = TestIdStubs.trader_id()
@@ -259,9 +312,15 @@ class TestCloudbetExecutionReports:
             clock=clock,
         )
 
-    async def cache_valid_order(self, exec_client: Union[mock.MagicMock, CloudbetLiveExecutionClient],
-                                instruments: list[CryptoBettingInstrument], instrument_id: Optional[InstrumentId],
-                                cached_order: str, bet_history: GetBetHistoryResponse, **kwargs) -> None:
+    async def cache_valid_order(
+        self,
+        exec_client: Union[mock.MagicMock, CloudbetLiveExecutionClient],
+        instruments: list[CryptoBettingInstrument],
+        instrument_id: Optional[InstrumentId],
+        cached_order: str,
+        bet_history: GetBetHistoryResponse,
+        **kwargs,
+    ) -> None:
         """
         Caches a valid order for each instrument in the given list of instruments.
 
@@ -275,16 +334,19 @@ class TestCloudbetExecutionReports:
         Returns:
             None
         """
-        if kwargs.get(
-            'venue_order_id') is not None:  # if parametrize decorator passes non-None venue_order_id, we need to add it to the Cache
-            cached_venue_order_id = kwargs.get('venue_order_id')
+        if (
+            kwargs.get("venue_order_id") is not None
+        ):  # if parametrize decorator passes non-None venue_order_id, we need to add it to the Cache
+            cached_venue_order_id = kwargs.get("venue_order_id")
             order = self.order_factory.limit(
                 instrument_id if instrument_id else instruments[0].id,
                 OrderSide.SELL,
                 Quantity.from_int(10),
                 Price.from_str("8.835"),
             )
-            order.apply(TestEventStubs.order_accepted(order=order, venue_order_id=cached_venue_order_id))
+            order.apply(
+                TestEventStubs.order_accepted(order=order, venue_order_id=cached_venue_order_id)
+            )
             position_id = PositionId(f"{order.instrument_id.symbol.value}-{CLOUDBET_VENUE.value}")
             exec_client._cache.add_order(order=order, position_id=position_id)
 
@@ -312,10 +374,14 @@ class TestCloudbetExecutionReports:
                     # Use the reference_id from the bet as the VenueOrderId
                     cached_venue_order_id = VenueOrderId(bet.reference_id)
                     # print("typed venue_order_id", cached_venue_order_id)
-                    order.apply(TestEventStubs.order_accepted(order=order, venue_order_id=cached_venue_order_id))
+                    order.apply(
+                        TestEventStubs.order_accepted(
+                            order=order, venue_order_id=cached_venue_order_id
+                        )
+                    )
 
                 position_id = PositionId(f"{instr.id}-{CLOUDBET_VENUE.value}")
-                exec_client._cache.add_order(order=order, position_id=position_id, override=True)
+                exec_client._cache.add_order(order=order, position_id=position_id)
                 exec_client._cache.update_order(order=order)
 
     @pytest.fixture()
@@ -338,7 +404,9 @@ class TestCloudbetExecutionReports:
 
     # -- ORDER STATUS REPORTS ------------------------------------------------------------------------
 
-    def test_cloudbet_betstatus_to_order_status_report(self, account_id, instrument, exec_client, clock):
+    def test_cloudbet_betstatus_to_order_status_report(
+        self, account_id, instrument, exec_client, clock
+    ):
         """
         Test case for converting a Cloudbet bet status to an Order Status Report. Assumes the bet has been accepted by Cloudbet but the status needs to be mapped to internal order representation.
 
@@ -374,7 +442,7 @@ class TestCloudbetExecutionReports:
             client_order_id=client_order_id,
             venue_order_id=venue_order_id,
             report_id=report_id,
-            bet_response=bet_response
+            bet_response=bet_response,
         )
 
         # # Assert the generated order status report
@@ -387,11 +455,16 @@ class TestCloudbetExecutionReports:
         assert order_status_report.order_status == bet_response.status.get_order_status()
         assert order_status_report.quantity == Quantity.from_str(str(bet_response.stake))
         assert order_status_report.ts_init == ts_init
-        assert order_status_report.ts_accepted == cloudbet_timestamp_to_unix_nanos(bet_response.create_time)
-        assert order_status_report.ts_last == cloudbet_timestamp_to_unix_nanos(bet_response.create_time)
+        assert order_status_report.ts_accepted == cloudbet_timestamp_to_unix_nanos(
+            bet_response.create_time
+        )
+        assert order_status_report.ts_last == cloudbet_timestamp_to_unix_nanos(
+            bet_response.create_time
+        )
 
-    def test_cached_order_to_order_status_report(self, account_id, instrument, exec_client, clock, trader_id,
-                                                 venue_order_id):
+    def test_cached_order_to_order_status_report(
+        self, account_id, instrument, exec_client, clock, trader_id, venue_order_id
+    ):
         """
         Test case for converting a cached order to an Order Status Report. This assumes the order has reached the exchange and has been accepted, but we are unable to retrieve the order status from the exchange.
 
@@ -424,8 +497,9 @@ class TestCloudbetExecutionReports:
             Price.from_str("2.38"),
         )
 
-        limit_order.apply(TestEventStubs.order_accepted(order=limit_order,
-                                                        venue_order_id=venue_order_id))  # we have to explicitly set the venue order id as it is not set by default
+        limit_order.apply(
+            TestEventStubs.order_accepted(order=limit_order, venue_order_id=venue_order_id)
+        )  # we have to explicitly set the venue order id as it is not set by default
 
         # Invoke the cb_bet_to_order_status_report function
         order_status_report = cb_bet_to_order_status_report(
@@ -436,12 +510,13 @@ class TestCloudbetExecutionReports:
             venue_order_id=limit_order.venue_order_id,
             report_id=report_id,
             bet_response=bet_response,
-            order=limit_order
+            order=limit_order,
         )
         assert isinstance(order_status_report, OrderStatusReport)
 
-    def test_raise_assertion_error_if_neither_order_nor_bet_response_provided(self, account_id, instrument, exec_client,
-                                                                              clock, venue_order_id):
+    def test_raise_assertion_error_if_neither_order_nor_bet_response_provided(
+        self, account_id, instrument, exec_client, clock, venue_order_id
+    ):
         """
         Test whether an `AssertionError` is raised when neither `order` nor `bet_response` is provided.
 
@@ -471,7 +546,7 @@ class TestCloudbetExecutionReports:
                 ts_init=ts_init,
                 client_order_id=client_order_id,
                 venue_order_id=venue_order_id,
-                report_id=report_id
+                report_id=report_id,
             )
 
         # Assert an Assertion Error was raised
@@ -481,20 +556,49 @@ class TestCloudbetExecutionReports:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        "get_bet_status_result, is_exception, client_order_id_is_none, cached_order, venue_order_id", [
-            (CloudbetResponses.get_bet_status_accepted(), False, True, None, "some_venue_id"),  # Test 1
-            (CloudbetResponses.get_bet_status_accepted(), False, False, None, "some_venue_id"),  # Test 2
-            ("No bet status response received from Cloudbet", True, False, "valid_order", "some_venue_id"),  # Test 3
+        "get_bet_status_result, is_exception, client_order_id_is_none, cached_order, venue_order_id",
+        [
+            (
+                CloudbetResponses.get_bet_status_accepted(),
+                False,
+                True,
+                None,
+                "some_venue_id",
+            ),  # Test 1
+            (
+                CloudbetResponses.get_bet_status_accepted(),
+                False,
+                False,
+                None,
+                "some_venue_id",
+            ),  # Test 2
+            (
+                "No bet status response received from Cloudbet",
+                True,
+                False,
+                "valid_order",
+                "some_venue_id",
+            ),  # Test 3
             (None, False, False, "valid_order", "None"),  # Test 4
-        ])
-    @patch.object(CloudbetClient, 'login', new_callable=AsyncMock, return_value=CloudbetResponses.login())
-    @patch.object(CloudbetClient, 'get_bet_status', new_callable=AsyncMock)
-    async def test_successful_order_status_reports(self,
-                                                   get_bet_status, login,
-                                                   get_bet_status_result, is_exception, client_order_id_is_none,
-                                                   cached_order, venue_order_id,
-                                                   exec_client, instrument,
-                                                   limit_order):  # Replace exec_client, instrument, and limit_order with your actual fixtures or objects
+        ],
+    )
+    @patch.object(
+        CloudbetClient, "login", new_callable=AsyncMock, return_value=CloudbetResponses.login()
+    )
+    @patch.object(CloudbetClient, "get_bet_status", new_callable=AsyncMock)
+    async def test_successful_order_status_reports(
+        self,
+        get_bet_status,
+        login,
+        get_bet_status_result,
+        is_exception,
+        client_order_id_is_none,
+        cached_order,
+        venue_order_id,
+        exec_client,
+        instrument,
+        limit_order,
+    ):  # Replace exec_client, instrument, and limit_order with your actual fixtures or objects
         """
         General Overview:
         -----------------
@@ -550,11 +654,16 @@ class TestCloudbetExecutionReports:
             get_bet_status.return_value = get_bet_status_result
 
         # Common setup code
-        instrument_id = cloudbet_instrument_id(event_id=20254973, market_name="soccer.team_win_to_nil", outcome="yes",
-                                               params="team=away")  # Replace with your actual method to create an InstrumentId
+        instrument_id = cloudbet_instrument_id(
+            event_id=20254973,
+            market_name="soccer.team_win_to_nil",
+            outcome="yes",
+            params="team=away",
+        )  # Replace with your actual method to create an InstrumentId
 
-        client_order_id = None if client_order_id_is_none else ClientOrderId(
-            "some_id")  # Replace with your actual method to create a ClientOrderId
+        client_order_id = (
+            None if client_order_id_is_none else ClientOrderId("some_id")
+        )  # Replace with your actual method to create a ClientOrderId
 
         if cached_order == "valid_order":
             order = self.order_factory.limit(
@@ -564,11 +673,11 @@ class TestCloudbetExecutionReports:
                 Price.from_str("8.835"),
             )
             cached_venue_order_id = VenueOrderId("some_venue_order_id")
-            order.apply(TestEventStubs.order_accepted(order=order,
-                                                      venue_order_id=cached_venue_order_id))  # Replace with your actual method to apply an order accepted event
+            order.apply(
+                TestEventStubs.order_accepted(order=order, venue_order_id=cached_venue_order_id)
+            )  # Replace with your actual method to apply an order accepted event
 
-            position_id = PositionId(
-                f"{instrument.id}-{CLOUDBET_VENUE.value}")
+            position_id = PositionId(f"{instrument.id}-{CLOUDBET_VENUE.value}")
             exec_client._cache.add_order(order=order, position_id=position_id)
 
             client_order_id = order.client_order_id
@@ -587,7 +696,7 @@ class TestCloudbetExecutionReports:
         order_status_report = await exec_client.generate_order_status_report(
             instrument_id=instrument_id,
             client_order_id=client_order_id,
-            venue_order_id=actual_venue_order_id
+            venue_order_id=actual_venue_order_id,
         )
 
         # Common assertions
@@ -598,96 +707,141 @@ class TestCloudbetExecutionReports:
     @pytest.mark.parametrize(
         "get_bet_history_result, get_bet_status_result, is_exception, instrument_id_is_none, start, end, open_only, cached_order",
         [
-            (CloudbetResponses.get_bet_history_success(), CloudbetResponses.get_bet_status_accepted(), False, False,
-             None, None,
-             True, "valid_order"),  # Test 1
-            (CloudbetResponses.get_bet_history_success(), CloudbetResponses.get_bet_status_accepted(), False, False,
-             None, None, False, "valid_order"),  # Test 2
-            (CloudbetResponses.get_bet_history_success(), CloudbetResponses.get_bet_status_accepted(), False, True,
-             "2021-10-01",
-             "2021-10-02", False, None),  # Test 3
+            (
+                CloudbetResponses.get_bet_history_success(),
+                CloudbetResponses.get_bet_status_accepted(),
+                False,
+                False,
+                None,
+                None,
+                True,
+                "valid_order",
+            ),  # Test 1
+            (
+                CloudbetResponses.get_bet_history_success(),
+                CloudbetResponses.get_bet_status_accepted(),
+                False,
+                False,
+                None,
+                None,
+                False,
+                "valid_order",
+            ),  # Test 2
+            (
+                CloudbetResponses.get_bet_history_success(),
+                CloudbetResponses.get_bet_status_accepted(),
+                False,
+                True,
+                "2021-10-01",
+                "2021-10-02",
+                False,
+                None,
+            ),  # Test 3
             (None, None, True, False, None, None, False, "valid_order"),  # Test 5
-            (CloudbetResponses.get_bet_history_success(), None, True, True, "20-10-01", "2021-10-02", True,
-             "valid_order"),
+            (
+                CloudbetResponses.get_bet_history_success(),
+                None,
+                True,
+                True,
+                "20-10-01",
+                "2021-10-02",
+                True,
+                "valid_order",
+            ),
             # Test 5
-        ])
-    @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 10)], indirect=["instruments"])  # return 10 instruments
-    @patch.object(CloudbetClient, 'login', new_callable=AsyncMock, return_value=CloudbetResponses.login())
-    @patch.object(CloudbetClient, 'get_bet_history', new_callable=AsyncMock)
-    @patch.object(CloudbetClient, 'get_bet_status', new_callable=AsyncMock)
-    async def test_successful_generate_order_status_multi_reports(self,
-                                                                  get_bet_status, get_bet_history, login,
-                                                                  get_bet_history_result, get_bet_status_result,
-                                                                  is_exception,
-                                                                  instrument_id_is_none, start, end, open_only,
-                                                                  cached_order,
-                                                                  exec_client, instrument, instruments):
+        ],
+    )
+    @pytest.mark.parametrize(
+        "instruments", [(CLOUDBET_VENUE, 10)], indirect=["instruments"]
+    )  # return 10 instruments
+    @patch.object(
+        CloudbetClient, "login", new_callable=AsyncMock, return_value=CloudbetResponses.login()
+    )
+    @patch.object(CloudbetClient, "get_bet_history", new_callable=AsyncMock)
+    @patch.object(CloudbetClient, "get_bet_status", new_callable=AsyncMock)
+    async def test_successful_generate_order_status_multi_reports(
+        self,
+        get_bet_status,
+        get_bet_history,
+        login,
+        get_bet_history_result,
+        get_bet_status_result,
+        is_exception,
+        instrument_id_is_none,
+        start,
+        end,
+        open_only,
+        cached_order,
+        exec_client,
+        instrument,
+        instruments,
+    ):
         """
-        General Overview:
-        -----------------
-        Test case for generating a list of Order Status Reports using the `generate_order_status_reports` method.
-        This test aims to cover multiple scenarios encapsulated by the parametrized inputs.
+         General Overview:
+         -----------------
+         Test case for generating a list of Order Status Reports using the `generate_order_status_reports` method.
+         This test aims to cover multiple scenarios encapsulated by the parametrized inputs.
 
-        Parameters Explained:
-        ---------------------
-            - get_bet_history (AsyncMock): A patched version of the 'get_bet_history' method.
-            - get_bet_status (AsyncMock): A patched version of the 'get_bet_status' method.
-            - login (AsyncMock): A patched version of the 'login' method.
-            - get_bet_history_result: Mock result for 'get_bet_history'.
-            - get_bet_status_result: Mock result for 'get_bet_status'.
-            - is_exception (bool): If 'get_bet_history' or 'get_bet_status' should raise an exception.
-            - instrument_id_is_none (bool): If the instrument_id should be None.
-            - start (str): The start date in string format.
-            - end (str): The end date in string format.
-            - open_only (bool): If only open orders should be returned.
-            - cached_order (str): Specifies if a valid order should be cached.
-            - exec_client: The CloudbetLiveExecutionClient fixture.
-            - instrument: The instrument fixture.
+         Parameters Explained:
+         ---------------------
+             - get_bet_history (AsyncMock): A patched version of the 'get_bet_history' method.
+             - get_bet_status (AsyncMock): A patched version of the 'get_bet_status' method.
+             - login (AsyncMock): A patched version of the 'login' method.
+             - get_bet_history_result: Mock result for 'get_bet_history'.
+             - get_bet_status_result: Mock result for 'get_bet_status'.
+             - is_exception (bool): If 'get_bet_history' or 'get_bet_status' should raise an exception.
+             - instrument_id_is_none (bool): If the instrument_id should be None.
+             - start (str): The start date in string format.
+             - end (str): The end date in string format.
+             - open_only (bool): If only open orders should be returned.
+             - cached_order (str): Specifies if a valid order should be cached.
+             - exec_client: The CloudbetLiveExecutionClient fixture.
+             - instrument: The instrument fixture.
 
-        Test Cases Explained:
-        ---------------------
-        Test 1/Param set 1:
-            - 'get_bet_history' and 'get_bet_status' return valid responses.
-            - Only instrument_id is provided.
-            - no start and end date provided so a cached order will be used
-            - `open_only` is True.
-            - Expected: A list of OrderStatusReports generated from cached orders that are open.
-            - Assertions: Expect a list of OrderStatusReports.
+         Test Cases Explained:
+         ---------------------
+         Test 1/Param set 1:
+             - 'get_bet_history' and 'get_bet_status' return valid responses.
+             - Only instrument_id is provided.
+             - no start and end date provided so a cached order will be used
+             - `open_only` is True.
+             - Expected: A list of OrderStatusReports generated from cached orders that are open.
+             - Assertions: Expect a list of OrderStatusReports.
 
-        Test 1/Param set 2:
-            - 'get_bet_history' and 'get_bet_status' return valid responses.
-            - Only instrument_id is provided.
-            - no start and end date provided so a cached order will be used
-            - `open_only` is False.
-            - Expected: A list of OrderStatusReports generated from cached orders, regardless of their status.
-            - Assertions: Expect a list of OrderStatusReports.
+         Test 1/Param set 2:
+             - 'get_bet_history' and 'get_bet_status' return valid responses.
+             - Only instrument_id is provided.
+             - no start and end date provided so a cached order will be used
+             - `open_only` is False.
+             - Expected: A list of OrderStatusReports generated from cached orders, regardless of their status.
+             - Assertions: Expect a list of OrderStatusReports.
 
-       Test 3/Param set 3:
-            - 'get_bet_history' and 'get_bet_status' return valid responses.
-            - No instrument_id, but start and end dates are provided.
-            - `open_only` is False.
-            - Expected: A list of OrderStatusReports generated for all orders within the specified time frame.
+        Test 3/Param set 3:
+             - 'get_bet_history' and 'get_bet_status' return valid responses.
+             - No instrument_id, but start and end dates are provided.
+             - `open_only` is False.
+             - Expected: A list of OrderStatusReports generated for all orders within the specified time frame.
 
-        Test 4/Param set 4:
-            - 'get_bet_history' and 'get_bet_status' raise exceptions.
-            - Only instrument_id is provided.
-            - `open_only` is False.
-            - Assumes successful login and valid instrument.
-            - Assertions: Expect an empty list.
-            - Expected: An empty list since both get_bet_history and get_bet_status raise exceptions.
+         Test 4/Param set 4:
+             - 'get_bet_history' and 'get_bet_status' raise exceptions.
+             - Only instrument_id is provided.
+             - `open_only` is False.
+             - Assumes successful login and valid instrument.
+             - Assertions: Expect an empty list.
+             - Expected: An empty list since both get_bet_history and get_bet_status raise exceptions.
 
 
-        Test 5/Param set 5:
-            - 'get_bet_history' returns valid response, but 'get_bet_status' raises exception.
-            - Both start and end dates are provided.
-            - instrument_id is not provided
-            - `open_only` is True.
-            - Assumes successful login and valid instrument.
-            - Expected: An empty list since 'get_bet_status' fails.
-            - Assertions: Expect an empty list.
+         Test 5/Param set 5:
+             - 'get_bet_history' returns valid response, but 'get_bet_status' raises exception.
+             - Both start and end dates are provided.
+             - instrument_id is not provided
+             - `open_only` is True.
+             - Assumes successful login and valid instrument.
+             - Expected: An empty list since 'get_bet_status' fails.
+             - Assertions: Expect an empty list.
 
-        Returns:
-            None
+         Returns:
+             None
         """
         # Mock the side effects or return values based on `is_exception`
         if is_exception:
@@ -701,7 +855,9 @@ class TestCloudbetExecutionReports:
         instrument_id = None if instrument_id_is_none else instrument.id
 
         if get_bet_history_result is not None:
-            await self.cache_valid_order(exec_client, instruments, instrument_id, cached_order, get_bet_history_result)
+            await self.cache_valid_order(
+                exec_client, instruments, instrument_id, cached_order, get_bet_history_result
+            )
 
         # Convert string date to pandas Timestamp if start and end are not None
         start_ts = pd.Timestamp(start) if start else None
@@ -710,14 +866,14 @@ class TestCloudbetExecutionReports:
         # Call the function under test
         try:
             order_status_reports = await exec_client.generate_order_status_reports(
-                instrument_id=instrument_id,
-                start=start_ts,
-                end=end_ts,
-                open_only=open_only
+                instrument_id=instrument_id, start=start_ts, end=end_ts, open_only=open_only
             )
         except Exception as e:
             if is_exception:
-                assert str(e) == "Failed to fetch bet history" or str(e) == "Failed to fetch bet status"
+                assert (
+                    str(e) == "Failed to fetch bet history"
+                    or str(e) == "Failed to fetch bet status"
+                )
                 return
             else:
                 raise AssertionError(f"Unexpected exception: {e}")
@@ -735,24 +891,40 @@ class TestCloudbetExecutionReports:
     # -- UNHAPPY PATH GENERATE ORDER STATUS REPORTS ------------------------------------------------------------------------
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        "get_bet_status_result, is_exception, client_order_id_is_none, cached_order, venue_order_id", [
+        "get_bet_status_result, is_exception, client_order_id_is_none, cached_order, venue_order_id",
+        [
             ("ExceptionMessage", True, True, None, "some_venue_id"),
             # # Test 1: get_bet_status raises an exception, no client ID, no cached order
             ("ExceptionMessage", True, True, "valid_order", "some_venue_id"),
             # # Test 2: get_bet_status raises an exception, client ID from cached order, no venue_order_id
-            (CloudbetResponses.get_bet_status_accepted(), True, False, "valid_order_no_venue_id", None),
+            (
+                CloudbetResponses.get_bet_status_accepted(),
+                True,
+                False,
+                "valid_order_no_venue_id",
+                None,
+            ),
             # Test 3: get_bet_status raises an exception, client ID from cached order, venue_order_id is None
             (CloudbetResponses.get_bet_status_accepted(), False, False, None, None),
             # Test 4: order with client ID is not found in cached. venue_order_id is None
-        ])
-    @patch.object(CloudbetClient, 'login', new_callable=AsyncMock, return_value=CloudbetResponses.login())
-    @patch.object(CloudbetClient, 'get_bet_status', new_callable=AsyncMock)
-    async def test_unsuccessful_order_status_reports(self,
-                                                     get_bet_status, login,
-                                                     get_bet_status_result, is_exception, client_order_id_is_none,
-                                                     cached_order, venue_order_id,
-                                                     exec_client,
-                                                     instrument):  # Replace exec_client, instrument with your actual fixtures or objects
+        ],
+    )
+    @patch.object(
+        CloudbetClient, "login", new_callable=AsyncMock, return_value=CloudbetResponses.login()
+    )
+    @patch.object(CloudbetClient, "get_bet_status", new_callable=AsyncMock)
+    async def test_unsuccessful_order_status_reports(
+        self,
+        get_bet_status,
+        login,
+        get_bet_status_result,
+        is_exception,
+        client_order_id_is_none,
+        cached_order,
+        venue_order_id,
+        exec_client,
+        instrument,
+    ):  # Replace exec_client, instrument with your actual fixtures or objects
         """
         General Overview:
         -----------------
@@ -794,8 +966,12 @@ class TestCloudbetExecutionReports:
             get_bet_status.return_value = get_bet_status_result
 
         # Common setup code similar to the happy path test
-        instrument_id = cloudbet_instrument_id(event_id=20254973, market_name="soccer.team_win_to_nil", outcome="yes",
-                                               params="team=away")  # Replace with your actual method to create an InstrumentId
+        instrument_id = cloudbet_instrument_id(
+            event_id=20254973,
+            market_name="soccer.team_win_to_nil",
+            outcome="yes",
+            params="team=away",
+        )  # Replace with your actual method to create an InstrumentId
         client_order_id = None if client_order_id_is_none else ClientOrderId("some_client_order_id")
 
         if cached_order == "valid_order" or cached_order == "valid_order_no_venue_id":
@@ -812,7 +988,9 @@ class TestCloudbetExecutionReports:
             else:
                 # Apply the order_accepted event, which should have a venue_order_id
                 cached_venue_order_id = VenueOrderId("some_venue_order_id")
-                order.apply(TestEventStubs.order_accepted(order=order, venue_order_id=cached_venue_order_id))
+                order.apply(
+                    TestEventStubs.order_accepted(order=order, venue_order_id=cached_venue_order_id)
+                )
 
             position_id = PositionId(f"{instrument.id}-{CLOUDBET_VENUE.value}")
             exec_client._cache.add_order(order=order, position_id=position_id)
@@ -821,14 +999,16 @@ class TestCloudbetExecutionReports:
             if client_order_id_is_none:
                 client_order_id = None
             else:
-                client_order_id = order.client_order_id  # Ensure client_order_id is set to a valid value
+                client_order_id = (
+                    order.client_order_id
+                )  # Ensure client_order_id is set to a valid value
 
         actual_venue_order_id = VenueOrderId(venue_order_id) if venue_order_id is not None else None
         # Call the function under test
         order_status_report = await exec_client.generate_order_status_report(
             instrument_id=instrument_id,
             client_order_id=client_order_id,
-            venue_order_id=actual_venue_order_id
+            venue_order_id=actual_venue_order_id,
         )
 
         # Assertions for unsuccessful scenarios
@@ -838,22 +1018,62 @@ class TestCloudbetExecutionReports:
 
     # ------------------------------------------ TRADE REPORT----------------------------------------------------
     @pytest.mark.parametrize(
-        "bet_response, cached_order, is_exception, client_order_id, venue_order_id, report_id, ts_init", [
-            (CloudbetResponses.get_bet_status_win(), None, False, None, "some_venue_id", UUID4(), 123456789),
+        "bet_response, cached_order, is_exception, client_order_id, venue_order_id, report_id, ts_init",
+        [
+            (
+                CloudbetResponses.get_bet_status_win(),
+                None,
+                False,
+                None,
+                "some_venue_id",
+                UUID4(),
+                123456789,
+            ),
             # Test 1
-            (None, "valid_order", False, "client_order_1", "some_venue_id", UUID4(), 123456789),  # Test 2
-            ("No bet status response received from Cloudbet", None, True, "client_order_1", "some_venue_id", UUID4(),
-             123456789),  # Test 3
-            (CloudbetResponses.get_bet_status_win(), "valid_order", False, "client_order_1", "some_venue_id",
-             UUID4(), 123456789)  # Test 4
-        ])
-    @patch.object(CloudbetClient, 'get_bet_status', new_callable=AsyncMock)
-    def test_bet_to_trade_report(self,
-                                 get_bet_status,
-                                 bet_response, cached_order, is_exception, client_order_id, venue_order_id, report_id,
-                                 ts_init,
-                                 account_id, instrument,
-                                 exec_client):  # Replace account_id, instrument_id with your actual fixtures or objects
+            (
+                None,
+                "valid_order",
+                False,
+                "client_order_1",
+                "some_venue_id",
+                UUID4(),
+                123456789,
+            ),  # Test 2
+            (
+                "No bet status response received from Cloudbet",
+                None,
+                True,
+                "client_order_1",
+                "some_venue_id",
+                UUID4(),
+                123456789,
+            ),  # Test 3
+            (
+                CloudbetResponses.get_bet_status_win(),
+                "valid_order",
+                False,
+                "client_order_1",
+                "some_venue_id",
+                UUID4(),
+                123456789,
+            ),  # Test 4
+        ],
+    )
+    @patch.object(CloudbetClient, "get_bet_status", new_callable=AsyncMock)
+    def test_bet_to_trade_report(
+        self,
+        get_bet_status,
+        bet_response,
+        cached_order,
+        is_exception,
+        client_order_id,
+        venue_order_id,
+        report_id,
+        ts_init,
+        account_id,
+        instrument,
+        exec_client,
+    ):  # Replace account_id, instrument_id with your actual fixtures or objects
         """
         General Overview:
         -----------------
@@ -915,16 +1135,24 @@ class TestCloudbetExecutionReports:
             else:
                 # Use the reference_id from the bet as the VenueOrderId
                 cached_venue_order_id = VenueOrderId(
-                    CloudbetResponses.get_bet_status_win().reference_id)  # have to patch this even if it's not used
-                order.apply(TestEventStubs.order_accepted(order=order, venue_order_id=cached_venue_order_id))
+                    CloudbetResponses.get_bet_status_win().reference_id
+                )  # have to patch this even if it's not used
+                order.apply(
+                    TestEventStubs.order_accepted(order=order, venue_order_id=cached_venue_order_id)
+                )
 
             position_id = PositionId(
-                f"{instrument_id}-{CLOUDBET_VENUE.value}")  # TODO: set position_id to venue_order_id
+                f"{instrument_id}-{CLOUDBET_VENUE.value}"
+            )  # TODO: set position_id to venue_order_id
             exec_client._cache.add_order(order=order, position_id=position_id)
             cached_order = order
 
-        typed_venue_order_id = VenueOrderId(venue_order_id) if cached_venue_order_id is None else cached_venue_order_id
-        typed_client_order_id = ClientOrderId(client_order_id) if client_order_id is not None else None
+        typed_venue_order_id = (
+            VenueOrderId(venue_order_id) if cached_venue_order_id is None else cached_venue_order_id
+        )
+        typed_client_order_id = (
+            ClientOrderId(client_order_id) if client_order_id is not None else None
+        )
 
         # Invoke the bet_to_trade_report function
         try:
@@ -936,7 +1164,7 @@ class TestCloudbetExecutionReports:
                 ts_init=ts_init,
                 venue_order_id=typed_venue_order_id,
                 report_id=report_id,
-                client_order_id=typed_client_order_id
+                client_order_id=typed_client_order_id,
             )
             assert isinstance(trade_report, TradeReport)
             # TODO: Replace with more specific assertions for a valid bet response or cached order
@@ -951,33 +1179,116 @@ class TestCloudbetExecutionReports:
     @pytest.mark.parametrize(
         "instrument_id, venue_order_id, start, end, get_bet_status_response, get_bet_history_response, cached_order, is_exception, expected_reports_count",
         [
-            ("some_instrument_id", None, "20-10-01", "2021-10-02", None, CloudbetResponses.get_bet_history_success(),
-             "invalid_order", False, 21),  # Test 1, uses bet history exclusively
-            (None, "some_venue_order_id", None, None, CloudbetResponses.get_bet_status_win(),
-             CloudbetResponses.get_bet_history_success(), "valid_order", False, 1),  # Test 2
             (
-            None, None, "20-10-01", "2021-10-02", None, CloudbetResponses.get_bet_history_mixed_status(), "valid_order",
-            False, 9),  # Test 3
-            (None, None, "20-10-01", "2021-10-02", None, CloudbetResponses.get_bet_history_success(), "invalid_order",
-             False, 0),  # Test 4 # no valid orders, no instruments so can't construct Trade Report
-            ("some_instrument_id", None, None, None, None, None, None, True, 0),  # Test 5 : Exception case
-            ("some_instrument_id", None, None, None, None, CloudbetResponses.get_bet_history_success(), "valid_order",
-             True, 10),  # Test 6
-            ("some_instrument_id", "some_venue_order_id", None, None, CloudbetResponses.get_bet_status_win(),
-             CloudbetResponses.get_bet_history_success(), "valid_order", False, 1),  # Test 7
-            ("some_instrument_id", "some_venue_order_id", None, None, None, None, None, True, 0)
+                "some_instrument_id",
+                None,
+                "20-10-01",
+                "2021-10-02",
+                None,
+                CloudbetResponses.get_bet_history_success(),
+                "invalid_order",
+                False,
+                21,
+            ),  # Test 1, uses bet history exclusively
+            (
+                None,
+                "some_venue_order_id",
+                None,
+                None,
+                CloudbetResponses.get_bet_status_win(),
+                CloudbetResponses.get_bet_history_success(),
+                "valid_order",
+                False,
+                1,
+            ),  # Test 2
+            (
+                None,
+                None,
+                "20-10-01",
+                "2021-10-02",
+                None,
+                CloudbetResponses.get_bet_history_mixed_status(),
+                "valid_order",
+                False,
+                9,
+            ),  # Test 3
+            (
+                None,
+                None,
+                "20-10-01",
+                "2021-10-02",
+                None,
+                CloudbetResponses.get_bet_history_success(),
+                "invalid_order",
+                False,
+                0,
+            ),  # Test 4 # no valid orders, no instruments so can't construct Trade Report
+            (
+                "some_instrument_id",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                True,
+                0,
+            ),  # Test 5 : Exception case
+            (
+                "some_instrument_id",
+                None,
+                None,
+                None,
+                None,
+                CloudbetResponses.get_bet_history_success(),
+                "valid_order",
+                True,
+                10,
+            ),  # Test 6
+            (
+                "some_instrument_id",
+                "some_venue_order_id",
+                None,
+                None,
+                CloudbetResponses.get_bet_status_win(),
+                CloudbetResponses.get_bet_history_success(),
+                "valid_order",
+                False,
+                1,
+            ),  # Test 7
+            ("some_instrument_id", "some_venue_order_id", None, None, None, None, None, True, 0),
             # Test 8: Exception case
-        ]
+        ],
     )
-    @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 10)], indirect=["instruments"])  # return 10 instruments
-    @patch.object(CloudbetClient, 'get_bet_status', new_callable=AsyncMock)
-    @patch.object(CloudbetClient, 'get_bet_history', new_callable=AsyncMock,
-                  return_value=CloudbetResponses.get_bet_history_success())
+    @pytest.mark.parametrize(
+        "instruments", [(CLOUDBET_VENUE, 10)], indirect=["instruments"]
+    )  # return 10 instruments
+    @patch.object(CloudbetClient, "get_bet_status", new_callable=AsyncMock)
+    @patch.object(
+        CloudbetClient,
+        "get_bet_history",
+        new_callable=AsyncMock,
+        return_value=CloudbetResponses.get_bet_history_success(),
+    )
     # TODO: refactor docstring as per the test cases
-    async def test_generate_trade_reports(self, get_bet_history, get_bet_status, instrument_id, venue_order_id, start,
-                                          end, get_bet_status_response, get_bet_history_response, cached_order,
-                                          is_exception,
-                                          expected_reports_count, account_id, instrument, instruments, exec_client):
+    async def test_generate_trade_reports(
+        self,
+        get_bet_history,
+        get_bet_status,
+        instrument_id,
+        venue_order_id,
+        start,
+        end,
+        get_bet_status_response,
+        get_bet_history_response,
+        cached_order,
+        is_exception,
+        expected_reports_count,
+        account_id,
+        instrument,
+        instruments,
+        exec_client,
+    ):
         """
         General Overview:
         -----------------
@@ -1059,23 +1370,33 @@ class TestCloudbetExecutionReports:
 
         if cached_order is not None:
             try:
-                await self.cache_valid_order(exec_client, instruments, instrument_id, cached_order,
-                                             CloudbetResponses.get_bet_history_success(), kwargs=venue_order_id)
+                await self.cache_valid_order(
+                    exec_client,
+                    instruments,
+                    instrument_id,
+                    cached_order,
+                    CloudbetResponses.get_bet_history_success(),
+                    kwargs=venue_order_id,
+                )
             except Exception as e:
                 print(e)
         # random_bet_ref = CloudbetResponses.get_bet_history_success().bets[0].reference_id
-        typed_venue_order_id = VenueOrderId(
-            CloudbetResponses.get_bet_history_success().bets[0].reference_id) if venue_order_id is not None else None
+        typed_venue_order_id = (
+            VenueOrderId(CloudbetResponses.get_bet_history_success().bets[0].reference_id)
+            if venue_order_id is not None
+            else None
+        )
         try:
             # Invoke the generate_trade_reports function
             trade_reports: list[TradeReport] = await exec_client.generate_trade_reports(
                 instrument_id=instrument_id,
                 venue_order_id=typed_venue_order_id,
                 start=start_ts,
-                end=end_ts
+                end=end_ts,
             )
-            assert len(
-                trade_reports) == expected_reports_count  # Replace with more specific assertions based on your needs
+            assert (
+                len(trade_reports) == expected_reports_count
+            )  # Replace with more specific assertions based on your needs
         except Exception as e:
             if is_exception:
                 assert isinstance(e, Exception("Failed to fetch bet status"))
@@ -1087,26 +1408,72 @@ class TestCloudbetExecutionReports:
 
     # ------------------------------------------ PositionStatusReport----------------------------------------------------
     @pytest.mark.parametrize(
-        "bet_response, cached_order, is_exception, client_order_id, venue_order_id, report_id, ts_init, position", [
-            (CloudbetResponses.get_bet_status_win(), None, False, None, "some_venue_id", UUID4(), 123456789, None),
+        "bet_response, cached_order, is_exception, client_order_id, venue_order_id, report_id, ts_init, position",
+        [
+            (
+                CloudbetResponses.get_bet_status_win(),
+                None,
+                False,
+                None,
+                "some_venue_id",
+                UUID4(),
+                123456789,
+                None,
+            ),
             # Test 1 - Valid bet response, no order or position provided
-            (None, "valid_order", False, "client_order_1", "some_venue_id", UUID4(), 123456789, None),
+            (
+                None,
+                "valid_order",
+                False,
+                "client_order_1",
+                "some_venue_id",
+                UUID4(),
+                123456789,
+                None,
+            ),
             # Test 2 - No bet response, valid order provided, no position provided
-            ("No bet status response received from Cloudbet", None, True, "client_order_1", "some_venue_id", UUID4(),
-             123456789, None),
+            (
+                "No bet status response received from Cloudbet",
+                None,
+                True,
+                "client_order_1",
+                "some_venue_id",
+                UUID4(),
+                123456789,
+                None,
+            ),
             # Test 3 - Exception case, no bet response or order provided, no position provided
-            (CloudbetResponses.get_bet_status_win(), "valid_order", False, "client_order_1", "some_venue_id", UUID4(),
-             123456789, None),
+            (
+                CloudbetResponses.get_bet_status_win(),
+                "valid_order",
+                False,
+                "client_order_1",
+                "some_venue_id",
+                UUID4(),
+                123456789,
+                None,
+            ),
             # Test 4 - Valid bet response and order provided, no position
             (None, None, False, None, "some_venue_id", UUID4(), 123456789, "valid_position"),
             # Test 5 - No bet response or order, position provided
-        ]
+        ],
     )
-    @patch.object(CloudbetClient, 'get_bet_status', new_callable=AsyncMock)
-    def test_cb_bet_to_position_report(self,
-                                       get_bet_status,
-                                       bet_response, cached_order, is_exception, client_order_id, venue_order_id,
-                                       report_id, ts_init, position, account_id, instrument, exec_client):
+    @patch.object(CloudbetClient, "get_bet_status", new_callable=AsyncMock)
+    def test_cb_bet_to_position_report(
+        self,
+        get_bet_status,
+        bet_response,
+        cached_order,
+        is_exception,
+        client_order_id,
+        venue_order_id,
+        report_id,
+        ts_init,
+        position,
+        account_id,
+        instrument,
+        exec_client,
+    ):
         """
         General Overview:
         -----------------
@@ -1170,15 +1537,22 @@ class TestCloudbetExecutionReports:
             else:
                 # Use the reference_id from the bet as the VenueOrderId
                 cached_venue_order_id = VenueOrderId(
-                    CloudbetResponses.get_bet_status_win().reference_id)  # have to patch this even if it's not used
-                order.apply(TestEventStubs.order_accepted(order=order, venue_order_id=cached_venue_order_id))
+                    CloudbetResponses.get_bet_status_win().reference_id
+                )  # have to patch this even if it's not used
+                order.apply(
+                    TestEventStubs.order_accepted(order=order, venue_order_id=cached_venue_order_id)
+                )
 
             position_id = PositionId(f"{instrument_id}-{CLOUDBET_VENUE.value}")
             exec_client._cache.add_order(order=order, position_id=position_id)
             cached_order = order
 
-        typed_venue_order_id = VenueOrderId(venue_order_id) if cached_venue_order_id is None else cached_venue_order_id
-        typed_client_order_id = ClientOrderId(client_order_id) if client_order_id is not None else None
+        typed_venue_order_id = (
+            VenueOrderId(venue_order_id) if cached_venue_order_id is None else cached_venue_order_id
+        )
+        typed_client_order_id = (
+            ClientOrderId(client_order_id) if client_order_id is not None else None
+        )
 
         if position:
             # position_id = PositionId(f"{instrument_id}-{CLOUDBET_VENUE.value}")
@@ -1187,8 +1561,11 @@ class TestCloudbetExecutionReports:
             price: Price = Price.from_str("8.835")
             quantity = Quantity.from_int(10)
             time_in_force: TimeInForce = TimeInForce.GTC
-            strategy_id: StrategyId = self.order_factory.strategy_id if self.order_factory.strategy_id is not None else StrategyId(
-                "S-123456")
+            strategy_id: StrategyId = (
+                self.order_factory.strategy_id
+                if self.order_factory.strategy_id is not None
+                else StrategyId("S-123456")
+            )
             position_id: PositionId = PositionId(f"{instrument_id}-{CLOUDBET_VENUE.value}")
             limit_order = self.order_factory.limit(
                 instrument_id,
@@ -1216,14 +1593,16 @@ class TestCloudbetExecutionReports:
                 order=cached_order,
                 bet_response=bet_response,
                 client_order_id=typed_client_order_id,
-                position=position
+                position=position,
             )
 
-            assert isinstance(report, PositionStatusReport), "Report must be an instance of PositionStatusReport"
+            assert isinstance(report, PositionStatusReport), (
+                "Report must be an instance of PositionStatusReport"
+            )
             assert report.venue_position_id == PositionId(
-                f"{typed_venue_order_id.value.split('-')[-1]}-{CLOUDBET_VENUE}")
+                f"{typed_venue_order_id.value.split('-')[-1]}-{CLOUDBET_VENUE}"
+            )
             assert instrument_id == report.instrument_id
-
 
         except Exception as e:
             if is_exception:
@@ -1237,44 +1616,94 @@ class TestCloudbetExecutionReports:
         [
             # Case 1: Valid response with bets matching the criteria
             (
-            CloudbetResponses.get_bet_history_mixed_status(), None, 'instrument_id_1', '2021-10-01', '2021-10-02', True,
-            9),
+                CloudbetResponses.get_bet_history_mixed_status(),
+                None,
+                "instrument_id_1",
+                "2021-10-01",
+                "2021-10-02",
+                True,
+                9,
+            ),
             # get_bet_history_mixed_status has 9 valid "accepted" bets => expected_result_length = 9
-
             # Case 2: Valid response but no bets match the criteria
-            (CloudbetResponses.get_bet_history_no_bets(), None, 'instrument_id_1', '2021-10-01', '2021-10-02', True, 0),
-
+            (
+                CloudbetResponses.get_bet_history_no_bets(),
+                None,
+                "instrument_id_1",
+                "2021-10-01",
+                "2021-10-02",
+                True,
+                0,
+            ),
             # Case 3: Exception raised when fetching bet history
-            (Exception("Failed to fetch bet history"), Exception, 'instrument_id_1', '2021-10-01', '2021-10-02', False,
-             None),
-
+            (
+                Exception("Failed to fetch bet history"),
+                Exception,
+                "instrument_id_1",
+                "2021-10-01",
+                "2021-10-02",
+                False,
+                None,
+            ),
             # Case 4: Instrument ID provided, relevant positions found in the cache
-            (CloudbetResponses.get_bet_history_mixed_status(), None, 'instrument_id_1', None, None, True, 9),  # fail
-
+            (
+                CloudbetResponses.get_bet_history_mixed_status(),
+                None,
+                "instrument_id_1",
+                None,
+                None,
+                True,
+                9,
+            ),  # fail
             # Case 5: Instrument ID provided, no relevant positions in cache
-            (CloudbetResponses.get_bet_history_success(), None, 'instrument_id_2', None, None, False, 0),
-
+            (
+                CloudbetResponses.get_bet_history_success(),
+                None,
+                "instrument_id_2",
+                None,
+                None,
+                False,
+                0,
+            ),
             # Case 6: Time range provided, successful fetch and process
-            (CloudbetResponses.get_bet_history_mixed_status(), None, None, '2021-10-01', '2021-10-02', True, 9),
-
+            (
+                CloudbetResponses.get_bet_history_mixed_status(),
+                None,
+                None,
+                "2021-10-01",
+                "2021-10-02",
+                True,
+                9,
+            ),
             # Case 7: Time range provided, no bets in the range
-            (CloudbetResponses.get_bet_history_success(), None, None, '2023-01-01', '2023-01-02', False, 0),
-
+            (
+                CloudbetResponses.get_bet_history_success(),
+                None,
+                None,
+                "2023-01-01",
+                "2023-01-02",
+                False,
+                0,
+            ),
             # Case 8: Neither instrument ID nor time range provided
             (None, AssertionError, None, None, None, False, None),
-        ]
+        ],
     )
-    @patch.object(CloudbetClient, 'get_bet_history', new_callable=AsyncMock)
-    async def test_generate_position_status_reports(self,
-                                                    get_bet_history,
-                                                    get_bet_history_result,
-                                                    expected_exception,
-                                                    instrument_id,
-                                                    start,
-                                                    end,
-                                                    valid_position,
-                                                    expected_result_length,
-                                                    account_id, instrument, exec_client):
+    @patch.object(CloudbetClient, "get_bet_history", new_callable=AsyncMock)
+    async def test_generate_position_status_reports(
+        self,
+        get_bet_history,
+        get_bet_history_result,
+        expected_exception,
+        instrument_id,
+        start,
+        end,
+        valid_position,
+        expected_result_length,
+        account_id,
+        instrument,
+        exec_client,
+    ):
         """
         General Overview:
         -----------------
@@ -1351,10 +1780,19 @@ class TestCloudbetExecutionReports:
 
         if valid_position:
             for bet in get_bet_history_result.bets:
-                if bet.status in [BetStatus.PARTIAL, BetStatus.HALF_LOSS, BetStatus.HALF_WIN,
-                                  BetStatus.PUSH, BetStatus.LOSS, BetStatus.WIN, BetStatus.ACCEPTED]:
+                if bet.status in [
+                    BetStatus.PARTIAL,
+                    BetStatus.HALF_LOSS,
+                    BetStatus.HALF_WIN,
+                    BetStatus.PUSH,
+                    BetStatus.LOSS,
+                    BetStatus.WIN,
+                    BetStatus.ACCEPTED,
+                ]:
                     order_side = choice([OrderSide.BUY, OrderSide.SELL])
-                    position_id = PositionId(f"{bet.reference_id.split('-')[-1]}-{CLOUDBET_VENUE.value}")
+                    position_id = PositionId(
+                        f"{bet.reference_id.split('-')[-1]}-{CLOUDBET_VENUE.value}"
+                    )
                     cached_venue_order_id = VenueOrderId(str(bet.reference_id))
                     limit_order: LimitOrder = self.order_factory.limit(
                         instrument_id if instrument_id else instrument.id,
@@ -1370,16 +1808,21 @@ class TestCloudbetExecutionReports:
                         strategy_id=self.strategy_id,
                         last_px=limit_order.price,
                         account_id=account_id,
-                        venue_order_id=cached_venue_order_id
+                        venue_order_id=cached_venue_order_id,
                     )
                     exec_client._cache.add_order(order=limit_order, position_id=position_id)
                     position: Position = Position(instrument=instrument, fill=fill)
-                    exec_client._cache.add_position(position=position,
-                                                    oms_type=OmsType.HEDGING)  # OmsType.HEDGING => multiple positions per instrument
-                    limit_order.apply(TestEventStubs.order_accepted(order=limit_order,
-                                                                    venue_order_id=cached_venue_order_id))  # Replace with your actual method to apply an order accepted event
+                    exec_client._cache.add_position(
+                        position=position, oms_type=OmsType.HEDGING
+                    )  # OmsType.HEDGING => multiple positions per instrument
+                    limit_order.apply(
+                        TestEventStubs.order_accepted(
+                            order=limit_order, venue_order_id=cached_venue_order_id
+                        )
+                    )  # Replace with your actual method to apply an order accepted event
                     exec_client._cache.update_order(
-                        order=limit_order)  # Tres important!! => if we don't udpate the Order the Cache's mapping between Client Order ID and Venue Order ID will be broken
+                        order=limit_order
+                    )  # Tres important!! => if we don't udpate the Order the Cache's mapping between Client Order ID and Venue Order ID will be broken
                     # print("Cached Client Order ID:", exec_client._cache.client_order_id(cached_venue_order_id))
                     # print("Cached Client Order ID:", exec_client._cache.client_order_id(limit_order.venue_order_id)) # self._index_order_ids.get(venue_order_id)
                     # exec_client._cache.update_order(order=limit_order)
@@ -1389,21 +1832,19 @@ class TestCloudbetExecutionReports:
         if expected_exception:
             with pytest.raises(expected_exception):
                 await exec_client.generate_position_status_reports(
-                    instrument_id=instrument_id,
-                    start=start_ts,
-                    end=end_ts
+                    instrument_id=instrument_id, start=start_ts, end=end_ts
                 )
         else:
             position_status_reports = await exec_client.generate_position_status_reports(
-                instrument_id=instrument_id,
-                start=start_ts,
-                end=end_ts
+                instrument_id=instrument_id, start=start_ts, end=end_ts
             )
 
             # Assertions
             assert len(position_status_reports) == expected_result_length
             if expected_result_length > 0:
-                assert all(isinstance(report, PositionStatusReport) for report in position_status_reports)
+                assert all(
+                    isinstance(report, PositionStatusReport) for report in position_status_reports
+                )
 
     # ------------------------------------------ PositionStatusReport---------------------------------------------------
     # --------------------------------------------TEST CONNECTION HANDLERS ----------------------------------------------
@@ -1417,10 +1858,14 @@ class TestCloudbetExecutionClientConnect:
         # TODO: test with a live stream
         # Arrange, Act
         stream_connect.side_effect = None  # No side effect for now
-        assert exec_client.is_connected is False, f"Expected client to be disconnected, got {exec_client.is_connected}"
+        assert exec_client.is_connected is False, (
+            f"Expected client to be disconnected, got {exec_client.is_connected}"
+        )
         await exec_client._connect()
         # Assert that underlying _client component is connected
-        assert exec_client._client.connected, f"Expected client to be connected, got {exec_client._client.connected}"
+        assert exec_client._client.connected, (
+            f"Expected client to be connected, got {exec_client._client.connected}"
+        )
 
     @pytest.mark.asyncio()
     @pytest.mark.parametrize(
@@ -1428,19 +1873,39 @@ class TestCloudbetExecutionClientConnect:
         [
             (None, None, 0, 1),  # Both tasks complete without exceptions
             (Exception("Stream connect failed"), None, 1, 1),  # Stream connect throws exception
-            (None, Exception("Account state connection failed"), 0, 1),  # Account state throws exception
-            (Exception("Stream connect failed"), Exception("Account state connection failed"), 1, 1),
+            (
+                None,
+                Exception("Account state connection failed"),
+                0,
+                1,
+            ),  # Account state throws exception
+            (
+                Exception("Stream connect failed"),
+                Exception("Account state connection failed"),
+                1,
+                1,
+            ),
             # Both tasks throw exceptions
         ],
     )
     @patch("nautilus_trader.adapters.cloudbet.sockets.CloudbetStreamClient.connect")
-    @patch.object(CloudbetLiveExecutionClient, 'connection_account_state', new_callable=AsyncMock)
-    @patch.object(CloudbetLiveExecutionClient, '_log', new_callable=PropertyMock)
-    @patch.object(CloudbetStreamClient, 'is_connected', new_callable=PropertyMock)
-    async def test_connect_tasks(self, mock_stream_is_connected, mock_logger, mock_connection_account_state,
-                                 mock_stream_connect, stream_connect_exception,
-                                 account_state_exception, expected_stream_call_count, expected_account_state_call_count,
-                                 exec_client, account_state, portfolio):
+    @patch.object(CloudbetLiveExecutionClient, "connection_account_state", new_callable=AsyncMock)
+    @patch.object(CloudbetLiveExecutionClient, "_log", new_callable=PropertyMock)
+    @patch.object(CloudbetStreamClient, "is_connected", new_callable=PropertyMock)
+    async def test_connect_tasks(
+        self,
+        mock_stream_is_connected,
+        mock_logger,
+        mock_connection_account_state,
+        mock_stream_connect,
+        stream_connect_exception,
+        account_state_exception,
+        expected_stream_call_count,
+        expected_account_state_call_count,
+        exec_client,
+        account_state,
+        portfolio,
+    ):
         """
         General Overview:
         -----------------
@@ -1496,15 +1961,20 @@ class TestCloudbetExecutionClientConnect:
             if stream_connect_exception:
                 raise stream_connect_exception
             else:
-                return iter(())  # Return an empty iterator to simulate successful connection without further actions.
+                return iter(
+                    ()
+                )  # Return an empty iterator to simulate successful connection without further actions.
 
         mock_stream_connect.side_effect = side_effect_callable
         # mock_stream_connect.side_effect = stream_connect_exception or exec_client.stream.is_connected is True
 
         # print("side effect ", mock_stream_connect.side_effect)
-        mock_connection_account_state.side_effect = account_state_exception or exec_client._msgbus.send(
-            endpoint=f"Portfolio.update_account",
-            msg=account_state,
+        mock_connection_account_state.side_effect = (
+            account_state_exception
+            or exec_client._msgbus.send(
+                endpoint=f"Portfolio.update_account",
+                msg=account_state,
+            )
         )
         # Act
         await exec_client._connect()
@@ -1512,13 +1982,15 @@ class TestCloudbetExecutionClientConnect:
         assert mock_connection_account_state.call_count == expected_account_state_call_count
 
         if stream_connect_exception is None:
-            assert exec_client.stream.is_connected is True, f"Expected streaming client to be connected, got {exec_client.stream.is_connected}"
+            assert exec_client.stream.is_connected is True, (
+                f"Expected streaming client to be connected, got {exec_client.stream.is_connected}"
+            )
             # assert mock_stream_connect.call_count == expected_stream_call_count
         # TODO: this is not the best way to assert the mock logger, but it works for now...too convoluted
         # After the _connect coroutine has been awaited, we want to inspect the mock logger for any error calls.
         # We do this by iterating through all calls made to the mock_logger and filtering for those that
         # are error method calls. We create a list of these specific calls for further inspection.
-        error_calls = [call for call in mock_logger.mock_calls if call[0] == '().error']
+        error_calls = [call for call in mock_logger.mock_calls if call[0] == "().error"]
 
         # We now have two conditions to assert based on whether exceptions were expected.
         # We check if the stream connection was supposed to fail.
@@ -1528,8 +2000,9 @@ class TestCloudbetExecutionClientConnect:
             # We check this by asserting that any call in error_calls contains the string "Stream connect failed".
             # The assert statement will raise an AssertionError if the condition is False, which means
             # the error call was not found when it was expected.
-            assert any("Stream connect failed" in str(call) for call in
-                       error_calls), "Error not logged for stream connect failure"
+            assert any("Stream connect failed" in str(call) for call in error_calls), (
+                "Error not logged for stream connect failure"
+            )
 
         # Similarly, we check if the account state connection was supposed to fail.
         if account_state_exception is not None:
@@ -1537,8 +2010,9 @@ class TestCloudbetExecutionClientConnect:
             # one error call recorded with the message "Account state connection failed".
             # We check this by asserting that any call in error_calls contains the string "Account state connection failed".
             # The assert statement here serves the same purpose as above, confirming that the error was logged.
-            assert any("Account state connection failed" in str(call) for call in
-                       error_calls), "Error not logged for account state failure"
+            assert any("Account state connection failed" in str(call) for call in error_calls), (
+                "Error not logged for account state failure"
+            )
         # Check that the portfolio balances are as expected
         # This part depends on what the expected outcome is for the portfolio balances after _connect
         # For example, if no exceptions, the balances should be updated, otherwise not
@@ -1547,20 +2021,26 @@ class TestCloudbetExecutionClientConnect:
             portfolio_dict: dict = portfolio.account(venue=CLOUDBET_VENUE).balances()
             portfolio_account_balance: Optional[AccountBalance] = None
             for currency, account_balance in portfolio_dict.items():
-                if currency.code == "GBP":  # Assuming you're looking for the Currency with code "GBP"
+                if (
+                    currency.code == "GBP"
+                ):  # Assuming you're looking for the Currency with code "GBP"
                     # Now you can access account_balance
                     portfolio_account_balance = account_balance
                     break
             account_state_dict: dict = account_state.balances[0].to_dict()
             portfolio_account_balance_dict: AccountBalance = portfolio_account_balance.to_dict()
-            assert account_state_dict == portfolio_account_balance_dict, f"Expected account balance to be {portfolio_account_balance_dict}, got {account_state_dict}"
+            assert account_state_dict == portfolio_account_balance_dict, (
+                f"Expected account balance to be {portfolio_account_balance_dict}, got {account_state_dict}"
+            )
             # Additional asserts for _watch_stream_task
 
     @pytest.mark.asyncio
-    @patch.object(CloudbetStreamClient, 'disconnect', new_callable=AsyncMock)
-    @patch.object(CloudbetClient, 'disconnect', new_callable=AsyncMock)
-    @patch.object(CloudbetLiveExecutionClient, '_log', new_callable=PropertyMock)
-    async def test_disconnect(self, mock_log, mock_client_disconnect, mock_stream_disconnect, exec_client):
+    @patch.object(CloudbetStreamClient, "disconnect", new_callable=AsyncMock)
+    @patch.object(CloudbetClient, "disconnect", new_callable=AsyncMock)
+    @patch.object(CloudbetLiveExecutionClient, "_log", new_callable=PropertyMock)
+    async def test_disconnect(
+        self, mock_log, mock_client_disconnect, mock_stream_disconnect, exec_client
+    ):
         """
         Test the CloudbetLiveExecutionClient's ability to disconnect both the streaming socket and the client sessions.
         This test ensures that the necessary clean-up procedures are called and appropriate log messages are emitted.
@@ -1588,13 +2068,16 @@ class TestCloudbetExecutionClientConnect:
         # Assert
         mock_stream_disconnect.assert_awaited_once()
         mock_client_disconnect.assert_awaited_once()
-        assert mock_log.return_value.info.call_count == 2, "Expected two info log messages to be emitted."
-        mock_log.return_value.info.assert_has_calls([
-            call("Closing streaming socket..."),
-            call("Closing CloudbetClient sessions...")
-        ], any_order=True)
+        assert mock_log.return_value.info.call_count == 2, (
+            "Expected two info log messages to be emitted."
+        )
+        mock_log.return_value.info.assert_has_calls(
+            [call("Closing streaming socket..."), call("Closing CloudbetClient sessions...")],
+            any_order=True,
+        )
 
     # --------------------------------------------TEST CONNECTION HANDLERS ---------------------------------------------
+
 
 class TestCloudbetExecutionCommand:
     def setup(self):
@@ -1610,6 +2093,7 @@ class TestCloudbetExecutionCommand:
             strategy_id=self.strategy_id,
             clock=clock,
         )
+
     @pytest.mark.asyncio()
     @pytest.mark.parametrize(
         "valid_cache_instrument, order_has_price, place_bet_response, expected_order_status, expected_exception",
@@ -1621,15 +2105,29 @@ class TestCloudbetExecutionCommand:
             ("valid_instrument", True, Exception("Some exception"), "rejected", Exception),
         ],
     )
-    @patch.object(CloudbetLiveExecutionClient, '_cache')
-    @patch.object(CloudbetLiveExecutionClient, 'generate_order_submitted')
-    @patch.object(CloudbetLiveExecutionClient, 'generate_order_accepted')
-    @patch.object(CloudbetLiveExecutionClient, 'generate_order_rejected')
-    @patch.object(CloudbetClient, 'place_bets', new_callable=AsyncMock)
-    async def test_submit_order(self, mock_place_bets, mock_generate_order_rejected,
-                                mock_generate_order_accepted, mock_generate_order_submitted,mock_cache,
-                                valid_cache_instrument, order_has_price, place_bet_response, expected_order_status, expected_exception,
-                                exec_client, exec_engine, instrument, account_id, clock):
+    @patch.object(CloudbetLiveExecutionClient, "_cache")
+    @patch.object(CloudbetLiveExecutionClient, "generate_order_submitted")
+    @patch.object(CloudbetLiveExecutionClient, "generate_order_accepted")
+    @patch.object(CloudbetLiveExecutionClient, "generate_order_rejected")
+    @patch.object(CloudbetClient, "place_bets", new_callable=AsyncMock)
+    async def test_submit_order(
+        self,
+        mock_place_bets,
+        mock_generate_order_rejected,
+        mock_generate_order_accepted,
+        mock_generate_order_submitted,
+        mock_cache,
+        valid_cache_instrument,
+        order_has_price,
+        place_bet_response,
+        expected_order_status,
+        expected_exception,
+        exec_client,
+        exec_engine,
+        instrument,
+        account_id,
+        clock,
+    ):
         """
         Tests the _submit_order method of CloudbetLiveExecutionClient.
 
@@ -1666,9 +2164,9 @@ class TestCloudbetExecutionCommand:
             - Expected Behavior: Order submission process is aborted due to invalid instrument, order is rejected.
         """
         # Arrange
-        order_side : OrderSide = choice([OrderSide.BUY, OrderSide.SELL])
-        order_quantity : int = random.randint(1, 100)
-        order_price : str = str(round(random.uniform(1, 20), 2))
+        order_side: OrderSide = choice([OrderSide.BUY, OrderSide.SELL])
+        order_quantity: int = random.randint(1, 100)
+        order_price: str = str(round(random.uniform(1, 20), 2))
 
         if order_has_price:
             order: LimitOrder = self.order_factory.limit(
@@ -1723,5 +2221,4 @@ class TestCloudbetExecutionCommand:
             #         )
 
     # -------------------------------------------TEST COMMAND HANDLERS---------------------------------------------------
-    #-------------------------------------------TEST COMMAND HANDLERS---------------------------------------------------
-
+    # -------------------------------------------TEST COMMAND HANDLERS---------------------------------------------------

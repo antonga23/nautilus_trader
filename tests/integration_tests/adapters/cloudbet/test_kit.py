@@ -1,28 +1,40 @@
 import json
-import json
 import pathlib
 import random
 from asyncio import Future
 from typing import List, Optional
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import msgspec
 from aiohttp import ClientResponse
 
 from nautilus_trader.adapters.cloudbet.client.core import CloudbetClient
-from nautilus_trader.adapters.cloudbet.client.schema import GetAccountInfoResponse, GetSportsResponse, \
-    GetEventsForSportResponse, GetBetResponse, GetBetHistoryResponse, GetAccountCurrencies, GetAccountBalance, \
-    GetLatestOddsResponse, Selection, GetEventResponse
-from nautilus_trader.adapters.cloudbet.client.util import extract_cloudbet_symbol, cloudbet_instrument_id
+from nautilus_trader.adapters.cloudbet.client.schema import (
+    GetAccountInfoResponse,
+    GetSportsResponse,
+    GetEventsForSportResponse,
+    GetBetResponse,
+    GetBetHistoryResponse,
+    GetAccountCurrencies,
+    GetAccountBalance,
+    GetLatestOddsResponse,
+    Selection,
+    GetEventResponse,
+)
+from nautilus_trader.adapters.cloudbet.client.util import (
+    extract_cloudbet_symbol,
+    cloudbet_instrument_id,
+)
 from nautilus_trader.adapters.cloudbet.common import CLOUDBET_VENUE
 from nautilus_trader.adapters.cloudbet.providers import CloudbetInstrumentProvider
+from nautilus_trader.config import InstrumentProviderConfig
 from nautilus_trader.model.identifiers import InstrumentId, Symbol
 from nautilus_trader.model.instruments.crypto_betting import CryptoBettingInstrument
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
 from tests import TESTS_PACKAGE_ROOT
 
-TEST_PATH = pathlib.Path(TESTS_PACKAGE_ROOT + "/integration_tests/adapters/cloudbet/resources/")
-DATA_PATH = pathlib.Path(TESTS_PACKAGE_ROOT + "/test_data/cloudbet")
+TEST_PATH = TESTS_PACKAGE_ROOT / "integration_tests" / "adapters" / "cloudbet" / "resources"
+DATA_PATH = TESTS_PACKAGE_ROOT / "test_data" / "cloudbet"
 
 test_api_key = "eyJhbGciOiJSUzI1NiIsImtpZCI6IkhKcDkyNnF3ZXBjNnF3LU9rMk4zV05pXzBrRFd6cEdwTzAxNlRJUjdRWDAiLCJ0eXAiOiJKV1QifQ.eyJhY2Nlc3NfdGllciI6InRyYWRpbmciLCJleHAiOjIwMDI2MjM5MDgsImlhdCI6MTY4NzI2MzkwOCwianRpIjoiMzlkMTgwODYtNWYxNy00Y2QxLTg5NDEtODU1YzQ4ODAyNWYyIiwic3ViIjoiOGY1OGFiNTAtOGRlMi00N2EwLTkxZjYtMDQzMzg1YWMxOTE3IiwidGVuYW50IjoiY2xvdWRiZXQiLCJ1dWlkIjoiOGY1OGFiNTAtOGRlMi00N2EwLTkxZjYtMDQzMzg1YWMxOTE3In0.Sn7cONVxnz3hmbiWYh8TB0jK_yx86rZ6S-Pd2bw1b0WTA5MK88nHbYmGtHC8Wu8tDegvE5dK_bo-Ra0pcB50Hg-oa_1IkLTh3XwG7aT6tfzg61Qj0_vfkPhw2UPjVrSGw3w8bRxFNXldB3ls1xk2C-5M-f-PA7aPSoG5ebXOGsjmno-rV7HQJ_48xjF8QgLEtt9daxHQAmQ8DNzoAwKJ2ILZHg09GAL2Lfi5m48NMYAUYgInn20QIJVlcDqljltPUG5JQPtWGlVsyMIDz1QwobpcxjdE3zbhHnES64kD3eqjuKX52vMgmeDLgJvth5LbzTgxgHhZl2t9lyr_-x7lig"
 test_api_url = "https://sports-api.cloudbet.com/pub"
@@ -45,12 +57,12 @@ def mock_cloudbet_request(obj, response, attr="request"):
 
 
 class CloudbetTestStubs:
-
     @staticmethod
     def instrument_provider(cloudbet_client) -> CloudbetInstrumentProvider:
         return CloudbetInstrumentProvider(
             client=cloudbet_client,
             logger=TestComponentStubs.logger(),
+            config=InstrumentProviderConfig(load_all=True),
         )
 
     @staticmethod
@@ -67,8 +79,8 @@ class CloudbetTestStubs:
         client = CloudbetClient(
             loop=loop,
             logger=logger,
-            api_key=test_api_key, # TODO: replace test key with an empty string
-            api_url=test_api_url,# TODO: replace test key with an empty string
+            api_key=test_api_key,  # TODO: replace test key with an empty string
+            api_url=test_api_url,  # TODO: replace test key with an empty string
         )
 
         # TODO: finish implementing this method and re-run Cloubet Client test suite, handle cases where enpoitn returns Exceptions, failure, success, etc for each endpoint
@@ -94,9 +106,21 @@ class CloudbetTestStubs:
         # client.request = MagicMock()  # type: ignore
         # client.request.side_effect = request
 
+        client.get_sports = AsyncMock(return_value=CloudbetResponses.get_sports())  # type: ignore[method-assign]
+
+        async def get_events_for_sport_side_effect(*args, **kwargs):
+            sport_key = kwargs.get("sport_key")
+            if sport_key is None and args:
+                sport_key = args[0]
+            return CloudbetResponses.get_events_for_sport(sport_key=sport_key)
+
+        client.get_events_for_sport = AsyncMock(  # type: ignore[method-assign]
+            side_effect=get_events_for_sport_side_effect,
+        )
+
         return client
 
-    @staticmethod # TODO: move to test_kit_providers or create a util function for calling those methods
+    @staticmethod  # TODO: move to test_kit_providers or create a util function for calling those methods
     def get_instrument_id(filename: str = "instrument_id_data.json") -> InstrumentId:
         """
         Retrieves an instrument ID from a JSON file.
@@ -111,12 +135,12 @@ class CloudbetTestStubs:
             instrument_ids = json.load(json_file)
         # randomly select an instrument id from the array
         instrument_id_symbol = Symbol(random.sample(instrument_ids, k=1)[0])
-        instrument_id = InstrumentId(instrument_id_symbol,CLOUDBET_VENUE)
+        instrument_id = InstrumentId(instrument_id_symbol, CLOUDBET_VENUE)
         # event_id, market_name, outcome, params = extract_cloudbet_symbol(instrument_id)
         # instrument_id = cloudbet_instrument_id(event_id, market_name, outcome, params)
         return instrument_id
 
-    @staticmethod # TODO: move to test_kit_providers or create a util function for calling those methods
+    @staticmethod  # TODO: move to test_kit_providers or create a util function for calling those methods
     def get_instrument_ids(count: int = 100, filename: str = "instrument_id_data.json"):
         """
         Retrieves a specified number of instrument IDs from a JSON file.
@@ -148,22 +172,33 @@ class CloudbetTestStubs:
         :return: A list of Selection objects based on the provided kwargs.
         :rtype: List[Selection]
         """
-        if kwargs.get('sport'):
+        if kwargs.get("sport"):
             try:
-                selections: List[Selection] = CloudbetTestStubs.load(f"{kwargs['sport']}_selections.json", response_type=List[Selection])
+                selections: List[Selection] = CloudbetTestStubs.load(
+                    f"{kwargs['sport']}_selections.json", response_type=List[Selection]
+                )
             # if a file not found, use the default selections
             except FileNotFoundError:
-                selections: List[Selection] = CloudbetTestStubs.load("default_selections.json", response_type=List[Selection])
+                selections: List[Selection] = CloudbetTestStubs.load(
+                    "default_selections.json", response_type=List[Selection]
+                )
             except KeyError:
-                selections: List[Selection] = CloudbetTestStubs.load("default_selections.json", response_type=List[Selection])
+                selections: List[Selection] = CloudbetTestStubs.load(
+                    "default_selections.json", response_type=List[Selection]
+                )
             except Exception:
-                selections: List[Selection] = CloudbetTestStubs.load("default_selections.json", response_type=List[Selection])
+                selections: List[Selection] = CloudbetTestStubs.load(
+                    "default_selections.json", response_type=List[Selection]
+                )
         else:
-            selections: List[Selection] = CloudbetTestStubs.load("default_selections.json", response_type=List[Selection])
-        if kwargs.get('count'):
-            return selections[:kwargs['count']]
+            selections: List[Selection] = CloudbetTestStubs.load(
+                "default_selections.json", response_type=List[Selection]
+            )
+        if kwargs.get("count"):
+            return selections[: kwargs["count"]]
         else:
             return selections
+
 
 class CloudbetResponses:
     @staticmethod
@@ -171,7 +206,9 @@ class CloudbetResponses:
         # optionally pass the response type as a keyword argument
         if "response_type" in kwargs:
             response_type = kwargs["response_type"]
-            return msgspec.json.decode((TEST_PATH / "responses" / filename).read_bytes(), type=response_type)
+            return msgspec.json.decode(
+                (TEST_PATH / "responses" / filename).read_bytes(), type=response_type
+            )
         else:
             return msgspec.json.decode((TEST_PATH / "responses" / filename).read_bytes())
 
@@ -186,80 +223,104 @@ class CloudbetResponses:
     @staticmethod
     def get_events_for_sport(**sport) -> GetEventsForSportResponse:
         # check if a sport key was passed
-        if 'sport_key' in sport:
-            if sport['sport_key'] is 'soccer':
-                return CloudbetResponses.load("get_events_for_sport_soccer.json", response_type=GetEventsForSportResponse)
-            elif sport['sport_key'] is 'soccer':
-                return CloudbetResponses.load("get_events_for_sport_soccer.json", response_type=GetEventsForSportResponse)
-            elif sport['sport_key'] is 'tennis':
-                return CloudbetResponses.load("get_events_for_sport_tennis.json", response_type=GetEventsForSportResponse)
-            elif sport['sport_key'] is 'baseball':
-                return CloudbetResponses.load("get_events_for_sport_baseball.json", response_type=GetEventsForSportResponse)
-            elif sport['sport_key'] is 'basketball':
-                return CloudbetResponses.load("get_events_for_sport_basketball.json", response_type=GetEventsForSportResponse)
+        if "sport_key" in sport:
+            if sport["sport_key"] == "soccer":
+                return CloudbetResponses.load(
+                    "get_events_for_sport_soccer.json", response_type=GetEventsForSportResponse
+                )
+            elif sport["sport_key"] == "soccer":
+                return CloudbetResponses.load(
+                    "get_events_for_sport_soccer.json", response_type=GetEventsForSportResponse
+                )
+            elif sport["sport_key"] == "tennis":
+                return CloudbetResponses.load(
+                    "get_events_for_sport_tennis.json", response_type=GetEventsForSportResponse
+                )
+            elif sport["sport_key"] == "baseball":
+                return CloudbetResponses.load(
+                    "get_events_for_sport_baseball.json", response_type=GetEventsForSportResponse
+                )
+            elif sport["sport_key"] == "basketball":
+                return CloudbetResponses.load(
+                    "get_events_for_sport_basketball.json", response_type=GetEventsForSportResponse
+                )
             else:
-                return CloudbetResponses.load("get_events_for_sport_no_events.json", response_type=GetEventsForSportResponse)
+                return CloudbetResponses.load(
+                    "get_events_for_sport_no_events.json", response_type=GetEventsForSportResponse
+                )
         else:
-            return CloudbetResponses.load("get_events_for_sport.json", response_type=GetEventsForSportResponse)
+            return CloudbetResponses.load(
+                "get_events_for_sport.json", response_type=GetEventsForSportResponse
+            )
 
     @staticmethod
     def get_latest_odds(**kwargs) -> GetLatestOddsResponse:
-        if kwargs.get('event_id'):
-            return CloudbetResponses.load("get_latest_odds.json", response_type=GetLatestOddsResponse)
+        if kwargs.get("event_id"):
+            return CloudbetResponses.load(
+                "get_latest_odds.json", response_type=GetLatestOddsResponse
+            )
         else:
-            return CloudbetResponses.load("get_latest_odds.json", response_type=GetLatestOddsResponse)
-
+            return CloudbetResponses.load(
+                "get_latest_odds.json", response_type=GetLatestOddsResponse
+            )
 
     @staticmethod
     def place_bet_success() -> GetBetResponse:
-        return CloudbetResponses.load('place_bet_success.json', response_type=GetBetResponse)
+        return CloudbetResponses.load("place_bet_success.json", response_type=GetBetResponse)
 
     @staticmethod
     def place_bet_failure(**kwargs) -> GetBetResponse:
-        return CloudbetResponses.load('place_bet_failure.json', response_type=GetBetResponse)
+        return CloudbetResponses.load("place_bet_failure.json", response_type=GetBetResponse)
 
     @staticmethod
     def place_bet_invalid_event_id() -> GetBetResponse:
-        return CloudbetResponses.load('place_bet_invalid_event.json', response_type=GetBetResponse)
+        return CloudbetResponses.load("place_bet_invalid_event.json", response_type=GetBetResponse)
 
     @staticmethod
-    def get_bet_history_success() -> GetBetHistoryResponse: #TODO: rename to get_bet_history
-        return CloudbetResponses.load('get_bet_history.json', response_type=GetBetHistoryResponse)
+    def get_bet_history_success() -> GetBetHistoryResponse:  # TODO: rename to get_bet_history
+        return CloudbetResponses.load("get_bet_history.json", response_type=GetBetHistoryResponse)
 
     @staticmethod
     def get_bet_status_win() -> GetBetResponse:
-        return CloudbetResponses.load('get_bet_status.json', response_type=GetBetResponse)
+        return CloudbetResponses.load("get_bet_status.json", response_type=GetBetResponse)
 
     @staticmethod
     def get_bet_status_accepted() -> GetBetResponse:
-        return CloudbetResponses.load('get_bet_status_accepted.json', response_type=GetBetResponse)
+        return CloudbetResponses.load("get_bet_status_accepted.json", response_type=GetBetResponse)
 
     @staticmethod
     def get_account_currencies_success() -> GetAccountCurrencies:
-        return CloudbetResponses.load('get_account_currencies.json', response_type=GetAccountCurrencies)
+        return CloudbetResponses.load(
+            "get_account_currencies.json", response_type=GetAccountCurrencies
+        )
 
     @staticmethod
     # TODO: handle currencies with different precision eg. BTC
-    def get_account_balances(currency: Optional[str] = None) -> GetAccountBalance: # we optionally pass a currency in case a mock is needed
-        return CloudbetResponses.load('get_account_balances.json', response_type=GetAccountBalance)
+    def get_account_balances(
+        currency: Optional[str] = None,
+    ) -> GetAccountBalance:  # we optionally pass a currency in case a mock is needed
+        return CloudbetResponses.load("get_account_balances.json", response_type=GetAccountBalance)
 
     @staticmethod
     def get_bet_history_no_bets() -> GetBetHistoryResponse:
-        return CloudbetResponses.load('get_bet_history_no_bets.json', response_type=GetBetHistoryResponse)
+        return CloudbetResponses.load(
+            "get_bet_history_no_bets.json", response_type=GetBetHistoryResponse
+        )
 
     @staticmethod
     def get_bet_history_mixed_status() -> GetBetHistoryResponse:
-        return CloudbetResponses.load('get_bet_history_mixed_status.json', response_type=GetBetHistoryResponse)
+        return CloudbetResponses.load(
+            "get_bet_history_mixed_status.json", response_type=GetBetHistoryResponse
+        )
 
     @staticmethod
     def get_event(**kwargs) -> GetEventResponse:
-        if kwargs.get('event_id'):
-            event = CloudbetResponses.load('get_event.json', response_type=GetEventResponse)
-            event.event_id = int(kwargs['event_id'])
+        if kwargs.get("event_id"):
+            event = CloudbetResponses.load("get_event.json", response_type=GetEventResponse)
+            event.event_id = int(kwargs["event_id"])
             return event
         else:
-            return CloudbetResponses.load('get_event.json', response_type=GetEventResponse)
-
+            return CloudbetResponses.load("get_event.json", response_type=GetEventResponse)
 
 
 class DataGenerator:
@@ -267,6 +328,7 @@ class DataGenerator:
     def generate_sport():
         sports = ["soccer", "tennis", "baseball", "basketball"]
         return random.choice(sports)
+
 
 # @contextlib.contextmanager
 # def mock_client_request(response):

@@ -382,9 +382,12 @@ for _data_cls in NAUTILUS_ARROW_SCHEMA:
 
 # Custom implementations
 for instrument_cls in Instrument.__subclasses__():
+    schema = instruments.SCHEMAS.get(instrument_cls)
+    if schema is None:
+        continue
     register_arrow(
         data_cls=instrument_cls,
-        schema=instruments.SCHEMAS[instrument_cls],
+        schema=schema,
         encoder=instruments.serialize,
         decoder=instruments.deserialize,
     )

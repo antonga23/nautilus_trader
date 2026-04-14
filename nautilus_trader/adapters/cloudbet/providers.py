@@ -21,12 +21,15 @@ import msgspec.json
 import pandas as pd
 
 from nautilus_trader.adapters.cloudbet.client.core import CloudbetClient
-from nautilus_trader.adapters.betfair.client.enums import MarketProjection
-from nautilus_trader.adapters.cloudbet.client.schema import Selection, SelectionStatus, SelectionSide, SelectionId, \
-    GetLatestOddsResponse, GetEventResponse
+from nautilus_trader.adapters.cloudbet.client.schema import (
+    Selection,
+    SelectionStatus,
+    SelectionSide,
+    SelectionId,
+    GetLatestOddsResponse,
+    GetEventResponse,
+)
 from nautilus_trader.adapters.cloudbet.common import VENUE
-from nautilus_trader.adapters.betfair.parsing.common import chunk
-from nautilus_trader.adapters.betfair.parsing.requests import parse_handicap
 from nautilus_trader.common.clock import LiveClock
 from nautilus_trader.common.logging import Logger
 from nautilus_trader.common.providers import InstrumentProvider
@@ -38,6 +41,16 @@ from nautilus_trader.model.currencies import EUR
 from nautilus_trader.model.instruments import BettingInstrument
 from nautilus_trader.model.instruments import Instrument
 from nautilus_trader.model.instruments.crypto_betting import CryptoBettingInstrument
+
+
+def parse_handicap(handicap: str | None) -> float | None:
+    if handicap in (None, "", "None"):
+        return None
+
+    try:
+        return float(handicap)
+    except (TypeError, ValueError):
+        return None
 
 
 class CloudbetInstrumentProvider(InstrumentProvider):
@@ -60,14 +73,11 @@ class CloudbetInstrumentProvider(InstrumentProvider):
         logger: Logger,
         config: Optional[InstrumentProviderConfig] = None,
     ):
-
-        super().__init__(
-            venue=VENUE,
-            logger=logger,
-            config=config,
-        )
+        super().__init__(config=config)
 
         self._client = client
+        self._log = logger
+        self.venue = VENUE
         # TODO: test if this is needed as the _cache should be a Nautilus cache/component nont a dict
         self._cache: dict[InstrumentId, CryptoBettingInstrument] = {}
         self._account_currency = EUR
@@ -113,29 +123,37 @@ class CloudbetInstrumentProvider(InstrumentProvider):
                 event_id = int(event_id)  # necessary type conversion
                 # TODO: Check if event is already in cache/instrument_provider, if so, load event and prepend to selection data. check if selection idupdate it
                 # event: GetEventResponse = await self._client.get_event(selection_id.event_id)
-                market_url = market_name + '/' + outcome + '?' + params if params is not None else market_name + '/' + outcome
+                market_url = (
+                    market_name + "/" + outcome + "?" + params
+                    if params is not None
+                    else market_name + "/" + outcome
+                )
                 assert self._client.connected is True, "Client is not connected"
-                updated_selection: GetLatestOddsResponse = await self._client.get_latest_odds(event_id, market_url)
-                selection = Selection(event_id=event_id,
-                                  status=updated_selection.status,
-                                  market_name=market_name,
-                                  outcome=outcome,
-                                  price=updated_selection.price,
-                                  min_stake=updated_selection.min_stake,
-                                  max_stake=updated_selection.max_stake,
-                                  probability=updated_selection.probability,
-                                  selection_status=SelectionStatus(updated_selection.status),
-                                  side=updated_selection.side.value,
-                                  params=params if params is not None else None)
+                updated_selection: GetLatestOddsResponse = await self._client.get_latest_odds(
+                    event_id, market_url
+                )
+                selection = Selection(
+                    event_id=event_id,
+                    status=updated_selection.status,
+                    market_name=market_name,
+                    outcome=outcome,
+                    price=updated_selection.price,
+                    min_stake=updated_selection.min_stake,
+                    max_stake=updated_selection.max_stake,
+                    probability=updated_selection.probability,
+                    selection_status=SelectionStatus(updated_selection.status),
+                    side=updated_selection.side.value,
+                    params=params if params is not None else None,
+                )
                 instruments.append(self.selection_to_instrument(selection))
         elif len(instrument_ids) <= 10 and filters is None:
-        # for a larger number of instruments, we should get the events first, then filter out the selections based on the selection ids
+            # for a larger number of instruments, we should get the events first, then filter out the selections based on the selection ids
             selection_ids = [
                 SelectionId(
                     event_id=int(instrument_id.symbol.value.split("|")[0]),
                     market_name=instrument_id.symbol.value.split("|")[1],
                     outcome=instrument_id.symbol.value.split("|")[2],
-                    params=instrument_id.symbol.value.split("|")[3]
+                    params=instrument_id.symbol.value.split("|")[3],
                 )
                 for instrument_id in instrument_ids
             ]
@@ -143,15 +161,20 @@ class CloudbetInstrumentProvider(InstrumentProvider):
             market_names = list(set([selection_id.market_name for selection_id in selection_ids]))
 
             for event_id in event_ids:
-            # TODO: only load events that are not already in cache
-            # TODO: There are too many godamn for loops! implement a faster filtering mechanism to match and extract the selection level data
+                # TODO: only load events that are not already in cache
+                # TODO: There are too many godamn for loops! implement a faster filtering mechanism to match and extract the selection level data
                 event: GetEventResponse = await self._client.get_event(event_id)
                 for market_name, market_value in event.markets.items():
                     if market_name in market_names:
                         for submarket_period, submarket_value in market_value.submarkets.items():
                             # Iterate over all the selections in the current submarket
                             for selection in submarket_value.selections:
-                                selection_id = SelectionId(event_id=event_id, market_name=market_name, outcome=selection.outcome, params=selection.params)
+                                selection_id = SelectionId(
+                                    event_id=event_id,
+                                    market_name=market_name,
+                                    outcome=selection.outcome,
+                                    params=selection.params,
+                                )
                                 # we're only interested in creating/loading instruments that have selection ids which are contained in the selection_id list
                                 if selection_id in selection_ids:
                                     selection = Selection(
@@ -165,23 +188,32 @@ class CloudbetInstrumentProvider(InstrumentProvider):
                                         probability=selection.probability,
                                         selection_status=SelectionStatus(selection.status),
                                         side=selection.side,
-                                        params=selection.params
+                                        params=selection.params,
                                     )
                                     instruments.append(self.selection_to_instrument(selection))
         else:
             if filters and filters.get("selection_id") is not None:
                 selection_ids: List[SelectionId] = filters.get("selection_id")
                 event_ids = list(set([selection_id.event_id for selection_id in selection_ids]))
-                market_names = list(set([selection_id.market_name for selection_id in selection_ids]))
+                market_names = list(
+                    set([selection_id.market_name for selection_id in selection_ids])
+                )
                 for event_id in event_ids:
                     event: GetEventResponse = await self._client.get_event(event_id)
                     for market_name, market_value in event.markets.items():
                         if market_name in market_names:
-                            for submarket_period, submarket_value in market_value.submarkets.items():
+                            for (
+                                submarket_period,
+                                submarket_value,
+                            ) in market_value.submarkets.items():
                                 # Iterate over all the selections in the current submarket
                                 for selection in submarket_value.selections:
-                                    selection_id = SelectionId(event_id=event_id, market_name=market_name,
-                                                               outcome=selection.outcome, params=selection.params)
+                                    selection_id = SelectionId(
+                                        event_id=event_id,
+                                        market_name=market_name,
+                                        outcome=selection.outcome,
+                                        params=selection.params,
+                                    )
                                     # we're only interested in creating/loading instruments that have selection ids which are contained in the selection_id list
                                     if selection_id in selection_ids:
                                         selection = Selection(
@@ -195,7 +227,7 @@ class CloudbetInstrumentProvider(InstrumentProvider):
                                             probability=selection.probability,
                                             selection_status=SelectionStatus(selection.status),
                                             side=selection.side,
-                                            params=selection.params
+                                            params=selection.params,
                                         )
                                         instruments.append(self.selection_to_instrument(selection))
         self.add_bulk(instruments)
@@ -228,24 +260,32 @@ class CloudbetInstrumentProvider(InstrumentProvider):
         filters_str = "..." if not filters else f" with filters {filters}..."
         self._log.debug(f"Loading instrument {instrument_id}{filters_str}.")
         # Symbol format >>>> 19490102|basketball.totals|over|total=164
-        event_id , market_name , outcome , params = instrument_id.symbol.value.split("|")
-        event_id = int(event_id) # necessary type conversion
+        event_id, market_name, outcome, params = instrument_id.symbol.value.split("|")
+        event_id = int(event_id)  # necessary type conversion
         # TODO: Check if event is already in cache/instrument_provider, if so, load event and prepend to selection data. check if selection idupdate it
         # event: GetEventResponse = await self._client.get_event(selection_id.event_id)
-        market_url = market_name + '/' + outcome + '?' + params if params is not None else market_name + '/' + outcome
-        updated_selection: GetLatestOddsResponse = await self._client.get_latest_odds(event_id, market_url)
-        selection = Selection(event_id=event_id,
-                              status=updated_selection.status,
-                              market_name=market_name,
-                              outcome=outcome,
-                              price=updated_selection.price,
-                              min_stake=updated_selection.min_stake,
-                              max_stake=updated_selection.max_stake,
-                              probability=updated_selection.probability,
-                              selection_status=SelectionStatus(updated_selection.status),
-                              side=updated_selection.side.value,
-                              # if params is None, set to None else set to params
-                              params=params if params is not None else None)
+        market_url = (
+            market_name + "/" + outcome + "?" + params
+            if params is not None
+            else market_name + "/" + outcome
+        )
+        updated_selection: GetLatestOddsResponse = await self._client.get_latest_odds(
+            event_id, market_url
+        )
+        selection = Selection(
+            event_id=event_id,
+            status=updated_selection.status,
+            market_name=market_name,
+            outcome=outcome,
+            price=updated_selection.price,
+            min_stake=updated_selection.min_stake,
+            max_stake=updated_selection.max_stake,
+            probability=updated_selection.probability,
+            selection_status=SelectionStatus(updated_selection.status),
+            side=updated_selection.side.value,
+            # if params is None, set to None else set to params
+            params=params if params is not None else None,
+        )
         instrument = self.selection_to_instrument(selection)
         self.add(instrument=instrument)
         self._log.debug(f"Loaded instrument {instrument.id}")
@@ -321,7 +361,11 @@ class CloudbetInstrumentProvider(InstrumentProvider):
             venue=self.venue,
             live=False if selection.status != "TRADING_LIVE" else True,
             enabled=True if selection.selection_status != SelectionStatus.DISABLED else False,
-            side=SelectionSide.BACK if selection.side == "BACK" else SelectionSide.LAY if selection.side == "LAY" else SelectionSide.UNKNOWN,
+            side=SelectionSide.BACK
+            if selection.side == "BACK"
+            else SelectionSide.LAY
+            if selection.side == "LAY"
+            else SelectionSide.UNKNOWN,
             outcome=selection.outcome,
             # ToDo: set at Selection level with Enums + caching for performance
             market_type=selection.submarket_name,
@@ -335,7 +379,9 @@ class CloudbetInstrumentProvider(InstrumentProvider):
         )
         return instrument
 
-    async def get_instruments_update_async(self, instrument_ids: List[InstrumentId]) -> CryptoBettingInstrument:
+    async def get_instruments_update_async(
+        self, instrument_ids: List[InstrumentId]
+    ) -> CryptoBettingInstrument:
         """
         Get the latest instruments update for the given instrument IDs.
 
@@ -352,7 +398,9 @@ class CloudbetInstrumentProvider(InstrumentProvider):
         """
         raise NotImplementedError("get_instruments_update_async is not supported for Cloudbet")
 
-    def search_instruments(self, instrument_filter: Optional[dict] = None) -> Optional[List[CryptoBettingInstrument]]:
+    def search_instruments(
+        self, instrument_filter: Optional[dict] = None
+    ) -> Optional[List[CryptoBettingInstrument]]:
         """Search for instruments within the cache. Useful for debugging / interactive use"""
         instruments = self.list_all()
         if instrument_filter:
@@ -363,7 +411,7 @@ class CloudbetInstrumentProvider(InstrumentProvider):
             ]
         return instruments
 
-    #TODO: TEST get_betting_instrument
+    # TODO: TEST get_betting_instrument
     def get_betting_instrument(
         self,
         market_id: str,
@@ -410,4 +458,3 @@ class CloudbetInstrumentProvider(InstrumentProvider):
         """
         event_id, market_name, outcome, params = instrument_id.value.split("|")
         return SelectionId(int(event_id), market_name, outcome, params)
-

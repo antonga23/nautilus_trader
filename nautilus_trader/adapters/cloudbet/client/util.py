@@ -28,7 +28,7 @@ from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.execution.reports import OrderStatusReport, TradeReport, PositionStatusReport
 from nautilus_trader.model.identifiers import InstrumentId, ClientOrderId, VenueOrderId, AccountId, TradeId, PositionId
 from nautilus_trader.model.identifiers import Symbol
-from nautilus_trader.model.objects import Price, Quantity
+from nautilus_trader.model.objects import Currency, Money, Price, Quantity
 
 from nautilus_trader.adapters.cloudbet.client.schema import GetBetResponse, BetStatus, SelectionSide
 from nautilus_trader.model.orders import Order
@@ -207,7 +207,8 @@ def bet_to_trade_report(
     report_id: Union[UUID4, str],
     order: Optional[Order] = None,
     bet_response: Optional[GetBetResponse] = None,
-    client_order_id: Optional[ClientOrderId] = None  # (None if external order)
+    client_order_id: Optional[ClientOrderId] = None,  # (None if external order)
+    commission_currency: Optional[Currency] = None,
 ) -> Optional[TradeReport]:
     """
     Convert a cloudbet bet response or Order object to a trade report.
@@ -241,6 +242,7 @@ def bet_to_trade_report(
         bet_time = bet_response.create_time
         trade_accepted = cloudbet_timestamp_to_unix_nanos(bet_time)
         order_liquidity_side = LiquiditySide.MAKER if trade_side == OrderSide.BUY else LiquiditySide.TAKER
+        commission_currency = Currency.from_str(bet_response.currency)
 
     else:  # We have an order but no bet_response
         trade_side = order.side
@@ -251,6 +253,8 @@ def bet_to_trade_report(
         trade_quantity = order.quantity
         trade_accepted = order.ts_last if order.ts_last else 0
         order_liquidity_side = LiquiditySide.MAKER if trade_side == OrderSide.BUY else LiquiditySide.TAKER
+        if commission_currency is None:
+            commission_currency = Currency.from_str("EUR")
 
     report = TradeReport(
         account_id=account_id,
@@ -265,7 +269,7 @@ def bet_to_trade_report(
         report_id=report_id,
         ts_init=ts_init,
         ts_event=trade_accepted,
-        commission=None  # TODO: Add commission. Commission if fixed, check on Cloudbet and add the value here
+        commission=Money(0, commission_currency),
     )
     return report
 

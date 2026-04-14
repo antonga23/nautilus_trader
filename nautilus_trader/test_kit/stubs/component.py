@@ -34,6 +34,7 @@ from nautilus_trader.model.objects import Currency
 from nautilus_trader.model.objects import Money
 from nautilus_trader.persistence.catalog.parquet import ParquetDataCatalog
 from nautilus_trader.portfolio.portfolio import Portfolio
+from nautilus_trader.common.logging import Logger
 from nautilus_trader.test_kit.mocks.engines import MockLiveDataEngine
 from nautilus_trader.test_kit.mocks.engines import MockLiveExecutionEngine
 from nautilus_trader.test_kit.mocks.engines import MockLiveRiskEngine
@@ -46,6 +47,10 @@ class TestComponentStubs:
     @staticmethod
     def clock() -> LiveClock:
         return LiveClock()
+
+    @staticmethod
+    def logger(name: str = "TEST_LOGGER") -> Logger:
+        return Logger(name=name)
 
     @staticmethod
     def msgbus() -> MessageBus:

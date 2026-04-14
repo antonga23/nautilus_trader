@@ -845,6 +845,11 @@ class FillReport(ExecutionReport):
         )
 
 
+# Backwards-compatibility shim for older adapter code that still imports
+# `TradeReport`. The current execution model uses `FillReport`.
+TradeReport = FillReport
+
+
 class PositionStatusReport(ExecutionReport):
     """
     Represents a position status at a point in time.

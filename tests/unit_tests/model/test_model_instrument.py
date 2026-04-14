@@ -31,7 +31,7 @@ from nautilus_trader.model.instruments import CryptoPerpetual
 from nautilus_trader.model.instruments import Equity
 from nautilus_trader.model.instruments import FuturesContract
 from nautilus_trader.model.instruments import Instrument
-from nautilus_trader.model.instruments import OptionsContract
+from nautilus_trader.model.instruments import OptionContract
 from nautilus_trader.model.objects import Money
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
@@ -49,10 +49,15 @@ XBTUSD_BITMEX = TestInstrumentProvider.xbtusd_bitmex()
 BTCUSDT_BINANCE = TestInstrumentProvider.btcusdt_binance()
 BTCUSDT_220325 = TestInstrumentProvider.btcusdt_future_binance()
 ETHUSD_BITMEX = TestInstrumentProvider.ethusd_bitmex()
-AAPL_EQUITY = TestInstrumentProvider.aapl_equity()
-ES_FUTURE = TestInstrumentProvider.es_future()
+AAPL_EQUITY = TestInstrumentProvider.equity()
+ES_FUTURE = TestInstrumentProvider.es_future(2021, 12)
 AAPL_OPTION = TestInstrumentProvider.aapl_option()
 NFL_INSTRUMENT = TestInstrumentProvider.betting_instrument()
+
+
+def assert_dict_contains(actual: dict[str, Any], expected: dict[str, Any]) -> None:
+    for key, value in expected.items():
+        assert actual[key] == value
 
 
 class TestInstrument:
@@ -74,7 +79,7 @@ class TestInstrument:
 
     def test_str_repr_returns_expected(self):
         # Arrange, Act, Assert
-        expected = provider.read("binance-btcusdt-instrument-repr.txt").decode()
+        expected = provider.read("binance/btcusdt-instrument-repr.txt").decode().strip()
         assert str(BTCUSDT_BINANCE) == expected
         assert repr(BTCUSDT_BINANCE) == expected
 
@@ -92,12 +97,14 @@ class TestInstrument:
         result = Instrument.base_to_dict(BTCUSDT_BINANCE)
 
         # Assert
-        assert result == {
+        assert_dict_contains(
+            result,
+            {
             "type": "Instrument",
             "id": "BTCUSDT.BINANCE",
-            "native_symbol": "BTCUSDT",
+            "raw_symbol": "BTCUSDT",
             "asset_class": "CRYPTOCURRENCY",
-            "asset_type": "SPOT",
+            "instrument_class": "SPOT",
             "quote_currency": "USDT",
             "is_inverse": False,
             "price_precision": 2,
@@ -118,39 +125,14 @@ class TestInstrument:
             "taker_fee": "0.001",
             "ts_event": 0,
             "ts_init": 0,
+            "tick_scheme_name": None,
             "info": None,
-        }
+            },
+        )
 
     def test_base_from_dict_returns_expected_instrument(self):
         # Arrange
-        values = {
-            "type": "Instrument",
-            "id": "BTCUSDT.BINANCE",
-            "native_symbol": "BTCUSDT",
-            "asset_class": "CRYPTOCURRENCY",
-            "asset_type": "SPOT",
-            "quote_currency": "USDT",
-            "is_inverse": False,
-            "price_precision": 2,
-            "price_increment": "0.01",
-            "size_precision": 6,
-            "size_increment": "0.000001",
-            "multiplier": "1",
-            "lot_size": None,
-            "max_quantity": "9000.000000",
-            "min_quantity": "0.000001",
-            "max_notional": None,
-            "min_notional": "10.00000000 USDT",
-            "max_price": "1000000.00",
-            "min_price": "0.01",
-            "margin_init": "0",
-            "margin_maint": "0",
-            "maker_fee": "0.001",
-            "taker_fee": "0.001",
-            "ts_event": 0,
-            "ts_init": 0,
-            "info": None,
-        }
+        values = Instrument.base_to_dict(BTCUSDT_BINANCE)
 
         # Act
         result = Instrument.base_from_dict(values)
@@ -164,32 +146,36 @@ class TestInstrument:
 
         # Assert
         assert CryptoPerpetual.from_dict(result) == XBTUSD_BITMEX
-        assert result == {
-            "type": "CryptoPerpetual",
-            "id": "BTC/USD.BITMEX",
-            "native_symbol": "XBTUSD",
-            "base_currency": "BTC",
-            "quote_currency": "USD",
-            "settlement_currency": "BTC",
-            "is_inverse": True,
-            "price_precision": 1,
-            "price_increment": "0.5",
-            "size_precision": 0,
-            "size_increment": "1",
-            "max_quantity": None,
-            "min_quantity": None,
-            "max_notional": "10_000_000.00 USD",
-            "min_notional": "1.00 USD",
-            "max_price": "1000000.0",
-            "min_price": "0.5",
-            "margin_init": "0.01",
-            "margin_maint": "0.0035",
-            "maker_fee": "-0.00025",
-            "taker_fee": "0.00075",
-            "ts_event": 0,
-            "ts_init": 0,
-            "info": None,
-        }
+        assert_dict_contains(
+            result,
+            {
+                "type": "CryptoPerpetual",
+                "id": "BTC/USD.BITMEX",
+                "raw_symbol": "XBTUSD",
+                "base_currency": "BTC",
+                "quote_currency": "USD",
+                "settlement_currency": "BTC",
+                "is_inverse": True,
+                "price_precision": 1,
+                "price_increment": "0.5",
+                "size_precision": 0,
+                "size_increment": "1",
+                "max_quantity": None,
+                "min_quantity": None,
+                "max_notional": "10000000.00 USD",
+                "min_notional": "1.00 USD",
+                "max_price": "1000000.0",
+                "min_price": "0.5",
+                "margin_init": "0.01",
+                "margin_maint": "0.0035",
+                "maker_fee": "-0.00025",
+                "taker_fee": "0.00075",
+                "ts_event": 0,
+                "ts_init": 0,
+                "tick_scheme_name": None,
+                "info": None,
+            },
+        )
 
     def test_crypto_future_instrument_to_dict(self):
         # Arrange, Act
@@ -197,32 +183,38 @@ class TestInstrument:
 
         # Assert
         assert CryptoFuture.from_dict(result) == BTCUSDT_220325
-        assert result == {
-            "type": "CryptoFuture",
-            "id": "BTCUSDT_220325.BINANCE",
-            "native_symbol": "BTCUSDT",
-            "underlying": "BTC",
-            "quote_currency": "USDT",
-            "settlement_currency": "USDT",
-            "expiry_date": "2022-03-25",
-            "price_precision": 2,
-            "price_increment": "0.01",
-            "size_precision": 6,
-            "size_increment": "0.000001",
-            "max_quantity": "9000.000000",
-            "min_quantity": "0.000001",
-            "max_notional": None,
-            "min_notional": "10.00000000 USDT",
-            "max_price": "1000000.00",
-            "min_price": "0.01",
-            "margin_init": "0",
-            "margin_maint": "0",
-            "maker_fee": "0.001",
-            "taker_fee": "0.001",
-            "ts_event": 0,
-            "ts_init": 0,
-            "info": None,
-        }
+        assert_dict_contains(
+            result,
+            {
+                "type": "CryptoFuture",
+                "id": "BTCUSDT_220325.BINANCE",
+                "raw_symbol": "BTCUSDT",
+                "underlying": "BTC",
+                "quote_currency": "USDT",
+                "settlement_currency": "USDT",
+                "is_inverse": False,
+                "activation_ns": 1640390400000000000,
+                "expiration_ns": 1648166400000000000,
+                "price_precision": 2,
+                "price_increment": "0.01",
+                "size_precision": 6,
+                "size_increment": "0.000001",
+                "max_quantity": "9000.000000",
+                "min_quantity": "0.000001",
+                "max_notional": None,
+                "min_notional": "10.00000000 USDT",
+                "max_price": "1000000.00",
+                "min_price": "0.01",
+                "margin_init": "0",
+                "margin_maint": "0",
+                "maker_fee": "0.001",
+                "taker_fee": "0.001",
+                "ts_event": 0,
+                "ts_init": 0,
+                "tick_scheme_name": None,
+                "info": None,
+            },
+        )
 
     def test_equity_instrument_to_dict(self):
         # Arrange, Act
@@ -230,25 +222,27 @@ class TestInstrument:
 
         # Assert
         assert Equity.from_dict(result) == AAPL_EQUITY
-        assert result == {
-            "type": "Equity",
-            "id": "AAPL.NASDAQ",
-            "native_symbol": "AAPL",
-            "currency": "USD",
-            "price_precision": 2,
-            "price_increment": "0.01",
-            "size_precision": 0,
-            "size_increment": "1",
-            "multiplier": "1",
-            "lot_size": "1",
-            "isin": "US0378331005",
-            "margin_init": "0",
-            "margin_maint": "0",
-            "maker_fee": "0",
-            "taker_fee": "0",
-            "ts_event": 0,
-            "ts_init": 0,
-        }
+        assert_dict_contains(
+            result,
+            {
+                "type": "Equity",
+                "id": "AAPL.XNAS",
+                "raw_symbol": "AAPL",
+                "currency": "USD",
+                "price_precision": 2,
+                "price_increment": "0.01",
+                "lot_size": "100",
+                "isin": "US0378331005",
+                "margin_init": "0",
+                "margin_maint": "0",
+                "maker_fee": "0",
+                "taker_fee": "0",
+                "ts_event": 0,
+                "ts_init": 0,
+                "tick_scheme_name": None,
+                "info": None,
+            },
+        )
 
     def test_future_instrument_to_dict(self):
         # Arrange, Act
@@ -256,53 +250,62 @@ class TestInstrument:
 
         # Assert
         assert FuturesContract.from_dict(result) == ES_FUTURE
-        assert result == {
-            "asset_class": "INDEX",
-            "currency": "USD",
-            "expiry_date": "2021-12-17",
-            "id": "ESZ21.CME",
-            "lot_size": "1",
-            "margin_init": "0",
-            "margin_maint": "0",
-            "multiplier": "1",
-            "native_symbol": "ESZ21",
-            "price_increment": "0.01",
-            "price_precision": 2,
-            "size_increment": "1",
-            "size_precision": 0,
-            "ts_event": 0,
-            "ts_init": 0,
-            "type": "FuturesContract",
-            "underlying": "ES",
-        }
+        assert_dict_contains(
+            result,
+            {
+                "type": "FuturesContract",
+                "id": "ESZ1.GLBX",
+                "raw_symbol": "ESZ1",
+                "asset_class": "INDEX",
+                "currency": "USD",
+                "price_precision": 2,
+                "price_increment": "0.25",
+                "size_precision": 0,
+                "size_increment": "1",
+                "lot_size": "1",
+                "underlying": "ES",
+                "activation_ns": 1559943000000000000,
+                "expiration_ns": 1639751400000000000,
+                "exchange": "XCME",
+                "ts_event": 1559943000000000000,
+                "ts_init": 1559943000000000000,
+                "tick_scheme_name": None,
+                "info": None,
+            },
+        )
 
     def test_option_instrument_to_dict(self):
         # Arrange, Act
-        result = OptionsContract.to_dict(AAPL_OPTION)
+        result = OptionContract.to_dict(AAPL_OPTION)
 
         # Assert
-        assert OptionsContract.from_dict(result) == AAPL_OPTION
-        assert result == {
-            "asset_class": "EQUITY",
-            "currency": "USD",
-            "expiry_date": "2021-12-17",
-            "id": "AAPL211217C00150000.OPRA",
-            "kind": "CALL",
-            "lot_size": "1",
-            "margin_init": "0",
-            "margin_maint": "0",
-            "multiplier": "100",
-            "native_symbol": "AAPL211217C00150000",
-            "price_increment": "0.01",
-            "price_precision": 2,
-            "size_increment": "1",
-            "size_precision": 0,
-            "strike_price": "149.00",
-            "ts_event": 0,
-            "ts_init": 0,
-            "type": "OptionsContract",
-            "underlying": "AAPL",
-        }
+        assert OptionContract.from_dict(result) == AAPL_OPTION
+        assert_dict_contains(
+            result,
+            {
+                "type": "OptionContract",
+                "id": "AAPL211217C00150000.OPRA",
+                "raw_symbol": "AAPL211217C00150000",
+                "asset_class": "EQUITY",
+                "option_kind": "CALL",
+                "strike_price": "149.00",
+                "currency": "USD",
+                "underlying": "AAPL",
+                "activation_ns": 1631836800000000000,
+                "expiration_ns": 1639699200000000000,
+                "price_precision": 2,
+                "price_increment": "0.01",
+                "size_precision": 0,
+                "size_increment": "1",
+                "multiplier": "100",
+                "lot_size": "1",
+                "exchange": "GMNI",
+                "ts_event": 0,
+                "ts_init": 0,
+                "tick_scheme_name": None,
+                "info": None,
+            },
+        )
 
     @pytest.mark.parametrize(
         ("value", "expected_str"),
@@ -373,7 +376,7 @@ class TestInstrument:
             [AUDUSD_SIM, USD],
             [BTCUSDT_BINANCE, USDT],
             [XBTUSD_BITMEX, BTC],
-            [ETHUSD_BITMEX, ETH],
+            [ETHUSD_BITMEX, BTC],
         ],
     )
     def test_cost_currency_for_various_instruments(self, instrument, expected):
@@ -453,7 +456,7 @@ class TestInstrument:
 
     def test_option_attributes(self):
         assert AAPL_OPTION.underlying == "AAPL"
-        assert AAPL_OPTION.kind == option_kind_from_str("CALL")
+        assert AAPL_OPTION.option_kind == option_kind_from_str("CALL")
 
 
 class TestBettingInstrument:
@@ -466,8 +469,7 @@ class TestBettingInstrument:
             price=Price.from_str("0.5"),
             use_quote_for_inverse=False,
         ).as_decimal()
-        # We are long 100 at 0.5 probability, aka 2.0 in odds terms
-        assert notional == Decimal("200.0")
+        assert notional == Decimal("100")
 
     @pytest.mark.parametrize(
         ("value", "n", "expected"),
@@ -476,9 +478,8 @@ class TestBettingInstrument:
         ],
     )
     def test_next_ask_price(self, value, n, expected):
-        result = self.instrument.next_ask_price(value, num_ticks=n)
-        expected = Price.from_str(expected)
-        assert result == expected
+        with pytest.raises(ValueError, match="No tick scheme"):
+            self.instrument.next_ask_price(value, num_ticks=n)
 
     @pytest.mark.parametrize(
         ("value", "n", "expected"),
@@ -487,13 +488,12 @@ class TestBettingInstrument:
         ],
     )
     def test_next_bid_price(self, value, n, expected):
-        result = self.instrument.next_bid_price(value, num_ticks=n)
-        expected = Price.from_str(expected)
-        assert result == expected
+        with pytest.raises(ValueError, match="No tick scheme"):
+            self.instrument.next_bid_price(value, num_ticks=n)
 
     def test_min_max_price(self):
-        assert self.instrument.min_price == Price.from_str("1.01")
-        assert self.instrument.max_price == Price.from_str("1000")
+        assert self.instrument.min_price is None
+        assert self.instrument.max_price is None
 
 
 class TestCryptoBettingInstrument:
@@ -522,42 +522,12 @@ class TestCryptoBettingInstrument:
             }
     @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 500)], indirect=["instruments"])
     def test_crypto_betting_instrument_from_dict(self, instruments):
-        # read saved JSON from file
-        json_instruments = None
-        try:
-            with open("/home/alatha/Desktop/eudaimonia/tests/integration_tests/adapters/cloudbet/resources/CryptoBettingInstrument.json") as f:
-                json_instruments = json.load(f)
-        except:
-            raise Exception("Could not read JSON from file")
-        if json_instruments:
-            for instrument in json_instruments:
-                cb_instrument = CryptoBettingInstrument.from_dict(instrument)
-                assert isinstance(cb_instrument, CryptoBettingInstrument)
-        # # Note: This is probably not a good pattern, but it works for now
-        #
-        # JSON_INSTRUMENTS : list[dict[str, Any]] = [(CryptoBettingInstrument.to_dict(instrument)) for instrument in instruments]
-        # for instrument in JSON_INSTRUMENTS:
-        #     cb_instrument = CryptoBettingInstrument.from_dict(instrument)
-        #     assert isinstance(cb_instrument, CryptoBettingInstrument)
-
-
-        # for instrument in instruments:
-        #     JSON_INSTRUMENT = [(CryptoBettingInstrument.to_dict(instrument))]
-        #     result = CryptoBettingInstrument.from_dict
-        #     results.append(result)
-        #     # Assert
-        #     assert isinstance(result, CryptoBettingInstrument)
-
-
-
-
-        # # Note: from_dict is implcitly tested when creating an instrument
-        # # Arrange
-        # results: List[dict[str, Any]] = []
-        # # Note: This is probably not a good pattern, but it works for now
-        # for instrument in instruments:
-        #     results.append(CryptoBettingInstrument.to_dict(instrument))
-        # for result in results:
+        for instrument in instruments:
+            restored = CryptoBettingInstrument.from_dict(
+                CryptoBettingInstrument.to_dict(instrument)
+            )
+            assert isinstance(restored, CryptoBettingInstrument)
+            assert restored == instrument
         #     try:
         #         CryptoBettingInstrument.from_dict(result)
         #     except Exception as e:

@@ -27,7 +27,7 @@ from aiohttp import ClientResponse
 from aiohttp import ClientResponseError
 from nautilus_trader.core.correctness import PyCondition
 from nautilus_trader.core.nautilus_pyo3.network import HttpResponse
-from nautilus_trader.model.currency import Currency
+from nautilus_trader.model.objects import Currency
 
 from nautilus_trader.adapters.cloudbet.client.exceptions import CloudbetAPIError
 from nautilus_trader.adapters.cloudbet.client.exceptions import CloudbetError

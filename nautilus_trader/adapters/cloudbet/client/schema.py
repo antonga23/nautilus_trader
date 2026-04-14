@@ -17,7 +17,7 @@ from typing import Optional, List, Dict, Any, Union
 
 import msgspec
 from nautilus_trader.core.rust.model import OrderStatus, OrderSide, PositionSide
-from nautilus_trader.model.currency import Currency
+from nautilus_trader.model.objects import Currency
 from nautilus_trader.model.currencies import EUR
 
 
