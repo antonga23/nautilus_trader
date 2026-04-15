@@ -11,7 +11,7 @@ if [ ! -f "$config_path" ]; then
   exit 1
 fi
 
-if ! getent group "$shared_group" >/dev/null 2>&1; then
+if ! getent group "$shared_group" > /dev/null 2>&1; then
   sudo groupadd --system "$shared_group"
 fi
 
@@ -19,9 +19,9 @@ sudo usermod -a -G "$shared_group" ubuntu
 sudo install -d -o ubuntu -g "$shared_group" -m 2775 /srv/symphony
 
 jq -c '.workers[]' "$config_path" | while read -r worker_json; do
-  user="$(jq -r '.user' <<<"$worker_json")"
+  user="$(jq -r '.user' <<< "$worker_json")"
 
-  if ! id "$user" >/dev/null 2>&1; then
+  if ! id "$user" > /dev/null 2>&1; then
     sudo useradd --create-home --shell /bin/bash --groups "$shared_group" "$user"
   else
     sudo usermod -a -G "$shared_group" "$user"
@@ -34,7 +34,7 @@ jq -c '.workers[]' "$config_path" | while read -r worker_json; do
     "/home/$user/.cache/go-build" \
     "/home/$user/.cache/uv" \
     "/home/$user/.local/state"
-  sudo tee "/home/$user/.codex/config.toml" >/dev/null <<'CONFIG'
+  sudo tee "/home/$user/.codex/config.toml" > /dev/null << 'CONFIG'
 cli_auth_credentials_store = "file"
 forced_login_method = "chatgpt"
 CONFIG

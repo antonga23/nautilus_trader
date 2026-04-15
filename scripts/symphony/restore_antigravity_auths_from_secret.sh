@@ -10,7 +10,7 @@ if [ ! -f "$config_path" ]; then
   exit 1
 fi
 
-if ! command -v aws >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
+if ! command -v aws > /dev/null 2>&1 || ! command -v jq > /dev/null 2>&1; then
   echo "aws CLI and jq are required" >&2
   exit 1
 fi
@@ -23,21 +23,21 @@ secret_json="$(
 )"
 
 jq -c '.workers[] | select(.enabled != false)' "$config_path" | while read -r worker_json; do
-  name="$(jq -r '.name' <<<"$worker_json")"
-  user="$(jq -r '.user' <<<"$worker_json")"
-  secret_key="$(jq -r '.antigravityAuthSecretKey // empty' <<<"$worker_json")"
+  name="$(jq -r '.name' <<< "$worker_json")"
+  user="$(jq -r '.user' <<< "$worker_json")"
+  secret_key="$(jq -r '.antigravityAuthSecretKey // empty' <<< "$worker_json")"
   if [ -z "$secret_key" ]; then
-    secret_key="ANTIGRAVITY_WORKER_AUTH_$(jq -r '.name' <<<"$worker_json" | tr '[:lower:]-' '[:upper:]_')_JSON_B64"
+    secret_key="ANTIGRAVITY_WORKER_AUTH_$(jq -r '.name' <<< "$worker_json" | tr '[:lower:]-' '[:upper:]_')_JSON_B64"
   fi
 
-  auth_b64="$(jq -r --arg key "$secret_key" '.[$key] // empty' <<<"$secret_json")"
+  auth_b64="$(jq -r --arg key "$secret_key" '.[$key] // empty' <<< "$secret_json")"
   if [ -z "$auth_b64" ]; then
     continue
   fi
 
   auth_dir="/home/$user/.config/antigravity-cli"
   tmp_auth="$(mktemp)"
-  printf '%s' "$auth_b64" | base64 --decode >"$tmp_auth"
+  printf '%s' "$auth_b64" | base64 --decode > "$tmp_auth"
 
   sudo install -d -o "$user" -g "$user" -m 700 "$auth_dir"
   sudo install -o "$user" -g "$user" -m 600 "$tmp_auth" "$auth_dir/auth.json"

@@ -4,12 +4,12 @@ set -euo pipefail
 secret_id="${1:-cloudbet-market-maker/credentials}"
 output_path="${2:-/srv/symphony/symphony.env}"
 
-if ! command -v aws >/dev/null 2>&1; then
+if ! command -v aws > /dev/null 2>&1; then
   echo "aws CLI is required" >&2
   exit 1
 fi
 
-if ! command -v jq >/dev/null 2>&1; then
+if ! command -v jq > /dev/null 2>&1; then
   echo "jq is required" >&2
   exit 1
 fi
@@ -34,15 +34,15 @@ jq -r '
   to_entries[]
   | select(.value != null)
   | "\(.key)=\(.value)"
-' <<<"$secret_json" >"$tmp_file"
+' <<< "$secret_json" > "$tmp_file"
 
-github_token="$(jq -r '.GITHUB_TOKEN // ""' <<<"$secret_json")"
-gh_token="$(jq -r '.GH_TOKEN // ""' <<<"$secret_json")"
+github_token="$(jq -r '.GITHUB_TOKEN // ""' <<< "$secret_json")"
+gh_token="$(jq -r '.GH_TOKEN // ""' <<< "$secret_json")"
 if [ -n "$github_token" ] && [ -z "$gh_token" ]; then
-  printf 'GH_TOKEN=%s\n' "$github_token" >>"$tmp_file"
+  printf 'GH_TOKEN=%s\n' "$github_token" >> "$tmp_file"
 fi
 
-cat >>"$tmp_file" <<'EOF'
+cat >> "$tmp_file" << 'EOF'
 SYMPHONY_WORKSPACE_ROOT=/srv/symphony/workspaces
 SOURCE_REPO_URL=/srv/symphony/control-repo
 SYMPHONY_PORT=4000
@@ -51,16 +51,16 @@ CONTROL_PLANE_WORKER_CONFIG=/srv/symphony/control-repo/scripts/symphony/workers.
 AGENT_SECRET_ID=cloudbet-market-maker/credentials
 EOF
 
-printf 'CODEX_BIN=%s\n' "$codex_bin" >>"$tmp_file"
+printf 'CODEX_BIN=%s\n' "$codex_bin" >> "$tmp_file"
 
 output_dir="$(dirname "$output_path")"
 install -d "$output_dir"
-if getent group symphony >/dev/null 2>&1; then
-  chgrp symphony "$output_dir" 2>/dev/null || true
-  chmod 2775 "$output_dir" 2>/dev/null || true
+if getent group symphony > /dev/null 2>&1; then
+  chgrp symphony "$output_dir" 2> /dev/null || true
+  chmod 2775 "$output_dir" 2> /dev/null || true
 else
-  chmod 755 "$output_dir" 2>/dev/null || true
+  chmod 755 "$output_dir" 2> /dev/null || true
 fi
-if ! install -m 600 "$tmp_file" "$output_path" 2>/dev/null; then
+if ! install -m 600 "$tmp_file" "$output_path" 2> /dev/null; then
   sudo install -m 600 -o "$(id -un)" -g "$(id -gn)" "$tmp_file" "$output_path"
 fi

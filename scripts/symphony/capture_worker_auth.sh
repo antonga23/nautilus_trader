@@ -15,7 +15,7 @@ if [ ! -f "$config_path" ]; then
   exit 1
 fi
 
-if ! jq -e --arg name "$worker_name" '.workers[] | select(.name == $name)' "$config_path" >/dev/null; then
+if ! jq -e --arg name "$worker_name" '.workers[] | select(.name == $name)' "$config_path" > /dev/null; then
   echo "Unknown worker: $worker_name" >&2
   exit 1
 fi
@@ -25,7 +25,7 @@ worker_email="$(jq -r --arg name "$worker_name" '.workers[] | select(.name == $n
 
 mkdir -p "$worker_home"
 chmod 700 "$worker_home"
-cat > "$worker_home/config.toml" <<'CONFIG'
+cat > "$worker_home/config.toml" << 'CONFIG'
 cli_auth_credentials_store = "file"
 forced_login_method = "chatgpt"
 CONFIG
@@ -43,7 +43,7 @@ if [ ! -f "$worker_home/auth.json" ]; then
 fi
 
 auth_email="$(
-  python3 - "$worker_home/auth.json" <<'PY'
+  python3 - "$worker_home/auth.json" << 'PY'
 import base64
 import json
 import sys

@@ -36,8 +36,8 @@ COPYFILE_DISABLE=1 tar czf - \
   --exclude='scripts/symphony/control_plane/node_modules' \
   --exclude='scripts/symphony/control_plane/dist' \
   --exclude='scripts/symphony/control_plane/.vite' \
-  "${paths[@]}" \
-  | ssh "${ssh_opts[@]}" "$EC2_USER@$EC2_HOST" '
+  "${paths[@]}" |
+  ssh "${ssh_opts[@]}" "$EC2_USER@$EC2_HOST" '
       set -euo pipefail
       tar xzf - -C /srv/symphony/control-repo
     '

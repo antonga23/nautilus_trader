@@ -18,7 +18,7 @@ ssh_opts=(
 )
 
 decode_email() {
-  python3 - "$1" <<'PY'
+  python3 - "$1" << 'PY'
 import base64
 import json
 import sys
@@ -53,20 +53,20 @@ upsert_secret_key() {
       --output text
   )"
   local updated_json
-  updated_json="$(jq --arg key "$key" --arg value "$value" '.[$key] = $value' <<<"$current_json")"
+  updated_json="$(jq --arg key "$key" --arg value "$value" '.[$key] = $value' <<< "$current_json")"
   aws secretsmanager put-secret-value \
     --region "$AWS_DEFAULT_REGION" \
     --secret-id "$secret_id" \
-    --secret-string "$updated_json" >/dev/null
+    --secret-string "$updated_json" > /dev/null
 }
 
 jq -c '.workers[] | select(.enabled != false)' "$config_path" | while read -r worker_json; do
-  name="$(jq -r '.name' <<<"$worker_json")"
-  user="$(jq -r '.user' <<<"$worker_json")"
-  expected_email="$(jq -r '.email' <<<"$worker_json")"
-  secret_key="$(jq -r '.secretKey // empty' <<<"$worker_json")"
+  name="$(jq -r '.name' <<< "$worker_json")"
+  user="$(jq -r '.user' <<< "$worker_json")"
+  expected_email="$(jq -r '.email' <<< "$worker_json")"
+  secret_key="$(jq -r '.secretKey // empty' <<< "$worker_json")"
   if [ -z "$secret_key" ]; then
-    secret_key="CODEX_WORKER_AUTH_$(tr '[:lower:]-' '[:upper:]_' <<<"$name")_B64"
+    secret_key="CODEX_WORKER_AUTH_$(tr '[:lower:]-' '[:upper:]_' <<< "$name")_B64"
   fi
   worker_auth_dir="$auth_root/$name"
   auth_file="$worker_auth_dir/auth.json"
@@ -78,7 +78,7 @@ jq -c '.workers[] | select(.enabled != false)' "$config_path" | while read -r wo
   fi
 
   if [ ! -f "$config_file" ]; then
-    cat > "$config_file" <<'CONFIG'
+    cat > "$config_file" << 'CONFIG'
 cli_auth_credentials_store = "file"
 forced_login_method = "chatgpt"
 CONFIG
@@ -97,7 +97,7 @@ CONFIG
   ssh "${ssh_opts[@]}" "$EC2_USER@$EC2_HOST" "sudo install -d -o $user -g $user -m 700 /home/$user/.codex"
   scp "${ssh_opts[@]}" "$auth_file" "$config_file" "$EC2_USER@$EC2_HOST:/tmp/"
   ssh "${ssh_opts[@]}" "$EC2_USER@$EC2_HOST" "sudo install -o $user -g $user -m 600 /tmp/auth.json /home/$user/.codex/auth.json && sudo install -o $user -g $user -m 600 /tmp/config.toml /home/$user/.codex/config.toml && rm -f /tmp/auth.json /tmp/config.toml"
-  auth_b64="$(base64 <"$auth_file" | tr -d '\n')"
+  auth_b64="$(base64 < "$auth_file" | tr -d '\n')"
   upsert_secret_key "$secret_key" "$auth_b64"
   echo "Installed auth for $name -> /home/$user/.codex/auth.json and persisted $secret_key to $secret_id" >&2
 done

@@ -11,8 +11,8 @@ cd "$repo_root"
 install -d -m 755 /var/log/symphony
 
 if [ -f "$pid_file" ]; then
-  pid="$(cat "$pid_file" 2>/dev/null || true)"
-  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+  pid="$(cat "$pid_file" 2> /dev/null || true)"
+  if [ -n "$pid" ] && kill -0 "$pid" 2> /dev/null; then
     exit 0
   fi
   rm -f "$pid_file"

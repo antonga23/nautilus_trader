@@ -14,8 +14,8 @@ nohup "$HOME/.local/bin/mise" exec -- ./bin/symphony \
   --logs-root /var/log/symphony \
   --port 4000 \
   /srv/symphony/control-repo/WORKFLOW.md \
-  >/var/log/symphony/launcher.stdout.log \
-  2>/var/log/symphony/launcher.stderr.log &
+  > /var/log/symphony/launcher.stdout.log \
+  2> /var/log/symphony/launcher.stderr.log &
 
 launcher_pid="$!"
 actual_pid=""
@@ -28,4 +28,4 @@ for _ in $(seq 1 20); do
   sleep 1
 done
 
-echo "${actual_pid:-$launcher_pid}" >/srv/symphony/symphony.pid
+echo "${actual_pid:-$launcher_pid}" > /srv/symphony/symphony.pid

@@ -7,8 +7,8 @@ set -a
 source /srv/symphony/symphony.env
 set +a
 
-if [ -f /srv/symphony/control-repo/scripts/symphony/control_plane/package.json ] \
-  && [ ! -f /srv/symphony/control-repo/scripts/symphony/control_plane/dist/index.html ]; then
+if [ -f /srv/symphony/control-repo/scripts/symphony/control_plane/package.json ] &&
+  [ ! -f /srv/symphony/control-repo/scripts/symphony/control_plane/dist/index.html ]; then
   (
     cd /srv/symphony/control-repo/scripts/symphony/control_plane
     npm ci

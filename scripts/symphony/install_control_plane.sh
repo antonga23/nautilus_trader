@@ -9,8 +9,8 @@ certbot_email="${CONTROL_PLANE_CERTBOT_EMAIL:-${LETSENCRYPT_EMAIL:-}}"
 
 install_node_if_needed() {
   local current_major=""
-  if command -v node >/dev/null 2>&1; then
-    current_major="$(node -p "process.versions.node.split('.')[0]" 2>/dev/null || true)"
+  if command -v node > /dev/null 2>&1; then
+    current_major="$(node -p "process.versions.node.split('.')[0]" 2> /dev/null || true)"
   fi
   if [ -n "$current_major" ] && [ "$current_major" -ge 20 ]; then
     return 0
@@ -19,9 +19,12 @@ install_node_if_needed() {
   local arch platform tarball url tmpdir install_dir
   arch="$(uname -m)"
   case "$arch" in
-    x86_64|amd64) platform="linux-x64" ;;
-    aarch64|arm64) platform="linux-arm64" ;;
-    *) echo "Unsupported Node architecture: $arch" >&2; exit 1 ;;
+    x86_64 | amd64) platform="linux-x64" ;;
+    aarch64 | arm64) platform="linux-arm64" ;;
+    *)
+      echo "Unsupported Node architecture: $arch" >&2
+      exit 1
+      ;;
   esac
   tarball="node-v${node_version}-${platform}.tar.xz"
   url="https://nodejs.org/dist/v${node_version}/${tarball}"
@@ -39,11 +42,11 @@ install_node_if_needed() {
 }
 
 public_ip() {
-  curl -fsS --max-time 3 https://checkip.amazonaws.com 2>/dev/null | tr -d '[:space:]' || true
+  curl -fsS --max-time 3 https://checkip.amazonaws.com 2> /dev/null | tr -d '[:space:]' || true
 }
 
 resolved_ip() {
-  python3 - "$control_plane_domain" <<'PY' 2>/dev/null || true
+  python3 - "$control_plane_domain" << 'PY' 2> /dev/null || true
 import socket, sys
 try:
     print(socket.gethostbyname(sys.argv[1]))
@@ -67,7 +70,7 @@ run_certbot_if_ready() {
     return 0
   fi
 
-  if ! command -v certbot >/dev/null 2>&1; then
+  if ! command -v certbot > /dev/null 2>&1; then
     sudo apt-get update -o Acquire::Retries=5
     sudo apt-get install -y certbot python3-certbot-nginx -o Acquire::Retries=5
   fi
@@ -101,13 +104,13 @@ install_node_if_needed
 )
 
 hash_value="$(openssl passwd -apr1 "$SYMPHONY_DASHBOARD_PASSWORD")"
-printf '%s:%s\n' "$SYMPHONY_DASHBOARD_USER" "$hash_value" | sudo tee /etc/nginx/.htpasswd-symphony >/dev/null
+printf '%s:%s\n' "$SYMPHONY_DASHBOARD_USER" "$hash_value" | sudo tee /etc/nginx/.htpasswd-symphony > /dev/null
 sudo chown root:www-data /etc/nginx/.htpasswd-symphony
 sudo chmod 640 /etc/nginx/.htpasswd-symphony
 
 sudo install -d -m 755 /var/www/letsencrypt
 sudo install -m 644 "$repo_root/scripts/symphony/control-plane.service" /etc/systemd/system/control-plane.service
-sed "s/__CONTROL_PLANE_SERVER_NAME__/${control_plane_domain}/g" "$repo_root/scripts/symphony/control-plane.nginx.conf" | sudo tee /etc/nginx/sites-available/symphony-control-plane >/dev/null
+sed "s/__CONTROL_PLANE_SERVER_NAME__/${control_plane_domain}/g" "$repo_root/scripts/symphony/control-plane.nginx.conf" | sudo tee /etc/nginx/sites-available/symphony-control-plane > /dev/null
 sudo rm -f /etc/nginx/sites-enabled/symphony-dashboard /etc/nginx/sites-enabled/symphony-control-plane
 sudo rm -f /etc/nginx/sites-available/symphony-dashboard
 sudo ln -sfn /etc/nginx/sites-available/symphony-control-plane /etc/nginx/sites-enabled/symphony-control-plane

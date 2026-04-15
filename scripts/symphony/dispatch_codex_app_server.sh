@@ -27,9 +27,9 @@ write_state() {
   local tmp_file
   tmp_file="$(mktemp)"
   if [ -f "$file" ]; then
-    jq -s '.[0] * .[1]' "$file" <(printf '%s\n' "$payload") >"$tmp_file"
+    jq -s '.[0] * .[1]' "$file" <(printf '%s\n' "$payload") > "$tmp_file"
   else
-    printf '%s\n' "$payload" | jq . >"$tmp_file"
+    printf '%s\n' "$payload" | jq . > "$tmp_file"
   fi
   install -m 664 "$tmp_file" "$file"
   rm -f "$tmp_file"
@@ -39,7 +39,7 @@ worker_auth_present() {
   local worker_user="$1"
   local worker_auth_file="$2"
 
-  if ! id "$worker_user" >/dev/null 2>&1; then
+  if ! id "$worker_user" > /dev/null 2>&1; then
     return 1
   fi
 
@@ -55,21 +55,21 @@ prepare_worker_workspace() {
     return
   fi
 
-  if [ "$(stat -c '%U' "$workspace_dir" 2>/dev/null || printf '')" != "$worker_user" ]; then
+  if [ "$(stat -c '%U' "$workspace_dir" 2> /dev/null || printf '')" != "$worker_user" ]; then
     sudo chown -R "$worker_user:$worker_group" "$workspace_dir"
   fi
 
   sudo chmod -R g+rwX "$workspace_dir"
   sudo find "$workspace_dir" -type d -exec chmod g+s {} +
 
-  sudo -u "$worker_user" -H git config --global --replace-all safe.directory "$workspace_dir" >/dev/null 2>&1 || true
+  sudo -u "$worker_user" -H git config --global --replace-all safe.directory "$workspace_dir" > /dev/null 2>&1 || true
 
   if [ -n "${GITHUB_TOKEN:-}" ] && [ -n "${GITHUB_REPO:-}" ] && [ -d "$workspace_dir/.git" ]; then
-    sudo -u "$worker_user" -H git -C "$workspace_dir" remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPO}.git" >/dev/null 2>&1 || true
+    sudo -u "$worker_user" -H git -C "$workspace_dir" remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPO}.git" > /dev/null 2>&1 || true
   fi
 
   if [ -n "${GH_TOKEN:-${GITHUB_TOKEN:-}}" ]; then
-    sudo -u "$worker_user" -H git config --global credential.helper '!gh auth git-credential' >/dev/null 2>&1 || true
+    sudo -u "$worker_user" -H git config --global credential.helper '!gh auth git-credential' > /dev/null 2>&1 || true
   fi
 }
 
@@ -101,17 +101,17 @@ load_runtime_profile_overrides() {
   runtime_profile_overrides_loaded=1
   runtime_profile_overrides='{}'
 
-  if ! command -v aws >/dev/null 2>&1; then
+  if ! command -v aws > /dev/null 2>&1; then
     return
   fi
 
   local secret_json
-  if ! secret_json="$(aws secretsmanager get-secret-value --secret-id "$agent_secret_id" --query SecretString --output text 2>/dev/null)"; then
+  if ! secret_json="$(aws secretsmanager get-secret-value --secret-id "$agent_secret_id" --query SecretString --output text 2> /dev/null)"; then
     return
   fi
 
-  runtime_profile_overrides="$(jq -r --arg key "$worker_profile_secret_key" '.[$key] // "{}"' <<<"$secret_json" 2>/dev/null || printf '{}')"
-  if ! jq -e . >/dev/null 2>&1 <<<"$runtime_profile_overrides"; then
+  runtime_profile_overrides="$(jq -r --arg key "$worker_profile_secret_key" '.[$key] // "{}"' <<< "$secret_json" 2> /dev/null || printf '{}')"
+  if ! jq -e . > /dev/null 2>&1 <<< "$runtime_profile_overrides"; then
     runtime_profile_overrides='{}'
   fi
 }
@@ -133,16 +133,16 @@ select_and_run() {
   local name user email priority state_file lock_file auth_file state_json cooldown_until cordoned run_log exit_code now_epoch effective_model subscription_tier
   local bridge_bin worker_group
 
-  name="$(jq -r '.name' <<<"$worker_json")"
-  user="$(jq -r '.user' <<<"$worker_json")"
-  email="$(jq -r '.email' <<<"$worker_json")"
-  priority="$(jq -r '.priority // 999' <<<"$worker_json")"
+  name="$(jq -r '.name' <<< "$worker_json")"
+  user="$(jq -r '.user' <<< "$worker_json")"
+  email="$(jq -r '.email' <<< "$worker_json")"
+  priority="$(jq -r '.priority // 999' <<< "$worker_json")"
   state_file="$state_root/workers/$name.json"
   lock_file="$state_root/locks/$name.lock"
   auth_file="/home/$user/.codex/auth.json"
   now_epoch="$(date +%s)"
 
-  if ! id "$user" >/dev/null 2>&1; then
+  if ! id "$user" > /dev/null 2>&1; then
     write_state "$state_file" "$(jq -n --arg status unavailable --arg lastError "Missing Linux user $user" '{status:$status,lastError:$lastError}')"
     return 1
   fi
@@ -157,8 +157,8 @@ select_and_run() {
     state_json="$(cat "$state_file")"
   fi
 
-  cooldown_until="$(jq -r '.cooldownUntilEpoch // 0' <<<"$state_json")"
-  cordoned="$(jq -r '.cordoned // false' <<<"$state_json")"
+  cooldown_until="$(jq -r '.cooldownUntilEpoch // 0' <<< "$state_json")"
+  cordoned="$(jq -r '.cordoned // false' <<< "$state_json")"
 
   if [ "$cordoned" = "true" ]; then
     return 1
@@ -169,14 +169,14 @@ select_and_run() {
     return 1
   fi
 
-  exec 9>"$lock_file"
+  exec 9> "$lock_file"
   if ! flock -n 9; then
     exec 9>&-
     return 1
   fi
 
   run_log="/var/log/symphony/workers/${name}.stderr.log"
-  : >"$run_log"
+  : > "$run_log"
   effective_model="$(get_worker_codex_profile_field "$name" "runtimeModel")"
   subscription_tier="$(get_worker_codex_profile_field "$name" "subscriptionTier")"
   bridge_bin="$repo_root/scripts/symphony/codex_control_bridge.mjs"
@@ -222,7 +222,7 @@ select_and_run() {
   exit_code=$?
   set -e
 
-  if grep -qiE 'HTTP 429|rate limit|credits balance|too many requests' "$run_log" 2>/dev/null; then
+  if grep -qiE 'HTTP 429|rate limit|credits balance|too many requests' "$run_log" 2> /dev/null; then
     write_state "$state_file" "$(jq -n \
       --arg status rate_limited \
       --arg issueIdentifier "$issue_identifier" \
@@ -230,7 +230,7 @@ select_and_run() {
       --arg lastError "Codex rate limit detected" \
       --arg lastEndedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
       --argjson lastEndedAtEpoch "$(date +%s)" \
-      --argjson cooldownUntilEpoch "$(( $(date +%s) + 3600 ))" \
+      --argjson cooldownUntilEpoch "$(($(date +%s) + 3600))" \
       '{status:$status,issueIdentifier:$issueIdentifier,workspacePath:$workspacePath,lastError:$lastError,lastEndedAt:$lastEndedAt,lastEndedAtEpoch:$lastEndedAtEpoch,cooldownUntilEpoch:$cooldownUntilEpoch}')"
   else
     clear_busy_state "$name"
