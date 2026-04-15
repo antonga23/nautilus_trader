@@ -5,6 +5,7 @@ repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 
 cd "$repo_root"
 set -a
+# shellcheck source=/dev/null
 source .env
 set +a
 

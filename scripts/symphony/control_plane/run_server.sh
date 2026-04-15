@@ -4,6 +4,7 @@ set -euo pipefail
 cd /srv/symphony/control-repo
 ./scripts/symphony/render_env_from_secret.sh
 set -a
+# shellcheck source=/dev/null
 source /srv/symphony/symphony.env
 set +a
 

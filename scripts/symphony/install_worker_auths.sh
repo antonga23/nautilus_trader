@@ -8,6 +8,7 @@ secret_id="${AGENT_SECRET_ID:-cloudbet-market-maker/credentials}"
 
 cd "$repo_root"
 set -a
+# shellcheck source=/dev/null
 source .env
 set +a
 
@@ -94,9 +95,9 @@ CONFIG
     exit 1
   fi
 
-  ssh "${ssh_opts[@]}" "$EC2_USER@$EC2_HOST" "sudo install -d -o $user -g $user -m 700 /home/$user/.codex"
+  ssh -n "${ssh_opts[@]}" "$EC2_USER@$EC2_HOST" "sudo install -d -o $user -g $user -m 700 /home/$user/.codex"
   scp "${ssh_opts[@]}" "$auth_file" "$config_file" "$EC2_USER@$EC2_HOST:/tmp/"
-  ssh "${ssh_opts[@]}" "$EC2_USER@$EC2_HOST" "sudo install -o $user -g $user -m 600 /tmp/auth.json /home/$user/.codex/auth.json && sudo install -o $user -g $user -m 600 /tmp/config.toml /home/$user/.codex/config.toml && rm -f /tmp/auth.json /tmp/config.toml"
+  ssh -n "${ssh_opts[@]}" "$EC2_USER@$EC2_HOST" "sudo install -o $user -g $user -m 600 /tmp/auth.json /home/$user/.codex/auth.json && sudo install -o $user -g $user -m 600 /tmp/config.toml /home/$user/.codex/config.toml && rm -f /tmp/auth.json /tmp/config.toml"
   auth_b64="$(base64 < "$auth_file" | tr -d '\n')"
   upsert_secret_key "$secret_key" "$auth_b64"
   echo "Installed auth for $name -> /home/$user/.codex/auth.json and persisted $secret_key to $secret_id" >&2

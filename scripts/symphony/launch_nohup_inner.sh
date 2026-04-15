@@ -6,6 +6,7 @@ export HOME=/home/ubuntu
 export PATH="$HOME/.local/bin:$HOME/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin"
 
 set -a
+# shellcheck source=/dev/null
 source /srv/symphony/symphony.env
 set +a
 
