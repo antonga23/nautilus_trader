@@ -1,0 +1,113 @@
+{
+  "version": 1,
+  "maxConcurrentAgents": 3,
+  "workers": [
+    {
+      "name": "codex-a",
+      "displayName": "Codex A",
+      "user": "codex-a",
+      "email": "alathantonga@gmail.com",
+      "providerProfiles": {
+        "codex": {
+          "subscriptionTier": "",
+          "runtimeModel": "",
+          "availableModels": [],
+          "notes": ""
+        },
+        "antigravity": {
+          "subscriptionTier": "",
+          "runtimeModel": "",
+          "availableModels": [],
+          "notes": ""
+        }
+      },
+      "secretKey": "CODEX_WORKER_AUTH_CODEX_A_B64",
+      "antigravityAuthSecretKey": "ANTIGRAVITY_WORKER_AUTH_CODEX_A_JSON_B64",
+      "enabled": true,
+      "maxJobs": 1,
+      "role": "general",
+      "priority": 1
+    },
+    {
+      "name": "codex-b",
+      "displayName": "Codex B",
+      "user": "codex-b",
+      "email": "fixedarb@gmail.com",
+      "providerProfiles": {
+        "codex": {
+          "subscriptionTier": "",
+          "runtimeModel": "",
+          "availableModels": [],
+          "notes": ""
+        },
+        "antigravity": {
+          "subscriptionTier": "",
+          "runtimeModel": "",
+          "availableModels": [],
+          "notes": ""
+        }
+      },
+      "secretKey": "CODEX_WORKER_AUTH_CODEX_B_B64",
+      "antigravityAuthSecretKey": "ANTIGRAVITY_WORKER_AUTH_CODEX_B_JSON_B64",
+      "enabled": true,
+      "maxJobs": 1,
+      "role": "general",
+      "priority": 2
+    },
+    {
+      "name": "codex-c",
+      "displayName": "Codex C",
+      "user": "codex-c",
+      "email": "antigravityantigravity15@gmail.com",
+      "providerProfiles": {
+        "codex": {
+          "subscriptionTier": "free",
+          "runtimeModel": "",
+          "availableModels": [],
+          "notes": "Operator-declared free ChatGPT plan. Runtime model stays on the Codex CLI provider default unless explicitly pinned."
+        },
+        "antigravity": {
+          "subscriptionTier": "",
+          "runtimeModel": "",
+          "availableModels": [],
+          "notes": ""
+        }
+      },
+      "secretKey": "CODEX_WORKER_AUTH_CODEX_C_B64",
+      "antigravityAuthSecretKey": "ANTIGRAVITY_WORKER_AUTH_CODEX_C_JSON_B64",
+      "enabled": true,
+      "maxJobs": 1,
+      "role": "general",
+      "priority": 3
+    },
+    {
+      "name": "codex-d",
+      "displayName": "Codex D",
+      "user": "codex-d",
+      "email": "info@cheapestgames.online",
+      "providerProfiles": {
+        "codex": {
+          "subscriptionTier": "",
+          "runtimeModel": "",
+          "availableModels": [],
+          "notes": ""
+        },
+        "antigravity": {
+          "subscriptionTier": "",
+          "runtimeModel": "",
+          "availableModels": [],
+          "notes": ""
+        }
+      },
+      "secretKey": "CODEX_WORKER_AUTH_CODEX_D_B64",
+      "antigravityAuthSecretKey": "ANTIGRAVITY_WORKER_AUTH_CODEX_D_JSON_B64",
+      "enabled": true,
+      "maxJobs": 1,
+      "role": "general",
+      "priority": 4,
+      "labels": [
+        "spare"
+      ]
+    }
+  ]
+}
