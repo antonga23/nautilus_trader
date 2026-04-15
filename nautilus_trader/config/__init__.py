@@ -42,6 +42,7 @@ from nautilus_trader.common.config import ActorFactory
 from nautilus_trader.common.config import DatabaseConfig
 from nautilus_trader.common.config import ImportableActorConfig
 from nautilus_trader.common.config import ImportableConfig
+from nautilus_trader.common.config import ImportableFactoryConfig
 from nautilus_trader.common.config import InstrumentProviderConfig
 from nautilus_trader.common.config import InvalidConfiguration
 from nautilus_trader.common.config import LoggingConfig
@@ -107,6 +108,7 @@ __all__ = [
     "FixedFeeModelConfig",
     "ImportableActorConfig",
     "ImportableConfig",
+    "ImportableFactoryConfig",
     "ImportableControllerConfig",
     "ImportableExecAlgorithmConfig",
     "ImportableFeeModelConfig",

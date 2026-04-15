@@ -1,0 +1,167 @@
+name: strategy-node-release
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+on:
+  push:
+    branches: [production]
+  workflow_dispatch:
+    inputs:
+      manifest_path:
+        description: Manifest to validate and, when enabled, deploy
+        required: false
+        default: deploy/strategy_nodes/betting_arbitrage/sxbet-single-venue.json
+      deploy_enabled:
+        description: Actually deploy to the target host
+        required: false
+        default: 'false'
+      image_tag:
+        description: Optional explicit image tag override
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  validate-manifests:
+    name: validate-strategy-node-manifests
+    timeout-minutes: 90
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+
+      - name: Common setup
+        uses: ./.github/actions/common-setup
+        with:
+          python-version: '3.12'
+          free-disk-space: 'false'
+
+      - name: Build and install wheel
+        uses: ./.github/actions/common-wheel-build
+        with:
+          python-version: '3.12'
+          github_ref: ${{ github.ref }}
+
+      - name: Validate SX.bet manifest
+        run: python -m nautilus_trader.live.strategy_nodes.betting_arbitrage validate-manifest --manifest deploy/strategy_nodes/betting_arbitrage/sxbet-single-venue.json
+
+      - name: Validate Polymarket manifest
+        run: python -m nautilus_trader.live.strategy_nodes.betting_arbitrage validate-manifest --manifest deploy/strategy_nodes/betting_arbitrage/polymarket-single-venue.json
+
+      - name: Validate Polymarket multi-venue example
+        run: python -m nautilus_trader.live.strategy_nodes.betting_arbitrage validate-manifest --manifest deploy/strategy_nodes/betting_arbitrage/polymarket-plus-sxbet.example.json
+
+      - name: Upload rendered strategy-node artifacts
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: strategy-node-validation-artifacts
+          path: artifacts/strategy-nodes
+          if-no-files-found: ignore
+
+  build-strategy-node-image:
+    name: build-strategy-node-image
+    timeout-minutes: 120
+    needs: [validate-manifests]
+    runs-on: ubuntu-22.04
+    outputs:
+      image_ref: ${{ steps.meta.outputs.image_ref }}
+    steps:
+      - uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
+        with:
+          egress-policy: audit
+          allowed-endpoints: |
+            ghcr.io:443
+
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+
+      - name: Log in to GHCR
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve image reference
+        id: meta
+        run: |
+          if [ -n "${{ github.event.inputs.image_tag }}" ]; then
+            tag="${{ github.event.inputs.image_tag }}"
+          else
+            tag="${GITHUB_SHA::12}"
+          fi
+          image_ref="ghcr.io/${{ github.repository_owner }}/cloudbet-market-maker/betting-arbitrage-node:${tag}"
+          echo "image_ref=$image_ref" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push strategy-node image
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: .
+          file: .docker/strategy_node.dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.image_ref }}
+
+  deploy-strategy-node:
+    name: deploy-strategy-node
+    timeout-minutes: 30
+    needs: [build-strategy-node-image]
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.deploy_enabled == 'true'
+    runs-on: ubuntu-22.04
+    env:
+      STRATEGY_NODE_HOST: ${{ secrets.STRATEGY_NODE_HOST }}
+      STRATEGY_NODE_SSH_USER: ${{ secrets.STRATEGY_NODE_SSH_USER }}
+      STRATEGY_NODE_SSH_KEY: ${{ secrets.STRATEGY_NODE_SSH_KEY }}
+      STRATEGY_NODE_ENV_FILE: ${{ secrets.STRATEGY_NODE_ENV_FILE }}
+    steps:
+      - uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+
+      - name: Validate deploy inputs
+        run: |
+          test -n "$STRATEGY_NODE_HOST"
+          test -n "$STRATEGY_NODE_SSH_USER"
+          test -n "$STRATEGY_NODE_SSH_KEY"
+
+      - name: Prepare SSH key
+        run: |
+          install -m 600 /dev/null strategy-node.key
+          printf '%s' "$STRATEGY_NODE_SSH_KEY" > strategy-node.key
+
+      - name: Upload manifest and deploy script
+        run: |
+          manifest_path="${{ github.event.inputs.manifest_path || 'deploy/strategy_nodes/betting_arbitrage/sxbet-single-venue.json' }}"
+          scp -i strategy-node.key -o StrictHostKeyChecking=no "$manifest_path" "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST:/tmp/strategy-node-manifest.json"
+          scp -i strategy-node.key -o StrictHostKeyChecking=no scripts/deploy/strategy_nodes/deploy_betting_strategy_node.sh "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST:/tmp/deploy_betting_strategy_node.sh"
+          if [ -n "$STRATEGY_NODE_ENV_FILE" ]; then
+            printf '%s' "$STRATEGY_NODE_ENV_FILE" | ssh -i strategy-node.key -o StrictHostKeyChecking=no "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST" 'cat > /tmp/strategy-node.env'
+          fi
+
+      - name: Deploy node on target host
+        run: |
+          ssh -i strategy-node.key -o StrictHostKeyChecking=no "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST" \
+            "chmod +x /tmp/deploy_betting_strategy_node.sh && \
+             /tmp/deploy_betting_strategy_node.sh \
+               --manifest /tmp/strategy-node-manifest.json \
+               --image '${{ needs.build-strategy-node-image.outputs.image_ref }}' \
+               --name betting-arbitrage-node \
+               ${STRATEGY_NODE_ENV_FILE:+--env-file /tmp/strategy-node.env}"

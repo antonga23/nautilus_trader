@@ -49,6 +49,12 @@ const WORKER_LOCK_DIR = '/srv/symphony/worker-state/locks';
 const AUTH_SESSION_DIR = '/srv/symphony/worker-state/auth-sessions';
 const RUN_ROOT = ENV.CONTROL_PLANE_RUN_ROOT || '/srv/symphony/worker-state/runs';
 const GITHUB_STATE_ROOT = ENV.CONTROL_PLANE_GITHUB_ROOT || DEFAULT_GITHUB_ROOT;
+const STRATEGY_NODE_MANIFEST_ROOT =
+  ENV.CONTROL_PLANE_STRATEGY_NODE_MANIFEST_ROOT ||
+  '/srv/symphony/control-repo/deploy/strategy_nodes/betting_arbitrage';
+const STRATEGY_NODE_REQUEST_ROOT =
+  ENV.CONTROL_PLANE_STRATEGY_NODE_REQUEST_ROOT ||
+  '/srv/symphony/worker-state/strategy-node-requests';
 const CONTROL_SETTINGS_PATH = ENV.CONTROL_PLANE_SETTINGS_PATH || '/srv/symphony/worker-state/control-plane/settings.json';
 const STATIC_DIR = path.dirname(fileURLToPath(import.meta.url));
 const STATIC_DIST_DIR = path.join(STATIC_DIR, 'dist');
@@ -170,6 +176,91 @@ function writeJson(filePath, value) {
   const tmp = `${filePath}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(value, null, 2));
   fs.renameSync(tmp, filePath);
+}
+
+function listStrategyNodeCatalogEntries() {
+  if (!fs.existsSync(STRATEGY_NODE_MANIFEST_ROOT)) {
+    return [];
+  }
+
+  return fs
+    .readdirSync(STRATEGY_NODE_MANIFEST_ROOT, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
+    .map((entry) => {
+      const manifestPath = path.join(STRATEGY_NODE_MANIFEST_ROOT, entry.name);
+      const manifest = readJson(manifestPath, {});
+      const venues = Array.isArray(manifest.venues)
+        ? manifest.venues.map((venue) => ({
+            venue: String(venue?.venue || ''),
+            clientKey: String(venue?.client_key || venue?.clientKey || ''),
+            dataEnabled: venue?.data_enabled !== false && venue?.dataEnabled !== false,
+            executionEnabled: venue?.execution_enabled === true || venue?.executionEnabled === true
+          }))
+        : [];
+
+      return {
+        manifestId: path.basename(entry.name, '.json'),
+        manifestFile: entry.name,
+        manifestPath,
+        nodeId: manifest.node_id || null,
+        traderId: manifest.trader_id || null,
+        validationMode: manifest.validation_mode !== false,
+        allowDummyCredentials: manifest.allow_dummy_credentials !== false,
+        venues,
+        metadata: manifest.metadata || {},
+        statusPath: manifest.status_path || null,
+        heartbeatPath: manifest.heartbeat_path || null,
+        renderedConfigPath: manifest.rendered_config_path || null
+      };
+    })
+    .sort((a, b) => String(a.manifestFile).localeCompare(String(b.manifestFile)));
+}
+
+function listStrategyNodeRequests(limit = 100) {
+  if (!fs.existsSync(STRATEGY_NODE_REQUEST_ROOT)) {
+    return [];
+  }
+
+  return fs
+    .readdirSync(STRATEGY_NODE_REQUEST_ROOT, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
+    .map((entry) => readJson(path.join(STRATEGY_NODE_REQUEST_ROOT, entry.name), null))
+    .filter(Boolean)
+    .sort((a, b) => String(b.requestedAt || '').localeCompare(String(a.requestedAt || '')))
+    .slice(0, limit);
+}
+
+function createStrategyNodeRequest(payload) {
+  const manifestFile = String(payload?.manifestFile || '').trim();
+  if (!manifestFile) {
+    throw new Error('manifestFile is required');
+  }
+
+  const manifestPath = path.join(STRATEGY_NODE_MANIFEST_ROOT, path.basename(manifestFile));
+  if (!fs.existsSync(manifestPath)) {
+    throw new Error(`Unknown manifest: ${manifestFile}`);
+  }
+
+  const manifest = readJson(manifestPath, {});
+  const requestId = `deploy-${Date.now()}-${randomBytes(4).toString('hex')}`;
+  const request = {
+    id: requestId,
+    requestedAt: new Date().toISOString(),
+    manifestFile: path.basename(manifestFile),
+    manifestPath,
+    nodeId: manifest.node_id || null,
+    traderId: manifest.trader_id || null,
+    rolloutMode: String(payload?.rolloutMode || 'validate_only'),
+    imageRef: payload?.imageRef ? String(payload.imageRef) : null,
+    requestedBy: payload?.requestedBy ? String(payload.requestedBy) : 'control-plane',
+    notes: payload?.notes ? String(payload.notes) : '',
+    target: payload?.target ? String(payload.target) : 'production',
+    status: 'queued',
+    metadata: payload?.metadata && typeof payload.metadata === 'object' ? payload.metadata : {}
+  };
+
+  writeJson(path.join(STRATEGY_NODE_REQUEST_ROOT, `${requestId}.json`), request);
+  return request;
 }
 
 function decodeJwtPayload(token) {
@@ -2546,6 +2637,10 @@ async function computeOverview() {
     ...readGitHubActionsState(40),
     webhook: getGitHubWebhookConfig(getSecretJson())
   };
+  const strategyNodes = {
+    manifests: listStrategyNodeCatalogEntries(),
+    requests: listStrategyNodeRequests(40)
+  };
   const settings = readControlSettings();
   const runs = listRecentRuns(60);
   const latestRunByIssue = new Map();
@@ -2613,6 +2708,7 @@ async function computeOverview() {
       latestRun: latestRunByWorker.get(worker.name) || null
     })),
     githubActions,
+    strategyNodes,
     providers,
     issues: issueRows,
     runs,
@@ -2909,6 +3005,36 @@ async function handleSettingsPost(req, res) {
     const settings = saveControlSettings(payload || {});
     latestOverview = await computeOverview();
     sendJson(res, 200, { success: true, settings });
+  } catch (error) {
+    sendJson(res, 500, { error: error.message });
+  }
+}
+
+async function handleStrategyNodeCatalog(res) {
+  try {
+    sendJson(res, 200, { manifests: listStrategyNodeCatalogEntries() });
+  } catch (error) {
+    sendJson(res, 500, { error: error.message });
+  }
+}
+
+async function handleStrategyNodeRequestList(res, requestUrl) {
+  try {
+    const limit = Number.parseInt(requestUrl.searchParams.get('limit') || '100', 10);
+    sendJson(res, 200, {
+      requests: listStrategyNodeRequests(Number.isFinite(limit) ? limit : 100)
+    });
+  } catch (error) {
+    sendJson(res, 500, { error: error.message });
+  }
+}
+
+async function handleStrategyNodeRequestCreate(req, res) {
+  try {
+    const raw = await readBody(req);
+    const payload = JSON.parse(raw || '{}');
+    const request = createStrategyNodeRequest(payload);
+    sendJson(res, 200, { success: true, request });
   } catch (error) {
     sendJson(res, 500, { error: error.message });
   }
@@ -3563,6 +3689,21 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'POST' && pathname === '/control/api/settings') {
     await handleSettingsPost(req, res);
+    return;
+  }
+
+  if (req.method === 'GET' && pathname === '/control/api/deployments/catalog') {
+    await handleStrategyNodeCatalog(res);
+    return;
+  }
+
+  if (req.method === 'GET' && pathname === '/control/api/deployments/requests') {
+    await handleStrategyNodeRequestList(res, requestUrl);
+    return;
+  }
+
+  if (req.method === 'POST' && pathname === '/control/api/deployments/requests') {
+    await handleStrategyNodeRequestCreate(req, res);
     return;
   }
 

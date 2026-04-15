@@ -18,10 +18,13 @@ Cross-venue arbitrage strategy for sports betting.
 
 from decimal import Decimal
 
+import msgspec
+
 from nautilus_trader.adapters.betting.common.odds import calculate_arbitrage_stakes
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.betting.market_matcher import ArbitrageOpportunity
 from nautilus_trader.adapters.betting.market_matcher import MarketMatcher
+from nautilus_trader.config import StrategyConfig
 from nautilus_trader.core.message import Event
 from nautilus_trader.model.data import QuoteTick
 from nautilus_trader.model.enums import OrderSide
@@ -30,9 +33,10 @@ from nautilus_trader.trading.strategy import Strategy
 
 
 VALID_MARKET_TIMINGS = frozenset({"all", "pre_market", "live"})
+DEFAULT_ENABLED_VENUES = frozenset({"CLOUDBET", "SXBET", "10BET"})
 
 
-class BettingArbitrageConfig:
+class BettingArbitrageConfig(StrategyConfig, frozen=True):
     """
     Configuration for betting arbitrage strategy.
 
@@ -60,32 +64,30 @@ class BettingArbitrageConfig:
 
     """
 
-    def __init__(  # pylint: disable=too-many-arguments
-        self,
-        min_profit_margin: Decimal = Decimal("0.01"),
-        max_total_stake: Decimal = Decimal(1000),
-        enabled_venues: frozenset[str] | None = None,
-        sport_filter: str | None = None,
-        market_timing_filter: str = "all",
-        exclude_live: bool = False,
-        rollover_aware: bool = True,
-        auto_execute: bool = False,
-    ):
-        self.min_profit_margin = min_profit_margin
-        self.max_total_stake = max_total_stake
-        self.enabled_venues = enabled_venues or frozenset(["CLOUDBET", "SXBET", "10BET"])
-        self.sport_filter = sport_filter.strip().lower() if sport_filter else None
-        self.market_timing_filter = market_timing_filter if not exclude_live else "pre_market"
-        self.rollover_aware = rollover_aware
-        self.auto_execute = auto_execute
+    min_profit_margin: Decimal = Decimal("0.01")
+    max_total_stake: Decimal = Decimal(1000)
+    enabled_venues: frozenset[str] = DEFAULT_ENABLED_VENUES
+    sport_filter: str | None = None
+    market_timing_filter: str = "all"
+    exclude_live: bool = False
+    rollover_aware: bool = True
+    auto_execute: bool = False
 
-        # Validate market_timing_filter
-        if self.market_timing_filter not in VALID_MARKET_TIMINGS:
+    def __post_init__(self) -> None:
+        enabled_venues = frozenset(self.enabled_venues or DEFAULT_ENABLED_VENUES)
+        normalized_sport_filter = self.sport_filter.strip().lower() if self.sport_filter else None
+        market_timing_filter = self.market_timing_filter if not self.exclude_live else "pre_market"
+
+        if market_timing_filter not in VALID_MARKET_TIMINGS:
             msg = (
-                f"Invalid market_timing_filter: {self.market_timing_filter}. "
+                f"Invalid market_timing_filter: {market_timing_filter}. "
                 f"Must be one of {VALID_MARKET_TIMINGS}"
             )
             raise ValueError(msg)
+
+        msgspec.structs.force_setattr(self, "enabled_venues", enabled_venues)
+        msgspec.structs.force_setattr(self, "sport_filter", normalized_sport_filter)
+        msgspec.structs.force_setattr(self, "market_timing_filter", market_timing_filter)
 
 
 class BettingArbitrageStrategy(Strategy):
@@ -110,7 +112,7 @@ class BettingArbitrageStrategy(Strategy):
         self,
         config: BettingArbitrageConfig,
     ):
-        super().__init__()
+        super().__init__(config)
         self._config = config
 
         # Market matcher for finding arbitrage
