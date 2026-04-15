@@ -1,0 +1,19 @@
+[Unit]
+Description=Symphony service for cloudbet-market-maker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/symphony/elixir
+Environment=HOME=/home/ubuntu
+Environment=PATH=/home/ubuntu/.local/bin:/home/ubuntu/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin
+ExecStartPre=/bin/bash -lc 'cd /srv/symphony/control-repo && ./scripts/symphony/render_env_from_secret.sh'
+ExecStart=/bin/bash -lc 'cd /srv/symphony/control-repo && ./scripts/symphony/run_service.sh'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

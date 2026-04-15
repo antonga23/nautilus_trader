@@ -1,0 +1,21 @@
+{
+  "name": "symphony-control-plane",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "6.0.1",
+    "vite": "8.0.8",
+    "typescript": "6.0.2",
+    "react": "19.2.5",
+    "react-dom": "19.2.5",
+    "lucide-react": "1.8.0",
+    "clsx": "2.1.1"
+  },
+  "devDependencies": {}
+}

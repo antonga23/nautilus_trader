@@ -2,7 +2,7 @@
 
 ## Services
 
-- GitHub Actions runner: `actions.runner.antonga23-cloudbet-market-maker.EC2-Runner.service`
+- GitHub Actions runner: `actions.runner.antonga23-cloudbet-market-maker.ip-172-31-21-124-cloudbet-market-maker.service`
 - Symphony control plane: `control-plane.service`
 - Symphony detached watchdog: user cron invoking `/srv/symphony/control-repo/scripts/symphony/ensure_running.sh`
 - Runner hygiene timer: `actions-runner-hygiene.timer`
@@ -15,7 +15,7 @@
 - `du -sh /home/ubuntu/actions-runner/_work/.ci-cache`
 - `du -xhd1 /home/ubuntu/actions-runner/_work | sort -h`
 - `du -xhd1 /srv/symphony/workspaces | sort -h`
-- `systemctl status actions.runner.antonga23-cloudbet-market-maker.EC2-Runner.service`
+- `systemctl status actions.runner.antonga23-cloudbet-market-maker.ip-172-31-21-124-cloudbet-market-maker.service`
 - `systemctl status control-plane.service`
 - `systemctl status actions-runner-hygiene.timer`
 - `bash /srv/symphony/control-repo/scripts/ci/runner_health_check.sh`
@@ -23,13 +23,13 @@
 ## Drain the runner
 
 1. Cancel or let the active GitHub Actions job finish.
-2. Stop the runner service: `sudo systemctl stop actions.runner.antonga23-cloudbet-market-maker.EC2-Runner.service`
+2. Stop the runner service: `sudo systemctl stop actions.runner.antonga23-cloudbet-market-maker.ip-172-31-21-124-cloudbet-market-maker.service`
 3. Confirm `docker ps -a` has no active CI containers.
 4. Run hygiene cleanup if disk pressure or stale logs are present.
 
 ## Restart the runner
 
-1. Start the runner service: `sudo systemctl start actions.runner.antonga23-cloudbet-market-maker.EC2-Runner.service`
+1. Start the runner service: `sudo systemctl start actions.runner.antonga23-cloudbet-market-maker.ip-172-31-21-124-cloudbet-market-maker.service`
 2. Confirm it is online in GitHub repository runner settings.
 3. Confirm the hygiene timer is still enabled.
 

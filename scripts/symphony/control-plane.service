@@ -1,0 +1,14 @@
+[Unit]
+Description=Symphony Control Plane
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/srv/symphony/control-repo
+ExecStart=/bin/bash -lc 'cd /srv/symphony/control-repo && ./scripts/symphony/control_plane/run_server.sh'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
