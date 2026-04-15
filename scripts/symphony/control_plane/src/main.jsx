@@ -174,6 +174,118 @@ function ProviderPanels({ overview, outputs, onCodexAction, onOpenRouterSave, on
   );
 }
 
+function StrategyNodeDeploymentsPanel({ overview, onRequest }) {
+  const manifests = overview?.strategyNodes?.manifests || [];
+  const requests = overview?.strategyNodes?.requests || [];
+  const [manifestFile, setManifestFile] = useState(manifests[0]?.manifestFile || '');
+  const [rolloutMode, setRolloutMode] = useState('validate_only');
+  const [target, setTarget] = useState('production');
+  const [workerName, setWorkerName] = useState(manifests[0]?.operatorFlow?.recommendedWorker || 'codex-a');
+  const [requestedBy, setRequestedBy] = useState('control-plane');
+  const [imageRef, setImageRef] = useState('');
+  const [notes, setNotes] = useState('');
+
+  useEffect(() => {
+    if (!manifests.length) return;
+    setManifestFile((current) => current || manifests[0].manifestFile || '');
+    setWorkerName((current) => current || manifests[0]?.operatorFlow?.recommendedWorker || 'codex-a');
+  }, [manifests.map((manifest) => manifest.manifestFile).join('|')]);
+
+  const selectedManifest = manifests.find((manifest) => manifest.manifestFile === manifestFile) || manifests[0] || null;
+
+  return (
+    <Card>
+      <h3><Workflow size={16} /> Strategy Nodes</h3>
+      <p className="subtle">Validate a deployable manifest, queue a rollout request, and review the current request backlog for betting-arbitrage nodes.</p>
+      <div className="nested-columns">
+        <div className="form-grid">
+          <label>
+            <span>Manifest</span>
+            <Select value={manifestFile} onChange={(event) => setManifestFile(event.target.value)}>
+              {manifests.map((manifest) => <option key={manifest.manifestFile} value={manifest.manifestFile}>{manifest.manifestFile}</option>)}
+            </Select>
+          </label>
+          <label>
+            <span>Rollout mode</span>
+            <Select value={rolloutMode} onChange={(event) => setRolloutMode(event.target.value)}>
+              <option value="validate_only">validate_only</option>
+              <option value="deploy">deploy</option>
+            </Select>
+          </label>
+          <label>
+            <span>Target</span>
+            <Select value={target} onChange={(event) => setTarget(event.target.value)}>
+              <option value="production">production</option>
+              <option value="staging">staging</option>
+              <option value="dry-run">dry-run</option>
+            </Select>
+          </label>
+          <label>
+            <span>Requested by</span>
+            <Input value={requestedBy} onChange={(event) => setRequestedBy(event.target.value)} />
+          </label>
+          <label>
+            <span>Worker</span>
+            <Input value={workerName} onChange={(event) => setWorkerName(event.target.value)} />
+          </label>
+          <label>
+            <span>Image ref override</span>
+            <Input placeholder="Optional GHCR image ref" value={imageRef} onChange={(event) => setImageRef(event.target.value)} />
+          </label>
+          <label>
+            <span>Notes</span>
+            <Textarea rows={3} value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Mixed-venue validation notes, operator context, or rollout caveats." />
+          </label>
+          <Button onClick={() => onRequest({ manifestFile, rolloutMode, target, requestedBy, workerName, imageRef, notes, metadata: { track: selectedManifest?.metadata?.track || '', phase: selectedManifest?.metadata?.phase || '' } })}>Queue Deployment Request</Button>
+        </div>
+        <div className="form-grid">
+          <Card>
+            <h4>Selected Manifest</h4>
+            {selectedManifest ? (
+              <>
+                <div className="muted">Node: {selectedManifest.nodeId || 'unknown'}</div>
+                <div className="muted">Trader: {selectedManifest.traderId || 'unknown'}</div>
+                <div className="muted">Recommended worker: {selectedManifest.operatorFlow?.recommendedWorker || 'codex-a'}</div>
+                <div className="muted">Dummy credentials allowed: {selectedManifest.allowDummyCredentials ? 'yes' : 'no'}</div>
+                <div className="muted">Validation mode: {selectedManifest.validationMode ? 'yes' : 'no'}</div>
+                <div className="muted">Required live secrets: {(selectedManifest.requirements?.requiredEnvKeys || []).join(', ') || 'none'}</div>
+                <div className="muted">Validation fallback: {(selectedManifest.requirements?.dummyCredentialKeys || []).join(', ') || 'none'}</div>
+                <div className="muted">Local auth step: <code>{selectedManifest.operatorFlow?.localAuthCommand || './scripts/symphony/capture_worker_auth.sh codex-a'}</code></div>
+                <div className="muted">Install step: <code>{selectedManifest.operatorFlow?.installCommand || './scripts/symphony/install_worker_auths.sh'}</code></div>
+                <div className="muted">Start step: <pre>{selectedManifest.operatorFlow?.startCommandTemplate || 'ssh ... deploy_betting_strategy_node.sh ...'}</pre></div>
+                <div className="muted">Monitor step: <pre>{selectedManifest.operatorFlow?.monitorCommandTemplate || './scripts/deploy/strategy_nodes/wait_for_strategy_node_status.sh ...'}</pre></div>
+              </>
+            ) : <Empty>No strategy-node manifests found.</Empty>}
+          </Card>
+          <Card>
+            <h4>Manifest Requirements</h4>
+            {selectedManifest ? <JsonBlock value={selectedManifest.requirements || {}} empty="No manifest requirements captured." /> : <Empty>Select a manifest to inspect requirements.</Empty>}
+          </Card>
+        </div>
+      </div>
+      <div className="nested-columns">
+        <Card>
+          <h4>Deployment Requests</h4>
+          {requests.length ? requests.map((request) => (
+            <div className="comment-card" key={request.id}>
+              <div className="timeline-meta">
+                <span>{formatDateTime(request.requestedAt)}</span>
+                <span className="tag">{request.rolloutMode || 'validate_only'}</span>
+                <span className="tag">{request.status || 'queued'}</span>
+                <span className="tag">{request.workerName || 'codex-a'}</span>
+              </div>
+              <strong>{request.manifestFile}</strong>
+              <div className="muted">Target: {request.target || 'production'} · Requested by {request.requestedBy || 'control-plane'}</div>
+              {request.notes ? <pre>{request.notes}</pre> : null}
+              <div className="muted">Image: {request.imageRef || 'manifest/default'}</div>
+            </div>
+          )) : <Empty>No deployment requests have been queued yet.</Empty>}
+        </Card>
+      </div>
+    </Card>
+  );
+}
+
 function Timeline({ events, filters, setFilters, onApply, onReset, selectedRunId }) {
   return (
     <>
@@ -459,6 +571,7 @@ function App() {
         <Panel title="Timeline" subtitle="Filterable Temporal-style event history across issues, workers, and runs."><Timeline events={timeline} filters={timelineFilters} setFilters={setTimelineFilters} onApply={loadTimeline} onReset={() => setTimelineFilters(DEFAULT_FILTERS)} selectedRunId={selectedRunId} /></Panel>
         <Panel title="Run Detail" subtitle="Temporal-style mission-control view, queue controls, and live logs."><RunDetail detail={runDetail} overview={overview} logStreamId={selectedLogStreamId} setLogStreamId={setSelectedLogStreamId} logContent={logContents[selectedLogStreamId]} onPrompt={(runId, prompt, deliveryMode) => postJson(`/control/api/runs/${encodeURIComponent(runId)}/prompts`, { prompt, deliveryMode })} onInterrupt={(runId, reason) => postJson(`/control/api/runs/${encodeURIComponent(runId)}/interrupt`, { reason })} onCheckpoint={(runId, note, deliveryMode) => postJson(`/control/api/runs/${encodeURIComponent(runId)}/checkpoint`, { note, deliveryMode })} /></Panel>
         <Panel title="Auth & Providers" subtitle="Configure worker identities, OAuth brokers, model keys, and runtime policy."><ProviderPanels overview={overview} outputs={providerOutputs} onCodexAction={(worker, action) => postJson(`/control/api/providers/codex/workers/${encodeURIComponent(worker)}/action`, { action }).then((result) => setProviderOutputs((current) => ({ ...current, codex: result })))} onOpenRouterSave={(apiKey) => postJson('/control/api/providers/openrouter', { apiKey }).then((result) => setProviderOutputs((current) => ({ ...current, openrouter: result })))} onAntigravityConfig={(config) => postJson('/control/api/providers/antigravity', config).then((result) => setProviderOutputs((current) => ({ ...current, antigravity: result })))} onAntigravityAction={(worker, action, callbackInput) => postJson(`/control/api/providers/antigravity/workers/${encodeURIComponent(worker)}/action`, { action, callbackInput }).then((result) => setProviderOutputs((current) => ({ ...current, antigravity: result })))} onProfileSave={(providerId, worker, profile) => postJson(`/control/api/providers/${providerId}/workers/${encodeURIComponent(worker)}/profile`, profile).then((result) => setProviderOutputs((current) => ({ ...current, [providerId]: result })))} /></Panel>
+        <Panel title="Strategy Deployments" subtitle="Validate manifests, queue rollout requests, and inspect node-specific requirements."><StrategyNodeDeploymentsPanel overview={overview} onRequest={(payload) => postJson('/control/api/deployments/requests', payload)} /></Panel>
         <Panel title="Workers" subtitle="One provider auth identity per isolated Linux user."><Table columns={['Worker', 'Status', 'Issue', 'Email', 'Codex Runtime', 'Actions']} rows={rows.workers} /></Panel>
         <Panel title="Issues" subtitle="Project issues with current run, PR status, and issue-level controls."><Table columns={['Issue', 'State', 'Runtime', 'Updated', 'PR']} rows={rows.issues} /></Panel>
         <Panel title="Issue Detail" subtitle="Workpad summary, recent comments, and linked runs.">

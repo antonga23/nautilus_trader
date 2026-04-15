@@ -126,6 +126,8 @@ jobs:
       STRATEGY_NODE_SSH_USER: ${{ secrets.STRATEGY_NODE_SSH_USER }}
       STRATEGY_NODE_SSH_KEY: ${{ secrets.STRATEGY_NODE_SSH_KEY }}
       STRATEGY_NODE_ENV_FILE: ${{ secrets.STRATEGY_NODE_ENV_FILE }}
+      STRATEGY_NODE_GHCR_USERNAME: ${{ secrets.STRATEGY_NODE_GHCR_USERNAME }}
+      STRATEGY_NODE_GHCR_TOKEN: ${{ secrets.STRATEGY_NODE_GHCR_TOKEN }}
     steps:
       - uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
         with:
@@ -141,6 +143,10 @@ jobs:
           test -n "$STRATEGY_NODE_HOST"
           test -n "$STRATEGY_NODE_SSH_USER"
           test -n "$STRATEGY_NODE_SSH_KEY"
+          if [ -n "$STRATEGY_NODE_GHCR_TOKEN" ] && [ -z "$STRATEGY_NODE_GHCR_USERNAME" ]; then
+            echo "STRATEGY_NODE_GHCR_USERNAME is required when STRATEGY_NODE_GHCR_TOKEN is set" >&2
+            exit 1
+          fi
 
       - name: Prepare SSH key
         run: |
@@ -155,13 +161,24 @@ jobs:
           if [ -n "$STRATEGY_NODE_ENV_FILE" ]; then
             printf '%s' "$STRATEGY_NODE_ENV_FILE" | ssh -i strategy-node.key -o StrictHostKeyChecking=no "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST" 'cat > /tmp/strategy-node.env'
           fi
+          if [ -n "$STRATEGY_NODE_GHCR_TOKEN" ]; then
+            printf '%s' "$STRATEGY_NODE_GHCR_TOKEN" | ssh -i strategy-node.key -o StrictHostKeyChecking=no "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST" 'cat > /tmp/strategy-node-ghcr-token'
+            ssh -i strategy-node.key -o StrictHostKeyChecking=no "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST" 'chmod 600 /tmp/strategy-node-ghcr-token'
+          fi
 
       - name: Deploy node on target host
         run: |
+          if [ -n "$STRATEGY_NODE_GHCR_TOKEN" ]; then
+            registry_args="--registry-user $STRATEGY_NODE_GHCR_USERNAME --registry-token-file /tmp/strategy-node-ghcr-token"
+          else
+            registry_args=""
+          fi
           ssh -i strategy-node.key -o StrictHostKeyChecking=no "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST" \
             "chmod +x /tmp/deploy_betting_strategy_node.sh && \
              /tmp/deploy_betting_strategy_node.sh \
                --manifest /tmp/strategy-node-manifest.json \
                --image '${{ needs.build-strategy-node-image.outputs.image_ref }}' \
                --name betting-arbitrage-node \
-               ${STRATEGY_NODE_ENV_FILE:+--env-file /tmp/strategy-node.env}"
+               ${STRATEGY_NODE_ENV_FILE:+--env-file /tmp/strategy-node.env} \
+               $registry_args && \
+             rm -f /tmp/strategy-node-ghcr-token"

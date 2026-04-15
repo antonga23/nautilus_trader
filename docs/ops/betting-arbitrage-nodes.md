@@ -39,6 +39,72 @@ For manifest validation and CI smoke validation, the builder can synthesize dete
 
 This is for validation-only flows. Live execution must provide real env vars on the deployment host.
 
+## Polymarket mixed-venue validation
+
+Use the mixed manifest at `deploy/strategy_nodes/betting_arbitrage/polymarket-plus-sxbet.example.json` for the control-plane mediated validation path.
+
+Recommended worker:
+
+- `codex-a`
+
+Local auth capture:
+
+```bash
+./scripts/symphony/capture_worker_auth.sh codex-a
+```
+
+Remote install and Secrets Manager persistence:
+
+```bash
+./scripts/symphony/install_worker_auths.sh
+```
+
+Control-plane UI path:
+
+1. Open `Auth & Providers` and confirm the worker auth shows up on EC2.
+2. Open `Strategy Deployments`.
+3. Select `polymarket-plus-sxbet.example.json`.
+4. Queue a request in `validate_only` mode.
+5. Monitor the resulting request row and the worker timeline.
+
+Real live execution for this track requires:
+
+- `POLYMARKET_API_KEY`
+- `POLYMARKET_API_SECRET`
+- `POLYMARKET_PASSPHRASE`
+- `POLYMARKET_PRIVATE_KEY`
+- `POLYMARKET_FUNDER`
+- `SXBET_API_KEY`
+- `SXBET_PRIVATE_KEY`
+- `SXBET_WALLET_ADDRESS`
+- `STRATEGY_NODE_HOST`
+- `STRATEGY_NODE_SSH_USER`
+- `STRATEGY_NODE_SSH_KEY`
+- `STRATEGY_NODE_ENV_FILE`
+- `STRATEGY_NODE_GHCR_USERNAME`
+- `STRATEGY_NODE_GHCR_TOKEN`
+
+After the control-plane request is approved, the EC2 deploy step uses:
+
+```sh
+ssh -i ./ec2-dev-betting-project.pem ubuntu@13.51.235.85 \
+  'chmod +x /tmp/deploy_betting_strategy_node.sh && \
+   /tmp/deploy_betting_strategy_node.sh \
+     --manifest /tmp/strategy-node-manifest.json \
+     --image ghcr.io/antonga23/cloudbet-market-maker/betting-arbitrage-node:<tag> \
+     --name betting-arbitrage-node \
+     --env-file /tmp/strategy-node.env \
+     --registry-user <ghcr-username> \
+     --registry-token-file /tmp/strategy-node-ghcr-token'
+```
+
+The node writes status and heartbeat files to:
+
+- `/opt/cloudbet/strategy-nodes/betting-arbitrage-node/status.json`
+- `/opt/cloudbet/strategy-nodes/betting-arbitrage-node/heartbeat.json`
+
+Use `./scripts/deploy/strategy_nodes/wait_for_strategy_node_status.sh` against the status file to monitor validation, startup, or recovery progress.
+
 ## CLI
 
 Validate a manifest:
@@ -74,6 +140,17 @@ Host-side scripts:
 
 The deploy script writes a runtime manifest with node-local status/heartbeat paths under `/var/lib/nautilus-node/` and starts the node as a Docker container.
 
+GitHub deploy workflow secrets:
+
+- `STRATEGY_NODE_HOST`
+- `STRATEGY_NODE_SSH_USER`
+- `STRATEGY_NODE_SSH_KEY`
+- `STRATEGY_NODE_ENV_FILE`
+- `STRATEGY_NODE_GHCR_USERNAME`
+- `STRATEGY_NODE_GHCR_TOKEN`
+
+`STRATEGY_NODE_ENV_FILE` should contain the venue runtime env vars required by the selected manifest.
+
 ## Control plane backend hooks
 
 The control-plane backend now exposes:
@@ -83,3 +160,5 @@ The control-plane backend now exposes:
 - `POST /control/api/deployments/requests`
 
 These endpoints list repo manifests and persist deployment requests for later UI/operator flows.
+
+The `Strategy Deployments` panel in the control plane surfaces those same endpoints and shows per-manifest required secrets, dummy fallback keys, and the recommended worker/auth flow.

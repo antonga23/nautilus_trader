@@ -5,16 +5,24 @@
 # -------------------------------------------------------------------------------------------------
 # pylint: disable=duplicate-code
 
+import asyncio
 from decimal import Decimal
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 
+import msgspec
 import pytest
 
+from nautilus_trader.adapters.tenbet.config import TenBetExecClientConfig
+from nautilus_trader.adapters.tenbet.config import TenBetInstrumentProviderConfig
+from nautilus_trader.adapters.tenbet.execution import TenBetExecutionClient
 from nautilus_trader.adapters.tenbet.browser_client import TenBetBrowserClient
 from nautilus_trader.adapters.tenbet.constants import TENBET_BASE_URL
 from nautilus_trader.adapters.tenbet.providers import TenBetInstrumentProvider
 from nautilus_trader.adapters.tenbet.risk_engine import TenBetRiskEngine
+from nautilus_trader.test_kit.stubs.commands import TestCommandStubs
+from nautilus_trader.test_kit.stubs.execution import TestExecStubs
+from nautilus_trader.test_kit.stubs.component import TestComponentStubs
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import Symbol
 from nautilus_trader.model.identifiers import Venue
@@ -165,9 +173,7 @@ class TestTenBetInstrumentProvider:
         """
         Mock config.
         """
-        config = Mock()
-        config.sports = frozenset(["soccer"])
-        return config
+        return TenBetInstrumentProviderConfig(sports=frozenset(["soccer"]))
 
     @pytest.fixture
     def provider(self, mock_logger, mock_browser_client, mock_config):
@@ -212,6 +218,42 @@ class TestTenBetInstrumentProvider:
         result = provider.find(inst_id)
         assert result is None
 
+    @pytest.mark.asyncio
+    async def test_load_all_async_creates_real_betting_instruments(self, mock_logger):
+        browser_client = Mock()
+        browser_client.is_connected = False
+        browser_client.connect = AsyncMock(side_effect=lambda: setattr(browser_client, "is_connected", True))
+        browser_client.get_markets_for_sport = AsyncMock(
+            return_value=[
+                {
+                    "marketHash": "market-1",
+                    "teamOneName": "Team A",
+                    "teamTwoName": "Team B",
+                    "sportId": 1,
+                    "leagueName": "Premier League",
+                    "type": 0,
+                    "orders": [
+                        {"isMakerBettingOutcomeOne": False, "percentageOdds": 5000},
+                        {"isMakerBettingOutcomeOne": True, "percentageOdds": 4500},
+                    ],
+                },
+            ],
+        )
+
+        provider = TenBetInstrumentProvider(
+            browser_client=browser_client,
+            config=TenBetInstrumentProviderConfig(sports=frozenset(["soccer"])),
+            logger=mock_logger,
+        )
+
+        await provider.load_all_async()
+
+        instruments = provider.list_all()
+        assert len(instruments) == 2
+        assert all(instrument.venue == Venue("10BET") for instrument in instruments)
+        assert {instrument.outcome for instrument in instruments} == {"home", "away"}
+        assert browser_client.get_markets_for_sport.await_count == 1
+
 
 @pytest.mark.asyncio
 async def test_tenbet_browser_client_disconnect_clears_connection_state():
@@ -232,6 +274,114 @@ async def test_tenbet_browser_client_disconnect_clears_connection_state():
     assert client._playwright is None
     assert client._is_logged_in is False
     assert client._session_start_time is None
+
+
+@pytest.mark.asyncio
+async def test_tenbet_browser_client_uses_synthetic_auth_without_secrets():
+    client = TenBetBrowserClient(
+        base_url=TENBET_BASE_URL,
+        allow_synthetic_auth=True,
+    )
+
+    assert await client.login_placeholder() is True
+    assert client.is_logged_in is True
+    assert client.auth_mode == "synthetic"
+
+
+@pytest.mark.asyncio
+async def test_tenbet_exec_config_round_trip_supports_synthetic_validation_mode():
+    raw = msgspec.json.encode(
+        {
+            "base_url": TENBET_BASE_URL,
+            "email": "validator@example.com",
+            "password": "dummy-password",
+            "allow_synthetic_auth": True,
+            "allow_synthetic_execution": True,
+            "max_stake_zar": "1000",
+            "instrument_provider": {
+                "sports": ["soccer"],
+            },
+        },
+    )
+
+    config = msgspec.json.decode(raw, type=TenBetExecClientConfig)
+
+    assert isinstance(config, TenBetExecClientConfig)
+    assert config.allow_synthetic_auth is True
+    assert config.allow_synthetic_execution is True
+    assert config.instrument_provider is not None
+    assert config.instrument_provider.sports == frozenset({"soccer"})
+
+
+@pytest.mark.asyncio
+async def test_tenbet_execution_client_accepts_synthetic_orders():
+    browser_client = Mock()
+    browser_client.connect = AsyncMock()
+    browser_client.disconnect = AsyncMock()
+    browser_client.login_placeholder = AsyncMock(return_value=True)
+    browser_client.is_logged_in = True
+    browser_client.auth_mode = "synthetic"
+
+    market_browser_client = Mock()
+    market_browser_client.is_connected = True
+
+    provider = TenBetInstrumentProvider(
+        browser_client=market_browser_client,
+        config=TenBetInstrumentProviderConfig(sports=frozenset(["soccer"])),
+    )
+
+    await provider._process_market(
+        {
+            "marketHash": "market-1",
+            "teamOneName": "Team A",
+            "teamTwoName": "Team B",
+            "sportId": 1,
+            "leagueName": "Premier League",
+            "type": 0,
+            "orders": [
+                {"isMakerBettingOutcomeOne": False, "percentageOdds": 5000},
+                {"isMakerBettingOutcomeOne": True, "percentageOdds": 4500},
+            ],
+        },
+    )
+
+    instrument = provider.list_all()[0]
+    order = TestExecStubs.limit_order(
+        instrument=instrument,
+        price=instrument.make_price(2.0),
+        quantity=instrument.make_qty(10),
+    )
+    command = TestCommandStubs.submit_order_command(order)
+
+    msgbus = TestComponentStubs.msgbus()
+    events: list[object] = []
+    msgbus.register("ExecEngine.process", events.append)
+    cache = TestComponentStubs.cache()
+    clock = TestComponentStubs.clock()
+    logger = TestComponentStubs.logger()
+    loop = asyncio.get_running_loop()
+
+    client = TenBetExecutionClient(
+        loop=loop,
+        browser_client=browser_client,
+        instrument_provider=provider,
+        msgbus=msgbus,
+        cache=cache,
+        clock=clock,
+        logger=logger,
+        config=TenBetExecClientConfig(
+            allow_synthetic_auth=True,
+            allow_synthetic_execution=True,
+            email=None,
+            password=None,
+        ),
+    )
+
+    await client._submit_order(command)
+
+    assert len(events) >= 2
+    assert any(event.__class__.__name__ == "OrderAccepted" for event in events)
+    assert command.order.client_order_id in client._orders
 
 
 # Note: Data client and execution client tests would require more complex

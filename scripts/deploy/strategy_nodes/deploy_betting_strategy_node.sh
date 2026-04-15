@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<USAGE
-Usage: $0 --manifest <path> --image <image> --name <container-name> [--env-file <path>] [--root <path>]
+Usage: $0 --manifest <path> --image <image> --name <container-name> [--env-file <path>] [--root <path>] [--registry-user <user>] [--registry-token-file <path>]
 USAGE
 }
 
@@ -12,6 +12,8 @@ image_ref=""
 container_name=""
 env_file=""
 root_dir="/opt/cloudbet/strategy-nodes"
+registry_user=""
+registry_token_file=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -33,6 +35,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --root)
       root_dir="$2"
+      shift 2
+      ;;
+    --registry-user)
+      registry_user="$2"
+      shift 2
+      ;;
+    --registry-token-file)
+      registry_token_file="$2"
       shift 2
       ;;
     -h|--help)
@@ -62,6 +72,16 @@ if [[ -n "$env_file" && ! -f "$env_file" ]]; then
   exit 1
 fi
 
+if [[ -n "$registry_token_file" && ! -f "$registry_token_file" ]]; then
+  echo "Registry token file not found: $registry_token_file" >&2
+  exit 1
+fi
+
+if [[ -n "$registry_token_file" && -z "$registry_user" ]]; then
+  echo "--registry-user is required when --registry-token-file is provided" >&2
+  exit 1
+fi
+
 command -v docker >/dev/null 2>&1 || { echo "docker is required" >&2; exit 1; }
 command -v python3 >/dev/null 2>&1 || { echo "python3 is required" >&2; exit 1; }
 
@@ -86,6 +106,10 @@ data["status_path"] = "/var/lib/nautilus-node/status.json"
 data["heartbeat_path"] = "/var/lib/nautilus-node/heartbeat.json"
 dest.write_text(json.dumps(data, indent=2) + "\n")
 PY
+
+if [[ -n "$registry_token_file" ]]; then
+  docker login ghcr.io -u "$registry_user" --password-stdin < "$registry_token_file" >/dev/null
+fi
 
 if docker image inspect "$image_ref" >/dev/null 2>&1; then
   :

@@ -206,14 +206,97 @@ function listStrategyNodeCatalogEntries() {
         traderId: manifest.trader_id || null,
         validationMode: manifest.validation_mode !== false,
         allowDummyCredentials: manifest.allow_dummy_credentials !== false,
+        recommendedWorker: manifest.metadata?.recommended_worker || 'codex-a',
         venues,
         metadata: manifest.metadata || {},
         statusPath: manifest.status_path || null,
         heartbeatPath: manifest.heartbeat_path || null,
-        renderedConfigPath: manifest.rendered_config_path || null
+        renderedConfigPath: manifest.rendered_config_path || null,
+        requirements: describeStrategyNodeRequirements(manifest),
+        operatorFlow: describeStrategyNodeOperatorFlow(manifest)
       };
     })
     .sort((a, b) => String(a.manifestFile).localeCompare(String(b.manifestFile)));
+}
+
+function describeStrategyNodeRequirements(manifest) {
+  const requiredEnvKeys = new Set();
+  const dummyCredentialKeys = new Set();
+  const liveNotes = [];
+  const validationNotes = [];
+  for (const venue of manifest.venues || []) {
+    const venueName = String(venue?.venue || '').toUpperCase();
+    if (venueName === 'SXBET') {
+      requiredEnvKeys.add('SXBET_API_KEY');
+      requiredEnvKeys.add('SXBET_PRIVATE_KEY');
+      requiredEnvKeys.add('SXBET_WALLET_ADDRESS');
+      dummyCredentialKeys.add('SXBET_API_KEY');
+      dummyCredentialKeys.add('SXBET_PRIVATE_KEY');
+      dummyCredentialKeys.add('SXBET_WALLET_ADDRESS');
+      liveNotes.push('SX.bet live execution needs API key, private key, and wallet address.');
+      validationNotes.push('SX.bet validation mode can run with deterministic dummy SXBET credentials.');
+    } else if (venueName === 'POLYMARKET') {
+      requiredEnvKeys.add('POLYMARKET_API_KEY');
+      requiredEnvKeys.add('POLYMARKET_API_SECRET');
+      requiredEnvKeys.add('POLYMARKET_PASSPHRASE');
+      requiredEnvKeys.add('POLYMARKET_PRIVATE_KEY');
+      requiredEnvKeys.add('POLYMARKET_FUNDER');
+      dummyCredentialKeys.add('POLYMARKET_API_KEY');
+      dummyCredentialKeys.add('POLYMARKET_API_SECRET');
+      dummyCredentialKeys.add('POLYMARKET_PASSPHRASE');
+      dummyCredentialKeys.add('POLYMARKET_PRIVATE_KEY');
+      dummyCredentialKeys.add('POLYMARKET_FUNDER');
+      liveNotes.push('Polymarket live execution needs API key, API secret, passphrase, private key, and funder.');
+      validationNotes.push('Polymarket validation mode can run with deterministic dummy Polymarket credentials.');
+    }
+  }
+
+  return {
+    requiredEnvKeys: [...requiredEnvKeys].sort(),
+    dummyCredentialKeys: [...dummyCredentialKeys].sort(),
+    hostPrereqs: ['docker', 'python3', 'jq', 'aws cli'],
+    validationNotes,
+    liveNotes,
+    deploymentSecrets: [
+      'STRATEGY_NODE_HOST',
+      'STRATEGY_NODE_SSH_USER',
+      'STRATEGY_NODE_SSH_KEY',
+      'STRATEGY_NODE_ENV_FILE',
+      'STRATEGY_NODE_GHCR_USERNAME',
+      'STRATEGY_NODE_GHCR_TOKEN'
+    ],
+    workerAuthSecret: 'CODEX_WORKER_AUTH_<WORKER>_B64',
+    workerAuthInstallFlow: [
+      './scripts/symphony/capture_worker_auth.sh codex-a',
+      './scripts/symphony/install_worker_auths.sh'
+    ]
+  };
+}
+
+function describeStrategyNodeOperatorFlow(manifest) {
+  const worker = manifest.metadata?.recommended_worker || 'codex-a';
+  return {
+    recommendedWorker: worker,
+    localAuthCommand: `./scripts/symphony/capture_worker_auth.sh ${worker}`,
+    installCommand: './scripts/symphony/install_worker_auths.sh',
+    startCommandTemplate: `ssh -i ./ec2-dev-betting-project.pem ubuntu@13.51.235.85 \
+  'chmod +x /tmp/deploy_betting_strategy_node.sh && \
+  /tmp/deploy_betting_strategy_node.sh \
+    --manifest /tmp/strategy-node-manifest.json \
+    --image ghcr.io/antonga23/cloudbet-market-maker/betting-arbitrage-node:<tag> \
+    --name betting-arbitrage-node \
+    --env-file /tmp/strategy-node.env \
+    --registry-user <ghcr-username> \
+    --registry-token-file /tmp/strategy-node-ghcr-token'`,
+    monitorCommandTemplate: `./scripts/deploy/strategy_nodes/wait_for_strategy_node_status.sh \
+  --status-file /opt/cloudbet/strategy-nodes/betting-arbitrage-node/status.json \
+  --timeout-seconds 600 \
+  --success-status running,completed,validated,built`,
+    catalogPath: '/control/api/deployments/catalog',
+    requestPath: '/control/api/deployments/requests',
+    requestListPath: '/control/api/deployments/requests',
+    monitorPath: '/control/api/deployments/requests?limit=40'
+  };
 }
 
 function listStrategyNodeRequests(limit = 100) {
@@ -253,6 +336,7 @@ function createStrategyNodeRequest(payload) {
     rolloutMode: String(payload?.rolloutMode || 'validate_only'),
     imageRef: payload?.imageRef ? String(payload.imageRef) : null,
     requestedBy: payload?.requestedBy ? String(payload.requestedBy) : 'control-plane',
+    workerName: payload?.workerName ? String(payload.workerName) : manifest.metadata?.recommended_worker || 'codex-a',
     notes: payload?.notes ? String(payload.notes) : '',
     target: payload?.target ? String(payload.target) : 'production',
     status: 'queued',
