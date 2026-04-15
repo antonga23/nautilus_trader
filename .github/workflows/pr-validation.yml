@@ -17,7 +17,7 @@ on:
 jobs:
   pre-commit-fast:
     timeout-minutes: 15
-    runs-on: ubuntu-22.04
+    runs-on: [self-hosted, Linux, X64, cloudbet-market-maker]
     steps:
       - uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
         with:
@@ -57,7 +57,7 @@ jobs:
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name == github.repository
     needs: [pre-commit-fast]
-    runs-on: ubuntu-22.04
+    runs-on: [self-hosted, Linux, X64, cloudbet-market-maker]
     container:
       image: >-
         ghcr.io/antonga23/cloudbet-market-maker/ci-runner@sha256:ed46e808744508e5627f3f8d32fc3eff6b0c047129af03db70a8a6225346235b
@@ -172,7 +172,7 @@ jobs:
     needs:
       - pre-commit-fast
       - build-linux-x86-py312
-    runs-on: ubuntu-22.04
+    runs-on: [self-hosted, Linux, X64, cloudbet-market-maker]
     container:
       image: >-
         ghcr.io/antonga23/cloudbet-market-maker/ci-runner@sha256:ed46e808744508e5627f3f8d32fc3eff6b0c047129af03db70a8a6225346235b
