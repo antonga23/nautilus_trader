@@ -1,0 +1,16 @@
+[Unit]
+Description=GitHub Actions Runner (__SERVICE_NAME__)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+ExecStart=__RUNNER_ROOT__/runsvc.sh
+User=__RUNNER_USER__
+WorkingDirectory=__RUNNER_ROOT__
+Environment=HOME=__RUNNER_HOME__
+KillMode=process
+KillSignal=SIGTERM
+TimeoutStopSec=5min
+
+[Install]
+WantedBy=multi-user.target
