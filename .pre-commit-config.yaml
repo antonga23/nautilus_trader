@@ -1,3 +1,5 @@
+exclude: ^examples/live/cloudbet\.py$
+
 repos:
   ##############################################################################
   #  General checks
@@ -68,6 +70,7 @@ repos:
         exclude: &legacy_cloudbet_exclude >-
           (?x)^(
             nautilus_trader/adapters/cloudbet/
+            |examples/live/cloudbet\.py$
             |tests/.*cloudbet.*
             |nautilus_trader/common/(clock|logging)\.py$
             |nautilus_trader/execution/reports\.py$
