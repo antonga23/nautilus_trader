@@ -73,12 +73,12 @@ runs:
       env:
         BUILD_TYPE: ${{ inputs.build-type }}
       run: |
-        packages=(curl git make pkg-config)
+        packages=(build-essential curl git make pkg-config)
 
         if [[ "$BUILD_TYPE" == "pre-commit" ]]; then
-          packages+=(ripgrep)
+          packages+=(ripgrep zlib1g-dev)
         else
-          packages+=(clang ripgrep python3-dev libpython3-dev)
+          packages+=(clang cmake libssl-dev ripgrep python3-dev libpython3-dev zlib1g-dev)
         fi
 
         missing_packages=()

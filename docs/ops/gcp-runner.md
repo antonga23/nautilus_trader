@@ -31,7 +31,7 @@ The health script reports:
 - root disk headroom
 - runner root, `_diag`, and local cache usage
 - Docker availability
-- `bash`, `python3`, `git`, and `uv`
+- `bash`, `python3`, `git`, `uv`, `gcc`, and `clang`
 - runner service state
 
 ## Drain the runner
@@ -54,6 +54,23 @@ The health script reports:
 - remove stale runner diagnostics manually if `_diag` grows unexpectedly
 - remove stale runner `_work/_temp` content only while the runner service is stopped
 - prune stopped containers and unused images if disk pressure rises
+
+## Bootstrap requirements
+
+Fresh CI runners must be provisioned with the package manifest from
+[`self-hosted-runner-packages.txt`](../../.docker/self-hosted-runner-packages.txt)
+through
+[`bootstrap-self-hosted-runner-host.sh`](../../.docker/bootstrap-self-hosted-runner-host.sh).
+That manifest now includes the native compiler toolchain and headers required
+for:
+
+- `cargo install cargo-vet`
+- `cargo install cargo-deny`
+- Cap'n Proto source builds during `common-setup`
+
+At minimum, a healthy GCP CI runner should have `gcc`, `clang`,
+`build-essential`, `cmake`, `libssl-dev`, and `zlib1g-dev` available before it
+starts taking jobs.
 
 ## Cache behavior
 

@@ -30,7 +30,7 @@ The health script keeps the summary short and reports:
 - root disk headroom
 - runner root, `_diag`, and local cache usage
 - Docker availability
-- `bash`, `python3`, `git`, and `uv`
+- `bash`, `python3`, `git`, `uv`, `gcc`, and `clang`
 - runner, control-plane, and hygiene service state
 
 ## Drain the runner
