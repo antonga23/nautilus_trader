@@ -91,8 +91,7 @@ validate_runner_layout_config_path() {
 
   path="$(validate_managed_path RUNNER_LAYOUT_CONFIG "$1")"
   case "$path" in
-    /etc/cloudbet/*.conf)
-      ;;
+    /etc/cloudbet/*.conf) ;;
     *)
       echo "RUNNER_LAYOUT_CONFIG must live under /etc/cloudbet and end with .conf, got: $path" >&2
       exit 1
