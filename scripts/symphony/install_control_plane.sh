@@ -109,6 +109,8 @@ sudo chown root:www-data /etc/nginx/.htpasswd-symphony
 sudo chmod 640 /etc/nginx/.htpasswd-symphony
 
 sudo install -d -m 755 /var/www/letsencrypt
+sudo install -d -o ubuntu -g ubuntu -m 775 /srv/symphony/worker-state
+sudo install -d -o ubuntu -g ubuntu -m 775 /srv/symphony/worker-state/strategy-node-requests
 sudo install -m 644 "$repo_root/scripts/symphony/control-plane.service" /etc/systemd/system/control-plane.service
 sed "s/__CONTROL_PLANE_SERVER_NAME__/${control_plane_domain}/g" "$repo_root/scripts/symphony/control-plane.nginx.conf" | sudo tee /etc/nginx/sites-available/symphony-control-plane > /dev/null
 sudo rm -f /etc/nginx/sites-enabled/symphony-dashboard /etc/nginx/sites-enabled/symphony-control-plane
