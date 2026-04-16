@@ -55,13 +55,13 @@ apt_with_retry() {
 apt_with_retry "apt-get update" apt-get update -o Acquire::Retries=5
 apt_with_retry "apt-get install" \
   apt-get install -y --no-install-recommends \
-    build-essential \
-    pkg-config \
-    postgresql-client \
-    python3-dev \
-    libpython3-dev \
-    git \
-    make \
-    ca-certificates \
-    -o Acquire::Retries=5
+  build-essential \
+  pkg-config \
+  postgresql-client \
+  python3-dev \
+  libpython3-dev \
+  git \
+  make \
+  ca-certificates \
+  -o Acquire::Retries=5
 rm -rf /var/lib/apt/lists/*
