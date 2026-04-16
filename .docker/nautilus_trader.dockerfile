@@ -27,12 +27,14 @@ ENV DEBIAN_FRONTEND=noninteractive \
     RUNNER_HOME=/home/actions-runner \
     RUNNER_ROOT=/opt/actions-runner \
     PACKAGES_FILE=/usr/local/share/cloudbet/self-hosted-runner-packages.txt \
-    RUNNER_SERVICE_TEMPLATE=/usr/local/share/cloudbet/github-actions-runner.service.tmpl
+    RUNNER_SERVICE_TEMPLATE=/usr/local/share/cloudbet/github-actions-runner.service.tmpl \
+    RUNNER_CHECKSUMS_FILE=/usr/local/share/cloudbet/github-actions-runner-sha256sums.txt
 
 COPY .docker/self-hosted-runner-packages.txt $PACKAGES_FILE
 COPY .docker/bootstrap-self-hosted-runner-host.sh /usr/local/bin/bootstrap-self-hosted-runner-host
 COPY .docker/install-github-actions-runner.sh /usr/local/bin/install-github-actions-runner
 COPY .docker/github-actions-runner.service.tmpl $RUNNER_SERVICE_TEMPLATE
+COPY .docker/github-actions-runner-sha256sums.txt $RUNNER_CHECKSUMS_FILE
 
 RUN chmod +x /usr/local/bin/bootstrap-self-hosted-runner-host /usr/local/bin/install-github-actions-runner && \
     BOOTSTRAP_MODE=image /usr/local/bin/bootstrap-self-hosted-runner-host

@@ -18,7 +18,7 @@ fi
 
 if [[ "$bootstrap_mode" != "image" && "${EUID}" -ne 0 ]]; then
   if command -v sudo >/dev/null 2>&1; then
-    exec sudo --preserve-env=BOOTSTRAP_MODE,RUNNER_USER,RUNNER_GROUP,RUNNER_HOME,RUNNER_ROOT,PACKAGES_FILE "$0" "$@"
+    exec sudo --preserve-env=BOOTSTRAP_MODE,RUNNER_USER,RUNNER_GROUP,RUNNER_HOME,RUNNER_ROOT,PACKAGES_FILE,INSTALL_GITHUB_ACTIONS_RUNNER,RUNNER_INSTALLER_PATH "$0" "$@"
   fi
 
   echo "bootstrap-self-hosted-runner-host.sh must run as root" >&2
