@@ -10,9 +10,16 @@ packages_file="${PACKAGES_FILE:-/usr/local/share/cloudbet/self-hosted-runner-pac
 sudoers_file="/etc/sudoers.d/90-${runner_user}"
 install_runner="${INSTALL_GITHUB_ACTIONS_RUNNER:-false}"
 runner_installer="${RUNNER_INSTALLER_PATH:-/usr/local/bin/install-github-actions-runner}"
-workspace_repair_source="${RUNNER_WORKSPACE_REPAIR_SOURCE:-$(dirname "$0")/repair-github-runner-workspace.sh}"
 workspace_repair_target="${RUNNER_WORKSPACE_REPAIR_TARGET:-/usr/local/bin/repair-github-runner-workspace}"
 runner_layout_config="${RUNNER_LAYOUT_CONFIG:-/etc/cloudbet/self-hosted-runner.conf}"
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+default_workspace_repair_source="${script_dir}/repair-github-runner-workspace.sh"
+
+if [[ ! -f "$default_workspace_repair_source" && -f "${script_dir}/repair-github-runner-workspace" ]]; then
+  default_workspace_repair_source="${script_dir}/repair-github-runner-workspace"
+fi
+
+workspace_repair_source="${RUNNER_WORKSPACE_REPAIR_SOURCE:-$default_workspace_repair_source}"
 
 if [[ ! -f "$packages_file" ]]; then
   echo "Package manifest not found: $packages_file" >&2

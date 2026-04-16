@@ -68,11 +68,11 @@ if [[ "${EUID}" -ne 0 ]]; then
   exit 1
 fi
 
+validate_runner_root_for_destructive_reset "$runner_root"
 install -d -m 0755 "$runner_root" "$runner_workdir"
 chown -R "$runner_user:$runner_group" "$runner_root" "$runner_home"
 
 if [[ "$force_reinstall" = "true" || ! -x "$runner_root/config.sh" || ! -x "$runner_root/runsvc.sh" ]]; then
-  validate_runner_root_for_destructive_reset "$runner_root"
   rm -rf "$runner_root"
   install -d -m 0755 "$runner_root" "$runner_workdir"
 
