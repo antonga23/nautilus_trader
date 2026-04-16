@@ -1,6 +1,64 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+canonicalize_path() {
+  python3 - "$1" <<'PY'
+import os
+import sys
+
+print(os.path.realpath(sys.argv[1]))
+PY
+}
+
+validate_managed_path() {
+  local label="$1"
+  local raw_path="$2"
+  local path
+
+  path="$(canonicalize_path "${raw_path%/}")"
+  if [[ -z "$path" || "$path" != /* ]]; then
+    echo "${label} must be an absolute path, got: ${raw_path:-<empty>}" >&2
+    exit 1
+  fi
+
+  case "$path" in
+    /|/bin|/boot|/dev|/etc|/home|/lib|/lib64|/media|/mnt|/opt|/proc|/root|/run|/sbin|/srv|/sys|/tmp|/usr|/var)
+      echo "Refusing unsafe ${label}: $path" >&2
+      exit 1
+      ;;
+  esac
+
+  printf '%s\n' "$path"
+}
+
+validate_runner_home_path() {
+  local path
+  local base
+
+  path="$(validate_managed_path RUNNER_HOME "$1")"
+  base="$(basename "$path")"
+  if [[ "$base" != "$runner_user" ]]; then
+    echo "RUNNER_HOME must end with the runner user name ($runner_user), got: $path" >&2
+    exit 1
+  fi
+
+  printf '%s\n' "$path"
+}
+
+validate_runner_root_path() {
+  local path
+  local base
+
+  path="$(validate_managed_path RUNNER_ROOT "$1")"
+  base="$(basename "$path")"
+  if [[ "$base" != *runner* && "$base" != "$runner_user" ]]; then
+    echo "RUNNER_ROOT must point to a dedicated runner directory, got: $path" >&2
+    exit 1
+  fi
+
+  printf '%s\n' "$path"
+}
+
 bootstrap_mode="${BOOTSTRAP_MODE:-host}"
 runner_user="${RUNNER_USER:-actions-runner}"
 runner_group="${RUNNER_GROUP:-$runner_user}"
@@ -35,6 +93,9 @@ if [[ "$bootstrap_mode" != "image" && "${EUID}" -ne 0 ]]; then
   exit 1
 fi
 
+runner_home="$(validate_runner_home_path "$runner_home")"
+runner_root="$(validate_runner_root_path "$runner_root")"
+
 mapfile -t packages < <(grep -Ev '^\s*(#|$)' "$packages_file")
 
 export DEBIAN_FRONTEND=noninteractive
@@ -63,8 +124,12 @@ fi
 
 usermod -aG docker "$runner_user"
 
-install -d -m 0755 "$runner_root" "$runner_root/_diag" "$runner_root/_work" "$runner_home/.cache"
-chown -R "$runner_user:$runner_group" "$runner_root" "$runner_home"
+install -d -m 0755 -o "$runner_user" -g "$runner_group" \
+  "$runner_home" \
+  "$runner_home/.cache" \
+  "$runner_root" \
+  "$runner_root/_diag" \
+  "$runner_root/_work"
 
 if [[ ! -f "$workspace_repair_source" ]]; then
   echo "Runner workspace repair helper not found: $workspace_repair_source" >&2

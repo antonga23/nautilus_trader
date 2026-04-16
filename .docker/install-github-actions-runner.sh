@@ -10,6 +10,27 @@ print(os.path.realpath(sys.argv[1]))
 PY
 }
 
+validate_managed_path() {
+  local label="$1"
+  local raw_path="$2"
+  local path
+
+  path="$(canonicalize_path "${raw_path%/}")"
+  if [[ -z "$path" || "$path" != /* ]]; then
+    echo "${label} must be an absolute path, got: ${raw_path:-<empty>}" >&2
+    exit 1
+  fi
+
+  case "$path" in
+    /|/bin|/boot|/dev|/etc|/home|/lib|/lib64|/media|/mnt|/opt|/proc|/root|/run|/sbin|/srv|/sys|/tmp|/usr|/var)
+      echo "Refusing unsafe ${label}: $path" >&2
+      exit 1
+      ;;
+  esac
+
+  printf '%s\n' "$path"
+}
+
 runner_user="${RUNNER_USER:-actions-runner}"
 runner_group="${RUNNER_GROUP:-$runner_user}"
 runner_home="${RUNNER_HOME:-/home/$runner_user}"
@@ -39,19 +60,46 @@ configured_runner="false"
 
 validate_runner_root_for_destructive_reset() {
   local path
-  path="$(canonicalize_path "${1%/}")"
+  local base
 
-  if [[ -z "$path" || "$path" != /* ]]; then
-    echo "RUNNER_ROOT must be an absolute path, got: ${1:-<empty>}" >&2
+  path="$(validate_managed_path RUNNER_ROOT "$1")"
+  base="$(basename "$path")"
+  if [[ "$base" != *runner* && "$base" != "$runner_user" ]]; then
+    echo "RUNNER_ROOT must point to a dedicated runner directory, got: $path" >&2
     exit 1
   fi
 
+  printf '%s\n' "$path"
+}
+
+validate_runner_home_path() {
+  local path
+  local base
+
+  path="$(validate_managed_path RUNNER_HOME "$1")"
+  base="$(basename "$path")"
+  if [[ "$base" != "$runner_user" ]]; then
+    echo "RUNNER_HOME must end with the runner user name ($runner_user), got: $path" >&2
+    exit 1
+  fi
+
+  printf '%s\n' "$path"
+}
+
+validate_runner_workdir_path() {
+  local path
+
+  path="$(validate_managed_path GITHUB_RUNNER_WORKDIR "$1")"
   case "$path" in
-    /|/bin|/boot|/dev|/etc|/home|/lib|/lib64|/media|/mnt|/opt|/proc|/root|/run|/sbin|/srv|/sys|/tmp|/usr|/var)
-      echo "Refusing to recursively delete unsafe RUNNER_ROOT: $path" >&2
+    "$runner_root"/*|"$runner_home"/*)
+      ;;
+    *)
+      echo "GITHUB_RUNNER_WORKDIR must live under RUNNER_ROOT or RUNNER_HOME, got: $path" >&2
       exit 1
       ;;
   esac
+
+  printf '%s\n' "$path"
 }
 
 cleanup() {
@@ -68,13 +116,16 @@ if [[ "${EUID}" -ne 0 ]]; then
   exit 1
 fi
 
-validate_runner_root_for_destructive_reset "$runner_root"
-install -d -m 0755 "$runner_root" "$runner_workdir"
-chown -R "$runner_user:$runner_group" "$runner_root" "$runner_home"
+runner_home="$(validate_runner_home_path "$runner_home")"
+runner_root="$(validate_runner_root_for_destructive_reset "$runner_root")"
+runner_workdir="$(validate_runner_workdir_path "$runner_workdir")"
+
+install -d -m 0755 -o "$runner_user" -g "$runner_group" "$runner_home" "$runner_root" "$runner_workdir"
+chown -R "$runner_user:$runner_group" "$runner_root"
 
 if [[ "$force_reinstall" = "true" || ! -x "$runner_root/config.sh" || ! -x "$runner_root/runsvc.sh" ]]; then
   rm -rf "$runner_root"
-  install -d -m 0755 "$runner_root" "$runner_workdir"
+  install -d -m 0755 -o "$runner_user" -g "$runner_group" "$runner_root" "$runner_workdir"
 
   if [[ ! -f "$checksums_file" ]]; then
     echo "Runner checksum manifest not found: $checksums_file" >&2
