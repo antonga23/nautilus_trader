@@ -17,13 +17,8 @@ from nautilus_trader.model.orderbook import OrderBook
 from nautilus_trader.trading.strategy import Strategy
 
 
-# from nautilus_trader.core.uuid import UUID4
-
-
-# TODO: complete mapping between all markets for all sports
-
-# 'soccer.team_win_to_nil': [('winner', 'team_clean_sheet'), (), ()], # example of a special case 1 market maps to 2 markets simultaneously
-# 'match_odds': [ ('asian_handicap', 'double_chance') ] # example of a special case 1 market maps to 2 markets simultaneously
+# TODO: complete mapping between all markets for all sports.
+# Some special cases will need one market to map to multiple related markets.
 
 MARKET_MAPPER: dict[str, list[str]] = {
     "both_teams_to_score": ["both_teams_to_score"],
@@ -99,7 +94,6 @@ class BettingMarketMaker(Strategy):
         self.instrument_provider: CloudbetInstrumentProvider = instrument_provider
         self.matching_selections: dict[InstrumentId, list[InstrumentId]] | None = None
         self._instrument_to_book: dict[InstrumentId, BookOrder] = {}
-        # self.order_factory = config.order_factory
         self._trigger_min_profit = trigger_min_profit
         self._trigger_min_size = trigger_min_size
 
@@ -183,14 +177,8 @@ class BettingMarketMaker(Strategy):
             stake_on_bid = max_stake * (ask_probability / (bid_probability + ask_probability))
             stake_on_ask = max_stake * (bid_probability / (bid_probability + ask_probability))
 
-            # # Check if stake on ask is within bounds
-            # if not (buy_instrument.min_size <= stake_on_ask <= buy_instrument.max_size): TODO: force max and min size initialisation
-            #     print(f"Stake on ask is out of bounds: {stake_on_ask}")
-            #     return
-            # # Check if stake on bid is within bounds
-            # if not (sell_instrument.min_size <= stake_on_bid <= sell_instrument.max_size):
-            #     print(f"Stake on bid is out of bounds: {stake_on_bid}")
-            #     return
+            # TODO: enforce venue-specific stake bounds once min and max size
+            # constraints are initialized consistently on the instruments.
             # check if strategy has any open orders
             if len(self.cache.orders_inflight(strategy_id=self.id)) > 0:
                 return
@@ -266,7 +254,6 @@ class BettingMarketMaker(Strategy):
         self.subscribe_instrument(self.instrument.id)
         for ins in matching_instruments:
             self.subscribe_instrument(ins.id)
-        # pass
 
     def on_order_book_deltas(self, deltas: OrderBookDeltas) -> None:
         """
@@ -319,7 +306,6 @@ class BettingMarketMaker(Strategy):
                 self._book.clear_asks()
                 book_event_time = instrument.ts_event or self.clock.timestamp_ns()
                 self._book.add(book_order, book_event_time)
-            # self.instrument = instrument
         if instrument.id in self._instrument_to_book and instrument.id != self.instrument_id:
             if instrument.max_quantity is not None and instrument.min_price is not None:
                 synthetic_book_order = BookOrder(
@@ -383,8 +369,7 @@ class BettingMarketMaker(Strategy):
         """
         Actions to be performed when the strategy is stopped.
         """
-        # self.cancel_all_orders(self.instrument_id)
-        # self.close_all_positions(self.instrument_id)
+        return
 
     def selection_matcher(self) -> list[CryptoBettingInstrument]:
         # We need to find the matching selections for the current instrumentID
