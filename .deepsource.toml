@@ -8,6 +8,7 @@ test_patterns = [
 ]
 
 exclude_patterns = [
+  "nautilus_trader/examples/strategies/betting_market_maker.py",
   "tests/performance_tests/**",
   "tests/integration_tests/**",
   "nautilus_trader/adapters/betfair/**",

@@ -270,6 +270,10 @@ max-complexity = 10
   "S105",
   "S106",
 ] # Examples can use naive datetimes, asserts, and mock credentials
+"nautilus_trader/examples/strategies/betting_market_maker.py" = [
+  "C901",
+  "D213",
+] # Legacy strategy example is intentionally complex for now
 "nautilus_trader/common/config.py" = [
   "S105",
 ] # redacted_password variable is intentional
