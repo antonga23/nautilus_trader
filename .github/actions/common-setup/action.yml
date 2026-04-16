@@ -242,26 +242,13 @@ runs:
       run: |
         echo "PRE_COMMIT_VERSION=$(bash scripts/pre-commit-version.sh)" >> $GITHUB_ENV
 
-    - name: Set pre-commit cache dirs
-      if: inputs.build-type == 'pre-commit' || inputs.build-type == 'rust-policy'
-      shell: bash
-      run: |
-        workspace_parent="$(cd "$GITHUB_WORKSPACE/.." && pwd)"
-        pre_commit_home="${workspace_parent}/.ci-cache/pre-commit"
-        pre_commit_tool_root="${workspace_parent}/.ci-cache/pre-commit-tool"
-
-        mkdir -p "${pre_commit_home}" "${pre_commit_tool_root}"
-
-        echo "PRE_COMMIT_HOME=${pre_commit_home}" >> "$GITHUB_ENV"
-        echo "PRE_COMMIT_TOOL_ROOT=${pre_commit_tool_root}" >> "$GITHUB_ENV"
-
     - name: Cache pre-commit tool environment
       if: inputs.build-type == 'pre-commit' || inputs.build-type == 'rust-policy'
       id: cached-pre-commit-tool
       # https://github.com/actions/cache
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
-        path: ${{ github.workspace }}/../.ci-cache/pre-commit-tool
+        path: ~/.cache/pre-commit-tool
         key: >-
           ${{ runner.os }}-${{ runner.arch }}-${{ inputs.python-version
           }}-pre-commit-tool-${{ env.PRE_COMMIT_VERSION }}
@@ -273,8 +260,7 @@ runs:
         PRE_COMMIT_VERSION: ${{ env.PRE_COMMIT_VERSION }}
         PRE_COMMIT_PYTHON_VERSION: ${{ inputs.python-version }}
       run: |
-        workspace_parent="$(cd "$GITHUB_WORKSPACE/.." && pwd)"
-        pre_commit_tool_root="${workspace_parent}/.ci-cache/pre-commit-tool"
+        pre_commit_tool_root="${HOME}/.cache/pre-commit-tool"
         pre_commit_tool_dir="${pre_commit_tool_root}/py${PRE_COMMIT_PYTHON_VERSION}-${PRE_COMMIT_VERSION}"
         pre_commit_venv="${pre_commit_tool_dir}/venv"
         pre_commit_python="${pre_commit_venv}/bin/python"
@@ -339,5 +325,5 @@ runs:
       # https://github.com/actions/cache
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
-        path: ${{ github.workspace }}/../.ci-cache/pre-commit
+        path: ~/.cache/pre-commit
         key: ${{ runner.os }}-${{ env.PYTHON_VERSION }}-pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
