@@ -369,6 +369,7 @@ repos:
         exclude: >-
           (?x)^(
             python/
+            |nautilus_trader/examples/strategies/betting_market_maker\.py$
             |nautilus_trader/.*\.pyi$
             |nautilus_trader/adapters/cloudbet/
             |tests/.*cloudbet.*

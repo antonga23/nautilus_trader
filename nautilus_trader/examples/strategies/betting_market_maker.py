@@ -40,16 +40,17 @@ MARKET_MAPPER: dict[str, list[str]] = {
         "asian_handicap_period_first_half",
     ],
     "team_total_goals_period_first_half": [
-        "team_total_goals_period_first_half"
+        "team_total_goals_period_first_half",
     ],  # over/under markets
     "team_total_goals_period_second_half": [
-        "team_total_goals_period_second_half"
+        "team_total_goals_period_second_half",
     ],  # over/under markets
 }  # TODO: store and add to cache in case it has not been added.
 
 
 class BettingMarketMaker(Strategy):
-    """Provides a market making strategy for Sports/Betting orderbook arbitrage.
+    """
+    Provides a market making strategy for Sports/Betting orderbook arbitrage.
 
     Parameters
     ----------
@@ -66,7 +67,7 @@ class BettingMarketMaker(Strategy):
 
     Attributes
     ----------
-    macthing_selections : list[InstrumentId]
+    matching_selections : list[InstrumentId]
         The list of matching selections for the strategy InstrumentID.
     markets : list[Market]
         The list of markets for the strategy.
@@ -96,7 +97,7 @@ class BettingMarketMaker(Strategy):
         self._mid: Decimal | None = None
         self._adj = Decimal(0)
         self.instrument_provider: CloudbetInstrumentProvider = instrument_provider
-        self.macthing_selections: dict[InstrumentId, list[InstrumentId]] | None = None
+        self.matching_selections: dict[InstrumentId, list[InstrumentId]] | None = None
         self._instrument_to_book: dict[InstrumentId, BookOrder] = {}
         # self.order_factory = config.order_factory
         self._trigger_min_profit = trigger_min_profit
@@ -107,11 +108,11 @@ class BettingMarketMaker(Strategy):
         Check for trigger conditions.
         """
         self.log.info(
-            f"Checking trigger conditions for {self.instrument_id} @ StrategyID:{self.id}"
+            f"Checking trigger conditions for {self.instrument_id} @ StrategyID:{self.id}",
         )
         if not self._book:
             self.log.info(
-                f"No book being maintained for {self.instrument_id} @ StrategyID:{self.id}"
+                f"No book being maintained for {self.instrument_id} @ StrategyID:{self.id}",
             )
             return
 
@@ -122,19 +123,19 @@ class BettingMarketMaker(Strategy):
         ask_price: Price | None = self._book.best_ask_price()
         if not (bid_price and ask_price):
             self.log.info(
-                f"No bid or ask price for {self.instrument_id} bid:{bid_price} ask:{ask_price}"
+                f"No bid or ask price for {self.instrument_id} bid:{bid_price} ask:{ask_price}",
             )
             return
         bid_size: Quantity | None = self._book.best_bid_size()
         ask_size: Quantity | None = self._book.best_ask_size()
         if not (bid_size and ask_size):
             self.log.info(
-                f"No bid or ask size for {self.instrument_id} bid:{bid_size} ask:{ask_size}"
+                f"No bid or ask size for {self.instrument_id} bid:{bid_size} ask:{ask_size}",
             )
             return
         if bid_size < 0 and ask_size < 0:
             self.log.info(
-                f"Negative bid or ask size for {self.instrument_id}  bid:{bid_size} ask:{ask_size}"
+                f"Negative bid or ask size for {self.instrument_id}  bid:{bid_size} ask:{ask_size}",
             )
             return
         # Calculate "true" implied probabilities
@@ -160,7 +161,7 @@ class BettingMarketMaker(Strategy):
                 self._trigger_min_size > bid_size + ask_size
             ):  # check the combined stake is above the trigger stake size. TODO: use a max/min notional type (Money)
                 self.log.info(
-                    f"Combined stake for bid and ask:{bid_size + ask_size} is below trigger size {self._trigger_min_size}"
+                    f"Combined stake for bid and ask:{bid_size + ask_size} is below trigger size {self._trigger_min_size}",
                 )
                 return
             buy_instrument = self.instrument
@@ -183,7 +184,7 @@ class BettingMarketMaker(Strategy):
             stake_on_ask = max_stake * (bid_probability / (bid_probability + ask_probability))
 
             # # Check if stake on ask is within bounds
-            # if not (buy_instrument.min_size <= stake_on_ask <= buy_instrument.max_size): TODO: force max and min size intialisation
+            # if not (buy_instrument.min_size <= stake_on_ask <= buy_instrument.max_size): TODO: force max and min size initialisation
             #     print(f"Stake on ask is out of bounds: {stake_on_ask}")
             #     return
             # # Check if stake on bid is within bounds
@@ -198,7 +199,7 @@ class BettingMarketMaker(Strategy):
             profit_if_ask_wins = stake_on_ask * ask_price - max_stake
             # all checks passed we need to create the orders and send it to the exchange
             self.log.info(
-                f"Potential arbitrage opportunity detected! %: {1 - (bid_probability + ask_probability)} Profit: {profit_if_bid_wins + profit_if_ask_wins}"
+                f"Potential arbitrage opportunity detected! %: {1 - (bid_probability + ask_probability)} Profit: {profit_if_bid_wins + profit_if_ask_wins}",
             )
             self.buy(instrument=buy_instrument, size=stake_on_ask)
             self.buy(instrument=sell_instrument, size=stake_on_bid)
@@ -389,7 +390,7 @@ class BettingMarketMaker(Strategy):
         # We need to find the matching selections for the current instrumentID
         # and use the dataEngine to get the orderbook for matching selections
         matching_markets: list[str] | None = MARKET_MAPPER.get(
-            self.instrument.market_name.split(".")[-1]
+            self.instrument.market_name.split(".")[-1],
         )
         if not matching_markets:
             return []
@@ -427,7 +428,8 @@ class BettingMarketMaker(Strategy):
         return matching_instruments
 
     def match_same_market(
-        self, instrument: CryptoBettingInstrument
+        self,
+        instrument: CryptoBettingInstrument,
     ) -> CryptoBettingInstrument | None:
         matching_instruments: CryptoBettingInstrument | None = None
         # handicap instruments
@@ -445,13 +447,13 @@ class BettingMarketMaker(Strategy):
                     # same market, opposite outcome, same handicap values => match
                     matching_instruments = instrument
                     self.log.debug(
-                        f"Found matching Instrument: {instrument.id}  for {self.instrument.id}"
+                        f"Found matching Instrument: {instrument.id}  for {self.instrument.id}",
                     )
                     return matching_instruments
                 else:
                     # same market, opposite outcome, but different handicap values => no match
                     self.log.debug(
-                        f"No match. Instrument Handicap value: {instrument_handicap_value}  Matching Instrument Handicap value: {matching_instrument_handicap_value}"
+                        f"No match. Instrument Handicap value: {instrument_handicap_value}  Matching Instrument Handicap value: {matching_instrument_handicap_value}",
                     )
                     return matching_instruments
             else:
@@ -477,7 +479,7 @@ class BettingMarketMaker(Strategy):
             if matching_instrument_total_value == instrument_total_value:
                 matching_instruments = instrument
                 self.log.debug(
-                    f"Found matching Instrument: {instrument.id}  for {self.instrument.id}"
+                    f"Found matching Instrument: {instrument.id}  for {self.instrument.id}",
                 )
                 return matching_instruments
         # draw_no_bet instruments
@@ -491,7 +493,8 @@ class BettingMarketMaker(Strategy):
         return matching_instruments
 
     def match_cross_market(
-        self, instrument: CryptoBettingInstrument
+        self,
+        instrument: CryptoBettingInstrument,
     ) -> CryptoBettingInstrument | None:
         matching_instruments: CryptoBettingInstrument | None = None
         # path for double_chance and match_odds
@@ -514,7 +517,7 @@ class BettingMarketMaker(Strategy):
             if match_odds_instrument.outcome not in double_chance_instrument.outcome.split("_"):
                 matching_instruments = instrument
                 self.log.debug(
-                    f"Found matching Instrument: {instrument.id}  for {self.instrument.id}"
+                    f"Found matching Instrument: {instrument.id}  for {self.instrument.id}",
                 )
                 return matching_instruments
         # path for double chance and handicap
@@ -541,7 +544,7 @@ class BettingMarketMaker(Strategy):
             if handicap_instrument.outcome not in double_chance_instrument.outcome.split("_"):
                 matching_instruments = instrument
                 self.log.debug(
-                    f"Found matching Instrument: {instrument.id}  for {self.instrument.id}"
+                    f"Found matching Instrument: {instrument.id}  for {self.instrument.id}",
                 )
                 return matching_instruments
             # path for double chance and draw_no_bet
@@ -564,11 +567,11 @@ class BettingMarketMaker(Strategy):
                 )
                 # check if the draw_no_bet_instrument_outcome is not a possible outcome of the double_chance_instrument
                 if draw_no_bet_instrument.outcome not in double_chance_instrument.outcome.split(
-                    "_"
+                    "_",
                 ):
                     matching_instruments = instrument
                     self.log.debug(
-                        f"Found matching Instrument: {instrument.id}  for {self.instrument.id}"
+                        f"Found matching Instrument: {instrument.id}  for {self.instrument.id}",
                     )
                 return matching_instruments
             # path for handicap and draw_no_bet
