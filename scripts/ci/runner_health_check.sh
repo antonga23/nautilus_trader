@@ -80,6 +80,8 @@ print_command_version bash bash
 print_command_version python3 python3
 print_command_version git git
 print_command_version uv uv
+print_command_version gcc gcc
+print_command_version clang clang
 if command -v docker > /dev/null 2>&1; then
   printf 'docker\t%s\n' "$(docker --version 2> /dev/null || echo unavailable)"
 else

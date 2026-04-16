@@ -2,8 +2,10 @@
 # docker build -f .docker/nautilus_trader.dockerfile --target runner-bootstrap -t nautilus-runner-bootstrap .
 #
 # The runner-bootstrap target codifies the self-hosted runner host prerequisites:
-# system packages, docker access, runner user creation, passwordless sudo,
-# pinned GitHub Actions runner install, and a systemd service template.
+# system packages (including the native compiler toolchain needed by cargo-deny,
+# cargo-vet, and Cap'n Proto source builds), docker access, runner user creation,
+# passwordless sudo, pinned GitHub Actions runner install, and a systemd service
+# template.
 #
 # Pin to specific digest for supply-chain security (python:3.13-slim as of 2025-11-29)
 FROM python@sha256:326df678c20c78d465db501563f3492d17c42a4afe33a1f2bf5406a1d56b0e86 AS base

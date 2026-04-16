@@ -1,17 +1,21 @@
 # Base host utilities
+build-essential
 ca-certificates
+cmake
 curl
 git
 jq
+libssl-dev
 make
 pkg-config
 ripgrep
 sudo
 unzip
 xz-utils
+zlib1g-dev
 zip
 
-# Native build/runtime dependencies used by CI and pre-commit toolchains
+# Native build/runtime dependencies used by CI, cargo-tool installs, and pre-commit toolchains
 clang
 capnproto
 libatomic1
