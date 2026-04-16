@@ -1,0 +1,69 @@
+name: runner-health
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+
+jobs:
+  gcp-ci-health:
+    name: gcp-ci-health
+    timeout-minutes: 10
+    runs-on: [self-hosted, linux, x64, cloudbet-market-maker, ci, gcp, ubuntu24]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+
+      - name: Print runner identity
+        shell: bash
+        run: |
+          echo "job=gcp-ci-health"
+          echo "runner_name=${RUNNER_NAME}"
+          echo "runner_os=${RUNNER_OS}"
+          echo "runner_arch=${RUNNER_ARCH}"
+          echo "expected_labels=self-hosted,Linux,X64,cloudbet-market-maker,ci,gcp,ubuntu24"
+
+      - name: Verify host tooling and paths
+        shell: bash
+        env:
+          RUNNER_ROLE: ci
+          ACTIONS_RUNNER_ROOT: /opt/actions-runner
+          GITHUB_RUNNER_SERVICE_NAME: actions.runner.antonga23-cloudbet-market-maker.instance-20260415-214825.service
+        run: |
+          set -euo pipefail
+          bash scripts/ci/runner_health_check.sh
+          echo
+          ls -ld /usr/local/bin/repair-github-runner-workspace || true
+
+  ec2-deploy-health:
+    name: ec2-deploy-health
+    timeout-minutes: 10
+    runs-on: [self-hosted, linux, x64, ec2, deploy, trading]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+
+      - name: Print runner identity
+        shell: bash
+        run: |
+          echo "job=ec2-deploy-health"
+          echo "runner_name=${RUNNER_NAME}"
+          echo "runner_os=${RUNNER_OS}"
+          echo "runner_arch=${RUNNER_ARCH}"
+          echo "expected_labels=self-hosted,Linux,X64,ec2,deploy,trading"
+
+      - name: Verify host tooling and paths
+        shell: bash
+        env:
+          RUNNER_ROLE: deploy
+          ACTIONS_RUNNER_ROOT: /home/ubuntu/actions-runner
+          GITHUB_RUNNER_SERVICE_NAME: actions.runner.antonga23-cloudbet-market-maker.ip-172-31-21-124-cloudbet-market-maker.service
+          OPTIONAL_SERVICE_NAMES: control-plane.service,actions-runner-hygiene.timer
+        run: |
+          set -euo pipefail
+          bash scripts/ci/runner_health_check.sh
