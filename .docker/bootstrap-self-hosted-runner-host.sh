@@ -2,7 +2,7 @@
 set -euo pipefail
 
 canonicalize_path() {
-  python3 - "$1" <<'PY'
+  python3 - "$1" << 'PY'
 import os
 import sys
 
@@ -22,7 +22,7 @@ validate_managed_path() {
   fi
 
   case "$path" in
-    /|/bin|/boot|/dev|/etc|/home|/lib|/lib64|/media|/mnt|/opt|/proc|/root|/run|/sbin|/srv|/sys|/tmp|/usr|/var)
+    / | /bin | /boot | /dev | /etc | /home | /lib | /lib64 | /media | /mnt | /opt | /proc | /root | /run | /sbin | /srv | /sys | /tmp | /usr | /var)
       echo "Refusing unsafe ${label}: $path" >&2
       exit 1
       ;;
@@ -76,8 +76,7 @@ validate_workspace_repair_target_path() {
 
   path="$(validate_managed_path RUNNER_WORKSPACE_REPAIR_TARGET "$1")"
   case "$path" in
-    /usr/local/bin/repair-github-runner-workspace|/usr/local/bin/repair-github-runner-workspace.sh|/usr/bin/repair-github-runner-workspace|/usr/bin/repair-github-runner-workspace.sh)
-      ;;
+    /usr/local/bin/repair-github-runner-workspace | /usr/local/bin/repair-github-runner-workspace.sh | /usr/bin/repair-github-runner-workspace | /usr/bin/repair-github-runner-workspace.sh) ;;
     *)
       echo "RUNNER_WORKSPACE_REPAIR_TARGET must install to a repair-helper path under /usr/local/bin or /usr/bin, got: $path" >&2
       exit 1
@@ -129,7 +128,7 @@ if [[ ! -f "$packages_file" ]]; then
 fi
 
 if [[ "$bootstrap_mode" != "image" && "${EUID}" -ne 0 ]]; then
-  if command -v sudo >/dev/null 2>&1; then
+  if command -v sudo > /dev/null 2>&1; then
     exec sudo --preserve-env=BOOTSTRAP_MODE,RUNNER_USER,RUNNER_GROUP,RUNNER_HOME,RUNNER_ROOT,PACKAGES_FILE,INSTALL_GITHUB_ACTIONS_RUNNER,RUNNER_INSTALLER_PATH,RUNNER_WORKSPACE_REPAIR_SOURCE,RUNNER_WORKSPACE_REPAIR_TARGET,RUNNER_LAYOUT_CONFIG "$0" "$@"
   fi
 
@@ -152,11 +151,11 @@ apt-get install -y --no-install-recommends "${packages[@]}"
 apt-get clean
 rm -rf /var/lib/apt/lists/*
 
-if ! getent group "$runner_group" >/dev/null 2>&1; then
+if ! getent group "$runner_group" > /dev/null 2>&1; then
   groupadd --system "$runner_group"
 fi
 
-if ! id -u "$runner_user" >/dev/null 2>&1; then
+if ! id -u "$runner_user" > /dev/null 2>&1; then
   useradd \
     --system \
     --create-home \
@@ -166,7 +165,7 @@ if ! id -u "$runner_user" >/dev/null 2>&1; then
     "$runner_user"
 fi
 
-if ! getent group docker >/dev/null 2>&1; then
+if ! getent group docker > /dev/null 2>&1; then
   groupadd docker
 fi
 
@@ -186,19 +185,19 @@ fi
 
 install -m 0755 "$workspace_repair_source" "$workspace_repair_target"
 install -d -m 0755 "$(dirname "$runner_layout_config")"
-cat > "$runner_layout_config" <<EOF
+cat > "$runner_layout_config" << EOF
 RUNNER_ROOT=$runner_root
 EOF
 chmod 0644 "$runner_layout_config"
 
-cat > "$sudoers_file" <<EOF
+cat > "$sudoers_file" << EOF
 $runner_user ALL=(root) NOPASSWD:${workspace_repair_target} *
 EOF
 chmod 440 "$sudoers_file"
 
-if [[ "$bootstrap_mode" = "host" ]] && command -v systemctl >/dev/null 2>&1; then
-  systemctl enable docker >/dev/null 2>&1 || true
-  systemctl start docker >/dev/null 2>&1 || true
+if [[ "$bootstrap_mode" = "host" ]] && command -v systemctl > /dev/null 2>&1; then
+  systemctl enable docker > /dev/null 2>&1 || true
+  systemctl start docker > /dev/null 2>&1 || true
 fi
 
 if [[ "$install_runner" = "true" ]]; then

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 canonicalize_path() {
-  python3 - "$1" <<'PY'
+  python3 - "$1" << 'PY'
 import os
 import sys
 
@@ -22,7 +22,7 @@ validate_managed_path() {
   fi
 
   case "$path" in
-    /|/bin|/boot|/dev|/etc|/home|/lib|/lib64|/media|/mnt|/opt|/proc|/root|/run|/sbin|/srv|/sys|/tmp|/usr|/var)
+    / | /bin | /boot | /dev | /etc | /home | /lib | /lib64 | /media | /mnt | /opt | /proc | /root | /run | /sbin | /srv | /sys | /tmp | /usr | /var)
       echo "Refusing unsafe ${label}: $path" >&2
       exit 1
       ;;
@@ -103,8 +103,7 @@ validate_runner_workdir_path() {
 
   path="$(validate_managed_path GITHUB_RUNNER_WORKDIR "$1")"
   case "$path" in
-    "$runner_root"/*|"$runner_home"/*)
-      ;;
+    "$runner_root"/* | "$runner_home"/*) ;;
     *)
       echo "GITHUB_RUNNER_WORKDIR must live under RUNNER_ROOT or RUNNER_HOME, got: $path" >&2
       exit 1
@@ -131,7 +130,7 @@ cleanup() {
 trap cleanup EXIT
 
 if [[ "${EUID}" -ne 0 ]]; then
-  if command -v sudo >/dev/null 2>&1; then
+  if command -v sudo > /dev/null 2>&1; then
     exec sudo --preserve-env=RUNNER_USER,RUNNER_GROUP,RUNNER_HOME,RUNNER_ROOT,GITHUB_RUNNER_VERSION,GITHUB_RUNNER_PLATFORM,GITHUB_RUNNER_ARCH,GITHUB_RUNNER_URL,GITHUB_RUNNER_TOKEN,GITHUB_RUNNER_NAME,GITHUB_RUNNER_LABELS,GITHUB_RUNNER_GROUP_NAME,GITHUB_RUNNER_WORKDIR,GITHUB_RUNNER_DISABLE_UPDATE,START_RUNNER_SERVICE,ENABLE_RUNNER_SERVICE,CREATE_RUNNER_SERVICE,FORCE_REINSTALL_RUNNER,FORCE_RECONFIGURE_RUNNER,GITHUB_RUNNER_SERVICE_NAME,RUNNER_SERVICE_TEMPLATE,RUNNER_CHECKSUMS_FILE "$0" "$@"
   fi
 
@@ -224,7 +223,7 @@ if [[ "$create_service" = "true" && -f "$template_path" && -d /etc/systemd/syste
   fi
 
   if [[ "$configured_runner" = "true" && "$enable_service" != "false" ]]; then
-    systemctl enable "$service_name" >/dev/null 2>&1 || true
+    systemctl enable "$service_name" > /dev/null 2>&1 || true
 
     if [[ "$start_service" = "true" ]]; then
       systemctl restart "$service_name"

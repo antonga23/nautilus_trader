@@ -2,7 +2,7 @@
 set -euo pipefail
 
 canonicalize_path() {
-  python3 - "$1" <<'PY'
+  python3 - "$1" << 'PY'
 import os
 import sys
 
