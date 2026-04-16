@@ -31,6 +31,18 @@ validate_managed_path() {
   printf '%s\n' "$path"
 }
 
+validate_account_name() {
+  local label="$1"
+  local value="$2"
+
+  if [[ ! "$value" =~ ^[a-z_][a-z0-9_-]*[$]?$ ]]; then
+    echo "${label} must be a valid system account name, got: ${value:-<empty>}" >&2
+    exit 1
+  fi
+
+  printf '%s\n' "$value"
+}
+
 runner_user="${RUNNER_USER:-actions-runner}"
 runner_group="${RUNNER_GROUP:-$runner_user}"
 runner_home="${RUNNER_HOME:-/home/$runner_user}"
@@ -102,6 +114,17 @@ validate_runner_workdir_path() {
   printf '%s\n' "$path"
 }
 
+validate_service_name() {
+  local value="$1"
+
+  if [[ ! "$value" =~ ^[A-Za-z0-9_.@-]+\.service$ ]]; then
+    echo "GITHUB_RUNNER_SERVICE_NAME must be a valid systemd unit name ending in .service, got: ${value:-<empty>}" >&2
+    exit 1
+  fi
+
+  printf '%s\n' "$value"
+}
+
 cleanup() {
   rm -rf "$tmp_dir"
 }
@@ -116,9 +139,12 @@ if [[ "${EUID}" -ne 0 ]]; then
   exit 1
 fi
 
+runner_user="$(validate_account_name RUNNER_USER "$runner_user")"
+runner_group="$(validate_account_name RUNNER_GROUP "$runner_group")"
 runner_home="$(validate_runner_home_path "$runner_home")"
 runner_root="$(validate_runner_root_for_destructive_reset "$runner_root")"
 runner_workdir="$(validate_runner_workdir_path "$runner_workdir")"
+service_name="$(validate_service_name "$service_name")"
 
 install -d -m 0755 -o "$runner_user" -g "$runner_group" "$runner_home" "$runner_root" "$runner_workdir"
 chown -R "$runner_user:$runner_group" "$runner_root"

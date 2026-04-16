@@ -59,6 +59,50 @@ validate_runner_root_path() {
   printf '%s\n' "$path"
 }
 
+validate_account_name() {
+  local label="$1"
+  local value="$2"
+
+  if [[ ! "$value" =~ ^[a-z_][a-z0-9_-]*[$]?$ ]]; then
+    echo "${label} must be a valid system account name, got: ${value:-<empty>}" >&2
+    exit 1
+  fi
+
+  printf '%s\n' "$value"
+}
+
+validate_workspace_repair_target_path() {
+  local path
+
+  path="$(validate_managed_path RUNNER_WORKSPACE_REPAIR_TARGET "$1")"
+  case "$path" in
+    /usr/local/bin/repair-github-runner-workspace|/usr/local/bin/repair-github-runner-workspace.sh|/usr/bin/repair-github-runner-workspace|/usr/bin/repair-github-runner-workspace.sh)
+      ;;
+    *)
+      echo "RUNNER_WORKSPACE_REPAIR_TARGET must install to a repair-helper path under /usr/local/bin or /usr/bin, got: $path" >&2
+      exit 1
+      ;;
+  esac
+
+  printf '%s\n' "$path"
+}
+
+validate_runner_layout_config_path() {
+  local path
+
+  path="$(validate_managed_path RUNNER_LAYOUT_CONFIG "$1")"
+  case "$path" in
+    /etc/cloudbet/*.conf)
+      ;;
+    *)
+      echo "RUNNER_LAYOUT_CONFIG must live under /etc/cloudbet and end with .conf, got: $path" >&2
+      exit 1
+      ;;
+  esac
+
+  printf '%s\n' "$path"
+}
+
 bootstrap_mode="${BOOTSTRAP_MODE:-host}"
 runner_user="${RUNNER_USER:-actions-runner}"
 runner_group="${RUNNER_GROUP:-$runner_user}"
@@ -93,8 +137,12 @@ if [[ "$bootstrap_mode" != "image" && "${EUID}" -ne 0 ]]; then
   exit 1
 fi
 
+runner_user="$(validate_account_name RUNNER_USER "$runner_user")"
+runner_group="$(validate_account_name RUNNER_GROUP "$runner_group")"
 runner_home="$(validate_runner_home_path "$runner_home")"
 runner_root="$(validate_runner_root_path "$runner_root")"
+workspace_repair_target="$(validate_workspace_repair_target_path "$workspace_repair_target")"
+runner_layout_config="$(validate_runner_layout_config_path "$runner_layout_config")"
 
 mapfile -t packages < <(grep -Ev '^\s*(#|$)' "$packages_file")
 
