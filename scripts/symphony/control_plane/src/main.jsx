@@ -101,7 +101,7 @@ function ProviderPanels({ overview, outputs, onCodexAction, onOpenRouterSave, on
       {overview?.providers?.codex ? (
         <Card className="provider-card">
           <h3><KeyRound size={16} /> Codex ChatGPT Auth</h3>
-          <p className="subtle">Start remote device auth on EC2, then persist and restore worker auth via Secrets Manager.</p>
+          <p className="subtle">Start remote device auth on EC2, then persist and restore worker auth via Secrets Manager. This is only needed for control-plane-driven remote Codex work, not for the GitHub Actions SSH deploy path.</p>
           {(overview.providers.codex.workers || []).map((worker) => (
             <div className="provider-worker" key={worker.worker}>
               <strong>{worker.displayName}</strong>
@@ -196,7 +196,7 @@ function StrategyNodeDeploymentsPanel({ overview, onRequest }) {
   return (
     <Card>
       <h3><Workflow size={16} /> Strategy Nodes</h3>
-      <p className="subtle">Validate a deployable manifest, queue a rollout request, and review the current request backlog for betting-arbitrage nodes.</p>
+      <p className="subtle">Validate a deployable manifest, queue a rollout request, and review the current request backlog for betting-arbitrage nodes. GCP handles CI/build work; EC2 remains the deploy and trading host.</p>
       <div className="nested-columns">
         <div className="form-grid">
           <label>
@@ -250,8 +250,9 @@ function StrategyNodeDeploymentsPanel({ overview, onRequest }) {
                 <div className="muted">Validation mode: {selectedManifest.validationMode ? 'yes' : 'no'}</div>
                 <div className="muted">Required live secrets: {(selectedManifest.requirements?.requiredEnvKeys || []).join(', ') || 'none'}</div>
                 <div className="muted">Validation fallback: {(selectedManifest.requirements?.dummyCredentialKeys || []).join(', ') || 'none'}</div>
-                <div className="muted">Local auth step: <code>{selectedManifest.operatorFlow?.localAuthCommand || './scripts/symphony/capture_worker_auth.sh codex-a'}</code></div>
-                <div className="muted">Install step: <code>{selectedManifest.operatorFlow?.installCommand || './scripts/symphony/install_worker_auths.sh'}</code></div>
+                <div className="muted">Worker auth purpose: {selectedManifest.requirements?.workerAuthPurpose || 'Only required for control-plane remote worker actions.'}</div>
+                <div className="muted">Local auth step (control-plane remote worker only): <code>{selectedManifest.operatorFlow?.localAuthCommand || './scripts/symphony/capture_worker_auth.sh codex-a'}</code></div>
+                <div className="muted">Install step (control-plane remote worker only): <code>{selectedManifest.operatorFlow?.installCommand || './scripts/symphony/install_worker_auths.sh'}</code></div>
                 <div className="muted">Start step: <pre>{selectedManifest.operatorFlow?.startCommandTemplate || 'ssh ... deploy_betting_strategy_node.sh ...'}</pre></div>
                 <div className="muted">Monitor step: <pre>{selectedManifest.operatorFlow?.monitorCommandTemplate || './scripts/deploy/strategy_nodes/wait_for_strategy_node_status.sh ...'}</pre></div>
               </>

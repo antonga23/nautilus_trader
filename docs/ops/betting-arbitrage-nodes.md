@@ -130,6 +130,11 @@ python -m nautilus_trader.live.strategy_nodes.betting_arbitrage run \
 
 ## Deployment
 
+Runner split for this workflow:
+
+- GCP self-hosted runner: validation, wheel build, image build, release orchestration
+- EC2 deploy/trading host: strategy-node runtime host and SSH deployment target
+
 Container image build:
 - `.docker/strategy_node.dockerfile`
 
@@ -150,6 +155,9 @@ GitHub deploy workflow secrets:
 - `STRATEGY_NODE_GHCR_TOKEN`
 
 `STRATEGY_NODE_ENV_FILE` should contain the venue runtime env vars required by the selected manifest.
+Store it as a secret payload in GitHub Actions or Secrets Manager. Do not commit venue credentials to the repo.
+
+`STRATEGY_NODE_GHCR_TOKEN` should be a dedicated PAT used only for strategy-node image pull access on the deploy host.
 
 ## Control plane backend hooks
 
@@ -162,3 +170,5 @@ The control-plane backend now exposes:
 These endpoints list repo manifests and persist deployment requests for later UI/operator flows.
 
 The `Strategy Deployments` panel in the control plane surfaces those same endpoints and shows per-manifest required secrets, dummy fallback keys, and the recommended worker/auth flow.
+
+The worker auth flow is only required when the control plane will start a remote Codex worker on EC2 for `validate_only` or operator-driven execution. The GitHub Actions strategy-node release workflow deploys over SSH using `STRATEGY_NODE_*` secrets and does not consume Codex worker auth.

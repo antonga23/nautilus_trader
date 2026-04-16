@@ -53,6 +53,8 @@ Strategy-node deployment envs and secrets:
 - `POLYMARKET_PRIVATE_KEY`
 - `POLYMARKET_FUNDER`
 
+Store strategy-node venue credentials in secret payloads only. Do not commit them to the repo or paste them into operator notes. `STRATEGY_NODE_GHCR_TOKEN` should be a dedicated image-pull PAT rather than a shared general-purpose token.
+
 ## Deploy
 
 From the repo root on a workstation with SSH access:
@@ -76,6 +78,8 @@ The installer:
 
 The recommended worker for mixed-venue validation is `codex-a`.
 
+This auth flow is only required when the control plane will start a remote Codex worker on EC2. The GitHub Actions strategy-node release workflow does not use Codex worker auth; it deploys over SSH with `STRATEGY_NODE_*` secrets.
+
 Operator flow:
 
 1. Capture local ChatGPT auth on a browser-capable machine:
@@ -98,6 +102,18 @@ Operator flow:
 
 If the request is later promoted to a real deploy, the missing live secrets must be present on the deployment host or in the env file used by `deploy_betting_strategy_node.sh`.
 Authenticated image pulls for the remote host also require `STRATEGY_NODE_GHCR_USERNAME` and `STRATEGY_NODE_GHCR_TOKEN` if the image is private.
+
+## Read-Only Dev Plane
+
+`CONTROL_PLANE_READ_ONLY=1` turns the control plane into a non-mutating environment. When enabled, every `POST`, `PUT`, `PATCH`, and `DELETE` request is rejected with `403`, while `GET`, `HEAD`, and `OPTIONS` continue to work.
+
+Use this mode for non-production control-plane deployments that should expose live state without any path to mutate production Symphony, Linear, or GitHub state.
+
+Local smoke test:
+
+```sh
+node --test scripts/symphony/control_plane/__tests__/read_only.test.mjs
+```
 
 ## Mixed-Venue Deploy Start And Monitor
 

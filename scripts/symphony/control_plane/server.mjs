@@ -38,6 +38,12 @@ const ENV = { ...FILE_ENV, ...process.env };
 
 const PORT = Number(ENV.CONTROL_PLANE_PORT || 4100);
 const SYMPHONY_PORT = Number(ENV.SYMPHONY_PORT || 4000);
+// READ_ONLY dev mode: block every non-safe HTTP method (POST/PUT/PATCH/DELETE)
+// before it reaches any handler. Used by the Azure dev deployment to prevent
+// accidental mutation of prod Symphony/Linear/GitHub state from the dev plane.
+// Accepts "1", "true", "yes" (case-insensitive) as truthy.
+const CONTROL_PLANE_READ_ONLY = /^(1|true|yes)$/i.test(String(ENV.CONTROL_PLANE_READ_ONLY || '').trim());
+const READ_ONLY_SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 const LINEAR_API_KEY = ENV.LINEAR_API_KEY || '';
 const GITHUB_TOKEN = ENV.GITHUB_TOKEN || '';
 const PROJECT_ID = ENV.LINEAR_PROJECT_ID || '2e1bd292-7154-405c-9252-be85623a0ed3';
@@ -257,6 +263,10 @@ function describeStrategyNodeRequirements(manifest) {
     hostPrereqs: ['docker', 'python3', 'jq', 'aws cli'],
     validationNotes,
     liveNotes,
+    deploymentNotes: [
+      'Store STRATEGY_NODE_ENV_FILE as a secret payload, not a committed file.',
+      'Use a dedicated GHCR PAT for STRATEGY_NODE_GHCR_TOKEN when the image registry is private.'
+    ],
     deploymentSecrets: [
       'STRATEGY_NODE_HOST',
       'STRATEGY_NODE_SSH_USER',
@@ -269,7 +279,9 @@ function describeStrategyNodeRequirements(manifest) {
     workerAuthInstallFlow: [
       './scripts/symphony/capture_worker_auth.sh codex-a',
       './scripts/symphony/install_worker_auths.sh'
-    ]
+    ],
+    workerAuthPurpose:
+      'Only required when the control plane starts a remote Codex worker on EC2. GitHub Actions SSH deploys use STRATEGY_NODE_* secrets only.'
   };
 }
 
@@ -3720,6 +3732,15 @@ const server = http.createServer(async (req, res) => {
   const requestUrl = new URL(req.url || '/', `http://${req.headers.host || '127.0.0.1'}`);
   const pathname = requestUrl.pathname;
 
+  if (CONTROL_PLANE_READ_ONLY && !READ_ONLY_SAFE_METHODS.has(req.method || '')) {
+    sendJson(res, 403, {
+      error: 'control-plane is read-only in this environment',
+      method: req.method,
+      path: pathname
+    });
+    return;
+  }
+
   if (req.method === 'GET' && pathname === '/') {
     sendText(res, 200, renderHtml(), 'text/html; charset=utf-8');
     return;
@@ -3928,6 +3949,9 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, '127.0.0.1', async () => {
   console.error(`[control-plane] listening on 127.0.0.1:${PORT}`);
+  if (CONTROL_PLANE_READ_ONLY) {
+    console.error('[control-plane] READ_ONLY mode enabled (all POST/PUT/PATCH/DELETE requests return 403)');
+  }
   await refreshOverview();
 });
 
