@@ -261,7 +261,7 @@ runs:
       # https://github.com/actions/cache
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
-        path: ${{ env.PRE_COMMIT_TOOL_ROOT }}
+        path: ${{ github.workspace }}/../.ci-cache/pre-commit-tool
         key: >-
           ${{ runner.os }}-${{ runner.arch }}-${{ inputs.python-version
           }}-pre-commit-tool-${{ env.PRE_COMMIT_VERSION }}
@@ -272,14 +272,15 @@ runs:
       env:
         PRE_COMMIT_VERSION: ${{ env.PRE_COMMIT_VERSION }}
         PRE_COMMIT_PYTHON_VERSION: ${{ inputs.python-version }}
-        PRE_COMMIT_TOOL_ROOT: ${{ env.PRE_COMMIT_TOOL_ROOT }}
       run: |
-        pre_commit_tool_dir="${PRE_COMMIT_TOOL_ROOT}/py${PRE_COMMIT_PYTHON_VERSION}-${PRE_COMMIT_VERSION}"
+        workspace_parent="$(cd "$GITHUB_WORKSPACE/.." && pwd)"
+        pre_commit_tool_root="${workspace_parent}/.ci-cache/pre-commit-tool"
+        pre_commit_tool_dir="${pre_commit_tool_root}/py${PRE_COMMIT_PYTHON_VERSION}-${PRE_COMMIT_VERSION}"
         pre_commit_venv="${pre_commit_tool_dir}/venv"
         pre_commit_python="${pre_commit_venv}/bin/python"
         pre_commit_bin="${pre_commit_venv}/bin/pre-commit"
 
-        mkdir -p "${PRE_COMMIT_TOOL_ROOT}"
+        mkdir -p "${pre_commit_tool_root}"
 
         if [[ ! -x "${pre_commit_bin}" || ! -x "${pre_commit_python}" ]]; then
           rm -rf "${pre_commit_tool_dir}"
@@ -338,5 +339,5 @@ runs:
       # https://github.com/actions/cache
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
-        path: ${{ env.PRE_COMMIT_HOME }}
+        path: ${{ github.workspace }}/../.ci-cache/pre-commit
         key: ${{ runner.os }}-${{ env.PYTHON_VERSION }}-pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
