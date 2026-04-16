@@ -1,3 +1,9 @@
 self-hosted-runner:
   labels:
     - cloudbet-market-maker
+    - ci
+    - gcp
+    - ubuntu24
+    - ec2
+    - deploy
+    - trading

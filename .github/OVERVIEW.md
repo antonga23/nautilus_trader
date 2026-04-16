@@ -53,7 +53,7 @@ CI/CD, testing, publishing, and automation within the NautilusTrader repository.
 - **Build attestations**: All published artifacts include cryptographic SLSA build provenance attestations, linking each artifact to a specific commit SHA. Verify via `gh attestation verify`.
 - **Immutable action pinning**: All third-party GitHub Actions are pinned to specific commit SHAs.
 - **Docker image pinning**: Base images in Dockerfiles are pinned to SHA256 digests to prevent supply-chain attacks via tag mutation.
-- **Caching**: Caches for sccache, pip/site-packages, pre-commit, and test data speed up workflows while preserving hermetic (reproducible) builds.
+- **Caching**: GitHub-managed caches such as `actions/cache` restore across runners when keys match, but host-local caches such as `.ci-cache/wheels` remain machine-specific. In the split-runner setup, general CI is pinned to the GCP runner so local wheel cache reuse stays warm there, while EC2 deploy/trading jobs must not assume access to GCP-local caches.
 
 ### Runtime hardening
 
