@@ -10,6 +10,8 @@ packages_file="${PACKAGES_FILE:-/usr/local/share/cloudbet/self-hosted-runner-pac
 sudoers_file="/etc/sudoers.d/90-${runner_user}"
 install_runner="${INSTALL_GITHUB_ACTIONS_RUNNER:-false}"
 runner_installer="${RUNNER_INSTALLER_PATH:-/usr/local/bin/install-github-actions-runner}"
+workspace_repair_source="${RUNNER_WORKSPACE_REPAIR_SOURCE:-$(dirname "$0")/repair-github-runner-workspace.sh}"
+workspace_repair_target="${RUNNER_WORKSPACE_REPAIR_TARGET:-/usr/local/bin/repair-github-runner-workspace}"
 
 if [[ ! -f "$packages_file" ]]; then
   echo "Package manifest not found: $packages_file" >&2
@@ -18,7 +20,7 @@ fi
 
 if [[ "$bootstrap_mode" != "image" && "${EUID}" -ne 0 ]]; then
   if command -v sudo >/dev/null 2>&1; then
-    exec sudo --preserve-env=BOOTSTRAP_MODE,RUNNER_USER,RUNNER_GROUP,RUNNER_HOME,RUNNER_ROOT,PACKAGES_FILE,INSTALL_GITHUB_ACTIONS_RUNNER,RUNNER_INSTALLER_PATH "$0" "$@"
+    exec sudo --preserve-env=BOOTSTRAP_MODE,RUNNER_USER,RUNNER_GROUP,RUNNER_HOME,RUNNER_ROOT,PACKAGES_FILE,INSTALL_GITHUB_ACTIONS_RUNNER,RUNNER_INSTALLER_PATH,RUNNER_WORKSPACE_REPAIR_SOURCE,RUNNER_WORKSPACE_REPAIR_TARGET "$0" "$@"
   fi
 
   echo "bootstrap-self-hosted-runner-host.sh must run as root" >&2
@@ -56,8 +58,15 @@ usermod -aG docker "$runner_user"
 install -d -m 0755 "$runner_root" "$runner_root/_diag" "$runner_root/_work" "$runner_home/.cache"
 chown -R "$runner_user:$runner_group" "$runner_root" "$runner_home"
 
+if [[ ! -f "$workspace_repair_source" ]]; then
+  echo "Runner workspace repair helper not found: $workspace_repair_source" >&2
+  exit 1
+fi
+
+install -m 0755 "$workspace_repair_source" "$workspace_repair_target"
+
 cat > "$sudoers_file" <<EOF
-$runner_user ALL=(ALL) NOPASSWD:ALL
+$runner_user ALL=(root) NOPASSWD:${workspace_repair_target} *
 EOF
 chmod 440 "$sudoers_file"
 

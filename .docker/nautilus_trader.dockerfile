@@ -33,10 +33,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
 COPY .docker/self-hosted-runner-packages.txt $PACKAGES_FILE
 COPY .docker/bootstrap-self-hosted-runner-host.sh /usr/local/bin/bootstrap-self-hosted-runner-host
 COPY .docker/install-github-actions-runner.sh /usr/local/bin/install-github-actions-runner
+COPY .docker/repair-github-runner-workspace.sh /usr/local/bin/repair-github-runner-workspace
 COPY .docker/github-actions-runner.service.tmpl $RUNNER_SERVICE_TEMPLATE
 COPY .docker/github-actions-runner-sha256sums.txt $RUNNER_CHECKSUMS_FILE
 
-RUN chmod +x /usr/local/bin/bootstrap-self-hosted-runner-host /usr/local/bin/install-github-actions-runner && \
+RUN chmod +x /usr/local/bin/bootstrap-self-hosted-runner-host /usr/local/bin/install-github-actions-runner /usr/local/bin/repair-github-runner-workspace && \
     BOOTSTRAP_MODE=image /usr/local/bin/bootstrap-self-hosted-runner-host
 
 FROM base AS builder

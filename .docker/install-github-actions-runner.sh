@@ -1,10 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+canonicalize_path() {
+  python3 - "$1" <<'PY'
+import os
+import sys
+
+print(os.path.realpath(sys.argv[1]))
+PY
+}
+
 runner_user="${RUNNER_USER:-actions-runner}"
 runner_group="${RUNNER_GROUP:-$runner_user}"
 runner_home="${RUNNER_HOME:-/home/$runner_user}"
-runner_root="${RUNNER_ROOT:-/opt/actions-runner}"
+runner_root="$(canonicalize_path "${RUNNER_ROOT:-/opt/actions-runner}")"
 runner_version="${GITHUB_RUNNER_VERSION:-2.333.1}"
 runner_platform="${GITHUB_RUNNER_PLATFORM:-linux}"
 runner_arch="${GITHUB_RUNNER_ARCH:-x64}"
@@ -13,7 +22,7 @@ runner_token="${GITHUB_RUNNER_TOKEN:-}"
 runner_name="${GITHUB_RUNNER_NAME:-$(hostname)}"
 runner_labels="${GITHUB_RUNNER_LABELS:-self-hosted,Linux,X64}"
 runner_group_name="${GITHUB_RUNNER_GROUP_NAME:-Default}"
-runner_workdir="${GITHUB_RUNNER_WORKDIR:-$runner_root/_work}"
+runner_workdir="$(canonicalize_path "${GITHUB_RUNNER_WORKDIR:-$runner_root/_work}")"
 disable_update="${GITHUB_RUNNER_DISABLE_UPDATE:-true}"
 start_service="${START_RUNNER_SERVICE:-true}"
 enable_service="${ENABLE_RUNNER_SERVICE:-auto}"
@@ -29,7 +38,8 @@ download_url="https://github.com/actions/runner/releases/download/v${runner_vers
 configured_runner="false"
 
 validate_runner_root_for_destructive_reset() {
-  local path="${1%/}"
+  local path
+  path="$(canonicalize_path "${1%/}")"
 
   if [[ -z "$path" || "$path" != /* ]]; then
     echo "RUNNER_ROOT must be an absolute path, got: ${1:-<empty>}" >&2

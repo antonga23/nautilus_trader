@@ -27,8 +27,16 @@ jobs:
         shell: bash
         run: |
           workspace_parent="$(dirname "$GITHUB_WORKSPACE")"
-          sudo mkdir -p "$GITHUB_WORKSPACE" "$workspace_parent/.ci-cache"
-          sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" "$workspace_parent/.ci-cache"
+          if [[ -x /usr/local/bin/repair-github-runner-workspace ]]; then
+            sudo /usr/local/bin/repair-github-runner-workspace \
+              "$GITHUB_WORKSPACE" \
+              "$workspace_parent/.ci-cache" \
+              "$(id -u)" \
+              "$(id -g)"
+          else
+            sudo mkdir -p "$GITHUB_WORKSPACE" "$workspace_parent/.ci-cache"
+            sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" "$workspace_parent/.ci-cache"
+          fi
 
           if [[ ! -e "$GITHUB_WORKSPACE/.git" ]]; then
             find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
