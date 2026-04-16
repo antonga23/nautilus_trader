@@ -29,15 +29,39 @@ if [[ "$(id -u)" -ne 0 ]]; then
 fi
 
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -o Acquire::Retries=5
-apt-get install -y --no-install-recommends \
-  build-essential \
-  pkg-config \
-  postgresql-client \
-  python3-dev \
-  libpython3-dev \
-  git \
-  make \
-  ca-certificates \
-  -o Acquire::Retries=5
+
+apt_with_retry() {
+  local description="$1"
+  shift
+  local attempt=1
+  local max_attempts=5
+
+  while true; do
+    if "$@"; then
+      return 0
+    fi
+
+    if [[ "$attempt" -ge "$max_attempts" ]]; then
+      echo "${description} failed after ${attempt} attempts" >&2
+      return 1
+    fi
+
+    sleep $((attempt * 5))
+    rm -rf /var/lib/apt/lists/*
+    attempt=$((attempt + 1))
+  done
+}
+
+apt_with_retry "apt-get update" apt-get update -o Acquire::Retries=5
+apt_with_retry "apt-get install" \
+  apt-get install -y --no-install-recommends \
+    build-essential \
+    pkg-config \
+    postgresql-client \
+    python3-dev \
+    libpython3-dev \
+    git \
+    make \
+    ca-certificates \
+    -o Acquire::Retries=5
 rm -rf /var/lib/apt/lists/*
