@@ -12,6 +12,7 @@ install_runner="${INSTALL_GITHUB_ACTIONS_RUNNER:-false}"
 runner_installer="${RUNNER_INSTALLER_PATH:-/usr/local/bin/install-github-actions-runner}"
 workspace_repair_source="${RUNNER_WORKSPACE_REPAIR_SOURCE:-$(dirname "$0")/repair-github-runner-workspace.sh}"
 workspace_repair_target="${RUNNER_WORKSPACE_REPAIR_TARGET:-/usr/local/bin/repair-github-runner-workspace}"
+runner_layout_config="${RUNNER_LAYOUT_CONFIG:-/etc/cloudbet/self-hosted-runner.conf}"
 
 if [[ ! -f "$packages_file" ]]; then
   echo "Package manifest not found: $packages_file" >&2
@@ -20,7 +21,7 @@ fi
 
 if [[ "$bootstrap_mode" != "image" && "${EUID}" -ne 0 ]]; then
   if command -v sudo >/dev/null 2>&1; then
-    exec sudo --preserve-env=BOOTSTRAP_MODE,RUNNER_USER,RUNNER_GROUP,RUNNER_HOME,RUNNER_ROOT,PACKAGES_FILE,INSTALL_GITHUB_ACTIONS_RUNNER,RUNNER_INSTALLER_PATH,RUNNER_WORKSPACE_REPAIR_SOURCE,RUNNER_WORKSPACE_REPAIR_TARGET "$0" "$@"
+    exec sudo --preserve-env=BOOTSTRAP_MODE,RUNNER_USER,RUNNER_GROUP,RUNNER_HOME,RUNNER_ROOT,PACKAGES_FILE,INSTALL_GITHUB_ACTIONS_RUNNER,RUNNER_INSTALLER_PATH,RUNNER_WORKSPACE_REPAIR_SOURCE,RUNNER_WORKSPACE_REPAIR_TARGET,RUNNER_LAYOUT_CONFIG "$0" "$@"
   fi
 
   echo "bootstrap-self-hosted-runner-host.sh must run as root" >&2
@@ -64,6 +65,11 @@ if [[ ! -f "$workspace_repair_source" ]]; then
 fi
 
 install -m 0755 "$workspace_repair_source" "$workspace_repair_target"
+install -d -m 0755 "$(dirname "$runner_layout_config")"
+cat > "$runner_layout_config" <<EOF
+RUNNER_ROOT=$runner_root
+EOF
+chmod 0644 "$runner_layout_config"
 
 cat > "$sudoers_file" <<EOF
 $runner_user ALL=(root) NOPASSWD:${workspace_repair_target} *
