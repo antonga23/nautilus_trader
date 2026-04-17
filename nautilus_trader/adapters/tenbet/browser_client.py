@@ -50,6 +50,7 @@ class RateLimiter:
     Implements:
     - Random delays between requests
     - Maximum requests per minute tracking
+
     """
 
     def __init__(
@@ -92,6 +93,7 @@ class TenBetBrowserClient:
     - real browser login with credentials
     - persisted browser storage state
     - synthetic auth for CI or offline validation
+
     """
 
     def __init__(
@@ -169,10 +171,10 @@ class TenBetBrowserClient:
         """
         try:
             from playwright.async_api import async_playwright
-        except ImportError as exc:
+        except ImportError as e:
             raise ImportError(
                 "Playwright not installed. Run: pip install playwright && playwright install chromium",
-            ) from exc
+            ) from e
 
         if self._logger:
             self._logger.info("Initializing Playwright browser...")
@@ -258,9 +260,9 @@ class TenBetBrowserClient:
         if context is not None and session_state_path and self._is_logged_in:
             try:
                 await context.storage_state(path=session_state_path)
-            except Exception as exc:  # pragma: no cover - defensive cleanup
+            except Exception as e:  # pragma: no cover - defensive cleanup
                 if self._logger:
-                    self._logger.warning(f"Failed to persist 10bet storage state: {exc}")
+                    self._logger.warning(f"Failed to persist 10bet storage state: {e}")
 
         self._page = None
         self._context = None
@@ -281,9 +283,9 @@ class TenBetBrowserClient:
                 continue
             try:
                 await cleanup()
-            except Exception as exc:  # pragma: no cover - defensive cleanup
+            except Exception as e:  # pragma: no cover - defensive cleanup
                 if first_error is None:
-                    first_error = exc
+                    first_error = e
 
         if self._logger:
             self._logger.info(f"Browser disconnected. Total requests: {request_count}")
@@ -313,9 +315,10 @@ class TenBetBrowserClient:
         """
         Authenticate the browser session.
 
-        If real credentials are available, this attempts the login form.
-        If credentials are absent and synthetic auth is allowed, it marks the
-        session as authenticated for validation-only flows.
+        If real credentials are available, this attempts the login form. If credentials
+        are absent and synthetic auth is allowed, it marks the session as authenticated
+        for validation-only flows.
+
         """
         allow_synthetic = (
             self._allow_synthetic_auth if allow_synthetic_auth is None else allow_synthetic_auth
@@ -325,60 +328,84 @@ class TenBetBrowserClient:
         otp_code = otp_code or self._otp_code
 
         if not email or not password:
-            if allow_synthetic:
-                self._is_logged_in = True
-                self._auth_mode = "synthetic"
-                if self._logger:
-                    self._logger.warning(
-                        "10bet credentials missing; using synthetic authenticated session for validation",
-                    )
-                return True
-            if self._logger:
-                self._logger.warning(
-                    "10bet authentication skipped because credentials were missing"
-                )
-            return False
+            return self._handle_missing_credentials(allow_synthetic)
 
         try:
-            await self.navigate_to(self._login_url)
-            page = self._require_page()
+            await self._attempt_live_login(email, password, otp_code)
+        except Exception as e:
+            return self._handle_login_exception(e, allow_synthetic)
 
-            await self._fill_first(page, TenBetSelectors.EMAIL_INPUT, email)
-            await self._fill_first(page, TenBetSelectors.PASSWORD_INPUT, password)
-            await self._click_first(page, TenBetSelectors.SUBMIT_BUTTON)
-
-            if otp_code:
-                await self._fill_first(page, TenBetSelectors.OTP_INPUT, otp_code)
-                await self._click_first(page, TenBetSelectors.SUBMIT_BUTTON)
-
-            await self._wait_for_login_resolution(page)
-            self._is_logged_in = not await self._has_any_selector(
-                page, TenBetSelectors.SESSION_EXPIRED
-            )
-            self._auth_mode = "authenticated" if self._is_logged_in else "unauthenticated"
-        except Exception as exc:
-            if allow_synthetic:
-                self._is_logged_in = True
-                self._auth_mode = "synthetic"
-                if self._logger:
-                    self._logger.warning(
-                        f"10bet live login failed ({exc}); continuing with synthetic auth",
-                    )
-                return True
-            if self._logger:
-                self._logger.error(f"10bet login failed: {exc}")
-            return False
-
-        if self._is_logged_in and self._session_state_path and self._context is not None:
-            try:
-                await self._context.storage_state(path=self._session_state_path)
-            except Exception as exc:  # pragma: no cover - defensive cleanup
-                if self._logger:
-                    self._logger.warning(f"Failed to save 10bet session state: {exc}")
+        await self._save_session_state_after_login()
 
         if self._logger:
             self._logger.info(f"10bet login resolved using auth_mode={self._auth_mode}")
         return self._is_logged_in
+
+    def _set_synthetic_auth(self, message: str) -> bool:
+        self._is_logged_in = True
+        self._auth_mode = "synthetic"
+        if self._logger:
+            self._logger.warning(message)
+        return True
+
+    def _handle_missing_credentials(self, allow_synthetic: bool) -> bool:
+        if allow_synthetic:
+            return self._set_synthetic_auth(
+                "10bet credentials missing; using synthetic authenticated session for validation",
+            )
+        if self._logger:
+            self._logger.warning(
+                "10bet authentication skipped because credentials were missing",
+            )
+        return False
+
+    def _handle_login_exception(self, error: Exception, allow_synthetic: bool) -> bool:
+        if allow_synthetic:
+            return self._set_synthetic_auth(
+                f"10bet live login failed ({error}); continuing with synthetic auth",
+            )
+        if self._logger:
+            self._logger.error(f"10bet login failed: {error}")
+        return False
+
+    async def _attempt_live_login(
+        self,
+        email: str,
+        password: str,
+        otp_code: str | None,
+    ) -> None:
+        await self.navigate_to(self._login_url)
+        page = self._require_page()
+        await self._submit_login_form(page, email, password, otp_code)
+        await self._wait_for_login_resolution(page)
+        self._is_logged_in = not await self._has_any_selector(
+            page,
+            TenBetSelectors.SESSION_EXPIRED,
+        )
+        self._auth_mode = "authenticated" if self._is_logged_in else "unauthenticated"
+
+    async def _submit_login_form(
+        self,
+        page: Page,
+        email: str,
+        password: str,
+        otp_code: str | None,
+    ) -> None:
+        await self._fill_first(page, TenBetSelectors.EMAIL_INPUT, email)
+        await self._fill_first(page, TenBetSelectors.PASSWORD_INPUT, password)
+        await self._click_first(page, TenBetSelectors.SUBMIT_BUTTON)
+        if otp_code:
+            await self._fill_first(page, TenBetSelectors.OTP_INPUT, otp_code)
+            await self._click_first(page, TenBetSelectors.SUBMIT_BUTTON)
+
+    async def _save_session_state_after_login(self) -> None:
+        if not self._is_logged_in or not self._session_state_path or self._context is None:
+            return
+        try:
+            await self._context.storage_state(path=self._session_state_path)
+        except Exception as e:  # pragma: no cover - defensive cleanup
+            if self._logger:
+                self._logger.warning(f"Failed to save 10bet session state: {e}")
 
     async def get_markets_for_sport(self, sport: str) -> list[dict[str, Any]]:
         """

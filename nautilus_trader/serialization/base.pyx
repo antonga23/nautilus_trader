@@ -82,6 +82,7 @@ from nautilus_trader.execution.reports import OrderStatusReport
 from nautilus_trader.execution.reports import PositionStatusReport
 from nautilus_trader.model.instruments.crypto_betting import CryptoBettingInstrument
 
+
 # Default mappings for Nautilus objects
 _OBJECT_TO_DICT_MAP: dict[str, Callable[[None], dict]] = {
     CancelOrder.__name__: CancelOrder.to_dict_c,

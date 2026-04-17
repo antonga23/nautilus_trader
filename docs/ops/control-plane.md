@@ -153,18 +153,26 @@ The first trading-node operations release should treat the EC2 host as the live 
 Control-plane UI routes:
 
 - `/control` for the mission-control view
-- `/nodes` for trading-node inventory
-- `/nodes/:nodeId` for node detail, logs, lifecycle actions, and config preview
+- `/trading-nodes` for the trading-node host/node overview
+- `/trading-nodes/:nodeId` for the GitHub-runner-style node drilldown
+- `/nodes` redirects to `/trading-nodes` for compatibility
 
 Trading-node API surface:
 
-- `GET /control/api/nodes`
-- `GET /control/api/nodes/:nodeId`
-- `GET /control/api/nodes/:nodeId/logs?mode=recent|follow&limit=...`
-- `POST /control/api/nodes/:nodeId/start`
-- `POST /control/api/nodes/:nodeId/stop`
-- `POST /control/api/nodes/:nodeId/restart`
-- `POST /control/api/nodes/:nodeId/render-config`
+- `GET /control/api/trading-nodes`
+- `GET /control/api/trading-nodes/:nodeId`
+- `GET /control/api/trading-nodes/:nodeId/sessions`
+- `GET /control/api/trading-nodes/:nodeId/sessions/:sessionId`
+- `GET /control/api/trading-nodes/:nodeId/logs?sessionId=current&limit=...`
+- `GET /control/api/trading-nodes/:nodeId/logs/stream?sessionId=current`
+- `POST /control/api/trading-nodes/:nodeId/start`
+- `POST /control/api/trading-nodes/:nodeId/stop`
+- `POST /control/api/trading-nodes/:nodeId/restart`
+- `POST /control/api/trading-nodes/:nodeId/render-config`
+
+The legacy `/control/api/nodes*` endpoints remain as compatibility aliases.
+Trading-node logs are persisted per session under
+`/opt/cloudbet/strategy-nodes/<container>/sessions/<sessionId>/`.
 
 `render-config` remains available in read-only mode because it is a non-mutating preview. Start/stop/restart are blocked when `CONTROL_PLANE_READ_ONLY=1`.
 

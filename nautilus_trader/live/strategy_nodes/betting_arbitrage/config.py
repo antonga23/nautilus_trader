@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from decimal import Decimal
 
 import msgspec
 
@@ -39,12 +38,12 @@ class BettingVenueManifest(NautilusConfig, frozen=True):
         if normalized_venue in BLOCKED_SPORTSBOOK_VENUES:
             raise ValueError(
                 f"Venue {normalized_venue} is not deployment-ready. "
-                "Only SXBET and POLYMARKET are currently supported in the live node builder."
+                "Only SXBET and POLYMARKET are currently supported in the live node builder.",
             )
         if normalized_venue not in SUPPORTED_BETTING_NODE_VENUES:
             raise ValueError(
                 f"Unsupported venue {normalized_venue}. Supported venues: "
-                f"{sorted(SUPPORTED_BETTING_NODE_VENUES)}"
+                f"{sorted(SUPPORTED_BETTING_NODE_VENUES)}",
             )
         if self.execution_enabled and not self.data_enabled:
             raise ValueError("execution_enabled requires data_enabled for live betting nodes")
@@ -109,8 +108,8 @@ class BettingArbitrageNodeManifest(NautilusConfig, frozen=True):
 
 
 __all__ = [
-    "BettingArbitrageNodeManifest",
-    "BettingVenueManifest",
     "BLOCKED_SPORTSBOOK_VENUES",
     "SUPPORTED_BETTING_NODE_VENUES",
+    "BettingArbitrageNodeManifest",
+    "BettingVenueManifest",
 ]

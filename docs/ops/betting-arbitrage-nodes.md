@@ -169,11 +169,23 @@ Node lifecycle in v1:
 
 - `start` and `stop` act on the current EC2 host only.
 - `restart` may accept a bounded override payload, but not arbitrary secret mutation.
-- The UI should expose logs, runtime state, and effective config for each discovered node.
+- The UI exposes a host/node overview and a dedicated drilldown page for each
+  discovered node, with process state, sessions, stage inference, persisted logs,
+  lifecycle controls, and effective config preview.
 - `CONTROL_PLANE_READ_ONLY=1` must still allow inventory and log reads, but block node mutation requests.
 - The control-plane routes are:
-  - `/nodes` for the merged inventory
-  - `/nodes/:nodeId` for node detail, recent logs, lifecycle actions, and effective config preview
+  - `/trading-nodes` for the merged host/node inventory
+  - `/trading-nodes/:nodeId` for node detail, sessions, logs, lifecycle actions,
+    and effective config preview
+
+The deploy script persists every container run as a session under:
+
+- `/opt/cloudbet/strategy-nodes/<container>/sessions/<sessionId>/node.log`
+- `/opt/cloudbet/strategy-nodes/<container>/sessions/<sessionId>/events.jsonl`
+- `/opt/cloudbet/strategy-nodes/<container>/current-session.json`
+
+Docker logs are treated as a fallback only; session logs are the source of truth
+for the control-plane log viewer and survive container removal/redeployment.
 
 GitHub deploy workflow secrets:
 

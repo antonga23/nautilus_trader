@@ -23,11 +23,23 @@ Recommended decision bucket:
 ### Rustls / webpki
 
 - `RUSTSEC-2026-0049` against `rustls-webpki 0.103.8`
+- `RUSTSEC-2026-0098` against `rustls-webpki 0.103.8`
+- `RUSTSEC-2026-0099` against `rustls-webpki 0.103.8`
 
 Recommended decision bucket:
 
 - update the `rustls` dependency chain if a patched `rustls-webpki` is available
 - waive only if the affected validation path is provably unreachable in this repo and the waiver is time-boxed
+
+### Rand unsoundness
+
+- `RUSTSEC-2026-0097` against inherited `rand` versions
+
+Recommended decision bucket:
+
+- identify whether the affected custom-logger path is reachable in our runtime
+- prefer dependency updates once upstream crates move to patched `rand`
+- keep the waiver temporary because this is an unsoundness advisory, not a simple maintenance warning
 
 ### Time crate
 

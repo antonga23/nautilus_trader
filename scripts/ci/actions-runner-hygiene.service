@@ -5,5 +5,7 @@ After=network.target docker.service
 [Service]
 Type=oneshot
 User=root
-WorkingDirectory=/srv/symphony/control-repo
-ExecStart=/bin/bash /srv/symphony/control-repo/scripts/ci/self_hosted_runner_cleanup.sh
+EnvironmentFile=-/etc/cloudbet/self-hosted-runner.conf
+EnvironmentFile=-/etc/cloudbet/actions-runner-hygiene.conf
+WorkingDirectory=/opt/cloudbet-runner-hygiene
+ExecStart=/opt/cloudbet-runner-hygiene/self_hosted_runner_cleanup.sh

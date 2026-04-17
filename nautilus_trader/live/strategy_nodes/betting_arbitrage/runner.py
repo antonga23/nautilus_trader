@@ -48,7 +48,8 @@ def main(argv: list[str] | None = None) -> int:
     validate_parser.add_argument("--manifest", required=True)
 
     render_parser = subparsers.add_parser(
-        "render-node-config", help="Render TradingNodeConfig JSON"
+        "render-node-config",
+        help="Render TradingNodeConfig JSON",
     )
     render_parser.add_argument("--manifest", required=True)
     render_parser.add_argument("--output")
@@ -161,14 +162,14 @@ def main(argv: list[str] | None = None) -> int:
             },
         )
         return 0
-    except Exception as exc:
+    except Exception as e:
         _write_json(
             status_path,
             {
                 "nodeId": manifest.node_id,
                 "status": "failed",
                 "failedAt": _utc_now(),
-                "error": repr(exc),
+                "error": repr(e),
                 "heartbeatPath": str(heartbeat_path),
             },
         )
