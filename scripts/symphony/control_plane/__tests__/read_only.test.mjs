@@ -12,7 +12,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,29 +22,58 @@ const serverPath = path.join(here, '..', 'server.mjs');
 
 function startServer(envOverrides) {
   const tempRoot = mkdtempSync(path.join(tmpdir(), 'cp-ro-'));
+  const binDir = path.join(tempRoot, 'bin');
   const runRoot = path.join(tempRoot, 'runs');
   const githubRoot = path.join(tempRoot, 'github');
   const settingsPath = path.join(tempRoot, 'settings.json');
   const strategyNodeManifestRoot = path.join(tempRoot, 'strategy-node-manifests');
   const strategyNodeRequestRoot = path.join(tempRoot, 'strategy-node-requests');
+  const tradingNodeRoot = path.join(tempRoot, 'strategy-nodes');
+  mkdirSync(binDir, { recursive: true });
   mkdirSync(runRoot, { recursive: true });
   mkdirSync(githubRoot, { recursive: true });
   mkdirSync(strategyNodeManifestRoot, { recursive: true });
   mkdirSync(strategyNodeRequestRoot, { recursive: true });
+  mkdirSync(tradingNodeRoot, { recursive: true });
+  const dockerPath = path.join(binDir, 'docker');
+  writeFileSync(
+    dockerPath,
+    `#!/usr/bin/env bash
+set -euo pipefail
+case "\${1:-}" in
+  ps) exit 0 ;;
+  inspect) exit 1 ;;
+  logs) exit 1 ;;
+  *) exit 0 ;;
+esac
+`,
+    'utf8',
+  );
+  chmodSync(dockerPath, 0o755);
   const port = 14100 + Math.floor(Math.random() * 500);
   const child = spawn(process.execPath, [serverPath], {
     env: {
       ...process.env,
+      PATH: `${binDir}:${process.env.PATH || ''}`,
       CONTROL_PLANE_PORT: String(port),
       CONTROL_PLANE_RUN_ROOT: runRoot,
       CONTROL_PLANE_GITHUB_ROOT: githubRoot,
       CONTROL_PLANE_SETTINGS_PATH: settingsPath,
       CONTROL_PLANE_STRATEGY_NODE_MANIFEST_ROOT: strategyNodeManifestRoot,
       CONTROL_PLANE_STRATEGY_NODE_REQUEST_ROOT: strategyNodeRequestRoot,
+      CONTROL_PLANE_TRADING_NODE_ROOT: tradingNodeRoot,
+      CONTROL_PLANE_DISABLE_SECRET_MANAGER: '1',
       CONTROL_PLANE_WORKER_CONFIG: path.join(tempRoot, 'workers.json'),
       ...envOverrides
     },
     stdio: ['ignore', 'pipe', 'pipe']
+  });
+  child.output = '';
+  child.stdout.on('data', (chunk) => {
+    child.output += chunk.toString();
+  });
+  child.stderr.on('data', (chunk) => {
+    child.output += chunk.toString();
   });
   return { child, port, tempRoot, strategyNodeManifestRoot, strategyNodeRequestRoot };
 }
@@ -80,8 +109,11 @@ function writeStrategyNodeManifest(rootDir, fileName, manifest = {}) {
 async function waitForListen(port, child, timeoutMs = 5000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      throw new Error(`server exited before listening: ${child.output || '<no output>'}`);
+    }
     try {
-      const resp = await fetch(`http://127.0.0.1:${port}/control/api/overview`, { method: 'GET' });
+      const resp = await fetch(`http://127.0.0.1:${port}/control/api/settings`, { method: 'GET' });
       if (resp.ok || resp.status === 500) {
         return;
       }
@@ -95,6 +127,9 @@ async function waitForListen(port, child, timeoutMs = 5000) {
 }
 
 async function stopServer({ child }) {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return;
+  }
   child.kill('SIGKILL');
   await new Promise((r) => child.once('exit', r));
 }

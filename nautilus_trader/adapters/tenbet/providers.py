@@ -84,8 +84,8 @@ class TenBetInstrumentProvider(InstrumentProvider):
                 self._log.info(f"Found {len(markets)} markets for {sport}")
                 for market in markets:
                     await self._process_market(market)
-            except Exception as exc:
-                self._log.error(f"Error loading {sport} markets: {exc}")
+            except Exception as e:
+                self._log.error(f"Error loading {sport} markets: {e}")
 
         self._loaded = True
         self._log.info(f"Instrument loading complete ({len(self._instruments)} instruments)")
@@ -170,7 +170,8 @@ class TenBetInstrumentProvider(InstrumentProvider):
 
         if best_odds <= 0:
             implied = market.get(
-                "outcomeOneProbability" if outcome_one else "outcomeTwoProbability", 0
+                "outcomeOneProbability" if outcome_one else "outcomeTwoProbability",
+                0,
             )
             if implied and implied > 0:
                 best_odds = 1 / float(implied)
@@ -317,8 +318,8 @@ class TenBetInstrumentProvider(InstrumentProvider):
                     "sport_id": sport_name,
                 },
             )
-        except (TypeError, ValueError) as exc:
-            self._log.warning(f"Failed to create 10bet instrument: {exc}")
+        except (TypeError, ValueError) as e:
+            self._log.warning(f"Failed to create 10bet instrument: {e}")
             return None
 
     def get_market_data(self, market_hash: str) -> dict | None:

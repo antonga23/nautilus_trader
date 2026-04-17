@@ -223,7 +223,7 @@ class TestTenBetInstrumentProvider:
         browser_client = Mock()
         browser_client.is_connected = False
         browser_client.connect = AsyncMock(
-            side_effect=lambda: setattr(browser_client, "is_connected", True)
+            side_effect=lambda: setattr(browser_client, "is_connected", True),
         )
         browser_client.get_markets_for_sport = AsyncMock(
             return_value=[

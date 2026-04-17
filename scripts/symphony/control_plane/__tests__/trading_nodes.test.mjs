@@ -36,6 +36,9 @@ function createFixtureLayout(tempRoot, options = {}) {
   const requestRoot = path.join(tempRoot, 'strategy-node-requests');
   const workerConfigPath = path.join(tempRoot, 'workers.json');
   const nodeDir = path.join(nodeRoot, 'betting-arbitrage-node-sxbet');
+  const sessionId = '20260417T042532Z-test';
+  const sessionDir = path.join(nodeDir, 'sessions', sessionId);
+  const freshHeartbeatAt = new Date().toISOString();
 
   mkdirSync(binDir, { recursive: true });
   mkdirSync(repoRoot, { recursive: true });
@@ -45,6 +48,7 @@ function createFixtureLayout(tempRoot, options = {}) {
   mkdirSync(githubRoot, { recursive: true });
   mkdirSync(manifestRoot, { recursive: true });
   mkdirSync(requestRoot, { recursive: true });
+  mkdirSync(sessionDir, { recursive: true });
 
   writeExecutable(
     path.join(binDir, 'docker'),
@@ -57,13 +61,19 @@ case "$cmd" in
     echo '{"Names":"betting-arbitrage-node-sxbet","Image":"local/betting-arbitrage-node:sxbet-test","Status":"Up 5 minutes"}'
     ;;
   inspect)
-    name="${1:-}"
+    name="\${1:-}"
     if [ "$name" != "betting-arbitrage-node-sxbet" ]; then
       exit 1
     fi
     cat <<'JSON'
-[{"Config":{"Image":"local/betting-arbitrage-node:sxbet-test","Cmd":["python3","-m","nautilus_trader.live.strategy_nodes.betting_arbitrage","run","--manifest","/srv/node/manifest.json"]},"State":{"Status":"running","Running":true,"StartedAt":"2026-04-17T04:25:32Z","FinishedAt":"0001-01-01T00:00:00Z","ExitCode":0},"Created":"2026-04-17T04:25:31Z"}]
+[{"Config":{"Image":"local/betting-arbitrage-node:sxbet-test","Entrypoint":["/var/lib/nautilus-node/run_with_logs.sh"],"Cmd":["python3","-m","nautilus_trader.live.strategy_nodes.betting_arbitrage","run","--manifest","/srv/node/manifest.json"]},"State":{"Status":"running","Running":true,"Restarting":false,"Dead":false,"Pid":4242,"StartedAt":"2026-04-17T04:25:32Z","FinishedAt":"0001-01-01T00:00:00Z","ExitCode":0},"RestartCount":0,"HostConfig":{"LogConfig":{"Type":"json-file","Config":{"max-size":"20m","max-file":"5"}}},"Created":"2026-04-17T04:25:31Z"}]
 JSON
+    ;;
+  top)
+    cat <<'TOP'
+PID PPID ELAPSED CMD
+4242 1 00:03:11 python3 -m nautilus_trader.live.strategy_nodes.betting_arbitrage run --manifest /srv/node/manifest.json
+TOP
     ;;
   logs)
     cat <<'LOG'
@@ -72,11 +82,11 @@ JSON
 LOG
     ;;
   rm)
-    if [ "${CONTROL_PLANE_TEST_DOCKER_RM_MISSING:-}" = "1" ]; then
-      echo "Error: No such container: ${2:-}" >&2
+    if [ "\${CONTROL_PLANE_TEST_DOCKER_RM_MISSING:-}" = "1" ]; then
+      echo "Error: No such container: \${2:-}" >&2
       exit 1
     fi
-    echo "${2:-}" > "${CONTROL_PLANE_TEST_STATE_ROOT}/docker-rm.txt"
+    echo "\${2:-}" > "\${CONTROL_PLANE_TEST_STATE_ROOT}/docker-rm.txt"
     ;;
   *)
     exit 0
@@ -125,8 +135,8 @@ JSON
 cat > "$node_dir/heartbeat.json" <<JSON
 {"at":"2026-04-17T04:25:33Z"}
 JSON
-echo "$env_file" > "${CONTROL_PLANE_TEST_STATE_ROOT}/deploy-env-path.txt"
-echo "$image" > "${CONTROL_PLANE_TEST_STATE_ROOT}/deploy-image.txt"
+echo "$env_file" > "\${CONTROL_PLANE_TEST_STATE_ROOT}/deploy-env-path.txt"
+    echo "$image" > "\${CONTROL_PLANE_TEST_STATE_ROOT}/deploy-image.txt"
 `,
   );
 
@@ -139,12 +149,42 @@ echo "$image" > "${CONTROL_PLANE_TEST_STATE_ROOT}/deploy-image.txt"
       renderedConfigPath: path.join(nodeDir, 'runtime-config.json'),
     });
   }
-  writeJson(path.join(nodeDir, 'heartbeat.json'), { at: '2026-04-17T04:25:33Z' });
+  writeJson(path.join(nodeDir, 'heartbeat.json'), { at: freshHeartbeatAt });
   writeJson(path.join(nodeDir, 'release.json'), {
     image: 'local/betting-arbitrage-node:sxbet-test',
     manifest: path.join(nodeDir, 'manifest.runtime.json'),
     envFile: path.join(nodeDir, 'runtime.env'),
+    sessionId,
+    sessionDir,
+    logPath: path.join(sessionDir, 'node.log'),
+    eventLogPath: path.join(sessionDir, 'events.jsonl'),
   });
+  writeJson(path.join(nodeDir, 'current-session.json'), {
+    container: 'betting-arbitrage-node-sxbet',
+    sessionId,
+    hostSessionDir: sessionDir,
+    logPath: path.join(sessionDir, 'node.log'),
+    eventLogPath: path.join(sessionDir, 'events.jsonl'),
+    startedAt: '2026-04-17T04:25:32Z',
+  });
+  writeFileSync(
+    path.join(sessionDir, 'events.jsonl'),
+    [
+      '{"at":"2026-04-17T04:25:31Z","event":"deploy_started","message":"Preparing strategy-node deployment"}',
+      '{"at":"2026-04-17T04:25:32Z","event":"process_started","message":"Launching betting arbitrage trading node","sessionId":"20260417T042532Z-test"}',
+      '{"at":"2026-04-17T04:25:33Z","event":"running","message":"Trading node heartbeat observed","sessionId":"20260417T042532Z-test"}',
+    ].join('\n') + '\n',
+    'utf8',
+  );
+  writeFileSync(
+    path.join(sessionDir, 'node.log'),
+    [
+      '2026-04-17T04:25:32Z TradingNode: Starting trader_id=betting-arbitrage node_id=sxbet-single-venue',
+      '2026-04-17T04:25:33Z TradingNode: Building data client for SXBET_PRIMARY',
+      '2026-04-17T04:25:34Z TradingNode: Running strategy betting_arbitrage venues=SXBET',
+    ].join('\n') + '\n',
+    'utf8',
+  );
   if (!options.discoveryWithoutNodeId) {
     writeJson(path.join(nodeDir, 'manifest.runtime.json'), {
       node_id: 'sxbet-single-venue',
@@ -238,11 +278,19 @@ function startServer(envOverrides = {}, options = {}) {
       CONTROL_PLANE_TRADING_NODE_REGISTRY_PATH: fixture.nodeRegistryPath,
       CONTROL_PLANE_TRADING_NODE_DISCOVERY_ROOT: fixture.discoveryRoot,
       CONTROL_PLANE_TRADING_NODE_ROOT: fixture.nodeRoot,
+      CONTROL_PLANE_DISABLE_SECRET_MANAGER: '1',
       CONTROL_PLANE_TEST_STATE_ROOT: fixture.stateRoot,
       CONTROL_REPO_ROOT: fixture.repoRoot,
       ...envOverrides,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  child.output = '';
+  child.stdout.on('data', (chunk) => {
+    child.output += chunk.toString();
+  });
+  child.stderr.on('data', (chunk) => {
+    child.output += chunk.toString();
   });
   return { child, port, tempRoot, fixture };
 }
@@ -250,6 +298,9 @@ function startServer(envOverrides = {}, options = {}) {
 async function waitForListen(port, child, timeoutMs = 5000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      throw new Error(`server exited before listening: ${child.output || '<no output>'}`);
+    }
     try {
       const resp = await fetch(`http://127.0.0.1:${port}/control/api/overview`, { method: 'GET' });
       if (resp.ok || resp.status === 500) {
@@ -263,6 +314,9 @@ async function waitForListen(port, child, timeoutMs = 5000) {
 }
 
 async function stopServer({ child }) {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return;
+  }
   child.kill('SIGKILL');
   await new Promise((resolve) => child.once('exit', resolve));
 }
@@ -285,7 +339,41 @@ test('trading node inventory and detail endpoints merge registry with discovery'
     assert.equal(detailBody.node.nodeId, 'sxbet-single-venue');
     assert.equal(detailBody.registryEntry.nodeId, 'sxbet-single-venue');
     assert.equal(detailBody.discoveryEntry.containerName, 'betting-arbitrage-node-sxbet');
-    assert.match(detailBody.logs.content, /strategy node boot/);
+    assert.equal(detailBody.node.sessionId, '20260417T042532Z-test');
+    assert.equal(detailBody.node.container.pid, 4242);
+    assert.match(detailBody.node.container.processes[0].command, /betting_arbitrage/);
+    assert.match(detailBody.logs.content, /Running strategy betting_arbitrage/);
+    assert.equal(detailBody.logs.source, 'session-log');
+
+    const aliasResp = await fetch(`http://127.0.0.1:${s.port}/control/api/trading-nodes`);
+    assert.equal(aliasResp.status, 200);
+    const aliasBody = await aliasResp.json();
+    assert.equal(aliasBody.nodes[0].nodeId, 'sxbet-single-venue');
+
+    const sessionsResp = await fetch(
+      `http://127.0.0.1:${s.port}/control/api/trading-nodes/sxbet-single-venue/sessions`,
+    );
+    assert.equal(sessionsResp.status, 200);
+    const sessionsBody = await sessionsResp.json();
+    assert.equal(sessionsBody.sessions.length, 1);
+    assert.equal(sessionsBody.sessions[0].sessionId, '20260417T042532Z-test');
+    assert.equal(sessionsBody.sessions[0].active, true);
+
+    const sessionResp = await fetch(
+      `http://127.0.0.1:${s.port}/control/api/trading-nodes/sxbet-single-venue/sessions/20260417T042532Z-test`,
+    );
+    assert.equal(sessionResp.status, 200);
+    const sessionBody = await sessionResp.json();
+    assert.equal(sessionBody.session.events.length, 3);
+
+    const logsResp = await fetch(
+      `http://127.0.0.1:${s.port}/control/api/trading-nodes/sxbet-single-venue/logs?sessionId=current&limit=2`,
+    );
+    assert.equal(logsResp.status, 200);
+    const logsBody = await logsResp.json();
+    assert.equal(logsBody.source, 'session-log');
+    assert.match(logsBody.content, /Building data client/);
+    assert.match(logsBody.content, /Running strategy betting_arbitrage/);
   } finally {
     await stopServer(s);
   }
@@ -356,6 +444,9 @@ test('trading node lifecycle endpoints use local host actions and SPA fallback s
     const spaResp = await fetch(`http://127.0.0.1:${s.port}/nodes`);
     assert.equal(spaResp.status, 200);
     assert.match(await spaResp.text(), /<div id="root"><\/div>/);
+    const tradingNodesSpaResp = await fetch(`http://127.0.0.1:${s.port}/trading-nodes/sxbet-single-venue`);
+    assert.equal(tradingNodesSpaResp.status, 200);
+    assert.match(await tradingNodesSpaResp.text(), /<div id="root"><\/div>/);
 
     const restartResp = await fetch(`http://127.0.0.1:${s.port}/control/api/nodes/sxbet-single-venue/restart`, {
       method: 'POST',

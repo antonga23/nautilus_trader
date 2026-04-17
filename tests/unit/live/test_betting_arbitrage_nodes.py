@@ -33,7 +33,7 @@ class TestBettingArbitrageNodeBuilder:
             allow_dummy_credentials=True,
             strategy=BettingArbitrageConfig(
                 min_profit_margin=Decimal("0.02"),
-                max_total_stake=Decimal("100"),
+                max_total_stake=Decimal(100),
                 auto_execute=True,
             ),
             venues=[
@@ -89,7 +89,7 @@ class TestBettingArbitrageNodeBuilder:
                     instrument_ids=frozenset(
                         {
                             "condition-token.POLYMARKET",
-                        }
+                        },
                     ),
                 ),
             ],

@@ -50,6 +50,7 @@ class RateLimiter:
     Implements:
     - Random delays between requests
     - Maximum requests per minute tracking
+
     """
 
     def __init__(
@@ -92,6 +93,7 @@ class TenBetBrowserClient:
     - real browser login with credentials
     - persisted browser storage state
     - synthetic auth for CI or offline validation
+
     """
 
     def __init__(
@@ -169,10 +171,10 @@ class TenBetBrowserClient:
         """
         try:
             from playwright.async_api import async_playwright
-        except ImportError as exc:
+        except ImportError as e:
             raise ImportError(
                 "Playwright not installed. Run: pip install playwright && playwright install chromium",
-            ) from exc
+            ) from e
 
         if self._logger:
             self._logger.info("Initializing Playwright browser...")
@@ -258,9 +260,9 @@ class TenBetBrowserClient:
         if context is not None and session_state_path and self._is_logged_in:
             try:
                 await context.storage_state(path=session_state_path)
-            except Exception as exc:  # pragma: no cover - defensive cleanup
+            except Exception as e:  # pragma: no cover - defensive cleanup
                 if self._logger:
-                    self._logger.warning(f"Failed to persist 10bet storage state: {exc}")
+                    self._logger.warning(f"Failed to persist 10bet storage state: {e}")
 
         self._page = None
         self._context = None
@@ -281,9 +283,9 @@ class TenBetBrowserClient:
                 continue
             try:
                 await cleanup()
-            except Exception as exc:  # pragma: no cover - defensive cleanup
+            except Exception as e:  # pragma: no cover - defensive cleanup
                 if first_error is None:
-                    first_error = exc
+                    first_error = e
 
         if self._logger:
             self._logger.info(f"Browser disconnected. Total requests: {request_count}")
@@ -303,7 +305,7 @@ class TenBetBrowserClient:
         await page.goto(url, wait_until="domcontentloaded")
         self._request_count += 1
 
-    async def login_placeholder(
+    async def login_placeholder(  # noqa: C901
         self,
         email: str | None = None,
         password: str | None = None,
@@ -313,9 +315,10 @@ class TenBetBrowserClient:
         """
         Authenticate the browser session.
 
-        If real credentials are available, this attempts the login form.
-        If credentials are absent and synthetic auth is allowed, it marks the
-        session as authenticated for validation-only flows.
+        If real credentials are available, this attempts the login form. If credentials
+        are absent and synthetic auth is allowed, it marks the session as authenticated
+        for validation-only flows.
+
         """
         allow_synthetic = (
             self._allow_synthetic_auth if allow_synthetic_auth is None else allow_synthetic_auth
@@ -335,7 +338,7 @@ class TenBetBrowserClient:
                 return True
             if self._logger:
                 self._logger.warning(
-                    "10bet authentication skipped because credentials were missing"
+                    "10bet authentication skipped because credentials were missing",
                 )
             return False
 
@@ -353,28 +356,29 @@ class TenBetBrowserClient:
 
             await self._wait_for_login_resolution(page)
             self._is_logged_in = not await self._has_any_selector(
-                page, TenBetSelectors.SESSION_EXPIRED
+                page,
+                TenBetSelectors.SESSION_EXPIRED,
             )
             self._auth_mode = "authenticated" if self._is_logged_in else "unauthenticated"
-        except Exception as exc:
+        except Exception as e:
             if allow_synthetic:
                 self._is_logged_in = True
                 self._auth_mode = "synthetic"
                 if self._logger:
                     self._logger.warning(
-                        f"10bet live login failed ({exc}); continuing with synthetic auth",
+                        f"10bet live login failed ({e}); continuing with synthetic auth",
                     )
                 return True
             if self._logger:
-                self._logger.error(f"10bet login failed: {exc}")
+                self._logger.error(f"10bet login failed: {e}")
             return False
 
         if self._is_logged_in and self._session_state_path and self._context is not None:
             try:
                 await self._context.storage_state(path=self._session_state_path)
-            except Exception as exc:  # pragma: no cover - defensive cleanup
+            except Exception as e:  # pragma: no cover - defensive cleanup
                 if self._logger:
-                    self._logger.warning(f"Failed to save 10bet session state: {exc}")
+                    self._logger.warning(f"Failed to save 10bet session state: {e}")
 
         if self._logger:
             self._logger.info(f"10bet login resolved using auth_mode={self._auth_mode}")

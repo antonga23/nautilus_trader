@@ -60,14 +60,34 @@ function inspectDockerContainer(name) {
   return {
     name,
     image: item?.Config?.Image || '',
+    entrypoint: Array.isArray(item?.Config?.Entrypoint) ? item.Config.Entrypoint.join(' ') : '',
     status: item?.State?.Status || '',
     running: Boolean(item?.State?.Running),
+    restarting: Boolean(item?.State?.Restarting),
+    dead: Boolean(item?.State?.Dead),
+    pid: Number.isFinite(item?.State?.Pid) ? item.State.Pid : null,
+    restartCount: Number.isFinite(item?.RestartCount) ? item.RestartCount : 0,
     startedAt: item?.State?.StartedAt || null,
     finishedAt: item?.State?.FinishedAt || null,
     exitCode: Number.isFinite(item?.State?.ExitCode) ? item.State.ExitCode : null,
     createdAt: item?.Created || null,
     command: Array.isArray(item?.Config?.Cmd) ? item.Config.Cmd.join(' ') : '',
+    logDriver: item?.HostConfig?.LogConfig?.Type || '',
+    logOptions: item?.HostConfig?.LogConfig?.Config || {},
   };
+}
+
+function inspectDockerTop(name) {
+  const result = runCommand('docker', ['top', name, '-eo', 'pid,ppid,etime,cmd']);
+  if (!result.ok) {
+    return [];
+  }
+  const lines = result.stdout.split(/\r?\n/).slice(1).map((line) => line.trim()).filter(Boolean);
+  return lines.map((line) => {
+    const match = line.match(/^(\S+)\s+(\S+)\s+(\S+)\s+(.+)$/);
+    if (!match) return { raw: line };
+    return { pid: match[1], ppid: match[2], elapsed: match[3], command: match[4] };
+  });
 }
 
 function readJsonBuffer(value, fallback = null) {
@@ -217,22 +237,32 @@ export function discoverLocalTradingNodes({ hostId = 'local-ec2', rootDir = '/op
       const manifestPath = path.join(nodeDir, 'manifest.runtime.json');
       const currentImagePath = path.join(nodeDir, 'current-image.txt');
       const previousImagePath = path.join(nodeDir, 'previous-image.txt');
+      const currentSessionPath = path.join(nodeDir, 'current-session.json');
       const status = readJson(statusPath, null);
       const heartbeat = readJson(heartbeatPath, null);
       const release = readJson(releasePath, null);
       const manifest = readJson(manifestPath, null);
-      const container = inspectDockerContainer(containerName) || {
+      const inspectedContainer = inspectDockerContainer(containerName);
+      const container = inspectedContainer || {
         name: containerName,
         image: '',
+        entrypoint: '',
         status: '',
         running: false,
+        restarting: false,
+        dead: false,
+        pid: null,
+        restartCount: 0,
         startedAt: null,
         finishedAt: null,
         exitCode: null,
         createdAt: null,
         command: '',
+        logDriver: '',
+        logOptions: {},
       };
-      container.exists = Boolean(inspectDockerContainer(containerName));
+      container.exists = Boolean(inspectedContainer);
+      container.processes = container.exists && container.running ? inspectDockerTop(containerName) : [];
       const heartbeatAt = heartbeat?.at || status?.startedAt || status?.at || null;
       const heartbeatMs = heartbeatAt ? Date.parse(heartbeatAt) : NaN;
       const isHeartbeatStale = Boolean(
@@ -240,6 +270,7 @@ export function discoverLocalTradingNodes({ hostId = 'local-ec2', rootDir = '/op
       );
       const manifestVenues = Array.isArray(manifest?.venues) ? manifest.venues.map(normalizeVenue) : [];
       const currentImage = readText(currentImagePath) || release?.image || container.image || '';
+      const currentSession = readJson(currentSessionPath, null);
       return {
         hostId,
         rootDir,
@@ -256,6 +287,10 @@ export function discoverLocalTradingNodes({ hostId = 'local-ec2', rootDir = '/op
         validationMode: manifest?.validation_mode !== false,
         currentImage,
         previousImage: readText(previousImagePath),
+        currentSession,
+        sessionId: currentSession?.sessionId || release?.sessionId || null,
+        logPath: currentSession?.logPath || release?.logPath || null,
+        eventLogPath: currentSession?.eventLogPath || release?.eventLogPath || null,
         status,
         heartbeat,
         heartbeatAt,
@@ -271,6 +306,7 @@ export function discoverLocalTradingNodes({ hostId = 'local-ec2', rootDir = '/op
           manifestPath,
           currentImagePath,
           previousImagePath,
+          currentSessionPath,
         },
         hasNodeDir,
       };
@@ -373,6 +409,10 @@ export function buildEffectiveTradingNodes({ hosts = [], registry = { nodes: [] 
         manifestPath: registryEntry?.manifestPath || discoveryEntry?.release?.manifest || discoveryEntry?.paths?.manifestPath || null,
         status: statusText,
         stateClass,
+        sessionId: discoveryEntry?.sessionId || discoveryEntry?.release?.sessionId || null,
+        logPath: discoveryEntry?.logPath || discoveryEntry?.release?.logPath || null,
+        eventLogPath: discoveryEntry?.eventLogPath || discoveryEntry?.release?.eventLogPath || null,
+        currentSession: discoveryEntry?.currentSession || null,
         managed: Boolean(registryEntry),
         source: registryEntry && discoveryEntry ? 'managed+discovered' : registryEntry ? 'managed' : 'discovered',
         heartbeatAt: discoveryEntry?.heartbeatAt || null,
@@ -483,4 +523,72 @@ export function readTradingNodeLogs({ containerName, mode = 'recent', limit = 20
     mode,
     limit,
   };
+}
+
+function readFileTail(filePath, limit = 200) {
+  const content = readText(filePath);
+  if (!content) return '';
+  const lines = content.split(/\r?\n/);
+  return lines.slice(-Math.max(1, Number(limit) || 200)).join('\n');
+}
+
+function discoverSessionDirs(nodeDir) {
+  const sessionsDir = path.join(nodeDir || '', 'sessions');
+  if (!sessionsDir || !fs.existsSync(sessionsDir)) return [];
+  return fs.readdirSync(sessionsDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => path.join(sessionsDir, entry.name))
+    .sort();
+}
+
+export function listTradingNodeSessions(node) {
+  const nodeDir = node?.discovery?.nodeDir || node?.paths?.nodeDir || '';
+  const currentSessionId = node?.sessionId || node?.currentSession?.sessionId || null;
+  return discoverSessionDirs(nodeDir).map((sessionDir) => {
+    const sessionId = path.basename(sessionDir);
+    const eventLogPath = path.join(sessionDir, 'events.jsonl');
+    const logPath = path.join(sessionDir, 'node.log');
+    const eventsText = readText(eventLogPath);
+    const events = eventsText ? eventsText.split(/\r?\n/).filter(Boolean).map((line) => readJsonBuffer(line, { raw: line })) : [];
+    const stat = fs.existsSync(logPath) ? fs.statSync(logPath) : null;
+    return {
+      sessionId,
+      active: currentSessionId === sessionId,
+      sessionDir,
+      logPath,
+      eventLogPath,
+      startedAt: events[0]?.at || null,
+      updatedAt: stat ? stat.mtime.toISOString() : events.at(-1)?.at || null,
+      eventCount: events.length,
+      logBytes: stat ? stat.size : 0,
+      lastEvent: events.at(-1) || null,
+    };
+  }).sort((a, b) => String(b.startedAt || b.sessionId).localeCompare(String(a.startedAt || a.sessionId)));
+}
+
+export function readTradingNodeSession(node, sessionId = 'current') {
+  const sessions = listTradingNodeSessions(node);
+  const selected = sessionId === 'current'
+    ? sessions.find((session) => session.active) || sessions[0]
+    : sessions.find((session) => session.sessionId === sessionId);
+  if (!selected) return null;
+  const eventsText = readText(selected.eventLogPath);
+  const events = eventsText ? eventsText.split(/\r?\n/).filter(Boolean).map((line) => readJsonBuffer(line, { raw: line })) : [];
+  return { ...selected, events };
+}
+
+export function readTradingNodeSessionLogs({ node, containerName, sessionId = 'current', limit = 200, cursor = '' } = {}) {
+  const session = readTradingNodeSession(node, sessionId);
+  if (session?.logPath && fs.existsSync(session.logPath)) {
+    return {
+      content: readFileTail(session.logPath, limit),
+      cursor: new Date().toISOString(),
+      source: 'session-log',
+      sessionId: session.sessionId,
+      logPath: session.logPath,
+      mode: 'recent',
+      limit,
+    };
+  }
+  return readTradingNodeLogs({ containerName, mode: cursor ? 'follow' : 'recent', limit, cursor });
 }

@@ -36,10 +36,13 @@ import {
   buildEffectiveTradingNodes,
   defaultLocalHostRecord,
   discoverLocalTradingNodes,
+  listTradingNodeSessions,
   mergeTradingNodeManifest,
   readTradingHostRegistry,
   readTradingNodeLogs,
   readTradingNodeRegistry,
+  readTradingNodeSession,
+  readTradingNodeSessionLogs,
   writeTradingHostRegistry,
   writeTradingNodeDiscoverySnapshot,
   writeTradingNodeRegistry,
@@ -56,6 +59,9 @@ const SYMPHONY_PORT = Number(ENV.SYMPHONY_PORT || 4000);
 // accidental mutation of prod Symphony/Linear/GitHub state from the dev plane.
 // Accepts "1", "true", "yes" (case-insensitive) as truthy.
 const CONTROL_PLANE_READ_ONLY = /^(1|true|yes)$/i.test(String(ENV.CONTROL_PLANE_READ_ONLY || '').trim());
+const CONTROL_PLANE_DISABLE_SECRET_MANAGER = /^(1|true|yes)$/i.test(
+  String(ENV.CONTROL_PLANE_DISABLE_SECRET_MANAGER || '').trim(),
+);
 const READ_ONLY_SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 const LINEAR_API_KEY = ENV.LINEAR_API_KEY || '';
 const GITHUB_TOKEN = ENV.GITHUB_TOKEN || '';
@@ -949,6 +955,9 @@ function runAwsCli(args, input = null) {
 }
 
 function getSecretJson() {
+  if (CONTROL_PLANE_DISABLE_SECRET_MANAGER) {
+    return {};
+  }
   const now = Date.now();
   if (secretCache.value && now - secretCache.fetchedAt < 15_000) {
     return secretCache.value;
@@ -2343,6 +2352,9 @@ async function fetchSymphonyState() {
 }
 
 async function fetchTeamStates() {
+  if (!LINEAR_API_KEY) {
+    return { team: null, nodes: [], stateByName: {} };
+  }
   const query = `
     query($teamId: String!) {
       team(id: $teamId) {
@@ -2367,6 +2379,9 @@ async function fetchTeamStates() {
 }
 
 async function fetchProjectIssues() {
+  if (!LINEAR_API_KEY) {
+    return [];
+  }
   const query = `
     query($projectId: String!) {
       project(id: $projectId) {
@@ -3592,11 +3607,9 @@ async function handleTradingNodeDetail(res, nodeId) {
       manifest: node.discovery?.manifest || node.registry?.lastAppliedConfig || null,
       effectiveConfig: node.registry?.lastAppliedConfig || node.discovery?.manifest || null,
       summary: summarizeTradingNodesSnapshot(snapshot),
-      logs: readTradingNodeLogs({
-        containerName: node.containerName,
-        mode: 'recent',
-        limit: 200,
-      }),
+      sessions: listTradingNodeSessions(node),
+      currentSession: readTradingNodeSession(node, 'current'),
+      logs: readTradingNodeSessionLogs({ node, containerName: node.containerName, limit: 200 }),
     });
   } catch (error) {
     sendJson(res, 500, { error: error.message });
@@ -3613,16 +3626,97 @@ async function handleTradingNodeLogs(res, nodeId, requestUrl) {
     }
     const limit = Number.parseInt(requestUrl.searchParams.get('limit') || '200', 10);
     const mode = String(requestUrl.searchParams.get('mode') || 'recent').trim();
-    const result = readTradingNodeLogs({
+    const sessionId = String(requestUrl.searchParams.get('sessionId') || 'current');
+    const cursor = String(requestUrl.searchParams.get('cursor') || '');
+    const result = readTradingNodeSessionLogs({
+      node,
       containerName: node.containerName,
-      mode,
+      sessionId,
       limit: Number.isFinite(limit) ? limit : 200,
-      cursor: String(requestUrl.searchParams.get('cursor') || ''),
+      cursor,
     });
+    if (result.source === 'docker') {
+      Object.assign(result, readTradingNodeLogs({
+        containerName: node.containerName,
+        mode,
+        limit: Number.isFinite(limit) ? limit : 200,
+        cursor,
+      }));
+    }
     sendJson(res, 200, { nodeId: node.nodeId, ...result });
   } catch (error) {
     sendJson(res, 500, { error: error.message });
   }
+}
+
+async function handleTradingNodeSessionList(res, nodeId) {
+  try {
+    const snapshot = loadTradingNodeState();
+    const node = findTradingNode(snapshot, nodeId);
+    if (!node) {
+      sendJson(res, 404, { error: `Unknown trading node: ${nodeId}` });
+      return;
+    }
+    sendJson(res, 200, { nodeId: node.nodeId, sessions: listTradingNodeSessions(node) });
+  } catch (error) {
+    sendJson(res, 500, { error: error.message });
+  }
+}
+
+async function handleTradingNodeSessionDetail(res, nodeId, sessionId) {
+  try {
+    const snapshot = loadTradingNodeState();
+    const node = findTradingNode(snapshot, nodeId);
+    if (!node) {
+      sendJson(res, 404, { error: `Unknown trading node: ${nodeId}` });
+      return;
+    }
+    const session = readTradingNodeSession(node, sessionId);
+    if (!session) {
+      sendJson(res, 404, { error: `Unknown trading node session: ${sessionId}` });
+      return;
+    }
+    sendJson(res, 200, { nodeId: node.nodeId, session });
+  } catch (error) {
+    sendJson(res, 500, { error: error.message });
+  }
+}
+
+function handleTradingNodeLogStream(req, res, nodeId, requestUrl) {
+  const sessionId = String(requestUrl.searchParams.get('sessionId') || 'current');
+  const limit = Number.parseInt(requestUrl.searchParams.get('limit') || '200', 10);
+  const initialSnapshot = loadTradingNodeState();
+  const initialNode = findTradingNode(initialSnapshot, nodeId);
+  if (!initialNode) {
+    sendJson(res, 404, { error: `Unknown trading node: ${nodeId}` });
+    return;
+  }
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-store',
+    Connection: 'keep-alive',
+  });
+
+  let lastContent = '';
+  const emit = () => {
+    const snapshot = loadTradingNodeState();
+    const node = findTradingNode(snapshot, nodeId) || initialNode;
+    const result = readTradingNodeSessionLogs({
+      node,
+      containerName: node.containerName,
+      sessionId,
+      limit: Number.isFinite(limit) ? limit : 200,
+    });
+    if (result.content !== lastContent) {
+      lastContent = result.content;
+      res.write(`event: logs\ndata: ${JSON.stringify(result)}\n\n`);
+    }
+  };
+
+  emit();
+  const timer = setInterval(emit, 2000);
+  req.on('close', () => clearInterval(timer));
 }
 
 async function handleTradingNodeRenderConfig(req, res, nodeId, requestUrl) {
@@ -4347,24 +4441,46 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (req.method === 'GET' && pathname === '/control/api/nodes') {
+  if (req.method === 'GET' && (pathname === '/control/api/nodes' || pathname === '/control/api/trading-nodes')) {
     await handleTradingNodeList(res);
     return;
   }
 
-  const tradingNodeLogsMatch = pathname.match(/^\/control\/api\/nodes\/([^/]+)\/logs$/);
+  const tradingNodeLogsMatch = pathname.match(/^\/control\/api\/(?:nodes|trading-nodes)\/([^/]+)\/logs$/);
   if (req.method === 'GET' && tradingNodeLogsMatch) {
     await handleTradingNodeLogs(res, decodeURIComponent(tradingNodeLogsMatch[1]), requestUrl);
     return;
   }
 
-  const tradingNodeRenderConfigMatch = pathname.match(/^\/control\/api\/nodes\/([^/]+)\/render-config$/);
+  const tradingNodeLogStreamMatch = pathname.match(/^\/control\/api\/(?:nodes|trading-nodes)\/([^/]+)\/logs\/stream$/);
+  if (req.method === 'GET' && tradingNodeLogStreamMatch) {
+    handleTradingNodeLogStream(req, res, decodeURIComponent(tradingNodeLogStreamMatch[1]), requestUrl);
+    return;
+  }
+
+  const tradingNodeSessionsMatch = pathname.match(/^\/control\/api\/(?:nodes|trading-nodes)\/([^/]+)\/sessions$/);
+  if (req.method === 'GET' && tradingNodeSessionsMatch) {
+    await handleTradingNodeSessionList(res, decodeURIComponent(tradingNodeSessionsMatch[1]));
+    return;
+  }
+
+  const tradingNodeSessionDetailMatch = pathname.match(/^\/control\/api\/(?:nodes|trading-nodes)\/([^/]+)\/sessions\/([^/]+)$/);
+  if (req.method === 'GET' && tradingNodeSessionDetailMatch) {
+    await handleTradingNodeSessionDetail(
+      res,
+      decodeURIComponent(tradingNodeSessionDetailMatch[1]),
+      decodeURIComponent(tradingNodeSessionDetailMatch[2]),
+    );
+    return;
+  }
+
+  const tradingNodeRenderConfigMatch = pathname.match(/^\/control\/api\/(?:nodes|trading-nodes)\/([^/]+)\/render-config$/);
   if ((req.method === 'GET' || req.method === 'POST') && tradingNodeRenderConfigMatch) {
     await handleTradingNodeRenderConfig(req, res, decodeURIComponent(tradingNodeRenderConfigMatch[1]), requestUrl);
     return;
   }
 
-  const tradingNodeActionMatch = pathname.match(/^\/control\/api\/nodes\/([^/]+)\/(start|stop|restart)$/);
+  const tradingNodeActionMatch = pathname.match(/^\/control\/api\/(?:nodes|trading-nodes)\/([^/]+)\/(start|stop|restart)$/);
   if (req.method === 'POST' && tradingNodeActionMatch) {
     await handleTradingNodeAction(
       req,
@@ -4375,7 +4491,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  const tradingNodeDetailMatch = pathname.match(/^\/control\/api\/nodes\/([^/]+)$/);
+  const tradingNodeDetailMatch = pathname.match(/^\/control\/api\/(?:nodes|trading-nodes)\/([^/]+)$/);
   if (req.method === 'GET' && tradingNodeDetailMatch) {
     await handleTradingNodeDetail(res, decodeURIComponent(tradingNodeDetailMatch[1]));
     return;

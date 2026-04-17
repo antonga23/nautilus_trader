@@ -61,6 +61,7 @@ class TenBetExecutionClient(LiveExecutionClient):
     The client supports two submission modes:
     - validation mode, where it records a synthetic acceptance for CI/dry runs
     - browser mode, where it attempts to click through the bet slip flow
+
     """
 
     def __init__(
@@ -218,8 +219,8 @@ class TenBetExecutionClient(LiveExecutionClient):
             await self._open_bet_slip_if_present(page)
             await self._fill_stake_if_present(page, stake)
             await self._click_submit_if_present(page)
-        except Exception as exc:
-            self._log.warning(f"10bet browser submission failed: {exc}")
+        except Exception as e:
+            self._log.warning(f"10bet browser submission failed: {e}")
             return None
 
         confirmation = await self._read_confirmation(page)

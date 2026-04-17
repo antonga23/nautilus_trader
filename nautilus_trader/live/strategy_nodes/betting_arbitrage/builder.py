@@ -71,7 +71,8 @@ def render_trading_node_config_json(config: TradingNodeConfig) -> bytes:
 
 
 def write_rendered_node_config(
-    config: TradingNodeConfig, output_path: str | os.PathLike[str]
+    config: TradingNodeConfig,
+    output_path: str | os.PathLike[str],
 ) -> Path:
     destination = Path(output_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -194,7 +195,9 @@ def _build_sxbet_exec_importable(
         "api_key": _resolve_secret(prefix, "API_KEY", manifest.allow_dummy_credentials),
         "private_key": _resolve_secret(prefix, "PRIVATE_KEY", manifest.allow_dummy_credentials),
         "wallet_address": _resolve_secret(
-            prefix, "WALLET_ADDRESS", manifest.allow_dummy_credentials
+            prefix,
+            "WALLET_ADDRESS",
+            manifest.allow_dummy_credentials,
         ),
         "api_url": venue.api_url,
         "ws_url": venue.ws_url,
@@ -312,7 +315,8 @@ def default_render_paths(manifest: BettingArbitrageNodeManifest) -> dict[str, Pa
 
 
 def write_manifest_snapshot(
-    manifest: BettingArbitrageNodeManifest, output_path: str | os.PathLike[str]
+    manifest: BettingArbitrageNodeManifest,
+    output_path: str | os.PathLike[str],
 ) -> Path:
     destination = Path(output_path)
     destination.parent.mkdir(parents=True, exist_ok=True)

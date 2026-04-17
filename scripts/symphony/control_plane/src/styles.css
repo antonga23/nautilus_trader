@@ -124,11 +124,52 @@ tr:hover td { background: rgba(15, 118, 110, 0.035); }
 .node-toolbar .action-row { margin-top: 0; }
 .node-list-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .node-log-panel .log-output { height: 380px; }
+.node-topbar { background: linear-gradient(135deg, rgba(18, 60, 57, 0.08), rgba(154, 52, 18, 0.08)); border-bottom: 1px solid var(--line); }
+.node-ops-layout, .node-drilldown-layout { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 18px; padding: 0 42px 42px; align-items: start; }
+.full-width { grid-column: 1 / -1; }
+.node-rail { position: sticky; top: 16px; display: grid; gap: 12px; background: #16130f; color: #f7efe1; border: 1px solid #2f281f; border-radius: 18px; padding: 14px; box-shadow: var(--shadow); }
+.node-rail-header, .node-host-group summary, .node-rail-item, .session-pill { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.node-host-group { border-top: 1px solid rgba(255, 255, 255, 0.12); padding-top: 10px; }
+.node-host-group summary { cursor: pointer; font-weight: 800; }
+.node-rail-list { display: grid; gap: 8px; margin-top: 10px; }
+.node-rail-item, .session-pill { width: 100%; text-align: left; border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 14px; padding: 10px; background: rgba(255, 255, 255, 0.04); color: inherit; font: inherit; }
+.node-rail-item { cursor: pointer; justify-content: flex-start; }
+.node-rail-item.active, .session-pill.active { border-color: #7dd3fc; background: rgba(14, 116, 144, 0.28); }
+.node-rail-item small, .session-pill small { display: block; color: #c8bca7; margin-top: 3px; }
+.node-main-panel { display: grid; gap: 16px; min-width: 0; }
+.node-card-stack { display: grid; gap: 12px; }
+.node-summary-card { border: 1px solid var(--line); border-radius: 18px; background: var(--panel); overflow: hidden; }
+.node-summary-card.selected { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.12); }
+.node-summary-card summary { display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: center; padding: 14px; cursor: pointer; }
+.node-summary-title { display: grid; gap: 3px; }
+.node-summary-title span { color: var(--muted); font-size: 13px; }
+.node-card-body { border-top: 1px solid var(--line); padding: 14px; display: grid; gap: 12px; }
+.node-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
+.node-facts > div { display: grid; gap: 4px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel-2); padding: 10px; min-width: 0; }
+.node-facts span { color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; font-size: 11px; }
+.node-facts strong { overflow-wrap: anywhere; }
+.compact-facts { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+.status-dot, .stage-icon { width: 10px; height: 10px; border-radius: 999px; display: inline-block; flex: 0 0 auto; background: var(--muted); }
+.status-success, .stage-success { background: var(--good); box-shadow: 0 0 0 5px rgba(2, 122, 72, 0.13); }
+.status-warning, .stage-pending { background: var(--warn); box-shadow: 0 0 0 5px rgba(181, 71, 8, 0.14); }
+.status-error, .stage-failed { background: var(--alert); box-shadow: 0 0 0 5px rgba(180, 35, 24, 0.13); }
+.status-unknown, .stage-empty { background: var(--muted); }
+.stage-list { display: grid; gap: 8px; }
+.stage-row { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); }
+.stage-row summary { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; padding: 12px; cursor: pointer; }
+.stage-body { border-top: 1px solid var(--line); padding: 10px 12px; }
+.log-toolbar { display: grid; grid-template-columns: minmax(200px, 1fr) auto auto; gap: 8px; margin-bottom: 10px; }
+.node-live-log { min-height: 520px; background: #07090d; color: #d1e7ff; border-color: #202734; }
+.session-pill { justify-content: flex-start; }
+.drilldown-rail { gap: 14px; }
 
 @media (max-width: 820px) {
   .topbar { flex-direction: column; padding: 24px 18px 14px; }
   .topnav { justify-content: flex-start; min-width: 0; }
   .layout { padding: 0 18px 24px; }
+  .node-ops-layout, .node-drilldown-layout { grid-template-columns: 1fr; padding: 0 18px 24px; }
+  .node-rail { position: relative; top: auto; }
+  .log-toolbar { grid-template-columns: 1fr; }
   .panel-header { flex-direction: column; }
   .run-detail-grid { grid-template-columns: 1fr; }
   .run-summary, .log-card { grid-column: auto; }
