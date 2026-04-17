@@ -11,6 +11,7 @@
 - GitHub Actions runner service: `actions.runner.antonga23-cloudbet-market-maker.<runner-name>.service`
 - Docker service: `docker.service`
 - Optional hygiene timer if installed: `actions-runner-hygiene.timer`
+- Optional hygiene config: `/etc/cloudbet/actions-runner-hygiene.conf`
 
 Discover the exact runner service name with:
 
@@ -51,6 +52,12 @@ The health script reports:
 
 - inspect runner usage from a checkout of this repository:
   `RUNNER_ROLE=ci ACTIONS_RUNNER_ROOT=/opt/actions-runner GITHUB_RUNNER_SERVICE_NAME="actions.runner.antonga23-cloudbet-market-maker.<runner-name>.service" bash scripts/ci/runner_health_check.sh`
+- install the hourly hygiene timer from any checkout of this repository:
+  `sudo bash scripts/ci/install_runner_hygiene.sh`
+- run the installed cleanup job manually:
+  `sudo /usr/local/bin/cloudbet-self-hosted-runner-cleanup`
+- the installed hygiene service reads `/etc/cloudbet/self-hosted-runner.conf` for `RUNNER_ROOT`, so it does not depend on `/srv/symphony/control-repo`
+- if the host needs non-default cleanup paths, add environment overrides to `/etc/cloudbet/actions-runner-hygiene.conf`
 - remove stale runner diagnostics manually if `_diag` grows unexpectedly
 - remove stale runner `_work/_temp` content only while the runner service is stopped
 - prune stopped containers and unused images if disk pressure rises

@@ -1,8 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+runner_layout_config="${RUNNER_LAYOUT_CONFIG:-/etc/cloudbet/self-hosted-runner.conf}"
+runner_hygiene_config="${RUNNER_HYGIENE_CONFIG:-/etc/cloudbet/actions-runner-hygiene.conf}"
+
+if [[ -f "$runner_layout_config" ]]; then
+  # shellcheck disable=SC1090
+  source "$runner_layout_config"
+fi
+
+if [[ -f "$runner_hygiene_config" ]]; then
+  # shellcheck disable=SC1090
+  source "$runner_hygiene_config"
+fi
+
 runner_role="${RUNNER_ROLE:-generic}"
-runner_root="${ACTIONS_RUNNER_ROOT:-/home/ubuntu/actions-runner}"
+runner_root="${ACTIONS_RUNNER_ROOT:-${RUNNER_ROOT:-/home/ubuntu/actions-runner}}"
 runner_diag_root="${RUNNER_DIAG_ROOT:-$runner_root/_diag}"
 runner_work_root="${RUNNER_WORK_ROOT:-$runner_root/_work}"
 runner_local_cache_root="${RUNNER_LOCAL_CACHE_ROOT:-$runner_work_root/.ci-cache}"

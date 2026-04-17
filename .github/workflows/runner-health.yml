@@ -12,6 +12,12 @@ jobs:
     timeout-minutes: 10
     runs-on: [self-hosted, linux, x64, cloudbet-market-maker, ci, gcp, ubuntu24]
     steps:
+      - name: Repair self-hosted workspace
+        shell: bash
+        env:
+          ACTIONS_RUNNER_ROOT: /opt/actions-runner
+        run: bash scripts/ci/repair_self_hosted_workspace.sh
+
       - name: Checkout repository
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
