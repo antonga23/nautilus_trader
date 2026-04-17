@@ -24,7 +24,6 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
   validate-manifests:
@@ -84,6 +83,9 @@ jobs:
     timeout-minutes: 120
     needs: [validate-manifests]
     runs-on: [self-hosted, linux, x64, cloudbet-market-maker, ci, gcp, ubuntu24]
+    permissions:
+      contents: read
+      packages: write
     outputs:
       image_ref: ${{ steps.meta.outputs.image_ref }}
     steps:
@@ -117,13 +119,22 @@ jobs:
 
       - name: Resolve image reference
         id: meta
+        env:
+          INPUT_IMAGE_TAG: ${{ github.event.inputs.image_tag }}
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
         run: |
-          if [ -n "${{ github.event.inputs.image_tag }}" ]; then
-            tag="${{ github.event.inputs.image_tag }}"
+          if [ -n "$INPUT_IMAGE_TAG" ]; then
+            case "$INPUT_IMAGE_TAG" in
+              *[!A-Za-z0-9._-]*)
+                echo "Invalid image tag override: $INPUT_IMAGE_TAG" >&2
+                exit 1
+                ;;
+            esac
+            tag="$INPUT_IMAGE_TAG"
           else
             tag="${GITHUB_SHA::12}"
           fi
-          image_ref="ghcr.io/${{ github.repository_owner }}/cloudbet-market-maker/betting-arbitrage-node:${tag}"
+          image_ref="ghcr.io/${REPOSITORY_OWNER}/cloudbet-market-maker/betting-arbitrage-node:${tag}"
           echo "image_ref=$image_ref" >> "$GITHUB_OUTPUT"
 
       - name: Build and push strategy-node image
@@ -177,8 +188,18 @@ jobs:
           printf '%s' "$STRATEGY_NODE_SSH_KEY" > strategy-node.key
 
       - name: Upload manifest and deploy script
+        env:
+          INPUT_MANIFEST_PATH: ${{ github.event.inputs.manifest_path }}
         run: |
-          manifest_path="${{ github.event.inputs.manifest_path || 'deploy/strategy_nodes/betting_arbitrage/sxbet-single-venue.json' }}"
+          manifest_path="${INPUT_MANIFEST_PATH:-deploy/strategy_nodes/betting_arbitrage/sxbet-single-venue.json}"
+          case "$manifest_path" in
+            deploy/strategy_nodes/*.json) ;;
+            *)
+              echo "Manifest path must stay under deploy/strategy_nodes and point to a JSON file" >&2
+              exit 1
+              ;;
+          esac
+          test -f "$manifest_path"
           scp -i strategy-node.key -o StrictHostKeyChecking=no "$manifest_path" "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST:/tmp/strategy-node-manifest.json"
           scp -i strategy-node.key -o StrictHostKeyChecking=no scripts/deploy/strategy_nodes/deploy_betting_strategy_node.sh "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST:/tmp/deploy_betting_strategy_node.sh"
           scp -i strategy-node.key -o StrictHostKeyChecking=no scripts/ci/runner_health_check.sh "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST:/tmp/runner_health_check.sh"
