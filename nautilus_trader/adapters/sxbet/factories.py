@@ -40,16 +40,17 @@ class SXBetLiveDataClientFactory:
     @staticmethod
     def create(
         loop: asyncio.AbstractEventLoop,
-        client_id: str,
+        name: str,
+        config: SXBetDataClientConfig,
         msgbus: MessageBus,
         cache: Cache,
         clock: LiveClock,
-        logger: Logger,
-        config: SXBetDataClientConfig,
     ) -> SXBetDataClient:
         """
         Create a new SX.bet data client.
         """
+        logger = Logger(name=f"SXBetDataClient-{name}")
+
         # Create HTTP client
         http_client = SXBetHttpClient(
             api_key=config.api_key,
@@ -89,16 +90,17 @@ class SXBetLiveExecClientFactory:
     @staticmethod
     def create(
         loop: asyncio.AbstractEventLoop,
-        client_id: str,
+        name: str,
+        config: SXBetExecClientConfig,
         msgbus: MessageBus,
         cache: Cache,
         clock: LiveClock,
-        logger: Logger,
-        config: SXBetExecClientConfig,
     ) -> SXBetExecutionClient:
         """
         Create a new SX.bet execution client.
         """
+        logger = Logger(name=f"SXBetExecutionClient-{name}")
+
         # Create HTTP client
         http_client = SXBetHttpClient(
             api_key=config.api_key,

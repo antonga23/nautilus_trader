@@ -91,7 +91,21 @@ release_meta="$node_dir/release.json"
 previous_image_file="$node_dir/previous-image.txt"
 current_image_file="$node_dir/current-image.txt"
 
-mkdir -p "$node_dir"
+ensure_dir() {
+  local target="$1"
+  if mkdir -p "$target" 2>/dev/null; then
+    return 0
+  fi
+  if command -v sudo >/dev/null 2>&1; then
+    sudo install -d -o "$(id -un)" -g "$(id -gn)" -m 775 "$target"
+    return 0
+  fi
+  echo "Cannot create directory: $target" >&2
+  exit 1
+}
+
+ensure_dir "$root_dir"
+ensure_dir "$node_dir"
 
 python3 - "$manifest_path" "$runtime_manifest" <<'PY'
 import json
@@ -131,6 +145,7 @@ run_args=(
   run -d
   --restart unless-stopped
   --name "$container_name"
+  --entrypoint python3
   -v "$node_dir:/var/lib/nautilus-node"
   -v "$runtime_manifest:/srv/node/manifest.json:ro"
 )
@@ -141,6 +156,8 @@ fi
 
 run_args+=(
   "$image_ref"
+  -m
+  nautilus_trader.live.strategy_nodes.betting_arbitrage
   run
   --manifest /srv/node/manifest.json
 )

@@ -32,6 +32,14 @@ COPY README.md ./
 RUN cargo build --lib --release --all-features
 RUN uv build --wheel
 RUN uv pip install --system dist/*.whl
+RUN uv pip install --system \
+    "aiohttp==3.12.14,<4.0.0" \
+    "py-clob-client==0.30.0,<1.0.0"
+RUN python3 - <<'PY'
+import aiohttp
+import nautilus_trader.adapters.polymarket  # noqa: F401
+import nautilus_trader.adapters.sxbet  # noqa: F401
+PY
 RUN find /usr/local/lib/python3.13/site-packages -name "*.pyc" -exec rm -f {} \;
 
 FROM base AS runtime
