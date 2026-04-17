@@ -109,11 +109,64 @@ Authenticated image pulls for the remote host also require `STRATEGY_NODE_GHCR_U
 
 Use this mode for non-production control-plane deployments that should expose live state without any path to mutate production Symphony, Linear, or GitHub state.
 
+This includes strategy-node operations:
+
+- `GET /control/api/deployments/catalog` remains available for manifest discovery.
+- `GET /control/api/deployments/requests` remains available for request history.
+- `POST /control/api/deployments/requests` is blocked in read-only mode.
+
 Local smoke test:
 
 ```sh
 node --test scripts/symphony/control_plane/__tests__/read_only.test.mjs
 ```
+
+## Trading Node Ops V1
+
+The first trading-node operations release should treat the EC2 host as the live runtime source of truth and a durable registry as the operator record.
+
+- Durable node and host records belong under `/srv/symphony/worker-state`.
+- Runtime truth comes from host discovery:
+  - Docker containers
+  - `/opt/cloudbet/strategy-nodes/*`
+  - `status.json`
+  - `heartbeat.json`
+  - `release.json`
+  - `manifest.runtime.json`
+  - `current-image.txt`
+- Effective node state should merge registry intent with discovered runtime state.
+- V1 lifecycle actions are local-host only:
+  - `start`
+  - `stop`
+  - `restart`
+  - `restart with bounded override`
+- Restart overrides must be narrow and operator-safe:
+  - logging level
+  - strategy knobs
+  - venue timing/filter knobs
+  - validation mode
+  - execution enablement flags
+  - image ref override
+- Credentials stay externalized in env/Secrets Manager payloads and are never edited from the UI.
+- Multi-host discovery should be designed into the registry schema now, but only the current EC2 host is active in this release.
+
+Control-plane UI routes:
+
+- `/control` for the mission-control view
+- `/nodes` for trading-node inventory
+- `/nodes/:nodeId` for node detail, logs, lifecycle actions, and config preview
+
+Trading-node API surface:
+
+- `GET /control/api/nodes`
+- `GET /control/api/nodes/:nodeId`
+- `GET /control/api/nodes/:nodeId/logs?mode=recent|follow&limit=...`
+- `POST /control/api/nodes/:nodeId/start`
+- `POST /control/api/nodes/:nodeId/stop`
+- `POST /control/api/nodes/:nodeId/restart`
+- `POST /control/api/nodes/:nodeId/render-config`
+
+`render-config` remains available in read-only mode because it is a non-mutating preview. Start/stop/restart are blocked when `CONTROL_PLANE_READ_ONLY=1`.
 
 ## Mixed-Venue Deploy Start And Monitor
 

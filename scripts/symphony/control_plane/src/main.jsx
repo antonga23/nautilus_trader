@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Activity, AlertTriangle, Bot, Braces, CheckCircle2, Clock3, GitBranch, KeyRound, PauseCircle, PlayCircle, RefreshCw, Send, Shield, SquareArrowOutUpRight, TerminalSquare, Workflow } from 'lucide-react';
+import { BrowserRouter, NavLink, Navigate, Route, Routes, useNavigate, useParams } from 'react-router-dom';
 import { Button, Card, Empty, Input, Panel, Pill, Select, Table, Textarea } from './components/ui.jsx';
 import { coerceList, formatDateTime, formatDuration, formatNumber, formatRelative, getJson, pillStatus } from './lib/api.js';
 import './styles.css';
@@ -8,6 +9,96 @@ import './styles.css';
 const DEFAULT_FILTERS = { issue: '', worker: '', eventType: '', level: '', search: '', limit: 300 };
 const DELIVERY_MODES = ['deliver_after_current_step', 'interrupt_now', 'deliver_when_idle'];
 const RUNNING_STATUSES = new Set(['starting', 'running', 'interrupted']);
+const NODE_LOG_LIMIT = 500;
+
+function asArray(value) {
+  if (Array.isArray(value)) return value;
+  if (Array.isArray(value?.nodes)) return value.nodes;
+  if (Array.isArray(value?.items)) return value.items;
+  if (Array.isArray(value?.entries)) return value.entries;
+  if (Array.isArray(value?.data)) return value.data;
+  return [];
+}
+
+function parseJsonOrNull(value) {
+  const text = String(value || '').trim();
+  if (!text) return null;
+  return JSON.parse(text);
+}
+
+function formatNodeState(node) {
+  return node?.state || node?.status || node?.runtimeState || node?.health || node?.containerState || 'unknown';
+}
+
+function normalizeNode(node = {}) {
+  const source = node.source || node.discoverySource || (node.managed ? 'registry' : 'discovery');
+  const venues = asArray(node.venues || node.venueNames || node.enabledVenues).map((venue) => {
+    if (typeof venue === 'string') return venue;
+    if (venue && typeof venue === 'object') {
+      return venue.venue || venue.clientKey || venue.client_key || JSON.stringify(venue);
+    }
+    return String(venue || '');
+  }).filter(Boolean);
+  return {
+    raw: node,
+    nodeId: node.nodeId || node.id || node.name || node.containerName || 'unknown',
+    displayName: node.displayName || node.title || node.nodeId || node.id || node.name || 'Unknown node',
+    hostId: node.hostId || node.host || node.hostName || 'local',
+    hostName: node.hostName || node.hostDisplayName || node.host || node.hostId || 'local',
+    hostKind: node.hostKind || node.executorKind || node.kind || 'local',
+    strategyId: node.strategyId || node.strategy || node.strategyName || 'betting_arbitrage',
+    manifestId: node.manifestId || node.manifestFile || node.manifest || 'unknown',
+    containerName: node.containerName || node.container || node.name || 'unknown',
+    image: node.image || node.imageRef || node.currentImage || node.runtime?.image || node.release?.image || 'unknown',
+    venues,
+    source,
+    managed: node.managed !== undefined ? Boolean(node.managed) : source === 'registry' || source.includes('managed'),
+    intendedState: node.intendedState || node.desiredState || node.requestedState || 'running',
+    lastHeartbeatAt: node.lastHeartbeatAt || node.heartbeatAt || node.lastSeenAt || node.observedAt || null,
+    updatedAt: node.updatedAt || node.discoveredAt || node.syncedAt || node.lastSeenAt || null,
+    runtimeConfigPath: node.runtimeConfigPath || node.renderedConfigPath || node.configPath || null,
+    logPath: node.logPath || node.logsPath || null,
+    registry: node.registry || null,
+    discovery: node.discovery || node.observed || null,
+    release: node.release || null,
+    config: node.config || node.runtimeConfig || node.manifestRuntime || null,
+    rawNode: node
+  };
+}
+
+function normalizeNodesPayload(payload) {
+  return asArray(payload).map((node) => normalizeNode(node));
+}
+
+function normalizeNodeDetail(payload, nodeId) {
+  const node = payload?.node || payload?.item || payload?.data || payload || {};
+  const summary = normalizeNode({ ...node, nodeId: node.nodeId || nodeId });
+  return {
+    ...payload,
+    node: summary,
+    registry: payload?.registry || payload?.registryEntry || node.registry || null,
+    registryEntry: payload?.registryEntry || payload?.registry || node.registry || null,
+    discovery: payload?.discovery || payload?.discoveryEntry || node.discovery || null,
+    discoveryEntry: payload?.discoveryEntry || payload?.discovery || node.discovery || null,
+    logs: payload?.logs || node.logs || null,
+    configPreview: payload?.configPreview || node.configPreview || null,
+    effectiveConfig: payload?.effectiveConfig || payload?.manifest || node.effectiveConfig || null,
+    history: asArray(payload?.history || node.history),
+  };
+}
+
+function normalizeNodeLogText(payload) {
+  if (typeof payload === 'string') return payload;
+  if (!payload || typeof payload !== 'object') return String(payload || '');
+  if (typeof payload.content === 'string') return payload.content;
+  if (typeof payload.chunk === 'string') return payload.chunk;
+  if (typeof payload.text === 'string') return payload.text;
+  if (typeof payload.log === 'string') return payload.log;
+  if (typeof payload.output === 'string') return payload.output;
+  if (Array.isArray(payload.lines)) return payload.lines.join('\n');
+  if (Array.isArray(payload.entries)) return payload.entries.map((entry) => entry.line || entry.message || JSON.stringify(entry)).join('\n');
+  return JSON.stringify(payload, null, 2);
+}
 
 function Metric({ label, value, detail, icon: Icon }) {
   return (
@@ -402,7 +493,7 @@ function RunDetail({ detail, overview, logStreamId, setLogStreamId, logContent, 
   );
 }
 
-function App() {
+function MissionControlPage() {
   const [overview, setOverview] = useState(null);
   const [timeline, setTimeline] = useState([]);
   const [timelineFilters, setTimelineFilters] = useState(DEFAULT_FILTERS);
@@ -548,7 +639,8 @@ function App() {
         </div>
         <nav className="topnav">
           <span className={`stream-status stream-status-${streamStatus}`} role="status" aria-live="polite">{streamStatus === 'connected' ? 'Live stream connected' : streamStatus === 'reconnecting' ? 'Reconnecting' : 'Disconnected'}</span>
-          <a href="/" aria-current="page">Control Plane</a>
+          <NavLink to="/control">Control Plane</NavLink>
+          <NavLink to="/nodes">Trading Nodes</NavLink>
           <a href="/symphony/">Symphony</a>
           <Button onClick={refreshAll}><RefreshCw size={14} /> Refresh</Button>
         </nav>
@@ -614,6 +706,332 @@ function IssueDetail({ detail, onComment, onState, onRun }) {
         {comments.length ? comments.map((item) => <div className="comment-card" key={item.id || item.createdAt}><div className="muted">{item.user?.name || item.author || 'unknown'} · {formatRelative(item.createdAt)}</div><pre>{item.body || item.text || ''}</pre></div>) : <Empty>No recent comments.</Empty>}
       </Card>
     </div>
+  );
+}
+
+function TradingNodesPage() {
+  const navigate = useNavigate();
+  const [payload, setPayload] = useState(null);
+  const [error, setError] = useState('');
+
+  const loadNodes = useCallback(async () => {
+    setError('');
+    const result = await getJson('/control/api/nodes');
+    setPayload(result);
+    return result;
+  }, []);
+
+  useEffect(() => {
+    loadNodes().catch((err) => setError(err.message || String(err)));
+  }, [loadNodes]);
+
+  const nodes = useMemo(() => normalizeNodesPayload(payload), [payload]);
+  const metrics = useMemo(() => {
+    const managed = nodes.filter((node) => node.managed).length;
+    const discovered = nodes.filter((node) => !node.managed).length;
+    const running = nodes.filter((node) => /running|starting/i.test(formatNodeState(node))).length;
+    const hosts = new Set(nodes.map((node) => node.hostId || node.hostName).filter(Boolean)).size;
+    return [
+      { label: 'Managed Nodes', value: managed, detail: 'Registry-backed records', icon: Shield },
+      { label: 'Discovered Nodes', value: discovered, detail: 'Observed from host state', icon: GitBranch },
+      { label: 'Running Nodes', value: running, detail: 'Live containers and active processes', icon: PlayCircle },
+      { label: 'Hosts', value: hosts, detail: 'Current host discovery scope', icon: Activity }
+    ];
+  }, [nodes]);
+
+  const refresh = useCallback(() => loadNodes().catch((err) => setError(err.message || String(err))), [loadNodes]);
+
+  const postNodeAction = useCallback(async (nodeId, action, body = {}) => {
+    await getJson(`/control/api/nodes/${encodeURIComponent(nodeId)}/${action}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    await refresh();
+  }, [refresh]);
+
+  const rows = nodes.map((node) => (
+    <tr key={node.nodeId}>
+      <td>
+        <LinkButton onClick={() => navigate(`/nodes/${encodeURIComponent(node.nodeId)}`)}>{node.nodeId}</LinkButton>
+        <div className="muted">{node.displayName}</div>
+      </td>
+      <td>
+        <div>{node.hostName}</div>
+        <div className="muted">{node.hostKind || 'local'}</div>
+      </td>
+      <td>
+        <div>{node.strategyId}</div>
+        <div className="muted">{node.manifestId}</div>
+      </td>
+      <td>{node.venues.length ? node.venues.join(', ') : 'all venues'}</td>
+      <td><Pill status={pillStatus(formatNodeState(node))}>{formatNodeState(node)}</Pill></td>
+      <td><Pill status={pillStatus(node.source)}>{node.source}</Pill><div className="muted">{node.managed ? 'durable registry' : 'host discovery'}</div></td>
+      <td>{formatRelative(node.updatedAt || node.lastHeartbeatAt)}</td>
+      <td>
+        <div className="action-row wrap">
+          <Button onClick={() => navigate(`/nodes/${encodeURIComponent(node.nodeId)}`)}>Open</Button>
+          <Button variant="ghost" onClick={() => postNodeAction(node.nodeId, 'start').catch((err) => setError(err.message || String(err)))}>Start</Button>
+          <Button variant="ghost" onClick={() => postNodeAction(node.nodeId, 'stop').catch((err) => setError(err.message || String(err)))}>Stop</Button>
+          <Button variant="ghost" onClick={() => postNodeAction(node.nodeId, 'restart').catch((err) => setError(err.message || String(err)))}>Restart</Button>
+        </div>
+      </td>
+    </tr>
+  ));
+
+  return (
+    <>
+      <header className="topbar">
+        <div>
+          <p className="eyebrow">Betting Arbitrage Control Plane</p>
+          <h1>Trading Nodes</h1>
+          <p className="subtitle">Inventory, logs, lifecycle control, and registry-backed state for live trading nodes.</p>
+        </div>
+        <nav className="topnav">
+          <NavLink to="/control">Control Plane</NavLink>
+          <NavLink to="/nodes">Trading Nodes</NavLink>
+          <a href="/symphony/">Symphony</a>
+          <Button onClick={refresh}><RefreshCw size={14} /> Refresh</Button>
+        </nav>
+      </header>
+
+      <main className="layout">
+        {error ? <div className="alert alert-error">{error}</div> : null}
+        <section className="grid metrics">{metrics.map((metric) => <Metric key={metric.label} {...metric} />)}</section>
+
+        <Panel title="Inventory" subtitle="Registry-backed node records merged with host-discovered runtime truth.">
+          <Table
+            columns={['Node', 'Host', 'Strategy', 'Venues', 'State', 'Source', 'Updated', 'Actions']}
+            rows={rows}
+            empty="No trading nodes discovered yet."
+          />
+        </Panel>
+
+        <section className="two-column">
+          <Panel title="Registry Snapshot" subtitle="Durable managed state for hosts and nodes.">
+            <JsonBlock value={payload?.nodeRegistry || payload?.registry || { hosts: payload?.hosts || [] }} empty="Registry data unavailable." />
+          </Panel>
+          <Panel title="Discovery Snapshot" subtitle="Host-observed node state, reconciled into the operator view.">
+            <JsonBlock value={payload?.discovery || payload?.discoveries || payload?.snapshot || payload?.observed || {}} empty="Discovery data unavailable." />
+          </Panel>
+        </section>
+      </main>
+    </>
+  );
+}
+
+function TradingNodeDetailPage() {
+  const navigate = useNavigate();
+  const { nodeId } = useParams();
+  const [detail, setDetail] = useState(null);
+  const [error, setError] = useState('');
+  const [logText, setLogText] = useState('');
+  const [previewResult, setPreviewResult] = useState(null);
+  const [overrideText, setOverrideText] = useState('');
+  const [followLogs, setFollowLogs] = useState(true);
+  const [actionResult, setActionResult] = useState(null);
+
+  const loadDetail = useCallback(async () => {
+    if (!nodeId) return null;
+    setError('');
+    const result = await getJson(`/control/api/nodes/${encodeURIComponent(nodeId)}`);
+    const normalized = normalizeNodeDetail(result, nodeId);
+    setDetail(normalized);
+    const seed = normalized.manifest || normalized.effectiveConfig || normalized.registryEntry?.lastAppliedConfig || normalized.discoveryEntry?.manifest || {};
+    setOverrideText((current) => (current.trim() ? current : JSON.stringify(seed || {}, null, 2)));
+    return normalized;
+  }, [nodeId]);
+
+  const loadLogs = useCallback(async () => {
+    if (!nodeId) return null;
+    const result = await getJson(`/control/api/nodes/${encodeURIComponent(nodeId)}/logs?mode=recent&limit=${NODE_LOG_LIMIT}`);
+    setLogText(normalizeNodeLogText(result));
+    return result;
+  }, [nodeId]);
+
+  useEffect(() => {
+    loadDetail().catch((err) => setError(err.message || String(err)));
+    loadLogs().catch((err) => setError(err.message || String(err)));
+    setPreviewResult(null);
+    setActionResult(null);
+  }, [loadDetail, loadLogs, nodeId]);
+
+  useEffect(() => {
+    if (!followLogs || !nodeId) return undefined;
+    const timer = window.setInterval(() => {
+      loadLogs().catch((err) => setError(err.message || String(err)));
+    }, 2500);
+    return () => window.clearInterval(timer);
+  }, [followLogs, loadLogs, nodeId]);
+
+  const node = detail?.node || null;
+
+  async function postAction(action, body = {}) {
+    if (!nodeId) return null;
+    const result = await getJson(`/control/api/nodes/${encodeURIComponent(nodeId)}/${action}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    setActionResult(result);
+    await loadDetail();
+    await loadLogs();
+    return result;
+  }
+
+  async function previewConfig() {
+    const override = parseJsonOrNull(overrideText);
+    const payload = override ? { override } : {};
+    const result = await getJson(`/control/api/nodes/${encodeURIComponent(nodeId)}/render-config`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    setPreviewResult(result);
+  }
+
+  async function startNode() {
+    const override = parseJsonOrNull(overrideText);
+    return postAction('start', override ? { override } : {});
+  }
+
+  async function restartNode() {
+    const override = parseJsonOrNull(overrideText);
+    return postAction('restart', override ? { override } : {});
+  }
+
+  async function stopNode() {
+    return postAction('stop');
+  }
+
+  const summaryMetrics = useMemo(() => {
+    if (!node) return [];
+    return [
+      { label: 'State', value: formatNodeState(node), detail: node.intendedState || 'desired state', icon: PlayCircle },
+      { label: 'Host', value: node.hostName || 'local', detail: node.hostKind || 'host', icon: GitBranch },
+      { label: 'Strategy', value: node.strategyId || 'unknown', detail: node.manifestId || 'manifest unknown', icon: Workflow },
+      { label: 'Heartbeat', value: node.lastHeartbeatAt ? formatRelative(node.lastHeartbeatAt) : 'unknown', detail: node.source || 'discovery source', icon: Clock3 }
+    ];
+  }, [node]);
+
+  if (!nodeId) {
+    return <Navigate to="/nodes" replace />;
+  }
+
+  return (
+    <>
+      <header className="topbar">
+        <div>
+          <p className="eyebrow">Betting Arbitrage Control Plane</p>
+          <h1>Trading Node Detail</h1>
+          <p className="subtitle">Lifecycle, config preview, logs, and registry/discovery reconciliation for a live node.</p>
+        </div>
+        <nav className="topnav">
+          <NavLink to="/control">Control Plane</NavLink>
+          <NavLink to="/nodes">Trading Nodes</NavLink>
+          <a href="/symphony/">Symphony</a>
+          <Button onClick={() => { loadDetail().catch((err) => setError(err.message || String(err))); loadLogs().catch((err) => setError(err.message || String(err))); }}><RefreshCw size={14} /> Refresh</Button>
+        </nav>
+      </header>
+
+      <main className="layout">
+        <div className="action-row wrap">
+          <Button variant="ghost" onClick={() => navigate('/nodes')}>Back to Inventory</Button>
+          <Pill status={pillStatus(node?.source)}>{node?.source || 'unknown source'}</Pill>
+          <Pill status={pillStatus(formatNodeState(node))}>{formatNodeState(node)}</Pill>
+          {node?.managed ? <Pill status="running">registry managed</Pill> : <Pill status="interrupted">host discovered</Pill>}
+        </div>
+
+        {error ? <div className="alert alert-error">{error}</div> : null}
+        <section className="grid metrics">{summaryMetrics.map((metric) => <Metric key={metric.label} {...metric} />)}</section>
+
+        <section className="two-column">
+          <Card>
+            <h3>{node?.displayName || nodeId}</h3>
+            <div className="node-details">
+              <div><span className="muted">Node ID</span><strong>{node?.nodeId || nodeId}</strong></div>
+              <div><span className="muted">Host</span><strong>{node?.hostName || 'local'}</strong></div>
+              <div><span className="muted">Host kind</span><strong>{node?.hostKind || 'local'}</strong></div>
+              <div><span className="muted">Container</span><strong>{node?.containerName || 'unknown'}</strong></div>
+              <div><span className="muted">Strategy</span><strong>{node?.strategyId || 'unknown'}</strong></div>
+              <div><span className="muted">Manifest</span><strong>{node?.manifestId || 'unknown'}</strong></div>
+              <div><span className="muted">Image</span><strong>{node?.image || 'unknown'}</strong></div>
+              <div><span className="muted">Venues</span><strong>{node?.venues?.length ? node.venues.join(', ') : 'all venues'}</strong></div>
+              <div><span className="muted">Runtime config</span><strong>{node?.runtimeConfigPath || 'unknown'}</strong></div>
+              <div><span className="muted">Heartbeat</span><strong>{node?.lastHeartbeatAt ? formatDateTime(node.lastHeartbeatAt) : 'unknown'}</strong></div>
+            </div>
+            <div className="action-row wrap">
+              <Button onClick={() => startNode().catch((err) => setError(err.message || String(err)))}>Start</Button>
+              <Button variant="ghost" onClick={() => stopNode().catch((err) => setError(err.message || String(err)))}>Stop</Button>
+              <Button variant="ghost" onClick={() => restartNode().catch((err) => setError(err.message || String(err)))}>Restart</Button>
+              <Button variant="ghost" onClick={() => previewConfig().catch((err) => setError(err.message || String(err)))}>Preview Config</Button>
+            </div>
+          </Card>
+
+          <Card>
+            <h3>Config Override</h3>
+            <p className="subtle">Bounded JSON override for restart, start, and preview. Secrets stay out of this surface.</p>
+            <Textarea rows={12} value={overrideText} onChange={(event) => setOverrideText(event.target.value)} placeholder='{"validationMode": true, "executionEnabled": false}' />
+            <div className="action-row wrap">
+              <Button onClick={() => startNode().catch((err) => setError(err.message || String(err)))}>Start with Override</Button>
+              <Button variant="ghost" onClick={() => restartNode().catch((err) => setError(err.message || String(err)))}>Restart with Override</Button>
+              <Button variant="ghost" onClick={() => previewConfig().catch((err) => setError(err.message || String(err)))}>Preview Effective Config</Button>
+            </div>
+            <div className="muted">Follow logs: {followLogs ? 'enabled' : 'disabled'}</div>
+            <div className="action-row wrap">
+              <Button variant="ghost" onClick={() => setFollowLogs((current) => !current)}>{followLogs ? 'Pause Auto Refresh' : 'Resume Auto Refresh'}</Button>
+              {actionResult ? <Button variant="ghost" onClick={() => setActionResult(null)}>Clear Action Result</Button> : null}
+            </div>
+          </Card>
+        </section>
+
+        <section className="two-column">
+          <Card>
+            <h3>Recent Logs</h3>
+            <p className="subtle">The latest host-observed logs for the currently selected node. Auto refresh follows the active process.</p>
+            <pre className="log-output">{logText || 'No logs loaded yet.'}</pre>
+          </Card>
+          <Card>
+            <h3>Registry / Discovery</h3>
+            <div className="nested-columns">
+              <div>
+                <h4>Registry</h4>
+                <JsonBlock value={detail?.registryEntry || detail?.registry || node?.registry || {}} empty="No durable registry snapshot available." />
+              </div>
+              <div>
+                <h4>Discovery</h4>
+                <JsonBlock value={detail?.discoveryEntry || detail?.discovery || node?.discovery || {}} empty="No host discovery snapshot available." />
+              </div>
+            </div>
+          </Card>
+        </section>
+
+        <section className="two-column">
+          <Card>
+            <h3>Effective Config Preview</h3>
+            <JsonBlock value={previewResult?.renderedConfig || previewResult?.effectiveConfig || previewResult?.manifest || previewResult || {}} empty="Run a config preview to inspect the effective configuration." />
+          </Card>
+          <Card>
+            <h3>Last Action Result</h3>
+            <JsonBlock value={actionResult || {}} empty="Run a lifecycle action to inspect the server response." />
+          </Card>
+        </section>
+      </main>
+    </>
+  );
+}
+
+function App() {
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route path="/" element={<Navigate to="/control" replace />} />
+        <Route path="/control" element={<MissionControlPage />} />
+        <Route path="/nodes" element={<TradingNodesPage />} />
+        <Route path="/nodes/:nodeId" element={<TradingNodeDetailPage />} />
+        <Route path="*" element={<Navigate to="/control" replace />} />
+      </Routes>
+    </BrowserRouter>
   );
 }
 
