@@ -1,0 +1,45 @@
+{
+  "node_id": "polymarket-plus-sxbet",
+  "trader_id": "BETARB-MIXED-001",
+  "validation_mode": true,
+  "allow_dummy_credentials": true,
+  "log_level": "INFO",
+  "rendered_config_path": "artifacts/strategy-nodes/polymarket-plus-sxbet/trading-node-config.json",
+  "status_path": "artifacts/strategy-nodes/polymarket-plus-sxbet/status.json",
+  "heartbeat_path": "artifacts/strategy-nodes/polymarket-plus-sxbet/heartbeat.json",
+  "strategy": {
+    "min_profit_margin": "0.02",
+    "max_total_stake": "200",
+    "market_timing_filter": "all",
+    "rollover_aware": false,
+    "auto_execute": false
+  },
+  "venues": [
+    {
+      "venue": "POLYMARKET",
+      "client_key": "POLYMARKET_PRIMARY",
+      "data_enabled": true,
+      "execution_enabled": false,
+      "credential_prefix": "POLYMARKET",
+      "load_all_instruments": false,
+      "instrument_ids": [
+        "0x4319532e181605cb15b1bd677759a3bc7f7394b2fdf145195b700eeaedfd5221-60487116984468020978247225474488676749601001829886755968952521846780452448915.POLYMARKET"
+      ]
+    },
+    {
+      "venue": "SXBET",
+      "client_key": "SXBET_PRIMARY",
+      "data_enabled": true,
+      "execution_enabled": false,
+      "credential_prefix": "SXBET",
+      "load_all_instruments": true,
+      "sport_ids": [29],
+      "live_only": false
+    }
+  ],
+  "metadata": {
+    "phase": "polymarket-phase-pm2",
+    "track": "polymarket",
+    "note": "Compatibility validation example for mixed-venue topology; not yet approved for live execution."
+  }
+}

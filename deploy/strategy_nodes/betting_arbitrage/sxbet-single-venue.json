@@ -1,0 +1,35 @@
+{
+  "node_id": "sxbet-single-venue",
+  "trader_id": "BETARB-SXBET-001",
+  "validation_mode": true,
+  "allow_dummy_credentials": true,
+  "log_level": "INFO",
+  "rendered_config_path": "artifacts/strategy-nodes/sxbet-single-venue/trading-node-config.json",
+  "status_path": "artifacts/strategy-nodes/sxbet-single-venue/status.json",
+  "heartbeat_path": "artifacts/strategy-nodes/sxbet-single-venue/heartbeat.json",
+  "strategy": {
+    "min_profit_margin": "0.02",
+    "max_total_stake": "250",
+    "sport_filter": "soccer",
+    "market_timing_filter": "pre_market",
+    "exclude_live": true,
+    "rollover_aware": true,
+    "auto_execute": false
+  },
+  "venues": [
+    {
+      "venue": "SXBET",
+      "client_key": "SXBET_PRIMARY",
+      "data_enabled": true,
+      "execution_enabled": false,
+      "credential_prefix": "SXBET",
+      "load_all_instruments": true,
+      "sport_ids": [29],
+      "live_only": false
+    }
+  ],
+  "metadata": {
+    "phase": "sportsbook-phase-1",
+    "track": "sportsbook"
+  }
+}

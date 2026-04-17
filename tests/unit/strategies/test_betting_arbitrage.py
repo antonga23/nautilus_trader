@@ -97,6 +97,25 @@ class TestBettingArbitrageConfig:
         config2 = BettingArbitrageConfig(min_profit_margin=Decimal("0.10"))
         assert config2.min_profit_margin == Decimal("0.10")
 
+    def test_config_round_trips_via_parse(self):
+        """
+        Test config remains importable through JSON encoding/decoding.
+        """
+        config = BettingArbitrageConfig(
+            min_profit_margin=Decimal("0.015"),
+            max_total_stake=Decimal("2500"),
+            enabled_venues=frozenset(["SXBET", "POLYMARKET"]),
+            sport_filter=" Soccer ",
+            market_timing_filter="live",
+            auto_execute=True,
+        )
+
+        parsed = BettingArbitrageConfig.parse(config.json())
+
+        assert parsed == config
+        assert parsed.sport_filter == "soccer"
+        assert parsed.enabled_venues == frozenset(["SXBET", "POLYMARKET"])
+
 
 class TestBettingArbitrageStrategy:
     """

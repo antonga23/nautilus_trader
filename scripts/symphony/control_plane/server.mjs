@@ -38,6 +38,12 @@ const ENV = { ...FILE_ENV, ...process.env };
 
 const PORT = Number(ENV.CONTROL_PLANE_PORT || 4100);
 const SYMPHONY_PORT = Number(ENV.SYMPHONY_PORT || 4000);
+// READ_ONLY dev mode: block every non-safe HTTP method (POST/PUT/PATCH/DELETE)
+// before it reaches any handler. Used by the Azure dev deployment to prevent
+// accidental mutation of prod Symphony/Linear/GitHub state from the dev plane.
+// Accepts "1", "true", "yes" (case-insensitive) as truthy.
+const CONTROL_PLANE_READ_ONLY = /^(1|true|yes)$/i.test(String(ENV.CONTROL_PLANE_READ_ONLY || '').trim());
+const READ_ONLY_SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 const LINEAR_API_KEY = ENV.LINEAR_API_KEY || '';
 const GITHUB_TOKEN = ENV.GITHUB_TOKEN || '';
 const PROJECT_ID = ENV.LINEAR_PROJECT_ID || '2e1bd292-7154-405c-9252-be85623a0ed3';
@@ -49,6 +55,12 @@ const WORKER_LOCK_DIR = '/srv/symphony/worker-state/locks';
 const AUTH_SESSION_DIR = '/srv/symphony/worker-state/auth-sessions';
 const RUN_ROOT = ENV.CONTROL_PLANE_RUN_ROOT || '/srv/symphony/worker-state/runs';
 const GITHUB_STATE_ROOT = ENV.CONTROL_PLANE_GITHUB_ROOT || DEFAULT_GITHUB_ROOT;
+const STRATEGY_NODE_MANIFEST_ROOT =
+  ENV.CONTROL_PLANE_STRATEGY_NODE_MANIFEST_ROOT ||
+  '/srv/symphony/control-repo/deploy/strategy_nodes/betting_arbitrage';
+const STRATEGY_NODE_REQUEST_ROOT =
+  ENV.CONTROL_PLANE_STRATEGY_NODE_REQUEST_ROOT ||
+  '/srv/symphony/worker-state/strategy-node-requests';
 const CONTROL_SETTINGS_PATH = ENV.CONTROL_PLANE_SETTINGS_PATH || '/srv/symphony/worker-state/control-plane/settings.json';
 const STATIC_DIR = path.dirname(fileURLToPath(import.meta.url));
 const STATIC_DIST_DIR = path.join(STATIC_DIR, 'dist');
@@ -170,6 +182,181 @@ function writeJson(filePath, value) {
   const tmp = `${filePath}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(value, null, 2));
   fs.renameSync(tmp, filePath);
+}
+
+function listStrategyNodeCatalogEntries() {
+  if (!fs.existsSync(STRATEGY_NODE_MANIFEST_ROOT)) {
+    return [];
+  }
+
+  return fs
+    .readdirSync(STRATEGY_NODE_MANIFEST_ROOT, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
+    .map((entry) => {
+      const manifestPath = path.join(STRATEGY_NODE_MANIFEST_ROOT, entry.name);
+      const manifest = readJson(manifestPath, {});
+      const venues = Array.isArray(manifest.venues)
+        ? manifest.venues.map((venue) => ({
+            venue: String(venue?.venue || ''),
+            clientKey: String(venue?.client_key || venue?.clientKey || ''),
+            dataEnabled: venue?.data_enabled !== false && venue?.dataEnabled !== false,
+            executionEnabled: venue?.execution_enabled === true || venue?.executionEnabled === true
+          }))
+        : [];
+
+      return {
+        manifestId: path.basename(entry.name, '.json'),
+        manifestFile: entry.name,
+        manifestPath,
+        nodeId: manifest.node_id || null,
+        traderId: manifest.trader_id || null,
+        validationMode: manifest.validation_mode !== false,
+        allowDummyCredentials: manifest.allow_dummy_credentials !== false,
+        recommendedWorker: manifest.metadata?.recommended_worker || 'codex-a',
+        venues,
+        metadata: manifest.metadata || {},
+        statusPath: manifest.status_path || null,
+        heartbeatPath: manifest.heartbeat_path || null,
+        renderedConfigPath: manifest.rendered_config_path || null,
+        requirements: describeStrategyNodeRequirements(manifest),
+        operatorFlow: describeStrategyNodeOperatorFlow(manifest)
+      };
+    })
+    .sort((a, b) => String(a.manifestFile).localeCompare(String(b.manifestFile)));
+}
+
+function describeStrategyNodeRequirements(manifest) {
+  const requiredEnvKeys = new Set();
+  const dummyCredentialKeys = new Set();
+  const liveNotes = [];
+  const validationNotes = [];
+  for (const venue of manifest.venues || []) {
+    const venueName = String(venue?.venue || '').toUpperCase();
+    if (venueName === 'SXBET') {
+      requiredEnvKeys.add('SXBET_API_KEY');
+      requiredEnvKeys.add('SXBET_PRIVATE_KEY');
+      requiredEnvKeys.add('SXBET_WALLET_ADDRESS');
+      dummyCredentialKeys.add('SXBET_API_KEY');
+      dummyCredentialKeys.add('SXBET_PRIVATE_KEY');
+      dummyCredentialKeys.add('SXBET_WALLET_ADDRESS');
+      liveNotes.push('SX.bet live execution needs API key, private key, and wallet address.');
+      validationNotes.push('SX.bet validation mode can run with deterministic dummy SXBET credentials.');
+    } else if (venueName === 'POLYMARKET') {
+      requiredEnvKeys.add('POLYMARKET_API_KEY');
+      requiredEnvKeys.add('POLYMARKET_API_SECRET');
+      requiredEnvKeys.add('POLYMARKET_PASSPHRASE');
+      requiredEnvKeys.add('POLYMARKET_PRIVATE_KEY');
+      requiredEnvKeys.add('POLYMARKET_FUNDER');
+      dummyCredentialKeys.add('POLYMARKET_API_KEY');
+      dummyCredentialKeys.add('POLYMARKET_API_SECRET');
+      dummyCredentialKeys.add('POLYMARKET_PASSPHRASE');
+      dummyCredentialKeys.add('POLYMARKET_PRIVATE_KEY');
+      dummyCredentialKeys.add('POLYMARKET_FUNDER');
+      liveNotes.push('Polymarket live execution needs API key, API secret, passphrase, private key, and funder.');
+      validationNotes.push('Polymarket validation mode can run with deterministic dummy Polymarket credentials.');
+    }
+  }
+
+  return {
+    requiredEnvKeys: [...requiredEnvKeys].sort(),
+    dummyCredentialKeys: [...dummyCredentialKeys].sort(),
+    hostPrereqs: ['docker', 'python3', 'jq', 'aws cli'],
+    validationNotes,
+    liveNotes,
+    deploymentNotes: [
+      'Store STRATEGY_NODE_ENV_FILE as a secret payload, not a committed file.',
+      'Use a dedicated GHCR PAT for STRATEGY_NODE_GHCR_TOKEN when the image registry is private.'
+    ],
+    deploymentSecrets: [
+      'STRATEGY_NODE_HOST',
+      'STRATEGY_NODE_SSH_USER',
+      'STRATEGY_NODE_SSH_KEY',
+      'STRATEGY_NODE_ENV_FILE',
+      'STRATEGY_NODE_GHCR_USERNAME',
+      'STRATEGY_NODE_GHCR_TOKEN'
+    ],
+    workerAuthSecret: 'CODEX_WORKER_AUTH_<WORKER>_B64',
+    workerAuthInstallFlow: [
+      './scripts/symphony/capture_worker_auth.sh codex-a',
+      './scripts/symphony/install_worker_auths.sh'
+    ],
+    workerAuthPurpose:
+      'Only required when the control plane starts a remote Codex worker on EC2. GitHub Actions SSH deploys use STRATEGY_NODE_* secrets only.'
+  };
+}
+
+function describeStrategyNodeOperatorFlow(manifest) {
+  const worker = manifest.metadata?.recommended_worker || 'codex-a';
+  return {
+    recommendedWorker: worker,
+    localAuthCommand: `./scripts/symphony/capture_worker_auth.sh ${worker}`,
+    installCommand: './scripts/symphony/install_worker_auths.sh',
+    startCommandTemplate: `ssh -i ./ec2-dev-betting-project.pem ubuntu@13.51.235.85 \
+  'chmod +x /tmp/deploy_betting_strategy_node.sh && \
+  /tmp/deploy_betting_strategy_node.sh \
+    --manifest /tmp/strategy-node-manifest.json \
+    --image ghcr.io/antonga23/cloudbet-market-maker/betting-arbitrage-node:<tag> \
+    --name betting-arbitrage-node \
+    --env-file /tmp/strategy-node.env \
+    --registry-user <ghcr-username> \
+    --registry-token-file /tmp/strategy-node-ghcr-token'`,
+    monitorCommandTemplate: `./scripts/deploy/strategy_nodes/wait_for_strategy_node_status.sh \
+  --status-file /opt/cloudbet/strategy-nodes/betting-arbitrage-node/status.json \
+  --timeout-seconds 600 \
+  --success-status running,completed,validated,built`,
+    catalogPath: '/control/api/deployments/catalog',
+    requestPath: '/control/api/deployments/requests',
+    requestListPath: '/control/api/deployments/requests',
+    monitorPath: '/control/api/deployments/requests?limit=40'
+  };
+}
+
+function listStrategyNodeRequests(limit = 100) {
+  if (!fs.existsSync(STRATEGY_NODE_REQUEST_ROOT)) {
+    return [];
+  }
+
+  return fs
+    .readdirSync(STRATEGY_NODE_REQUEST_ROOT, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
+    .map((entry) => readJson(path.join(STRATEGY_NODE_REQUEST_ROOT, entry.name), null))
+    .filter(Boolean)
+    .sort((a, b) => String(b.requestedAt || '').localeCompare(String(a.requestedAt || '')))
+    .slice(0, limit);
+}
+
+function createStrategyNodeRequest(payload) {
+  const manifestFile = String(payload?.manifestFile || '').trim();
+  if (!manifestFile) {
+    throw new Error('manifestFile is required');
+  }
+
+  const manifestPath = path.join(STRATEGY_NODE_MANIFEST_ROOT, path.basename(manifestFile));
+  if (!fs.existsSync(manifestPath)) {
+    throw new Error(`Unknown manifest: ${manifestFile}`);
+  }
+
+  const manifest = readJson(manifestPath, {});
+  const requestId = `deploy-${Date.now()}-${randomBytes(4).toString('hex')}`;
+  const request = {
+    id: requestId,
+    requestedAt: new Date().toISOString(),
+    manifestFile: path.basename(manifestFile),
+    manifestPath,
+    nodeId: manifest.node_id || null,
+    traderId: manifest.trader_id || null,
+    rolloutMode: String(payload?.rolloutMode || 'validate_only'),
+    imageRef: payload?.imageRef ? String(payload.imageRef) : null,
+    requestedBy: payload?.requestedBy ? String(payload.requestedBy) : 'control-plane',
+    workerName: payload?.workerName ? String(payload.workerName) : manifest.metadata?.recommended_worker || 'codex-a',
+    notes: payload?.notes ? String(payload.notes) : '',
+    target: payload?.target ? String(payload.target) : 'production',
+    status: 'queued',
+    metadata: payload?.metadata && typeof payload.metadata === 'object' ? payload.metadata : {}
+  };
+
+  writeJson(path.join(STRATEGY_NODE_REQUEST_ROOT, `${requestId}.json`), request);
+  return request;
 }
 
 function decodeJwtPayload(token) {
@@ -2546,6 +2733,10 @@ async function computeOverview() {
     ...readGitHubActionsState(40),
     webhook: getGitHubWebhookConfig(getSecretJson())
   };
+  const strategyNodes = {
+    manifests: listStrategyNodeCatalogEntries(),
+    requests: listStrategyNodeRequests(40)
+  };
   const settings = readControlSettings();
   const runs = listRecentRuns(60);
   const latestRunByIssue = new Map();
@@ -2613,6 +2804,7 @@ async function computeOverview() {
       latestRun: latestRunByWorker.get(worker.name) || null
     })),
     githubActions,
+    strategyNodes,
     providers,
     issues: issueRows,
     runs,
@@ -2909,6 +3101,36 @@ async function handleSettingsPost(req, res) {
     const settings = saveControlSettings(payload || {});
     latestOverview = await computeOverview();
     sendJson(res, 200, { success: true, settings });
+  } catch (error) {
+    sendJson(res, 500, { error: error.message });
+  }
+}
+
+async function handleStrategyNodeCatalog(res) {
+  try {
+    sendJson(res, 200, { manifests: listStrategyNodeCatalogEntries() });
+  } catch (error) {
+    sendJson(res, 500, { error: error.message });
+  }
+}
+
+async function handleStrategyNodeRequestList(res, requestUrl) {
+  try {
+    const limit = Number.parseInt(requestUrl.searchParams.get('limit') || '100', 10);
+    sendJson(res, 200, {
+      requests: listStrategyNodeRequests(Number.isFinite(limit) ? limit : 100)
+    });
+  } catch (error) {
+    sendJson(res, 500, { error: error.message });
+  }
+}
+
+async function handleStrategyNodeRequestCreate(req, res) {
+  try {
+    const raw = await readBody(req);
+    const payload = JSON.parse(raw || '{}');
+    const request = createStrategyNodeRequest(payload);
+    sendJson(res, 200, { success: true, request });
   } catch (error) {
     sendJson(res, 500, { error: error.message });
   }
@@ -3510,6 +3732,15 @@ const server = http.createServer(async (req, res) => {
   const requestUrl = new URL(req.url || '/', `http://${req.headers.host || '127.0.0.1'}`);
   const pathname = requestUrl.pathname;
 
+  if (CONTROL_PLANE_READ_ONLY && !READ_ONLY_SAFE_METHODS.has(req.method || '')) {
+    sendJson(res, 403, {
+      error: 'control-plane is read-only in this environment',
+      method: req.method,
+      path: pathname
+    });
+    return;
+  }
+
   if (req.method === 'GET' && pathname === '/') {
     sendText(res, 200, renderHtml(), 'text/html; charset=utf-8');
     return;
@@ -3563,6 +3794,21 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'POST' && pathname === '/control/api/settings') {
     await handleSettingsPost(req, res);
+    return;
+  }
+
+  if (req.method === 'GET' && pathname === '/control/api/deployments/catalog') {
+    await handleStrategyNodeCatalog(res);
+    return;
+  }
+
+  if (req.method === 'GET' && pathname === '/control/api/deployments/requests') {
+    await handleStrategyNodeRequestList(res, requestUrl);
+    return;
+  }
+
+  if (req.method === 'POST' && pathname === '/control/api/deployments/requests') {
+    await handleStrategyNodeRequestCreate(req, res);
     return;
   }
 
@@ -3703,6 +3949,9 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, '127.0.0.1', async () => {
   console.error(`[control-plane] listening on 127.0.0.1:${PORT}`);
+  if (CONTROL_PLANE_READ_ONLY) {
+    console.error('[control-plane] READ_ONLY mode enabled (all POST/PUT/PATCH/DELETE requests return 403)');
+  }
   await refreshOverview();
 });
 

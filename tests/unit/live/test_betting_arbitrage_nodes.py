@@ -1,0 +1,121 @@
+from decimal import Decimal
+
+import pytest
+
+from nautilus_trader.config import ImportableConfig
+from nautilus_trader.examples.strategies.betting_arbitrage import BettingArbitrageConfig
+from nautilus_trader.live.strategy_nodes.betting_arbitrage.builder import build_trading_node_config
+from nautilus_trader.live.strategy_nodes.betting_arbitrage.config import (
+    BettingArbitrageNodeManifest,
+)
+from nautilus_trader.live.strategy_nodes.betting_arbitrage.config import BettingVenueManifest
+
+
+class TestBettingArbitrageNodeManifest:
+    def test_rejects_blocked_sportsbook_venues(self):
+        with pytest.raises(ValueError, match="not deployment-ready"):
+            BettingVenueManifest(venue="10BET")
+
+    def test_requires_enabled_venue(self):
+        with pytest.raises(ValueError, match="At least one enabled venue"):
+            BettingArbitrageNodeManifest(
+                node_id="test-node",
+                venues=[BettingVenueManifest(venue="SXBET", enabled=False)],
+            )
+
+
+class TestBettingArbitrageNodeBuilder:
+    def test_validation_mode_forces_safe_strategy_and_no_exec_clients(self):
+        manifest = BettingArbitrageNodeManifest(
+            node_id="sxbet-validation",
+            trader_id="BETARB-TEST-001",
+            validation_mode=True,
+            allow_dummy_credentials=True,
+            strategy=BettingArbitrageConfig(
+                min_profit_margin=Decimal("0.02"),
+                max_total_stake=Decimal("100"),
+                auto_execute=True,
+            ),
+            venues=[
+                BettingVenueManifest(
+                    venue="SXBET",
+                    client_key="SXBET_PRIMARY",
+                    execution_enabled=True,
+                ),
+            ],
+        )
+
+        config = build_trading_node_config(manifest)
+
+        assert len(config.exec_clients) == 0
+        assert len(config.strategies) == 1
+        assert config.strategies[0].config["auto_execute"] is False
+        assert config.strategies[0].config["enabled_venues"] == ["SXBET"]
+
+    def test_sxbet_exec_client_uses_dummy_credentials(self):
+        manifest = BettingArbitrageNodeManifest(
+            node_id="sxbet-live",
+            trader_id="BETARB-TEST-002",
+            validation_mode=False,
+            allow_dummy_credentials=True,
+            venues=[
+                BettingVenueManifest(
+                    venue="SXBET",
+                    client_key="SXBET_PRIMARY",
+                    execution_enabled=True,
+                ),
+            ],
+        )
+
+        config = build_trading_node_config(manifest)
+        exec_client = config.exec_clients["SXBET_PRIMARY"]
+
+        assert isinstance(exec_client, ImportableConfig)
+        assert exec_client.config["api_key"] == "dummy-sxbet-api-key"
+        assert exec_client.config["private_key"].startswith("0x")
+        assert exec_client.config["wallet_address"].startswith("0x")
+
+    def test_polymarket_instrument_ids_flow_into_importable_config(self):
+        manifest = BettingArbitrageNodeManifest(
+            node_id="polymarket-validation",
+            trader_id="BETARB-TEST-003",
+            validation_mode=True,
+            allow_dummy_credentials=True,
+            venues=[
+                BettingVenueManifest(
+                    venue="POLYMARKET",
+                    client_key="POLYMARKET_PRIMARY",
+                    load_all_instruments=False,
+                    instrument_ids=frozenset(
+                        {
+                            "condition-token.POLYMARKET",
+                        }
+                    ),
+                ),
+            ],
+        )
+
+        config = build_trading_node_config(manifest)
+        data_client = config.data_clients["POLYMARKET_PRIMARY"]
+
+        assert isinstance(data_client, ImportableConfig)
+        assert data_client.config["instrument_provider"]["load_all"] is False
+        assert data_client.config["instrument_provider"]["load_ids"] == [
+            "condition-token.POLYMARKET",
+        ]
+
+    def test_mixed_supported_topology_updates_strategy_enabled_venues(self):
+        manifest = BettingArbitrageNodeManifest(
+            node_id="mixed-validation",
+            trader_id="BETARB-TEST-004",
+            validation_mode=True,
+            allow_dummy_credentials=True,
+            venues=[
+                BettingVenueManifest(venue="POLYMARKET", client_key="POLYMARKET_PRIMARY"),
+                BettingVenueManifest(venue="SXBET", client_key="SXBET_PRIMARY"),
+            ],
+        )
+
+        config = build_trading_node_config(manifest)
+
+        assert config.strategies[0].config["enabled_venues"] == ["POLYMARKET", "SXBET"]

@@ -58,6 +58,12 @@ class TenBetLiveDataClientFactory:
             request_delay_min=config.request_delay_min,
             request_delay_max=config.request_delay_max,
             max_requests_per_minute=config.max_requests_per_minute,
+            login_url=config.login_url,
+            email=config.email,
+            password=config.password,
+            otp_code=config.otp_code,
+            session_state_path=config.session_state_path,
+            allow_synthetic_auth=config.allow_synthetic_auth,
             logger=logger,
         )
 
@@ -108,6 +114,12 @@ class TenBetLiveExecClientFactory:
             request_delay_min=config.request_delay_min,
             request_delay_max=config.request_delay_max,
             max_requests_per_minute=config.max_requests_per_minute,
+            login_url=config.login_url,
+            email=config.email,
+            password=config.password,
+            otp_code=config.otp_code,
+            session_state_path=config.session_state_path,
+            allow_synthetic_auth=config.allow_synthetic_auth,
             logger=logger,
         )
 

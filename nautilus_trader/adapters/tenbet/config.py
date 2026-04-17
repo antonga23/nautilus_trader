@@ -18,16 +18,17 @@
 
 from decimal import Decimal
 
-import msgspec
-
 from nautilus_trader.adapters.tenbet.constants import DEFAULT_MAX_REQUESTS_PER_MINUTE
 from nautilus_trader.adapters.tenbet.constants import DEFAULT_REQUEST_DELAY_MAX
 from nautilus_trader.adapters.tenbet.constants import DEFAULT_REQUEST_DELAY_MIN
 from nautilus_trader.adapters.tenbet.constants import DEFAULT_SCRAPE_INTERVAL_SECONDS
 from nautilus_trader.adapters.tenbet.constants import DEFAULT_SESSION_TIMEOUT_MINUTES
+from nautilus_trader.common.config import InstrumentProviderConfig
+from nautilus_trader.live.config import LiveDataClientConfig
+from nautilus_trader.live.config import LiveExecClientConfig
 
 
-class TenBetInstrumentProviderConfig(msgspec.Struct, frozen=True):
+class TenBetInstrumentProviderConfig(InstrumentProviderConfig, frozen=True):
     """
     Configuration for `TenBetInstrumentProvider`.
 
@@ -50,7 +51,7 @@ class TenBetInstrumentProviderConfig(msgspec.Struct, frozen=True):
     scrape_interval: int = DEFAULT_SCRAPE_INTERVAL_SECONDS
 
 
-class TenBetDataClientConfig(msgspec.Struct, frozen=True):
+class TenBetDataClientConfig(LiveDataClientConfig, frozen=True):
     """
     Configuration for `TenBetDataClient`.
 
@@ -85,7 +86,7 @@ class TenBetDataClientConfig(msgspec.Struct, frozen=True):
     use_stealth: bool = True
 
 
-class TenBetExecClientConfig(msgspec.Struct, frozen=True):
+class TenBetExecClientConfig(LiveExecClientConfig, frozen=True):
     """
     Configuration for `TenBetExecutionClient`.
 
@@ -118,12 +119,17 @@ class TenBetExecClientConfig(msgspec.Struct, frozen=True):
 
     instrument_provider: TenBetInstrumentProviderConfig | None = None
     base_url: str | None = None
+    login_url: str | None = None
     email: str | None = None
     password: str | None = None
+    otp_code: str | None = None
     headless: bool = True
     request_delay_min: float = DEFAULT_REQUEST_DELAY_MIN
     request_delay_max: float = DEFAULT_REQUEST_DELAY_MAX
     max_requests_per_minute: int = DEFAULT_MAX_REQUESTS_PER_MINUTE
     use_stealth: bool = True
     session_timeout_minutes: int = DEFAULT_SESSION_TIMEOUT_MINUTES
-    max_stake_zar: Decimal = Decimal(1000)
+    session_state_path: str | None = None
+    allow_synthetic_auth: bool = False
+    allow_synthetic_execution: bool = False
+    max_stake_zar: Decimal = Decimal("1000")

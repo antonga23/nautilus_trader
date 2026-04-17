@@ -9,13 +9,14 @@
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {
+    "@tailwindcss/vite": "4.2.2",
     "@vitejs/plugin-react": "6.0.1",
-    "vite": "8.0.8",
-    "typescript": "6.0.2",
+    "clsx": "2.1.1",
+    "lucide-react": "1.8.0",
     "react": "19.2.5",
     "react-dom": "19.2.5",
-    "lucide-react": "1.8.0",
-    "clsx": "2.1.1"
-  },
-  "devDependencies": {}
+    "tailwindcss": "4.2.2",
+    "typescript": "6.0.2",
+    "vite": "8.0.8"
+  }
 }

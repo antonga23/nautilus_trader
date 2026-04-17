@@ -5,12 +5,42 @@ secret_id="${1:-cloudbet-market-maker/credentials}"
 output_path="${2:-/srv/symphony/symphony.env}"
 
 if ! command -v aws > /dev/null 2>&1; then
+  if [ -f "$output_path" ]; then
+    echo "aws CLI not available; reusing existing $output_path" >&2
+    exit 0
+  fi
   echo "aws CLI is required" >&2
   exit 1
 fi
 
 if ! command -v jq > /dev/null 2>&1; then
+  if [ -f "$output_path" ]; then
+    echo "jq not available; reusing existing $output_path" >&2
+    exit 0
+  fi
   echo "jq is required" >&2
+  exit 1
+fi
+
+aws_region="${AWS_REGION:-${AWS_DEFAULT_REGION:-}}"
+if [ -z "$aws_region" ]; then
+  aws_region="$(aws configure get region 2> /dev/null || true)"
+fi
+if [ -z "$aws_region" ]; then
+  if [ -f "$output_path" ]; then
+    echo "AWS region not configured; reusing existing $output_path" >&2
+    exit 0
+  fi
+  echo "AWS region is required to render $output_path" >&2
+  exit 1
+fi
+
+if ! aws sts get-caller-identity --output json > /dev/null 2>&1; then
+  if [ -f "$output_path" ]; then
+    echo "AWS credentials unavailable; reusing existing $output_path" >&2
+    exit 0
+  fi
+  echo "AWS credentials are required to render $output_path" >&2
   exit 1
 fi
 
