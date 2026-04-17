@@ -14,11 +14,31 @@ if [[ -f "$runner_hygiene_config" ]]; then
   source "$runner_hygiene_config"
 fi
 
-runner_root="${ACTIONS_RUNNER_ROOT:-${RUNNER_ROOT:-/home/ubuntu/actions-runner}}"
+detect_runner_root() {
+  local candidate
+
+  for candidate in \
+    "${ACTIONS_RUNNER_ROOT:-}" \
+    "${RUNNER_ROOT:-}" \
+    /opt/actions-runner \
+    /home/ubuntu/actions-runner
+  do
+    if [[ -n "$candidate" && -d "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return
+    fi
+  done
+
+  printf '%s\n' "${ACTIONS_RUNNER_ROOT:-${RUNNER_ROOT:-/home/ubuntu/actions-runner}}"
+}
+
+runner_root="$(detect_runner_root)"
 runner_diag_root="${RUNNER_DIAG_ROOT:-$runner_root/_diag}"
 runner_work_root="${RUNNER_WORK_ROOT:-$runner_root/_work}"
 runner_temp_root="${RUNNER_TEMP_ROOT:-$runner_work_root/_temp}"
 runner_local_cache_root="${RUNNER_LOCAL_CACHE_ROOT:-$runner_work_root/.ci-cache}"
+runner_ci_home="${RUNNER_CI_HOME:-/tmp/cloudbet-market-maker-ci-home}"
+runner_ci_home_purge_when_idle="${RUNNER_CI_HOME_PURGE_WHEN_IDLE:-true}"
 workspace_root="${SYMPHONY_WORKSPACE_ROOT:-/srv/symphony/workspaces}"
 control_repo_root="${SYMPHONY_CONTROL_REPO_ROOT:-/srv/symphony/control-repo}"
 diag_retention_days="${RUNNER_DIAG_RETENTION_DAYS:-7}"
@@ -31,10 +51,15 @@ symphony_workspace_retention_days="${SYMPHONY_WORKSPACE_RETENTION_DAYS:-7}"
 control_repo_artifact_retention_days="${SYMPHONY_CONTROL_REPO_ARTIFACT_RETENTION_DAYS:-7}"
 root_usage_prune_threshold="${ROOT_USAGE_PRUNE_THRESHOLD_PERCENT:-85}"
 active_container_count=0
+active_worker_count=0
 
 if command -v docker > /dev/null 2>&1; then
   docker container prune -f --filter status=exited > /dev/null 2>&1 || true
   active_container_count="$(docker ps -q | wc -l | tr -d ' ')"
+fi
+
+if command -v pgrep > /dev/null 2>&1; then
+  active_worker_count="$(pgrep -fc 'Runner.Worker' || true)"
 fi
 
 root_usage_pct="$(
@@ -66,18 +91,14 @@ if [[ -d "$runner_diag_root" ]]; then
   fi
 fi
 
-if [[ -d "$runner_temp_root" && "$active_container_count" -eq 0 ]]; then
+if [[ -d "$runner_temp_root" && "$active_container_count" -eq 0 && "$active_worker_count" -eq 0 ]]; then
   # Container jobs mount these runner temp paths as /github/home, /github/workflow, and
   # /github/file_commands. If the runner cannot clean them because the container wrote root-owned
   # files, stale Cargo/Rust state can leak into later jobs. Remove them only when the runner is idle.
-  find "$runner_temp_root" -mindepth 1 -maxdepth 1 \
-    \( -name _github_home -o -name _github_workflow -o -name _runner_file_commands \) \
-    -exec rm -rf {} + 2> /dev/null || true
-
-  find "$runner_temp_root" -mindepth 1 -mtime "+$runner_temp_retention_days" -exec rm -rf {} + 2> /dev/null || true
+  find "$runner_temp_root" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2> /dev/null || true
 fi
 
-if [[ -d "$runner_work_root" && "$active_container_count" -eq 0 ]]; then
+if [[ -d "$runner_work_root" && "$active_container_count" -eq 0 && "$active_worker_count" -eq 0 ]]; then
   find "$runner_work_root" -mindepth 1 -maxdepth 1 -type d \
     ! -name .ci-cache \
     ! -name _actions \
@@ -89,8 +110,16 @@ if [[ -d "$runner_work_root" && "$active_container_count" -eq 0 ]]; then
     -exec rm -rf {} + 2> /dev/null || true
 fi
 
-if [[ -d "$runner_local_cache_root" && "$active_container_count" -eq 0 ]]; then
+if [[ -d "$runner_local_cache_root" && "$active_container_count" -eq 0 && "$active_worker_count" -eq 0 ]]; then
   find "$runner_local_cache_root" -mindepth 1 -maxdepth 2 -mtime "+$runner_local_cache_retention_days" -exec rm -rf {} + 2> /dev/null || true
+fi
+
+if [[ -d "$runner_ci_home" && "$active_container_count" -eq 0 && "$active_worker_count" -eq 0 ]]; then
+  if [[ "$runner_ci_home_purge_when_idle" == "true" ]]; then
+    rm -rf "$runner_ci_home" 2> /dev/null || true
+  else
+    find "$runner_ci_home" -mindepth 1 -mtime "+$runner_temp_retention_days" -exec rm -rf {} + 2> /dev/null || true
+  fi
 fi
 
 if [[ -d "$workspace_root" ]]; then

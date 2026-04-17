@@ -15,10 +15,30 @@ if [[ -f "$runner_hygiene_config" ]]; then
 fi
 
 runner_role="${RUNNER_ROLE:-generic}"
-runner_root="${ACTIONS_RUNNER_ROOT:-${RUNNER_ROOT:-/home/ubuntu/actions-runner}}"
+detect_runner_root() {
+  local candidate
+
+  for candidate in \
+    "${ACTIONS_RUNNER_ROOT:-}" \
+    "${RUNNER_ROOT:-}" \
+    /opt/actions-runner \
+    /home/ubuntu/actions-runner
+  do
+    if [[ -n "$candidate" && -d "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return
+    fi
+  done
+
+  printf '%s\n' "${ACTIONS_RUNNER_ROOT:-${RUNNER_ROOT:-/home/ubuntu/actions-runner}}"
+}
+
+runner_root="$(detect_runner_root)"
 runner_diag_root="${RUNNER_DIAG_ROOT:-$runner_root/_diag}"
 runner_work_root="${RUNNER_WORK_ROOT:-$runner_root/_work}"
 runner_local_cache_root="${RUNNER_LOCAL_CACHE_ROOT:-$runner_work_root/.ci-cache}"
+runner_temp_root="${RUNNER_TEMP_ROOT:-$runner_work_root/_temp}"
+runner_ci_home="${RUNNER_CI_HOME:-/tmp/cloudbet-market-maker-ci-home}"
 workspace_root="${SYMPHONY_WORKSPACE_ROOT:-/srv/symphony/workspaces}"
 control_repo_root="${SYMPHONY_CONTROL_REPO_ROOT:-/srv/symphony/control-repo}"
 runner_service_names="${RUNNER_SERVICE_NAMES:-${GITHUB_RUNNER_SERVICE_NAME:-actions.runner.antonga23-cloudbet-market-maker.ip-172-31-21-124-cloudbet-market-maker.service}}"
@@ -109,7 +129,9 @@ echo
 echo "== Runner paths =="
 print_dir_size "$runner_root"
 print_dir_size "$runner_diag_root"
+print_dir_size "$runner_temp_root"
 print_dir_size "$runner_local_cache_root"
+print_dir_size "$runner_ci_home"
 echo
 
 echo "== Runner work usage =="

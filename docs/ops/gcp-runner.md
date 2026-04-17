@@ -12,6 +12,7 @@
 - Docker service: `docker.service`
 - Optional hygiene timer if installed: `actions-runner-hygiene.timer`
 - Optional hygiene config: `/etc/cloudbet/actions-runner-hygiene.conf`
+- Installed hygiene script root: `/opt/cloudbet-runner-hygiene`
 
 Discover the exact runner service name with:
 
@@ -56,11 +57,12 @@ The health script reports:
   `sudo bash scripts/ci/install_runner_hygiene.sh`
 - run the installed cleanup job manually:
   `sudo /usr/local/bin/cloudbet-self-hosted-runner-cleanup`
-- the installed hygiene service reads `/etc/cloudbet/self-hosted-runner.conf` for `RUNNER_ROOT`, so it does not depend on `/srv/symphony/control-repo`
+- the installer writes `/etc/cloudbet/self-hosted-runner.conf` from the detected host layout so it does not depend on `/srv/symphony/control-repo`
 - if the host needs non-default cleanup paths, add environment overrides to `/etc/cloudbet/actions-runner-hygiene.conf`
 - remove stale runner diagnostics manually if `_diag` grows unexpectedly
 - remove stale runner `_work/_temp` content only while the runner service is stopped
 - prune stopped containers and unused images if disk pressure rises
+- the installed cleanup purges `/tmp/cloudbet-market-maker-ci-home` when the runner is idle, which is safe because repaired jobs recreate it before checkout
 
 ## Bootstrap requirements
 
