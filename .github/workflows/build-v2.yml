@@ -76,8 +76,14 @@ jobs:
           free-disk-space: "true"
           build-type: "pre-commit"
 
-      - name: Run pre-commit
-        run: pre-commit run --all-files
+      - name: Run pre-commit-fast
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_BASE_REF: ${{ github.base_ref }}
+          GITHUB_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GITHUB_EVENT_BEFORE: ${{ github.event.before }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: bash scripts/ci/run_pre_commit_fast.sh
 
   # Dependency license, advisory, and ban checks
   # https://embarkstudios.github.io/cargo-deny/
