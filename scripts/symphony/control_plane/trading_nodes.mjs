@@ -284,8 +284,13 @@ export function discoverLocalTradingNodes({ hostId = 'local-ec2', rootDir = '/op
   };
 }
 
-function nodeMergeKey(node = {}) {
-  return String(node.nodeId || node.containerName || '').trim();
+function nodeMergeKeys(node = {}) {
+  const keys = new Set();
+  const nodeId = String(node.nodeId || '').trim();
+  const containerName = String(node.containerName || '').trim();
+  if (nodeId) keys.add(nodeId);
+  if (containerName) keys.add(containerName);
+  return [...keys];
 }
 
 export function buildEffectiveTradingNodes({ hosts = [], registry = { nodes: [] }, discoveries = [] } = {}) {
@@ -293,20 +298,58 @@ export function buildEffectiveTradingNodes({ hosts = [], registry = { nodes: [] 
   const discoveryNodes = Array.isArray(discoveries)
     ? discoveries.flatMap((discovery) => Array.isArray(discovery?.nodes) ? discovery.nodes : [])
     : [];
-  const discoveryByKey = new Map();
-  for (const node of discoveryNodes) {
-    discoveryByKey.set(nodeMergeKey(node), node);
-  }
-  const registryByKey = new Map();
-  for (const node of registryNodes) {
-    registryByKey.set(nodeMergeKey(node), node);
-  }
-  const allKeys = new Set([...registryByKey.keys(), ...discoveryByKey.keys()].filter(Boolean));
+  const groups = [];
+  const groupByAlias = new Map();
 
-  const effectiveNodes = Array.from(allKeys)
-    .map((key) => {
-      const registryEntry = registryByKey.get(key) || null;
-      const discoveryEntry = discoveryByKey.get(key) || null;
+  function upsertGroupEntry(type, entry) {
+    const aliases = nodeMergeKeys(entry);
+    if (!aliases.length) {
+      return;
+    }
+    let group = null;
+    for (const alias of aliases) {
+      if (groupByAlias.has(alias)) {
+        group = groupByAlias.get(alias);
+        break;
+      }
+    }
+    if (!group) {
+      group = { aliases: new Set(), registryEntry: null, discoveryEntry: null };
+      groups.push(group);
+    }
+    if (type === 'registry') {
+      group.registryEntry = entry;
+    } else {
+      group.discoveryEntry = entry;
+    }
+    for (const alias of aliases) {
+      group.aliases.add(alias);
+      groupByAlias.set(alias, group);
+    }
+  }
+
+  for (const node of registryNodes) {
+    upsertGroupEntry('registry', node);
+  }
+  for (const node of discoveryNodes) {
+    upsertGroupEntry('discovery', node);
+  }
+
+  const effectiveNodes = groups
+    .map((group) => {
+      const registryEntry = group.registryEntry || null;
+      const discoveryEntry = group.discoveryEntry || null;
+      const key =
+        String(
+          registryEntry?.nodeId ||
+            discoveryEntry?.nodeId ||
+            registryEntry?.containerName ||
+            discoveryEntry?.containerName ||
+            ''
+        ).trim();
+      if (!key) {
+        return null;
+      }
       const hostId = registryEntry?.hostId || discoveryEntry?.hostId || hosts[0]?.hostId || 'local-ec2';
       const hostRecord = hosts.find((host) => host.hostId === hostId) || null;
       const stateClass = computeStateClass({ registryEntry, discoveryEntry, staleHeartbeatMs: DEFAULT_STALE_HEARTBEAT_MS });
@@ -345,6 +388,7 @@ export function buildEffectiveTradingNodes({ hosts = [], registry = { nodes: [] 
         },
       };
     })
+    .filter(Boolean)
     .sort((a, b) => a.nodeId.localeCompare(b.nodeId));
 
   return effectiveNodes;

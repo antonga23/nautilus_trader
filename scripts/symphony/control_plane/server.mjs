@@ -514,14 +514,17 @@ function parseNodeOverridePayload(payload = {}) {
   const override = {};
   const source = payload.override || payload.overrides || payload.configOverrides || {};
   if (source && typeof source === 'object') {
-    if (source.log_level !== undefined) {
-      override.log_level = source.log_level;
+    const logLevel = source.log_level ?? source.logLevel;
+    if (logLevel !== undefined) {
+      override.log_level = logLevel;
     }
-    if (source.validation_mode !== undefined) {
-      override.validation_mode = source.validation_mode;
+    const validationMode = source.validation_mode ?? source.validationMode;
+    if (validationMode !== undefined) {
+      override.validation_mode = validationMode;
     }
-    if (source.execution_enabled !== undefined) {
-      override.execution_enabled = source.execution_enabled;
+    const executionEnabled = source.execution_enabled ?? source.executionEnabled;
+    if (executionEnabled !== undefined) {
+      override.execution_enabled = executionEnabled;
     }
     if (source.strategy && typeof source.strategy === 'object') {
       override.strategy = source.strategy;
@@ -532,12 +535,19 @@ function parseNodeOverridePayload(payload = {}) {
     if (source.metadata && typeof source.metadata === 'object') {
       override.metadata = source.metadata;
     }
-    if (source.allow_dummy_credentials !== undefined) {
-      override.allow_dummy_credentials = source.allow_dummy_credentials;
+    const allowDummyCredentials =
+      source.allow_dummy_credentials ?? source.allowDummyCredentials;
+    if (allowDummyCredentials !== undefined) {
+      override.allow_dummy_credentials = allowDummyCredentials;
     }
   }
   const imageRef = payload.imageRef ? String(payload.imageRef).trim() : '';
   return { override, imageRef };
+}
+
+function isMissingDockerContainerError(result) {
+  const text = String(result?.stderr || result?.stdout || '').toLowerCase();
+  return text.includes('no such container') || text.includes('cannot remove container');
 }
 
 function renderTradingNodeConfigPreview(manifest) {
@@ -3449,10 +3459,12 @@ async function handleTradingNodeStop(res, nodeId) {
       sendJson(res, 404, { error: `Unknown trading node: ${nodeId}` });
       return;
     }
-    const result = spawnSync('docker', ['rm', '-f', node.containerName], { encoding: 'utf8' });
-    if (result.status !== 0) {
-      sendJson(res, 500, { error: (result.stderr || result.stdout || 'docker rm failed').trim() });
-      return;
+    if (node.container?.exists !== false) {
+      const result = spawnSync('docker', ['rm', '-f', node.containerName], { encoding: 'utf8' });
+      if (result.status !== 0 && !isMissingDockerContainerError(result)) {
+        sendJson(res, 500, { error: (result.stderr || result.stdout || 'docker rm failed').trim() });
+        return;
+      }
     }
     writeNodeStatusFile(node, {
       nodeId: node.nodeId,

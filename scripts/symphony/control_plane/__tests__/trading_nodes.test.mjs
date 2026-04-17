@@ -20,7 +20,7 @@ function writeJson(filePath, payload) {
   writeFileSync(filePath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
 }
 
-function createFixtureLayout(tempRoot) {
+function createFixtureLayout(tempRoot, options = {}) {
   const binDir = path.join(tempRoot, 'bin');
   const repoRoot = path.join(tempRoot, 'repo');
   const nodeRoot = path.join(tempRoot, 'strategy-nodes');
@@ -72,6 +72,10 @@ JSON
 LOG
     ;;
   rm)
+    if [ "${CONTROL_PLANE_TEST_DOCKER_RM_MISSING:-}" = "1" ]; then
+      echo "Error: No such container: ${2:-}" >&2
+      exit 1
+    fi
     echo "${2:-}" > "${CONTROL_PLANE_TEST_STATE_ROOT}/docker-rm.txt"
     ;;
   *)
@@ -126,38 +130,42 @@ echo "$image" > "${CONTROL_PLANE_TEST_STATE_ROOT}/deploy-image.txt"
 `,
   );
 
-  writeJson(path.join(nodeDir, 'status.json'), {
-    nodeId: 'sxbet-single-venue',
-    status: 'running',
-    startedAt: '2026-04-17T04:25:32Z',
-    manifestPath: path.join(nodeDir, 'manifest.runtime.json'),
-    renderedConfigPath: path.join(nodeDir, 'runtime-config.json'),
-  });
+  if (!options.discoveryWithoutNodeId) {
+    writeJson(path.join(nodeDir, 'status.json'), {
+      nodeId: 'sxbet-single-venue',
+      status: 'running',
+      startedAt: '2026-04-17T04:25:32Z',
+      manifestPath: path.join(nodeDir, 'manifest.runtime.json'),
+      renderedConfigPath: path.join(nodeDir, 'runtime-config.json'),
+    });
+  }
   writeJson(path.join(nodeDir, 'heartbeat.json'), { at: '2026-04-17T04:25:33Z' });
   writeJson(path.join(nodeDir, 'release.json'), {
     image: 'local/betting-arbitrage-node:sxbet-test',
     manifest: path.join(nodeDir, 'manifest.runtime.json'),
     envFile: path.join(nodeDir, 'runtime.env'),
   });
-  writeJson(path.join(nodeDir, 'manifest.runtime.json'), {
-    node_id: 'sxbet-single-venue',
-    trader_id: 'betting-arbitrage',
-    log_level: 'INFO',
-    validation_mode: true,
-    venues: [
-      {
-        venue: 'SXBET',
-        client_key: 'SXBET',
-        data_enabled: true,
-        execution_enabled: false,
+  if (!options.discoveryWithoutNodeId) {
+    writeJson(path.join(nodeDir, 'manifest.runtime.json'), {
+      node_id: 'sxbet-single-venue',
+      trader_id: 'betting-arbitrage',
+      log_level: 'INFO',
+      validation_mode: true,
+      venues: [
+        {
+          venue: 'SXBET',
+          client_key: 'SXBET',
+          data_enabled: true,
+          execution_enabled: false,
+        },
+      ],
+      strategy: {
+        min_profit_margin: 0.01,
+        max_total_stake: 50,
+        auto_execute: false,
       },
-    ],
-    strategy: {
-      min_profit_margin: 0.01,
-      max_total_stake: 50,
-      auto_execute: false,
-    },
-  });
+    });
+  }
   writeFileSync(path.join(nodeDir, 'current-image.txt'), 'local/betting-arbitrage-node:sxbet-test\n', 'utf8');
   writeJson(hostRegistryPath, {
     version: 1,
@@ -211,9 +219,9 @@ echo "$image" > "${CONTROL_PLANE_TEST_STATE_ROOT}/deploy-image.txt"
   };
 }
 
-function startServer(envOverrides = {}) {
+function startServer(envOverrides = {}, options = {}) {
   const tempRoot = mkdtempSync(path.join(tmpdir(), 'cp-nodes-'));
-  const fixture = createFixtureLayout(tempRoot);
+  const fixture = createFixtureLayout(tempRoot, options);
   const port = 14600 + Math.floor(Math.random() * 400);
   const child = spawn(process.execPath, [serverPath], {
     env: {
@@ -283,6 +291,26 @@ test('trading node inventory and detail endpoints merge registry with discovery'
   }
 });
 
+test('trading node inventory still reconciles registry and discovery by container name when discovery loses nodeId', async () => {
+  const s = startServer({}, { discoveryWithoutNodeId: true });
+  try {
+    await waitForListen(s.port, s.child);
+    const listResp = await fetch(`http://127.0.0.1:${s.port}/control/api/nodes`);
+    assert.equal(listResp.status, 200);
+    const listBody = await listResp.json();
+    assert.equal(listBody.nodes.length, 1);
+    assert.equal(listBody.nodes[0].nodeId, 'sxbet-single-venue');
+    assert.equal(listBody.nodes[0].source, 'managed+discovered');
+
+    const detailResp = await fetch(`http://127.0.0.1:${s.port}/control/api/nodes/sxbet-single-venue`);
+    assert.equal(detailResp.status, 200);
+    const detailBody = await detailResp.json();
+    assert.equal(detailBody.discoveryEntry.containerName, 'betting-arbitrage-node-sxbet');
+  } finally {
+    await stopServer(s);
+  }
+});
+
 test('trading node render-config stays available in read-only mode while lifecycle actions are blocked', async () => {
   const s = startServer({ CONTROL_PLANE_READ_ONLY: '1' });
   try {
@@ -293,7 +321,8 @@ test('trading node render-config stays available in read-only mode while lifecyc
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         override: {
-          validation_mode: true,
+          validationMode: true,
+          executionEnabled: false,
           strategy: { min_profit_margin: 0.025 },
         },
       }),
@@ -302,6 +331,8 @@ test('trading node render-config stays available in read-only mode while lifecyc
     const renderBody = await renderResp.json();
     assert.equal(renderBody.ok, true);
     assert.equal(renderBody.manifest.strategy.min_profit_margin, 0.025);
+    assert.equal(renderBody.manifest.validation_mode, true);
+    assert.equal(renderBody.manifest.venues[0].execution_enabled, false);
     assert.deepEqual(renderBody.renderedConfig.venues, ['SXBET']);
 
     const restartResp = await fetch(`http://127.0.0.1:${s.port}/control/api/nodes/sxbet-single-venue/restart`, {
@@ -342,6 +373,22 @@ test('trading node lifecycle endpoints use local host actions and SPA fallback s
     assert.equal(restartBody.registryEntry.intendedState, 'running');
     assert.equal(restartBody.registryEntry.imageRef, 'local/betting-arbitrage-node:sxbet-hotfix');
 
+    const stopResp = await fetch(`http://127.0.0.1:${s.port}/control/api/nodes/sxbet-single-venue/stop`, {
+      method: 'POST',
+    });
+    assert.equal(stopResp.status, 200);
+    const stopBody = await stopResp.json();
+    assert.equal(stopBody.success, true);
+    assert.equal(stopBody.registryEntry.intendedState, 'stopped');
+  } finally {
+    await stopServer(s);
+  }
+});
+
+test('trading node stop succeeds when the container is already gone', async () => {
+  const s = startServer({ CONTROL_PLANE_TEST_DOCKER_RM_MISSING: '1' });
+  try {
+    await waitForListen(s.port, s.child);
     const stopResp = await fetch(`http://127.0.0.1:${s.port}/control/api/nodes/sxbet-single-venue/stop`, {
       method: 'POST',
     });
