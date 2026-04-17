@@ -128,7 +128,37 @@ jobs:
 
       - name: Repair self-hosted workspace
         shell: bash
-        run: bash scripts/ci/repair_self_hosted_workspace.sh
+        run: |
+          workspace_parent="$(dirname "$GITHUB_WORKSPACE")"
+          runner_ci_home="${RUNNER_CI_HOME:-}"
+          run_maybe_sudo() {
+            if [[ "${EUID}" -ne 0 ]] && command -v sudo > /dev/null 2>&1; then
+              sudo "$@"
+            else
+              "$@"
+            fi
+          }
+
+          if [[ -x /usr/local/bin/repair-github-runner-workspace ]]; then
+            run_maybe_sudo \
+              /usr/local/bin/repair-github-runner-workspace \
+              "$GITHUB_WORKSPACE" \
+              "$workspace_parent/.ci-cache" \
+              "$(id -u)" \
+              "$(id -g)"
+          else
+            run_maybe_sudo mkdir -p "$GITHUB_WORKSPACE" "$workspace_parent/.ci-cache"
+            run_maybe_sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" "$workspace_parent/.ci-cache"
+          fi
+
+          if [[ -n "$runner_ci_home" ]]; then
+            run_maybe_sudo mkdir -p "$runner_ci_home/.cache"
+            run_maybe_sudo chown -R "$(id -u):$(id -g)" "$runner_ci_home"
+          fi
+
+          if [[ ! -e "$GITHUB_WORKSPACE/.git" ]]; then
+            find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+          fi
 
       - name: Checkout repository
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
