@@ -1,6 +1,7 @@
 // Smoke test for CONTROL_PLANE_READ_ONLY. Runs under `node --test`.
-// Validates that enabling the flag rejects every non-safe HTTP method with 403
-// and still serves GETs (here: a synthetic OPTIONS pre-flight is treated safe).
+// Validates that enabling the flag rejects mutating control-plane calls with 403
+// while still allowing safe reads for overview/settings/deployment catalog and
+// strategy-node request history.
 //
 // Run locally with:
 //   node --test scripts/symphony/control_plane/__tests__/read_only.test.mjs
@@ -11,7 +12,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -24,8 +25,12 @@ function startServer(envOverrides) {
   const runRoot = path.join(tempRoot, 'runs');
   const githubRoot = path.join(tempRoot, 'github');
   const settingsPath = path.join(tempRoot, 'settings.json');
+  const strategyNodeManifestRoot = path.join(tempRoot, 'strategy-node-manifests');
+  const strategyNodeRequestRoot = path.join(tempRoot, 'strategy-node-requests');
   mkdirSync(runRoot, { recursive: true });
   mkdirSync(githubRoot, { recursive: true });
+  mkdirSync(strategyNodeManifestRoot, { recursive: true });
+  mkdirSync(strategyNodeRequestRoot, { recursive: true });
   const port = 14100 + Math.floor(Math.random() * 500);
   const child = spawn(process.execPath, [serverPath], {
     env: {
@@ -34,12 +39,42 @@ function startServer(envOverrides) {
       CONTROL_PLANE_RUN_ROOT: runRoot,
       CONTROL_PLANE_GITHUB_ROOT: githubRoot,
       CONTROL_PLANE_SETTINGS_PATH: settingsPath,
+      CONTROL_PLANE_STRATEGY_NODE_MANIFEST_ROOT: strategyNodeManifestRoot,
+      CONTROL_PLANE_STRATEGY_NODE_REQUEST_ROOT: strategyNodeRequestRoot,
       CONTROL_PLANE_WORKER_CONFIG: path.join(tempRoot, 'workers.json'),
       ...envOverrides
     },
     stdio: ['ignore', 'pipe', 'pipe']
   });
-  return { child, port, tempRoot };
+  return { child, port, tempRoot, strategyNodeManifestRoot, strategyNodeRequestRoot };
+}
+
+function writeStrategyNodeManifest(rootDir, fileName, manifest = {}) {
+  const filePath = path.join(rootDir, fileName);
+  writeFileSync(
+    filePath,
+    JSON.stringify(
+      {
+        node_id: 'sxbet-single-venue',
+        trader_id: 'betting-arbitrage',
+        validation_mode: true,
+        allow_dummy_credentials: true,
+        metadata: { recommended_worker: 'codex-a' },
+        venues: [
+          {
+            venue: 'SXBET',
+            client_key: 'SXBET',
+            data_enabled: true,
+            execution_enabled: false
+          }
+        ],
+        ...manifest
+      },
+      null,
+      2
+    )
+  );
+  return filePath;
 }
 
 async function waitForListen(port, child, timeoutMs = 5000) {
@@ -83,6 +118,33 @@ test('CONTROL_PLANE_READ_ONLY=1 rejects POST with 403', async () => {
   }
 });
 
+test('CONTROL_PLANE_READ_ONLY=1 rejects strategy-node deployment requests with 403', async () => {
+  const s = startServer({ CONTROL_PLANE_READ_ONLY: '1' });
+  try {
+    writeStrategyNodeManifest(s.strategyNodeManifestRoot, 'sxbet-single-venue.json');
+    await waitForListen(s.port, s.child);
+    const resp = await fetch(`http://127.0.0.1:${s.port}/control/api/deployments/requests`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        manifestFile: 'sxbet-single-venue.json',
+        rolloutMode: 'validate_only',
+        requestedBy: 'unit-test',
+        workerName: 'codex-a',
+        target: 'production',
+        notes: 'should be blocked by read-only'
+      })
+    });
+    assert.equal(resp.status, 403);
+    const body = await resp.json();
+    assert.equal(body.error, 'control-plane is read-only in this environment');
+    assert.equal(body.method, 'POST');
+    assert.equal(body.path, '/control/api/deployments/requests');
+  } finally {
+    await stopServer(s);
+  }
+});
+
 test('CONTROL_PLANE_READ_ONLY=1 still allows GET /control/api/overview', async () => {
   const s = startServer({ CONTROL_PLANE_READ_ONLY: '1' });
   try {
@@ -91,6 +153,69 @@ test('CONTROL_PLANE_READ_ONLY=1 still allows GET /control/api/overview', async (
     assert.equal(resp.status, 200);
     const body = await resp.json();
     assert.ok(body.generatedAt, 'overview should carry generatedAt');
+  } finally {
+    await stopServer(s);
+  }
+});
+
+test('CONTROL_PLANE_READ_ONLY=1 still allows strategy-node catalog and request listing', async () => {
+  const s = startServer({ CONTROL_PLANE_READ_ONLY: '1' });
+  try {
+    writeStrategyNodeManifest(s.strategyNodeManifestRoot, 'sxbet-single-venue.json');
+    await waitForListen(s.port, s.child);
+    const catalogResp = await fetch(`http://127.0.0.1:${s.port}/control/api/deployments/catalog`, {
+      method: 'GET'
+    });
+    assert.equal(catalogResp.status, 200);
+    const catalogBody = await catalogResp.json();
+    assert.ok(Array.isArray(catalogBody.manifests));
+    assert.equal(catalogBody.manifests.length, 1);
+    assert.equal(catalogBody.manifests[0].manifestFile, 'sxbet-single-venue.json');
+
+    const requestsResp = await fetch(`http://127.0.0.1:${s.port}/control/api/deployments/requests?limit=5`, {
+      method: 'GET'
+    });
+    assert.equal(requestsResp.status, 200);
+    const requestsBody = await requestsResp.json();
+    assert.deepEqual(requestsBody.requests, []);
+  } finally {
+    await stopServer(s);
+  }
+});
+
+test('without CONTROL_PLANE_READ_ONLY, strategy-node deployment requests are queued and listed', async () => {
+  const s = startServer({ CONTROL_PLANE_READ_ONLY: '' });
+  try {
+    writeStrategyNodeManifest(s.strategyNodeManifestRoot, 'sxbet-single-venue.json');
+    await waitForListen(s.port, s.child);
+    const resp = await fetch(`http://127.0.0.1:${s.port}/control/api/deployments/requests`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        manifestFile: 'sxbet-single-venue.json',
+        rolloutMode: 'validate_only',
+        requestedBy: 'unit-test',
+        workerName: 'codex-a',
+        target: 'production',
+        notes: 'queue a strategy-node request'
+      })
+    });
+    assert.equal(resp.status, 200);
+    const body = await resp.json();
+    assert.equal(body.success, true);
+    assert.equal(body.request.status, 'queued');
+    assert.equal(body.request.manifestFile, 'sxbet-single-venue.json');
+    assert.equal(body.request.rolloutMode, 'validate_only');
+
+    const listResp = await fetch(`http://127.0.0.1:${s.port}/control/api/deployments/requests?limit=5`, {
+      method: 'GET'
+    });
+    assert.equal(listResp.status, 200);
+    const listBody = await listResp.json();
+    assert.ok(Array.isArray(listBody.requests));
+    assert.equal(listBody.requests.length, 1);
+    assert.equal(listBody.requests[0].id, body.request.id);
+    assert.equal(listBody.requests[0].status, 'queued');
   } finally {
     await stopServer(s);
   }

@@ -24,7 +24,6 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
   validate-manifests:
@@ -63,13 +62,22 @@ jobs:
           github_ref: ${{ github.ref }}
 
       - name: Validate SX.bet manifest
-        run: python -m nautilus_trader.live.strategy_nodes.betting_arbitrage validate-manifest --manifest deploy/strategy_nodes/betting_arbitrage/sxbet-single-venue.json
+        run: >-
+          python -m nautilus_trader.live.strategy_nodes.betting_arbitrage
+          validate-manifest --manifest
+          deploy/strategy_nodes/betting_arbitrage/sxbet-single-venue.json
 
       - name: Validate Polymarket manifest
-        run: python -m nautilus_trader.live.strategy_nodes.betting_arbitrage validate-manifest --manifest deploy/strategy_nodes/betting_arbitrage/polymarket-single-venue.json
+        run: >-
+          python -m nautilus_trader.live.strategy_nodes.betting_arbitrage
+          validate-manifest --manifest
+          deploy/strategy_nodes/betting_arbitrage/polymarket-single-venue.json
 
       - name: Validate Polymarket multi-venue example
-        run: python -m nautilus_trader.live.strategy_nodes.betting_arbitrage validate-manifest --manifest deploy/strategy_nodes/betting_arbitrage/polymarket-plus-sxbet.example.json
+        run: >-
+          python -m nautilus_trader.live.strategy_nodes.betting_arbitrage
+          validate-manifest --manifest
+          deploy/strategy_nodes/betting_arbitrage/polymarket-plus-sxbet.example.json
 
       - name: Upload rendered strategy-node artifacts
         if: always()
@@ -84,6 +92,9 @@ jobs:
     timeout-minutes: 120
     needs: [validate-manifests]
     runs-on: [self-hosted, linux, x64, cloudbet-market-maker, ci, gcp, ubuntu24]
+    permissions:
+      contents: read
+      packages: write
     outputs:
       image_ref: ${{ steps.meta.outputs.image_ref }}
     steps:
@@ -117,13 +128,22 @@ jobs:
 
       - name: Resolve image reference
         id: meta
+        env:
+          INPUT_IMAGE_TAG: ${{ github.event.inputs.image_tag }}
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
         run: |
-          if [ -n "${{ github.event.inputs.image_tag }}" ]; then
-            tag="${{ github.event.inputs.image_tag }}"
+          if [ -n "$INPUT_IMAGE_TAG" ]; then
+            case "$INPUT_IMAGE_TAG" in
+              *[!A-Za-z0-9._-]*)
+                echo "Invalid image tag override: $INPUT_IMAGE_TAG" >&2
+                exit 1
+                ;;
+            esac
+            tag="$INPUT_IMAGE_TAG"
           else
             tag="${GITHUB_SHA::12}"
           fi
-          image_ref="ghcr.io/${{ github.repository_owner }}/cloudbet-market-maker/betting-arbitrage-node:${tag}"
+          image_ref="ghcr.io/${REPOSITORY_OWNER}/cloudbet-market-maker/betting-arbitrage-node:${tag}"
           echo "image_ref=$image_ref" >> "$GITHUB_OUTPUT"
 
       - name: Build and push strategy-node image
@@ -166,7 +186,8 @@ jobs:
           test -n "$STRATEGY_NODE_HOST"
           test -n "$STRATEGY_NODE_SSH_USER"
           test -n "$STRATEGY_NODE_SSH_KEY"
-          if [ -n "$STRATEGY_NODE_GHCR_TOKEN" ] && [ -z "$STRATEGY_NODE_GHCR_USERNAME" ]; then
+          if [ -n "$STRATEGY_NODE_GHCR_TOKEN" ] \
+            && [ -z "$STRATEGY_NODE_GHCR_USERNAME" ]; then
             echo "STRATEGY_NODE_GHCR_USERNAME is required when STRATEGY_NODE_GHCR_TOKEN is set" >&2
             exit 1
           fi
@@ -177,44 +198,78 @@ jobs:
           printf '%s' "$STRATEGY_NODE_SSH_KEY" > strategy-node.key
 
       - name: Upload manifest and deploy script
+        env:
+          INPUT_MANIFEST_PATH: ${{ github.event.inputs.manifest_path }}
         run: |
-          manifest_path="${{ github.event.inputs.manifest_path || 'deploy/strategy_nodes/betting_arbitrage/sxbet-single-venue.json' }}"
-          scp -i strategy-node.key -o StrictHostKeyChecking=no "$manifest_path" "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST:/tmp/strategy-node-manifest.json"
-          scp -i strategy-node.key -o StrictHostKeyChecking=no scripts/deploy/strategy_nodes/deploy_betting_strategy_node.sh "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST:/tmp/deploy_betting_strategy_node.sh"
-          scp -i strategy-node.key -o StrictHostKeyChecking=no scripts/ci/runner_health_check.sh "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST:/tmp/runner_health_check.sh"
+          manifest_path="$INPUT_MANIFEST_PATH"
+          if [ -z "$manifest_path" ]; then
+            manifest_path="deploy/strategy_nodes/betting_arbitrage/sxbet-single-venue.json"
+          fi
+          case "$manifest_path" in
+            deploy/strategy_nodes/*.json) ;;
+            *)
+              echo "Manifest path must stay under deploy/strategy_nodes and point to a JSON file" >&2
+              exit 1
+              ;;
+          esac
+          test -f "$manifest_path"
+          scp -i strategy-node.key -o StrictHostKeyChecking=no \
+            "$manifest_path" \
+            "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST:/tmp/strategy-node-manifest.json"
+          scp -i strategy-node.key -o StrictHostKeyChecking=no \
+            scripts/deploy/strategy_nodes/deploy_betting_strategy_node.sh \
+            "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST:/tmp/deploy_betting_strategy_node.sh"
+          scp -i strategy-node.key -o StrictHostKeyChecking=no \
+            scripts/ci/runner_health_check.sh \
+            "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST:/tmp/runner_health_check.sh"
           if [ -n "$STRATEGY_NODE_ENV_FILE" ]; then
-            printf '%s' "$STRATEGY_NODE_ENV_FILE" | ssh -i strategy-node.key -o StrictHostKeyChecking=no "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST" 'cat > /tmp/strategy-node.env'
+            printf '%s' "$STRATEGY_NODE_ENV_FILE" | \
+              ssh -i strategy-node.key -o StrictHostKeyChecking=no \
+                "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST" \
+                'cat > /tmp/strategy-node.env'
           fi
           if [ -n "$STRATEGY_NODE_GHCR_TOKEN" ]; then
-            printf '%s' "$STRATEGY_NODE_GHCR_TOKEN" | ssh -i strategy-node.key -o StrictHostKeyChecking=no "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST" 'cat > /tmp/strategy-node-ghcr-token'
-            ssh -i strategy-node.key -o StrictHostKeyChecking=no "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST" 'chmod 600 /tmp/strategy-node-ghcr-token'
+            printf '%s' "$STRATEGY_NODE_GHCR_TOKEN" | \
+              ssh -i strategy-node.key -o StrictHostKeyChecking=no \
+                "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST" \
+                'cat > /tmp/strategy-node-ghcr-token'
+            ssh -i strategy-node.key -o StrictHostKeyChecking=no \
+              "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST" \
+              'chmod 600 /tmp/strategy-node-ghcr-token'
           fi
 
       - name: Verify EC2 deploy host health
         run: |
+          runner_service_name="actions.runner.antonga23-cloudbet-market-maker."
+          runner_service_name+="ip-172-31-21-124-cloudbet-market-maker.service"
           health_output="$(
             ssh -i strategy-node.key -o StrictHostKeyChecking=no "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST" \
               "chmod +x /tmp/runner_health_check.sh && \
                RUNNER_ROLE=deploy \
                ACTIONS_RUNNER_ROOT=/home/ubuntu/actions-runner \
-               GITHUB_RUNNER_SERVICE_NAME=actions.runner.antonga23-cloudbet-market-maker.ip-172-31-21-124-cloudbet-market-maker.service \
+               GITHUB_RUNNER_SERVICE_NAME=$runner_service_name \
                OPTIONAL_SERVICE_NAMES=control-plane.service,actions-runner-hygiene.timer \
                bash /tmp/runner_health_check.sh"
           )"
           printf '%s\n' "$health_output"
+          expected_runner_state="${runner_service_name}"$'\tactive'
           if echo "$health_output" | grep -Fq $'docker\tmissing'; then
             echo "EC2 deploy host does not report a usable docker installation" >&2
             exit 1
           fi
-          if ! echo "$health_output" | grep -Fq $'actions.runner.antonga23-cloudbet-market-maker.ip-172-31-21-124-cloudbet-market-maker.service\tactive'; then
+          if ! echo "$health_output" | grep -Fq \
+            "$expected_runner_state"; then
             echo "EC2 deploy runner service is not active" >&2
             exit 1
           fi
 
       - name: Deploy node on target host
+        env:
+          IMAGE_REF: ${{ needs.build-strategy-node-image.outputs.image_ref }}
         run: |
           if [ -n "$STRATEGY_NODE_GHCR_TOKEN" ]; then
-            registry_args="--registry-user $STRATEGY_NODE_GHCR_USERNAME --registry-token-file /tmp/strategy-node-ghcr-token"
+            registry_args="--registry-user $STRATEGY_NODE_GHCR_USERNAME "
+            registry_args+="--registry-token-file /tmp/strategy-node-ghcr-token"
           else
             registry_args=""
           fi
@@ -222,7 +277,7 @@ jobs:
             "chmod +x /tmp/deploy_betting_strategy_node.sh && \
              /tmp/deploy_betting_strategy_node.sh \
                --manifest /tmp/strategy-node-manifest.json \
-               --image '${{ needs.build-strategy-node-image.outputs.image_ref }}' \
+               --image '$IMAGE_REF' \
                --name betting-arbitrage-node \
                ${STRATEGY_NODE_ENV_FILE:+--env-file /tmp/strategy-node.env} \
                $registry_args && \
@@ -232,4 +287,6 @@ jobs:
         if: always()
         run: |
           ssh -i strategy-node.key -o StrictHostKeyChecking=no "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST" \
-            'rm -f /tmp/deploy_betting_strategy_node.sh /tmp/runner_health_check.sh /tmp/strategy-node-ghcr-token'
+            'rm -f /tmp/deploy_betting_strategy_node.sh \
+              /tmp/runner_health_check.sh \
+              /tmp/strategy-node-ghcr-token'

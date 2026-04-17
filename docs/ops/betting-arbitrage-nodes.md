@@ -15,10 +15,12 @@ This repo now contains a repo-owned deployment path for live betting arbitrage n
 ## Supported venues today
 
 Supported in the live-node builder:
+
 - `SXBET`
 - `POLYMARKET`
 
 Explicitly blocked for live-node deployment until adapter hardening is completed:
+
 - `10BET`
 - `BLACKBET`
 - `WSB`
@@ -136,14 +138,42 @@ Runner split for this workflow:
 - EC2 deploy/trading host: strategy-node runtime host and SSH deployment target
 
 Container image build:
+
 - `.docker/strategy_node.dockerfile`
 
 Host-side scripts:
+
 - `scripts/deploy/strategy_nodes/deploy_betting_strategy_node.sh`
 - `scripts/deploy/strategy_nodes/rollback_betting_strategy_node.sh`
 - `scripts/deploy/strategy_nodes/wait_for_strategy_node_status.sh`
 
 The deploy script writes a runtime manifest with node-local status/heartbeat paths under `/var/lib/nautilus-node/` and starts the node as a Docker container.
+
+## Node Registry And Discovery
+
+Trading-node operations should use a durable registry plus host discovery:
+
+- Registry is the operator source of truth for desired state, host assignment, and last applied config.
+- Discovery is the runtime truth from Docker, the node status files, and the heartbeat files.
+- The effective node view is the merged result of registry state and discovered runtime state.
+- The current release only manages the EC2 trading host locally.
+- Future multi-host discovery should reuse the same host record shape and add `kind: ssh` without changing the node contract.
+
+Recommended registry locations:
+
+- `/srv/symphony/worker-state/trading-hosts/hosts.json`
+- `/srv/symphony/worker-state/trading-nodes/registry.json`
+- `/srv/symphony/worker-state/trading-nodes/discovery/<hostId>.json`
+
+Node lifecycle in v1:
+
+- `start` and `stop` act on the current EC2 host only.
+- `restart` may accept a bounded override payload, but not arbitrary secret mutation.
+- The UI should expose logs, runtime state, and effective config for each discovered node.
+- `CONTROL_PLANE_READ_ONLY=1` must still allow inventory and log reads, but block node mutation requests.
+- The control-plane routes are:
+  - `/nodes` for the merged inventory
+  - `/nodes/:nodeId` for node detail, recent logs, lifecycle actions, and effective config preview
 
 GitHub deploy workflow secrets:
 

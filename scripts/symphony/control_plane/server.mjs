@@ -31,6 +31,19 @@ import {
   upsertGitHubJob,
   upsertGitHubJobLogStream
 } from './github_live_store.mjs';
+import {
+  DEFAULT_STALE_HEARTBEAT_MS,
+  buildEffectiveTradingNodes,
+  defaultLocalHostRecord,
+  discoverLocalTradingNodes,
+  mergeTradingNodeManifest,
+  readTradingHostRegistry,
+  readTradingNodeLogs,
+  readTradingNodeRegistry,
+  writeTradingHostRegistry,
+  writeTradingNodeDiscoverySnapshot,
+  writeTradingNodeRegistry,
+} from './trading_nodes.mjs';
 
 const DEFAULT_ENV_PATH = '/srv/symphony/symphony.env';
 const FILE_ENV = loadEnvFile(DEFAULT_ENV_PATH);
@@ -61,10 +74,25 @@ const STRATEGY_NODE_MANIFEST_ROOT =
 const STRATEGY_NODE_REQUEST_ROOT =
   ENV.CONTROL_PLANE_STRATEGY_NODE_REQUEST_ROOT ||
   '/srv/symphony/worker-state/strategy-node-requests';
+const TRADING_HOST_REGISTRY_PATH =
+  ENV.CONTROL_PLANE_TRADING_HOST_REGISTRY_PATH ||
+  '/srv/symphony/worker-state/trading-hosts/hosts.json';
+const TRADING_NODE_REGISTRY_PATH =
+  ENV.CONTROL_PLANE_TRADING_NODE_REGISTRY_PATH ||
+  '/srv/symphony/worker-state/trading-nodes/registry.json';
+const TRADING_NODE_DISCOVERY_ROOT =
+  ENV.CONTROL_PLANE_TRADING_NODE_DISCOVERY_ROOT ||
+  '/srv/symphony/worker-state/trading-nodes/discovery';
+const TRADING_NODE_ROOT_DIR =
+  ENV.CONTROL_PLANE_TRADING_NODE_ROOT ||
+  '/opt/cloudbet/strategy-nodes';
+const TRADING_LOCAL_HOST_ID = ENV.CONTROL_PLANE_TRADING_LOCAL_HOST_ID || 'local-ec2';
+const TRADING_LOCAL_HOST_NAME = ENV.CONTROL_PLANE_TRADING_LOCAL_HOST_NAME || 'EC2 trading host';
 const CONTROL_SETTINGS_PATH = ENV.CONTROL_PLANE_SETTINGS_PATH || '/srv/symphony/worker-state/control-plane/settings.json';
 const STATIC_DIR = path.dirname(fileURLToPath(import.meta.url));
 const STATIC_DIST_DIR = path.join(STATIC_DIR, 'dist');
 const STATIC_ROOT = fs.existsSync(path.join(STATIC_DIST_DIR, 'index.html')) ? STATIC_DIST_DIR : STATIC_DIR;
+const CONTROL_REPO_ROOT = ENV.CONTROL_REPO_ROOT || path.resolve(STATIC_DIR, '..', '..', '..');
 const SYMPHONY_STATE_URL = `http://127.0.0.1:${SYMPHONY_PORT}/api/v1/state`;
 const RECONCILE_INTERVAL_MS = 30_000;
 const EVENT_STREAM_INTERVAL_MS = 2_000;
@@ -110,12 +138,21 @@ const GITHUB_REPO_SLUG = (ENV.GITHUB_REPO || '').trim();
 const RUNNER_SERVICE_NAME =
   ENV.GITHUB_RUNNER_SERVICE_NAME || 'actions.runner.antonga23-cloudbet-market-maker.EC2-Runner.service';
 const RUNNER_DIAG_DIR = ENV.GITHUB_RUNNER_DIAG_DIR || '/home/ubuntu/actions-runner/_diag';
+const TRADING_NODE_STALE_HEARTBEAT_MS = Number(
+  ENV.CONTROL_PLANE_TRADING_NODE_STALE_HEARTBEAT_MS || DEFAULT_STALE_HEARTBEAT_MS,
+);
 
 let latestOverview = {
   generatedAt: new Date().toISOString(),
   symphony: null,
   host: {},
   workers: [],
+  tradingNodes: {
+    hosts: [],
+    nodes: [],
+    summary: {},
+    errors: []
+  },
   providers: {},
   issues: [],
   runs: [],
@@ -357,6 +394,276 @@ function createStrategyNodeRequest(payload) {
 
   writeJson(path.join(STRATEGY_NODE_REQUEST_ROOT, `${requestId}.json`), request);
   return request;
+}
+
+function getLocalTradingHost() {
+  return defaultLocalHostRecord({
+    hostId: TRADING_LOCAL_HOST_ID,
+    rootDir: TRADING_NODE_ROOT_DIR,
+    displayName: TRADING_LOCAL_HOST_NAME,
+  });
+}
+
+function loadTradingNodeState() {
+  const localHost = getLocalTradingHost();
+  const hostRegistry = readTradingHostRegistry(TRADING_HOST_REGISTRY_PATH, localHost);
+  if (!fs.existsSync(TRADING_HOST_REGISTRY_PATH)) {
+    try {
+      writeTradingHostRegistry(TRADING_HOST_REGISTRY_PATH, hostRegistry);
+    } catch {
+      // non-fatal on local dev machines without /srv permissions
+    }
+  }
+
+  const nodeRegistry = readTradingNodeRegistry(TRADING_NODE_REGISTRY_PATH);
+  const discovery = discoverLocalTradingNodes({
+    hostId: localHost.hostId,
+    rootDir: localHost.rootDir,
+    staleHeartbeatMs: TRADING_NODE_STALE_HEARTBEAT_MS,
+  });
+  try {
+    writeTradingNodeDiscoverySnapshot(
+      path.join(TRADING_NODE_DISCOVERY_ROOT, `${localHost.hostId}.json`),
+      discovery,
+    );
+  } catch {
+    // non-fatal on local dev machines without /srv permissions
+  }
+
+  const nodes = buildEffectiveTradingNodes({
+    hosts: hostRegistry.hosts,
+    registry: nodeRegistry,
+    discoveries: [discovery],
+  });
+
+  return {
+    hosts: hostRegistry.hosts,
+    hostRegistry,
+    nodeRegistry,
+    registry: nodeRegistry,
+    discoveries: [discovery],
+    discovery,
+    nodes,
+  };
+}
+
+function summarizeTradingNodesSnapshot(snapshot) {
+  const summary = {
+    total: snapshot.nodes.length,
+    running: 0,
+    managed: 0,
+    discoveredUnmanaged: 0,
+    staleHeartbeat: 0,
+    missingContainer: 0,
+  };
+  for (const node of snapshot.nodes) {
+    if (node.status === 'running') {
+      summary.running += 1;
+    }
+    if (node.stateClass === 'managed') {
+      summary.managed += 1;
+    }
+    if (node.stateClass === 'discovered-unmanaged') {
+      summary.discoveredUnmanaged += 1;
+    }
+    if (node.stateClass === 'stale-heartbeat') {
+      summary.staleHeartbeat += 1;
+    }
+    if (node.stateClass === 'missing-container') {
+      summary.missingContainer += 1;
+    }
+  }
+  return summary;
+}
+
+function upsertTradingNodeRegistryEntry(snapshot, nextEntry) {
+  const registry = snapshot.registry || { nodes: [] };
+  const nodes = Array.isArray(registry.nodes) ? registry.nodes.map((node) => ({ ...node })) : [];
+  const index = nodes.findIndex(
+    (node) =>
+      node.nodeId === nextEntry.nodeId ||
+      (node.containerName && node.containerName === nextEntry.containerName),
+  );
+  const base = index >= 0 ? nodes[index] : null;
+  const merged = {
+    ...(base || {}),
+    ...nextEntry,
+    updatedAt: new Date().toISOString(),
+    createdAt: base?.createdAt || new Date().toISOString(),
+  };
+  if (index >= 0) {
+    nodes[index] = merged;
+  } else {
+    nodes.push(merged);
+  }
+  writeTradingNodeRegistry(TRADING_NODE_REGISTRY_PATH, { nodes });
+  return merged;
+}
+
+function findTradingNode(snapshot, nodeId) {
+  return snapshot.nodes.find((node) => node.nodeId === nodeId || node.containerName === nodeId) || null;
+}
+
+function ensureNodeDir(node) {
+  const nodeDir = node.discovery?.paths?.nodeDir || path.join(TRADING_NODE_ROOT_DIR, node.containerName);
+  fs.mkdirSync(nodeDir, { recursive: true });
+  return nodeDir;
+}
+
+function parseNodeOverridePayload(payload = {}) {
+  const override = {};
+  const source = payload.override || payload.overrides || payload.configOverrides || {};
+  if (source && typeof source === 'object') {
+    const logLevel = source.log_level ?? source.logLevel;
+    if (logLevel !== undefined) {
+      override.log_level = logLevel;
+    }
+    const validationMode = source.validation_mode ?? source.validationMode;
+    if (validationMode !== undefined) {
+      override.validation_mode = validationMode;
+    }
+    const executionEnabled = source.execution_enabled ?? source.executionEnabled;
+    if (executionEnabled !== undefined) {
+      override.execution_enabled = executionEnabled;
+    }
+    if (source.strategy && typeof source.strategy === 'object') {
+      override.strategy = source.strategy;
+    }
+    if (source.venues && Array.isArray(source.venues)) {
+      override.venues = source.venues;
+    }
+    if (source.metadata && typeof source.metadata === 'object') {
+      override.metadata = source.metadata;
+    }
+    const allowDummyCredentials =
+      source.allow_dummy_credentials ?? source.allowDummyCredentials;
+    if (allowDummyCredentials !== undefined) {
+      override.allow_dummy_credentials = allowDummyCredentials;
+    }
+  }
+  const imageRef = payload.imageRef ? String(payload.imageRef).trim() : '';
+  return { override, imageRef };
+}
+
+function isMissingDockerContainerError(result) {
+  const text = String(result?.stderr || result?.stdout || '').toLowerCase();
+  return text.includes('no such container') || text.includes('cannot remove container');
+}
+
+function renderTradingNodeConfigPreview(manifest) {
+  const manifestDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cp-node-render-'));
+  const manifestPath = path.join(manifestDir, 'manifest.json');
+  fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+  const result = spawnSync(
+    'python3',
+    [
+      '-m',
+      'nautilus_trader.live.strategy_nodes.betting_arbitrage',
+      'render-node-config',
+      '--manifest',
+      manifestPath,
+    ],
+    {
+      encoding: 'utf8',
+      cwd: CONTROL_REPO_ROOT,
+    },
+  );
+  fs.rmSync(manifestDir, { recursive: true, force: true });
+  if (result.status !== 0) {
+    return {
+      ok: false,
+      error: (result.stderr || result.stdout || 'render-node-config failed').trim(),
+    };
+  }
+  return {
+    ok: true,
+    renderedConfig: parseJsonString(result.stdout, null),
+    raw: result.stdout,
+  };
+}
+
+function writeNodeStatusFile(node, payload) {
+  const statusPath =
+    node.discovery?.paths?.statusPath ||
+    path.join(ensureNodeDir(node), 'status.json');
+  fs.writeFileSync(statusPath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+}
+
+function materializeTradingNodeEnvFile(node) {
+  const nodeDir = ensureNodeDir(node);
+  const envDir = path.join(nodeDir, 'runtime');
+  fs.mkdirSync(envDir, { recursive: true });
+  const envPath = path.join(envDir, `deploy-${Date.now()}.env`);
+  const keys = [
+    'SXBET_API_KEY',
+    'SXBET_PRIVATE_KEY',
+    'SXBET_WALLET_ADDRESS',
+    'POLYMARKET_API_KEY',
+    'POLYMARKET_API_SECRET',
+    'POLYMARKET_PASSPHRASE',
+    'POLYMARKET_PRIVATE_KEY',
+    'POLYMARKET_PK',
+    'POLYMARKET_FUNDER',
+    'SYMPHONY_WORKSPACE_ROOT',
+    'SOURCE_REPO_URL',
+    'SYMPHONY_PORT',
+    'CONTROL_PLANE_PORT',
+    'CONTROL_PLANE_WORKER_CONFIG',
+    'AGENT_SECRET_ID',
+    'AWS_REGION',
+    'AWS_DEFAULT_REGION'
+  ];
+  const lines = [];
+  for (const key of keys) {
+    const value = ENV[key] || process.env[key];
+    if (value) {
+      lines.push(`${key}=${value}`);
+    }
+  }
+  fs.writeFileSync(envPath, `${lines.join('\n')}\n`, 'utf8');
+  return envPath;
+}
+
+function runDeployScriptForNode(node, mergedManifest, imageRef) {
+  const nodeDir = ensureNodeDir(node);
+  const requestedManifestPath = path.join(nodeDir, 'manifest.requested.json');
+  fs.writeFileSync(requestedManifestPath, `${JSON.stringify(mergedManifest, null, 2)}\n`, 'utf8');
+
+  const args = [
+    path.join(CONTROL_REPO_ROOT, 'scripts/deploy/strategy_nodes/deploy_betting_strategy_node.sh'),
+    '--manifest',
+    requestedManifestPath,
+    '--image',
+    imageRef,
+    '--name',
+    node.containerName,
+    '--root',
+    TRADING_NODE_ROOT_DIR,
+  ];
+  const envFile = node.envFile || node.discovery?.release?.envFile || materializeTradingNodeEnvFile(node);
+  node.envFile = envFile;
+  if (envFile) {
+    args.push('--env-file', envFile);
+  }
+  const secretJson = getSecretJson();
+  const registryUser = String(secretJson.STRATEGY_NODE_GHCR_USERNAME || '').trim();
+  const registryToken = String(secretJson.STRATEGY_NODE_GHCR_TOKEN || '').trim();
+  let tokenFile = '';
+  try {
+    if (registryUser && registryToken) {
+      tokenFile = path.join(os.tmpdir(), `cp-ghcr-${Date.now()}-${randomBytes(4).toString('hex')}`);
+      fs.writeFileSync(tokenFile, registryToken, 'utf8');
+      args.push('--registry-user', registryUser, '--registry-token-file', tokenFile);
+    }
+    return spawnSync('bash', args, {
+      encoding: 'utf8',
+      cwd: CONTROL_REPO_ROOT,
+    });
+  } finally {
+    if (tokenFile) {
+      fs.rmSync(tokenFile, { force: true });
+    }
+  }
 }
 
 function decodeJwtPayload(token) {
@@ -2721,10 +3028,11 @@ function determineStall(issue, workers, symphony) {
 }
 
 async function computeOverview() {
-  const [symphony, issues, teamStates] = await Promise.all([
+  const [symphony, issues, teamStates, tradingNodes] = await Promise.all([
     fetchSymphonyState(),
     fetchProjectIssues(),
-    fetchTeamStates()
+    fetchTeamStates(),
+    Promise.resolve(loadTradingNodeState())
   ]);
 
   const workers = readWorkers();
@@ -2735,7 +3043,10 @@ async function computeOverview() {
   };
   const strategyNodes = {
     manifests: listStrategyNodeCatalogEntries(),
-    requests: listStrategyNodeRequests(40)
+    requests: listStrategyNodeRequests(40),
+    hosts: tradingNodes.hosts,
+    nodes: tradingNodes.nodes,
+    summary: summarizeTradingNodesSnapshot(tradingNodes),
   };
   const settings = readControlSettings();
   const runs = listRecentRuns(60);
@@ -2799,6 +3110,10 @@ async function computeOverview() {
     symphony,
     teamStates,
     host: readHostStats(),
+    tradingNodes: {
+      ...tradingNodes,
+      summary: summarizeTradingNodesSnapshot(tradingNodes),
+    },
     workers: workers.map((worker) => ({
       ...worker,
       latestRun: latestRunByWorker.get(worker.name) || null
@@ -3131,6 +3446,222 @@ async function handleStrategyNodeRequestCreate(req, res) {
     const payload = JSON.parse(raw || '{}');
     const request = createStrategyNodeRequest(payload);
     sendJson(res, 200, { success: true, request });
+  } catch (error) {
+    sendJson(res, 500, { error: error.message });
+  }
+}
+
+async function handleTradingNodeStop(res, nodeId) {
+  try {
+    const snapshot = loadTradingNodeState();
+    const node = findTradingNode(snapshot, nodeId);
+    if (!node) {
+      sendJson(res, 404, { error: `Unknown trading node: ${nodeId}` });
+      return;
+    }
+    if (node.container?.exists !== false) {
+      const result = spawnSync('docker', ['rm', '-f', node.containerName], { encoding: 'utf8' });
+      if (result.status !== 0 && !isMissingDockerContainerError(result)) {
+        sendJson(res, 500, { error: (result.stderr || result.stdout || 'docker rm failed').trim() });
+        return;
+      }
+    }
+    writeNodeStatusFile(node, {
+      nodeId: node.nodeId,
+      status: 'stopped',
+      stoppedAt: new Date().toISOString(),
+      manifestPath: node.manifestPath,
+      renderedConfigPath: node.discovery?.status?.renderedConfigPath || null,
+    });
+    const registryEntry = upsertTradingNodeRegistryEntry(snapshot, {
+      nodeId: node.nodeId,
+      displayName: node.displayName,
+      hostId: node.hostId,
+      strategyId: node.strategyId,
+      manifestId: node.manifestId,
+      containerName: node.containerName,
+      venues: node.venues,
+      intendedState: 'stopped',
+      lastAppliedConfig: node.discovery?.manifest || node.registry?.lastAppliedConfig || null,
+      configOverrides: node.registry?.configOverrides || null,
+      manifestPath: node.manifestPath,
+      imageRef: node.imageRef,
+      envFile: node.envFile,
+      traderId: node.metadata?.traderId || null,
+    });
+    latestOverview = await computeOverview();
+    sendJson(res, 200, { success: true, nodeId: node.nodeId, registryEntry });
+  } catch (error) {
+    sendJson(res, 500, { error: error.message });
+  }
+}
+
+async function handleTradingNodeStartOrRestart(req, res, nodeId, action) {
+  try {
+    const snapshot = loadTradingNodeState();
+    const node = findTradingNode(snapshot, nodeId);
+    if (!node) {
+      sendJson(res, 404, { error: `Unknown trading node: ${nodeId}` });
+      return;
+    }
+    const baseManifest = node.discovery?.manifest || node.registry?.lastAppliedConfig || null;
+    if (!baseManifest) {
+      sendJson(res, 400, { error: 'No manifest is available for this node' });
+      return;
+    }
+    const raw = await readBody(req);
+    const payload = JSON.parse(raw || '{}');
+    const { override, imageRef } = parseNodeOverridePayload(payload);
+    const mergedManifest = mergeTradingNodeManifest(baseManifest, override);
+    const nextImageRef = imageRef || node.imageRef || '';
+    if (!nextImageRef) {
+      sendJson(res, 400, { error: 'No imageRef is available for this node' });
+      return;
+    }
+    const result = runDeployScriptForNode(node, mergedManifest, nextImageRef);
+    if (result.status !== 0) {
+      sendJson(res, 500, {
+        error: (result.stderr || result.stdout || `${action} failed`).trim(),
+      });
+      return;
+    }
+    const registryEntry = upsertTradingNodeRegistryEntry(snapshot, {
+      nodeId: node.nodeId,
+      displayName: node.displayName,
+      hostId: node.hostId,
+      strategyId: node.strategyId,
+      manifestId: node.manifestId,
+      containerName: node.containerName,
+      venues: mergedManifest.venues || node.venues,
+      intendedState: 'running',
+      lastAppliedConfig: mergedManifest,
+      configOverrides: override,
+      manifestPath: node.manifestPath,
+      imageRef: nextImageRef,
+      envFile: node.envFile,
+      traderId: node.metadata?.traderId || null,
+    });
+    latestOverview = await computeOverview();
+    sendJson(res, 200, {
+      success: true,
+      action,
+      nodeId: node.nodeId,
+      registryEntry,
+      output: [result.stdout, result.stderr].filter(Boolean).join('\n').trim(),
+    });
+  } catch (error) {
+    sendJson(res, 500, { error: error.message });
+  }
+}
+
+async function handleTradingNodeList(res) {
+  try {
+    const snapshot = loadTradingNodeState();
+    sendJson(res, 200, {
+      hosts: snapshot.hosts,
+      hostRegistry: snapshot.hostRegistry,
+      nodeRegistry: snapshot.nodeRegistry,
+      registry: snapshot.registry,
+      discovery: snapshot.discovery,
+      discoveries: snapshot.discoveries,
+      nodes: snapshot.nodes,
+      summary: summarizeTradingNodesSnapshot(snapshot),
+    });
+  } catch (error) {
+    sendJson(res, 500, { error: error.message });
+  }
+}
+
+async function handleTradingNodeDetail(res, nodeId) {
+  try {
+    const snapshot = loadTradingNodeState();
+    const node = findTradingNode(snapshot, nodeId);
+    if (!node) {
+      sendJson(res, 404, { error: `Unknown trading node: ${nodeId}` });
+      return;
+    }
+    sendJson(res, 200, {
+      node,
+      hosts: snapshot.hosts,
+      hostRegistry: snapshot.hostRegistry,
+      nodeRegistry: snapshot.nodeRegistry,
+      registry: node.registry || null,
+      registryEntry: node.registry || null,
+      discovery: node.discovery || null,
+      discoveryEntry: node.discovery || null,
+      manifest: node.discovery?.manifest || node.registry?.lastAppliedConfig || null,
+      effectiveConfig: node.registry?.lastAppliedConfig || node.discovery?.manifest || null,
+      summary: summarizeTradingNodesSnapshot(snapshot),
+      logs: readTradingNodeLogs({
+        containerName: node.containerName,
+        mode: 'recent',
+        limit: 200,
+      }),
+    });
+  } catch (error) {
+    sendJson(res, 500, { error: error.message });
+  }
+}
+
+async function handleTradingNodeLogs(res, nodeId, requestUrl) {
+  try {
+    const snapshot = loadTradingNodeState();
+    const node = findTradingNode(snapshot, nodeId);
+    if (!node) {
+      sendJson(res, 404, { error: `Unknown trading node: ${nodeId}` });
+      return;
+    }
+    const limit = Number.parseInt(requestUrl.searchParams.get('limit') || '200', 10);
+    const mode = String(requestUrl.searchParams.get('mode') || 'recent').trim();
+    const result = readTradingNodeLogs({
+      containerName: node.containerName,
+      mode,
+      limit: Number.isFinite(limit) ? limit : 200,
+      cursor: String(requestUrl.searchParams.get('cursor') || ''),
+    });
+    sendJson(res, 200, { nodeId: node.nodeId, ...result });
+  } catch (error) {
+    sendJson(res, 500, { error: error.message });
+  }
+}
+
+async function handleTradingNodeRenderConfig(req, res, nodeId, requestUrl) {
+  try {
+    const snapshot = loadTradingNodeState();
+    const node = findTradingNode(snapshot, nodeId);
+    if (!node) {
+      sendJson(res, 404, { error: `Unknown trading node: ${nodeId}` });
+      return;
+    }
+    const payload =
+      req.method === 'POST'
+        ? JSON.parse((await readBody(req)) || '{}')
+        : Object.fromEntries(requestUrl.searchParams.entries());
+    const { override } = parseNodeOverridePayload(payload);
+    const manifest = mergeTradingNodeManifest(
+      node.discovery?.manifest || node.registry?.lastAppliedConfig || {},
+      override,
+    );
+    const result = renderTradingNodeConfigPreview(manifest);
+    sendJson(res, 200, {
+      ok: Boolean(result.ok),
+      nodeId: node.nodeId,
+      containerName: node.containerName,
+      manifest,
+      ...result,
+    });
+  } catch (error) {
+    sendJson(res, 500, { error: error.message });
+  }
+}
+
+async function handleTradingNodeAction(req, res, nodeId, action) {
+  try {
+    if (action === 'stop') {
+      await handleTradingNodeStop(res, nodeId);
+      return;
+    }
+    await handleTradingNodeStartOrRestart(req, res, nodeId, action);
   } catch (error) {
     sendJson(res, 500, { error: error.message });
   }
@@ -3733,12 +4264,16 @@ const server = http.createServer(async (req, res) => {
   const pathname = requestUrl.pathname;
 
   if (CONTROL_PLANE_READ_ONLY && !READ_ONLY_SAFE_METHODS.has(req.method || '')) {
-    sendJson(res, 403, {
-      error: 'control-plane is read-only in this environment',
-      method: req.method,
-      path: pathname
-    });
-    return;
+    const renderConfigAllowed =
+      req.method === 'POST' && /^\/control\/api\/nodes\/[^/]+\/render-config$/.test(pathname);
+    if (!renderConfigAllowed) {
+      sendJson(res, 403, {
+        error: 'control-plane is read-only in this environment',
+        method: req.method,
+        path: pathname
+      });
+      return;
+    }
   }
 
   if (req.method === 'GET' && pathname === '/') {
@@ -3809,6 +4344,40 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'POST' && pathname === '/control/api/deployments/requests') {
     await handleStrategyNodeRequestCreate(req, res);
+    return;
+  }
+
+  if (req.method === 'GET' && pathname === '/control/api/nodes') {
+    await handleTradingNodeList(res);
+    return;
+  }
+
+  const tradingNodeLogsMatch = pathname.match(/^\/control\/api\/nodes\/([^/]+)\/logs$/);
+  if (req.method === 'GET' && tradingNodeLogsMatch) {
+    await handleTradingNodeLogs(res, decodeURIComponent(tradingNodeLogsMatch[1]), requestUrl);
+    return;
+  }
+
+  const tradingNodeRenderConfigMatch = pathname.match(/^\/control\/api\/nodes\/([^/]+)\/render-config$/);
+  if ((req.method === 'GET' || req.method === 'POST') && tradingNodeRenderConfigMatch) {
+    await handleTradingNodeRenderConfig(req, res, decodeURIComponent(tradingNodeRenderConfigMatch[1]), requestUrl);
+    return;
+  }
+
+  const tradingNodeActionMatch = pathname.match(/^\/control\/api\/nodes\/([^/]+)\/(start|stop|restart)$/);
+  if (req.method === 'POST' && tradingNodeActionMatch) {
+    await handleTradingNodeAction(
+      req,
+      res,
+      decodeURIComponent(tradingNodeActionMatch[1]),
+      tradingNodeActionMatch[2]
+    );
+    return;
+  }
+
+  const tradingNodeDetailMatch = pathname.match(/^\/control\/api\/nodes\/([^/]+)$/);
+  if (req.method === 'GET' && tradingNodeDetailMatch) {
+    await handleTradingNodeDetail(res, decodeURIComponent(tradingNodeDetailMatch[1]));
     return;
   }
 
@@ -3941,6 +4510,11 @@ const server = http.createServer(async (req, res) => {
   const antigravityWorkerActionMatch = pathname.match(/^\/control\/api\/providers\/antigravity\/workers\/([^/]+)\/action$/);
   if (req.method === 'POST' && antigravityWorkerActionMatch) {
     await handleProviderAntigravityWorkerAction(req, res, decodeURIComponent(antigravityWorkerActionMatch[1]));
+    return;
+  }
+
+  if (req.method === 'GET' && !pathname.startsWith('/control/api/')) {
+    sendText(res, 200, renderHtml(), 'text/html; charset=utf-8');
     return;
   }
 
