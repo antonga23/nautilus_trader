@@ -15,10 +15,12 @@ This repo now contains a repo-owned deployment path for live betting arbitrage n
 ## Supported venues today
 
 Supported in the live-node builder:
+
 - `SXBET`
 - `POLYMARKET`
 
 Explicitly blocked for live-node deployment until adapter hardening is completed:
+
 - `10BET`
 - `BLACKBET`
 - `WSB`
@@ -136,9 +138,11 @@ Runner split for this workflow:
 - EC2 deploy/trading host: strategy-node runtime host and SSH deployment target
 
 Container image build:
+
 - `.docker/strategy_node.dockerfile`
 
 Host-side scripts:
+
 - `scripts/deploy/strategy_nodes/deploy_betting_strategy_node.sh`
 - `scripts/deploy/strategy_nodes/rollback_betting_strategy_node.sh`
 - `scripts/deploy/strategy_nodes/wait_for_strategy_node_status.sh`
