@@ -49,10 +49,36 @@ jobs:
   rust-policy:
     timeout-minutes: 30
     runs-on: [self-hosted, linux, x64, cloudbet-market-maker, ci, gcp, ubuntu24]
+    env:
+      RUNNER_CI_HOME: /tmp/cloudbet-market-maker-ci-home
+      HOME: /tmp/cloudbet-market-maker-ci-home
     steps:
       - uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
         with:
           egress-policy: audit
+
+      - name: Repair self-hosted workspace
+        shell: bash
+        run: |
+          workspace_parent="$(dirname "$GITHUB_WORKSPACE")"
+          runner_ci_home="${RUNNER_CI_HOME}"
+          if [[ -x /usr/local/bin/repair-github-runner-workspace ]]; then
+            sudo /usr/local/bin/repair-github-runner-workspace \
+              "$GITHUB_WORKSPACE" \
+              "$workspace_parent/.ci-cache" \
+              "$(id -u)" \
+              "$(id -g)"
+          else
+            sudo mkdir -p "$GITHUB_WORKSPACE" "$workspace_parent/.ci-cache"
+            sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" "$workspace_parent/.ci-cache"
+          fi
+
+          sudo mkdir -p "$runner_ci_home/.cache"
+          sudo chown -R "$(id -u):$(id -g)" "$runner_ci_home"
+
+          if [[ ! -e "$GITHUB_WORKSPACE/.git" ]]; then
+            find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+          fi
 
       - name: Checkout repository
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
