@@ -13,7 +13,6 @@ on:
   push:
     branches:
       - test-ci
-      - develop
       - nightly
 
 env:
