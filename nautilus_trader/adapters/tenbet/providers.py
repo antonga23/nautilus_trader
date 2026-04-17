@@ -75,11 +75,7 @@ class TenBetInstrumentProvider(InstrumentProvider):
             await self._browser_client.connect()
 
         filters = filters or {}
-        sports = (
-            self._config.sports
-            or filters.get("sports")
-            or frozenset({"soccer", "basketball"})
-        )
+        sports = self._config.sports or filters.get("sports") or frozenset({"soccer", "basketball"})
 
         for sport in sports:
             try:
@@ -173,7 +169,9 @@ class TenBetInstrumentProvider(InstrumentProvider):
                     best_odds = max(best_odds, decimal_odds)
 
         if best_odds <= 0:
-            implied = market.get("outcomeOneProbability" if outcome_one else "outcomeTwoProbability", 0)
+            implied = market.get(
+                "outcomeOneProbability" if outcome_one else "outcomeTwoProbability", 0
+            )
             if implied and implied > 0:
                 best_odds = 1 / float(implied)
 

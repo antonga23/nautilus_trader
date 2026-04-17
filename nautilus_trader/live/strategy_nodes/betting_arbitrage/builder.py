@@ -12,19 +12,31 @@ from nautilus_trader.config import ImportableStrategyConfig
 from nautilus_trader.config import LiveExecEngineConfig
 from nautilus_trader.config import LoggingConfig
 from nautilus_trader.config import TradingNodeConfig
-from nautilus_trader.live.strategy_nodes.betting_arbitrage.config import BettingArbitrageNodeManifest
+from nautilus_trader.live.strategy_nodes.betting_arbitrage.config import (
+    BettingArbitrageNodeManifest,
+)
 from nautilus_trader.live.strategy_nodes.betting_arbitrage.config import BettingVenueManifest
 
 SXBET_DATA_CONFIG_PATH = "nautilus_trader.adapters.sxbet.config:SXBetDataClientConfig"
 SXBET_EXEC_CONFIG_PATH = "nautilus_trader.adapters.sxbet.config:SXBetExecClientConfig"
 SXBET_DATA_FACTORY_PATH = "nautilus_trader.adapters.sxbet.factories:SXBetLiveDataClientFactory"
 SXBET_EXEC_FACTORY_PATH = "nautilus_trader.adapters.sxbet.factories:SXBetLiveExecClientFactory"
-POLYMARKET_DATA_CONFIG_PATH = "nautilus_trader.adapters.polymarket.config:PolymarketDataClientConfig"
-POLYMARKET_EXEC_CONFIG_PATH = "nautilus_trader.adapters.polymarket.config:PolymarketExecClientConfig"
-POLYMARKET_DATA_FACTORY_PATH = "nautilus_trader.adapters.polymarket.factories:PolymarketLiveDataClientFactory"
-POLYMARKET_EXEC_FACTORY_PATH = "nautilus_trader.adapters.polymarket.factories:PolymarketLiveExecClientFactory"
+POLYMARKET_DATA_CONFIG_PATH = (
+    "nautilus_trader.adapters.polymarket.config:PolymarketDataClientConfig"
+)
+POLYMARKET_EXEC_CONFIG_PATH = (
+    "nautilus_trader.adapters.polymarket.config:PolymarketExecClientConfig"
+)
+POLYMARKET_DATA_FACTORY_PATH = (
+    "nautilus_trader.adapters.polymarket.factories:PolymarketLiveDataClientFactory"
+)
+POLYMARKET_EXEC_FACTORY_PATH = (
+    "nautilus_trader.adapters.polymarket.factories:PolymarketLiveExecClientFactory"
+)
 STRATEGY_PATH = "nautilus_trader.examples.strategies.betting_arbitrage:BettingArbitrageStrategy"
-STRATEGY_CONFIG_PATH = "nautilus_trader.examples.strategies.betting_arbitrage:BettingArbitrageConfig"
+STRATEGY_CONFIG_PATH = (
+    "nautilus_trader.examples.strategies.betting_arbitrage:BettingArbitrageConfig"
+)
 DEFAULT_RENDER_ROOT = Path("artifacts/strategy-nodes")
 
 DUMMY_SECRETS = {
@@ -58,7 +70,9 @@ def render_trading_node_config_json(config: TradingNodeConfig) -> bytes:
     return config.json()
 
 
-def write_rendered_node_config(config: TradingNodeConfig, output_path: str | os.PathLike[str]) -> Path:
+def write_rendered_node_config(
+    config: TradingNodeConfig, output_path: str | os.PathLike[str]
+) -> Path:
     destination = Path(output_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_bytes(config.json())
@@ -97,9 +111,7 @@ def build_trading_node_config(manifest: BettingArbitrageNodeManifest) -> Trading
 
     exec_engine = LiveExecEngineConfig(
         reconciliation=manifest.reconciliation and bool(exec_clients),
-        open_check_interval_secs=(
-            manifest.open_check_interval_secs if exec_clients else None
-        ),
+        open_check_interval_secs=(manifest.open_check_interval_secs if exec_clients else None),
         open_check_open_only=True,
         graceful_shutdown_on_exception=True,
     )
@@ -181,7 +193,9 @@ def _build_sxbet_exec_importable(
     config = {
         "api_key": _resolve_secret(prefix, "API_KEY", manifest.allow_dummy_credentials),
         "private_key": _resolve_secret(prefix, "PRIVATE_KEY", manifest.allow_dummy_credentials),
-        "wallet_address": _resolve_secret(prefix, "WALLET_ADDRESS", manifest.allow_dummy_credentials),
+        "wallet_address": _resolve_secret(
+            prefix, "WALLET_ADDRESS", manifest.allow_dummy_credentials
+        ),
         "api_url": venue.api_url,
         "ws_url": venue.ws_url,
         "instrument_provider": provider_config,
@@ -272,7 +286,7 @@ def _resolve_secret(prefix: str, suffix: str, allow_dummy_credentials: bool) -> 
         dummy_value = DUMMY_SECRETS.get(key)
         if dummy_value is not None:
             return dummy_value
-        return f"dummy-{key.lower().replace('_', '-') }"
+        return f"dummy-{key.lower().replace('_', '-')}"
     raise MissingCredentialError(f"Missing required credential: {key}")
 
 
@@ -297,7 +311,9 @@ def default_render_paths(manifest: BettingArbitrageNodeManifest) -> dict[str, Pa
     }
 
 
-def write_manifest_snapshot(manifest: BettingArbitrageNodeManifest, output_path: str | os.PathLike[str]) -> Path:
+def write_manifest_snapshot(
+    manifest: BettingArbitrageNodeManifest, output_path: str | os.PathLike[str]
+) -> Path:
     destination = Path(output_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_bytes(json.dumps(manifest.json_primitives(), indent=2).encode("utf8"))

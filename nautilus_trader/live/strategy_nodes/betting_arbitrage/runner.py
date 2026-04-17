@@ -47,7 +47,9 @@ def main(argv: list[str] | None = None) -> int:
     validate_parser = subparsers.add_parser("validate-manifest", help="Validate a node manifest")
     validate_parser.add_argument("--manifest", required=True)
 
-    render_parser = subparsers.add_parser("render-node-config", help="Render TradingNodeConfig JSON")
+    render_parser = subparsers.add_parser(
+        "render-node-config", help="Render TradingNodeConfig JSON"
+    )
     render_parser.add_argument("--manifest", required=True)
     render_parser.add_argument("--output")
 
@@ -60,9 +62,15 @@ def main(argv: list[str] | None = None) -> int:
     manifest = load_manifest(args.manifest)
     rendered_paths = default_render_paths(manifest)
     manifest_snapshot = rendered_paths["manifest"]
-    rendered_config_path = Path(manifest.rendered_config_path) if manifest.rendered_config_path else rendered_paths["rendered_config"]
+    rendered_config_path = (
+        Path(manifest.rendered_config_path)
+        if manifest.rendered_config_path
+        else rendered_paths["rendered_config"]
+    )
     status_path = Path(manifest.status_path) if manifest.status_path else rendered_paths["status"]
-    heartbeat_path = Path(manifest.heartbeat_path) if manifest.heartbeat_path else rendered_paths["heartbeat"]
+    heartbeat_path = (
+        Path(manifest.heartbeat_path) if manifest.heartbeat_path else rendered_paths["heartbeat"]
+    )
 
     if args.command == "validate-manifest":
         config = build_trading_node_config(manifest)

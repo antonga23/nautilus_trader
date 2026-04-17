@@ -317,7 +317,9 @@ class TenBetBrowserClient:
         If credentials are absent and synthetic auth is allowed, it marks the
         session as authenticated for validation-only flows.
         """
-        allow_synthetic = self._allow_synthetic_auth if allow_synthetic_auth is None else allow_synthetic_auth
+        allow_synthetic = (
+            self._allow_synthetic_auth if allow_synthetic_auth is None else allow_synthetic_auth
+        )
         email = email or self._email
         password = password or self._password
         otp_code = otp_code or self._otp_code
@@ -332,7 +334,9 @@ class TenBetBrowserClient:
                     )
                 return True
             if self._logger:
-                self._logger.warning("10bet authentication skipped because credentials were missing")
+                self._logger.warning(
+                    "10bet authentication skipped because credentials were missing"
+                )
             return False
 
         try:
@@ -348,7 +352,9 @@ class TenBetBrowserClient:
                 await self._click_first(page, TenBetSelectors.SUBMIT_BUTTON)
 
             await self._wait_for_login_resolution(page)
-            self._is_logged_in = not await self._has_any_selector(page, TenBetSelectors.SESSION_EXPIRED)
+            self._is_logged_in = not await self._has_any_selector(
+                page, TenBetSelectors.SESSION_EXPIRED
+            )
             self._auth_mode = "authenticated" if self._is_logged_in else "unauthenticated"
         except Exception as exc:
             if allow_synthetic:

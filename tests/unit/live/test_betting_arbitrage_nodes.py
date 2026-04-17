@@ -5,7 +5,9 @@ import pytest
 from nautilus_trader.config import ImportableConfig
 from nautilus_trader.examples.strategies.betting_arbitrage import BettingArbitrageConfig
 from nautilus_trader.live.strategy_nodes.betting_arbitrage.builder import build_trading_node_config
-from nautilus_trader.live.strategy_nodes.betting_arbitrage.config import BettingArbitrageNodeManifest
+from nautilus_trader.live.strategy_nodes.betting_arbitrage.config import (
+    BettingArbitrageNodeManifest,
+)
 from nautilus_trader.live.strategy_nodes.betting_arbitrage.config import BettingVenueManifest
 
 
