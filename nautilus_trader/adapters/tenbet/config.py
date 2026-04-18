@@ -132,4 +132,4 @@ class TenBetExecClientConfig(LiveExecClientConfig, frozen=True):
     session_state_path: str | None = None
     allow_synthetic_auth: bool = False
     allow_synthetic_execution: bool = False
-    max_stake_zar: Decimal = Decimal("1000")
+    max_stake_zar: Decimal = Decimal(1000)

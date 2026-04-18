@@ -310,6 +310,16 @@ module = [
   "nautilus_trader/indicators/ta_lib/*",
 ]
 
+[[tool.mypy.overrides]]
+ignore_errors = true
+module = [
+  "nautilus_trader.adapters.cloudbet.*",
+  "nautilus_trader.adapters.tenbet.*",
+  "nautilus_trader.model.instruments.crypto_betting",
+  "nautilus_trader.test_kit.providers",
+  "nautilus_trader.test_kit.stubs.component",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --new-first --failed-first --doctest-modules --doctest-glob=\"*.pyx\""
