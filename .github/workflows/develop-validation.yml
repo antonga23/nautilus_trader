@@ -69,6 +69,8 @@ jobs:
 
       - name: Common setup
         uses: ./.github/actions/common-setup
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           python-version: "3.13"
           free-disk-space: "true"
@@ -77,7 +79,7 @@ jobs:
           skip-capnp: "true"
 
       - name: Run full pre-commit suite
-        run: pre-commit run --all-files --show-diff-on-failure --color=always
+        run: bash scripts/ci/run_pre_commit_full.sh
 
   cargo-deny:
     name: cargo-deny

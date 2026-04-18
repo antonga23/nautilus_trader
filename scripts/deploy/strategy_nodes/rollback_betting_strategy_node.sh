@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-  cat <<USAGE
+  cat << USAGE
 Usage: $0 --name <container-name> [--env-file <path>] [--root <path>]
 USAGE
 }
@@ -25,7 +25,7 @@ while [[ $# -gt 0 ]]; do
       root_dir="$2"
       shift 2
       ;;
-    -h|--help)
+    -h | --help)
       usage
       exit 0
       ;;

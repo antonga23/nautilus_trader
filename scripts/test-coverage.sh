@@ -36,4 +36,4 @@ uv run --no-sync pytest \
 
 # LEGACY build method
 # poetry install --with test --all-extras
-# poetry run pytest --ignore=tests/performance_tests --cov-report=term --cov-report=xml:coverage-report.xml --cov=nautilus_trader --new-first --failed-first 
+# poetry run pytest --ignore=tests/performance_tests --cov-report=term --cov-report=xml:coverage-report.xml --cov=nautilus_trader --new-first --failed-first

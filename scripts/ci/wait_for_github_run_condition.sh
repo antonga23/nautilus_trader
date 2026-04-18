@@ -4,7 +4,7 @@ set -euo pipefail
 PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 usage() {
-  cat <<'EOF' >&2
+  cat << 'EOF' >&2
 Usage: wait_for_github_run_condition.sh --repo <owner/repo> --run-id <id> [options]
 
 Options:
@@ -59,19 +59,19 @@ done
 [ -n "$run_id" ] || usage
 
 case "$condition" in
-  terminal|first-failure|first-failure-or-terminal) ;;
+  terminal | first-failure | first-failure-or-terminal) ;;
   *)
     echo "Unsupported condition: $condition" >&2
     exit 64
     ;;
 esac
 
-command -v gh >/dev/null 2>&1 || {
+command -v gh > /dev/null 2>&1 || {
   echo "gh is required" >&2
   exit 69
 }
 
-command -v jq >/dev/null 2>&1 || {
+command -v jq > /dev/null 2>&1 || {
   echo "jq is required" >&2
   exit 69
 }
@@ -81,7 +81,7 @@ last_signature=""
 
 is_bad_conclusion() {
   case "$1" in
-    failure|cancelled|timed_out|action_required|startup_failure)
+    failure | cancelled | timed_out | action_required | startup_failure)
       return 0
       ;;
     *)
@@ -107,7 +107,7 @@ print_summary() {
       "head_sha=\(.headSha // "unknown")",
       "url=\(.url // "unknown")"
     ] | .[]
-  ' <<<"$json"
+  ' <<< "$json"
 }
 
 emit_failed_job_logs() {
@@ -119,19 +119,20 @@ emit_failed_job_logs() {
 while true; do
   if [ "$timeout_seconds" -gt 0 ]; then
     now_epoch="$(date +%s)"
-    if [ $(( now_epoch - started_at_epoch )) -ge "$timeout_seconds" ]; then
+    if [ $((now_epoch - started_at_epoch)) -ge "$timeout_seconds" ]; then
       echo "Timed out waiting for run $run_id after ${timeout_seconds}s" >&2
       exit 124
     fi
   fi
 
   json="$(fetch_json)"
-  signature="$(jq -c '{status,conclusion,jobs:[.jobs[]? | {name,status,conclusion,startedAt,completedAt}]}'
-    <<<"$json")"
+  signature="$(
+    jq -c '{status,conclusion,jobs:[.jobs[]? | {name,status,conclusion,startedAt,completedAt}]}' <<< "$json"
+  )"
 
   if [ "$signature" != "$last_signature" ]; then
     print_summary "$json"
-    jq -r '.jobs[]? | "- " + (.name // "unknown") + ": status=" + (.status // "unknown") + ", conclusion=" + (.conclusion // "null")' <<<"$json"
+    jq -r '.jobs[]? | "- " + (.name // "unknown") + ": status=" + (.status // "unknown") + ", conclusion=" + (.conclusion // "null")' <<< "$json"
     last_signature="$signature"
   fi
 
@@ -139,13 +140,13 @@ while true; do
     [.jobs[]? | select(.status == "completed" and (.conclusion != null)) |
       select(.conclusion == "failure" or .conclusion == "cancelled" or .conclusion == "timed_out" or .conclusion == "action_required" or .conclusion == "startup_failure")
     ] | first
-  ' <<<"$json")"
+  ' <<< "$json")"
 
   if [ "$failed_job" != "null" ] && [ "$failed_job" != "" ]; then
     if [ "$condition" = "first-failure" ] || [ "$condition" = "first-failure-or-terminal" ]; then
-      job_id="$(jq -r '.databaseId // empty' <<<"$failed_job")"
-      job_name="$(jq -r '.name // "unknown"' <<<"$failed_job")"
-      job_conclusion="$(jq -r '.conclusion // "unknown"' <<<"$failed_job")"
+      job_id="$(jq -r '.databaseId // empty' <<< "$failed_job")"
+      job_name="$(jq -r '.name // "unknown"' <<< "$failed_job")"
+      job_conclusion="$(jq -r '.conclusion // "unknown"' <<< "$failed_job")"
       echo "Detected failing job: $job_name ($job_conclusion)" >&2
       if [ -n "$job_id" ]; then
         emit_failed_job_logs "$job_id"
@@ -154,11 +155,11 @@ while true; do
     fi
   fi
 
-  run_status="$(jq -r '.status // "unknown"' <<<"$json")"
-  run_conclusion="$(jq -r '.conclusion // empty' <<<"$json")"
+  run_status="$(jq -r '.status // "unknown"' <<< "$json")"
+  run_conclusion="$(jq -r '.conclusion // empty' <<< "$json")"
   if [ "$run_status" = "completed" ]; then
     case "$condition" in
-      terminal|first-failure-or-terminal)
+      terminal | first-failure-or-terminal)
         if [ "$run_conclusion" = "success" ]; then
           exit 0
         fi

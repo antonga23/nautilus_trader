@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-  cat <<USAGE
+  cat << USAGE
 Usage: $0 --status-file <path> [--timeout-seconds <n>] [--success-status <csv>]
 USAGE
 }
@@ -25,7 +25,7 @@ while [[ $# -gt 0 ]]; do
       success_statuses="$2"
       shift 2
       ;;
-    -h|--help)
+    -h | --help)
       usage
       exit 0
       ;;
@@ -42,9 +42,12 @@ if [[ -z "$status_file" ]]; then
   exit 1
 fi
 
-command -v python3 >/dev/null 2>&1 || { echo "python3 is required" >&2; exit 1; }
+command -v python3 > /dev/null 2>&1 || {
+  echo "python3 is required" >&2
+  exit 1
+}
 
-python3 - "$status_file" "$timeout_seconds" "$success_statuses" <<'PY'
+python3 - "$status_file" "$timeout_seconds" "$success_statuses" << 'PY'
 import json
 import pathlib
 import sys

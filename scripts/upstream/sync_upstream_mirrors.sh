@@ -9,7 +9,7 @@ mirror_master_branch="${MIRROR_MASTER_BRANCH:-nautilus_master}"
 summary_path="${GITHUB_STEP_SUMMARY:-}"
 output_path="${GITHUB_OUTPUT:-}"
 
-git remote remove "$upstream_remote" >/dev/null 2>&1 || true
+git remote remove "$upstream_remote" > /dev/null 2>&1 || true
 git remote add "$upstream_remote" "$upstream_url"
 
 git fetch "$origin_remote" --prune
