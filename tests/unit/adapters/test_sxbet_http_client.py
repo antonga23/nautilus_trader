@@ -232,7 +232,10 @@ async def test_get_markets_uses_active_endpoint_without_only_active_param(monkey
     monkeypatch.setattr(client, "_request", _fake_request)
 
     result = await client.get_markets(
-        sport_id=1, league_id=2, fixture_id="fixture-3", only_active=True
+        sport_id=1,
+        league_id=2,
+        fixture_id="fixture-3",
+        only_active=True,
     )
 
     assert result == {"ok": True}
