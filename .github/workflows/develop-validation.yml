@@ -1,0 +1,495 @@
+name: develop-validation
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+  packages: read
+
+on:
+  push:
+    branches: [develop]
+  workflow_dispatch:
+
+jobs:
+  pre-commit-full:
+    name: pre-commit-full
+    timeout-minutes: 30
+    runs-on: [self-hosted, linux, x64, cloudbet-market-maker, ci, gcp, ubuntu24]
+    env:
+      RUNNER_CI_HOME: /tmp/cloudbet-market-maker-ci-home
+      HOME: /tmp/cloudbet-market-maker-ci-home
+    steps:
+      - uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
+        with:
+          egress-policy: audit
+
+      - name: Repair self-hosted workspace
+        shell: bash
+        run: |
+          workspace_parent="$(dirname "$GITHUB_WORKSPACE")"
+          runner_ci_home="${RUNNER_CI_HOME:-}"
+          run_maybe_sudo() {
+            if [[ "${EUID}" -ne 0 ]] && command -v sudo > /dev/null 2>&1; then
+              sudo "$@"
+            else
+              "$@"
+            fi
+          }
+
+          if [[ -x /usr/local/bin/repair-github-runner-workspace ]]; then
+            run_maybe_sudo \
+              /usr/local/bin/repair-github-runner-workspace \
+              "$GITHUB_WORKSPACE" \
+              "$workspace_parent/.ci-cache" \
+              "$(id -u)" \
+              "$(id -g)"
+          else
+            run_maybe_sudo mkdir -p "$GITHUB_WORKSPACE" "$workspace_parent/.ci-cache"
+            run_maybe_sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" "$workspace_parent/.ci-cache"
+          fi
+
+          if [[ -n "$runner_ci_home" ]]; then
+            run_maybe_sudo mkdir -p "$runner_ci_home/.cache"
+            run_maybe_sudo chown -R "$(id -u):$(id -g)" "$runner_ci_home"
+          fi
+
+          if [[ ! -e "$GITHUB_WORKSPACE/.git" ]]; then
+            find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Common setup
+        uses: ./.github/actions/common-setup
+        with:
+          python-version: "3.13"
+          free-disk-space: "true"
+          build-type: "pre-commit"
+          skip-rust: "true"
+          skip-capnp: "true"
+
+      - name: Run full pre-commit suite
+        run: pre-commit run --all-files --show-diff-on-failure --color=always
+
+  cargo-deny:
+    name: cargo-deny
+    timeout-minutes: 20
+    runs-on: [self-hosted, linux, x64, cloudbet-market-maker, ci, gcp, ubuntu24]
+    steps:
+      - uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
+        with:
+          egress-policy: audit
+
+      - name: Repair self-hosted workspace
+        shell: bash
+        run: |
+          workspace_parent="$(dirname "$GITHUB_WORKSPACE")"
+          runner_ci_home="${RUNNER_CI_HOME:-}"
+          run_maybe_sudo() {
+            if [[ "${EUID}" -ne 0 ]] && command -v sudo > /dev/null 2>&1; then
+              sudo "$@"
+            else
+              "$@"
+            fi
+          }
+
+          if [[ -x /usr/local/bin/repair-github-runner-workspace ]]; then
+            run_maybe_sudo \
+              /usr/local/bin/repair-github-runner-workspace \
+              "$GITHUB_WORKSPACE" \
+              "$workspace_parent/.ci-cache" \
+              "$(id -u)" \
+              "$(id -g)"
+          else
+            run_maybe_sudo mkdir -p "$GITHUB_WORKSPACE" "$workspace_parent/.ci-cache"
+            run_maybe_sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" "$workspace_parent/.ci-cache"
+          fi
+
+          if [[ -n "$runner_ci_home" ]]; then
+            run_maybe_sudo mkdir -p "$runner_ci_home/.cache"
+            run_maybe_sudo chown -R "$(id -u):$(id -g)" "$runner_ci_home"
+          fi
+
+          if [[ ! -e "$GITHUB_WORKSPACE/.git" ]]; then
+            find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install cargo-deny
+        uses: ./.github/actions/cargo-tool-install
+        with:
+          tool-name: cargo-deny
+
+      - name: Run cargo-deny
+        run: cargo deny --all-features check advisories licenses sources bans
+
+  cargo-vet:
+    name: cargo-vet
+    timeout-minutes: 20
+    runs-on: [self-hosted, linux, x64, cloudbet-market-maker, ci, gcp, ubuntu24]
+    steps:
+      - uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
+        with:
+          egress-policy: audit
+
+      - name: Repair self-hosted workspace
+        shell: bash
+        run: |
+          workspace_parent="$(dirname "$GITHUB_WORKSPACE")"
+          runner_ci_home="${RUNNER_CI_HOME:-}"
+          run_maybe_sudo() {
+            if [[ "${EUID}" -ne 0 ]] && command -v sudo > /dev/null 2>&1; then
+              sudo "$@"
+            else
+              "$@"
+            fi
+          }
+
+          if [[ -x /usr/local/bin/repair-github-runner-workspace ]]; then
+            run_maybe_sudo \
+              /usr/local/bin/repair-github-runner-workspace \
+              "$GITHUB_WORKSPACE" \
+              "$workspace_parent/.ci-cache" \
+              "$(id -u)" \
+              "$(id -g)"
+          else
+            run_maybe_sudo mkdir -p "$GITHUB_WORKSPACE" "$workspace_parent/.ci-cache"
+            run_maybe_sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" "$workspace_parent/.ci-cache"
+          fi
+
+          if [[ -n "$runner_ci_home" ]]; then
+            run_maybe_sudo mkdir -p "$runner_ci_home/.cache"
+            run_maybe_sudo chown -R "$(id -u):$(id -g)" "$runner_ci_home"
+          fi
+
+          if [[ ! -e "$GITHUB_WORKSPACE/.git" ]]; then
+            find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install cargo-vet
+        uses: ./.github/actions/cargo-tool-install
+        with:
+          tool-name: cargo-vet
+
+      - name: Run cargo-vet
+        run: cargo vet --locked
+
+  build-linux-x86-py312:
+    name: build-linux-x86-py312
+    timeout-minutes: 60
+    needs:
+      - pre-commit-full
+      - cargo-deny
+      - cargo-vet
+    runs-on: [self-hosted, linux, x64, cloudbet-market-maker, ci, gcp, ubuntu24]
+    container:
+      image: >-
+        ghcr.io/antonga23/cloudbet-market-maker/ci-runner@sha256:ed46e808744508e5627f3f8d32fc3eff6b0c047129af03db70a8a6225346235b
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    permissions:
+      contents: read
+      packages: read
+    env:
+      UV_PYTHON: "3.12"
+      CARGO_HOME: ${{ github.workspace }}/.cache/cargo-home
+    steps:
+      - uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
+        with:
+          egress-policy: audit
+
+      - name: Repair self-hosted workspace
+        shell: bash
+        run: |
+          workspace_parent="$(dirname "$GITHUB_WORKSPACE")"
+          runner_ci_home="${RUNNER_CI_HOME:-}"
+          run_maybe_sudo() {
+            if [[ "${EUID}" -ne 0 ]] && command -v sudo > /dev/null 2>&1; then
+              sudo "$@"
+            else
+              "$@"
+            fi
+          }
+
+          if [[ -x /usr/local/bin/repair-github-runner-workspace ]]; then
+            run_maybe_sudo \
+              /usr/local/bin/repair-github-runner-workspace \
+              "$GITHUB_WORKSPACE" \
+              "$workspace_parent/.ci-cache" \
+              "$(id -u)" \
+              "$(id -g)"
+          else
+            run_maybe_sudo mkdir -p "$GITHUB_WORKSPACE" "$workspace_parent/.ci-cache"
+            run_maybe_sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" "$workspace_parent/.ci-cache"
+          fi
+
+          if [[ -n "$runner_ci_home" ]]; then
+            run_maybe_sudo mkdir -p "$runner_ci_home/.cache"
+            run_maybe_sudo chown -R "$(id -u):$(id -g)" "$runner_ci_home"
+          fi
+
+          if [[ ! -e "$GITHUB_WORKSPACE/.git" ]]; then
+            find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+          ref: ${{ github.sha }}
+
+      - name: Trust workspace
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Common setup
+        uses: ./.github/actions/common-setup
+        with:
+          python-version: "3.12"
+          build-type: "test"
+          skip-rust: "true"
+          skip-uv: "true"
+          skip-capnp: "true"
+          skip-install-deps: "true"
+          skip-setup-python: "true"
+
+      - name: Ensure CI container build dependencies
+        run: bash scripts/ci/ensure_ci_container_build_deps.sh
+
+      - name: Verify self-hosted build toolchain
+        run: |
+          python3 --version
+          uv --version
+          git --version
+
+      - name: Compute wheel cache key
+        id: wheel-key
+        run: echo "key=$(python3 scripts/ci/compute_test_wheel_cache_key.py)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore self-hosted wheel cache
+        id: local-wheel-cache
+        run: bash scripts/ci/self_hosted_wheel_cache.sh restore "${{ steps.wheel-key.outputs.key }}"
+
+      - name: Restore wheel cache
+        id: wheel-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: dist/
+          key: wheel-py3.12-tests-v1-${{ steps.wheel-key.outputs.key }}
+
+      - name: Restore UV artifacts cache
+        id: uv-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cache/uv
+            .venv
+          key: uv-py3.12-${{ hashFiles('uv.lock', 'pyproject.toml') }}
+
+      - name: Restore Cargo home cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: .cache/cargo-home
+          key: cargo-home-linux-x64-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+
+      - name: Install dependencies
+        run: uv sync --all-groups --all-extras --no-install-package nautilus_trader
+
+      - name: Build wheel (on cache miss)
+        if: steps.local-wheel-cache.outputs.cache-hit != 'true' && steps.wheel-cache.outputs.cache-hit != 'true'
+        env:
+          BUILD_MODE: release
+        run: |
+          uv build --wheel --python 3.12
+          ls -lh dist/
+
+      - name: Install wheel
+        run: uv pip install dist/*.whl
+
+      - name: Save self-hosted wheel cache
+        if: steps.local-wheel-cache.outputs.cache-hit != 'true'
+        run: bash scripts/ci/self_hosted_wheel_cache.sh save "${{ steps.wheel-key.outputs.key }}"
+
+      - name: Run smoke tests
+        run: bash scripts/ci/run_installed_wheel_smoke_test.sh
+
+      - name: Upload built wheel
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: nautilus-trader-wheel-py312-linux-x64
+          path: dist/nautilus_trader-*.whl
+          if-no-files-found: error
+
+  python-tests:
+    name: python-tests
+    timeout-minutes: 90
+    needs:
+      - pre-commit-full
+      - build-linux-x86-py312
+    runs-on: [self-hosted, linux, x64, cloudbet-market-maker, ci, gcp, ubuntu24]
+    container:
+      image: >-
+        ghcr.io/antonga23/cloudbet-market-maker/ci-runner@sha256:ed46e808744508e5627f3f8d32fc3eff6b0c047129af03db70a8a6225346235b
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      REDIS_HOST: redis
+      PGHOST: postgres
+      UV_PYTHON: "3.12"
+      PYTEST_XDIST_WORKERS: "6"
+      CARGO_HOME: ${{ github.workspace }}/.cache/cargo-home
+      PGPASSWORD: pass
+      PGUSER: nautilus
+      PGDATABASE: nautilus
+    services:
+      postgres:
+        image: postgres@sha256:f30e3de0ac9cc938dac627ef2231099867c694b5f949fadb924c8c977428c399
+        env:
+          POSTGRES_USER: nautilus
+          POSTGRES_PASSWORD: pass
+          POSTGRES_DB: nautilus
+        options: >-
+          --health-cmd "pg_isready -U nautilus"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: >-
+          public.ecr.aws/docker/library/redis:7.4.5-alpine3.21@sha256:bb186d083732f669da90be8b0f975a37812b15e913465bb14d845db72a4e3e08
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
+        with:
+          egress-policy: audit
+
+      - name: Repair self-hosted workspace
+        shell: bash
+        run: |
+          workspace_parent="$(dirname "$GITHUB_WORKSPACE")"
+          runner_ci_home="${RUNNER_CI_HOME:-}"
+          run_maybe_sudo() {
+            if [[ "${EUID}" -ne 0 ]] && command -v sudo > /dev/null 2>&1; then
+              sudo "$@"
+            else
+              "$@"
+            fi
+          }
+
+          if [[ -x /usr/local/bin/repair-github-runner-workspace ]]; then
+            run_maybe_sudo \
+              /usr/local/bin/repair-github-runner-workspace \
+              "$GITHUB_WORKSPACE" \
+              "$workspace_parent/.ci-cache" \
+              "$(id -u)" \
+              "$(id -g)"
+          else
+            run_maybe_sudo mkdir -p "$GITHUB_WORKSPACE" "$workspace_parent/.ci-cache"
+            run_maybe_sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" "$workspace_parent/.ci-cache"
+          fi
+
+          if [[ -n "$runner_ci_home" ]]; then
+            run_maybe_sudo mkdir -p "$runner_ci_home/.cache"
+            run_maybe_sudo chown -R "$(id -u):$(id -g)" "$runner_ci_home"
+          fi
+
+          if [[ ! -e "$GITHUB_WORKSPACE/.git" ]]; then
+            find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+          ref: ${{ github.sha }}
+
+      - name: Trust workspace
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Common setup
+        uses: ./.github/actions/common-setup
+        with:
+          python-version: "3.12"
+          build-type: "test"
+          skip-rust: "true"
+          skip-uv: "true"
+          skip-capnp: "true"
+          skip-install-deps: "true"
+          skip-setup-python: "true"
+
+      - name: Ensure CI container build dependencies
+        run: bash scripts/ci/ensure_ci_container_build_deps.sh
+
+      - name: Verify self-hosted test toolchain
+        run: |
+          python3 --version
+          uv --version
+          git --version
+
+      - name: Restore UV artifacts cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cache/uv
+            .venv
+          key: uv-py3.12-${{ hashFiles('uv.lock', 'pyproject.toml') }}
+
+      - name: Install dependencies
+        run: uv sync --all-groups --all-extras --no-install-package nautilus_trader
+
+      - name: Download built wheel
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          name: nautilus-trader-wheel-py312-linux-x64
+          path: dist
+
+      - name: Install wheel
+        run: uv pip install dist/*.whl
+
+      - name: Cached test data
+        uses: ./.github/actions/common-test-data
+
+      - name: Inject compiled extensions into source tree
+        run: python3 scripts/ci/extract_compiled_extensions_from_wheel.py dist/*.whl
+
+      - name: Initialize Database Schema
+        run: bash scripts/ci/initialize_database_schema.sh
+
+      - name: Run Python test suites
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: bash scripts/ci/run_python_test_suites.sh
+
+      - name: Upload Python test artifacts
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: python-tests-results
+          path: tests/results
+          if-no-files-found: ignore
