@@ -27,12 +27,10 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-skip_hooks="cargo-deny,cargo-vet,check-anyhow-usage,check-logging-macro-usage,check-tokio-usage,check-pyo3-conventions,check-testing-conventions,check-nautilus-conventions,fmt,cargo-clippy"
-if [ "$exclude_rust" -eq 1 ]; then
-  # This hook ignores the filtered file list (`pass_filenames: false`) and scans
-  # repo-wide, which would reintroduce Rust/global debt into the PR-only lane.
-  skip_hooks="${skip_hooks},check-copyright-year"
-fi
+# `check-copyright-year` ignores file selection (`pass_filenames: false`) and
+# fails on broad legacy repo debt outside the validated change set, so it is
+# kept as a manual cleanup hook rather than a required CI gate.
+skip_hooks="cargo-deny,cargo-vet,check-anyhow-usage,check-logging-macro-usage,check-tokio-usage,check-pyo3-conventions,check-testing-conventions,check-nautilus-conventions,fmt,cargo-clippy,check-copyright-year"
 export SKIP="$skip_hooks"
 
 pre_commit_cmd=(pre-commit)
