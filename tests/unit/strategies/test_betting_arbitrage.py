@@ -103,7 +103,7 @@ class TestBettingArbitrageConfig:
         """
         config = BettingArbitrageConfig(
             min_profit_margin=Decimal("0.015"),
-            max_total_stake=Decimal("2500"),
+            max_total_stake=Decimal(2500),
             enabled_venues=frozenset(["SXBET", "POLYMARKET"]),
             sport_filter=" Soccer ",
             market_timing_filter="live",
