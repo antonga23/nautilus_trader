@@ -73,6 +73,8 @@ jobs:
           python-version: "3.13"
           free-disk-space: "true"
           build-type: "pre-commit"
+          skip-rust: "true"
+          skip-capnp: "true"
 
       - name: Run full pre-commit suite
         run: pre-commit run --all-files --show-diff-on-failure --color=always
