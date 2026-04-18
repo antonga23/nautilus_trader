@@ -15,8 +15,9 @@ on:
   workflow_dispatch:
 
 jobs:
-  pre-commit-fast:
-    timeout-minutes: 15
+  pre-commit-full:
+    name: pre-commit-full
+    timeout-minutes: 30
     runs-on: [self-hosted, linux, x64, cloudbet-market-maker, ci, gcp, ubuntu24]
     env:
       RUNNER_CI_HOME: /tmp/cloudbet-market-maker-ci-home
@@ -75,17 +76,10 @@ jobs:
           free-disk-space: "false"
           build-type: "pre-commit"
           skip-rust: "true"
-          skip-uv: "true"
           skip-capnp: "true"
 
-      - name: Run pre-commit-fast
-        env:
-          GITHUB_EVENT_NAME: ${{ github.event_name }}
-          GITHUB_BASE_REF: ${{ github.base_ref }}
-          GITHUB_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          GITHUB_EVENT_BEFORE: ${{ github.event.before }}
-          GITHUB_SHA: ${{ github.sha }}
-        run: bash scripts/ci/run_pre_commit_fast.sh
+      - name: Run full pre-commit suite (non-Rust)
+        run: bash scripts/ci/run_pre_commit_full.sh --exclude-rust
 
   build-linux-x86-py312:
     name: build-linux-x86-py312
@@ -93,7 +87,7 @@ jobs:
     if: >-
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name == github.repository
-    needs: [pre-commit-fast]
+    needs: [pre-commit-full]
     runs-on: [self-hosted, linux, x64, cloudbet-market-maker, ci, gcp, ubuntu24]
     container:
       image: >-
@@ -241,7 +235,7 @@ jobs:
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name == github.repository
     needs:
-      - pre-commit-fast
+      - pre-commit-full
       - build-linux-x86-py312
     runs-on: [self-hosted, linux, x64, cloudbet-market-maker, ci, gcp, ubuntu24]
     container:

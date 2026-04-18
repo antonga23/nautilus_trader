@@ -2,11 +2,11 @@
 set -euo pipefail
 
 require_env() {
-  local name="$1"
-  if [[ -z "${!name:-}" ]]; then
-    echo "Missing required env: $name" >&2
-    exit 64
-  fi
+	local name="$1"
+	if [[ -z "${!name:-}" ]]; then
+		echo "Missing required env: $name" >&2
+		exit 64
+	fi
 }
 
 require_env REPO
@@ -31,52 +31,52 @@ target_sha="$(git rev-parse "$target_ref")"
 merge_base="$(git merge-base "$source_ref" "$target_ref")"
 
 ensure_label() {
-  local label="$1"
-  gh label create "$label" --repo "$REPO" --color C5DEF5 --force >/dev/null 2>&1 || true
+	local label="$1"
+	gh label create "$label" --repo "$REPO" --color C5DEF5 --force >/dev/null 2>&1 || true
 }
 
-IFS=',' read -r -a labels <<< "$labels_csv"
+IFS=',' read -r -a labels <<<"$labels_csv"
 for label in "${labels[@]}"; do
-  ensure_label "$label"
+	ensure_label "$label"
 done
 
 existing_pr="$(
-  gh pr list --repo "$REPO" --state open --base "$TARGET_BRANCH" --head "$SYNC_BRANCH" \
-    --json number --jq '.[0].number // ""'
+	gh pr list --repo "$REPO" --state open --base "$TARGET_BRANCH" --head "$SYNC_BRANCH" \
+		--json number --jq '.[0].number // ""'
 )"
 existing_issue="$(
-  gh issue list --repo "$REPO" --state open --search "$issue_title in:title" \
-    --json number,title --jq ".[] | select(.title == \"$issue_title\") | .number" | head -n1
+	gh issue list --repo "$REPO" --state open --search "$issue_title in:title" \
+		--json number,title --jq ".[] | select(.title == \"$issue_title\") | .number" | head -n1
 )"
 
 close_existing_pr() {
-  if [[ -n "$existing_pr" ]]; then
-    gh pr close "$existing_pr" --repo "$REPO" \
-      --comment "Closing because ${SOURCE_BRANCH} is already fully reconciled into ${TARGET_BRANCH}." >/dev/null
-  fi
+	if [[ -n "$existing_pr" ]]; then
+		gh pr close "$existing_pr" --repo "$REPO" \
+			--comment "Closing because ${SOURCE_BRANCH} is already fully reconciled into ${TARGET_BRANCH}." >/dev/null
+	fi
 }
 
 close_existing_issue() {
-  if [[ -n "$existing_issue" ]]; then
-    gh issue close "$existing_issue" --repo "$REPO" \
-      --comment "Closing because the reconciliation is now clean." >/dev/null
-  fi
+	if [[ -n "$existing_issue" ]]; then
+		gh issue close "$existing_issue" --repo "$REPO" \
+			--comment "Closing because the reconciliation is now clean." >/dev/null
+	fi
 }
 
 if git merge-base --is-ancestor "$source_ref" "$target_ref"; then
-  close_existing_pr
-  close_existing_issue
-  if [[ -n "$summary_path" ]]; then
-    {
-      echo "### ${SOURCE_BRANCH} -> ${TARGET_BRANCH}"
-      echo
-      echo "- status: already-reconciled"
-      echo "- source: ${source_sha}"
-      echo "- target: ${target_sha}"
-      echo
-    } >> "$summary_path"
-  fi
-  exit 0
+	close_existing_pr
+	close_existing_issue
+	if [[ -n "$summary_path" ]]; then
+		{
+			echo "### ${SOURCE_BRANCH} -> ${TARGET_BRANCH}"
+			echo
+			echo "- status: already-reconciled"
+			echo "- source: ${source_sha}"
+			echo "- target: ${target_sha}"
+			echo
+		} >>"$summary_path"
+	fi
+	exit 0
 fi
 
 tmp_branch="__sync_tmp_${TARGET_BRANCH//\//_}"
@@ -90,11 +90,11 @@ merge_status=$?
 set -e
 
 if [[ $merge_status -ne 0 ]]; then
-  conflict_files="$(git diff --name-only --diff-filter=U | sed '/^$/d')"
-  git merge --abort >/dev/null 2>&1 || true
+	conflict_files="$(git diff --name-only --diff-filter=U | sed '/^$/d')"
+	git merge --abort >/dev/null 2>&1 || true
 
-  issue_body=$(
-    cat <<EOF
+	issue_body=$(
+		cat <<EOF
 Automated upstream reconciliation detected merge conflicts.
 
 - source branch: \`${SOURCE_BRANCH}\`
@@ -113,53 +113,53 @@ ${conflict_files:-No file list captured}
 $(tail -n 80 /tmp/sync-merge.log)
 \`\`\`
 EOF
-  )
+	)
 
-  if [[ -n "$existing_issue" ]]; then
-    gh issue edit "$existing_issue" --repo "$REPO" --body "$issue_body" >/dev/null
-  else
-    create_args=(issue create --repo "$REPO" --title "$issue_title" --body "$issue_body")
-    for label in "${labels[@]}"; do
-      create_args+=(--label "$label")
-    done
-    gh "${create_args[@]}" >/dev/null
-  fi
+	if [[ -n "$existing_issue" ]]; then
+		gh issue edit "$existing_issue" --repo "$REPO" --body "$issue_body" >/dev/null
+	else
+		create_args=(issue create --repo "$REPO" --title "$issue_title" --body "$issue_body")
+		for label in "${labels[@]}"; do
+			create_args+=(--label "$label")
+		done
+		gh "${create_args[@]}" >/dev/null
+	fi
 
-  close_existing_pr
+	close_existing_pr
 
-  if [[ -n "$summary_path" ]]; then
-    {
-      echo "### ${SOURCE_BRANCH} -> ${TARGET_BRANCH}"
-      echo
-      echo "- status: conflict"
-      echo "- source: ${source_sha}"
-      echo "- target: ${target_sha}"
-      echo "- merge base: ${merge_base}"
-      echo
-    } >> "$summary_path"
-  fi
-  exit 0
+	if [[ -n "$summary_path" ]]; then
+		{
+			echo "### ${SOURCE_BRANCH} -> ${TARGET_BRANCH}"
+			echo
+			echo "- status: conflict"
+			echo "- source: ${source_sha}"
+			echo "- target: ${target_sha}"
+			echo "- merge base: ${merge_base}"
+			echo
+		} >>"$summary_path"
+	fi
+	exit 0
 fi
 
 if git diff --cached --quiet; then
-  git merge --abort >/dev/null 2>&1 || true
-  close_existing_pr
-  close_existing_issue
-  exit 0
+	git merge --abort >/dev/null 2>&1 || true
+	close_existing_pr
+	close_existing_issue
+	exit 0
 fi
 
 git commit -m "chore(sync): merge ${SOURCE_BRANCH} into ${TARGET_BRANCH}" >/dev/null
 changed_files_count="$(git diff --name-only "${target_sha}..HEAD" | sed '/^$/d' | wc -l | tr -d ' ')"
 rust_policy_required="false"
 if git diff --name-only "${target_sha}..HEAD" | grep -Eq '^(crates/|Cargo\.toml$|Cargo\.lock$|deny\.toml$|supply-chain/|rust-toolchain\.toml$|capnp-version$|\.pre-commit-config\.yaml$|\.pre-commit-hooks/|scripts/ci/run_rust_policy\.sh$|\.github/workflows/rust-policy\.yml$)'; then
-  rust_policy_required="true"
+	rust_policy_required="true"
 fi
 
 git branch -M "$SYNC_BRANCH"
 git push --force-with-lease "$origin_remote" "HEAD:refs/heads/$SYNC_BRANCH"
 
 pr_body=$(
-  cat <<EOF
+	cat <<EOF
 Automated upstream reconciliation PR.
 
 - source branch: \`${SOURCE_BRANCH}\`
@@ -172,34 +172,34 @@ Automated upstream reconciliation PR.
 
 This PR was generated by the nightly upstream sync workflow. It uses a merge commit workflow only. Do not squash and do not delete the sync branch after merge.
 EOF
-  )
+)
 
 if [[ -n "$existing_pr" ]]; then
-  edit_args=(pr edit "$existing_pr" --repo "$REPO" --title "$PR_TITLE" --body "$pr_body")
-  for label in "${labels[@]}"; do
-    edit_args+=(--add-label "$label")
-  done
-  gh "${edit_args[@]}" >/dev/null
+	edit_args=(pr edit "$existing_pr" --repo "$REPO" --title "$PR_TITLE" --body "$pr_body")
+	for label in "${labels[@]}"; do
+		edit_args+=(--add-label "$label")
+	done
+	gh "${edit_args[@]}" >/dev/null
 else
-  create_args=(pr create --repo "$REPO" --base "$TARGET_BRANCH" --head "$SYNC_BRANCH" --title "$PR_TITLE" --body "$pr_body")
-  for label in "${labels[@]}"; do
-    create_args+=(--label "$label")
-  done
-  gh "${create_args[@]}" >/dev/null
+	create_args=(pr create --repo "$REPO" --base "$TARGET_BRANCH" --head "$SYNC_BRANCH" --title "$PR_TITLE" --body "$pr_body")
+	for label in "${labels[@]}"; do
+		create_args+=(--label "$label")
+	done
+	gh "${create_args[@]}" >/dev/null
 fi
 
 close_existing_issue
 
 if [[ -n "$summary_path" ]]; then
-  {
-    echo "### ${SOURCE_BRANCH} -> ${TARGET_BRANCH}"
-    echo
-    echo "- status: pr-opened"
-    echo "- source: ${source_sha}"
-    echo "- target: ${target_sha}"
-    echo "- merge base: ${merge_base}"
-    echo "- changed files: ${changed_files_count}"
-    echo "- rust-policy expected: ${rust_policy_required}"
-    echo
-  } >> "$summary_path"
+	{
+		echo "### ${SOURCE_BRANCH} -> ${TARGET_BRANCH}"
+		echo
+		echo "- status: pr-opened"
+		echo "- source: ${source_sha}"
+		echo "- target: ${target_sha}"
+		echo "- merge base: ${merge_base}"
+		echo "- changed files: ${changed_files_count}"
+		echo "- rust-policy expected: ${rust_policy_required}"
+		echo
+	} >>"$summary_path"
 fi

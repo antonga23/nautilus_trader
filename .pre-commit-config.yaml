@@ -47,6 +47,7 @@ repos:
     hooks:
       - id: yamllint
         args: [--strict]
+        exclude: ^qodana\.yaml$|^\.gitlab-ci\.yml$
 
   - repo: https://github.com/ComPWA/taplo-pre-commit
     rev: v0.9.3

@@ -22,22 +22,22 @@ git update-ref "refs/heads/$mirror_develop_branch" "$develop_sha"
 git update-ref "refs/heads/$mirror_master_branch" "$master_sha"
 
 git push --force-with-lease "$origin_remote" \
-  "$develop_sha:refs/heads/$mirror_develop_branch"
+	"$develop_sha:refs/heads/$mirror_develop_branch"
 git push --force-with-lease "$origin_remote" \
-  "$master_sha:refs/heads/$mirror_master_branch"
+	"$master_sha:refs/heads/$mirror_master_branch"
 
 if [[ -n "$summary_path" ]]; then
-  {
-    echo "## Upstream Mirror Sync"
-    echo
-    echo "- ${mirror_develop_branch}: ${develop_sha}"
-    echo "- ${mirror_master_branch}: ${master_sha}"
-  } >> "$summary_path"
+	{
+		echo "## Upstream Mirror Sync"
+		echo
+		echo "- ${mirror_develop_branch}: ${develop_sha}"
+		echo "- ${mirror_master_branch}: ${master_sha}"
+	} >>"$summary_path"
 fi
 
 if [[ -n "$output_path" ]]; then
-  {
-    echo "develop_sha=$develop_sha"
-    echo "master_sha=$master_sha"
-  } >> "$output_path"
+	{
+		echo "develop_sha=$develop_sha"
+		echo "master_sha=$master_sha"
+	} >>"$output_path"
 fi

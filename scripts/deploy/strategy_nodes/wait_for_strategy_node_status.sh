@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-  cat <<USAGE
+	cat <<USAGE
 Usage: $0 --status-file <path> [--timeout-seconds <n>] [--success-status <csv>]
 USAGE
 }
@@ -12,37 +12,40 @@ timeout_seconds=300
 success_statuses="running,completed,validated,built"
 
 while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --status-file)
-      status_file="$2"
-      shift 2
-      ;;
-    --timeout-seconds)
-      timeout_seconds="$2"
-      shift 2
-      ;;
-    --success-status)
-      success_statuses="$2"
-      shift 2
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    *)
-      echo "Unknown argument: $1" >&2
-      usage >&2
-      exit 1
-      ;;
-  esac
+	case "$1" in
+	--status-file)
+		status_file="$2"
+		shift 2
+		;;
+	--timeout-seconds)
+		timeout_seconds="$2"
+		shift 2
+		;;
+	--success-status)
+		success_statuses="$2"
+		shift 2
+		;;
+	-h | --help)
+		usage
+		exit 0
+		;;
+	*)
+		echo "Unknown argument: $1" >&2
+		usage >&2
+		exit 1
+		;;
+	esac
 done
 
 if [[ -z "$status_file" ]]; then
-  usage >&2
-  exit 1
+	usage >&2
+	exit 1
 fi
 
-command -v python3 >/dev/null 2>&1 || { echo "python3 is required" >&2; exit 1; }
+command -v python3 >/dev/null 2>&1 || {
+	echo "python3 is required" >&2
+	exit 1
+}
 
 python3 - "$status_file" "$timeout_seconds" "$success_statuses" <<'PY'
 import json
