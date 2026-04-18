@@ -210,3 +210,68 @@ async def test_place_order_serializes_numeric_fields(monkeypatch):
         "signature": "0xsig",
         "baseToken": "0xtoken",
     }
+
+
+@pytest.mark.asyncio
+async def test_get_markets_uses_active_endpoint_without_only_active_param(monkeypatch):
+    captured: dict[str, object] = {}
+
+    async def _fake_request(
+        method: str,
+        endpoint: str,
+        params: Any = None,
+        data: Any = None,
+    ) -> dict[str, bool]:
+        captured["method"] = method
+        captured["endpoint"] = endpoint
+        captured["params"] = params
+        captured["data"] = data
+        return {"ok": True}
+
+    client = SXBetHttpClient()
+    monkeypatch.setattr(client, "_request", _fake_request)
+
+    result = await client.get_markets(
+        sport_id=1,
+        league_id=2,
+        fixture_id="fixture-3",
+        only_active=True,
+    )
+
+    assert result == {"ok": True}
+    assert captured["method"] == "GET"
+    assert captured["endpoint"] == "/markets/active"
+    assert captured["params"] == {
+        "sportId": 1,
+        "leagueId": 2,
+        "fixtureId": "fixture-3",
+    }
+    assert captured["data"] is None
+
+
+@pytest.mark.asyncio
+async def test_get_markets_uses_legacy_endpoint_for_non_active_queries(monkeypatch):
+    captured: dict[str, object] = {}
+
+    async def _fake_request(
+        method: str,
+        endpoint: str,
+        params: Any = None,
+        data: Any = None,
+    ) -> dict[str, bool]:
+        captured["method"] = method
+        captured["endpoint"] = endpoint
+        captured["params"] = params
+        captured["data"] = data
+        return {"ok": True}
+
+    client = SXBetHttpClient()
+    monkeypatch.setattr(client, "_request", _fake_request)
+
+    result = await client.get_markets(only_active=False)
+
+    assert result == {"ok": True}
+    assert captured["method"] == "GET"
+    assert captured["endpoint"] == "/markets"
+    assert captured["params"] == {"onlyActive": "false"}
+    assert captured["data"] is None
