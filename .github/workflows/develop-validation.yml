@@ -15,8 +15,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  pre-commit-full:
-    name: pre-commit-full
+  pre-commit-curated:
+    name: pre-commit-curated
     timeout-minutes: 30
     runs-on: [self-hosted, linux, x64, cloudbet-market-maker, ci, gcp, ubuntu24]
     env:
@@ -69,15 +69,24 @@ jobs:
 
       - name: Common setup
         uses: ./.github/actions/common-setup
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           python-version: "3.13"
           free-disk-space: "true"
           build-type: "pre-commit"
           skip-rust: "true"
+          skip-uv: "true"
           skip-capnp: "true"
 
-      - name: Run full pre-commit suite
-        run: pre-commit run --all-files --show-diff-on-failure --color=always
+      - name: Run curated pre-commit suite
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_BASE_REF: ${{ github.base_ref }}
+          GITHUB_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GITHUB_EVENT_BEFORE: ${{ github.event.before }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: bash scripts/ci/run_pre_commit_fast.sh
 
   cargo-deny:
     name: cargo-deny
@@ -195,7 +204,7 @@ jobs:
     name: build-linux-x86-py312
     timeout-minutes: 60
     needs:
-      - pre-commit-full
+      - pre-commit-curated
       - cargo-deny
       - cargo-vet
     runs-on: [self-hosted, linux, x64, cloudbet-market-maker, ci, gcp, ubuntu24]
@@ -342,7 +351,7 @@ jobs:
     name: python-tests
     timeout-minutes: 90
     needs:
-      - pre-commit-full
+      - pre-commit-curated
       - build-linux-x86-py312
     runs-on: [self-hosted, linux, x64, cloudbet-market-maker, ci, gcp, ubuntu24]
     container:

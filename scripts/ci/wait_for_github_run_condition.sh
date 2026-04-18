@@ -126,8 +126,9 @@ while true; do
   fi
 
   json="$(fetch_json)"
-  signature="$(jq -c '{status,conclusion,jobs:[.jobs[]? | {name,status,conclusion,startedAt,completedAt}]}'
-    <<<"$json")"
+  signature="$(
+    jq -c '{status,conclusion,jobs:[.jobs[]? | {name,status,conclusion,startedAt,completedAt}]}' <<< "$json"
+  )"
 
   if [ "$signature" != "$last_signature" ]; then
     print_summary "$json"
