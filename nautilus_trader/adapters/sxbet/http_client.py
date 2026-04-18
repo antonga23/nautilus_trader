@@ -327,7 +327,10 @@ class SXBetHttpClient:
             Only return active markets.
 
         """
-        params: dict[str, Any] = {"onlyActive": str(only_active).lower()}
+        endpoint = SXBET_ENDPOINTS["active_markets"] if only_active else SXBET_ENDPOINTS["markets"]
+        params: dict[str, Any] = {}
+        if not only_active:
+            params["onlyActive"] = str(only_active).lower()
         if sport_id:
             params["sportId"] = sport_id
         if league_id:
@@ -335,7 +338,7 @@ class SXBetHttpClient:
         if fixture_id:
             params["fixtureId"] = fixture_id
 
-        return await self._request("GET", SXBET_ENDPOINTS["markets"], params=params)
+        return await self._request("GET", endpoint, params=params)
 
     async def get_market(self, market_hash: str) -> dict[str, Any]:
         """

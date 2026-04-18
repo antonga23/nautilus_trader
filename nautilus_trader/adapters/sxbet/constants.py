@@ -33,6 +33,7 @@ SXBET_ENDPOINTS = {
     "leagues": "/leagues",
     "fixtures": "/fixtures",
     "markets": "/markets",
+    "active_markets": "/markets/active",
     "market_by_id": "/markets/{market_hash}",
     "active_leagues": "/activeLeagues",
     "active_sports": "/activeSports",
