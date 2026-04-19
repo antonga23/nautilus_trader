@@ -257,7 +257,7 @@ async def test_get_markets_rejects_non_active_queries(monkeypatch):
 
     with pytest.raises(
         SXBetHttpClientError,
-        match="Non-active SX.bet market queries are not exposed by the live REST API",
+        match=r"Non-active SX\.bet market queries are not exposed by the live REST API",
     ):
         await client.get_markets(only_active=False)
 
@@ -271,7 +271,7 @@ async def test_get_active_leagues_uses_live_endpoint_and_optional_sport_filter(m
         endpoint: str,
         params: Any = None,
         data: Any = None,
-    ) -> dict[str, bool]:
+    ) -> dict[str, Any]:
         captured["method"] = method
         captured["endpoint"] = endpoint
         captured["params"] = params
@@ -497,6 +497,6 @@ async def test_get_balance_raises_explanatory_error():
 
     with pytest.raises(
         SXBetHttpClientError,
-        match="SX.bet does not expose wallet balance via the current public REST API",
+        match=r"SX\.bet does not expose wallet balance via the current public REST API",
     ):
         await client.get_balance("0xmaker", "0xtoken")
