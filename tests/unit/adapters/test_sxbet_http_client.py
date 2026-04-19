@@ -166,6 +166,7 @@ async def test_request_uses_configured_timeout():
     assert result == {"ok": True}
     assert client._session.last_request_kwargs is not None
     assert client._session.last_request_kwargs["timeout"] is client._request_timeout
+    assert client._session.last_request_kwargs["url"] == "https://api.sx.bet/test"
 
 
 @pytest.mark.asyncio
@@ -242,15 +243,27 @@ async def test_get_markets_uses_active_endpoint_without_only_active_param(monkey
     assert captured["method"] == "GET"
     assert captured["endpoint"] == "/markets/active"
     assert captured["params"] == {
-        "sportId": 1,
+        "sportIds": 1,
         "leagueId": 2,
-        "fixtureId": "fixture-3",
+        "eventId": "fixture-3",
     }
     assert captured["data"] is None
 
 
 @pytest.mark.asyncio
-async def test_get_markets_uses_legacy_endpoint_for_non_active_queries(monkeypatch):
+async def test_get_markets_rejects_non_active_queries(monkeypatch):
+    client = SXBetHttpClient()
+    monkeypatch.setattr(client, "_request", lambda *args, **kwargs: {"ok": True})
+
+    with pytest.raises(
+        SXBetHttpClientError,
+        match="Non-active SX.bet market queries are not exposed by the live REST API",
+    ):
+        await client.get_markets(only_active=False)
+
+
+@pytest.mark.asyncio
+async def test_get_active_leagues_uses_live_endpoint_and_optional_sport_filter(monkeypatch):
     captured: dict[str, object] = {}
 
     async def _fake_request(
@@ -263,15 +276,227 @@ async def test_get_markets_uses_legacy_endpoint_for_non_active_queries(monkeypat
         captured["endpoint"] = endpoint
         captured["params"] = params
         captured["data"] = data
-        return {"ok": True}
+        return {"status": "success", "data": []}
 
     client = SXBetHttpClient()
     monkeypatch.setattr(client, "_request", _fake_request)
 
-    result = await client.get_markets(only_active=False)
+    result = await client.get_active_leagues(sport_id=29)
 
-    assert result == {"ok": True}
+    assert result == {"status": "success", "data": []}
     assert captured["method"] == "GET"
-    assert captured["endpoint"] == "/markets"
-    assert captured["params"] == {"onlyActive": "false"}
+    assert captured["endpoint"] == "/leagues/active"
+    assert captured["params"] == {"sportId": 29}
     assert captured["data"] is None
+
+
+@pytest.mark.asyncio
+async def test_get_active_sports_derives_from_active_leagues(monkeypatch):
+    client = SXBetHttpClient()
+
+    async def _fake_get_sports() -> dict[str, object]:
+        return {
+            "status": "success",
+            "data": [
+                {"sportId": 5, "label": "Soccer"},
+                {"sportId": 7, "label": "MMA"},
+            ],
+        }
+
+    async def _fake_get_active_leagues(
+        sport_id: int | None = None,
+    ) -> dict[str, object]:
+        assert sport_id is None
+        return {
+            "status": "success",
+            "data": [
+                {"leagueId": 1, "sportId": 5},
+                {"leagueId": 2, "sportId": 5},
+            ],
+        }
+
+    monkeypatch.setattr(client, "get_sports", _fake_get_sports)
+    monkeypatch.setattr(client, "get_active_leagues", _fake_get_active_leagues)
+
+    result = await client.get_active_sports()
+
+    assert result == {
+        "status": "success",
+        "data": [{"sportId": 5, "label": "Soccer"}],
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_fixtures_uses_active_fixture_endpoint_for_league(monkeypatch):
+    captured: dict[str, object] = {}
+
+    async def _fake_request(
+        method: str,
+        endpoint: str,
+        params: Any = None,
+        data: Any = None,
+    ) -> dict[str, object]:
+        captured["method"] = method
+        captured["endpoint"] = endpoint
+        captured["params"] = params
+        captured["data"] = data
+        return {"status": "success", "data": [{"eventId": "fixture-1"}]}
+
+    client = SXBetHttpClient()
+    monkeypatch.setattr(client, "_request", _fake_request)
+
+    result = await client.get_fixtures(league_id=42)
+
+    assert result == {"status": "success", "data": [{"eventId": "fixture-1"}]}
+    assert captured["method"] == "GET"
+    assert captured["endpoint"] == "/fixture/active"
+    assert captured["params"] == {"leagueId": 42}
+    assert captured["data"] is None
+
+
+@pytest.mark.asyncio
+async def test_get_market_uses_market_lookup_and_wraps_single_result(monkeypatch):
+    captured: dict[str, object] = {}
+
+    async def _fake_request(
+        method: str,
+        endpoint: str,
+        params: Any = None,
+        data: Any = None,
+    ) -> dict[str, object]:
+        captured["method"] = method
+        captured["endpoint"] = endpoint
+        captured["params"] = params
+        captured["data"] = data
+        return {
+            "status": "success",
+            "data": [{"marketHash": "0xabc"}],
+        }
+
+    client = SXBetHttpClient()
+    monkeypatch.setattr(client, "_request", _fake_request)
+
+    result = await client.get_market("0xabc")
+
+    assert result == {
+        "status": "success",
+        "data": {
+            "markets": [{"marketHash": "0xabc"}],
+            "market": {"marketHash": "0xabc"},
+        },
+    }
+    assert captured["method"] == "GET"
+    assert captured["endpoint"] == "/markets/find"
+    assert captured["params"] == {"marketHashes": "0xabc"}
+    assert captured["data"] is None
+
+
+@pytest.mark.asyncio
+async def test_get_order_book_uses_orders_endpoint_and_wraps_response(monkeypatch):
+    captured: dict[str, object] = {}
+
+    async def _fake_request(
+        method: str,
+        endpoint: str,
+        params: Any = None,
+        data: Any = None,
+    ) -> dict[str, object]:
+        captured["method"] = method
+        captured["endpoint"] = endpoint
+        captured["params"] = params
+        captured["data"] = data
+        return {
+            "status": "success",
+            "data": [{"orderHash": "0xorder"}],
+        }
+
+    client = SXBetHttpClient()
+    monkeypatch.setattr(client, "_request", _fake_request)
+
+    result = await client.get_order_book("0xmarket")
+
+    assert result == {
+        "status": "success",
+        "data": {
+            "orders": [{"orderHash": "0xorder"}],
+        },
+    }
+    assert captured["method"] == "GET"
+    assert captured["endpoint"] == "/orders"
+    assert captured["params"] == {"marketHashes": "0xmarket"}
+    assert captured["data"] is None
+
+
+@pytest.mark.asyncio
+async def test_get_user_orders_uses_maker_filter_and_wraps_response(monkeypatch):
+    captured: dict[str, object] = {}
+
+    async def _fake_request(
+        method: str,
+        endpoint: str,
+        params: Any = None,
+        data: Any = None,
+    ) -> dict[str, object]:
+        captured["method"] = method
+        captured["endpoint"] = endpoint
+        captured["params"] = params
+        captured["data"] = data
+        return {
+            "status": "success",
+            "data": [{"orderHash": "0xorder"}],
+        }
+
+    client = SXBetHttpClient(api_key="key")
+    monkeypatch.setattr(client, "_request", _fake_request)
+
+    result = await client.get_user_orders("0xmaker")
+
+    assert result == {
+        "status": "success",
+        "data": {
+            "orders": [{"orderHash": "0xorder"}],
+        },
+    }
+    assert captured["method"] == "GET"
+    assert captured["endpoint"] == "/orders"
+    assert captured["params"] == {"maker": "0xmaker"}
+    assert captured["data"] is None
+
+
+@pytest.mark.asyncio
+async def test_get_user_trades_uses_bettor_filter(monkeypatch):
+    captured: dict[str, object] = {}
+
+    async def _fake_request(
+        method: str,
+        endpoint: str,
+        params: Any = None,
+        data: Any = None,
+    ) -> dict[str, object]:
+        captured["method"] = method
+        captured["endpoint"] = endpoint
+        captured["params"] = params
+        captured["data"] = data
+        return {"status": "success", "data": {"trades": []}}
+
+    client = SXBetHttpClient(api_key="key")
+    monkeypatch.setattr(client, "_request", _fake_request)
+
+    result = await client.get_user_trades("0xmaker")
+
+    assert result == {"status": "success", "data": {"trades": []}}
+    assert captured["method"] == "GET"
+    assert captured["endpoint"] == "/trades"
+    assert captured["params"] == {"bettor": "0xmaker"}
+    assert captured["data"] is None
+
+
+@pytest.mark.asyncio
+async def test_get_balance_raises_explanatory_error():
+    client = SXBetHttpClient(api_key="key")
+
+    with pytest.raises(
+        SXBetHttpClientError,
+        match="SX.bet does not expose wallet balance via the current public REST API",
+    ):
+        await client.get_balance("0xmaker", "0xtoken")

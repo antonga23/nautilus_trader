@@ -22,8 +22,8 @@ from nautilus_trader.model.identifiers import Venue
 # Primary venue identifier
 SXBET_VENUE = Venue("SXBET")
 
-# API configuration (SX Network - Arbitrum chain)
-SXBET_API_BASE_URL = "https://api.sx.bet/v3"
+# API configuration (SX mainnet)
+SXBET_API_BASE_URL = "https://api.sx.bet"
 SXBET_WS_BASE_URL = "wss://api.sx.bet"
 
 # API endpoints
@@ -31,22 +31,17 @@ SXBET_ENDPOINTS = {
     # Market data (no API key required)
     "sports": "/sports",
     "leagues": "/leagues",
-    "fixtures": "/fixtures",
-    "markets": "/markets",
+    "active_leagues": "/leagues/active",
+    "fixtures": "/fixture/active",
     "active_markets": "/markets/active",
-    "market_by_id": "/markets/{market_hash}",
-    "active_leagues": "/activeLeagues",
-    "active_sports": "/activeSports",
+    "market_lookup": "/markets/find",
     # Order book
-    "order_book": "/orders/active",
-    "market_orders": "/orders/active/by-market/{market_hash}",
+    "order_book": "/orders",
     # Trading (API key required)
     "place_order": "/orders/new",
     "cancel_order": "/orders/cancel",
-    "user_orders": "/orders/user",
-    "user_trades": "/trades/user",
-    # Account
-    "balance": "/balance",
+    "user_orders": "/orders",
+    "user_trades": "/trades",
 }
 
 # SX.bet sport IDs

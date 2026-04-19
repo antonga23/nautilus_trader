@@ -21,6 +21,7 @@ import secrets
 from datetime import UTC
 from datetime import datetime
 from email.utils import parsedate_to_datetime
+from itertools import chain
 from typing import Any
 
 import aiohttp
@@ -165,6 +166,60 @@ class SXBetHttpClient:
         )
 
     @staticmethod
+    def _wrap_list_response(
+        payload: dict[str, Any],
+        item_key: str,
+        *,
+        single_item_key: str | None = None,
+    ) -> dict[str, Any]:
+        data = payload.get("data")
+        if isinstance(data, dict) and item_key in data:
+            return payload
+        if not isinstance(data, list):
+            return payload
+
+        wrapped: dict[str, Any] = {item_key: data}
+        if single_item_key is not None and len(data) == 1:
+            wrapped[single_item_key] = data[0]
+
+        return {
+            **payload,
+            "data": wrapped,
+        }
+
+    async def _get_active_fixture_batch(
+        self,
+        league_id: int,
+        *,
+        from_time: int | None = None,
+        to_time: int | None = None,
+    ) -> list[dict[str, Any]]:
+        payload = await self._request(
+            "GET",
+            SXBET_ENDPOINTS["fixtures"],
+            params={"leagueId": league_id},
+        )
+        fixtures = payload.get("data", [])
+        if not isinstance(fixtures, list):
+            return []
+
+        if from_time is None and to_time is None:
+            return fixtures
+
+        filtered: list[dict[str, Any]] = []
+        for fixture in fixtures:
+            game_time = fixture.get("gameTime")
+            if not isinstance(game_time, int):
+                filtered.append(fixture)
+                continue
+            if from_time is not None and game_time < from_time:
+                continue
+            if to_time is not None and game_time > to_time:
+                continue
+            filtered.append(fixture)
+        return filtered
+
+    @staticmethod
     def _parse_retry_after(value: str | None) -> float:
         if value is None:
             return 1.0
@@ -254,7 +309,28 @@ class SXBetHttpClient:
         """
         Get list of sports with active markets.
         """
-        return await self._request("GET", SXBET_ENDPOINTS["active_sports"])
+        sports_payload, active_leagues_payload = await asyncio.gather(
+            self.get_sports(),
+            self.get_active_leagues(),
+        )
+        sports = sports_payload.get("data", [])
+        active_leagues = active_leagues_payload.get("data", [])
+        if not isinstance(sports, list) or not isinstance(active_leagues, list):
+            return {"status": "success", "data": []}
+
+        active_sport_ids = {
+            league.get("sportId")
+            for league in active_leagues
+            if isinstance(league, dict) and league.get("sportId") is not None
+        }
+        return {
+            "status": sports_payload.get("status", "success"),
+            "data": [
+                sport
+                for sport in sports
+                if isinstance(sport, dict) and sport.get("sportId") in active_sport_ids
+            ],
+        }
 
     async def get_leagues(self, sport_id: int | None = None) -> dict[str, Any]:
         """
@@ -265,11 +341,12 @@ class SXBetHttpClient:
             params["sportId"] = sport_id
         return await self._request("GET", SXBET_ENDPOINTS["leagues"], params=params)
 
-    async def get_active_leagues(self) -> dict[str, Any]:
+    async def get_active_leagues(self, sport_id: int | None = None) -> dict[str, Any]:
         """
         Get leagues with active markets.
         """
-        return await self._request("GET", SXBET_ENDPOINTS["active_leagues"])
+        params = {"sportId": sport_id} if sport_id is not None else None
+        return await self._request("GET", SXBET_ENDPOINTS["active_leagues"], params=params)
 
     async def get_fixtures(
         self,
@@ -293,17 +370,36 @@ class SXBetHttpClient:
             End time (Unix timestamp).
 
         """
-        params = {}
-        if sport_id:
-            params["sportId"] = sport_id
-        if league_id:
-            params["leagueId"] = league_id
-        if from_time:
-            params["from"] = from_time
-        if to_time:
-            params["to"] = to_time
+        if league_id is not None:
+            return {
+                "status": "success",
+                "data": await self._get_active_fixture_batch(
+                    league_id,
+                    from_time=from_time,
+                    to_time=to_time,
+                ),
+            }
 
-        return await self._request("GET", SXBET_ENDPOINTS["fixtures"], params=params)
+        leagues_payload = await self.get_active_leagues(sport_id=sport_id)
+        leagues = leagues_payload.get("data", [])
+        if not isinstance(leagues, list):
+            return {"status": "success", "data": []}
+
+        fixture_batches = await asyncio.gather(
+            *[
+                self._get_active_fixture_batch(
+                    league["leagueId"],
+                    from_time=from_time,
+                    to_time=to_time,
+                )
+                for league in leagues
+                if isinstance(league, dict) and isinstance(league.get("leagueId"), int)
+            ],
+        )
+        return {
+            "status": leagues_payload.get("status", "success"),
+            "data": list(chain.from_iterable(fixture_batches)),
+        }
 
     async def get_markets(
         self,
@@ -327,16 +423,19 @@ class SXBetHttpClient:
             Only return active markets.
 
         """
-        endpoint = SXBET_ENDPOINTS["active_markets"] if only_active else SXBET_ENDPOINTS["markets"]
-        params: dict[str, Any] = {}
         if not only_active:
-            params["onlyActive"] = str(only_active).lower()
-        if sport_id:
-            params["sportId"] = sport_id
-        if league_id:
+            raise SXBetHttpClientError(
+                "Non-active SX.bet market queries are not exposed by the live REST API",
+            )
+
+        endpoint = SXBET_ENDPOINTS["active_markets"]
+        params: dict[str, Any] = {}
+        if sport_id is not None:
+            params["sportIds"] = sport_id
+        if league_id is not None:
             params["leagueId"] = league_id
         if fixture_id:
-            params["fixtureId"] = fixture_id
+            params["eventId"] = fixture_id
 
         return await self._request("GET", endpoint, params=params)
 
@@ -344,8 +443,12 @@ class SXBetHttpClient:
         """
         Get a specific market by hash.
         """
-        endpoint = SXBET_ENDPOINTS["market_by_id"].format(market_hash=market_hash)
-        return await self._request("GET", endpoint)
+        payload = await self._request(
+            "GET",
+            SXBET_ENDPOINTS["market_lookup"],
+            params={"marketHashes": market_hash},
+        )
+        return self._wrap_list_response(payload, "markets", single_item_key="market")
 
     async def get_order_book(
         self,
@@ -360,12 +463,15 @@ class SXBetHttpClient:
             Filter by market hash.
 
         """
-        if market_hash:
-            endpoint = SXBET_ENDPOINTS["market_orders"].format(market_hash=market_hash)
-        else:
-            endpoint = SXBET_ENDPOINTS["order_book"]
+        if market_hash is None:
+            raise SXBetHttpClientError("market_hash is required when querying SX.bet orders")
 
-        return await self._request("GET", endpoint)
+        payload = await self._request(
+            "GET",
+            SXBET_ENDPOINTS["order_book"],
+            params={"marketHashes": market_hash},
+        )
+        return self._wrap_list_response(payload, "orders")
 
     async def place_order(  # pylint: disable=too-many-arguments
         self,
@@ -431,8 +537,12 @@ class SXBetHttpClient:
         """
         self._require_api_key("user orders")
 
-        params = {"address": wallet_address}
-        return await self._request("GET", SXBET_ENDPOINTS["user_orders"], params=params)
+        payload = await self._request(
+            "GET",
+            SXBET_ENDPOINTS["user_orders"],
+            params={"maker": wallet_address},
+        )
+        return self._wrap_list_response(payload, "orders")
 
     async def get_user_trades(self, wallet_address: str) -> dict[str, Any]:
         """
@@ -440,12 +550,13 @@ class SXBetHttpClient:
         """
         self._require_api_key("user trades")
 
-        params = {"address": wallet_address}
+        params = {"bettor": wallet_address}
         return await self._request("GET", SXBET_ENDPOINTS["user_trades"], params=params)
 
     async def get_balance(self, wallet_address: str, token: str) -> dict[str, Any]:
         """
         Get token balance for a wallet.
         """
-        params = {"address": wallet_address, "token": token}
-        return await self._request("GET", SXBET_ENDPOINTS["balance"], params=params)
+        raise SXBetHttpClientError(
+            "SX.bet does not expose wallet balance via the current public REST API",
+        )
