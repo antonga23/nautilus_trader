@@ -251,6 +251,43 @@ async def test_get_markets_uses_active_endpoint_without_only_active_param(monkey
 
 
 @pytest.mark.asyncio
+async def test_get_markets_forwards_pagination_and_live_filters(monkeypatch):
+    captured: dict[str, object] = {}
+
+    async def _fake_request(
+        method: str,
+        endpoint: str,
+        params: Any = None,
+        data: Any = None,
+    ) -> dict[str, bool]:
+        captured["method"] = method
+        captured["endpoint"] = endpoint
+        captured["params"] = params
+        captured["data"] = data
+        return {"ok": True}
+
+    client = SXBetHttpClient()
+    monkeypatch.setattr(client, "_request", _fake_request)
+
+    result = await client.get_markets(
+        sport_id=5,
+        pagination_key="next-key",
+        page_size=50,
+        only_main_line=True,
+        live_only=True,
+    )
+
+    assert result == {"ok": True}
+    assert captured["params"] == {
+        "sportIds": 5,
+        "paginationKey": "next-key",
+        "pageSize": 50,
+        "onlyMainLine": True,
+        "liveOnly": True,
+    }
+
+
+@pytest.mark.asyncio
 async def test_get_markets_rejects_non_active_queries(monkeypatch):
     client = SXBetHttpClient()
     monkeypatch.setattr(client, "_request", lambda *args, **kwargs: {"ok": True})
@@ -288,6 +325,85 @@ async def test_get_active_leagues_uses_live_endpoint_and_optional_sport_filter(m
     assert captured["endpoint"] == "/leagues/active"
     assert captured["params"] == {"sportId": 29}
     assert captured["data"] is None
+
+
+@pytest.mark.asyncio
+async def test_get_best_odds_uses_market_hash_query(monkeypatch):
+    captured: dict[str, object] = {}
+
+    async def _fake_request(
+        method: str,
+        endpoint: str,
+        params: Any = None,
+        data: Any = None,
+    ) -> dict[str, Any]:
+        captured["method"] = method
+        captured["endpoint"] = endpoint
+        captured["params"] = params
+        return {"status": "success", "data": {"bestOdds": []}}
+
+    client = SXBetHttpClient()
+    monkeypatch.setattr(client, "_request", _fake_request)
+
+    result = await client.get_best_odds(
+        market_hashes=["hash-a", "hash-b"],
+        base_token="0xtoken",
+    )
+
+    assert result == {"status": "success", "data": {"bestOdds": []}}
+    assert captured["method"] == "GET"
+    assert captured["endpoint"] == "/orders/odds/best"
+    assert captured["params"] == {
+        "baseToken": "0xtoken",
+        "marketHashes": "hash-a,hash-b",
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_best_odds_uses_league_id_query(monkeypatch):
+    captured: dict[str, object] = {}
+
+    async def _fake_request(
+        method: str,
+        endpoint: str,
+        params: Any = None,
+        data: Any = None,
+    ) -> dict[str, Any]:
+        captured["method"] = method
+        captured["endpoint"] = endpoint
+        captured["params"] = params
+        return {"status": "success", "data": {"bestOdds": []}}
+
+    client = SXBetHttpClient()
+    monkeypatch.setattr(client, "_request", _fake_request)
+
+    result = await client.get_best_odds(
+        league_ids=[10, 20],
+        base_token="0xtoken",
+    )
+
+    assert result == {"status": "success", "data": {"bestOdds": []}}
+    assert captured["method"] == "GET"
+    assert captured["endpoint"] == "/orders/odds/best"
+    assert captured["params"] == {
+        "baseToken": "0xtoken",
+        "leagueIds": "10,20",
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_best_odds_rejects_invalid_query_shape():
+    client = SXBetHttpClient()
+
+    with pytest.raises(SXBetHttpClientError, match="market_hashes or league_ids is required"):
+        await client.get_best_odds(base_token="0xtoken")
+
+    with pytest.raises(SXBetHttpClientError, match="cannot both be set"):
+        await client.get_best_odds(
+            market_hashes=["hash-a"],
+            league_ids=[1],
+            base_token="0xtoken",
+        )
 
 
 @pytest.mark.asyncio

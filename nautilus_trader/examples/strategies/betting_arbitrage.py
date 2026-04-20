@@ -29,6 +29,7 @@ from nautilus_trader.core.message import Event
 from nautilus_trader.model.data import QuoteTick
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.enums import TimeInForce
+from nautilus_trader.model.instruments.base import Instrument
 from nautilus_trader.trading.strategy import Strategy
 
 
@@ -141,6 +142,7 @@ class BettingArbitrageStrategy(Strategy):
         self.log.info(msg)
         msg = f"Auto execute: {self._config.auto_execute}"
         self.log.info(msg)
+        self._subscribe_cached_instruments()
 
     def on_stop(self) -> None:
         """
@@ -167,18 +169,40 @@ class BettingArbitrageStrategy(Strategy):
 
         """
         for instrument in instruments:
-            # Venue filter
-            if instrument.id.venue.value not in self._config.enabled_venues:
+            if not self._maybe_subscribe_instrument(instrument):
                 continue
 
-            # Sport filter
-            if not self._should_process_instrument(instrument):
-                continue
+    def on_instrument(self, instrument: Instrument) -> None:
+        if isinstance(instrument, CryptoBettingInstrument):
+            self._maybe_subscribe_instrument(instrument)
 
-            self._subscribed_instruments.add(instrument)
-            self.subscribe_quote_ticks(instrument.id)
-            msg = f"Subscribed to {instrument.id}"
-            self.log.info(msg)
+    def _subscribe_cached_instruments(self) -> None:
+        cached_instruments = [
+            instrument
+            for instrument in self.cache.instruments()
+            if isinstance(instrument, CryptoBettingInstrument)
+        ]
+        if not cached_instruments:
+            self.log.warning("No cached betting instruments available at strategy start")
+            return
+        self.subscribe_instruments(cached_instruments)
+
+    def _maybe_subscribe_instrument(self, instrument: CryptoBettingInstrument) -> bool:
+        # Venue filter
+        if instrument.id.venue.value not in self._config.enabled_venues:
+            return False
+
+        # Sport/live filter
+        if not self._should_process_instrument(instrument):
+            return False
+
+        if any(existing.id == instrument.id for existing in self._subscribed_instruments):
+            return False
+
+        self._subscribed_instruments.add(instrument)
+        self.subscribe_quote_ticks(instrument.id)
+        self.log.info(f"Subscribed to {instrument.id}")
+        return True
 
     def _should_process_instrument(self, instrument: CryptoBettingInstrument) -> bool:
         """
