@@ -72,7 +72,7 @@ class SXBetDataClient(LiveMarketDataClient):
 
         self._http_client = http_client
         self._config = config
-        self._instrument_provider = instrument_provider
+        self._instrument_provider: SXBetInstrumentProvider = instrument_provider
         self._subscribed_instruments: set[InstrumentId] = set()
         self._polling_task: asyncio.Task | None = None
         self._polling_interval = 3.0  # Faster polling for SX.bet
@@ -234,7 +234,7 @@ class SXBetDataClient(LiveMarketDataClient):
             orders = order_book.get("data", {}).get("orders", [])
 
             # Find instruments for this market
-            instruments = self._instrument_provider.find_by_market_hash(market_hash)  # type: ignore[attr-defined]
+            instruments = self._instrument_provider.find_by_market_hash(market_hash)
 
             for instrument in instruments:
                 if instrument.id not in self._subscribed_instruments:

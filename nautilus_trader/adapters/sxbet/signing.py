@@ -22,6 +22,7 @@ from decimal import ROUND_DOWN
 from decimal import ROUND_HALF_UP
 from decimal import Decimal
 from typing import Any
+from typing import cast
 
 from nautilus_trader.adapters.sxbet.constants import SXBET_EIP712_DOMAIN
 
@@ -34,6 +35,10 @@ def generate_salt() -> int:
 
 
 SXBET_PERCENTAGE_ODDS_SCALE = Decimal("1e20")
+
+
+def _default_chain_id() -> int:
+    return cast(int, SXBET_EIP712_DOMAIN["chainId"])
 
 
 def get_expiry(hours: int = 24) -> int:
@@ -151,7 +156,7 @@ def _normalize_uint256(value: Any) -> int:
 
 def build_order_typed_data(
     order: dict[str, Any],
-    chain_id: int = SXBET_EIP712_DOMAIN["chainId"],
+    chain_id: int | None = None,
 ) -> dict[str, Any]:
     """
     Build EIP712 typed data structure for order signing.
@@ -169,6 +174,9 @@ def build_order_typed_data(
         EIP712 typed data structure.
 
     """
+    if chain_id is None:
+        chain_id = _default_chain_id()
+
     canonical_order = {
         **order,
         "totalBetSize": _normalize_uint256(order["totalBetSize"]),
@@ -243,7 +251,7 @@ def sign_order_hash(order_hash: bytes, private_key: str) -> str:
 def sign_eip712_order(
     order: dict[str, Any],
     private_key: str,
-    chain_id: int = SXBET_EIP712_DOMAIN["chainId"],
+    chain_id: int | None = None,
 ) -> str:
     """
     Sign an order using EIP712 typed data signing.
@@ -270,6 +278,9 @@ def sign_eip712_order(
     try:
         from eth_account import Account
         from eth_account.messages import encode_typed_data
+
+        if chain_id is None:
+            chain_id = _default_chain_id()
 
         typed_data = build_order_typed_data(order, chain_id)
         signed = Account.sign_message(
