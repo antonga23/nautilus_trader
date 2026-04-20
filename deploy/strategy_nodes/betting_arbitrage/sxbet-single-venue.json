@@ -10,9 +10,8 @@
   "strategy": {
     "min_profit_margin": "0.02",
     "max_total_stake": "250",
-    "sport_filter": "soccer",
-    "market_timing_filter": "pre_market",
-    "exclude_live": true,
+    "sport_filter": null,
+    "market_timing_filter": "all",
     "rollover_aware": true,
     "auto_execute": false
   },
@@ -24,7 +23,6 @@
       "execution_enabled": false,
       "credential_prefix": "SXBET",
       "load_all_instruments": true,
-      "sport_ids": [29],
       "live_only": false
     }
   ],
