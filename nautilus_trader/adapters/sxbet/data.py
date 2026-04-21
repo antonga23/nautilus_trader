@@ -22,6 +22,7 @@ import contextlib
 from nautilus_trader.adapters.betting.common.enums import Outcome
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.sxbet.config import SXBetDataClientConfig
+from nautilus_trader.adapters.sxbet.constants import SXBET_TOKENS
 from nautilus_trader.adapters.sxbet.constants import SXBET_VENUE
 from nautilus_trader.adapters.sxbet.http_client import SXBetHttpClient
 from nautilus_trader.adapters.sxbet.http_client import SXBetHttpClientError
@@ -71,7 +72,7 @@ class SXBetDataClient(LiveMarketDataClient):
 
         self._http_client = http_client
         self._config = config
-        self._instrument_provider = instrument_provider
+        self._instrument_provider: SXBetInstrumentProvider = instrument_provider
         self._subscribed_instruments: set[InstrumentId] = set()
         self._polling_task: asyncio.Task | None = None
         self._polling_interval = 3.0  # Faster polling for SX.bet
@@ -91,6 +92,7 @@ class SXBetDataClient(LiveMarketDataClient):
             filters["sport_ids"] = self._config.sport_ids
 
         await self._instrument_provider.load_all_async(filters)
+        self._send_all_instruments_to_data_engine()
 
         self._log.info("SXBetDataClient connected")
 
@@ -135,9 +137,9 @@ class SXBetDataClient(LiveMarketDataClient):
 
     async def _poll_order_books(self) -> None:
         """
-        Poll for order book updates.
+        Poll for best-odds updates.
         """
-        self._log.debug("Starting order book polling loop")
+        self._log.debug("Starting SX.bet best-odds polling loop")
 
         while self._running:
             try:
@@ -148,20 +150,80 @@ class SXBetDataClient(LiveMarketDataClient):
                     if isinstance(instrument, CryptoBettingInstrument):
                         market_hashes.add(instrument.event_id)
 
-                # Poll each market
-                for market_hash in market_hashes:
-                    await self._fetch_and_publish_quotes(market_hash)
+                if market_hashes:
+                    await self._fetch_and_publish_best_odds(market_hashes)
 
                 await asyncio.sleep(self._polling_interval)
 
             except asyncio.CancelledError:
                 break
             except (RuntimeError, ValueError, TypeError, KeyError, SXBetHttpClientError) as e:
-                msg = f"Error in order book polling: {e}"
+                msg = f"Error in SX.bet best-odds polling: {e}"
                 self._log.error(msg)
                 await asyncio.sleep(self._polling_interval)
 
-        self._log.debug("Stopped order book polling loop")
+        self._log.debug("Stopped SX.bet best-odds polling loop")
+
+    def _send_all_instruments_to_data_engine(self) -> None:
+        for instrument in self._instrument_provider.get_all().values():
+            self._handle_data(instrument)
+
+    async def _fetch_and_publish_best_odds(self, market_hashes: set[str]) -> None:
+        try:
+            payload = await self._http_client.get_best_odds(
+                market_hashes=sorted(market_hashes),
+                base_token=SXBET_TOKENS["USDC"],
+            )
+            best_odds = payload.get("data", {}).get("bestOdds", [])
+            best_odds_by_hash = {
+                entry["marketHash"]: entry
+                for entry in best_odds
+                if isinstance(entry, dict) and isinstance(entry.get("marketHash"), str)
+            }
+
+            for market_hash in market_hashes:
+                best_odds_entry = best_odds_by_hash.get(market_hash)
+                if best_odds_entry is None:
+                    continue
+
+                instruments = self._instrument_provider.find_by_market_hash(market_hash)
+                for instrument in instruments:
+                    if instrument.id not in self._subscribed_instruments:
+                        continue
+
+                    quote = self._build_best_odds_quote(instrument, best_odds_entry)
+                    if quote is not None:
+                        self._handle_data(quote)
+        except (ValueError, TypeError, KeyError, SXBetHttpClientError) as e:
+            self._log.warning(f"Failed to fetch SX.bet best odds: {e}")
+
+    def _build_best_odds_quote(
+        self,
+        instrument: CryptoBettingInstrument,
+        best_odds_entry: dict[str, object],
+    ) -> QuoteTick | None:
+        key = "outcomeOne" if self._instrument_is_outcome_one(instrument) else "outcomeTwo"
+        outcome_payload = best_odds_entry.get(key)
+        if not isinstance(outcome_payload, dict):
+            return None
+
+        percentage_odds = outcome_payload.get("percentageOdds")
+        if percentage_odds in (None, ""):
+            return None
+
+        best_bid = percentage_to_decimal_odds(int(str(percentage_odds)))
+        if best_bid <= 0:
+            return None
+
+        return QuoteTick(
+            instrument_id=instrument.id,
+            bid_price=Price(best_bid, precision=2),
+            ask_price=Price(0, precision=2),
+            bid_size=Quantity.from_int(100),
+            ask_size=Quantity.zero(),
+            ts_event=self._clock.timestamp_ns(),
+            ts_init=self._clock.timestamp_ns(),
+        )
 
     async def _fetch_and_publish_quotes(self, market_hash: str) -> None:
         """
@@ -172,7 +234,7 @@ class SXBetDataClient(LiveMarketDataClient):
             orders = order_book.get("data", {}).get("orders", [])
 
             # Find instruments for this market
-            instruments = self._instrument_provider.find_by_market_hash(market_hash)  # type: ignore[attr-defined]
+            instruments = self._instrument_provider.find_by_market_hash(market_hash)
 
             for instrument in instruments:
                 if instrument.id not in self._subscribed_instruments:

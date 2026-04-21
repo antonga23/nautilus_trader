@@ -18,13 +18,15 @@ SX.bet Instrument Provider.
 
 from datetime import UTC
 from datetime import datetime
+import re
 from typing import Any
 
+from nautilus_trader.adapters.betting.common.enums import MarketType
 from nautilus_trader.adapters.betting.common.enums import SelectionSide
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
-from nautilus_trader.adapters.sxbet.common import SXBetMarketType
 from nautilus_trader.adapters.sxbet.config import SXBetInstrumentProviderConfig
 from nautilus_trader.adapters.sxbet.constants import SXBET_SPORT_IDS
+from nautilus_trader.adapters.sxbet.constants import SXBET_TOKENS
 from nautilus_trader.adapters.sxbet.constants import SXBET_VENUE
 from nautilus_trader.adapters.sxbet.http_client import SXBetHttpClient
 from nautilus_trader.adapters.sxbet.signing import percentage_to_decimal_odds
@@ -32,6 +34,22 @@ from nautilus_trader.common.component import Logger
 from nautilus_trader.common.providers import InstrumentProvider
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.objects import Currency
+
+
+SXBET_MARKET_BATCH_SIZE = 30
+SXBET_MARKET_PAGE_SIZE = 50
+SXBET_PLACEHOLDER_PRICE = 2.0
+SXBET_MARKET_TYPE_MAP = {
+    1: MarketType.MATCH_ODDS.value,
+    2: MarketType.TOTAL_GOALS.value,
+    3: MarketType.ASIAN_HANDICAP.value,
+    52: MarketType.MATCH_ODDS.value,
+    88: MarketType.WINNER.value,
+    201: MarketType.ASIAN_HANDICAP.value,
+    226: MarketType.MATCH_ODDS.value,
+    342: MarketType.ASIAN_HANDICAP.value,
+    835: MarketType.TOTAL_GOALS.value,
+}
 
 
 class SXBetInstrumentProvider(InstrumentProvider):
@@ -78,6 +96,7 @@ class SXBetInstrumentProvider(InstrumentProvider):
             sport_ids=sport_ids,
             league_ids=league_ids,
         )
+        await self._hydrate_best_odds(markets)
         msg = f"Found {len(markets)} active markets"
         self._log.info(msg)
 
@@ -100,14 +119,47 @@ class SXBetInstrumentProvider(InstrumentProvider):
 
         for sport_id in sport_filters:
             for league_id in league_filters:
-                markets_data = await self._http_client.get_markets(
-                    sport_id=sport_id,
-                    league_id=league_id,
-                    only_active=True,
-                )
-                self._merge_markets(markets_by_hash, markets_data)
+                pagination_key: str | None = None
+                while True:
+                    markets_data = await self._http_client.get_markets(
+                        sport_id=sport_id,
+                        league_id=league_id,
+                        only_active=True,
+                        pagination_key=pagination_key,
+                        page_size=SXBET_MARKET_PAGE_SIZE,
+                    )
+                    self._merge_markets(markets_by_hash, markets_data)
+                    pagination_key = markets_data.get("data", {}).get("nextKey")
+                    if not pagination_key:
+                        break
 
         return list(markets_by_hash.values())
+
+    async def _hydrate_best_odds(self, markets: list[dict[str, Any]]) -> None:
+        market_hashes = [
+            market_hash
+            for market in markets
+            if isinstance(market_hash := market.get("marketHash"), str) and market_hash
+        ]
+        if not market_hashes:
+            return
+
+        best_odds_by_hash: dict[str, dict[str, Any]] = {}
+        for start in range(0, len(market_hashes), SXBET_MARKET_BATCH_SIZE):
+            batch = market_hashes[start : start + SXBET_MARKET_BATCH_SIZE]
+            payload = await self._http_client.get_best_odds(
+                market_hashes=batch,
+                base_token=SXBET_TOKENS["USDC"],
+            )
+            for item in payload.get("data", {}).get("bestOdds", []):
+                market_hash = item.get("marketHash")
+                if isinstance(market_hash, str) and market_hash:
+                    best_odds_by_hash[market_hash] = item
+
+        for market in markets:
+            market_hash = market.get("marketHash")
+            if isinstance(market_hash, str) and market_hash in best_odds_by_hash:
+                market["bestOdds"] = best_odds_by_hash[market_hash]
 
     @staticmethod
     def _merge_markets(
@@ -140,26 +192,28 @@ class SXBetInstrumentProvider(InstrumentProvider):
             return
 
         sport_name = SXBET_SPORT_IDS.get(sport_id, "unknown")
-        league_name = market.get("leagueName", "Unknown")
+        league_name = market.get("leagueLabel") or market.get("leagueName") or "Unknown"
+        normalized_market_type = self._normalize_market_type(market)
+        outcome_labels, proposition_subject = self._resolve_outcome_names(
+            market,
+            normalized_market_type,
+        )
+        market_params = self._market_params(
+            market_type=normalized_market_type,
+            handicap=market.get("line"),
+            outcome_labels=outcome_labels,
+            proposition_subject=proposition_subject,
+        )
 
-        # Get market type
-        try:
-            sx_market_type = SXBetMarketType(market_type)
-            normalized_market_type = sx_market_type.to_normalized()
-        except ValueError:
-            normalized_market_type = "other"
-
-        # Get best odds from order book if available
         outcome_one_odds = self._extract_best_odds(market, True)
         outcome_two_odds = self._extract_best_odds(market, False)
+        price_by_outcome = {
+            True: outcome_one_odds if outcome_one_odds > 0 else SXBET_PLACEHOLDER_PRICE,
+            False: outcome_two_odds if outcome_two_odds > 0 else SXBET_PLACEHOLDER_PRICE,
+        }
 
         # Create instruments for both outcomes
-        for outcome_one, odds in [(True, outcome_one_odds), (False, outcome_two_odds)]:
-            if odds <= 0:
-                continue
-
-            outcome = self._get_outcome_name(market_type, outcome_one)
-
+        for outcome_one in (True, False):
             instrument = self._create_instrument(
                 market_hash=market_hash,
                 event_name=f"{team_one} vs {team_two}",
@@ -169,12 +223,17 @@ class SXBetInstrumentProvider(InstrumentProvider):
                 competition_name=league_name,
                 market_type=normalized_market_type,
                 raw_market_type=market_type,
-                outcome=outcome,
-                price=odds,
+                outcome=outcome_labels[0] if outcome_one else outcome_labels[1],
+                price=price_by_outcome[outcome_one],
                 is_outcome_one=outcome_one,
-                handicap=market.get("line"),
                 live=is_live,
                 start_time=start_time,
+                handicap=market.get("line"),
+                params=market_params,
+                has_best_odds=(outcome_one_odds > 0 if outcome_one else outcome_two_odds > 0),
+                outcome_label=(
+                    market.get("outcomeOneName") if outcome_one else market.get("outcomeTwoName")
+                ),
             )
 
             if instrument:
@@ -186,6 +245,15 @@ class SXBetInstrumentProvider(InstrumentProvider):
         """
         Extract best available odds from market.
         """
+        best_odds_entry = market.get("bestOdds")
+        if isinstance(best_odds_entry, dict):
+            key = "outcomeOne" if outcome_one else "outcomeTwo"
+            payload = best_odds_entry.get(key, {})
+            if isinstance(payload, dict):
+                percentage_odds = payload.get("percentageOdds")
+                if percentage_odds not in (None, ""):
+                    return percentage_to_decimal_odds(int(str(percentage_odds)))
+
         # Check if there are orders in the market
         orders = market.get("orders", [])
 
@@ -211,28 +279,124 @@ class SXBetInstrumentProvider(InstrumentProvider):
 
         return best_odds
 
-    @staticmethod
-    def _get_outcome_name(
-        market_type: int,
-        outcome_one: bool,
-    ) -> str:
-        """
-        Get outcome name based on market type and outcome.
-        """
-        outcomes = {
-            0: "home" if outcome_one else "away",
-            1: "home" if outcome_one else "away",
-            2: "over" if outcome_one else "under",
-            3: "home" if outcome_one else "away",
-            4: "yes" if outcome_one else "no",
-        }
-        return outcomes.get(market_type, "outcome_1" if outcome_one else "outcome_2")
+    def _normalize_market_type(self, market: dict[str, Any]) -> str:
+        raw_market_type = market.get("type")
+        if isinstance(raw_market_type, int) and raw_market_type in SXBET_MARKET_TYPE_MAP:
+            return SXBET_MARKET_TYPE_MAP[raw_market_type]
+
+        outcome_one = self._normalize_label(market.get("outcomeOneName"))
+        outcome_two = self._normalize_label(market.get("outcomeTwoName"))
+        if outcome_one.startswith("over") or outcome_two.startswith("under"):
+            return MarketType.TOTAL_GOALS.value
+        if self._is_yes_no_pair(outcome_one, outcome_two):
+            return MarketType.BOTH_TEAMS_TO_SCORE.value
+        if market.get("line") is not None:
+            return MarketType.ASIAN_HANDICAP.value
+        return MarketType.OTHER.value
+
+    def _resolve_outcome_names(
+        self,
+        market: dict[str, Any],
+        market_type: str,
+    ) -> tuple[tuple[str, str], str | None]:
+        team_one = self._normalize_label(market.get("teamOneName"))
+        team_two = self._normalize_label(market.get("teamTwoName"))
+        outcome_one = self._normalize_label(market.get("outcomeOneName"))
+        outcome_two = self._normalize_label(market.get("outcomeTwoName"))
+
+        if market_type == MarketType.TOTAL_GOALS.value:
+            return ("over", "under"), None
+        if self._is_yes_no_pair(outcome_one, outcome_two):
+            return ("yes", "no"), None
+
+        team_side_outcomes = self._resolve_team_side_outcomes(
+            team_one=team_one,
+            team_two=team_two,
+            outcome_one=outcome_one,
+            outcome_two=outcome_two,
+        )
+        if team_side_outcomes is not None:
+            return team_side_outcomes
+
+        binary_outcomes = self._resolve_binary_team_outcomes(
+            team_one=team_one,
+            team_two=team_two,
+            outcome_one=outcome_one,
+            outcome_two=outcome_two,
+        )
+        if binary_outcomes is not None:
+            return binary_outcomes
+
+        return ("outcome_1", "outcome_2"), None
 
     @staticmethod
-    def _market_params(market_type: str, handicap: float | None) -> str:
-        if handicap is not None and market_type in {"asian_handicap", "total_goals"}:
-            return f"line={handicap}"
-        return ""
+    def _resolve_team_side_outcomes(
+        *,
+        team_one: str,
+        team_two: str,
+        outcome_one: str,
+        outcome_two: str,
+    ) -> tuple[tuple[str, str], str | None] | None:
+        if outcome_one == team_one and outcome_two == team_two:
+            return ("home", "away"), None
+        if outcome_one == team_two and outcome_two == team_one:
+            return ("away", "home"), None
+        if team_one and outcome_one.startswith(team_one):
+            return ("home", "away" if outcome_two.startswith(team_two) else "no"), None
+        if team_two and outcome_one.startswith(team_two):
+            return ("away", "home" if outcome_two.startswith(team_one) else "no"), None
+        return None
+
+    @staticmethod
+    def _resolve_binary_team_outcomes(
+        *,
+        team_one: str,
+        team_two: str,
+        outcome_one: str,
+        outcome_two: str,
+    ) -> tuple[tuple[str, str], str | None] | None:
+        if team_one and outcome_two.startswith(f"not {team_one}"):
+            return ("yes", "no"), team_one
+        if team_two and outcome_two.startswith(f"not {team_two}"):
+            return ("yes", "no"), team_two
+        if team_one and outcome_one.startswith(f"not {team_one}"):
+            return ("no", "yes"), team_one
+        if team_two and outcome_one.startswith(f"not {team_two}"):
+            return ("no", "yes"), team_two
+        return None
+
+    @classmethod
+    def _market_params(
+        cls,
+        market_type: str,
+        handicap: float | None,
+        outcome_labels: tuple[str, str],
+        proposition_subject: str | None,
+    ) -> str:
+        parts: list[str] = []
+        if handicap is not None and market_type in {
+            MarketType.ASIAN_HANDICAP.value,
+            MarketType.TOTAL_GOALS.value,
+        }:
+            parts.append(f"line={handicap}")
+        if outcome_labels in {("yes", "no"), ("no", "yes")}:
+            parts.append("binary=yes_no")
+        if proposition_subject:
+            subject_key = re.sub(r"[^a-z0-9]+", "_", proposition_subject).strip("_")
+            if subject_key:
+                parts.append(f"subject={subject_key}")
+        return ",".join(parts)
+
+    @staticmethod
+    def _normalize_label(value: Any) -> str:
+        if value is None:
+            return ""
+        normalized = re.sub(r"\s+", " ", str(value).strip().lower())
+        return normalized
+
+    @staticmethod
+    def _is_yes_no_pair(outcome_one: str, outcome_two: str) -> bool:
+        return {outcome_one, outcome_two} == {"yes", "no"}
 
     @classmethod
     def _is_live_market(cls, market: dict[str, Any]) -> bool:
@@ -305,9 +469,12 @@ class SXBetInstrumentProvider(InstrumentProvider):
         outcome: str,
         price: float,
         is_outcome_one: bool,
-        handicap: float | None = None,
         live: bool = False,
         start_time: str | None = None,
+        handicap: float | None = None,
+        params: str = "",
+        has_best_odds: bool = False,
+        outcome_label: str | None = None,
     ) -> CryptoBettingInstrument | None:
         """
         Create a CryptoBettingInstrument from market data.
@@ -327,7 +494,7 @@ class SXBetInstrumentProvider(InstrumentProvider):
                 side=SelectionSide.BACK,
                 price=price,
                 currency=Currency.from_str("USDC"),
-                params=self._market_params(market_type, handicap),
+                params=params,
                 live=live,
                 enabled=True,
                 start_time=start_time,
@@ -337,7 +504,9 @@ class SXBetInstrumentProvider(InstrumentProvider):
                 info={
                     "outcome_one": is_outcome_one,
                     "raw_market_type": raw_market_type,
-                    "is_two_way_market": raw_market_type == SXBetMarketType.MONEY_LINE.value,
+                    "is_two_way_market": market_type == MarketType.MATCH_ODDS.value,
+                    "has_best_odds": has_best_odds,
+                    "outcome_label": outcome_label,
                 },
             )
         except (TypeError, ValueError) as e:

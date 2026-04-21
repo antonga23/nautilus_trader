@@ -22,6 +22,9 @@ from decimal import ROUND_DOWN
 from decimal import ROUND_HALF_UP
 from decimal import Decimal
 from typing import Any
+from typing import cast
+
+from nautilus_trader.adapters.sxbet.constants import SXBET_EIP712_DOMAIN
 
 
 def generate_salt() -> int:
@@ -29,6 +32,13 @@ def generate_salt() -> int:
     Generate a random salt for order uniqueness.
     """
     return secrets.randbits(256)
+
+
+SXBET_PERCENTAGE_ODDS_SCALE = Decimal("1e20")
+
+
+def _default_chain_id() -> int:
+    return cast(int, SXBET_EIP712_DOMAIN["chainId"])
 
 
 def get_expiry(hours: int = 24) -> int:
@@ -42,7 +52,8 @@ def decimal_odds_to_percentage(decimal_odds: float) -> int:
     """
     Convert decimal odds to SX.bet percentage odds format.
 
-    SX.bet uses percentage odds = implied probability * 10000
+    The live SX.bet REST API uses percentage odds encoded as implied probability on
+    a ``10^20`` scale.
 
     Parameters
     ----------
@@ -57,14 +68,16 @@ def decimal_odds_to_percentage(decimal_odds: float) -> int:
     Examples
     --------
     >>> decimal_odds_to_percentage(2.0)  # 50% probability
-    5000
+    50000000000000000000
     >>> decimal_odds_to_percentage(1.5)  # 66.67% probability
-    6667
+    66666666666666666667
 
     """
     implied_probability = Decimal(1) / Decimal(str(decimal_odds))
     return int(
-        (implied_probability * Decimal(10000)).to_integral_value(rounding=ROUND_HALF_UP),
+        (implied_probability * SXBET_PERCENTAGE_ODDS_SCALE).to_integral_value(
+            rounding=ROUND_HALF_UP,
+        ),
     )
 
 
@@ -75,7 +88,7 @@ def percentage_to_decimal_odds(percentage_odds: int) -> float:
     Parameters
     ----------
     percentage_odds : int
-        SX.bet percentage odds (probability * 10000).
+        SX.bet percentage odds (implied probability scaled by ``10^20``).
 
     Returns
     -------
@@ -83,8 +96,10 @@ def percentage_to_decimal_odds(percentage_odds: int) -> float:
         Decimal odds.
 
     """
-    implied_probability = percentage_odds / 10000
-    return 1 / implied_probability
+    implied_probability = Decimal(str(percentage_odds)) / SXBET_PERCENTAGE_ODDS_SCALE
+    if implied_probability <= 0:
+        raise ValueError("percentage_odds must be positive")
+    return float(Decimal(1) / implied_probability)
 
 
 def to_wei(amount: Decimal | str | int, decimals: int = 6) -> int:
@@ -141,7 +156,7 @@ def _normalize_uint256(value: Any) -> int:
 
 def build_order_typed_data(
     order: dict[str, Any],
-    chain_id: int = 416,
+    chain_id: int | None = None,
 ) -> dict[str, Any]:
     """
     Build EIP712 typed data structure for order signing.
@@ -150,7 +165,7 @@ def build_order_typed_data(
     ----------
     order : dict
         Order parameters.
-    chain_id : int, default 416
+    chain_id : int, default 4162
         SX Network chain ID.
 
     Returns
@@ -159,6 +174,9 @@ def build_order_typed_data(
         EIP712 typed data structure.
 
     """
+    if chain_id is None:
+        chain_id = _default_chain_id()
+
     canonical_order = {
         **order,
         "totalBetSize": _normalize_uint256(order["totalBetSize"]),
@@ -186,8 +204,8 @@ def build_order_typed_data(
         },
         "primaryType": "Order",
         "domain": {
-            "name": "SportX",
-            "version": "1.0",
+            "name": SXBET_EIP712_DOMAIN["name"],
+            "version": SXBET_EIP712_DOMAIN["version"],
             "chainId": chain_id,
         },
         "message": canonical_order,
@@ -233,7 +251,7 @@ def sign_order_hash(order_hash: bytes, private_key: str) -> str:
 def sign_eip712_order(
     order: dict[str, Any],
     private_key: str,
-    chain_id: int = 416,
+    chain_id: int | None = None,
 ) -> str:
     """
     Sign an order using EIP712 typed data signing.
@@ -244,7 +262,7 @@ def sign_eip712_order(
         The order parameters.
     private_key : str
         The Ethereum private key.
-    chain_id : int, default 416
+    chain_id : int, default 4162
         SX Network chain ID.
 
     Returns
@@ -260,6 +278,9 @@ def sign_eip712_order(
     try:
         from eth_account import Account
         from eth_account.messages import encode_typed_data
+
+        if chain_id is None:
+            chain_id = _default_chain_id()
 
         typed_data = build_order_typed_data(order, chain_id)
         signed = Account.sign_message(

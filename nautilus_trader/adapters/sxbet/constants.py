@@ -35,6 +35,7 @@ SXBET_ENDPOINTS = {
     "fixtures": "/fixture/active",
     "active_markets": "/markets/active",
     "market_lookup": "/markets/find",
+    "best_odds": "/orders/odds/best",
     # Order book
     "order_book": "/orders",
     # Trading (API key required)
@@ -73,7 +74,7 @@ SXBET_MARKET_TYPES = {
 
 # Token addresses (SX Network / Arbitrum)
 SXBET_TOKENS = {
-    "USDC": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "USDC": "0x6629Ce1Cf35Cc1329ebB4F63202F3f197b3F050B",
     "SX": "0x9b85A81c3D4f0B012C2a8F3D2a53f1B56d5c5EF9",
 }
 
@@ -88,8 +89,8 @@ SXBET_MAX_ODDS = 100.0  # Maximum decimal odds
 # EIP712 domain for signing
 SXBET_EIP712_DOMAIN = {
     "name": "SportX",
-    "version": "1.0",
-    "chainId": 416,  # SX Network chain ID
+    "version": "6.0",
+    "chainId": 4162,  # SX Network chain ID
 }
 
 # WebSocket channels

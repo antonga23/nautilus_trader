@@ -222,6 +222,7 @@ jobs:
         run: bash scripts/ci/run_installed_wheel_smoke_test.sh
 
       - name: Upload built wheel
+        continue-on-error: true
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
           name: nautilus-trader-wheel-py312-linux-x64
@@ -357,7 +358,16 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-groups --all-extras --no-install-package nautilus_trader
 
+      - name: Compute wheel cache key
+        id: wheel-key
+        run: echo "key=$(python3 scripts/ci/compute_test_wheel_cache_key.py)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore self-hosted wheel cache
+        id: local-wheel-cache
+        run: bash scripts/ci/self_hosted_wheel_cache.sh restore "${{ steps.wheel-key.outputs.key }}"
+
       - name: Download built wheel
+        if: steps.local-wheel-cache.outputs.cache-hit != 'true'
         uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
         with:
           name: nautilus-trader-wheel-py312-linux-x64
@@ -382,6 +392,7 @@ jobs:
 
       - name: Upload Python test artifacts
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
           name: python-tests-results

@@ -407,6 +407,10 @@ class SXBetHttpClient:
         league_id: int | None = None,
         fixture_id: str | None = None,
         only_active: bool = True,
+        pagination_key: str | None = None,
+        page_size: int | None = None,
+        only_main_line: bool | None = None,
+        live_only: bool | None = None,
     ) -> dict[str, Any]:
         """
         Get betting markets.
@@ -421,6 +425,14 @@ class SXBetHttpClient:
             Filter by fixture.
         only_active : bool, default True
             Only return active markets.
+        pagination_key : str, optional
+            Pagination cursor returned from a prior active-markets response.
+        page_size : int, optional
+            Requested page size for paginated active-market queries.
+        only_main_line : bool, optional
+            Restrict responses to current main-line markets.
+        live_only : bool, optional
+            Restrict responses to markets currently available in-play.
 
         """
         if not only_active:
@@ -436,6 +448,14 @@ class SXBetHttpClient:
             params["leagueId"] = league_id
         if fixture_id:
             params["eventId"] = fixture_id
+        if pagination_key:
+            params["paginationKey"] = pagination_key
+        if page_size is not None:
+            params["pageSize"] = page_size
+        if only_main_line is not None:
+            params["onlyMainLine"] = only_main_line
+        if live_only is not None:
+            params["liveOnly"] = live_only
 
         return await self._request("GET", endpoint, params=params)
 
@@ -473,6 +493,33 @@ class SXBetHttpClient:
         )
         return self._wrap_list_response(payload, "orders")
 
+    async def get_best_odds(
+        self,
+        *,
+        market_hashes: list[str] | None = None,
+        league_ids: list[int] | None = None,
+        base_token: str,
+    ) -> dict[str, Any]:
+        """
+        Get the best currently available odds for the given markets or leagues.
+        """
+        if not market_hashes and not league_ids:
+            raise SXBetHttpClientError(
+                "market_hashes or league_ids is required when querying SX.bet best odds",
+            )
+        if market_hashes and league_ids:
+            raise SXBetHttpClientError(
+                "market_hashes and league_ids cannot both be set when querying SX.bet best odds",
+            )
+
+        params: dict[str, Any] = {"baseToken": base_token}
+        if market_hashes:
+            params["marketHashes"] = ",".join(market_hashes)
+        if league_ids:
+            params["leagueIds"] = ",".join(str(league_id) for league_id in league_ids)
+
+        return await self._request("GET", SXBET_ENDPOINTS["best_odds"], params=params)
+
     async def place_order(  # pylint: disable=too-many-arguments
         self,
         market_hash: str,
@@ -494,7 +541,7 @@ class SXBetHttpClient:
         total_bet_size : int
             Total bet size in wei.
         percentage_odds : int
-            Percentage odds (implied probability * 10000).
+            Percentage odds (implied probability scaled by ``10^20``).
         expiry : int
             Order expiry timestamp.
         salt : int

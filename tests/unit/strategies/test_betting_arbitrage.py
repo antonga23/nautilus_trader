@@ -394,6 +394,101 @@ class TestBettingArbitrageStrategy:
 
         assert strategy._quote_odds(quote) == Decimal("2.25")
 
+    def test_on_start_subscribes_cached_matching_instruments(self, default_config):
+        strategy = BettingArbitrageStrategy(config=default_config)
+        cache = TestComponentStubs.cache()
+        strategy.register(
+            trader_id=TraderId("TESTER-001"),
+            portfolio=TestComponentStubs.portfolio(),
+            msgbus=TestComponentStubs.msgbus(),
+            cache=cache,
+            clock=TestComponentStubs.clock(),
+        )
+        strategy.subscribe_quote_ticks = Mock()
+
+        matching = CryptoBettingInstrument(
+            venue=Venue("10BET"),
+            event_id="event-1",
+            event_name="Team A vs Team B",
+            home_name="Team A",
+            away_name="Team B",
+            sport_name="Soccer",
+            competition_name="Test League",
+            market_name="Match Odds",
+            market_type="match_odds",
+            outcome="home",
+            side=SelectionSide.BACK,
+            price=2.0,
+            currency=Currency.from_str("ZAR"),
+            params="",
+        )
+        filtered = CryptoBettingInstrument(
+            venue=Venue("SXBET"),
+            event_id="event-2",
+            event_name="Team C vs Team D",
+            home_name="Team C",
+            away_name="Team D",
+            sport_name="Soccer",
+            competition_name="Test League",
+            market_name="Match Odds",
+            market_type="match_odds",
+            outcome="away",
+            side=SelectionSide.BACK,
+            price=2.0,
+            currency=Currency.from_str("USDC"),
+            params="",
+        )
+        cache.add_instrument(matching)
+        cache.add_instrument(filtered)
+
+        strategy.on_start()
+
+        strategy.subscribe_quote_ticks.assert_called_once_with(matching.id)
+        assert matching in strategy._subscribed_instruments
+        assert filtered not in strategy._subscribed_instruments
+
+    def test_on_instrument_subscribes_new_matching_instrument_once(self, default_config):
+        strategy = BettingArbitrageStrategy(config=default_config)
+        strategy.subscribe_quote_ticks = Mock()
+
+        instrument = CryptoBettingInstrument(
+            venue=Venue("10BET"),
+            event_id="event-1",
+            event_name="Team A vs Team B",
+            home_name="Team A",
+            away_name="Team B",
+            sport_name="Soccer",
+            competition_name="Test League",
+            market_name="Match Odds",
+            market_type="match_odds",
+            outcome="home",
+            side=SelectionSide.BACK,
+            price=2.0,
+            currency=Currency.from_str("ZAR"),
+            params="",
+        )
+
+        strategy.on_instrument(instrument)
+        strategy.on_instrument(instrument)
+
+        strategy.subscribe_quote_ticks.assert_called_once_with(instrument.id)
+
+    def test_on_start_skips_subscription_when_cache_is_empty(self, default_config):
+        strategy = BettingArbitrageStrategy(config=default_config)
+        strategy.register(
+            trader_id=TraderId("TESTER-002"),
+            portfolio=TestComponentStubs.portfolio(),
+            msgbus=TestComponentStubs.msgbus(),
+            cache=TestComponentStubs.cache(),
+            clock=TestComponentStubs.clock(),
+        )
+        strategy.subscribe_quote_ticks = Mock()
+
+        strategy.on_start()
+
+        strategy.subscribe_quote_ticks.assert_not_called()
+        assert not strategy._subscribed_instruments
+
 
 # Note: Full integration tests with actual instrument subscriptions and quote ticks
 # would require more complex mocking of NautilusTrader components (cache, msgbus, etc.)
