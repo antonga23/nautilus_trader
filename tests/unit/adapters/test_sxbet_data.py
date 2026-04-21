@@ -188,9 +188,13 @@ async def test_fetch_and_publish_quotes_ignores_opposite_outcome_orders():
 async def test_connect_sends_loaded_instruments_to_data_engine():
     http_client = Mock()
     http_client.connect = AsyncMock()
-    provider = Mock()
+    provider = SXBetInstrumentProvider(
+        http_client=Mock(),
+        config=SXBetInstrumentProviderConfig(),
+        logger=Mock(),
+    )
     provider.load_all_async = AsyncMock()
-    provider.get_all.return_value = {"inst-1": Mock(), "inst-2": Mock()}
+    provider.get_all = Mock(return_value={"inst-1": Mock(), "inst-2": Mock()})
 
     client = SXBetDataClient(
         loop=get_event_loop(),
