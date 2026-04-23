@@ -54,6 +54,7 @@ ignore = [
   { id = "RUSTSEC-2026-0097", reason = "temporary CI waiver for inherited rand advisory pending upstream dependency updates" },
   { id = "RUSTSEC-2026-0098", reason = "temporary CI waiver for inherited rustls-webpki advisory pending upstream dependency updates" },
   { id = "RUSTSEC-2026-0099", reason = "temporary CI waiver for inherited rustls-webpki advisory pending upstream dependency updates" },
+  { id = "RUSTSEC-2026-0104", reason = "temporary CI waiver for inherited rustls-webpki advisory pending upstream dependency updates" },
 
 ]
 
