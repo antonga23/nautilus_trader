@@ -25,6 +25,7 @@ Recommended decision bucket:
 - `RUSTSEC-2026-0049` against `rustls-webpki 0.103.8`
 - `RUSTSEC-2026-0098` against `rustls-webpki 0.103.8`
 - `RUSTSEC-2026-0099` against `rustls-webpki 0.103.8`
+- `RUSTSEC-2026-0104` against `rustls-webpki 0.103.8`
 
 Recommended decision bucket:
 
