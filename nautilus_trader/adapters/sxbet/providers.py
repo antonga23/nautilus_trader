@@ -29,6 +29,7 @@ from nautilus_trader.adapters.sxbet.constants import SXBET_SPORT_IDS
 from nautilus_trader.adapters.sxbet.constants import SXBET_TOKENS
 from nautilus_trader.adapters.sxbet.constants import SXBET_VENUE
 from nautilus_trader.adapters.sxbet.http_client import SXBetHttpClient
+from nautilus_trader.adapters.sxbet.http_client import SXBetHttpClientError
 from nautilus_trader.adapters.sxbet.signing import percentage_to_decimal_odds
 from nautilus_trader.common.component import Logger
 from nautilus_trader.common.providers import InstrumentProvider
@@ -147,10 +148,16 @@ class SXBetInstrumentProvider(InstrumentProvider):
         best_odds_by_hash: dict[str, dict[str, Any]] = {}
         for start in range(0, len(market_hashes), SXBET_MARKET_BATCH_SIZE):
             batch = market_hashes[start : start + SXBET_MARKET_BATCH_SIZE]
-            payload = await self._http_client.get_best_odds(
-                market_hashes=batch,
-                base_token=SXBET_TOKENS["USDC"],
-            )
+            try:
+                payload = await self._http_client.get_best_odds(
+                    market_hashes=batch,
+                    base_token=SXBET_TOKENS["USDC"],
+                )
+            except SXBetHttpClientError as e:
+                self._log.warning(
+                    f"Failed to hydrate SX.bet best odds for {len(batch)} markets: {e}",
+                )
+                continue
             for item in payload.get("data", {}).get("bestOdds", []):
                 market_hash = item.get("marketHash")
                 if isinstance(market_hash, str) and market_hash:
