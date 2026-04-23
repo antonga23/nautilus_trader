@@ -8,6 +8,7 @@ import pytest
 
 from nautilus_trader.adapters.sxbet.config import SXBetInstrumentProviderConfig
 from nautilus_trader.adapters.sxbet.constants import SXBET_TOKENS
+from nautilus_trader.adapters.sxbet.http_client import SXBetHttpClientError
 from nautilus_trader.adapters.sxbet.providers import SXBetInstrumentProvider
 from nautilus_trader.adapters.sxbet.providers import SXBET_MARKET_BATCH_SIZE
 from nautilus_trader.adapters.sxbet.providers import SXBET_MARKET_PAGE_SIZE
@@ -471,6 +472,53 @@ async def test_sxbet_provider_uses_placeholder_prices_when_best_odds_missing():
             "outcomeTwoName": "Team B",
         },
     )
+
+    instruments = list(provider.get_all().values())
+    assert len(instruments) == TWO_INSTRUMENTS
+    assert all(instrument.price == 2.0 for instrument in instruments)
+    assert all(instrument.info["has_best_odds"] is False for instrument in instruments)
+
+
+@pytest.mark.asyncio
+async def test_sxbet_provider_load_all_continues_when_best_odds_hydration_fails():
+    class RecordingHttpClient:
+        async def get_markets(
+            self,
+            sport_id: int | None = None,
+            league_id: int | None = None,
+            only_active: bool = True,
+            pagination_key: str | None = None,
+            page_size: int | None = None,
+        ) -> dict:
+            return {
+                "data": {
+                    "markets": [
+                        {
+                            "marketHash": "market-1",
+                            "teamOneName": "Team A",
+                            "teamTwoName": "Team B",
+                            "sportId": 1,
+                            "leagueName": "Premier League",
+                            "type": 52,
+                            "outcomeOneName": "Team A",
+                            "outcomeTwoName": "Team B",
+                        },
+                    ],
+                },
+            }
+
+        async def get_best_odds(self, *, market_hashes: list[str], base_token: str) -> dict:
+            raise SXBetHttpClientError(
+                "SX.bet API request failed with status 403",
+                status_code=403,
+            )
+
+    provider = SXBetInstrumentProvider(
+        http_client=RecordingHttpClient(),
+        config=SXBetInstrumentProviderConfig(sport_ids=frozenset({1})),
+    )
+
+    await provider.load_all_async()
 
     instruments = list(provider.get_all().values())
     assert len(instruments) == TWO_INSTRUMENTS
