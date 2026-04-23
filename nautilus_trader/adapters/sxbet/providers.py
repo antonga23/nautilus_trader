@@ -155,8 +155,7 @@ class SXBetInstrumentProvider(InstrumentProvider):
                 )
             except SXBetHttpClientError as e:
                 self._log.warning(
-                    "Failed to hydrate SX.bet best odds for "
-                    f"{len(batch)} markets: {e}",
+                    f"Failed to hydrate SX.bet best odds for {len(batch)} markets: {e}",
                 )
                 continue
             for item in payload.get("data", {}).get("bestOdds", []):
