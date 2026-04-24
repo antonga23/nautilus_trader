@@ -142,9 +142,16 @@ class SXBetHttpClient:
         if self._log:
             self._log.info("SXBetHttpClient disconnected")
 
-    def _raise_api_error(self, method: str, endpoint: str, status_code: int) -> None:
+    def _raise_api_error(
+        self,
+        method: str,
+        endpoint: str,
+        status_code: int,
+        *,
+        log_api_error: bool = True,
+    ) -> None:
         error_message = f"SX.bet API request failed with status {status_code}"
-        if self._log:
+        if self._log and log_api_error:
             self._log.error(f"{error_message} for {method} {endpoint}")
         raise SXBetHttpClientError(error_message, status_code=status_code)
 
@@ -252,6 +259,8 @@ class SXBetHttpClient:
         endpoint: str,
         params: dict | None = None,
         data: Any | None = None,
+        *,
+        log_api_error: bool = True,
     ) -> dict[str, Any]:
         """
         Make an HTTP request to the API.
@@ -286,7 +295,12 @@ class SXBetHttpClient:
 
                     if not HTTP_STATUS_OK_MIN <= response.status < HTTP_STATUS_REDIRECT_MIN:
                         await response.text()
-                        self._raise_api_error(method, endpoint, response.status)
+                        self._raise_api_error(
+                            method,
+                            endpoint,
+                            response.status,
+                            log_api_error=log_api_error,
+                        )
 
                     return await response.json()
 
@@ -499,6 +513,7 @@ class SXBetHttpClient:
         market_hashes: list[str] | None = None,
         league_ids: list[int] | None = None,
         base_token: str,
+        log_api_error: bool = True,
     ) -> dict[str, Any]:
         """
         Get the best currently available odds for the given markets or leagues.
@@ -518,7 +533,12 @@ class SXBetHttpClient:
         if league_ids:
             params["leagueIds"] = ",".join(str(league_id) for league_id in league_ids)
 
-        return await self._request("GET", SXBET_ENDPOINTS["best_odds"], params=params)
+        return await self._request(
+            "GET",
+            SXBET_ENDPOINTS["best_odds"],
+            params=params,
+            log_api_error=log_api_error,
+        )
 
     async def place_order(  # pylint: disable=too-many-arguments
         self,

@@ -152,6 +152,7 @@ class SXBetInstrumentProvider(InstrumentProvider):
                 payload = await self._http_client.get_best_odds(
                     market_hashes=batch,
                     base_token=SXBET_TOKENS["USDC"],
+                    log_api_error=False,
                 )
             except SXBetHttpClientError as e:
                 self._log.warning(
@@ -423,7 +424,7 @@ class SXBetInstrumentProvider(InstrumentProvider):
     def _parse_bool(value: Any) -> bool | None:
         if isinstance(value, bool):
             return value
-        if isinstance(value, (int, float)):
+        if isinstance(value, int | float):
             return bool(value)
         if isinstance(value, str):
             normalized = value.strip().lower()
@@ -438,7 +439,7 @@ class SXBetInstrumentProvider(InstrumentProvider):
         if value in (None, ""):
             return None
 
-        if isinstance(value, (int, float)):
+        if isinstance(value, int | float):
             timestamp = float(value)
         else:
             value_str = str(value).strip()

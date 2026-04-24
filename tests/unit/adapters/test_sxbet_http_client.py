@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import secrets
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
@@ -136,6 +137,22 @@ async def test_request_redacts_upstream_error_body():
         await client._request("GET", "/test")
 
     assert "secret" not in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_request_can_suppress_duplicate_api_error_logging():
+    logger = Mock()
+    client = SXBetHttpClient(logger=logger)
+    client._session = _FakeSession(
+        [
+            _FakeResponse(403, text='{"error":"forbidden"}'),
+        ],
+    )
+
+    with pytest.raises(SXBetHttpClientError, match=r"SX\.bet API request failed with status 403"):
+        await client._request("GET", "/orders/odds/best", log_api_error=False)
+
+    logger.error.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -336,10 +353,13 @@ async def test_get_best_odds_uses_market_hash_query(monkeypatch):
         endpoint: str,
         params: Any = None,
         data: Any = None,
+        *,
+        log_api_error: bool = True,
     ) -> dict[str, Any]:
         captured["method"] = method
         captured["endpoint"] = endpoint
         captured["params"] = params
+        captured["log_api_error"] = log_api_error
         return {"status": "success", "data": {"bestOdds": []}}
 
     client = SXBetHttpClient()
@@ -348,6 +368,7 @@ async def test_get_best_odds_uses_market_hash_query(monkeypatch):
     result = await client.get_best_odds(
         market_hashes=["hash-a", "hash-b"],
         base_token="0xtoken",
+        log_api_error=False,
     )
 
     assert result == {"status": "success", "data": {"bestOdds": []}}
@@ -357,6 +378,7 @@ async def test_get_best_odds_uses_market_hash_query(monkeypatch):
         "baseToken": "0xtoken",
         "marketHashes": "hash-a,hash-b",
     }
+    assert captured["log_api_error"] is False
 
 
 @pytest.mark.asyncio
@@ -368,10 +390,13 @@ async def test_get_best_odds_uses_league_id_query(monkeypatch):
         endpoint: str,
         params: Any = None,
         data: Any = None,
+        *,
+        log_api_error: bool = True,
     ) -> dict[str, Any]:
         captured["method"] = method
         captured["endpoint"] = endpoint
         captured["params"] = params
+        captured["log_api_error"] = log_api_error
         return {"status": "success", "data": {"bestOdds": []}}
 
     client = SXBetHttpClient()
@@ -389,6 +414,7 @@ async def test_get_best_odds_uses_league_id_query(monkeypatch):
         "baseToken": "0xtoken",
         "leagueIds": "10,20",
     }
+    assert captured["log_api_error"] is True
 
 
 @pytest.mark.asyncio

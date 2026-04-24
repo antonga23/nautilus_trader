@@ -275,6 +275,7 @@ async def test_fetch_and_publish_best_odds_uses_market_hash_batch():
     http_client.get_best_odds.assert_awaited_once_with(
         market_hashes=["market-1"],
         base_token=SXBET_TOKENS["USDC"],
+        log_api_error=False,
     )
     client._handle_data.assert_called_once()
     quote = client._handle_data.call_args.args[0]
@@ -358,6 +359,7 @@ async def test_fetch_and_publish_best_odds_uses_outcome_two_and_skips_unsubscrib
     http_client.get_best_odds.assert_awaited_once_with(
         market_hashes=["market-1"],
         base_token=SXBET_TOKENS["USDC"],
+        log_api_error=False,
     )
     client._handle_data.assert_called_once()
     quote = client._handle_data.call_args.args[0]
