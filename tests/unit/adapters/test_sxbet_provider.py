@@ -141,7 +141,7 @@ async def test_sxbet_provider_load_all_forwards_each_league_id():
     class RecordingHttpClient:
         def __init__(self) -> None:
             self.calls: list[dict[str, int | bool | None]] = []
-            self.best_odds_calls: list[list[str]] = []
+            self.best_odds_calls: list[dict[str, object]] = []
 
         async def get_markets(
             self,
@@ -175,8 +175,20 @@ async def test_sxbet_provider_load_all_forwards_each_league_id():
                 },
             }
 
-        async def get_best_odds(self, *, market_hashes: list[str], base_token: str) -> dict:
-            self.best_odds_calls.append(market_hashes)
+        async def get_best_odds(
+            self,
+            *,
+            market_hashes: list[str],
+            base_token: str,
+            log_api_error: bool = True,
+        ) -> dict:
+            self.best_odds_calls.append(
+                {
+                    "market_hashes": market_hashes,
+                    "base_token": base_token,
+                    "log_api_error": log_api_error,
+                },
+            )
             return {
                 "data": {
                     "bestOdds": [
@@ -208,7 +220,13 @@ async def test_sxbet_provider_load_all_forwards_each_league_id():
     assert {call["league_id"] for call in http_client.calls} == {10, 20}
     assert all(call["sport_id"] == 1 for call in http_client.calls)
     assert all(call["only_active"] is True for call in http_client.calls)
-    assert http_client.best_odds_calls == [["market-10", "market-20"]]
+    assert http_client.best_odds_calls == [
+        {
+            "market_hashes": ["market-10", "market-20"],
+            "base_token": SXBET_TOKENS["USDC"],
+            "log_api_error": False,
+        },
+    ]
     assert len(provider.get_all()) == FOUR_INSTRUMENTS
 
 
@@ -217,7 +235,7 @@ async def test_sxbet_provider_load_all_forwards_each_sport_id():
     class RecordingHttpClient:
         def __init__(self) -> None:
             self.calls: list[dict[str, int | bool | None]] = []
-            self.best_odds_calls: list[list[str]] = []
+            self.best_odds_calls: list[dict[str, object]] = []
 
         async def get_markets(
             self,
@@ -251,8 +269,20 @@ async def test_sxbet_provider_load_all_forwards_each_sport_id():
                 },
             }
 
-        async def get_best_odds(self, *, market_hashes: list[str], base_token: str) -> dict:
-            self.best_odds_calls.append(market_hashes)
+        async def get_best_odds(
+            self,
+            *,
+            market_hashes: list[str],
+            base_token: str,
+            log_api_error: bool = True,
+        ) -> dict:
+            self.best_odds_calls.append(
+                {
+                    "market_hashes": market_hashes,
+                    "base_token": base_token,
+                    "log_api_error": log_api_error,
+                },
+            )
             return {
                 "data": {
                     "bestOdds": [
@@ -283,7 +313,13 @@ async def test_sxbet_provider_load_all_forwards_each_sport_id():
     assert {call["sport_id"] for call in http_client.calls} == {1, 2}
     assert all(call["league_id"] is None for call in http_client.calls)
     assert all(call["only_active"] is True for call in http_client.calls)
-    assert http_client.best_odds_calls == [["market-1", "market-2"]]
+    assert http_client.best_odds_calls == [
+        {
+            "market_hashes": ["market-1", "market-2"],
+            "base_token": SXBET_TOKENS["USDC"],
+            "log_api_error": False,
+        },
+    ]
     assert len(provider.get_all()) == FOUR_INSTRUMENTS
 
 
@@ -346,11 +382,18 @@ async def test_sxbet_provider_load_all_paginates_market_requests():
                 },
             }
 
-        async def get_best_odds(self, *, market_hashes: list[str], base_token: str) -> dict:
+        async def get_best_odds(
+            self,
+            *,
+            market_hashes: list[str],
+            base_token: str,
+            log_api_error: bool = True,
+        ) -> dict:
             self.best_odds_calls.append(
                 {
                     "market_hashes": market_hashes,
                     "base_token": base_token,
+                    "log_api_error": log_api_error,
                 },
             )
             return {
@@ -396,6 +439,7 @@ async def test_sxbet_provider_load_all_paginates_market_requests():
         {
             "market_hashes": ["market-1", "market-2"],
             "base_token": SXBET_TOKENS["USDC"],
+            "log_api_error": False,
         },
     ]
     assert len(provider.get_all()) == FOUR_INSTRUMENTS
@@ -407,11 +451,18 @@ async def test_sxbet_provider_hydrates_best_odds_in_batches():
         def __init__(self) -> None:
             self.best_odds_calls: list[dict[str, object]] = []
 
-        async def get_best_odds(self, *, market_hashes: list[str], base_token: str) -> dict:
+        async def get_best_odds(
+            self,
+            *,
+            market_hashes: list[str],
+            base_token: str,
+            log_api_error: bool = True,
+        ) -> dict:
             self.best_odds_calls.append(
                 {
                     "market_hashes": market_hashes,
                     "base_token": base_token,
+                    "log_api_error": log_api_error,
                 },
             )
             return {
@@ -444,10 +495,12 @@ async def test_sxbet_provider_hydrates_best_odds_in_batches():
     assert http_client.best_odds_calls[0] == {
         "market_hashes": [f"market-{index}" for index in range(SXBET_MARKET_BATCH_SIZE)],
         "base_token": SXBET_TOKENS["USDC"],
+        "log_api_error": False,
     }
     assert http_client.best_odds_calls[1] == {
         "market_hashes": [f"market-{SXBET_MARKET_BATCH_SIZE}"],
         "base_token": SXBET_TOKENS["USDC"],
+        "log_api_error": False,
     }
     assert markets[0]["bestOdds"]["marketHash"] == "market-0"
     assert markets[-1]["bestOdds"]["marketHash"] == f"market-{SXBET_MARKET_BATCH_SIZE}"
@@ -507,7 +560,14 @@ async def test_sxbet_provider_load_all_continues_when_best_odds_hydration_fails(
                 },
             }
 
-        async def get_best_odds(self, *, market_hashes: list[str], base_token: str) -> dict:
+        async def get_best_odds(
+            self,
+            *,
+            market_hashes: list[str],
+            base_token: str,
+            log_api_error: bool = True,
+        ) -> dict:
+            assert log_api_error is False
             raise SXBetHttpClientError(
                 "SX.bet API request failed with status 403",
                 status_code=403,
