@@ -173,6 +173,7 @@ class SXBetDataClient(LiveMarketDataClient):
             payload = await self._http_client.get_best_odds(
                 market_hashes=sorted(market_hashes),
                 base_token=SXBET_TOKENS["USDC"],
+                log_api_error=False,
             )
             best_odds = payload.get("data", {}).get("bestOdds", [])
             best_odds_by_hash = {
