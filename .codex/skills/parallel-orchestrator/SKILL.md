@@ -25,6 +25,13 @@ when the user explicitly asks for coordinated delegation.
   [$background-monitor](../background-monitor/SKILL.md).
 - Workers must hand long waits to a monitor, capture the command/log path, and
   return when the monitor reports an event.
+- Enforce runner ownership:
+  - GCP workers own pre-commit, tests, Rust policy checks, wheel builds, and
+    strategy-node image builds.
+  - EC2 workers own strategy-node deployment, runtime lifecycle, health checks,
+    and log inspection only.
+  - No worker may move CI/build/test/image-build work to EC2 as a workaround for
+    GCP auth or runner issues.
 
 ## When To Use
 
@@ -65,6 +72,7 @@ made clear.
 Every worker instruction should include:
 
 - `Ownership`: the only files, directories, or systems that worker may modify.
+- `Runner`: `GCP CI`, `EC2 deploy/runtime`, `local`, or `repo-only`.
 - `Goal`: the concrete deliverable.
 - `Validate`: the minimum checks to run.
 - `Escalate`: what to do if blocked or if another worker owns the needed area.
