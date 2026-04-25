@@ -21,6 +21,14 @@ on:
         description: Optional explicit image tag override
         required: false
         default: ''
+      container_name:
+        description: Target strategy-node container name
+        required: false
+        default: betting-arbitrage-node-sxbet
+      image_transport:
+        description: 'How the deploy job gets the built image onto EC2: archive or registry'
+        required: false
+        default: archive
 
 permissions:
   contents: read
@@ -215,12 +223,35 @@ jobs:
           echo "image_ref=$image_ref" >> "$GITHUB_OUTPUT"
 
       - name: Build and push strategy-node image
-        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        env:
+          IMAGE_REF: ${{ steps.meta.outputs.image_ref }}
+        run: |
+          docker build -t "$IMAGE_REF" -f .docker/strategy_node.dockerfile .
+          docker push "$IMAGE_REF"
+
+      - name: Save strategy-node image archive
+        if: >-
+          github.event_name == 'workflow_dispatch' &&
+          github.event.inputs.deploy_enabled == 'true' &&
+          github.event.inputs.image_transport == 'archive'
+        env:
+          IMAGE_REF: ${{ steps.meta.outputs.image_ref }}
+        run: |
+          mkdir -p artifacts/strategy-node-image
+          docker save "$IMAGE_REF" \
+            | gzip -1 > artifacts/strategy-node-image/betting-arbitrage-node.tar.gz
+          ls -lh artifacts/strategy-node-image/betting-arbitrage-node.tar.gz
+
+      - name: Upload strategy-node image archive
+        if: >-
+          github.event_name == 'workflow_dispatch' &&
+          github.event.inputs.deploy_enabled == 'true' &&
+          github.event.inputs.image_transport == 'archive'
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
-          context: .
-          file: .docker/strategy_node.dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.image_ref }}
+          name: strategy-node-image
+          path: artifacts/strategy-node-image/betting-arbitrage-node.tar.gz
+          if-no-files-found: error
 
   deploy-strategy-node:
     name: deploy-strategy-node
@@ -235,6 +266,8 @@ jobs:
       STRATEGY_NODE_ENV_FILE: ${{ secrets.STRATEGY_NODE_ENV_FILE }}
       STRATEGY_NODE_GHCR_USERNAME: ${{ secrets.STRATEGY_NODE_GHCR_USERNAME }}
       STRATEGY_NODE_GHCR_TOKEN: ${{ secrets.STRATEGY_NODE_GHCR_TOKEN }}
+      STRATEGY_NODE_CONTAINER_NAME: ${{ github.event.inputs.container_name }}
+      STRATEGY_NODE_IMAGE_TRANSPORT: ${{ github.event.inputs.image_transport }}
     steps:
       - uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
         with:
@@ -288,6 +321,19 @@ jobs:
           test -n "$STRATEGY_NODE_HOST"
           test -n "$STRATEGY_NODE_SSH_USER"
           test -n "$STRATEGY_NODE_SSH_KEY"
+          case "$STRATEGY_NODE_CONTAINER_NAME" in
+            ""|*[!A-Za-z0-9_.-]*)
+              echo "Invalid STRATEGY_NODE_CONTAINER_NAME: $STRATEGY_NODE_CONTAINER_NAME" >&2
+              exit 1
+              ;;
+          esac
+          case "$STRATEGY_NODE_IMAGE_TRANSPORT" in
+            archive|registry) ;;
+            *)
+              echo "STRATEGY_NODE_IMAGE_TRANSPORT must be archive or registry" >&2
+              exit 1
+              ;;
+          esac
           if [ -n "$STRATEGY_NODE_GHCR_TOKEN" ] \
             && [ -z "$STRATEGY_NODE_GHCR_USERNAME" ]; then
             echo "STRATEGY_NODE_GHCR_USERNAME is required when STRATEGY_NODE_GHCR_TOKEN is set" >&2
@@ -298,6 +344,13 @@ jobs:
         run: |
           install -m 600 /dev/null strategy-node.key
           printf '%s' "$STRATEGY_NODE_SSH_KEY" > strategy-node.key
+
+      - name: Download strategy-node image archive
+        if: github.event.inputs.image_transport == 'archive'
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          name: strategy-node-image
+          path: artifacts/strategy-node-image
 
       - name: Upload manifest and deploy script
         env:
@@ -340,6 +393,18 @@ jobs:
               'chmod 600 /tmp/strategy-node-ghcr-token'
           fi
 
+      - name: Upload and load strategy-node image archive
+        if: github.event.inputs.image_transport == 'archive'
+        run: |
+          image_archive="artifacts/strategy-node-image/betting-arbitrage-node.tar.gz"
+          test -f "$image_archive"
+          scp -i strategy-node.key -o StrictHostKeyChecking=no \
+            "$image_archive" \
+            "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST:/tmp/strategy-node-image.tar.gz"
+          ssh -i strategy-node.key -o StrictHostKeyChecking=no \
+            "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST" \
+            "sudo docker load -i /tmp/strategy-node-image.tar.gz"
+
       - name: Verify EC2 deploy host health
         run: |
           runner_service_name="actions.runner.antonga23-cloudbet-market-maker."
@@ -370,8 +435,12 @@ jobs:
           IMAGE_REF: ${{ needs.build-strategy-node-image.outputs.image_ref }}
         run: |
           if [ -n "$STRATEGY_NODE_GHCR_TOKEN" ]; then
-            registry_args="--registry-user $STRATEGY_NODE_GHCR_USERNAME "
-            registry_args+="--registry-token-file /tmp/strategy-node-ghcr-token"
+            if [ "$STRATEGY_NODE_IMAGE_TRANSPORT" = "registry" ]; then
+              registry_args="--registry-user $STRATEGY_NODE_GHCR_USERNAME "
+              registry_args+="--registry-token-file /tmp/strategy-node-ghcr-token"
+            else
+              registry_args=""
+            fi
           else
             registry_args=""
           fi
@@ -380,7 +449,7 @@ jobs:
              /tmp/deploy_betting_strategy_node.sh \
                --manifest /tmp/strategy-node-manifest.json \
                --image '$IMAGE_REF' \
-               --name betting-arbitrage-node \
+               --name '$STRATEGY_NODE_CONTAINER_NAME' \
                ${STRATEGY_NODE_ENV_FILE:+--env-file /tmp/strategy-node.env} \
                $registry_args && \
              rm -f /tmp/strategy-node-ghcr-token"
@@ -391,4 +460,5 @@ jobs:
           ssh -i strategy-node.key -o StrictHostKeyChecking=no "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST" \
             'rm -f /tmp/deploy_betting_strategy_node.sh \
               /tmp/runner_health_check.sh \
-              /tmp/strategy-node-ghcr-token'
+              /tmp/strategy-node-ghcr-token \
+              /tmp/strategy-node-image.tar.gz'
