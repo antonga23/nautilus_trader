@@ -120,9 +120,10 @@ async def test_fetch_and_publish_quotes_emits_one_sided_quote():
     client._subscribed_instruments = {instrument.id}
     client._handle_data = Mock()
 
-    published = await client._fetch_and_publish_quotes("market-1")
+    published, orders = await client._fetch_and_publish_quotes("market-1")
 
     assert published == 1
+    assert orders == 1
     client._handle_data.assert_called_once()
     quote = client._handle_data.call_args.args[0]
     assert quote.bid_price.as_decimal() == EXPECTED_ONE_SIDED_ODDS
@@ -171,9 +172,10 @@ async def test_fetch_and_publish_quotes_ignores_opposite_outcome_orders():
     client._subscribed_instruments = {instrument.id}
     client._handle_data = Mock()
 
-    published = await client._fetch_and_publish_quotes("market-1")
+    published, orders = await client._fetch_and_publish_quotes("market-1")
 
     assert published == 1
+    assert orders == 2
     client._handle_data.assert_called_once()
     quote = client._handle_data.call_args.args[0]
     assert quote.bid_price.as_decimal() == EXPECTED_EXECUTABLE_ODDS
@@ -243,7 +245,9 @@ def test_auto_subscribe_loaded_instruments_respects_limit(monkeypatch):
     selected_count = client._auto_subscribe_loaded_instruments()
 
     assert selected_count == 2
-    assert len(client.subscribed_quote_ticks()) == 2
+    subscribed = client.subscribed_quote_ticks()
+    assert isinstance(subscribed, list)
+    assert len(subscribed) == 2
     assert client._polling_task is task
     create_task.assert_called_once()
 

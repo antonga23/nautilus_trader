@@ -19,6 +19,7 @@ SX.bet Instrument Provider.
 from datetime import UTC
 from datetime import datetime
 import re
+import time
 from typing import Any
 
 from nautilus_trader.adapters.betting.common.enums import MarketType
@@ -87,30 +88,76 @@ class SXBetInstrumentProvider(InstrumentProvider):
         """
         Load all instruments from the venue.
         """
-        self._log.info("Loading all SX.bet instruments...")
+        started_at = time.perf_counter()
 
         filters = filters or {}
         sport_ids = filters.get("sport_ids") or self._sxbet_config.sport_ids
         league_ids = filters.get("league_ids") or self._sxbet_config.league_ids
+        instrument_limit = self._sxbet_config.instrument_load_limit
+        target_market_count = self._target_market_count(instrument_limit)
+        if self._sxbet_config.prefer_liquid_markets and target_market_count is not None:
+            discovery_limit = max(self._sxbet_config.liquidity_probe_limit, target_market_count)
+        else:
+            discovery_limit = target_market_count
 
+        self._log.info(
+            "Loading all SX.bet instruments "
+            f"sport_ids={sorted(sport_ids) if sport_ids else 'all'} "
+            f"league_ids={sorted(league_ids) if league_ids else 'all'} "
+            f"instrument_limit={instrument_limit or 'none'} "
+            f"prefer_liquid_markets={self._sxbet_config.prefer_liquid_markets}",
+        )
+
+        load_started_at = time.perf_counter()
         markets = await self._load_markets(
             sport_ids=sport_ids,
             league_ids=league_ids,
+            market_discovery_limit=discovery_limit,
         )
+        self._log.info(
+            f"SX.bet market discovery completed: markets={len(markets)} "
+            f"elapsed={time.perf_counter() - load_started_at:.2f}s",
+        )
+
+        selection_started_at = time.perf_counter()
+        markets = await self._select_markets_for_processing(markets, target_market_count)
+        self._log.info(
+            f"SX.bet market selection completed: selected_markets={len(markets)} "
+            f"elapsed={time.perf_counter() - selection_started_at:.2f}s",
+        )
+
+        hydrate_started_at = time.perf_counter()
         await self._hydrate_best_odds(markets)
-        msg = f"Found {len(markets)} active markets"
-        self._log.info(msg)
+        self._log.info(
+            f"SX.bet best-odds hydration completed: markets={len(markets)} "
+            f"elapsed={time.perf_counter() - hydrate_started_at:.2f}s",
+        )
 
+        process_started_at = time.perf_counter()
+        processed_markets = 0
         for market in markets:
+            if instrument_limit is not None and len(self._instruments) >= instrument_limit:
+                break
             await self._process_market(market)
+            processed_markets += 1
 
-        msg = f"Loaded {len(self._instruments)} instruments"
-        self._log.info(msg)
+        self._log.info(
+            f"Loaded {len(self._instruments)} instruments from {processed_markets} SX.bet markets "
+            f"elapsed={time.perf_counter() - process_started_at:.2f}s "
+            f"total_elapsed={time.perf_counter() - started_at:.2f}s",
+        )
+
+    @staticmethod
+    def _target_market_count(instrument_limit: int | None) -> int | None:
+        if instrument_limit is None:
+            return None
+        return max(1, (int(instrument_limit) + 1) // 2)
 
     async def _load_markets(
         self,
         sport_ids: frozenset[int] | set[int] | None,
         league_ids: frozenset[int] | set[int] | None,
+        market_discovery_limit: int | None,
     ) -> list[dict[str, Any]]:
         markets_by_hash: dict[str, dict[str, Any]] = {}
         sport_filters: tuple[int | None, ...] = tuple(sorted(sport_ids)) if sport_ids else (None,)
@@ -121,7 +168,9 @@ class SXBetInstrumentProvider(InstrumentProvider):
         for sport_id in sport_filters:
             for league_id in league_filters:
                 pagination_key: str | None = None
+                page_count = 0
                 while True:
+                    page_started_at = time.perf_counter()
                     markets_data = await self._http_client.get_markets(
                         sport_id=sport_id,
                         league_id=league_id,
@@ -129,12 +178,81 @@ class SXBetInstrumentProvider(InstrumentProvider):
                         pagination_key=pagination_key,
                         page_size=SXBET_MARKET_PAGE_SIZE,
                     )
+                    page_count += 1
+                    previous_count = len(markets_by_hash)
                     self._merge_markets(markets_by_hash, markets_data)
                     pagination_key = markets_data.get("data", {}).get("nextKey")
+                    self._log.info(
+                        "SX.bet market page loaded: "
+                        f"sport_id={sport_id or 'all'} league_id={league_id or 'all'} "
+                        f"page={page_count} added={len(markets_by_hash) - previous_count} "
+                        f"total={len(markets_by_hash)} has_next={bool(pagination_key)} "
+                        f"elapsed={time.perf_counter() - page_started_at:.2f}s",
+                    )
+                    if (
+                        market_discovery_limit is not None
+                        and len(markets_by_hash) >= market_discovery_limit
+                    ):
+                        self._log.info(
+                            "SX.bet market discovery cap reached: "
+                            f"market_discovery_limit={market_discovery_limit}",
+                        )
+                        return list(markets_by_hash.values())[:market_discovery_limit]
                     if not pagination_key:
                         break
 
         return list(markets_by_hash.values())
+
+    async def _select_markets_for_processing(
+        self,
+        markets: list[dict[str, Any]],
+        target_market_count: int | None,
+    ) -> list[dict[str, Any]]:
+        if target_market_count is None:
+            return markets
+
+        target_market_count = max(1, target_market_count)
+        if not self._sxbet_config.prefer_liquid_markets:
+            selected = markets[:target_market_count]
+            self._log.info(
+                f"SX.bet selected first {len(selected)} markets without liquidity probing",
+            )
+            return selected
+
+        probed = 0
+        liquid: list[dict[str, Any]] = []
+        fallback: list[dict[str, Any]] = []
+        probe_limit = min(len(markets), self._sxbet_config.liquidity_probe_limit)
+        for market in markets[:probe_limit]:
+            if len(liquid) >= target_market_count:
+                break
+            market_hash = market.get("marketHash")
+            if not isinstance(market_hash, str) or not market_hash:
+                fallback.append(market)
+                continue
+
+            probed += 1
+            try:
+                order_book = await self._http_client.get_order_book(market_hash)
+            except SXBetHttpClientError as e:
+                self._log.warning(f"Failed to probe SX.bet order book for {market_hash}: {e}")
+                fallback.append(market)
+                continue
+
+            orders = order_book.get("data", {}).get("orders", [])
+            if orders:
+                market["orders"] = orders
+                liquid.append(market)
+            else:
+                fallback.append(market)
+
+        selected = (liquid + fallback)[:target_market_count]
+        self._log.info(
+            "SX.bet liquidity probe completed: "
+            f"probed={probed} liquid_markets={len(liquid)} "
+            f"selected_markets={len(selected)} target_markets={target_market_count}",
+        )
+        return selected
 
     async def _hydrate_best_odds(self, markets: list[dict[str, Any]]) -> None:
         market_hashes = [
@@ -222,6 +340,11 @@ class SXBetInstrumentProvider(InstrumentProvider):
 
         # Create instruments for both outcomes
         for outcome_one in (True, False):
+            if (
+                self._sxbet_config.instrument_load_limit is not None
+                and len(self._instruments) >= self._sxbet_config.instrument_load_limit
+            ):
+                break
             instrument = self._create_instrument(
                 market_hash=market_hash,
                 event_name=f"{team_one} vs {team_two}",

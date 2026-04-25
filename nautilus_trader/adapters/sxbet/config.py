@@ -41,6 +41,12 @@ class SXBetInstrumentProviderConfig(InstrumentProviderConfig, frozen=True):
         Filter by league IDs.
     live_only : bool, default False
         If True, only load live markets.
+    instrument_load_limit : PositiveInt, optional
+        Maximum number of instruments to create from loaded markets.
+    prefer_liquid_markets : bool, default False
+        If True, probe order books and prefer markets with active orders.
+    liquidity_probe_limit : PositiveInt, optional
+        Maximum markets to probe while searching for liquid markets.
     log_warnings : bool, default True
         If parser warnings should be logged.
 
@@ -52,6 +58,9 @@ class SXBetInstrumentProviderConfig(InstrumentProviderConfig, frozen=True):
     sport_ids: frozenset[int] | None = None
     league_ids: frozenset[int] | None = None
     live_only: bool = False
+    instrument_load_limit: PositiveInt | None = None
+    prefer_liquid_markets: bool = False
+    liquidity_probe_limit: PositiveInt = 100
     log_warnings: bool = True
 
 
