@@ -169,6 +169,10 @@ def _build_sxbet_data_importable(
         "sport_ids": sorted(venue.sport_ids) if venue.sport_ids else None,
         "reconnect_on_disconnect": True,
         "max_reconnect_attempts": 5,
+        "auto_subscribe_quote_ticks": venue.auto_subscribe_quote_ticks,
+        "quote_subscription_limit": venue.quote_subscription_limit,
+        "order_book_poll_interval_secs": venue.order_book_poll_interval_secs,
+        "order_book_poll_summary_interval_secs": venue.order_book_poll_summary_interval_secs,
         "routing": {"venues": [venue.venue]},
     }
     return ImportableConfig(

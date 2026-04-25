@@ -18,6 +18,7 @@ SX.bet market data client.
 
 import asyncio
 import contextlib
+import time
 
 from nautilus_trader.adapters.betting.common.enums import Outcome
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
@@ -75,7 +76,9 @@ class SXBetDataClient(LiveMarketDataClient):
         self._instrument_provider: SXBetInstrumentProvider = instrument_provider
         self._subscribed_instruments: set[InstrumentId] = set()
         self._polling_task: asyncio.Task | None = None
-        self._polling_interval = 3.0  # Faster polling for SX.bet
+        self._polling_interval = float(config.order_book_poll_interval_secs)
+        self._poll_summary_interval = float(config.order_book_poll_summary_interval_secs)
+        self._last_poll_summary_at = 0.0
         self._running = False
         self._logger = logger
 
@@ -93,6 +96,7 @@ class SXBetDataClient(LiveMarketDataClient):
 
         await self._instrument_provider.load_all_async(filters)
         self._send_all_instruments_to_data_engine()
+        self._auto_subscribe_loaded_instruments()
 
         self._log.info("SXBetDataClient connected")
 
@@ -137,36 +141,97 @@ class SXBetDataClient(LiveMarketDataClient):
 
     async def _poll_order_books(self) -> None:
         """
-        Poll for best-odds updates.
+        Poll SX.bet order books for subscribed instruments.
         """
-        self._log.debug("Starting SX.bet best-odds polling loop")
+        self._log.info("Starting SX.bet order-book polling loop")
 
         while self._running:
             try:
                 # Get unique market hashes
-                market_hashes = set()
+                market_hashes: set[str] = set()
                 for instrument_id in list(self._subscribed_instruments):
                     instrument = self._instrument_provider.find(instrument_id)
                     if isinstance(instrument, CryptoBettingInstrument):
                         market_hashes.add(instrument.event_id)
 
+                quote_count = 0
+                empty_count = 0
                 if market_hashes:
-                    await self._fetch_and_publish_best_odds(market_hashes)
+                    for market_hash in sorted(market_hashes):
+                        published = await self._fetch_and_publish_quotes(market_hash)
+                        quote_count += published
+                        if published == 0:
+                            empty_count += 1
+                    self._log_poll_summary(
+                        market_count=len(market_hashes),
+                        quote_count=quote_count,
+                        empty_count=empty_count,
+                    )
 
                 await asyncio.sleep(self._polling_interval)
 
             except asyncio.CancelledError:
                 break
             except (RuntimeError, ValueError, TypeError, KeyError, SXBetHttpClientError) as e:
-                msg = f"Error in SX.bet best-odds polling: {e}"
+                msg = f"Error in SX.bet order-book polling: {e}"
                 self._log.error(msg)
                 await asyncio.sleep(self._polling_interval)
 
-        self._log.debug("Stopped SX.bet best-odds polling loop")
+        self._log.info("Stopped SX.bet order-book polling loop")
 
     def _send_all_instruments_to_data_engine(self) -> None:
         for instrument in self._instrument_provider.get_all().values():
             self._handle_data(instrument)
+
+    def _auto_subscribe_loaded_instruments(self) -> int:
+        if not self._config.auto_subscribe_quote_ticks:
+            return 0
+
+        loaded_instruments = [
+            instrument
+            for instrument in self._instrument_provider.get_all().values()
+            if isinstance(instrument, CryptoBettingInstrument)
+        ]
+        loaded_instruments.sort(key=lambda instrument: str(instrument.id))
+        limit = self._config.quote_subscription_limit
+        selected_instruments = (
+            loaded_instruments[:limit] if limit is not None else loaded_instruments
+        )
+        for instrument in selected_instruments:
+            self._subscribed_instruments.add(instrument.id)
+
+        selected_count = len(selected_instruments)
+        if selected_count == 0:
+            self._log.warning("SX.bet auto-subscription enabled but no instruments were loaded")
+            return 0
+
+        self._log.info(
+            f"Auto-subscribed {selected_count} of {len(loaded_instruments)} loaded "
+            "SX.bet instruments for order-book polling",
+        )
+
+        if not self._running:
+            self._running = True
+        if self._polling_task is None or self._polling_task.done():
+            self._polling_task = asyncio.create_task(self._poll_order_books())
+        return selected_count
+
+    def _log_poll_summary(
+        self,
+        *,
+        market_count: int,
+        quote_count: int,
+        empty_count: int,
+    ) -> None:
+        now = time.monotonic()
+        if now - self._last_poll_summary_at < self._poll_summary_interval:
+            return
+        self._last_poll_summary_at = now
+        self._log.info(
+            "SX.bet order-book poll cycle: "
+            f"markets={market_count} quotes={quote_count} empty_markets={empty_count} "
+            f"subscribed_instruments={len(self._subscribed_instruments)}",
+        )
 
     async def _fetch_and_publish_best_odds(self, market_hashes: set[str]) -> None:
         try:
@@ -226,7 +291,7 @@ class SXBetDataClient(LiveMarketDataClient):
             ts_init=self._clock.timestamp_ns(),
         )
 
-    async def _fetch_and_publish_quotes(self, market_hash: str) -> None:
+    async def _fetch_and_publish_quotes(self, market_hash: str) -> int:
         """
         Fetch and publish quotes for a market.
         """
@@ -237,6 +302,7 @@ class SXBetDataClient(LiveMarketDataClient):
             # Find instruments for this market
             instruments = self._instrument_provider.find_by_market_hash(market_hash)
 
+            published = 0
             for instrument in instruments:
                 if instrument.id not in self._subscribed_instruments:
                     continue
@@ -264,10 +330,14 @@ class SXBetDataClient(LiveMarketDataClient):
                     ts_init=self._clock.timestamp_ns(),
                 )
                 self._handle_data(quote)
+                published += 1
+
+            return published
 
         except (ValueError, TypeError, KeyError, SXBetHttpClientError) as e:
             msg = f"Failed to fetch quotes for {market_hash}: {e}"
             self._log.warning(msg)
+            return 0
 
     @staticmethod
     def _instrument_is_outcome_one(instrument: CryptoBettingInstrument) -> bool:

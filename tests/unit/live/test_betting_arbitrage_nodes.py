@@ -75,6 +75,34 @@ class TestBettingArbitrageNodeBuilder:
         assert exec_client.config["private_key"].startswith("0x")
         assert exec_client.config["wallet_address"].startswith("0x")
 
+    def test_sxbet_data_client_receives_order_book_runtime_settings(self):
+        manifest = BettingArbitrageNodeManifest(
+            node_id="sxbet-runtime",
+            trader_id="BETARB-TEST-002",
+            timeout_connection=240.0,
+            validation_mode=True,
+            allow_dummy_credentials=True,
+            venues=[
+                BettingVenueManifest(
+                    venue="SXBET",
+                    client_key="SXBET_PRIMARY",
+                    auto_subscribe_quote_ticks=True,
+                    quote_subscription_limit=40,
+                    order_book_poll_interval_secs=5.0,
+                    order_book_poll_summary_interval_secs=30.0,
+                ),
+            ],
+        )
+
+        config = build_trading_node_config(manifest)
+        data_client = config.data_clients["SXBET_PRIMARY"]
+
+        assert config.timeout_connection == 240.0
+        assert data_client.config["auto_subscribe_quote_ticks"] is True
+        assert data_client.config["quote_subscription_limit"] == 40
+        assert data_client.config["order_book_poll_interval_secs"] == 5.0
+        assert data_client.config["order_book_poll_summary_interval_secs"] == 30.0
+
     def test_polymarket_instrument_ids_flow_into_importable_config(self):
         manifest = BettingArbitrageNodeManifest(
             node_id="polymarket-validation",

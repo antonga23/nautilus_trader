@@ -19,6 +19,8 @@ SX.bet adapter configuration classes.
 from nautilus_trader.config import InstrumentProviderConfig
 from nautilus_trader.config import LiveDataClientConfig
 from nautilus_trader.config import LiveExecClientConfig
+from nautilus_trader.config import PositiveFloat
+from nautilus_trader.config import PositiveInt
 
 
 class SXBetInstrumentProviderConfig(InstrumentProviderConfig, frozen=True):
@@ -73,6 +75,14 @@ class SXBetDataClientConfig(LiveDataClientConfig, frozen=True):
         If WebSocket should reconnect on disconnect.
     max_reconnect_attempts : int, default 5
         Maximum WebSocket reconnection attempts.
+    auto_subscribe_quote_ticks : bool, default False
+        If loaded instruments should be subscribed for quote polling after connect.
+    quote_subscription_limit : PositiveInt, optional
+        Maximum loaded instruments to subscribe when auto-subscription is enabled.
+    order_book_poll_interval_secs : PositiveFloat, default 3.0
+        Order book polling interval in seconds.
+    order_book_poll_summary_interval_secs : PositiveFloat, default 30.0
+        Minimum interval between order book polling summary log lines.
 
     """
 
@@ -83,6 +93,10 @@ class SXBetDataClientConfig(LiveDataClientConfig, frozen=True):
     sport_ids: frozenset[int] | None = None
     reconnect_on_disconnect: bool = True
     max_reconnect_attempts: int = 5
+    auto_subscribe_quote_ticks: bool = False
+    quote_subscription_limit: PositiveInt | None = None
+    order_book_poll_interval_secs: PositiveFloat = 3.0
+    order_book_poll_summary_interval_secs: PositiveFloat = 30.0
 
 
 class SXBetExecClientConfig(LiveExecClientConfig, frozen=True):
