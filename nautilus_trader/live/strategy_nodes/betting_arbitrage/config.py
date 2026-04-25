@@ -5,6 +5,7 @@ import msgspec
 
 from nautilus_trader.common.config import NautilusConfig
 from nautilus_trader.common.config import PositiveFloat
+from nautilus_trader.common.config import PositiveInt
 from nautilus_trader.examples.strategies.betting_arbitrage import BettingArbitrageConfig
 
 SUPPORTED_BETTING_NODE_VENUES = frozenset({"SXBET", "POLYMARKET"})
@@ -27,6 +28,10 @@ class BettingVenueManifest(NautilusConfig, frozen=True):
     sport_ids: frozenset[int] | None = None
     league_ids: frozenset[int] | None = None
     live_only: bool = False
+    auto_subscribe_quote_ticks: bool = False
+    quote_subscription_limit: PositiveInt | None = None
+    order_book_poll_interval_secs: PositiveFloat = 3.0
+    order_book_poll_summary_interval_secs: PositiveFloat = 30.0
     api_url: str | None = None
     ws_url: str | None = None
     signature_type: int = 0

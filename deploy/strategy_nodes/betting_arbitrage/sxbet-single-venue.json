@@ -7,6 +7,7 @@
   "rendered_config_path": "artifacts/strategy-nodes/sxbet-single-venue/trading-node-config.json",
   "status_path": "artifacts/strategy-nodes/sxbet-single-venue/status.json",
   "heartbeat_path": "artifacts/strategy-nodes/sxbet-single-venue/heartbeat.json",
+  "timeout_connection": 240.0,
   "strategy": {
     "min_profit_margin": "0.02",
     "max_total_stake": "250",
@@ -23,6 +24,10 @@
       "execution_enabled": false,
       "credential_prefix": "SXBET",
       "load_all_instruments": true,
+      "auto_subscribe_quote_ticks": true,
+      "quote_subscription_limit": 40,
+      "order_book_poll_interval_secs": 5.0,
+      "order_book_poll_summary_interval_secs": 30.0,
       "live_only": false
     }
   ],

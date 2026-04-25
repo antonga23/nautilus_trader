@@ -28,6 +28,30 @@ EXPECTED_EXECUTABLE_ODDS = 2.5
 EXPECTED_ONE_SIDED_ODDS = 2.0
 
 
+def _make_instrument(
+    *,
+    market_hash: str = "market-1",
+    outcome: str = "home",
+    outcome_one: bool = True,
+) -> CryptoBettingInstrument:
+    return CryptoBettingInstrument(
+        venue=Venue("SXBET"),
+        event_id=market_hash,
+        event_name="Team A vs Team B",
+        home_name="Team A",
+        away_name="Team B",
+        sport_name="soccer",
+        competition_name="Test League",
+        market_name="Match Odds",
+        market_type="match_odds",
+        outcome=outcome,
+        side=SelectionSide.BACK,
+        price=2.0,
+        currency=Currency.from_str("USDT"),
+        info={"outcome_one": outcome_one},
+    )
+
+
 def test_best_bid_ask_uses_highest_executable_decimal_odds():
     orders = [
         {
@@ -62,22 +86,7 @@ def test_has_valid_spread_rejects_locked_or_crossed_quotes():
 
 @pytest.mark.asyncio
 async def test_fetch_and_publish_quotes_emits_one_sided_quote():
-    instrument = CryptoBettingInstrument(
-        venue=Venue("SXBET"),
-        event_id="market-1",
-        event_name="Team A vs Team B",
-        home_name="Team A",
-        away_name="Team B",
-        sport_name="soccer",
-        competition_name="Test League",
-        market_name="Match Odds",
-        market_type="match_odds",
-        outcome="home",
-        side=SelectionSide.BACK,
-        price=2.0,
-        currency=Currency.from_str("USDT"),
-        info={"outcome_one": True},
-    )
+    instrument = _make_instrument()
 
     http_client = Mock()
     http_client.get_order_book = AsyncMock(
@@ -111,8 +120,9 @@ async def test_fetch_and_publish_quotes_emits_one_sided_quote():
     client._subscribed_instruments = {instrument.id}
     client._handle_data = Mock()
 
-    await client._fetch_and_publish_quotes("market-1")
+    published = await client._fetch_and_publish_quotes("market-1")
 
+    assert published == 1
     client._handle_data.assert_called_once()
     quote = client._handle_data.call_args.args[0]
     assert quote.bid_price.as_decimal() == EXPECTED_ONE_SIDED_ODDS
@@ -123,22 +133,7 @@ async def test_fetch_and_publish_quotes_emits_one_sided_quote():
 
 @pytest.mark.asyncio
 async def test_fetch_and_publish_quotes_ignores_opposite_outcome_orders():
-    instrument = CryptoBettingInstrument(
-        venue=Venue("SXBET"),
-        event_id="market-1",
-        event_name="Team A vs Team B",
-        home_name="Team A",
-        away_name="Team B",
-        sport_name="soccer",
-        competition_name="Test League",
-        market_name="Match Odds",
-        market_type="match_odds",
-        outcome="home",
-        side=SelectionSide.BACK,
-        price=2.0,
-        currency=Currency.from_str("USDT"),
-        info={"outcome_one": True},
-    )
+    instrument = _make_instrument()
 
     http_client = Mock()
     http_client.get_order_book = AsyncMock(
@@ -176,8 +171,9 @@ async def test_fetch_and_publish_quotes_ignores_opposite_outcome_orders():
     client._subscribed_instruments = {instrument.id}
     client._handle_data = Mock()
 
-    await client._fetch_and_publish_quotes("market-1")
+    published = await client._fetch_and_publish_quotes("market-1")
 
+    assert published == 1
     client._handle_data.assert_called_once()
     quote = client._handle_data.call_args.args[0]
     assert quote.bid_price.as_decimal() == EXPECTED_EXECUTABLE_ODDS
@@ -212,6 +208,44 @@ async def test_connect_sends_loaded_instruments_to_data_engine():
 
     provider.load_all_async.assert_awaited_once_with({})
     assert client._handle_data.call_count == 2
+
+
+def test_auto_subscribe_loaded_instruments_respects_limit(monkeypatch):
+    task = Mock()
+    task.done.return_value = False
+    create_task = Mock(return_value=task)
+    monkeypatch.setattr("nautilus_trader.adapters.sxbet.data.asyncio.create_task", create_task)
+    instruments = {
+        "inst-1": _make_instrument(market_hash="market-1", outcome="home", outcome_one=True),
+        "inst-2": _make_instrument(market_hash="market-1", outcome="away", outcome_one=False),
+        "inst-3": _make_instrument(market_hash="market-2", outcome="home", outcome_one=True),
+    }
+    provider = SXBetInstrumentProvider(
+        http_client=Mock(),
+        config=SXBetInstrumentProviderConfig(),
+        logger=Mock(),
+    )
+    provider.get_all = Mock(return_value=instruments)
+    client = SXBetDataClient(
+        loop=get_event_loop(),
+        http_client=Mock(),
+        instrument_provider=provider,
+        msgbus=TestComponentStubs.msgbus(),
+        cache=TestComponentStubs.cache(),
+        clock=TestComponentStubs.clock(),
+        logger=Logger(name="test-sxbet-data"),
+        config=SXBetDataClientConfig(
+            auto_subscribe_quote_ticks=True,
+            quote_subscription_limit=2,
+        ),
+    )
+
+    selected_count = client._auto_subscribe_loaded_instruments()
+
+    assert selected_count == 2
+    assert len(client.subscribed_quote_ticks()) == 2
+    assert client._polling_task is task
+    create_task.assert_called_once()
 
 
 @pytest.mark.asyncio
