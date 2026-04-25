@@ -9,6 +9,17 @@
   command completion.
 - Persist watcher output to a durable log path whenever the command may outlive
   the current interaction.
+- Runner ownership is strict:
+  - GCP self-hosted runners are the primary CI surface for pre-commit, Python
+    tests, Rust policy checks, wheel builds, and strategy-node image builds.
+  - EC2 is the deploy/trading host only. Use it for strategy-node release,
+    runtime, lifecycle, health, and log inspection work.
+- Do not move pre-commit, build, test, or image-build work to EC2 as a fallback
+  when GCP auth or runner access fails. Re-authenticate GCP or use the intended
+  GitHub Actions workflow instead.
 - Before spending a GitHub Actions run for Python validation, prefer the
-  `ci-preflight` skill and run the same validation slice on the EC2 runner when
-  the runner is reachable.
+  `ci-preflight` skill and run the same validation slice on the GCP CI runner
+  when that runner is reachable.
+- Do not persist plaintext cloud passwords in repo files, skills, scripts, logs,
+  or documentation. Use interactive auth, short-lived credentials, or an
+  approved secret manager.

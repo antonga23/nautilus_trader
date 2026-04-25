@@ -3,4 +3,4 @@ interface:
   short_description: "Coordinate workers with owned parallel slices"
   default_prompt: >-
     Use $parallel-orchestrator to split this task across workers with explicit
-    ownership and iterative follow-up.
+    ownership, runner boundaries, and iterative follow-up.

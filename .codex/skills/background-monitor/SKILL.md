@@ -37,9 +37,21 @@ tail loops from the conversation.
 4. Do not keep issuing `sleep && gh ...` or `tail` polling commands in chat.
 5. When the watcher completes, inspect only the emitted summary and relevant
    logs.
-6. For GitHub validation work in this repository, run the EC2-side
-   `ci-preflight` slice before dispatching a new Actions run when the runner is
-   reachable.
+6. For GitHub validation work in this repository, run the GCP-side
+   `ci-preflight` slice before dispatching a new Actions run when the GCP CI
+   runner is reachable.
+
+## Runner Boundary
+
+- Use GCP self-hosted runners for pre-commit, tests, Rust policy checks, wheel
+  builds, and strategy-node image builds.
+- Use EC2 only for strategy-node deploy, runtime lifecycle, health checks, and
+  log inspection.
+- If GCP auth expires or the GCP runner is unavailable, do not move CI/build
+  work to EC2. Re-authenticate GCP, repair the GCP runner, or run the intended
+  GitHub Actions workflow.
+- Never persist plaintext cloud passwords in watcher commands, logs, skills, or
+  repo files.
 
 ## Codex Desktop Call Shape
 
@@ -86,15 +98,15 @@ Example:
 
 ```text
 exec_command(
-  cmd="mkdir -p artifacts/monitors && log_path=artifacts/monitors/ci-preflight.log && set +e; ssh -i \"$EC2_KEY_PATH\" -o StrictHostKeyChecking=no \"$EC2_USER@$EC2_HOST\" 'cd /home/ubuntu/pr14-ci-clone && bash scripts/ci/run_ci_preflight.sh' > \"$log_path\" 2>&1; status=$?; set -e; if [ \"$status\" -ne 0 ]; then tail -n 200 \"$log_path\" >&2 || true; fi; exit \"$status\"",
+  cmd="mkdir -p artifacts/monitors && log_path=artifacts/monitors/gcp-ci-preflight.log && set +e; /Users/alatha.ntonga/google-cloud-sdk/bin/gcloud compute ssh instance-20260415-214825 --project=shining-sol-493421-h6 --zone=europe-west4-c --command 'set -euo pipefail; cd /opt/actions-runner/_work/cloudbet-market-maker/cloudbet-market-maker; bash scripts/ci/run_ci_preflight.sh' > \"$log_path\" 2>&1; status=$?; set -e; if [ \"$status\" -ne 0 ]; then tail -n 200 \"$log_path\" >&2 || true; fi; exit \"$status\"",
   yield_time_ms=1000,
   max_output_tokens=12000
 )
 ```
 
 The condition is remote command completion. The background task returns `0`
-when the remote preflight exits `0`, and returns non-zero with the last 200 log
-lines when the preflight fails.
+when the GCP remote preflight exits `0`, and returns non-zero with the last 200
+log lines when the preflight fails.
 
 ## Log Error Watch
 
@@ -117,4 +129,4 @@ wrapper above.
 - Kill or replace stale watchers before starting a new watcher for the same
   branch or run.
 - If the watcher exists to guard a GitHub run, do not dispatch that run until
-  local or EC2 preflight has already covered the minimal reproducible slice.
+  local or GCP preflight has already covered the minimal reproducible slice.
