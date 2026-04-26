@@ -5,6 +5,7 @@ bucket="${CI_TRANSIENT_R2_BUCKET:-${CLOUDFLARE_R2_BUCKET_NAME:-}}"
 endpoint_url="${CI_TRANSIENT_R2_URL:-${CLOUDFLARE_R2_URL:-}}"
 access_key_id="${CI_TRANSIENT_R2_ACCESS_KEY_ID:-${AWS_ACCESS_KEY_ID:-}}"
 secret_access_key="${CI_TRANSIENT_R2_SECRET_ACCESS_KEY:-${AWS_SECRET_ACCESS_KEY:-}}"
+aws_bin_dir=""
 
 if [[ -z "$bucket" || -z "$endpoint_url" ]]; then
   echo "CI_TRANSIENT_R2_BUCKET and CI_TRANSIENT_R2_URL are required" >&2
@@ -12,8 +13,8 @@ if [[ -z "$bucket" || -z "$endpoint_url" ]]; then
 fi
 
 if ! command -v aws > /dev/null 2>&1; then
-  echo "aws CLI is required to configure R2 lifecycle" >&2
-  exit 69
+  aws_bin_dir="$(bash scripts/ci/ensure_aws_cli.sh)"
+  export PATH="${aws_bin_dir}:${PATH}"
 fi
 
 if [[ -z "$access_key_id" || -z "$secret_access_key" ]]; then

@@ -36,6 +36,7 @@ normalize_relative_key() {
 configure_aws_cli() {
   local access_key_id="${CI_TRANSIENT_R2_ACCESS_KEY_ID:-${AWS_ACCESS_KEY_ID:-}}"
   local secret_access_key="${CI_TRANSIENT_R2_SECRET_ACCESS_KEY:-${AWS_SECRET_ACCESS_KEY:-}}"
+  local aws_bin_dir
 
   if [[ -z "$access_key_id" || -z "$secret_access_key" ]]; then
     echo "CI_TRANSIENT_R2_ACCESS_KEY_ID and CI_TRANSIENT_R2_SECRET_ACCESS_KEY are required" >&2
@@ -43,8 +44,8 @@ configure_aws_cli() {
   fi
 
   if ! command -v aws > /dev/null 2>&1; then
-    echo "aws CLI is required for transient CI artifact storage" >&2
-    exit 69
+    aws_bin_dir="$(bash scripts/ci/ensure_aws_cli.sh)"
+    export PATH="${aws_bin_dir}:${PATH}"
   fi
 
   unset AWS_PROFILE AWS_DEFAULT_PROFILE
