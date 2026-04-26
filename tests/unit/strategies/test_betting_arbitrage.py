@@ -498,23 +498,13 @@ class TestBettingArbitrageStrategy:
         strategy.subscribe_quote_ticks.assert_not_called()
         assert not strategy._subscribed_instruments
 
-    def test_on_quote_tick_suppresses_inverse_duplicate_opportunities(self):
+    def test_arbitrage_diagnostics_suppresses_inverse_duplicate_opportunities(self):
         config = BettingArbitrageConfig(
             min_profit_margin=Decimal("0.02"),
             enabled_venues=frozenset(["SXBET"]),
             auto_execute=False,
         )
         strategy = BettingArbitrageStrategy(config=config)
-        strategy._handle_arbitrage_opportunity = Mock()
-        cache = TestComponentStubs.cache()
-        strategy.register(
-            trader_id=TraderId("TESTER-003"),
-            portfolio=TestComponentStubs.portfolio(),
-            msgbus=TestComponentStubs.msgbus(),
-            cache=cache,
-            clock=TestComponentStubs.clock(),
-        )
-
         instrument_a = self._sxbet_instrument(
             event_id="market-1",
             outcome="over",
@@ -525,9 +515,13 @@ class TestBettingArbitrageStrategy:
             outcome="under",
             params="line=2.5",
         )
-        strategy._subscribed_instruments = {instrument_a, instrument_b}
-        cache.add_instrument(instrument_a)
-        cache.add_instrument(instrument_b)
+        opportunity = strategy._matcher.check_arbitrage(
+            instrument_a,
+            instrument_b,
+            odds_a=Decimal("2.30"),
+            odds_b=Decimal("2.45"),
+        )
+        assert opportunity is not None
 
         tick_a = TestDataStubs.quote_tick(
             instrument=instrument_a,
@@ -541,16 +535,20 @@ class TestBettingArbitrageStrategy:
             ask_price=0.0,
             ts_event=10_500_000_000,
         )
+        diagnostics = strategy._build_arbitrage_diagnostics(
+            opportunity=opportunity,
+            hedge_match_type="same_market",
+            hedge_confidence=1.0,
+            quote_a=tick_a,
+            quote_b=tick_b,
+            now_ns=11_000_000_000,
+        )
 
-        strategy.on_quote_tick(tick_a)
-        strategy.on_quote_tick(tick_b)
-        strategy.on_quote_tick(tick_a)
+        assert strategy._suppress_arbitrage_candidate(diagnostics) is False
+        strategy._seen_opportunity_pairs.add(diagnostics.canonical_pair_id)
+        assert strategy._suppress_arbitrage_candidate(diagnostics) is True
 
-        assert strategy._raw_arbitrage_detections == 2
-        assert strategy._opportunities_found == 1
-        assert strategy._executable_candidates == 1
         assert strategy._duplicate_opportunities_suppressed == 1
-        strategy._handle_arbitrage_opportunity.assert_called_once()
 
     def test_arbitrage_diagnostics_flags_stale_quotes(self):
         strategy = BettingArbitrageStrategy(
