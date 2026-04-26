@@ -105,19 +105,19 @@ jobs:
 
       - name: Validate SX.bet manifest
         run: >-
-          python -m nautilus_trader.live.strategy_nodes.betting_arbitrage
+          uv run --no-sync python -m nautilus_trader.live.strategy_nodes.betting_arbitrage
           validate-manifest --manifest
           deploy/strategy_nodes/betting_arbitrage/sxbet-single-venue.json
 
       - name: Validate Polymarket manifest
         run: >-
-          python -m nautilus_trader.live.strategy_nodes.betting_arbitrage
+          uv run --no-sync python -m nautilus_trader.live.strategy_nodes.betting_arbitrage
           validate-manifest --manifest
           deploy/strategy_nodes/betting_arbitrage/polymarket-single-venue.json
 
       - name: Validate Polymarket multi-venue example
         run: >-
-          python -m nautilus_trader.live.strategy_nodes.betting_arbitrage
+          uv run --no-sync python -m nautilus_trader.live.strategy_nodes.betting_arbitrage
           validate-manifest --manifest
           deploy/strategy_nodes/betting_arbitrage/polymarket-plus-sxbet.example.json
 
