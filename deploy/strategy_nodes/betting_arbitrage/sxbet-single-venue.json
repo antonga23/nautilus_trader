@@ -25,7 +25,7 @@
       "credential_prefix": "SXBET",
       "load_all_instruments": true,
       "instrument_load_limit": 50,
-      "market_discovery_limit": 500,
+      "market_discovery_limit": null,
       "prefer_liquid_markets": true,
       "liquidity_probe_limit": 250,
       "min_two_sided_markets": 1,

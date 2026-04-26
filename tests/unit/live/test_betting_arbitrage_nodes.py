@@ -87,7 +87,7 @@ class TestBettingArbitrageNodeBuilder:
                     venue="SXBET",
                     client_key="SXBET_PRIMARY",
                     instrument_load_limit=50,
-                    market_discovery_limit=500,
+                    market_discovery_limit=None,
                     prefer_liquid_markets=True,
                     liquidity_probe_limit=250,
                     min_two_sided_markets=2,
@@ -105,7 +105,7 @@ class TestBettingArbitrageNodeBuilder:
 
         assert config.timeout_connection == 240.0
         assert data_client.config["instrument_provider"]["instrument_load_limit"] == 50
-        assert data_client.config["instrument_provider"]["market_discovery_limit"] == 500
+        assert data_client.config["instrument_provider"]["market_discovery_limit"] is None
         assert data_client.config["instrument_provider"]["prefer_liquid_markets"] is True
         assert data_client.config["instrument_provider"]["liquidity_probe_limit"] == 250
         assert data_client.config["instrument_provider"]["min_two_sided_markets"] == 2

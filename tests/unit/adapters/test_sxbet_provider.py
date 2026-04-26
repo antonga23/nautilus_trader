@@ -542,6 +542,84 @@ async def test_sxbet_provider_decouples_market_discovery_from_instrument_limit()
 
 
 @pytest.mark.asyncio
+async def test_sxbet_provider_scans_until_pagination_end_when_discovery_limit_is_none():
+    class RecordingHttpClient:
+        def __init__(self) -> None:
+            self.market_calls: list[str | None] = []
+
+        async def get_markets(
+            self,
+            sport_id: int | None = None,
+            league_id: int | None = None,
+            only_active: bool = True,
+            pagination_key: str | None = None,
+            page_size: int | None = None,
+        ) -> dict:
+            self.market_calls.append(pagination_key)
+            page = int(pagination_key or 0)
+            start = page * SXBET_MARKET_PAGE_SIZE
+            markets = [
+                {
+                    "marketHash": f"market-{index}",
+                    "teamOneName": f"Team {index}A",
+                    "teamTwoName": f"Team {index}B",
+                    "sportId": 1,
+                    "leagueName": "League One",
+                    "type": 52,
+                    "outcomeOneName": f"Team {index}A",
+                    "outcomeTwoName": f"Team {index}B",
+                }
+                for index in range(start, start + SXBET_MARKET_PAGE_SIZE)
+            ]
+            data: dict[str, object] = {"markets": markets}
+            if page < 2:
+                data["nextKey"] = str(page + 1)
+            return {"data": data}
+
+        async def get_order_book(self, market_hash: str) -> dict:
+            return {
+                "data": {
+                    "orders": [
+                        {
+                            "isMakerBettingOutcomeOne": True,
+                            "percentageOdds": decimal_odds_to_percentage(2.0),
+                        },
+                        {
+                            "isMakerBettingOutcomeOne": False,
+                            "percentageOdds": decimal_odds_to_percentage(2.0),
+                        },
+                    ],
+                },
+            }
+
+        async def get_best_odds(
+            self,
+            *,
+            market_hashes: list[str],
+            base_token: str,
+            log_api_error: bool = True,
+        ) -> dict:
+            return {"data": {"bestOdds": []}}
+
+    http_client = RecordingHttpClient()
+    provider = SXBetInstrumentProvider(
+        http_client=http_client,
+        config=SXBetInstrumentProviderConfig(
+            sport_ids=frozenset({1}),
+            instrument_load_limit=50,
+            market_discovery_limit=None,
+            prefer_liquid_markets=True,
+            liquidity_probe_limit=100,
+        ),
+    )
+
+    await provider.load_all_async()
+
+    assert http_client.market_calls == [None, "1", "2"]
+    assert len(provider.get_all()) == 50
+
+
+@pytest.mark.asyncio
 async def test_sxbet_provider_prefers_two_sided_liquid_markets():
     class RecordingHttpClient:
         def __init__(self) -> None:

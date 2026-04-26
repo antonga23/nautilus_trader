@@ -38,6 +38,8 @@ class TestBettingArbitrageConfig:
         assert config.market_timing_filter == "all"
         assert config.rollover_aware is True
         assert config.auto_execute is False
+        assert config.arbitrage_quote_stale_threshold_secs == 30.0
+        assert config.arbitrage_summary_interval_secs == 60.0
 
     def test_custom_venues(self):
         """
@@ -165,6 +167,8 @@ class TestBettingArbitrageStrategy:
         assert len(strategy._subscribed_instruments) == 0
         assert strategy._opportunities_found == 0
         assert strategy._opportunities_executed == 0
+        assert strategy._raw_arbitrage_detections == 0
+        assert strategy._executable_candidates == 0
 
     def test_get_stats(self, default_config):
         """
@@ -177,6 +181,11 @@ class TestBettingArbitrageStrategy:
         assert "subscribed_instruments" in stats
         assert "opportunities_found" in stats
         assert "opportunities_executed" in stats
+        assert "raw_arbitrage_detections" in stats
+        assert "duplicate_opportunities_suppressed" in stats
+        assert "stale_quote_suppressions" in stats
+        assert "matcher_suspect_suppressions" in stats
+        assert "executable_candidates" in stats
         assert "success_rate" in stats
         assert stats["subscribed_instruments"] == 0
         assert stats["success_rate"] == 0
@@ -488,6 +497,151 @@ class TestBettingArbitrageStrategy:
 
         strategy.subscribe_quote_ticks.assert_not_called()
         assert not strategy._subscribed_instruments
+
+    def test_arbitrage_diagnostics_suppresses_inverse_duplicate_opportunities(self):
+        config = BettingArbitrageConfig(
+            min_profit_margin=Decimal("0.02"),
+            enabled_venues=frozenset(["SXBET"]),
+            auto_execute=False,
+        )
+        strategy = BettingArbitrageStrategy(config=config)
+        instrument_a = self._sxbet_instrument(
+            event_id="market-1",
+            outcome="over",
+            params="line=2.5",
+        )
+        instrument_b = self._sxbet_instrument(
+            event_id="market-1",
+            outcome="under",
+            params="line=2.5",
+        )
+        opportunity = strategy._matcher.check_arbitrage(
+            instrument_a,
+            instrument_b,
+            odds_a=Decimal("2.30"),
+            odds_b=Decimal("2.45"),
+        )
+        assert opportunity is not None
+
+        tick_a = TestDataStubs.quote_tick(
+            instrument=instrument_a,
+            bid_price=2.30,
+            ask_price=0.0,
+            ts_event=10_000_000_000,
+        )
+        tick_b = TestDataStubs.quote_tick(
+            instrument=instrument_b,
+            bid_price=2.45,
+            ask_price=0.0,
+            ts_event=10_500_000_000,
+        )
+        diagnostics = strategy._build_arbitrage_diagnostics(
+            opportunity=opportunity,
+            hedge_match_type="same_market",
+            hedge_confidence=1.0,
+            quote_a=tick_a,
+            quote_b=tick_b,
+            now_ns=11_000_000_000,
+        )
+
+        assert strategy._suppress_arbitrage_candidate(diagnostics) is False
+        strategy._seen_opportunity_pairs.add(diagnostics.canonical_pair_id)
+        assert strategy._suppress_arbitrage_candidate(diagnostics) is True
+
+        assert strategy._duplicate_opportunities_suppressed == 1
+
+    def test_arbitrage_diagnostics_flags_stale_quotes(self):
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["SXBET"]),
+                arbitrage_quote_stale_threshold_secs=30.0,
+            ),
+        )
+        instrument_a = self._sxbet_instrument(
+            event_id="market-1",
+            outcome="over",
+            params="line=2.5",
+        )
+        instrument_b = self._sxbet_instrument(
+            event_id="market-1",
+            outcome="under",
+            params="line=2.5",
+        )
+        opportunity = strategy._matcher.check_arbitrage(
+            instrument_a,
+            instrument_b,
+            odds_a=Decimal("2.30"),
+            odds_b=Decimal("2.45"),
+        )
+        assert opportunity is not None
+
+        diagnostics = strategy._build_arbitrage_diagnostics(
+            opportunity=opportunity,
+            hedge_match_type="same_market",
+            hedge_confidence=1.0,
+            quote_a=TestDataStubs.quote_tick(
+                instrument=instrument_a,
+                bid_price=2.30,
+                ask_price=0.0,
+                ts_event=1_000_000_000,
+            ),
+            quote_b=TestDataStubs.quote_tick(
+                instrument=instrument_b,
+                bid_price=2.45,
+                ask_price=0.0,
+                ts_event=2_000_000_000,
+            ),
+            now_ns=40_000_000_000,
+        )
+
+        assert diagnostics.stale is True
+        assert diagnostics.matcher_suspect is False
+
+    def test_arbitrage_diagnostics_flags_same_venue_event_mismatch(self):
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(enabled_venues=frozenset(["SXBET"])),
+        )
+        instrument_a = self._sxbet_instrument(
+            event_id="market-a",
+            outcome="home",
+            market_name="match_odds",
+        )
+        instrument_b = self._sxbet_instrument(
+            event_id="market-b",
+            outcome="away",
+            market_name="match_odds",
+        )
+
+        suspect, reason = strategy._matcher_suspect_reason(instrument_a, instrument_b)
+
+        assert suspect is True
+        assert reason == "same_venue_event_id_mismatch"
+
+    @staticmethod
+    def _sxbet_instrument(
+        *,
+        event_id: str,
+        outcome: str,
+        market_name: str = "total_goals",
+        params: str = "",
+    ) -> CryptoBettingInstrument:
+        return CryptoBettingInstrument(
+            venue=Venue("SXBET"),
+            event_id=event_id,
+            event_name="Team A vs Team B",
+            home_name="Team A",
+            away_name="Team B",
+            sport_name="Soccer",
+            competition_name="Test League",
+            market_name=market_name,
+            market_type=market_name,
+            outcome=outcome,
+            side=SelectionSide.BACK,
+            price=2.0,
+            currency=Currency.from_str("USDC"),
+            params=params,
+            start_time="2026-03-13T18:00:00Z",
+        )
 
 
 # Note: Full integration tests with actual instrument subscriptions and quote ticks
