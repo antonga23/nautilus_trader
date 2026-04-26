@@ -160,6 +160,9 @@ def _build_sxbet_data_importable(
         "sport_ids": sorted(venue.sport_ids) if venue.sport_ids else None,
         "league_ids": sorted(venue.league_ids) if venue.league_ids else None,
         "live_only": venue.live_only,
+        "instrument_load_limit": venue.instrument_load_limit,
+        "prefer_liquid_markets": venue.prefer_liquid_markets,
+        "liquidity_probe_limit": venue.liquidity_probe_limit,
     }
     config = {
         "api_key": _resolve_secret(prefix, "API_KEY", manifest.allow_dummy_credentials),

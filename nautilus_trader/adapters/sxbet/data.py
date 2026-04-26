@@ -86,19 +86,38 @@ class SXBetDataClient(LiveMarketDataClient):
         """
         Connect to the data source.
         """
+        started_at = time.perf_counter()
         self._log.info("Connecting SXBetDataClient...")
+        http_started_at = time.perf_counter()
         await self._http_client.connect()
+        self._log.info(
+            f"SXBetHttpClient connect completed in {time.perf_counter() - http_started_at:.2f}s",
+        )
 
         # Load instruments
         filters = {}
         if self._config.sport_ids:
             filters["sport_ids"] = self._config.sport_ids
 
+        load_started_at = time.perf_counter()
         await self._instrument_provider.load_all_async(filters)
+        self._log.info(
+            f"SX.bet instrument provider load completed in "
+            f"{time.perf_counter() - load_started_at:.2f}s",
+        )
+        publish_started_at = time.perf_counter()
         self._send_all_instruments_to_data_engine()
+        self._log.info(
+            f"Sent {len(self._instrument_provider.get_all())} SX.bet instruments to DataEngine "
+            f"in {time.perf_counter() - publish_started_at:.2f}s",
+        )
+        subscribe_started_at = time.perf_counter()
         self._auto_subscribe_loaded_instruments()
+        self._log.info(
+            f"SX.bet auto-subscription completed in {time.perf_counter() - subscribe_started_at:.2f}s",
+        )
 
-        self._log.info("SXBetDataClient connected")
+        self._log.info(f"SXBetDataClient connected in {time.perf_counter() - started_at:.2f}s")
 
     async def _disconnect(self) -> None:
         """
@@ -155,15 +174,18 @@ class SXBetDataClient(LiveMarketDataClient):
                         market_hashes.add(instrument.event_id)
 
                 quote_count = 0
+                order_count = 0
                 empty_count = 0
                 if market_hashes:
                     for market_hash in sorted(market_hashes):
-                        published = await self._fetch_and_publish_quotes(market_hash)
+                        published, orders = await self._fetch_and_publish_quotes(market_hash)
                         quote_count += published
+                        order_count += orders
                         if published == 0:
                             empty_count += 1
                     self._log_poll_summary(
                         market_count=len(market_hashes),
+                        order_count=order_count,
                         quote_count=quote_count,
                         empty_count=empty_count,
                     )
@@ -220,6 +242,7 @@ class SXBetDataClient(LiveMarketDataClient):
         self,
         *,
         market_count: int,
+        order_count: int,
         quote_count: int,
         empty_count: int,
     ) -> None:
@@ -229,7 +252,8 @@ class SXBetDataClient(LiveMarketDataClient):
         self._last_poll_summary_at = now
         self._log.info(
             "SX.bet order-book poll cycle: "
-            f"markets={market_count} quotes={quote_count} empty_markets={empty_count} "
+            f"markets={market_count} orders={order_count} quotes={quote_count} "
+            f"empty_markets={empty_count} "
             f"subscribed_instruments={len(self._subscribed_instruments)}",
         )
 
@@ -291,11 +315,12 @@ class SXBetDataClient(LiveMarketDataClient):
             ts_init=self._clock.timestamp_ns(),
         )
 
-    async def _fetch_and_publish_quotes(self, market_hash: str) -> int:
+    async def _fetch_and_publish_quotes(self, market_hash: str) -> tuple[int, int]:
         """
         Fetch and publish quotes for a market.
         """
         try:
+            started_at = time.perf_counter()
             order_book = await self._http_client.get_order_book(market_hash)
             orders = order_book.get("data", {}).get("orders", [])
 
@@ -332,12 +357,17 @@ class SXBetDataClient(LiveMarketDataClient):
                 self._handle_data(quote)
                 published += 1
 
-            return published
+            if published > 0:
+                self._log.debug(
+                    f"SX.bet quote publish market={market_hash} orders={len(orders)} "
+                    f"quotes={published} elapsed={time.perf_counter() - started_at:.2f}s",
+                )
+            return published, len(orders)
 
         except (ValueError, TypeError, KeyError, SXBetHttpClientError) as e:
             msg = f"Failed to fetch quotes for {market_hash}: {e}"
             self._log.warning(msg)
-            return 0
+            return 0, 0
 
     @staticmethod
     def _instrument_is_outcome_one(instrument: CryptoBettingInstrument) -> bool:
@@ -393,8 +423,8 @@ class SXBetDataClient(LiveMarketDataClient):
         msg = f"Unsupported data type request: {data_type}"
         self._log.warning(msg)
 
-    def subscribed_quote_ticks(self) -> set[InstrumentId]:
+    def subscribed_quote_ticks(self) -> list[InstrumentId]:
         """
-        Return set of subscribed quote tick instrument IDs.
+        Return subscribed quote tick instrument IDs.
         """
-        return self._subscribed_instruments.copy()
+        return list(self._subscribed_instruments)

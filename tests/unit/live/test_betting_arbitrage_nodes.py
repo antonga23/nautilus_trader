@@ -86,6 +86,9 @@ class TestBettingArbitrageNodeBuilder:
                 BettingVenueManifest(
                     venue="SXBET",
                     client_key="SXBET_PRIMARY",
+                    instrument_load_limit=50,
+                    prefer_liquid_markets=True,
+                    liquidity_probe_limit=100,
                     auto_subscribe_quote_ticks=True,
                     quote_subscription_limit=40,
                     order_book_poll_interval_secs=5.0,
@@ -98,6 +101,9 @@ class TestBettingArbitrageNodeBuilder:
         data_client = config.data_clients["SXBET_PRIMARY"]
 
         assert config.timeout_connection == 240.0
+        assert data_client.config["instrument_provider"]["instrument_load_limit"] == 50
+        assert data_client.config["instrument_provider"]["prefer_liquid_markets"] is True
+        assert data_client.config["instrument_provider"]["liquidity_probe_limit"] == 100
         assert data_client.config["auto_subscribe_quote_ticks"] is True
         assert data_client.config["quote_subscription_limit"] == 40
         assert data_client.config["order_book_poll_interval_secs"] == 5.0
