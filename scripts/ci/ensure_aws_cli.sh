@@ -22,13 +22,18 @@ fi
 
 venv_dir="${cache_root}/venv"
 aws_bin="${venv_dir}/bin/aws"
+aws_python="${venv_dir}/bin/python"
 lock_dir="${cache_root}.lock"
+
+if [[ -x "$aws_python" ]] && ! "$aws_python" -c 'import botocore' > /dev/null 2>&1; then
+  rm -rf "$cache_root"
+fi
 
 if [[ -x "$aws_bin" ]] && ! "$aws_bin" --version > /dev/null 2>&1; then
   rm -rf "$cache_root"
 fi
 
-if [[ ! -x "$aws_bin" ]]; then
+if [[ ! -x "$aws_bin" || ! -x "$aws_python" ]]; then
   mkdir -p "$(dirname "$cache_root")"
 
   acquired_lock=false
@@ -37,13 +42,13 @@ if [[ ! -x "$aws_bin" ]]; then
       acquired_lock=true
       break
     fi
-    if [[ -x "$aws_bin" ]]; then
+    if [[ -x "$aws_bin" && -x "$aws_python" ]]; then
       break
     fi
     sleep 2
   done
 
-  if [[ "$acquired_lock" != "true" && ! -x "$aws_bin" ]]; then
+  if [[ "$acquired_lock" != "true" && (! -x "$aws_bin" || ! -x "$aws_python") ]]; then
     echo "Timed out waiting for awscli cache lock: ${lock_dir}" >&2
     exit 75
   fi
@@ -54,7 +59,7 @@ if [[ ! -x "$aws_bin" ]]; then
     }
     trap cleanup_lock EXIT
 
-    if [[ ! -x "$aws_bin" ]]; then
+    if [[ ! -x "$aws_bin" || ! -x "$aws_python" ]]; then
       rm -rf "$cache_root"
       python3 -m venv "${venv_dir}"
       "${venv_dir}/bin/python" -m pip install --upgrade pip >&2
@@ -63,7 +68,7 @@ if [[ ! -x "$aws_bin" ]]; then
   fi
 fi
 
-if [[ ! -x "$aws_bin" ]]; then
+if [[ ! -x "$aws_bin" || ! -x "$aws_python" ]]; then
   echo "awscli bootstrap did not produce ${aws_bin}" >&2
   exit 69
 fi

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import NoReturn
 
 from botocore.config import Config
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 from botocore.session import get_session
 
 
@@ -27,6 +27,10 @@ def usage() -> NoReturn:
         file=sys.stderr,
     )
     raise SystemExit(64)
+
+
+def debug(message: str) -> None:
+    print(f"[ci-transient] {message}", file=sys.stderr)
 
 
 def normalize_relative_key(value: str) -> str:
@@ -83,20 +87,52 @@ def list_keys(client, bucket: str, prefix: str) -> list[str]:
     return keys
 
 
+def upload_file(client, bucket: str, object_key: str, source_path: Path) -> None:
+    client.put_object(
+        Bucket=bucket,
+        Key=object_key,
+        Body=source_path.read_bytes(),
+    )
+
+
 def put_artifact(client, bucket: str, prefix: str, run_namespace: str, args: list[str]) -> int:
     if len(args) != 2:
         usage()
     source_path = Path(args[0])
     if not source_path.exists():
         fail(f"Source path not found: {source_path}", 66)
+    relative_key = args[1].rstrip("/")
     if source_path.is_dir():
-        fail(f"Directory uploads are not supported: {source_path}", 64)
-    relative_key = normalize_relative_key(args[1])
-    client.put_object(
-        Bucket=bucket,
-        Key=object_key_for(prefix, run_namespace, relative_key),
-        Body=source_path.read_bytes(),
+        relative_prefix = normalize_relative_key(relative_key)
+        uploaded = 0
+        for child in sorted(source_path.rglob("*")):
+            if child.is_dir():
+                continue
+            child_relative = child.relative_to(source_path).as_posix()
+            upload_file(
+                client,
+                bucket,
+                object_key_for(
+                    prefix,
+                    run_namespace,
+                    f"{relative_prefix}/{child_relative}",
+                ),
+                child,
+            )
+            uploaded += 1
+        if uploaded == 0:
+            fail(f"Directory upload source is empty: {source_path}", 66)
+        debug(f"uploaded {uploaded} files from {source_path} to {relative_prefix}/")
+        return 0
+
+    normalized_key = normalize_relative_key(relative_key)
+    upload_file(
+        client,
+        bucket,
+        object_key_for(prefix, run_namespace, normalized_key),
+        source_path,
     )
+    debug(f"uploaded file {source_path} to {normalized_key}")
     return 0
 
 
@@ -111,6 +147,7 @@ def get_artifact(client, bucket: str, prefix: str, run_namespace: str, args: lis
         Key=object_key_for(prefix, run_namespace, relative_key),
     )
     destination_path.write_bytes(response["Body"].read())
+    debug(f"downloaded file {relative_key} to {destination_path}")
     return 0
 
 
@@ -130,6 +167,7 @@ def get_prefix(client, bucket: str, prefix: str, run_namespace: str, args: list[
         target_path.parent.mkdir(parents=True, exist_ok=True)
         response = client.get_object(Bucket=bucket, Key=object_key)
         target_path.write_bytes(response["Body"].read())
+    debug(f"downloaded {len(object_keys)} files from {relative_prefix}/ to {destination_dir}")
     return 0
 
 
@@ -146,6 +184,7 @@ def exists_artifact(client, bucket: str, prefix: str, run_namespace: str, args: 
         if exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode") == 404:
             return 1
         raise
+    debug(f"object exists: {relative_key}")
     return 0
 
 
@@ -164,8 +203,10 @@ def delete_prefix(client, bucket: str, prefix: str, run_namespace: str, args: li
         )
     else:
         object_prefix = f"{prefix.rstrip('/')}/{run_namespace.lstrip('/')}/"
-    for object_key in list_keys(client, bucket, object_prefix):
+    object_keys = list_keys(client, bucket, object_prefix)
+    for object_key in object_keys:
         client.delete_object(Bucket=bucket, Key=object_key)
+    debug(f"deleted {len(object_keys)} files under prefix {object_prefix}")
     return 0
 
 
@@ -213,3 +254,5 @@ if __name__ == "__main__":
         if code == "404" or code == "NoSuchKey":
             fail(message, 66)
         fail(message, 1)
+    except BotoCoreError as exc:
+        fail(str(exc), 1)
