@@ -11,7 +11,7 @@ if [[ -z "$bucket" || -z "$endpoint_url" ]]; then
   exit 64
 fi
 
-if ! command -v aws >/dev/null 2>&1; then
+if ! command -v aws > /dev/null 2>&1; then
   echo "aws CLI is required to configure R2 lifecycle" >&2
   exit 69
 fi

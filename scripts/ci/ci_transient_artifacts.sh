@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-  cat >&2 <<'EOF'
+  cat >&2 << 'EOF'
 Usage:
   ci_transient_artifacts.sh put <source-path> <relative-key>
   ci_transient_artifacts.sh get <relative-key> <destination-path>
@@ -25,7 +25,7 @@ normalize_relative_key() {
   local key="$1"
   key="${key#/}"
   case "$key" in
-    ""|.|..|../*|*/../*|*/..)
+    "" | . | .. | ../* | */../* | */..)
       echo "Invalid transient artifact key: ${key}" >&2
       exit 64
       ;;
@@ -42,7 +42,7 @@ configure_aws_cli() {
     exit 64
   fi
 
-  if ! command -v aws >/dev/null 2>&1; then
+  if ! command -v aws > /dev/null 2>&1; then
     echo "aws CLI is required for transient CI artifact storage" >&2
     exit 69
   fi
@@ -144,7 +144,7 @@ case "$operation" in
   exists)
     [[ $# -eq 1 ]] || usage
     relative_key="$(normalize_relative_key "$1")"
-    aws s3 ls "${base_uri}/${relative_key}" "${aws_args[@]}" >/dev/null
+    aws s3 ls "${base_uri}/${relative_key}" "${aws_args[@]}" > /dev/null
     ;;
 
   delete-prefix)
