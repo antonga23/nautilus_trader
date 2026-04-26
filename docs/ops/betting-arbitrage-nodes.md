@@ -211,7 +211,7 @@ realtime/WebSocket-capable surfaces and future connection sharding.
 The SXBET live manifest intentionally separates three limits:
 
 - `market_discovery_limit`: how many paginated active markets may be scanned
-  during bootstrap.
+  during bootstrap. Use `null` to scan until SXBET pagination is exhausted.
 - `liquidity_probe_limit`: how many discovered markets may have their order
   books probed while searching for liquid candidates.
 - `instrument_load_limit`: how many Nautilus instruments are created and sent
@@ -225,6 +225,13 @@ cycle elapsed time.
 
 Keep execution disabled until the node shows stable two-sided order-book
 updates and the betting-arbitrage strategy is observing the loaded instruments.
+
+Arbitrage detections are candidate signals until the diagnostics show they are
+fresh, unique, and matched against the same event. The strategy logs structured
+fields for opportunity id, canonical pair id, quote timestamps/ages, market ids,
+event ids, match type, hedge confidence, same-cycle status, and periodic
+quality summaries. Treat `matcher_suspect` and `stale_quote` suppressions as
+non-executable until the matcher or data timing is corrected.
 
 ## Control plane backend hooks
 
