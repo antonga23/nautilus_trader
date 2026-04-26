@@ -76,6 +76,29 @@ configure_aws_cli() {
   } > "$AWS_CONFIG_FILE"
 }
 
+aws_cli() {
+  aws \
+    --endpoint-url "$endpoint_url" \
+    --region "${CLOUDFLARE_R2_REGION:-auto}" \
+    --cli-connect-timeout 10 \
+    --cli-read-timeout 120 \
+    "$@"
+}
+
+object_key_for() {
+  local relative_key="$1"
+  printf '%s/%s' "${prefix%/}/${run_namespace#/}" "${relative_key}"
+}
+
+list_object_keys() {
+  local key_prefix="$1"
+  aws_cli s3api list-objects-v2 \
+    --bucket "$bucket" \
+    --prefix "$key_prefix" \
+    --query 'Contents[].Key' \
+    --output text | tr '\t' '\n' | sed '/^None$/d;/^$/d'
+}
+
 bucket="${CI_TRANSIENT_R2_BUCKET:-${CLOUDFLARE_R2_BUCKET_NAME:-}}"
 endpoint_url="${CI_TRANSIENT_R2_URL:-${CLOUDFLARE_R2_URL:-}}"
 prefix="${CI_TRANSIENT_R2_PREFIX:-ci-transient}"
@@ -100,63 +123,72 @@ fi
 
 configure_aws_cli
 
-base_uri="s3://${bucket}/${prefix%/}/${run_namespace#/}"
-aws_args=(
-  --endpoint-url "$endpoint_url"
-  --region "${CLOUDFLARE_R2_REGION:-auto}"
-  --cli-connect-timeout 10
-  --cli-read-timeout 120
-)
-
 case "$operation" in
   put)
     [[ $# -eq 2 ]] || usage
     source_path="$1"
     relative_key="$(normalize_relative_key "$2")"
+    object_key="$(object_key_for "$relative_key")"
     if [[ ! -e "$source_path" ]]; then
       echo "Source path not found: ${source_path}" >&2
       exit 66
     fi
     if [[ -d "$source_path" ]]; then
-      aws s3 cp "$source_path" "${base_uri}/${relative_key%/}/" \
-        "${aws_args[@]}" --recursive --only-show-errors
-    else
-      aws s3 cp "$source_path" "${base_uri}/${relative_key}" "${aws_args[@]}" --only-show-errors
+      echo "Directory uploads are not supported: ${source_path}" >&2
+      exit 64
     fi
+    aws_cli s3api put-object --bucket "$bucket" --key "$object_key" --body "$source_path" > /dev/null
     ;;
 
   get)
     [[ $# -eq 2 ]] || usage
     relative_key="$(normalize_relative_key "$1")"
     destination_path="$2"
+    object_key="$(object_key_for "$relative_key")"
     mkdir -p "$(dirname "$destination_path")"
-    aws s3 cp "${base_uri}/${relative_key}" "$destination_path" "${aws_args[@]}" --only-show-errors
+    aws_cli s3api get-object --bucket "$bucket" --key "$object_key" "$destination_path" > /dev/null
     ;;
 
   get-prefix)
     [[ $# -eq 2 ]] || usage
     relative_prefix="$(normalize_relative_key "$1")"
     destination_dir="$2"
+    object_prefix="$(object_key_for "${relative_prefix%/}")/"
+    found_object=false
     mkdir -p "$destination_dir"
-    aws s3 cp "${base_uri}/${relative_prefix%/}/" "$destination_dir" \
-      "${aws_args[@]}" --recursive --only-show-errors
+    while IFS= read -r object_key; do
+      [[ -n "$object_key" ]] || continue
+      found_object=true
+      relative_path="${object_key#${object_prefix}}"
+      target_path="${destination_dir}/${relative_path}"
+      mkdir -p "$(dirname "$target_path")"
+      aws_cli s3api get-object --bucket "$bucket" --key "$object_key" "$target_path" > /dev/null
+    done < <(list_object_keys "$object_prefix")
+    if [[ "$found_object" != "true" ]]; then
+      echo "No transient artifacts found for prefix: ${relative_prefix}" >&2
+      exit 66
+    fi
     ;;
 
   exists)
     [[ $# -eq 1 ]] || usage
     relative_key="$(normalize_relative_key "$1")"
-    aws s3 ls "${base_uri}/${relative_key}" "${aws_args[@]}" > /dev/null
+    object_key="$(object_key_for "$relative_key")"
+    aws_cli s3api head-object --bucket "$bucket" --key "$object_key" > /dev/null
     ;;
 
   delete-prefix)
     [[ $# -le 1 ]] || usage
     relative_prefix="${1:-}"
     if [[ -n "$relative_prefix" ]]; then
-      relative_prefix="$(normalize_relative_key "$relative_prefix")"
-      aws s3 rm "${base_uri}/${relative_prefix%/}/" "${aws_args[@]}" --recursive --only-show-errors
+      object_prefix="$(object_key_for "$(normalize_relative_key "${relative_prefix%/}")")/"
     else
-      aws s3 rm "${base_uri}/" "${aws_args[@]}" --recursive --only-show-errors
+      object_prefix="${prefix%/}/${run_namespace#/}/"
     fi
+    while IFS= read -r object_key; do
+      [[ -n "$object_key" ]] || continue
+      aws_cli s3api delete-object --bucket "$bucket" --key "$object_key" > /dev/null
+    done < <(list_object_keys "$object_prefix")
     ;;
 
   *)
