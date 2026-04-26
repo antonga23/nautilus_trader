@@ -108,7 +108,7 @@ runs:
         brew cleanup
 
     - name: Set Cap'n Proto install prefix (Linux)
-      if: runner.os == 'Linux' && inputs.skip-capnp != 'true'
+      if: runner.os == 'Linux' && inputs.skip-capnp != 'true' && env.USE_GITHUB_ACTIONS_CACHE != 'false'
       shell: bash
       run: |
         echo "CAPNP_PREFIX=$GITHUB_WORKSPACE/.cache/capnp" >> $GITHUB_ENV
@@ -237,7 +237,7 @@ runs:
         echo "PYTHON_VERSION=$(bash scripts/python-version.sh)" >> $GITHUB_ENV
 
     - name: Get pre-commit version
-      if: inputs.build-type == 'pre-commit' || inputs.build-type == 'rust-policy'
+      if: (inputs.build-type == 'pre-commit' || inputs.build-type == 'rust-policy') && env.USE_GITHUB_ACTIONS_CACHE != 'false'
       shell: bash
       run: |
         echo "PRE_COMMIT_VERSION=$(bash scripts/pre-commit-version.sh)" >> $GITHUB_ENV
@@ -307,7 +307,7 @@ runs:
     - name: Cached uv
       # Skip on macOS: hashFiles() broken in composite actions after Nov 20 runner update
       # See: https://github.com/actions/runner/issues/3765
-      if: runner.os != 'macOS' && inputs.skip-uv != 'true'
+      if: runner.os != 'macOS' && inputs.skip-uv != 'true' && env.USE_GITHUB_ACTIONS_CACHE != 'false'
       id: cached-uv
       # https://github.com/actions/cache
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -320,7 +320,7 @@ runs:
     - name: Cached pre-commit
       # Skip on macOS: hashFiles() broken in composite actions after Nov 20 runner update
       # See: https://github.com/actions/runner/issues/3765
-      if: runner.os != 'macOS' && (inputs.build-type == 'pre-commit' || inputs.build-type == 'rust-policy')
+      if: runner.os != 'macOS' && (inputs.build-type == 'pre-commit' || inputs.build-type == 'rust-policy') && env.USE_GITHUB_ACTIONS_CACHE != 'false'
       id: cached-pre-commit
       # https://github.com/actions/cache
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0

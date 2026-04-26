@@ -1,0 +1,17 @@
+{
+  "Rules": [
+    {
+      "ID": "expire-ci-transient-after-7-days",
+      "Filter": {
+        "Prefix": "ci-transient/"
+      },
+      "Status": "Enabled",
+      "Expiration": {
+        "Days": 7
+      },
+      "AbortIncompleteMultipartUpload": {
+        "DaysAfterInitiation": 1
+      }
+    }
+  ]
+}

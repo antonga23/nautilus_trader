@@ -17,6 +17,14 @@ on:
 
 env:
   PACKAGE_DIR: python
+  USE_GITHUB_ACTIONS_CACHE: "false"
+  CI_TRANSIENT_ARTIFACTS_ENABLED: "true"
+  CI_TRANSIENT_R2_BUCKET: ${{ secrets.CI_TRANSIENT_R2_BUCKET_NAME }}
+  CI_TRANSIENT_R2_PREFIX: ci-transient
+  CI_TRANSIENT_R2_URL: ${{ secrets.CI_TRANSIENT_R2_URL }}
+  CLOUDFLARE_R2_REGION: "auto"
+  CI_TRANSIENT_R2_ACCESS_KEY_ID: ${{ secrets.CI_TRANSIENT_R2_ACCESS_KEY_ID }}
+  CI_TRANSIENT_R2_SECRET_ACCESS_KEY: ${{ secrets.CI_TRANSIENT_R2_SECRET_ACCESS_KEY }}
 
 jobs:
   pre-commit:
@@ -400,12 +408,8 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Download built wheels
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
-        with:
-          path: dist
-          pattern: "*.whl"
-          merge-multiple: true
+      - name: Download built wheels from transient CI storage
+        run: bash scripts/ci/ci_transient_artifacts.sh get-prefix wheels dist
 
       # https://github.com/actions/attest-build-provenance
       - name: Attest wheel provenance
@@ -416,9 +420,6 @@ jobs:
       - name: Publish wheels to Cloudflare R2 (v2 bucket)
         uses: ./.github/actions/publish-wheels
 
-      - name: Fetch and delete artifacts for current run
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          bash ./scripts/ci/publish-wheels-delete-artifacts.sh
+      - name: Delete transient CI wheel artifacts
+        if: always()
+        run: bash scripts/ci/ci_transient_artifacts.sh delete-prefix wheels

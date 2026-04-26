@@ -38,6 +38,7 @@ runs:
 
     # https://github.com/actions/cache
     - name: Cache tool binary
+      if: env.USE_GITHUB_ACTIONS_CACHE != 'false'
       uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
       with:
         path: ${{ runner.tool_cache }}/${{ inputs.tool-name }}

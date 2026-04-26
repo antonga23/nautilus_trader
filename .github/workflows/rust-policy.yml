@@ -45,6 +45,16 @@ on:
       - 'scripts/ci/run_rust_policy.sh'
   workflow_dispatch:
 
+env:
+  USE_GITHUB_ACTIONS_CACHE: "false"
+  CI_TRANSIENT_ARTIFACTS_ENABLED: "true"
+  CI_TRANSIENT_R2_BUCKET: ${{ secrets.CI_TRANSIENT_R2_BUCKET_NAME }}
+  CI_TRANSIENT_R2_PREFIX: ci-transient
+  CI_TRANSIENT_R2_URL: ${{ secrets.CI_TRANSIENT_R2_URL }}
+  CLOUDFLARE_R2_REGION: "auto"
+  CI_TRANSIENT_R2_ACCESS_KEY_ID: ${{ secrets.CI_TRANSIENT_R2_ACCESS_KEY_ID }}
+  CI_TRANSIENT_R2_SECRET_ACCESS_KEY: ${{ secrets.CI_TRANSIENT_R2_SECRET_ACCESS_KEY }}
+
 jobs:
   rust-policy:
     timeout-minutes: 30
@@ -121,11 +131,11 @@ jobs:
           RUN_CAPNP_SCHEMAS: "true"
         run: bash scripts/ci/run_rust_policy.sh
 
-      - name: Upload rust policy artifacts
-        if: always()
+      - name: Upload rust policy artifacts to transient CI storage
+        if: failure()
         continue-on-error: true
-        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
-        with:
-          name: rust-policy-artifacts
-          path: artifacts/rust-policy
-          if-no-files-found: ignore
+        run: |
+          if [ -d artifacts/rust-policy ]; then
+            bash scripts/ci/ci_transient_artifacts.sh \
+              put artifacts/rust-policy diagnostics/rust-policy
+          fi
