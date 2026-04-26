@@ -33,6 +33,16 @@ on:
 permissions:
   contents: read
 
+env:
+  USE_GITHUB_ACTIONS_CACHE: "false"
+  CI_TRANSIENT_ARTIFACTS_ENABLED: "true"
+  CI_TRANSIENT_R2_BUCKET: ${{ secrets.CI_TRANSIENT_R2_BUCKET_NAME }}
+  CI_TRANSIENT_R2_PREFIX: ci-transient
+  CI_TRANSIENT_R2_URL: ${{ secrets.CI_TRANSIENT_R2_URL }}
+  CLOUDFLARE_R2_REGION: "auto"
+  CI_TRANSIENT_R2_ACCESS_KEY_ID: ${{ secrets.CI_TRANSIENT_R2_ACCESS_KEY_ID }}
+  CI_TRANSIENT_R2_SECRET_ACCESS_KEY: ${{ secrets.CI_TRANSIENT_R2_SECRET_ACCESS_KEY }}
+
 jobs:
   validate-manifests:
     name: validate-strategy-node-manifests
@@ -96,6 +106,7 @@ jobs:
           free-disk-space: 'false'
           build-type: 'test'
           skip-install-deps: 'true'
+          use-github-actions-cache: 'false'
 
       - name: Build and install wheel
         uses: ./.github/actions/common-wheel-build
@@ -121,13 +132,14 @@ jobs:
           validate-manifest --manifest
           deploy/strategy_nodes/betting_arbitrage/polymarket-plus-sxbet.example.json
 
-      - name: Upload rendered strategy-node artifacts
-        if: always()
-        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
-        with:
-          name: strategy-node-validation-artifacts
-          path: artifacts/strategy-nodes
-          if-no-files-found: ignore
+      - name: Upload rendered strategy-node artifacts to transient CI storage
+        if: failure()
+        continue-on-error: true
+        run: |
+          if [ -d artifacts/strategy-nodes ]; then
+            bash scripts/ci/ci_transient_artifacts.sh \
+              put artifacts/strategy-nodes diagnostics/strategy-nodes
+          fi
 
   build-strategy-node-image:
     name: build-strategy-node-image
@@ -242,16 +254,15 @@ jobs:
             | gzip -1 > artifacts/strategy-node-image/betting-arbitrage-node.tar.gz
           ls -lh artifacts/strategy-node-image/betting-arbitrage-node.tar.gz
 
-      - name: Upload strategy-node image archive
+      - name: Upload strategy-node image archive to transient CI storage
         if: >-
           github.event_name == 'workflow_dispatch' &&
           github.event.inputs.deploy_enabled == 'true' &&
           github.event.inputs.image_transport == 'archive'
-        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
-        with:
-          name: strategy-node-image
-          path: artifacts/strategy-node-image/betting-arbitrage-node.tar.gz
-          if-no-files-found: error
+        run: >-
+          bash scripts/ci/ci_transient_artifacts.sh put
+          artifacts/strategy-node-image/betting-arbitrage-node.tar.gz
+          strategy-node-image/betting-arbitrage-node.tar.gz
 
   deploy-strategy-node:
     name: deploy-strategy-node
@@ -347,10 +358,9 @@ jobs:
 
       - name: Download strategy-node image archive
         if: github.event.inputs.image_transport == 'archive'
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
-        with:
-          name: strategy-node-image
-          path: artifacts/strategy-node-image
+        run: >-
+          bash scripts/ci/ci_transient_artifacts.sh get-prefix
+          strategy-node-image artifacts/strategy-node-image
 
       - name: Upload manifest and deploy script
         env:

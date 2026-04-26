@@ -8,6 +8,16 @@ on:
   push:
     branches: [master, nightly, test-docker]
 
+env:
+  USE_GITHUB_ACTIONS_CACHE: "false"
+  CI_TRANSIENT_ARTIFACTS_ENABLED: "true"
+  CI_TRANSIENT_R2_BUCKET: ${{ secrets.CI_TRANSIENT_R2_BUCKET_NAME }}
+  CI_TRANSIENT_R2_PREFIX: ci-transient
+  CI_TRANSIENT_R2_URL: ${{ secrets.CI_TRANSIENT_R2_URL }}
+  CLOUDFLARE_R2_REGION: "auto"
+  CI_TRANSIENT_R2_ACCESS_KEY_ID: ${{ secrets.CI_TRANSIENT_R2_ACCESS_KEY_ID }}
+  CI_TRANSIENT_R2_SECRET_ACCESS_KEY: ${{ secrets.CI_TRANSIENT_R2_SECRET_ACCESS_KEY }}
+
 jobs:
   # Test builds only - no publishing
   test-docker-build:
@@ -102,8 +112,6 @@ jobs:
           platforms: ${{ matrix.platform }}
           push: true
           tags: localhost:5000/nautilus_trader:test-${{ steps.platform-slug.outputs.slug }}
-          cache-from: type=gha,scope=nautilus_trader-test-${{ steps.platform-slug.outputs.slug }}
-          cache-to: type=gha,mode=max,scope=nautilus_trader-test-${{ steps.platform-slug.outputs.slug }}
 
       # -------------------------------------------------------------------------------------------
       # Uncomment to test push-by-digest to GHCR with merge
@@ -150,8 +158,6 @@ jobs:
           platforms: ${{ matrix.platform }}
           push: true
           tags: localhost:5000/jupyterlab:test-${{ steps.platform-slug.outputs.slug }}
-          cache-from: type=gha,scope=jupyterlab-test-${{ steps.platform-slug.outputs.slug }}
-          cache-to: type=gha,mode=max,scope=jupyterlab-test-${{ steps.platform-slug.outputs.slug }}
           build-args: |
             GIT_TAG=test-${{ steps.platform-slug.outputs.slug }}
 
@@ -368,8 +374,6 @@ jobs:
           file: .docker/nautilus_trader.dockerfile
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=nautilus_trader-${{ steps.platform-slug.outputs.slug }}
-          cache-to: type=gha,mode=max,scope=nautilus_trader-${{ steps.platform-slug.outputs.slug }}
           outputs:
             type=image,name=ghcr.io/${{ github.repository_owner }}/nautilus_trader,push-by-digest=true,
             name-canonical=true,push=true
@@ -380,13 +384,12 @@ jobs:
           digest="${{ steps.build.outputs.digest }}"
           touch "/tmp/digests/nautilus_trader/${digest#sha256:}"
 
-      - name: Upload digest
-        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
-        with:
-          name: digests-nautilus_trader-${{ strategy.job-index }}
-          path: /tmp/digests/nautilus_trader/*
-          if-no-files-found: error
-          retention-days: 1
+      - name: Upload digest to transient CI storage
+        run: |
+          digest_file="$(find /tmp/digests/nautilus_trader -mindepth 1 -maxdepth 1 -type f | head -n 1)"
+          test -n "$digest_file"
+          bash scripts/ci/ci_transient_artifacts.sh \
+            put "$digest_file" "docker-digests/nautilus_trader/$(basename "$digest_file")"
 
   merge-nautilus-trader:
     name: merge-nautilus_trader
@@ -395,12 +398,10 @@ jobs:
       packages: write
     needs: build-docker-images-nautilus-trader
     steps:
-      - name: Download digests
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
-        with:
-          path: /tmp/digests/nautilus_trader
-          pattern: digests-nautilus_trader-*
-          merge-multiple: true
+      - name: Download digests from transient CI storage
+        run: >-
+          bash scripts/ci/ci_transient_artifacts.sh get-prefix
+          docker-digests/nautilus_trader /tmp/digests/nautilus_trader
 
       - name: Set up Docker Buildx
         # https://github.com/docker/setup-buildx-action
@@ -555,8 +556,6 @@ jobs:
           file: .docker/jupyterlab.dockerfile
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=jupyterlab-${{ steps.platform-slug.outputs.slug }}
-          cache-to: type=gha,mode=max,scope=jupyterlab-${{ steps.platform-slug.outputs.slug }}
           outputs:
             type=image,name=ghcr.io/${{ github.repository_owner }}/jupyterlab,push-by-digest=true,
             name-canonical=true,push=true
@@ -569,13 +568,12 @@ jobs:
           digest="${{ steps.build.outputs.digest }}"
           touch "/tmp/digests/jupyterlab/${digest#sha256:}"
 
-      - name: Upload digest
-        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
-        with:
-          name: digests-jupyterlab-${{ strategy.job-index }}
-          path: /tmp/digests/jupyterlab/*
-          if-no-files-found: error
-          retention-days: 1
+      - name: Upload digest to transient CI storage
+        run: |
+          digest_file="$(find /tmp/digests/jupyterlab -mindepth 1 -maxdepth 1 -type f | head -n 1)"
+          test -n "$digest_file"
+          bash scripts/ci/ci_transient_artifacts.sh \
+            put "$digest_file" "docker-digests/jupyterlab/$(basename "$digest_file")"
 
   merge-jupyterlab:
     name: merge-jupyterlab
@@ -584,12 +582,10 @@ jobs:
       packages: write
     needs: build-docker-images-jupyterlab
     steps:
-      - name: Download digests
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
-        with:
-          path: /tmp/digests/jupyterlab
-          pattern: digests-jupyterlab-*
-          merge-multiple: true
+      - name: Download digests from transient CI storage
+        run: >-
+          bash scripts/ci/ci_transient_artifacts.sh get-prefix
+          docker-digests/jupyterlab /tmp/digests/jupyterlab
 
       - name: Set up Docker Buildx
         # https://github.com/docker/setup-buildx-action

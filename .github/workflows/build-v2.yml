@@ -17,6 +17,14 @@ on:
 
 env:
   PACKAGE_DIR: python
+  USE_GITHUB_ACTIONS_CACHE: "false"
+  CI_TRANSIENT_ARTIFACTS_ENABLED: "true"
+  CI_TRANSIENT_R2_BUCKET: ${{ secrets.CI_TRANSIENT_R2_BUCKET_NAME }}
+  CI_TRANSIENT_R2_PREFIX: ci-transient
+  CI_TRANSIENT_R2_URL: ${{ secrets.CI_TRANSIENT_R2_URL }}
+  CLOUDFLARE_R2_REGION: "auto"
+  CI_TRANSIENT_R2_ACCESS_KEY_ID: ${{ secrets.CI_TRANSIENT_R2_ACCESS_KEY_ID }}
+  CI_TRANSIENT_R2_SECRET_ACCESS_KEY: ${{ secrets.CI_TRANSIENT_R2_SECRET_ACCESS_KEY }}
 
 jobs:
   pre-commit:
@@ -75,6 +83,7 @@ jobs:
           python-version: "3.13"
           free-disk-space: "true"
           build-type: "pre-commit"
+          use-github-actions-cache: "false"
 
       - name: Run pre-commit-fast
         env:
@@ -139,6 +148,7 @@ jobs:
         uses: ./.github/actions/cargo-tool-install
         with:
           tool-name: cargo-deny
+          use-github-actions-cache: "false"
 
       - name: Run cargo-deny (advisories, licenses, sources, bans)
         run: cargo deny --all-features check advisories licenses sources bans
@@ -197,6 +207,7 @@ jobs:
         uses: ./.github/actions/cargo-tool-install
         with:
           tool-name: cargo-vet
+          use-github-actions-cache: "false"
 
       - name: Run cargo-vet
         run: cargo vet --locked
@@ -293,6 +304,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           free-disk-space: "true"
+          use-github-actions-cache: "false"
 
       - name: Install Nautilus CLI
         env:
@@ -310,6 +322,8 @@ jobs:
 
       - name: Cached test data
         uses: ./.github/actions/common-test-data
+        with:
+          use-github-actions-cache: "false"
 
       - name: Run Rust tests
         run: make cargo-test HYPERSYNC=true
@@ -400,12 +414,8 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Download built wheels
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
-        with:
-          path: dist
-          pattern: "*.whl"
-          merge-multiple: true
+      - name: Download built wheels from transient CI storage
+        run: bash scripts/ci/ci_transient_artifacts.sh get-prefix wheels dist
 
       # https://github.com/actions/attest-build-provenance
       - name: Attest wheel provenance
@@ -416,9 +426,6 @@ jobs:
       - name: Publish wheels to Cloudflare R2 (v2 bucket)
         uses: ./.github/actions/publish-wheels
 
-      - name: Fetch and delete artifacts for current run
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          bash ./scripts/ci/publish-wheels-delete-artifacts.sh
+      - name: Delete transient CI wheel artifacts
+        if: always()
+        run: bash scripts/ci/ci_transient_artifacts.sh delete-prefix wheels

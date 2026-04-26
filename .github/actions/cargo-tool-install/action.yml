@@ -5,6 +5,10 @@ inputs:
   tool-name:
     description: The cargo tool to install (e.g., cargo-deny, cargo-vet)
     required: true
+  use-github-actions-cache:
+    description: Use GitHub-hosted actions/cache for the installed tool binary
+    required: false
+    default: "true"
 
 outputs:
   version:
@@ -38,6 +42,7 @@ runs:
 
     # https://github.com/actions/cache
     - name: Cache tool binary
+      if: inputs.use-github-actions-cache == 'true'
       uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
       with:
         path: ${{ runner.tool_cache }}/${{ inputs.tool-name }}

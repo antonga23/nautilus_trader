@@ -12,7 +12,7 @@ CI/CD, testing, publishing, and automation within the NautilusTrader repository.
 - **common-test-data**: caches large test data under `tests/test_data/large`.
 - **common-wheel-build**: builds and installs Python wheels across Linux, macOS, and Windows for multiple Python versions.
 - **publish-wheels**: publishes built wheels to Cloudflare R2, manages old wheel cleanup and index generation.
-- **upload-artifact-wheel**: uploads the latest wheel artifact to GitHub Actions.
+- **upload-artifact-wheel**: uploads the latest wheel artifact to transient R2-backed CI storage.
 
 ## Workflows (`.github/workflows`)
 
@@ -53,7 +53,7 @@ CI/CD, testing, publishing, and automation within the NautilusTrader repository.
 - **Build attestations**: All published artifacts include cryptographic SLSA build provenance attestations, linking each artifact to a specific commit SHA. Verify via `gh attestation verify`.
 - **Immutable action pinning**: All third-party GitHub Actions are pinned to specific commit SHAs.
 - **Docker image pinning**: Base images in Dockerfiles are pinned to SHA256 digests to prevent supply-chain attacks via tag mutation.
-- **Caching**: GitHub-managed caches such as `actions/cache` restore across runners when keys match, but host-local caches such as `.ci-cache/wheels` remain machine-specific. In the split-runner setup, general CI is pinned to the GCP runner so local wheel cache reuse stays warm there, while EC2 deploy/trading jobs must not assume access to GCP-local caches.
+- **Caching and transient artifacts**: Host-local caches such as `.ci-cache/wheels` remain the first restore path. Workflows that must hand artifacts across jobs use the `ci-transient/` R2 prefix with a 7-day lifecycle policy instead of GitHub Actions artifact storage.
 
 ### Runtime hardening
 

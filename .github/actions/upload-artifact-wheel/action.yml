@@ -1,5 +1,5 @@
-name: Upload wheel artifact to GitHub Actions
-description: Upload wheel artifact to GitHub Actions
+name: Upload wheel to transient CI storage
+description: Upload wheel to transient CI storage
 
 runs:
   using: "composite"
@@ -7,8 +7,8 @@ runs:
     - name: Set release output
       shell: bash
       if:
-        github.event_name == 'push' && (github.ref_name == 'develop' || github.ref_name ==
-        'nightly' || github.ref_name == 'master' || github.ref_name == 'test-ci')
+        github.ref_name == 'develop' || github.ref_name == 'nightly' || github.ref_name ==
+        'master' || github.ref_name == 'production' || github.ref_name == 'test-ci'
       id: vars
       run: |
         if [ ! -d "./dist" ]; then
@@ -25,13 +25,11 @@ runs:
 
         echo "ASSET_NAME=$(basename "$ASSET_PATH")" >> $GITHUB_ENV
 
-    - name: Upload wheel artifact
+    - name: Upload wheel to transient CI storage
       if:
-        github.event_name == 'push' && (github.ref_name == 'develop' || github.ref_name ==
-        'nightly' || github.ref_name == 'master' || github.ref_name == 'test-ci')
-      # https://github.com/actions/upload-artifact
-      # Use wildcard to flatten dist/ prefix: path before first wildcard is stripped
-      uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
-      with:
-        name: ${{ env.ASSET_NAME }}
-        path: dist/nautilus_trader-*.whl
+        github.ref_name == 'develop' || github.ref_name == 'nightly' || github.ref_name ==
+        'master' || github.ref_name == 'production' || github.ref_name == 'test-ci'
+      shell: bash
+      run: |
+        bash scripts/ci/ci_transient_artifacts.sh \
+          put "dist/${ASSET_NAME}" "wheels/${ASSET_NAME}"
