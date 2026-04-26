@@ -146,6 +146,9 @@ jobs:
     timeout-minutes: 120
     needs: [validate-manifests]
     runs-on: [self-hosted, linux, x64, cloudbet-market-maker, ci, gcp, ubuntu24]
+    env:
+      STRATEGY_NODE_GHCR_USERNAME: ${{ secrets.STRATEGY_NODE_GHCR_USERNAME }}
+      STRATEGY_NODE_GHCR_TOKEN: ${{ secrets.STRATEGY_NODE_GHCR_TOKEN }}
     permissions:
       contents: read
       packages: write
@@ -208,11 +211,15 @@ jobs:
           docker --version
 
       - name: Log in to GHCR
+        if: >-
+          github.event_name != 'workflow_dispatch' ||
+          github.event.inputs.deploy_enabled != 'true' ||
+          github.event.inputs.image_transport != 'archive'
         uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
         with:
           registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: ${{ secrets.STRATEGY_NODE_GHCR_USERNAME || github.actor }}
+          password: ${{ secrets.STRATEGY_NODE_GHCR_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Resolve image reference
         id: meta
@@ -234,11 +241,20 @@ jobs:
           image_ref="ghcr.io/${REPOSITORY_OWNER}/cloudbet-market-maker/betting-arbitrage-node:${tag}"
           echo "image_ref=$image_ref" >> "$GITHUB_OUTPUT"
 
-      - name: Build and push strategy-node image
+      - name: Build strategy-node image
         env:
           IMAGE_REF: ${{ steps.meta.outputs.image_ref }}
         run: |
           docker build -t "$IMAGE_REF" -f .docker/strategy_node.dockerfile .
+
+      - name: Push strategy-node image to GHCR
+        if: >-
+          github.event_name != 'workflow_dispatch' ||
+          github.event.inputs.deploy_enabled != 'true' ||
+          github.event.inputs.image_transport != 'archive'
+        env:
+          IMAGE_REF: ${{ steps.meta.outputs.image_ref }}
+        run: |
           docker push "$IMAGE_REF"
 
       - name: Save strategy-node image archive
