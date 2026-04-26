@@ -24,6 +24,10 @@ venv_dir="${cache_root}/venv"
 aws_bin="${venv_dir}/bin/aws"
 lock_dir="${cache_root}.lock"
 
+if [[ -x "$aws_bin" ]] && ! "$aws_bin" --version > /dev/null 2>&1; then
+  rm -rf "$cache_root"
+fi
+
 if [[ ! -x "$aws_bin" ]]; then
   mkdir -p "$(dirname "$cache_root")"
 
@@ -51,13 +55,10 @@ if [[ ! -x "$aws_bin" ]]; then
     trap cleanup_lock EXIT
 
     if [[ ! -x "$aws_bin" ]]; then
-      tmp_root="${cache_root}.tmp.$$"
-      rm -rf "$tmp_root"
-      python3 -m venv "${tmp_root}/venv"
-      "${tmp_root}/venv/bin/python" -m pip install --upgrade pip
-      "${tmp_root}/venv/bin/python" -m pip install "awscli==${awscli_version}"
       rm -rf "$cache_root"
-      mv "$tmp_root" "$cache_root"
+      python3 -m venv "${venv_dir}"
+      "${venv_dir}/bin/python" -m pip install --upgrade pip >&2
+      "${venv_dir}/bin/python" -m pip install "awscli==${awscli_version}" >&2
     fi
   fi
 fi
