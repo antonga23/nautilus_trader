@@ -571,7 +571,7 @@ async def test_sxbet_provider_scans_until_pagination_end_when_discovery_limit_is
                 }
                 for index in range(start, start + SXBET_MARKET_PAGE_SIZE)
             ]
-            data = {"markets": markets}
+            data: dict[str, object] = {"markets": markets}
             if page < 2:
                 data["nextKey"] = str(page + 1)
             return {"data": data}
