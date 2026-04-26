@@ -95,9 +95,8 @@ class SXBetInstrumentProvider(InstrumentProvider):
         league_ids = filters.get("league_ids") or self._sxbet_config.league_ids
         instrument_limit = self._sxbet_config.instrument_load_limit
         target_market_count = self._target_market_count(instrument_limit)
-        if self._sxbet_config.prefer_liquid_markets and target_market_count is not None:
-            discovery_limit = max(self._sxbet_config.liquidity_probe_limit, target_market_count)
-        else:
+        discovery_limit = self._sxbet_config.market_discovery_limit
+        if discovery_limit is None and not self._sxbet_config.prefer_liquid_markets:
             discovery_limit = target_market_count
 
         self._log.info(
@@ -105,7 +104,10 @@ class SXBetInstrumentProvider(InstrumentProvider):
             f"sport_ids={sorted(sport_ids) if sport_ids else 'all'} "
             f"league_ids={sorted(league_ids) if league_ids else 'all'} "
             f"instrument_limit={instrument_limit or 'none'} "
-            f"prefer_liquid_markets={self._sxbet_config.prefer_liquid_markets}",
+            f"market_discovery_limit={discovery_limit or 'none'} "
+            f"prefer_liquid_markets={self._sxbet_config.prefer_liquid_markets} "
+            f"liquidity_probe_limit={self._sxbet_config.liquidity_probe_limit} "
+            f"min_two_sided_markets={self._sxbet_config.min_two_sided_markets}",
         )
 
         load_started_at = time.perf_counter()
@@ -220,11 +222,13 @@ class SXBetInstrumentProvider(InstrumentProvider):
             return selected
 
         probed = 0
-        liquid: list[dict[str, Any]] = []
+        two_sided: list[dict[str, Any]] = []
+        one_sided: list[dict[str, Any]] = []
         fallback: list[dict[str, Any]] = []
+        empty = 0
         probe_limit = min(len(markets), self._sxbet_config.liquidity_probe_limit)
         for market in markets[:probe_limit]:
-            if len(liquid) >= target_market_count:
+            if len(two_sided) >= target_market_count:
                 break
             market_hash = market.get("marketHash")
             if not isinstance(market_hash, str) or not market_hash:
@@ -240,19 +244,49 @@ class SXBetInstrumentProvider(InstrumentProvider):
                 continue
 
             orders = order_book.get("data", {}).get("orders", [])
-            if orders:
+            has_outcome_one, has_outcome_two = self._market_order_sides(orders)
+            if has_outcome_one and has_outcome_two:
                 market["orders"] = orders
-                liquid.append(market)
+                two_sided.append(market)
+            elif has_outcome_one or has_outcome_two:
+                market["orders"] = orders
+                one_sided.append(market)
             else:
+                empty += 1
                 fallback.append(market)
 
-        selected = (liquid + fallback)[:target_market_count]
+        unprobed = markets[probe_limit:]
+        selected = (two_sided + one_sided + fallback + unprobed)[:target_market_count]
         self._log.info(
             "SX.bet liquidity probe completed: "
-            f"probed={probed} liquid_markets={len(liquid)} "
+            f"probed={probed} two_sided_markets={len(two_sided)} "
+            f"one_sided_markets={len(one_sided)} empty_markets={empty} "
             f"selected_markets={len(selected)} target_markets={target_market_count}",
         )
+        if len(two_sided) < self._sxbet_config.min_two_sided_markets:
+            self._log.warning(
+                "SX.bet liquid market target not met: "
+                f"two_sided_markets={len(two_sided)} "
+                f"min_two_sided_markets={self._sxbet_config.min_two_sided_markets}",
+            )
         return selected
+
+    @staticmethod
+    def _market_order_sides(orders: list[dict]) -> tuple[bool, bool]:
+        has_outcome_one = False
+        has_outcome_two = False
+        for order in orders:
+            try:
+                percentage = int(order.get("percentageOdds", 0))
+            except (TypeError, ValueError):
+                continue
+            if percentage <= 0:
+                continue
+            if order.get("isMakerBettingOutcomeOne") is True:
+                has_outcome_one = True
+            elif order.get("isMakerBettingOutcomeOne") is False:
+                has_outcome_two = True
+        return has_outcome_one, has_outcome_two
 
     async def _hydrate_best_odds(self, markets: list[dict[str, Any]]) -> None:
         market_hashes = [

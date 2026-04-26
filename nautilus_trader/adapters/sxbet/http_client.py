@@ -94,18 +94,20 @@ class SXBetHttpClient:
     def __init__(
         self,
         api_key: str | None = None,
+        api_key_pool: tuple[str, ...] | list[str] | None = None,
         api_url: str | None = None,
         max_retries: int = 5,
         request_timeout_secs: float = 30.0,
         logger: Logger | None = None,
     ) -> None:
-        self._api_key = api_key
+        self._api_keys = self._normalize_api_key_pool(api_key=api_key, api_key_pool=api_key_pool)
         self._api_url = api_url or SXBET_API_BASE_URL
         self._max_retries = max_retries
         self._request_timeout_secs = request_timeout_secs
         self._log = logger
         self._session: Any = None
         self._request_timeout: Any = None
+        self._api_key_index = 0
 
     @property
     def headers(self) -> dict[str, str]:
@@ -116,8 +118,42 @@ class SXBetHttpClient:
             "Accept": "application/json",
             "Content-Type": "application/json",
         }
-        if self._api_key:
-            headers["x-api-key"] = self._api_key
+        if self._api_keys:
+            headers["x-api-key"] = self._api_keys[0]
+        return headers
+
+    @staticmethod
+    def _normalize_api_key_pool(
+        *,
+        api_key: str | None,
+        api_key_pool: tuple[str, ...] | list[str] | None,
+    ) -> tuple[str, ...]:
+        keys: list[str] = []
+        for value in api_key_pool or ():
+            key = value.strip()
+            if key and key not in keys:
+                keys.append(key)
+        if api_key:
+            key = api_key.strip()
+            if key and key not in keys:
+                keys.insert(0, key)
+        return tuple(keys)
+
+    def _next_api_key(self) -> str | None:
+        if not self._api_keys:
+            return None
+        key = self._api_keys[self._api_key_index % len(self._api_keys)]
+        self._api_key_index += 1
+        return key
+
+    def _request_headers(self) -> dict[str, str]:
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }
+        api_key = self._next_api_key()
+        if api_key:
+            headers["x-api-key"] = api_key
         return headers
 
     async def connect(self) -> None:
@@ -163,7 +199,7 @@ class SXBetHttpClient:
         return self._session
 
     def _require_api_key(self, operation: str) -> None:
-        if not self._api_key:
+        if not self._api_keys:
             raise SXBetHttpClientAuthenticationError(operation)
 
     def _raise_rate_limit_error(self, status_code: int) -> None:
@@ -277,6 +313,7 @@ class SXBetHttpClient:
                     url=url,
                     params=params,
                     json=data,
+                    headers=self._request_headers(),
                     timeout=self._request_timeout,
                 ) as response:
                     if response.status == HTTP_STATUS_TOO_MANY_REQUESTS:
@@ -539,6 +576,13 @@ class SXBetHttpClient:
             params=params,
             log_api_error=log_api_error,
         )
+
+    async def get_realtime_token(self) -> dict[str, Any]:
+        """
+        Fetch a realtime WebSocket token using an API key.
+        """
+        self._require_api_key("fetching realtime WebSocket token")
+        return await self._request("GET", SXBET_ENDPOINTS["realtime_token"])
 
     async def place_order(  # pylint: disable=too-many-arguments
         self,

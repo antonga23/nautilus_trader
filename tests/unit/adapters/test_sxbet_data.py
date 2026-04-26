@@ -78,6 +78,27 @@ def test_best_bid_ask_uses_highest_executable_decimal_odds():
     assert best_ask == 0
 
 
+def test_market_order_sides_requires_positive_orders_on_both_outcomes():
+    orders = [
+        {
+            "isMakerBettingOutcomeOne": True,
+            "percentageOdds": decimal_odds_to_percentage(2.0),
+        },
+        {
+            "isMakerBettingOutcomeOne": False,
+            "percentageOdds": decimal_odds_to_percentage(2.1),
+        },
+        {
+            "isMakerBettingOutcomeOne": False,
+            "percentageOdds": 0,
+        },
+    ]
+
+    assert SXBetDataClient._market_order_sides(orders) == (True, True)
+    assert SXBetDataClient._market_order_sides(orders[:1]) == (True, False)
+    assert SXBetDataClient._market_order_sides([]) == (False, False)
+
+
 def test_has_valid_spread_rejects_locked_or_crossed_quotes():
     assert SXBetDataClient._has_valid_spread(2.4, 2.5) is True
     assert SXBetDataClient._has_valid_spread(2.5, 2.5) is False
@@ -130,6 +151,62 @@ async def test_fetch_and_publish_quotes_emits_one_sided_quote():
     assert quote.ask_price.as_decimal() == 0
     assert quote.bid_size.as_decimal() == 100
     assert quote.ask_size.as_decimal() == 0
+
+
+@pytest.mark.asyncio
+async def test_fetch_and_publish_quote_stats_reports_two_sided_liquidity():
+    instrument_one = _make_instrument(outcome="home", outcome_one=True)
+    instrument_two = _make_instrument(outcome="away", outcome_one=False)
+
+    http_client = Mock()
+    http_client.get_order_book = AsyncMock(
+        return_value={
+            "data": {
+                "orders": [
+                    {
+                        "isMakerBettingOutcomeOne": True,
+                        "percentageOdds": decimal_odds_to_percentage(2.0),
+                    },
+                    {
+                        "isMakerBettingOutcomeOne": False,
+                        "percentageOdds": decimal_odds_to_percentage(2.1),
+                    },
+                ],
+            },
+        },
+    )
+    instrument_provider = SXBetInstrumentProvider(
+        http_client=Mock(),
+        config=SXBetInstrumentProviderConfig(),
+        logger=Mock(),
+    )
+    instrument_provider.find_by_market_hash = Mock(return_value=[instrument_one, instrument_two])
+    client = SXBetDataClient(
+        loop=get_event_loop(),
+        http_client=http_client,
+        instrument_provider=instrument_provider,
+        msgbus=TestComponentStubs.msgbus(),
+        cache=TestComponentStubs.cache(),
+        clock=TestComponentStubs.clock(),
+        logger=Logger(name="test-sxbet-data"),
+        config=SXBetDataClientConfig(),
+    )
+    client._subscribed_instruments = {instrument_one.id, instrument_two.id}
+    client._handle_data = Mock()
+
+    (
+        published,
+        orders,
+        has_outcome_one,
+        has_outcome_two,
+        elapsed,
+    ) = await client._fetch_and_publish_quote_stats("market-1")
+
+    assert published == 2
+    assert orders == 2
+    assert has_outcome_one is True
+    assert has_outcome_two is True
+    assert elapsed >= 0
 
 
 @pytest.mark.asyncio

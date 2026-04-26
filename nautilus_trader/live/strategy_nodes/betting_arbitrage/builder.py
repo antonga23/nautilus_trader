@@ -41,6 +41,7 @@ DEFAULT_RENDER_ROOT = Path("artifacts/strategy-nodes")
 
 DUMMY_SECRETS = {
     "SXBET_API_KEY": "dummy-sxbet-api-key",
+    "SXBET_API_KEYS": "dummy-sxbet-api-key",
     "SXBET_PRIVATE_KEY": "0x" + "1" * 64,
     "SXBET_WALLET_ADDRESS": "0x" + "2" * 40,
     "POLYMARKET_API_KEY": "dummy-polymarket-api-key",
@@ -153,19 +154,25 @@ def _build_sxbet_data_importable(
     manifest: BettingArbitrageNodeManifest,
 ) -> ImportableConfig:
     prefix = _credential_prefix(venue)
+    api_key = _resolve_secret(prefix, "API_KEY", manifest.allow_dummy_credentials)
+    api_key_pool = _resolve_secret_pool(prefix, "API_KEYS", manifest.allow_dummy_credentials)
     provider_config = {
-        "api_key": _resolve_secret(prefix, "API_KEY", manifest.allow_dummy_credentials),
+        "api_key": api_key,
+        "api_key_pool": api_key_pool,
         "api_url": venue.api_url,
         "load_all": venue.load_all_instruments,
         "sport_ids": sorted(venue.sport_ids) if venue.sport_ids else None,
         "league_ids": sorted(venue.league_ids) if venue.league_ids else None,
         "live_only": venue.live_only,
         "instrument_load_limit": venue.instrument_load_limit,
+        "market_discovery_limit": venue.market_discovery_limit,
         "prefer_liquid_markets": venue.prefer_liquid_markets,
         "liquidity_probe_limit": venue.liquidity_probe_limit,
+        "min_two_sided_markets": venue.min_two_sided_markets,
     }
     config = {
-        "api_key": _resolve_secret(prefix, "API_KEY", manifest.allow_dummy_credentials),
+        "api_key": api_key,
+        "api_key_pool": api_key_pool,
         "api_url": venue.api_url,
         "ws_url": venue.ws_url,
         "instrument_provider": provider_config,
@@ -176,6 +183,7 @@ def _build_sxbet_data_importable(
         "quote_subscription_limit": venue.quote_subscription_limit,
         "order_book_poll_interval_secs": venue.order_book_poll_interval_secs,
         "order_book_poll_summary_interval_secs": venue.order_book_poll_summary_interval_secs,
+        "order_book_concurrency": venue.order_book_concurrency,
         "routing": {"venues": [venue.venue]},
     }
     return ImportableConfig(
@@ -190,16 +198,25 @@ def _build_sxbet_exec_importable(
     manifest: BettingArbitrageNodeManifest,
 ) -> ImportableConfig:
     prefix = _credential_prefix(venue)
+    api_key = _resolve_secret(prefix, "API_KEY", manifest.allow_dummy_credentials)
+    api_key_pool = _resolve_secret_pool(prefix, "API_KEYS", manifest.allow_dummy_credentials)
     provider_config = {
-        "api_key": _resolve_secret(prefix, "API_KEY", manifest.allow_dummy_credentials),
+        "api_key": api_key,
+        "api_key_pool": api_key_pool,
         "api_url": venue.api_url,
         "load_all": venue.load_all_instruments,
         "sport_ids": sorted(venue.sport_ids) if venue.sport_ids else None,
         "league_ids": sorted(venue.league_ids) if venue.league_ids else None,
         "live_only": venue.live_only,
+        "instrument_load_limit": venue.instrument_load_limit,
+        "market_discovery_limit": venue.market_discovery_limit,
+        "prefer_liquid_markets": venue.prefer_liquid_markets,
+        "liquidity_probe_limit": venue.liquidity_probe_limit,
+        "min_two_sided_markets": venue.min_two_sided_markets,
     }
     config = {
-        "api_key": _resolve_secret(prefix, "API_KEY", manifest.allow_dummy_credentials),
+        "api_key": api_key,
+        "api_key_pool": api_key_pool,
         "private_key": _resolve_secret(prefix, "PRIVATE_KEY", manifest.allow_dummy_credentials),
         "wallet_address": _resolve_secret(
             prefix,
@@ -298,6 +315,25 @@ def _resolve_secret(prefix: str, suffix: str, allow_dummy_credentials: bool) -> 
             return dummy_value
         return f"dummy-{key.lower().replace('_', '-')}"
     raise MissingCredentialError(f"Missing required credential: {key}")
+
+
+def _resolve_secret_pool(
+    prefix: str,
+    suffix: str,
+    allow_dummy_credentials: bool,
+) -> tuple[str, ...] | None:
+    key = f"{prefix}_{suffix}"
+    value = os.environ.get(key)
+    if not value and suffix == "API_KEYS":
+        value = os.environ.get(f"{prefix}_API_KEY")
+    if value:
+        keys = tuple(part.strip() for part in re.split(r"[\s,]+", value) if part.strip())
+        return keys or None
+    if allow_dummy_credentials:
+        dummy_value = DUMMY_SECRETS.get(key) or DUMMY_SECRETS.get(f"{prefix}_API_KEY")
+        if dummy_value is not None:
+            return (dummy_value,)
+    return None
 
 
 def _client_key(venue: BettingVenueManifest, index: int) -> str:

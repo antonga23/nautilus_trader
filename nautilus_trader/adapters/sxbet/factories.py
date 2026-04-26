@@ -54,6 +54,7 @@ class SXBetLiveDataClientFactory:
         # Create HTTP client
         http_client = SXBetHttpClient(
             api_key=config.api_key,
+            api_key_pool=config.api_key_pool,
             api_url=config.api_url or SXBET_API_BASE_URL,
             logger=logger,
         )
@@ -61,6 +62,7 @@ class SXBetLiveDataClientFactory:
         # Create instrument provider
         provider_config = config.instrument_provider or SXBetInstrumentProviderConfig(
             api_key=config.api_key,
+            api_key_pool=config.api_key_pool,
             api_url=config.api_url,
         )
 
@@ -104,6 +106,7 @@ class SXBetLiveExecClientFactory:
         # Create HTTP client
         http_client = SXBetHttpClient(
             api_key=config.api_key,
+            api_key_pool=config.api_key_pool,
             api_url=config.api_url or SXBET_API_BASE_URL,
             logger=logger,
         )
@@ -111,6 +114,7 @@ class SXBetLiveExecClientFactory:
         # Create instrument provider
         provider_config = config.instrument_provider or SXBetInstrumentProviderConfig(
             api_key=config.api_key,
+            api_key_pool=config.api_key_pool,
             api_url=config.api_url,
         )
 
@@ -134,6 +138,7 @@ class SXBetLiveExecClientFactory:
 
 def get_sxbet_http_client(
     api_key: str | None = None,
+    api_key_pool: tuple[str, ...] | list[str] | None = None,
     api_url: str | None = None,
     logger: Logger | None = None,
 ) -> SXBetHttpClient:
@@ -142,6 +147,7 @@ def get_sxbet_http_client(
     """
     return SXBetHttpClient(
         api_key=api_key,
+        api_key_pool=api_key_pool,
         api_url=api_url or SXBET_API_BASE_URL,
         logger=logger,
     )
@@ -149,6 +155,7 @@ def get_sxbet_http_client(
 
 def get_sxbet_instrument_provider(
     api_key: str | None = None,
+    api_key_pool: tuple[str, ...] | list[str] | None = None,
     api_url: str | None = None,
     logger: Logger | None = None,
     sport_ids: set[int] | None = None,
@@ -159,12 +166,14 @@ def get_sxbet_instrument_provider(
     """
     http_client = SXBetHttpClient(
         api_key=api_key,
+        api_key_pool=api_key_pool,
         api_url=api_url or SXBET_API_BASE_URL,
         logger=logger,
     )
 
     config = SXBetInstrumentProviderConfig(
         api_key=api_key,
+        api_key_pool=tuple(api_key_pool) if api_key_pool is not None else None,
         api_url=api_url,
         sport_ids=frozenset(sport_ids) if sport_ids else None,
         league_ids=frozenset(league_ids) if league_ids else None,

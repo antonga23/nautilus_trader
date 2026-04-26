@@ -78,6 +78,7 @@ class SXBetDataClient(LiveMarketDataClient):
         self._polling_task: asyncio.Task | None = None
         self._polling_interval = float(config.order_book_poll_interval_secs)
         self._poll_summary_interval = float(config.order_book_poll_summary_interval_secs)
+        self._order_book_concurrency = int(config.order_book_concurrency)
         self._last_poll_summary_at = 0.0
         self._running = False
         self._logger = logger
@@ -166,30 +167,7 @@ class SXBetDataClient(LiveMarketDataClient):
 
         while self._running:
             try:
-                # Get unique market hashes
-                market_hashes: set[str] = set()
-                for instrument_id in list(self._subscribed_instruments):
-                    instrument = self._instrument_provider.find(instrument_id)
-                    if isinstance(instrument, CryptoBettingInstrument):
-                        market_hashes.add(instrument.event_id)
-
-                quote_count = 0
-                order_count = 0
-                empty_count = 0
-                if market_hashes:
-                    for market_hash in sorted(market_hashes):
-                        published, orders = await self._fetch_and_publish_quotes(market_hash)
-                        quote_count += published
-                        order_count += orders
-                        if published == 0:
-                            empty_count += 1
-                    self._log_poll_summary(
-                        market_count=len(market_hashes),
-                        order_count=order_count,
-                        quote_count=quote_count,
-                        empty_count=empty_count,
-                    )
-
+                await self._poll_order_books_once()
                 await asyncio.sleep(self._polling_interval)
 
             except asyncio.CancelledError:
@@ -200,6 +178,61 @@ class SXBetDataClient(LiveMarketDataClient):
                 await asyncio.sleep(self._polling_interval)
 
         self._log.info("Stopped SX.bet order-book polling loop")
+
+    async def _poll_order_books_once(self) -> None:
+        market_hashes = self._subscribed_market_hashes()
+        if not market_hashes:
+            return
+
+        cycle_started_at = time.perf_counter()
+        results = await self._fetch_order_book_results(market_hashes)
+        quote_count = 0
+        order_count = 0
+        empty_count = 0
+        one_sided_count = 0
+        two_sided_count = 0
+        max_latency = 0.0
+        for published, orders, has_outcome_one, has_outcome_two, elapsed in results:
+            quote_count += published
+            order_count += orders
+            max_latency = max(max_latency, elapsed)
+            if orders == 0:
+                empty_count += 1
+            elif has_outcome_one and has_outcome_two:
+                two_sided_count += 1
+            elif has_outcome_one or has_outcome_two:
+                one_sided_count += 1
+
+        self._log_poll_summary(
+            market_count=len(market_hashes),
+            order_count=order_count,
+            quote_count=quote_count,
+            empty_count=empty_count,
+            one_sided_count=one_sided_count,
+            two_sided_count=two_sided_count,
+            max_latency=max_latency,
+            cycle_elapsed=time.perf_counter() - cycle_started_at,
+        )
+
+    def _subscribed_market_hashes(self) -> set[str]:
+        market_hashes: set[str] = set()
+        for instrument_id in list(self._subscribed_instruments):
+            instrument = self._instrument_provider.find(instrument_id)
+            if isinstance(instrument, CryptoBettingInstrument):
+                market_hashes.add(instrument.event_id)
+        return market_hashes
+
+    async def _fetch_order_book_results(
+        self,
+        market_hashes: set[str],
+    ) -> list[tuple[int, int, bool, bool, float]]:
+        semaphore = asyncio.Semaphore(max(1, self._order_book_concurrency))
+
+        async def _fetch(market_hash: str) -> tuple[int, int, bool, bool, float]:
+            async with semaphore:
+                return await self._fetch_and_publish_quote_stats(market_hash)
+
+        return await asyncio.gather(*[_fetch(market_hash) for market_hash in sorted(market_hashes)])
 
     def _send_all_instruments_to_data_engine(self) -> None:
         for instrument in self._instrument_provider.get_all().values():
@@ -245,6 +278,10 @@ class SXBetDataClient(LiveMarketDataClient):
         order_count: int,
         quote_count: int,
         empty_count: int,
+        one_sided_count: int,
+        two_sided_count: int,
+        max_latency: float,
+        cycle_elapsed: float,
     ) -> None:
         now = time.monotonic()
         if now - self._last_poll_summary_at < self._poll_summary_interval:
@@ -253,8 +290,11 @@ class SXBetDataClient(LiveMarketDataClient):
         self._log.info(
             "SX.bet order-book poll cycle: "
             f"markets={market_count} orders={order_count} quotes={quote_count} "
-            f"empty_markets={empty_count} "
-            f"subscribed_instruments={len(self._subscribed_instruments)}",
+            f"empty_markets={empty_count} one_sided_markets={one_sided_count} "
+            f"two_sided_markets={two_sided_count} "
+            f"subscribed_instruments={len(self._subscribed_instruments)} "
+            f"concurrency={self._order_book_concurrency} "
+            f"max_latency={max_latency:.2f}s cycle_elapsed={cycle_elapsed:.2f}s",
         )
 
     async def _fetch_and_publish_best_odds(self, market_hashes: set[str]) -> None:
@@ -319,10 +359,27 @@ class SXBetDataClient(LiveMarketDataClient):
         """
         Fetch and publish quotes for a market.
         """
+        (
+            published,
+            orders,
+            _has_outcome_one,
+            _has_outcome_two,
+            _elapsed,
+        ) = await self._fetch_and_publish_quote_stats(market_hash)
+        return published, orders
+
+    async def _fetch_and_publish_quote_stats(
+        self,
+        market_hash: str,
+    ) -> tuple[int, int, bool, bool, float]:
+        """
+        Fetch and publish quotes for a market with liquidity statistics.
+        """
+        started_at = time.perf_counter()
         try:
-            started_at = time.perf_counter()
             order_book = await self._http_client.get_order_book(market_hash)
             orders = order_book.get("data", {}).get("orders", [])
+            has_outcome_one, has_outcome_two = self._market_order_sides(orders)
 
             # Find instruments for this market
             instruments = self._instrument_provider.find_by_market_hash(market_hash)
@@ -362,12 +419,18 @@ class SXBetDataClient(LiveMarketDataClient):
                     f"SX.bet quote publish market={market_hash} orders={len(orders)} "
                     f"quotes={published} elapsed={time.perf_counter() - started_at:.2f}s",
                 )
-            return published, len(orders)
+            return (
+                published,
+                len(orders),
+                has_outcome_one,
+                has_outcome_two,
+                time.perf_counter() - started_at,
+            )
 
         except (ValueError, TypeError, KeyError, SXBetHttpClientError) as e:
             msg = f"Failed to fetch quotes for {market_hash}: {e}"
             self._log.warning(msg)
-            return 0, 0
+            return 0, 0, False, False, time.perf_counter() - started_at
 
     @staticmethod
     def _instrument_is_outcome_one(instrument: CryptoBettingInstrument) -> bool:
@@ -399,6 +462,23 @@ class SXBetDataClient(LiveMarketDataClient):
                 best_bid = max(best_bid, odds)
 
         return best_bid, 0.0
+
+    @staticmethod
+    def _market_order_sides(orders: list[dict]) -> tuple[bool, bool]:
+        has_outcome_one = False
+        has_outcome_two = False
+        for order in orders:
+            try:
+                percentage = int(order.get("percentageOdds", 0))
+            except (TypeError, ValueError):
+                continue
+            if percentage <= 0:
+                continue
+            if order.get("isMakerBettingOutcomeOne") is True:
+                has_outcome_one = True
+            elif order.get("isMakerBettingOutcomeOne") is False:
+                has_outcome_two = True
+        return has_outcome_one, has_outcome_two
 
     @staticmethod
     def _has_valid_spread(best_bid: float, best_ask: float) -> bool:
