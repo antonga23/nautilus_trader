@@ -131,6 +131,8 @@ class SXBetExecClientConfig(LiveExecClientConfig, frozen=True):
     ----------
     api_key : str
         The SX.bet API key for authentication.
+    api_key_pool : tuple[str, ...], optional
+        SX.bet API keys for realtime/WebSocket-capable surfaces.
     private_key : str
         The Ethereum private key for signing orders (EIP712).
     wallet_address : str
@@ -150,6 +152,7 @@ class SXBetExecClientConfig(LiveExecClientConfig, frozen=True):
     """
 
     api_key: str = ""
+    api_key_pool: tuple[str, ...] | None = None
     private_key: str = ""
     wallet_address: str = ""
     api_url: str | None = None
