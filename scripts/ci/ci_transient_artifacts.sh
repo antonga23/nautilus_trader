@@ -43,10 +43,9 @@ configure_aws_cli() {
     exit 64
   fi
 
-  if ! command -v aws > /dev/null 2>&1; then
-    aws_bin_dir="$(bash scripts/ci/ensure_aws_cli.sh)"
-    export PATH="${aws_bin_dir}:${PATH}"
-  fi
+  export CI_AWSCLI_IGNORE_SYSTEM="${CI_AWSCLI_IGNORE_SYSTEM:-true}"
+  aws_bin_dir="$(bash scripts/ci/ensure_aws_cli.sh)"
+  export PATH="${aws_bin_dir}:${PATH}"
 
   unset AWS_PROFILE AWS_DEFAULT_PROFILE
   export AWS_REGION="${CLOUDFLARE_R2_REGION:-auto}"

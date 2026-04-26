@@ -3,7 +3,7 @@ set -euo pipefail
 
 awscli_version="${CI_AWSCLI_VERSION:-1.44.86}"
 
-if command -v aws > /dev/null 2>&1; then
+if [[ "${CI_AWSCLI_IGNORE_SYSTEM:-false}" != "true" ]] && command -v aws > /dev/null 2>&1; then
   dirname "$(command -v aws)"
   exit 0
 fi
