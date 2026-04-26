@@ -36,6 +36,7 @@ SXBET_ENDPOINTS = {
     "active_markets": "/markets/active",
     "market_lookup": "/markets/find",
     "best_odds": "/orders/odds/best",
+    "realtime_token": "/user/realtime-token/api-key",
     # Order book
     "order_book": "/orders",
     # Trading (API key required)

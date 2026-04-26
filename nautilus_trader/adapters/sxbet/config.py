@@ -43,10 +43,16 @@ class SXBetInstrumentProviderConfig(InstrumentProviderConfig, frozen=True):
         If True, only load live markets.
     instrument_load_limit : PositiveInt, optional
         Maximum number of instruments to create from loaded markets.
+    market_discovery_limit : PositiveInt, optional
+        Maximum number of markets to discover before liquidity selection.
     prefer_liquid_markets : bool, default False
-        If True, probe order books and prefer markets with active orders.
+        If True, probe order books and prefer markets with two-sided active orders.
     liquidity_probe_limit : PositiveInt, optional
         Maximum markets to probe while searching for liquid markets.
+    min_two_sided_markets : PositiveInt, default 1
+        Minimum desired count of markets with active orders on both outcomes.
+    api_key_pool : tuple[str, ...], optional
+        SX.bet API keys for realtime/WebSocket-capable surfaces.
     log_warnings : bool, default True
         If parser warnings should be logged.
 
@@ -59,8 +65,11 @@ class SXBetInstrumentProviderConfig(InstrumentProviderConfig, frozen=True):
     league_ids: frozenset[int] | None = None
     live_only: bool = False
     instrument_load_limit: PositiveInt | None = None
+    market_discovery_limit: PositiveInt | None = None
     prefer_liquid_markets: bool = False
     liquidity_probe_limit: PositiveInt = 100
+    min_two_sided_markets: PositiveInt = 1
+    api_key_pool: tuple[str, ...] | None = None
     log_warnings: bool = True
 
 
@@ -92,6 +101,10 @@ class SXBetDataClientConfig(LiveDataClientConfig, frozen=True):
         Order book polling interval in seconds.
     order_book_poll_summary_interval_secs : PositiveFloat, default 30.0
         Minimum interval between order book polling summary log lines.
+    order_book_concurrency : PositiveInt, default 4
+        Maximum concurrent order-book REST requests per poll cycle.
+    api_key_pool : tuple[str, ...], optional
+        SX.bet API keys for realtime/WebSocket-capable surfaces.
 
     """
 
@@ -106,6 +119,8 @@ class SXBetDataClientConfig(LiveDataClientConfig, frozen=True):
     quote_subscription_limit: PositiveInt | None = None
     order_book_poll_interval_secs: PositiveFloat = 3.0
     order_book_poll_summary_interval_secs: PositiveFloat = 30.0
+    order_book_concurrency: PositiveInt = 4
+    api_key_pool: tuple[str, ...] | None = None
 
 
 class SXBetExecClientConfig(LiveExecClientConfig, frozen=True):
@@ -116,6 +131,8 @@ class SXBetExecClientConfig(LiveExecClientConfig, frozen=True):
     ----------
     api_key : str
         The SX.bet API key for authentication.
+    api_key_pool : tuple[str, ...], optional
+        SX.bet API keys for realtime/WebSocket-capable surfaces.
     private_key : str
         The Ethereum private key for signing orders (EIP712).
     wallet_address : str
@@ -135,6 +152,7 @@ class SXBetExecClientConfig(LiveExecClientConfig, frozen=True):
     """
 
     api_key: str = ""
+    api_key_pool: tuple[str, ...] | None = None
     private_key: str = ""
     wallet_address: str = ""
     api_url: str | None = None

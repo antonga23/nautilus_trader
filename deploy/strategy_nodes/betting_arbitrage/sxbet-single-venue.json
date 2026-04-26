@@ -25,12 +25,15 @@
       "credential_prefix": "SXBET",
       "load_all_instruments": true,
       "instrument_load_limit": 50,
+      "market_discovery_limit": 500,
       "prefer_liquid_markets": true,
-      "liquidity_probe_limit": 100,
+      "liquidity_probe_limit": 250,
+      "min_two_sided_markets": 1,
       "auto_subscribe_quote_ticks": true,
       "quote_subscription_limit": 50,
       "order_book_poll_interval_secs": 10.0,
       "order_book_poll_summary_interval_secs": 30.0,
+      "order_book_concurrency": 4,
       "live_only": false
     }
   ],

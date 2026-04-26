@@ -87,12 +87,15 @@ class TestBettingArbitrageNodeBuilder:
                     venue="SXBET",
                     client_key="SXBET_PRIMARY",
                     instrument_load_limit=50,
+                    market_discovery_limit=500,
                     prefer_liquid_markets=True,
-                    liquidity_probe_limit=100,
+                    liquidity_probe_limit=250,
+                    min_two_sided_markets=2,
                     auto_subscribe_quote_ticks=True,
                     quote_subscription_limit=40,
                     order_book_poll_interval_secs=5.0,
                     order_book_poll_summary_interval_secs=30.0,
+                    order_book_concurrency=8,
                 ),
             ],
         )
@@ -102,12 +105,17 @@ class TestBettingArbitrageNodeBuilder:
 
         assert config.timeout_connection == 240.0
         assert data_client.config["instrument_provider"]["instrument_load_limit"] == 50
+        assert data_client.config["instrument_provider"]["market_discovery_limit"] == 500
         assert data_client.config["instrument_provider"]["prefer_liquid_markets"] is True
-        assert data_client.config["instrument_provider"]["liquidity_probe_limit"] == 100
+        assert data_client.config["instrument_provider"]["liquidity_probe_limit"] == 250
+        assert data_client.config["instrument_provider"]["min_two_sided_markets"] == 2
+        assert data_client.config["instrument_provider"]["api_key_pool"] == ("dummy-sxbet-api-key",)
         assert data_client.config["auto_subscribe_quote_ticks"] is True
         assert data_client.config["quote_subscription_limit"] == 40
         assert data_client.config["order_book_poll_interval_secs"] == 5.0
         assert data_client.config["order_book_poll_summary_interval_secs"] == 30.0
+        assert data_client.config["order_book_concurrency"] == 8
+        assert data_client.config["api_key_pool"] == ("dummy-sxbet-api-key",)
 
     def test_polymarket_instrument_ids_flow_into_importable_config(self):
         manifest = BettingArbitrageNodeManifest(

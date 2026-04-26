@@ -77,6 +77,7 @@ Real live execution for this track requires:
 - `POLYMARKET_PRIVATE_KEY`
 - `POLYMARKET_FUNDER`
 - `SXBET_API_KEY`
+- `SXBET_API_KEYS` for multiple realtime/WebSocket API keys, comma- or newline-separated
 - `SXBET_PRIVATE_KEY`
 - `SXBET_WALLET_ADDRESS`
 - `STRATEGY_NODE_HOST`
@@ -200,6 +201,30 @@ GitHub deploy workflow secrets:
 Store it as a secret payload in GitHub Actions or Secrets Manager. Do not commit venue credentials to the repo.
 
 `STRATEGY_NODE_GHCR_TOKEN` should be a dedicated PAT used only for strategy-node image pull access on the deploy host.
+
+## SXBET Discovery And Liquidity
+
+SXBET REST market reads are public, but the API still applies baseline request
+limits. Do not try to bypass REST limits with extra API keys. Use API keys for
+realtime/WebSocket-capable surfaces and future connection sharding.
+
+The SXBET live manifest intentionally separates three limits:
+
+- `market_discovery_limit`: how many paginated active markets may be scanned
+  during bootstrap.
+- `liquidity_probe_limit`: how many discovered markets may have their order
+  books probed while searching for liquid candidates.
+- `instrument_load_limit`: how many Nautilus instruments are created and sent
+  to the data engine.
+
+For the first runtime phase, "liquid" means a market has active orders on both
+SXBET outcomes. The node should load only a bounded liquid subset, then report
+order-book cycle metrics including discovered/probed/selected markets,
+one-sided markets, two-sided markets, quote count, max request latency, and
+cycle elapsed time.
+
+Keep execution disabled until the node shows stable two-sided order-book
+updates and the betting-arbitrage strategy is observing the loaded instruments.
 
 ## Control plane backend hooks
 

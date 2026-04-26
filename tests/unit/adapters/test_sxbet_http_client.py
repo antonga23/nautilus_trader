@@ -187,6 +187,59 @@ async def test_request_uses_configured_timeout():
 
 
 @pytest.mark.asyncio
+async def test_request_rotates_api_key_pool_without_logging_values():
+    client = SXBetHttpClient(api_key_pool=("key-a", "key-b"))
+    client._request_timeout = object()
+    client._session = _FakeSession(
+        [
+            _FakeResponse(200, json_data={"first": True}),
+            _FakeResponse(200, json_data={"second": True}),
+        ],
+    )
+
+    first = await client._request("GET", "/first")
+    first_headers = client._session.last_request_kwargs["headers"]
+    second = await client._request("GET", "/second")
+    second_headers = client._session.last_request_kwargs["headers"]
+
+    assert first == {"first": True}
+    assert second == {"second": True}
+    assert first_headers["x-api-key"] == "key-a"
+    assert second_headers["x-api-key"] == "key-b"
+
+
+@pytest.mark.asyncio
+async def test_get_realtime_token_requires_api_key(monkeypatch):
+    captured: dict[str, object] = {}
+
+    async def _fake_request(
+        method: str,
+        endpoint: str,
+        params: Any = None,
+        data: Any = None,
+    ) -> dict[str, str]:
+        captured["method"] = method
+        captured["endpoint"] = endpoint
+        captured["params"] = params
+        captured["data"] = data
+        return {"token": "realtime-token"}
+
+    client = SXBetHttpClient(api_key_pool=("key-a",))
+    monkeypatch.setattr(client, "_request", _fake_request)
+
+    assert await client.get_realtime_token() == {"token": "realtime-token"}
+    assert captured == {
+        "method": "GET",
+        "endpoint": "/user/realtime-token/api-key",
+        "params": None,
+        "data": None,
+    }
+
+    with pytest.raises(SXBetHttpClientError, match="fetching realtime WebSocket token"):
+        await SXBetHttpClient().get_realtime_token()
+
+
+@pytest.mark.asyncio
 async def test_place_order_serializes_numeric_fields(monkeypatch):
     captured: dict[str, object] = {}
 
