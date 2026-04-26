@@ -159,7 +159,7 @@ case "$operation" in
     while IFS= read -r object_key; do
       [[ -n "$object_key" ]] || continue
       found_object=true
-      relative_path="${object_key#${object_prefix}}"
+      relative_path="${object_key#"${object_prefix}"}"
       target_path="${destination_dir}/${relative_path}"
       mkdir -p "$(dirname "$target_path")"
       aws_cli s3api get-object --bucket "$bucket" --key "$object_key" "$target_path" > /dev/null
