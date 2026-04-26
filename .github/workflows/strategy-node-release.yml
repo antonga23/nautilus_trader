@@ -106,6 +106,7 @@ jobs:
           free-disk-space: 'false'
           build-type: 'test'
           skip-install-deps: 'true'
+          use-github-actions-cache: 'false'
 
       - name: Build and install wheel
         uses: ./.github/actions/common-wheel-build

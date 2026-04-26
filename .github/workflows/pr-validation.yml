@@ -87,6 +87,7 @@ jobs:
           build-type: "pre-commit"
           skip-rust: "true"
           skip-capnp: "true"
+          use-github-actions-cache: "false"
 
       - name: Run full pre-commit suite (non-Rust)
         run: bash scripts/ci/run_pre_commit_full.sh --exclude-rust
@@ -170,6 +171,7 @@ jobs:
           skip-capnp: "true"
           skip-install-deps: "true"
           skip-setup-python: "true"
+          use-github-actions-cache: "false"
 
       - name: Ensure CI container build dependencies
         run: bash scripts/ci/ensure_ci_container_build_deps.sh
@@ -324,6 +326,7 @@ jobs:
           skip-capnp: "true"
           skip-install-deps: "true"
           skip-setup-python: "true"
+          use-github-actions-cache: "false"
 
       - name: Ensure CI container build dependencies
         run: bash scripts/ci/ensure_ci_container_build_deps.sh
@@ -354,6 +357,8 @@ jobs:
 
       - name: Cached test data
         uses: ./.github/actions/common-test-data
+        with:
+          use-github-actions-cache: "false"
 
       - name: Inject compiled extensions into source tree
         run: python3 scripts/ci/extract_compiled_extensions_from_wheel.py dist/*.whl

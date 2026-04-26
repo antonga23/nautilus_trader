@@ -114,16 +114,19 @@ jobs:
           free-disk-space: "false"
           build-type: "rust-policy"
           skip-uv: "true"
+          use-github-actions-cache: "false"
 
       - name: Install cargo-deny
         uses: ./.github/actions/cargo-tool-install
         with:
           tool-name: cargo-deny
+          use-github-actions-cache: "false"
 
       - name: Install cargo-vet
         uses: ./.github/actions/cargo-tool-install
         with:
           tool-name: cargo-vet
+          use-github-actions-cache: "false"
 
       - name: Run rust policy
         env:

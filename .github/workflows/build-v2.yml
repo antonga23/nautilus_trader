@@ -83,6 +83,7 @@ jobs:
           python-version: "3.13"
           free-disk-space: "true"
           build-type: "pre-commit"
+          use-github-actions-cache: "false"
 
       - name: Run pre-commit-fast
         env:
@@ -147,6 +148,7 @@ jobs:
         uses: ./.github/actions/cargo-tool-install
         with:
           tool-name: cargo-deny
+          use-github-actions-cache: "false"
 
       - name: Run cargo-deny (advisories, licenses, sources, bans)
         run: cargo deny --all-features check advisories licenses sources bans
@@ -205,6 +207,7 @@ jobs:
         uses: ./.github/actions/cargo-tool-install
         with:
           tool-name: cargo-vet
+          use-github-actions-cache: "false"
 
       - name: Run cargo-vet
         run: cargo vet --locked
@@ -301,6 +304,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           free-disk-space: "true"
+          use-github-actions-cache: "false"
 
       - name: Install Nautilus CLI
         env:
@@ -318,6 +322,8 @@ jobs:
 
       - name: Cached test data
         uses: ./.github/actions/common-test-data
+        with:
+          use-github-actions-cache: "false"
 
       - name: Run Rust tests
         run: make cargo-test HYPERSYNC=true

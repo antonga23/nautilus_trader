@@ -44,6 +44,7 @@ jobs:
         with:
           python-version: "3.13"
           free-disk-space: "true"
+          use-github-actions-cache: "false"
 
       - name: Build CLI (all features)
         run: |
@@ -96,6 +97,7 @@ jobs:
         with:
           python-version: "3.13"
           free-disk-space: "true"
+          use-github-actions-cache: "false"
 
       - name: Build CLI (all features)
         run: |
@@ -147,6 +149,7 @@ jobs:
         uses: ./.github/actions/common-setup
         with:
           python-version: "3.13"
+          use-github-actions-cache: "false"
 
       - name: Build CLI (all features)
         run: |
@@ -199,6 +202,7 @@ jobs:
         with:
           python-version: "3.13"
           free-disk-space: "true"
+          use-github-actions-cache: "false"
 
       - name: Build CLI (all features)
         run: |
