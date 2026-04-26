@@ -11,8 +11,10 @@ import pytest
 
 from nautilus_trader.adapters.betting.common.enums import SelectionSide
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
+from nautilus_trader.adapters.betting.market_matcher import MarketMatcher
 from nautilus_trader.examples.strategies.betting_arbitrage import BettingArbitrageConfig
 from nautilus_trader.examples.strategies.betting_arbitrage import BettingArbitrageStrategy
+from nautilus_trader.examples.strategies.opportunity_graph import OpportunityGraph
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.objects import Currency
@@ -40,6 +42,9 @@ class TestBettingArbitrageConfig:
         assert config.auto_execute is False
         assert config.arbitrage_quote_stale_threshold_secs == 30.0
         assert config.arbitrage_summary_interval_secs == 60.0
+        assert config.opportunity_graph_enabled is True
+        assert config.opportunity_log_manual_instructions is True
+        assert config.graph_rebuild_on_new_instrument is True
 
     def test_custom_venues(self):
         """
@@ -182,12 +187,18 @@ class TestBettingArbitrageStrategy:
         assert "opportunities_found" in stats
         assert "opportunities_executed" in stats
         assert "raw_arbitrage_detections" in stats
+        assert "opportunity_graph_nodes" in stats
+        assert "opportunity_graph_edges" in stats
+        assert "opportunity_graph_quote_states" in stats
         assert "duplicate_opportunities_suppressed" in stats
         assert "stale_quote_suppressions" in stats
         assert "matcher_suspect_suppressions" in stats
         assert "executable_candidates" in stats
         assert "success_rate" in stats
         assert stats["subscribed_instruments"] == 0
+        assert stats["opportunity_graph_nodes"] == 0
+        assert stats["opportunity_graph_edges"] == 0
+        assert stats["opportunity_graph_quote_states"] == 0
         assert stats["success_rate"] == 0
 
     def test_stats_success_rate_calculation(self, default_config):
@@ -364,6 +375,137 @@ class TestBettingArbitrageStrategy:
         assert opportunity.odds_a == Decimal("2.55")
         assert opportunity.odds_b == Decimal("2.40")
         assert strategy._opportunities_found == 1
+        assert strategy._opportunity_graph.connected_edge_count(str(instrument_b.id)) == 1
+
+    def test_opportunity_graph_builds_nodes_and_matching_edges(self):
+        matcher = MarketMatcher()
+        graph = OpportunityGraph(matcher)
+        instrument_a = self._sxbet_instrument(
+            event_id="market-1",
+            outcome="over",
+            params="line=2.5",
+        )
+        instrument_b = self._sxbet_instrument(
+            event_id="market-1",
+            outcome="under",
+            params="line=2.5",
+        )
+
+        graph.build([instrument_a, instrument_b])
+
+        assert graph.node_count == 2
+        assert graph.edge_count == 1
+        assert graph.connected_edge_count(str(instrument_a.id)) == 1
+        node = graph.nodes_by_id[str(instrument_a.id)]
+        assert node.instrument_id == str(instrument_a.id)
+        assert node.venue == "SXBET"
+        assert node.canonical_event_key
+        assert node.canonical_outcome_key.endswith("|over")
+
+    def test_opportunity_graph_quote_update_evaluates_only_connected_edges(self):
+        matcher = MarketMatcher()
+        graph = OpportunityGraph(matcher)
+        instrument_a = self._sxbet_instrument(
+            event_id="market-1",
+            outcome="over",
+            params="line=2.5",
+        )
+        instrument_b = self._sxbet_instrument(
+            event_id="market-1",
+            outcome="under",
+            params="line=2.5",
+        )
+        unrelated = self._sxbet_instrument(
+            event_id="market-2",
+            event_name="Team C vs Team D",
+            home_name="Team C",
+            away_name="Team D",
+            outcome="over",
+            params="line=2.5",
+            start_time="2026-03-14T18:00:00Z",
+        )
+        graph.build([instrument_a, instrument_b, unrelated])
+
+        tick_a = TestDataStubs.quote_tick(
+            instrument=instrument_a,
+            bid_price=2.30,
+            ask_price=0.0,
+            ts_event=10_000_000_000,
+        )
+        tick_b = TestDataStubs.quote_tick(
+            instrument=instrument_b,
+            bid_price=2.45,
+            ask_price=0.0,
+            ts_event=10_500_000_000,
+        )
+        graph.update_quote(tick_a, odds=Decimal("2.30"), received_ns=11_000_000_000)
+        graph.update_quote(tick_b, odds=Decimal("2.45"), received_ns=11_000_000_000)
+
+        candidates = graph.evaluate_updated_node(
+            str(instrument_b.id),
+            min_profit_margin=Decimal("0.02"),
+            now_ns=11_000_000_000,
+        )
+
+        assert graph.connected_edge_count(str(unrelated.id)) == 0
+        assert len(candidates) == 1
+        assert candidates[0].updated_node_id == str(instrument_b.id)
+        assert candidates[0].opportunity.profit_margin >= Decimal("0.02")
+
+    def test_manual_execution_plan_includes_instrument_context(self):
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["SXBET"]),
+                max_total_stake=Decimal(100),
+            ),
+        )
+        instrument_a = self._sxbet_instrument(
+            event_id="market-1",
+            outcome="over",
+            params="line=2.5",
+        )
+        instrument_b = self._sxbet_instrument(
+            event_id="market-1",
+            outcome="under",
+            params="line=2.5",
+        )
+        opportunity = strategy._matcher.check_arbitrage(
+            instrument_a,
+            instrument_b,
+            odds_a=Decimal("2.30"),
+            odds_b=Decimal("2.45"),
+        )
+        assert opportunity is not None
+        diagnostics = strategy._build_arbitrage_diagnostics(
+            opportunity=opportunity,
+            hedge_match_type="same_market",
+            hedge_confidence=1.0,
+            quote_a=TestDataStubs.quote_tick(
+                instrument=instrument_a,
+                bid_price=2.30,
+                ask_price=0.0,
+                ts_event=10_000_000_000,
+            ),
+            quote_b=TestDataStubs.quote_tick(
+                instrument=instrument_b,
+                bid_price=2.45,
+                ask_price=0.0,
+                ts_event=10_500_000_000,
+            ),
+            now_ns=11_000_000_000,
+        )
+
+        manual_plan = strategy._manual_execution_plan(opportunity, diagnostics)
+
+        assert "Manual execution plan" in manual_plan
+        assert "Instrument A" in manual_plan
+        assert "Instrument B" in manual_plan
+        assert "event='Team A vs Team B'" in manual_plan
+        assert "selection='over'" in manual_plan
+        assert "selection='under'" in manual_plan
+        assert "bet=" in manual_plan
+        assert "expected_profit=" in manual_plan
+        assert "execution_enabled=False" in manual_plan
 
     def test_quote_odds_falls_back_to_bid_for_one_sided_quote(self, default_config):
         """
@@ -622,15 +764,19 @@ class TestBettingArbitrageStrategy:
         *,
         event_id: str,
         outcome: str,
+        event_name: str = "Team A vs Team B",
+        home_name: str = "Team A",
+        away_name: str = "Team B",
         market_name: str = "total_goals",
         params: str = "",
+        start_time: str = "2026-03-13T18:00:00Z",
     ) -> CryptoBettingInstrument:
         return CryptoBettingInstrument(
             venue=Venue("SXBET"),
             event_id=event_id,
-            event_name="Team A vs Team B",
-            home_name="Team A",
-            away_name="Team B",
+            event_name=event_name,
+            home_name=home_name,
+            away_name=away_name,
             sport_name="Soccer",
             competition_name="Test League",
             market_name=market_name,
@@ -640,7 +786,7 @@ class TestBettingArbitrageStrategy:
             price=2.0,
             currency=Currency.from_str("USDC"),
             params=params,
-            start_time="2026-03-13T18:00:00Z",
+            start_time=start_time,
         )
 
 

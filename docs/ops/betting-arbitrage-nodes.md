@@ -233,6 +233,37 @@ event ids, match type, hedge confidence, same-cycle status, and periodic
 quality summaries. Treat `matcher_suspect` and `stale_quote` suppressions as
 non-executable until the matcher or data timing is corrected.
 
+## Opportunity Graph Engine
+
+The betting-arbitrage strategy now keeps a persistent opportunity graph in the
+Python strategy layer. It still uses `MarketMatcher` as the source of betting
+domain rules, but it applies those rules when instruments are loaded or added
+instead of searching the whole subscribed instrument universe on every quote.
+
+Runtime flow:
+
+- instrument load/subscription builds graph nodes and hedge edges
+- quote ticks update one node's quote state
+- only edges connected to that node are re-evaluated
+- stale, duplicate, and matcher-suspect opportunities are suppressed before any
+  execution path
+
+Graph concepts:
+
+- node: one venue-specific `CryptoBettingInstrument`
+- canonical outcome key: semantic event/market/outcome identity independent of
+  venue-local instrument identity
+- edge: precomputed hedge relationship between two nodes
+- quote state: latest odds and timestamps for one node
+- candidate: a computed edge opportunity that still must pass freshness and risk
+  gates
+
+Accepted and suppressed arbitrage logs include manual-readable instrument
+context. Accepted candidates include a `Manual execution plan` section with the
+two instruments, events, selections, odds, suggested stake split, expected
+profit, and `execution_enabled` state. This is intended to make a candidate
+auditable before live execution is enabled.
+
 ## Control plane backend hooks
 
 The control-plane backend now exposes:

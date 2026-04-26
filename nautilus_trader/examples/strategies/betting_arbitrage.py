@@ -27,6 +27,8 @@ from nautilus_trader.adapters.betting.market_matcher import ArbitrageOpportunity
 from nautilus_trader.adapters.betting.market_matcher import MarketMatcher
 from nautilus_trader.config import StrategyConfig
 from nautilus_trader.core.message import Event
+from nautilus_trader.examples.strategies.opportunity_graph import OpportunityCandidate
+from nautilus_trader.examples.strategies.opportunity_graph import OpportunityGraph
 from nautilus_trader.model.data import QuoteTick
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.enums import TimeInForce
@@ -48,6 +50,10 @@ class ArbitrageDiagnostics:
     hedge_confidence: float
     event_id_a: str
     event_id_b: str
+    instrument_id_a: str
+    instrument_id_b: str
+    event_name_a: str
+    event_name_b: str
     market_id_a: str
     market_id_b: str
     market_name_a: str
@@ -98,6 +104,12 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         Maximum quote age before an arbitrage candidate is treated as stale.
     arbitrage_summary_interval_secs : float, default 60.0
         Minimum interval between arbitrage quality summary log lines.
+    opportunity_graph_enabled : bool, default True
+        Use the persistent opportunity graph instead of quote-time hedge discovery.
+    opportunity_log_manual_instructions : bool, default True
+        Include manual execution fields in arbitrage logs.
+    graph_rebuild_on_new_instrument : bool, default True
+        Add newly observed instruments to the opportunity graph incrementally.
 
     """
 
@@ -111,6 +123,9 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
     auto_execute: bool = False
     arbitrage_quote_stale_threshold_secs: float = 30.0
     arbitrage_summary_interval_secs: float = 60.0
+    opportunity_graph_enabled: bool = True
+    opportunity_log_manual_instructions: bool = True
+    graph_rebuild_on_new_instrument: bool = True
 
     def __post_init__(self) -> None:
         enabled_venues = frozenset(self.enabled_venues or DEFAULT_ENABLED_VENUES)
@@ -156,6 +171,7 @@ class BettingArbitrageStrategy(Strategy):
 
         # Market matcher for finding arbitrage
         self._matcher = MarketMatcher()
+        self._opportunity_graph = OpportunityGraph(self._matcher)
 
         # Tracking
         self._subscribed_instruments: set[CryptoBettingInstrument] = set()
@@ -190,7 +206,9 @@ class BettingArbitrageStrategy(Strategy):
         msg = (
             "Arbitrage diagnostics: "
             f"quote_stale_threshold_secs={self._config.arbitrage_quote_stale_threshold_secs} "
-            f"summary_interval_secs={self._config.arbitrage_summary_interval_secs}"
+            f"summary_interval_secs={self._config.arbitrage_summary_interval_secs} "
+            f"opportunity_graph_enabled={self._config.opportunity_graph_enabled} "
+            f"manual_instructions={self._config.opportunity_log_manual_instructions}"
         )
         self.log.info(msg)
         self._subscribe_cached_instruments()
@@ -220,9 +238,12 @@ class BettingArbitrageStrategy(Strategy):
             Instruments to monitor.
 
         """
+        subscribed_before = len(self._subscribed_instruments)
         for instrument in instruments:
             if not self._maybe_subscribe_instrument(instrument):
                 continue
+        if len(self._subscribed_instruments) != subscribed_before:
+            self._log_graph_topology_summary()
 
     def on_instrument(self, instrument: Instrument) -> None:
         if isinstance(instrument, CryptoBettingInstrument):
@@ -252,9 +273,23 @@ class BettingArbitrageStrategy(Strategy):
             return False
 
         self._subscribed_instruments.add(instrument)
+        if self._config.opportunity_graph_enabled and self._config.graph_rebuild_on_new_instrument:
+            self._opportunity_graph.add_instrument(instrument)
         self.subscribe_quote_ticks(instrument.id)
         self.log.info(f"Subscribed to {instrument.id}")
         return True
+
+    def _log_graph_topology_summary(self) -> None:
+        if not self._config.opportunity_graph_enabled:
+            return
+
+        graph_stats = self._opportunity_graph.stats()
+        self.log.info(
+            "Opportunity graph topology: "
+            f"nodes={graph_stats['nodes']} "
+            f"edges={graph_stats['edges']} "
+            f"quote_states={graph_stats['quote_states']}",
+        )
 
     def _should_process_instrument(self, instrument: CryptoBettingInstrument) -> bool:
         """
@@ -345,8 +380,8 @@ class BettingArbitrageStrategy(Strategy):
         Handle quote tick updates.
 
         When a new quote arrives:
-        1. Update latest quotes cache
-        2. Find potential arbitrage opportunities
+        1. Update latest quote state
+        2. Evaluate affected opportunity graph edges
         3. Execute if auto_execute enabled
 
         Parameters
@@ -363,6 +398,56 @@ class BettingArbitrageStrategy(Strategy):
         if not isinstance(instrument, CryptoBettingInstrument):
             return
 
+        if self._config.opportunity_graph_enabled:
+            self._handle_graph_quote_tick(tick, instrument)
+            return
+
+        self._handle_search_quote_tick(tick, instrument)
+
+    def _handle_graph_quote_tick(
+        self,
+        tick: QuoteTick,
+        instrument: CryptoBettingInstrument,
+    ) -> None:
+        current_odds = self._quote_odds(tick)
+        if current_odds is None:
+            return
+
+        now_ns = self.clock.timestamp_ns()
+        if str(tick.instrument_id) not in self._opportunity_graph.nodes_by_id:
+            if not self._config.graph_rebuild_on_new_instrument:
+                return
+            self._opportunity_graph.add_instrument(instrument)
+
+        quote_state = self._opportunity_graph.update_quote(
+            tick,
+            odds=current_odds,
+            received_ns=now_ns,
+        )
+        if quote_state is None:
+            return
+
+        candidates = self._opportunity_graph.evaluate_updated_node(
+            str(tick.instrument_id),
+            min_profit_margin=self._config.min_profit_margin,
+            now_ns=now_ns,
+        )
+        if candidates:
+            self.log.debug(
+                "Opportunity graph quote evaluation: "
+                f"instrument_id={tick.instrument_id} "
+                f"connected_edges={self._opportunity_graph.connected_edge_count(str(tick.instrument_id))} "
+                f"candidates={len(candidates)}",
+            )
+
+        for candidate in candidates:
+            self._handle_opportunity_candidate(candidate, now_ns)
+
+    def _handle_search_quote_tick(
+        self,
+        tick: QuoteTick,
+        instrument: CryptoBettingInstrument,
+    ) -> None:
         # Find arbitrage opportunities
         candidates = [inst for inst in self._subscribed_instruments if inst.id != instrument.id]
 
@@ -407,13 +492,38 @@ class BettingArbitrageStrategy(Strategy):
                 self._handle_arbitrage_opportunity(opportunity, diagnostics)
                 self._log_arbitrage_summary()
 
+    def _handle_opportunity_candidate(
+        self,
+        candidate: OpportunityCandidate,
+        now_ns: int,
+    ) -> None:
+        self._raw_arbitrage_detections += 1
+        diagnostics = self._build_arbitrage_diagnostics(
+            opportunity=candidate.opportunity,
+            hedge_match_type=candidate.edge.hedge_type,
+            hedge_confidence=candidate.edge.confidence,
+            quote_a=candidate.quote_a.quote,
+            quote_b=candidate.quote_b.quote,
+            now_ns=now_ns,
+        )
+        if self._suppress_arbitrage_candidate(diagnostics):
+            self._log_arbitrage_summary()
+            return
+
+        self._seen_opportunity_pairs.add(diagnostics.canonical_pair_id)
+        self._opportunities_found += 1
+        self._executable_candidates += 1
+        self._handle_arbitrage_opportunity(candidate.opportunity, diagnostics)
+        self._log_arbitrage_summary()
+
     def _suppress_arbitrage_candidate(self, diagnostics: ArbitrageDiagnostics) -> bool:
         if diagnostics.canonical_pair_id in self._seen_opportunity_pairs:
             self._duplicate_opportunities_suppressed += 1
             self.log.debug(
                 "Arbitrage candidate suppressed: "
                 f"reason=duplicate opportunity_id={diagnostics.opportunity_id} "
-                f"canonical_pair_id={diagnostics.canonical_pair_id}",
+                f"canonical_pair_id={diagnostics.canonical_pair_id}"
+                f"{self._diagnostics_instrument_fields(diagnostics)}",
             )
             return True
 
@@ -424,7 +534,8 @@ class BettingArbitrageStrategy(Strategy):
                 f"reason=stale_quote opportunity_id={diagnostics.opportunity_id} "
                 f"quote_age_a_secs={diagnostics.quote_age_a_secs:.2f} "
                 f"quote_age_b_secs={diagnostics.quote_age_b_secs:.2f} "
-                f"quote_delta_secs={diagnostics.quote_delta_secs:.2f}",
+                f"quote_delta_secs={diagnostics.quote_delta_secs:.2f}"
+                f"{self._diagnostics_instrument_fields(diagnostics)}",
             )
             return True
 
@@ -437,11 +548,75 @@ class BettingArbitrageStrategy(Strategy):
                 f"event_id_a={diagnostics.event_id_a} event_id_b={diagnostics.event_id_b} "
                 f"market_id_a={diagnostics.market_id_a} market_id_b={diagnostics.market_id_b} "
                 f"match_type={diagnostics.match_type} hedge_match_type={diagnostics.hedge_match_type} "
-                f"confidence={diagnostics.hedge_confidence:.2f}",
+                f"confidence={diagnostics.hedge_confidence:.2f}"
+                f"{self._diagnostics_instrument_fields(diagnostics)}",
             )
             return True
 
         return False
+
+    def _diagnostics_instrument_fields(self, diagnostics: ArbitrageDiagnostics) -> str:
+        if not self._config.opportunity_log_manual_instructions:
+            return ""
+
+        return (
+            " | Instrument A: "
+            f"instrument_id={diagnostics.instrument_id_a} "
+            f"venue={diagnostics.venue_a} "
+            f"event={diagnostics.event_name_a!r} "
+            f"market={diagnostics.market_name_a!r} "
+            f"selection={diagnostics.outcome_a!r} "
+            f"odds={diagnostics.odds_a} "
+            f"market_id={diagnostics.market_id_a} "
+            f"quote_age_secs={diagnostics.quote_age_a_secs:.2f}; "
+            "Instrument B: "
+            f"instrument_id={diagnostics.instrument_id_b} "
+            f"venue={diagnostics.venue_b} "
+            f"event={diagnostics.event_name_b!r} "
+            f"market={diagnostics.market_name_b!r} "
+            f"selection={diagnostics.outcome_b!r} "
+            f"odds={diagnostics.odds_b} "
+            f"market_id={diagnostics.market_id_b} "
+            f"quote_age_secs={diagnostics.quote_age_b_secs:.2f}"
+        )
+
+    def _manual_execution_plan(
+        self,
+        opportunity: ArbitrageOpportunity,
+        diagnostics: ArbitrageDiagnostics,
+    ) -> str:
+        if not self._config.opportunity_log_manual_instructions:
+            return ""
+
+        stake_a, stake_b, expected_profit = calculate_arbitrage_stakes(
+            odds_a=opportunity.odds_a,
+            odds_b=opportunity.odds_b,
+            total_stake=self._config.max_total_stake,
+        )
+        return (
+            " | Manual execution plan: "
+            f"execution_enabled={self._config.auto_execute} "
+            "Instrument A: "
+            f"bet={stake_a} "
+            f"instrument_id={diagnostics.instrument_id_a} "
+            f"venue={diagnostics.venue_a} "
+            f"event={diagnostics.event_name_a!r} "
+            f"market={diagnostics.market_name_a!r} "
+            f"selection={diagnostics.outcome_a!r} "
+            f"odds={diagnostics.odds_a} "
+            f"market_id={diagnostics.market_id_a}; "
+            "Instrument B: "
+            f"bet={stake_b} "
+            f"instrument_id={diagnostics.instrument_id_b} "
+            f"venue={diagnostics.venue_b} "
+            f"event={diagnostics.event_name_b!r} "
+            f"market={diagnostics.market_name_b!r} "
+            f"selection={diagnostics.outcome_b!r} "
+            f"odds={diagnostics.odds_b} "
+            f"market_id={diagnostics.market_id_b}; "
+            f"expected_profit={expected_profit} "
+            f"max_total_stake={self._config.max_total_stake}"
+        )
 
     def _build_arbitrage_diagnostics(
         self,
@@ -478,6 +653,10 @@ class BettingArbitrageStrategy(Strategy):
             hedge_confidence=hedge_confidence,
             event_id_a=str(inst_a.event_id),
             event_id_b=str(inst_b.event_id),
+            instrument_id_a=str(inst_a.id),
+            instrument_id_b=str(inst_b.id),
+            event_name_a=inst_a.event_name,
+            event_name_b=inst_b.event_name,
             market_id_a=str(inst_a.market_id or inst_a.event_id),
             market_id_b=str(inst_b.market_id or inst_b.event_id),
             market_name_a=inst_a.market_name,
@@ -587,6 +766,7 @@ class BettingArbitrageStrategy(Strategy):
                 f"quote_age_b_secs={diagnostics.quote_age_b_secs:.2f} "
                 f"quote_delta_secs={diagnostics.quote_delta_secs:.2f} "
                 f"same_quote_cycle={diagnostics.same_quote_cycle}"
+                f"{self._manual_execution_plan(opportunity, diagnostics)}"
             )
 
         msg = (
@@ -681,6 +861,9 @@ class BettingArbitrageStrategy(Strategy):
         """
         return {
             "subscribed_instruments": len(self._subscribed_instruments),
+            "opportunity_graph_nodes": self._opportunity_graph.node_count,
+            "opportunity_graph_edges": self._opportunity_graph.edge_count,
+            "opportunity_graph_quote_states": self._opportunity_graph.quote_state_count,
             "opportunities_found": self._opportunities_found,
             "opportunities_executed": self._opportunities_executed,
             "raw_arbitrage_detections": self._raw_arbitrage_detections,
