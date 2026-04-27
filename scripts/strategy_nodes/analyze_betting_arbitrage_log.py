@@ -6,16 +6,22 @@ Analyze persisted betting arbitrage node logs.
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 from pathlib import Path
 import sys
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-if str(SCRIPT_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPT_DIR))
 
-from betting_arbitrage_log_analysis import analyze_betting_arbitrage_log_text
-from betting_arbitrage_log_analysis import render_betting_arbitrage_analysis
+def _load_analysis_module():
+    repo_root = Path(__file__).resolve().parents[2]
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+    return importlib.import_module("scripts.strategy_nodes.betting_arbitrage_log_analysis")
+
+
+_analysis_module = _load_analysis_module()
+analyze_betting_arbitrage_log_text = _analysis_module.analyze_betting_arbitrage_log_text
+render_betting_arbitrage_analysis = _analysis_module.render_betting_arbitrage_analysis
 
 
 def main() -> int:

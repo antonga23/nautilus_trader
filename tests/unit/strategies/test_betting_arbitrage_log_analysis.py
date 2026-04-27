@@ -3,14 +3,8 @@
 # -------------------------------------------------------------------------------------------------
 
 from decimal import Decimal
-from pathlib import Path
-import sys
 
-SCRIPT_DIR = Path(__file__).resolve().parents[3] / "scripts" / "strategy_nodes"
-if str(SCRIPT_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPT_DIR))
-
-from betting_arbitrage_log_analysis import analyze_betting_arbitrage_log_text
+from scripts.strategy_nodes.betting_arbitrage_log_analysis import analyze_betting_arbitrage_log_text
 
 
 def test_analyze_betting_arbitrage_log_parses_accepted_manual_execution_records():
