@@ -141,22 +141,25 @@ jobs:
             put "$wheel_path" "strategy-node-wheel/$(basename "$wheel_path")"
 
       - name: Validate SX.bet manifest
-        run: >-
-          uv run --no-sync python -m nautilus_trader.live.strategy_nodes.betting_arbitrage
-          validate-manifest --manifest
-          deploy/strategy_nodes/betting_arbitrage/sxbet-single-venue.json
+        run: |
+          cd /tmp
+          "$GITHUB_WORKSPACE/.venv/bin/python" -m nautilus_trader.live.strategy_nodes.betting_arbitrage \
+            validate-manifest \
+            --manifest "$GITHUB_WORKSPACE/deploy/strategy_nodes/betting_arbitrage/sxbet-single-venue.json"
 
       - name: Validate Polymarket manifest
-        run: >-
-          uv run --no-sync python -m nautilus_trader.live.strategy_nodes.betting_arbitrage
-          validate-manifest --manifest
-          deploy/strategy_nodes/betting_arbitrage/polymarket-single-venue.json
+        run: |
+          cd /tmp
+          "$GITHUB_WORKSPACE/.venv/bin/python" -m nautilus_trader.live.strategy_nodes.betting_arbitrage \
+            validate-manifest \
+            --manifest "$GITHUB_WORKSPACE/deploy/strategy_nodes/betting_arbitrage/polymarket-single-venue.json"
 
       - name: Validate Polymarket multi-venue example
-        run: >-
-          uv run --no-sync python -m nautilus_trader.live.strategy_nodes.betting_arbitrage
-          validate-manifest --manifest
-          deploy/strategy_nodes/betting_arbitrage/polymarket-plus-sxbet.example.json
+        run: |
+          cd /tmp
+          "$GITHUB_WORKSPACE/.venv/bin/python" -m nautilus_trader.live.strategy_nodes.betting_arbitrage \
+            validate-manifest \
+            --manifest "$GITHUB_WORKSPACE/deploy/strategy_nodes/betting_arbitrage/polymarket-plus-sxbet.example.json"
 
       - name: Upload rendered strategy-node artifacts to transient CI storage
         if: failure()
