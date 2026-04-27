@@ -487,12 +487,42 @@ jobs:
           install -m 600 /dev/null strategy-node.key
           printf '%s' "$STRATEGY_NODE_SSH_KEY" > strategy-node.key
 
+      - name: Resolve deploy metadata
+        id: deploy-meta
+        env:
+          INPUT_IMAGE_TAG: ${{ github.event.inputs.image_tag }}
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+        run: |
+          if [ -n "$INPUT_IMAGE_TAG" ]; then
+            case "$INPUT_IMAGE_TAG" in
+              *[!A-Za-z0-9._-]*)
+                echo "Invalid image tag override: $INPUT_IMAGE_TAG" >&2
+                exit 1
+                ;;
+            esac
+            tag="$INPUT_IMAGE_TAG"
+          else
+            tag="${GITHUB_SHA::12}"
+          fi
+          image_ref="ghcr.io/${REPOSITORY_OWNER}/cloudbet-market-maker/betting-arbitrage-node:${tag}"
+          echo "image_ref=$image_ref" >> "$GITHUB_OUTPUT"
+          echo "image_tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "image_archive_key=betting-arbitrage-node.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "image_archive_namespace=strategy-node-images/$tag" >> "$GITHUB_OUTPUT"
+
       - name: Download strategy-node image archive
         if: github.event.inputs.image_transport == 'archive'
         env:
           CI_TRANSIENT_RUN_PREFIX: >-
-            ${{ github.repository }}/${{ needs.build-strategy-node-image.outputs.image_archive_namespace }}
-          IMAGE_ARCHIVE_KEY: ${{ needs.build-strategy-node-image.outputs.image_archive_key }}
+            ${{ github.repository }}/${{
+              needs.build-strategy-node-image.outputs.image_archive_namespace ||
+              steps.deploy-meta.outputs.image_archive_namespace
+            }}
+          IMAGE_ARCHIVE_KEY: >-
+            ${{
+              needs.build-strategy-node-image.outputs.image_archive_key ||
+              steps.deploy-meta.outputs.image_archive_key
+            }}
         run: >-
           bash scripts/ci/ci_transient_artifacts.sh get
           "$IMAGE_ARCHIVE_KEY"
@@ -578,7 +608,7 @@ jobs:
 
       - name: Deploy node on target host
         env:
-          IMAGE_REF: ${{ needs.build-strategy-node-image.outputs.image_ref }}
+          IMAGE_REF: ${{ needs.build-strategy-node-image.outputs.image_ref || steps.deploy-meta.outputs.image_ref }}
         run: |
           if [ -n "$STRATEGY_NODE_GHCR_TOKEN" ]; then
             if [ "$STRATEGY_NODE_IMAGE_TRANSPORT" = "registry" ]; then
