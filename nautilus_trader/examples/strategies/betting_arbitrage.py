@@ -29,6 +29,7 @@ from nautilus_trader.adapters.betting.semantics import FileRuleCache
 from nautilus_trader.adapters.betting.semantics import RuleStore
 from nautilus_trader.config import StrategyConfig
 from nautilus_trader.core.message import Event
+from nautilus_trader.examples.strategies.opportunity_graph import FastCandidateSnapshot
 from nautilus_trader.examples.strategies.opportunity_graph import OpportunityCandidate
 from nautilus_trader.examples.strategies.opportunity_graph import OpportunityGraph
 from nautilus_trader.model.data import QuoteTick
@@ -476,19 +477,18 @@ class BettingArbitrageStrategy(Strategy):
                 return
             self._opportunity_graph.add_instrument(instrument)
 
-        quote_state = self._opportunity_graph.update_quote(
+        if self._handle_graph_quote_tick_fast(tick, current_odds=current_odds, now_ns=now_ns):
+            return
+
+        quote_state, candidates = self._opportunity_graph.update_quote_and_evaluate(
             tick,
             odds=current_odds,
             received_ns=now_ns,
-        )
-        if quote_state is None:
-            return
-
-        candidates = self._opportunity_graph.evaluate_updated_node(
-            str(tick.instrument_id),
             min_profit_margin=self._config.min_profit_margin,
             now_ns=now_ns,
         )
+        if quote_state is None:
+            return
         if candidates:
             self.log.debug(
                 "Opportunity graph quote evaluation: "
@@ -499,6 +499,446 @@ class BettingArbitrageStrategy(Strategy):
 
         for candidate in candidates:
             self._handle_opportunity_candidate(candidate, now_ns)
+
+    def _handle_graph_quote_tick_fast(
+        self,
+        tick: QuoteTick,
+        *,
+        current_odds: Decimal,
+        now_ns: int,
+    ) -> bool:
+        fast_scan = self._opportunity_graph.update_quote_and_scan_fast(
+            tick,
+            odds=current_odds,
+            received_ns=now_ns,
+            min_profit_margin=self._config.min_profit_margin,
+            now_ns=now_ns,
+        )
+        if fast_scan is not None:
+            quote_updated, snapshots = fast_scan
+            if not quote_updated:
+                return True
+            if snapshots:
+                self.log.debug(
+                    "Opportunity graph quote evaluation: "
+                    f"instrument_id={tick.instrument_id} "
+                    f"connected_edges={self._opportunity_graph.connected_edge_count(str(tick.instrument_id))} "
+                    f"candidates={len(snapshots)}",
+                )
+            self._handle_fast_opportunity_snapshots(snapshots, now_ns)
+            return True
+        return False
+
+    def _handle_fast_opportunity_snapshots(
+        self,
+        snapshots: list[FastCandidateSnapshot],
+        now_ns: int,
+    ) -> None:
+        log_summary = False
+        for snapshot in snapshots:
+            if self._suppress_fast_snapshot_before_context(snapshot, now_ns):
+                log_summary = True
+                continue
+            log_summary = (
+                self._handle_fast_actionable_snapshot(snapshot, now_ns)
+                or log_summary
+            )
+        if log_summary:
+            self._log_arbitrage_summary()
+
+    def _suppress_fast_snapshot_before_context(
+        self,
+        snapshot: FastCandidateSnapshot,
+        now_ns: int,
+    ) -> bool:
+        edge_id = snapshot[0]
+        if edge_id in self._seen_opportunity_pairs:
+            self._raw_arbitrage_detections += 1
+            self._duplicate_opportunities_suppressed += 1
+            return True
+
+        quote_age_a_secs = self._fast_snapshot_quote_age_secs(now_ns, snapshot[8])
+        quote_age_b_secs = self._fast_snapshot_quote_age_secs(now_ns, snapshot[9])
+        if (
+            quote_age_a_secs > self._config.arbitrage_quote_stale_threshold_secs
+            or quote_age_b_secs > self._config.arbitrage_quote_stale_threshold_secs
+        ):
+            self._raw_arbitrage_detections += 1
+            self._stale_quote_suppressions += 1
+            return True
+        return False
+
+    @staticmethod
+    def _fast_snapshot_quote_age_secs(now_ns: int, quote_ts_ns: int) -> float:
+        if quote_ts_ns <= 0:
+            return 0.0
+        return max(0.0, (now_ns - int(quote_ts_ns)) / NANOSECONDS_PER_SECOND)
+
+    def _handle_fast_actionable_snapshot(
+        self,
+        snapshot: FastCandidateSnapshot,
+        now_ns: int,
+    ) -> bool:
+        (
+            canonical_pair_id,
+            source_node_id,
+            target_node_id,
+            hedge_type,
+            hedge_confidence,
+            odds_a_raw,
+            odds_b_raw,
+            profit_margin_raw,
+            quote_ts_a,
+            quote_ts_b,
+            match_type,
+            matcher_suspect,
+        ) = snapshot
+        self._raw_arbitrage_detections += 1
+        if matcher_suspect:
+            self._matcher_suspect_suppressions += 1
+            return True
+
+        if not self._config.auto_execute and not self._config.opportunity_log_manual_instructions:
+            self._record_fast_opportunity(canonical_pair_id)
+            self._log_fast_arbitrage_snapshot(
+                source_node_id,
+                target_node_id,
+                canonical_pair_id=canonical_pair_id,
+                match_type=match_type,
+                hedge_type=hedge_type,
+                hedge_confidence=hedge_confidence,
+                odds_a_raw=odds_a_raw,
+                odds_b_raw=odds_b_raw,
+                profit_margin_raw=profit_margin_raw,
+                quote_ts_a=quote_ts_a,
+                quote_ts_b=quote_ts_b,
+                now_ns=now_ns,
+            )
+            return True
+
+        source_node = self._opportunity_graph.nodes_by_id.get(source_node_id)
+        target_node = self._opportunity_graph.nodes_by_id.get(target_node_id)
+        if source_node is None or target_node is None:
+            return False
+
+        inst_a = source_node.instrument
+        inst_b = target_node.instrument
+        opportunity = self._fast_arbitrage_opportunity(
+            inst_a,
+            inst_b,
+            odds_a_raw=odds_a_raw,
+            odds_b_raw=odds_b_raw,
+            match_type=match_type,
+        )
+        if opportunity.profit_margin < self._config.min_profit_margin:
+            return False
+
+        diagnostics = self._fast_arbitrage_diagnostics(
+            opportunity=opportunity,
+            canonical_pair_id=canonical_pair_id,
+            hedge_match_type=hedge_type,
+            hedge_confidence=hedge_confidence,
+            quote_ts_a=quote_ts_a,
+            quote_ts_b=quote_ts_b,
+            now_ns=now_ns,
+        )
+        self._record_fast_opportunity(diagnostics.canonical_pair_id)
+        self._handle_arbitrage_opportunity(opportunity, diagnostics)
+        return True
+
+    def _record_fast_opportunity(self, canonical_pair_id: str) -> None:
+        self._seen_opportunity_pairs.add(canonical_pair_id)
+        self._opportunities_found += 1
+        self._executable_candidates += 1
+
+    def _handle_fast_opportunity_candidate(
+        self,
+        snapshot: FastCandidateSnapshot,
+        now_ns: int,
+        *,
+        emit_summary: bool = True,
+        emit_suppression_log: bool = True,
+    ) -> bool:
+        context = self._fast_candidate_context(snapshot, now_ns)
+        if context is None:
+            return False
+        (
+            inst_a,
+            inst_b,
+            quote_a,
+            quote_b,
+            hedge_type,
+            hedge_confidence,
+            odds_a_raw,
+            odds_b_raw,
+            canonical_pair_id,
+            match_type,
+            quote_age_a_secs,
+            quote_age_b_secs,
+            quote_delta_secs,
+        ) = context
+        self._raw_arbitrage_detections += 1
+        if self._suppress_fast_candidate(
+            inst_a=inst_a,
+            inst_b=inst_b,
+            hedge_type=hedge_type,
+            hedge_confidence=hedge_confidence,
+            odds_a_raw=odds_a_raw,
+            odds_b_raw=odds_b_raw,
+            canonical_pair_id=canonical_pair_id,
+            match_type=match_type,
+            quote_age_a_secs=quote_age_a_secs,
+            quote_age_b_secs=quote_age_b_secs,
+            quote_delta_secs=quote_delta_secs,
+            emit_summary=emit_summary,
+            emit_suppression_log=emit_suppression_log,
+        ):
+            return True
+
+        opportunity = self._fast_arbitrage_opportunity(
+            inst_a,
+            inst_b,
+            odds_a_raw=odds_a_raw,
+            odds_b_raw=odds_b_raw,
+            match_type=match_type,
+        )
+        if opportunity.profit_margin < self._config.min_profit_margin:
+            return False
+
+        diagnostics = self._build_arbitrage_diagnostics(
+            opportunity=opportunity,
+            hedge_match_type=hedge_type,
+            hedge_confidence=hedge_confidence,
+            quote_a=quote_a,
+            quote_b=quote_b,
+            now_ns=now_ns,
+        )
+        self._seen_opportunity_pairs.add(diagnostics.canonical_pair_id)
+        self._opportunities_found += 1
+        self._executable_candidates += 1
+        self._handle_arbitrage_opportunity(opportunity, diagnostics)
+        if emit_summary:
+            self._log_arbitrage_summary()
+        return True
+
+    def _fast_candidate_context(
+        self,
+        snapshot: FastCandidateSnapshot,
+        now_ns: int,
+    ) -> tuple | None:
+        (
+            _edge_id,
+            source_node_id,
+            target_node_id,
+            hedge_type,
+            hedge_confidence,
+            odds_a_raw,
+            odds_b_raw,
+            _profit_margin_raw,
+            _quote_ts_a,
+            _quote_ts_b,
+            *_,
+        ) = snapshot
+        source_node = self._opportunity_graph.nodes_by_id.get(source_node_id)
+        target_node = self._opportunity_graph.nodes_by_id.get(target_node_id)
+        quote_a = self._latest_quotes.get(source_node_id)
+        quote_b = self._latest_quotes.get(target_node_id)
+        if source_node is None or target_node is None or quote_a is None or quote_b is None:
+            return None
+
+        inst_a = source_node.instrument
+        inst_b = target_node.instrument
+        canonical_pair_id = self._canonical_pair_id(inst_a, inst_b)
+        match_type = self._opportunity_match_type(inst_a, inst_b)
+        quote_age_a_secs = self._quote_age_secs(now_ns, quote_a)
+        quote_age_b_secs = self._quote_age_secs(now_ns, quote_b)
+        quote_delta_secs = abs(int(quote_a.ts_event) - int(quote_b.ts_event)) / (
+            NANOSECONDS_PER_SECOND
+        )
+        return (
+            inst_a,
+            inst_b,
+            quote_a,
+            quote_b,
+            hedge_type,
+            hedge_confidence,
+            odds_a_raw,
+            odds_b_raw,
+            canonical_pair_id,
+            match_type,
+            quote_age_a_secs,
+            quote_age_b_secs,
+            quote_delta_secs,
+        )
+
+    def _suppress_fast_candidate(
+        self,
+        *,
+        inst_a: CryptoBettingInstrument,
+        inst_b: CryptoBettingInstrument,
+        hedge_type: str,
+        hedge_confidence: float,
+        odds_a_raw: float,
+        odds_b_raw: float,
+        canonical_pair_id: str,
+        match_type: str,
+        quote_age_a_secs: float,
+        quote_age_b_secs: float,
+        quote_delta_secs: float,
+        emit_summary: bool,
+        emit_suppression_log: bool,
+    ) -> bool:
+        if canonical_pair_id in self._seen_opportunity_pairs:
+            self._duplicate_opportunities_suppressed += 1
+            if emit_suppression_log:
+                self._log_fast_duplicate_suppression(
+                    inst_a,
+                    inst_b,
+                    odds_a_raw,
+                    odds_b_raw,
+                    canonical_pair_id,
+                    match_type,
+                    quote_age_a_secs,
+                    quote_age_b_secs,
+                )
+            if emit_summary:
+                self._log_arbitrage_summary()
+            return True
+
+        if (
+            quote_age_a_secs > self._config.arbitrage_quote_stale_threshold_secs
+            or quote_age_b_secs > self._config.arbitrage_quote_stale_threshold_secs
+        ):
+            self._stale_quote_suppressions += 1
+            if emit_suppression_log:
+                self._log_fast_stale_suppression(
+                    inst_a,
+                    inst_b,
+                    odds_a_raw,
+                    odds_b_raw,
+                    canonical_pair_id,
+                    match_type,
+                    quote_age_a_secs,
+                    quote_age_b_secs,
+                    quote_delta_secs,
+                )
+            if emit_summary:
+                self._log_arbitrage_summary()
+            return True
+
+        matcher_suspect, suspect_reason = self._matcher_suspect_reason(inst_a, inst_b)
+        if matcher_suspect:
+            self._matcher_suspect_suppressions += 1
+            if emit_suppression_log:
+                self._log_fast_suspect_suppression(
+                    inst_a,
+                    inst_b,
+                    odds_a_raw,
+                    odds_b_raw,
+                    canonical_pair_id,
+                    match_type,
+                    hedge_type,
+                    hedge_confidence,
+                    suspect_reason,
+                    quote_age_a_secs,
+                    quote_age_b_secs,
+                )
+            if emit_summary:
+                self._log_arbitrage_summary()
+            return True
+        return False
+
+    def _log_fast_duplicate_suppression(
+        self,
+        instrument_a: CryptoBettingInstrument,
+        instrument_b: CryptoBettingInstrument,
+        odds_a: float,
+        odds_b: float,
+        canonical_pair_id: str,
+        match_type: str,
+        quote_age_a_secs: float,
+        quote_age_b_secs: float,
+    ) -> None:
+        opportunity_id = self._fast_opportunity_id(
+            canonical_pair_id,
+            match_type,
+            odds_a,
+            odds_b,
+        )
+        self.log.debug(
+            "Arbitrage candidate suppressed: "
+            f"reason=duplicate opportunity_id={opportunity_id} "
+            f"canonical_pair_id={canonical_pair_id}"
+            f"{self._fast_diagnostics_instrument_fields(instrument_a, instrument_b, odds_a, odds_b, quote_age_a_secs, quote_age_b_secs)}",
+        )
+
+    def _log_fast_stale_suppression(
+        self,
+        instrument_a: CryptoBettingInstrument,
+        instrument_b: CryptoBettingInstrument,
+        odds_a: float,
+        odds_b: float,
+        canonical_pair_id: str,
+        match_type: str,
+        quote_age_a_secs: float,
+        quote_age_b_secs: float,
+        quote_delta_secs: float,
+    ) -> None:
+        opportunity_id = self._fast_opportunity_id(
+            canonical_pair_id,
+            match_type,
+            odds_a,
+            odds_b,
+        )
+        self.log.info(
+            "Arbitrage candidate suppressed: "
+            f"reason=stale_quote opportunity_id={opportunity_id} "
+            f"quote_age_a_secs={quote_age_a_secs:.2f} "
+            f"quote_age_b_secs={quote_age_b_secs:.2f} "
+            f"quote_delta_secs={quote_delta_secs:.2f}"
+            f"{self._fast_diagnostics_instrument_fields(instrument_a, instrument_b, odds_a, odds_b, quote_age_a_secs, quote_age_b_secs)}",
+        )
+
+    def _log_fast_suspect_suppression(
+        self,
+        instrument_a: CryptoBettingInstrument,
+        instrument_b: CryptoBettingInstrument,
+        odds_a: float,
+        odds_b: float,
+        canonical_pair_id: str,
+        match_type: str,
+        hedge_type: str,
+        hedge_confidence: float,
+        suspect_reason: str,
+        quote_age_a_secs: float,
+        quote_age_b_secs: float,
+    ) -> None:
+        opportunity_id = self._fast_opportunity_id(
+            canonical_pair_id,
+            match_type,
+            odds_a,
+            odds_b,
+        )
+        self.log.warning(
+            "Arbitrage candidate suppressed: "
+            f"reason=matcher_suspect suspect_reason={suspect_reason} "
+            f"opportunity_id={opportunity_id} "
+            f"event_id_a={instrument_a.event_id} event_id_b={instrument_b.event_id} "
+            f"market_id_a={instrument_a.market_id or instrument_a.event_id} "
+            f"market_id_b={instrument_b.market_id or instrument_b.event_id} "
+            f"match_type={match_type} hedge_match_type={hedge_type} "
+            f"confidence={hedge_confidence:.2f}"
+            f"{self._fast_diagnostics_instrument_fields(instrument_a, instrument_b, odds_a, odds_b, quote_age_a_secs, quote_age_b_secs)}",
+        )
+
+    @staticmethod
+    def _fast_opportunity_id(
+        canonical_pair_id: str,
+        match_type: str,
+        odds_a: float,
+        odds_b: float,
+    ) -> str:
+        return f"{canonical_pair_id}|{match_type}|{odds_a}:{odds_b}"
 
     def _handle_search_quote_tick(
         self,
@@ -572,6 +1012,187 @@ class BettingArbitrageStrategy(Strategy):
         self._executable_candidates += 1
         self._handle_arbitrage_opportunity(candidate.opportunity, diagnostics)
         self._log_arbitrage_summary()
+
+    @staticmethod
+    def _opportunity_match_type(
+        instrument_a: CryptoBettingInstrument,
+        instrument_b: CryptoBettingInstrument,
+    ) -> str:
+        if instrument_a.market_name == instrument_b.market_name:
+            return "same_market"
+        if instrument_a.venue_name == instrument_b.venue_name:
+            return "cross_market"
+        return "cross_venue"
+
+    @staticmethod
+    def _fast_arbitrage_opportunity(
+        instrument_a: CryptoBettingInstrument,
+        instrument_b: CryptoBettingInstrument,
+        *,
+        odds_a_raw: float,
+        odds_b_raw: float,
+        match_type: str,
+    ) -> ArbitrageOpportunity:
+        odds_a = Decimal(str(odds_a_raw))
+        odds_b = Decimal(str(odds_b_raw))
+        probability_a = Decimal(1) / odds_a
+        probability_b = Decimal(1) / odds_b
+        total_probability = probability_a + probability_b
+        profit_margin = (Decimal(1) / total_probability) - Decimal(1)
+        return ArbitrageOpportunity(
+            instrument_a=instrument_a,
+            instrument_b=instrument_b,
+            probability_a=probability_a,
+            probability_b=probability_b,
+            total_probability=total_probability,
+            profit_margin=profit_margin,
+            odds_a=odds_a,
+            odds_b=odds_b,
+            is_same_venue=instrument_a.venue_name == instrument_b.venue_name,
+            match_type=match_type,
+        )
+
+    def _fast_arbitrage_diagnostics(
+        self,
+        *,
+        opportunity: ArbitrageOpportunity,
+        canonical_pair_id: str,
+        hedge_match_type: str,
+        hedge_confidence: float,
+        quote_ts_a: int,
+        quote_ts_b: int,
+        now_ns: int,
+    ) -> ArbitrageDiagnostics:
+        inst_a = opportunity.instrument_a
+        inst_b = opportunity.instrument_b
+        quote_age_a_secs = self._fast_snapshot_quote_age_secs(now_ns, quote_ts_a)
+        quote_age_b_secs = self._fast_snapshot_quote_age_secs(now_ns, quote_ts_b)
+        quote_delta_secs = abs(int(quote_ts_a) - int(quote_ts_b)) / NANOSECONDS_PER_SECOND
+        stale = (
+            quote_age_a_secs > self._config.arbitrage_quote_stale_threshold_secs
+            or quote_age_b_secs > self._config.arbitrage_quote_stale_threshold_secs
+        )
+        return ArbitrageDiagnostics(
+            opportunity_id=(
+                f"{canonical_pair_id}|{opportunity.match_type}|"
+                f"{opportunity.odds_a}:{opportunity.odds_b}"
+            ),
+            canonical_pair_id=canonical_pair_id,
+            match_type=opportunity.match_type,
+            hedge_match_type=hedge_match_type,
+            hedge_confidence=hedge_confidence,
+            event_id_a=str(inst_a.event_id),
+            event_id_b=str(inst_b.event_id),
+            instrument_id_a=str(inst_a.id),
+            instrument_id_b=str(inst_b.id),
+            event_name_a=inst_a.event_name,
+            event_name_b=inst_b.event_name,
+            market_id_a=str(inst_a.market_id or inst_a.event_id),
+            market_id_b=str(inst_b.market_id or inst_b.event_id),
+            market_name_a=inst_a.market_name,
+            market_name_b=inst_b.market_name,
+            outcome_a=inst_a.outcome,
+            outcome_b=inst_b.outcome,
+            venue_a=str(inst_a.id.venue),
+            venue_b=str(inst_b.id.venue),
+            odds_a=opportunity.odds_a,
+            odds_b=opportunity.odds_b,
+            quote_ts_a=int(quote_ts_a),
+            quote_ts_b=int(quote_ts_b),
+            quote_age_a_secs=quote_age_a_secs,
+            quote_age_b_secs=quote_age_b_secs,
+            quote_delta_secs=quote_delta_secs,
+            same_quote_cycle=quote_delta_secs <= 2.0,
+            stale=stale,
+            matcher_suspect=False,
+            suspect_reason="",
+        )
+
+    def _log_fast_arbitrage_snapshot(
+        self,
+        source_node_id: str,
+        target_node_id: str,
+        *,
+        canonical_pair_id: str,
+        match_type: str,
+        hedge_type: str,
+        hedge_confidence: float,
+        odds_a_raw: float,
+        odds_b_raw: float,
+        profit_margin_raw: float,
+        quote_ts_a: int,
+        quote_ts_b: int,
+        now_ns: int,
+    ) -> None:
+        source_node = self._opportunity_graph.nodes_by_id.get(source_node_id)
+        target_node = self._opportunity_graph.nodes_by_id.get(target_node_id)
+        if source_node is None or target_node is None:
+            return
+
+        instrument_a = source_node.instrument
+        instrument_b = target_node.instrument
+        quote_age_a_secs = self._fast_snapshot_quote_age_secs(now_ns, quote_ts_a)
+        quote_age_b_secs = self._fast_snapshot_quote_age_secs(now_ns, quote_ts_b)
+        quote_delta_secs = abs(int(quote_ts_a) - int(quote_ts_b)) / NANOSECONDS_PER_SECOND
+        opportunity_id = (
+            f"{canonical_pair_id}|{match_type}|{odds_a_raw}:{odds_b_raw}"
+        )
+        diagnostic_suffix = (
+            f" | opportunity_id={opportunity_id} "
+            f"match_type={match_type} "
+            f"hedge_match_type={hedge_type} "
+            f"confidence={hedge_confidence:.2f} "
+            f"venue_a={instrument_a.id.venue} venue_b={instrument_b.id.venue} "
+            f"event_id_a={instrument_a.event_id} event_id_b={instrument_b.event_id} "
+            f"market_id_a={instrument_a.market_id or instrument_a.event_id} "
+            f"market_id_b={instrument_b.market_id or instrument_b.event_id} "
+            f"market_a={instrument_a.market_name} market_b={instrument_b.market_name} "
+            f"outcome_a={instrument_a.outcome} outcome_b={instrument_b.outcome} "
+            f"quote_ts_a={int(quote_ts_a)} quote_ts_b={int(quote_ts_b)} "
+            f"quote_age_a_secs={quote_age_a_secs:.2f} "
+            f"quote_age_b_secs={quote_age_b_secs:.2f} "
+            f"quote_delta_secs={quote_delta_secs:.2f} "
+            f"same_quote_cycle={quote_delta_secs <= 2.0}"
+        )
+        self.log.info(
+            f"Arbitrage found: {instrument_a.id.symbol} @ {odds_a_raw} vs "
+            f"{instrument_b.id.symbol} @ {odds_b_raw} | "
+            f"Profit: {profit_margin_raw:.2%}"
+            f"{diagnostic_suffix}",
+        )
+
+    def _fast_diagnostics_instrument_fields(
+        self,
+        instrument_a: CryptoBettingInstrument,
+        instrument_b: CryptoBettingInstrument,
+        odds_a: float,
+        odds_b: float,
+        quote_age_a_secs: float,
+        quote_age_b_secs: float,
+    ) -> str:
+        if not self._config.opportunity_log_manual_instructions:
+            return ""
+
+        return (
+            " | Instrument A: "
+            f"instrument_id={instrument_a.id} "
+            f"venue={instrument_a.id.venue} "
+            f"event={instrument_a.event_name!r} "
+            f"market={instrument_a.market_name!r} "
+            f"selection={instrument_a.outcome!r} "
+            f"odds={odds_a} "
+            f"market_id={instrument_a.market_id or instrument_a.event_id} "
+            f"quote_age_secs={quote_age_a_secs:.2f}; "
+            "Instrument B: "
+            f"instrument_id={instrument_b.id} "
+            f"venue={instrument_b.id.venue} "
+            f"event={instrument_b.event_name!r} "
+            f"market={instrument_b.market_name!r} "
+            f"selection={instrument_b.outcome!r} "
+            f"odds={odds_b} "
+            f"market_id={instrument_b.market_id or instrument_b.event_id} "
+            f"quote_age_secs={quote_age_b_secs:.2f}"
+        )
 
     def _suppress_arbitrage_candidate(self, diagnostics: ArbitrageDiagnostics) -> bool:
         if diagnostics.canonical_pair_id in self._seen_opportunity_pairs:

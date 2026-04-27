@@ -5,6 +5,8 @@
 # -------------------------------------------------------------------------------------------------
 
 from decimal import Decimal
+from typing import Any
+from typing import cast
 from unittest.mock import Mock
 
 import pytest
@@ -743,6 +745,627 @@ class TestBettingArbitrageStrategy:
         assert diagnostics.stale is True
         assert diagnostics.matcher_suspect is False
 
+    def test_strategy_lifecycle_and_filter_edge_cases(self):
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["SXBET"]),
+                sport_filter="soccer",
+                market_timing_filter="pre_market",
+            ),
+        )
+        strategy._log_arbitrage_summary = Mock()
+
+        strategy.on_stop()
+
+        strategy._log_arbitrage_summary.assert_called_once_with(force=True)
+
+        wrong_sport = self._sxbet_instrument(
+            event_id="market-1",
+            outcome="over",
+            params="line=2.5",
+            sport_name="Basketball",
+        )
+        assert strategy._should_process_instrument(wrong_sport) is False
+
+        live_market = self._sxbet_instrument(
+            event_id="market-2",
+            outcome="under",
+            params="line=2.5",
+            live=True,
+        )
+        assert strategy._should_process_instrument(live_market) is False
+
+        live_only = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["SXBET"]),
+                market_timing_filter="live",
+            ),
+        )
+        pre_market = self._sxbet_instrument(
+            event_id="market-3",
+            outcome="over",
+            params="line=2.5",
+            live=False,
+        )
+        assert live_only._should_process_instrument(pre_market) is False
+        assert BettingArbitrageStrategy._is_live_market(Mock(params="in_play=true")) is True
+        assert BettingArbitrageStrategy._is_live_market(object()) is False
+        assert strategy._quote_odds(None) is None
+        zero_quote = TestDataStubs.quote_tick(bid_price=0.0, ask_price=0.0)
+        assert strategy._quote_odds(zero_quote) is None
+
+    def test_quote_tick_and_graph_branch_edges(self):
+        instrument = self._sxbet_instrument(
+            event_id="market-1",
+            outcome="over",
+            params="line=2.5",
+        )
+        tick = TestDataStubs.quote_tick(
+            instrument=instrument,
+            bid_price=2.10,
+            ask_price=0.0,
+        )
+
+        search_strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["SXBET"]),
+                opportunity_graph_enabled=False,
+            ),
+        )
+        cache = TestComponentStubs.cache()
+        cache.add_instrument(instrument)
+        search_strategy.register(
+            trader_id=TraderId("TESTER-003"),
+            portfolio=TestComponentStubs.portfolio(),
+            msgbus=TestComponentStubs.msgbus(),
+            cache=cache,
+            clock=TestComponentStubs.clock(),
+        )
+        search_strategy._handle_search_quote_tick = Mock()
+
+        search_strategy.on_quote_tick(tick)
+
+        search_strategy._handle_search_quote_tick.assert_called_once_with(tick, instrument)
+
+        missing_strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["SXBET"]),
+                graph_rebuild_on_new_instrument=False,
+            ),
+        )
+        missing_strategy._handle_fast_opportunity_snapshots = Mock()
+        missing_strategy.register(
+            trader_id=TraderId("TESTER-004"),
+            portfolio=TestComponentStubs.portfolio(),
+            msgbus=TestComponentStubs.msgbus(),
+            cache=TestComponentStubs.cache(),
+            clock=TestComponentStubs.clock(),
+        )
+
+        missing_strategy._handle_graph_quote_tick(tick, instrument)
+
+        missing_strategy._handle_fast_opportunity_snapshots.assert_not_called()
+
+        fast_strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(enabled_venues=frozenset(["SXBET"])),
+        )
+        fast_strategy._opportunity_graph.update_quote_and_scan_fast = Mock(
+            return_value=(False, []),
+        )
+        assert (
+            fast_strategy._handle_graph_quote_tick_fast(
+                tick,
+                current_odds=Decimal("2.10"),
+                now_ns=10,
+            )
+            is True
+        )
+
+    def test_remaining_lightweight_branch_edges(self):
+        filtered_strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["SXBET"]),
+                sport_filter="soccer",
+            ),
+        )
+        wrong_sport = self._sxbet_instrument(
+            event_id="market-1",
+            outcome="over",
+            sport_name="Basketball",
+        )
+        assert filtered_strategy._maybe_subscribe_instrument(wrong_sport) is False
+        assert BettingArbitrageStrategy._is_live_market(Mock(params=123)) is False
+
+        graph_disabled = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(opportunity_graph_enabled=False),
+        )
+        graph_disabled._log_graph_topology_summary()
+
+        instrument = self._sxbet_instrument(
+            event_id="market-2",
+            outcome="under",
+            params="line=2.5",
+        )
+        tick = TestDataStubs.quote_tick(
+            instrument=instrument,
+            bid_price=0.0,
+            ask_price=0.0,
+        )
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(enabled_venues=frozenset(["SXBET"])),
+        )
+        strategy.register(
+            trader_id=TraderId("TESTER-006"),
+            portfolio=TestComponentStubs.portfolio(),
+            msgbus=TestComponentStubs.msgbus(),
+            cache=TestComponentStubs.cache(),
+            clock=TestComponentStubs.clock(),
+        )
+        strategy.on_quote_tick(tick)
+        strategy._handle_graph_quote_tick(tick, instrument)
+
+        strategy._opportunity_graph.update_quote_and_scan_fast = Mock(return_value=None)
+        assert (
+            strategy._handle_graph_quote_tick_fast(
+                tick,
+                current_odds=Decimal("2.10"),
+                now_ns=10,
+            )
+            is False
+        )
+
+        missing_snapshot = (
+            "a|b",
+            "missing-a",
+            "missing-b",
+            "same_market",
+            1.0,
+            2.45,
+            2.30,
+            0.05,
+            10_000_000_000,
+            10_000_000_000,
+            "same_market",
+            False,
+        )
+        assert strategy._handle_fast_opportunity_candidate(missing_snapshot, 11_000_000_000) is False
+        strategy._log_fast_arbitrage_snapshot(
+            "missing-a",
+            "missing-b",
+            canonical_pair_id="a|b",
+            match_type="same_market",
+            hedge_type="same_market",
+            hedge_confidence=1.0,
+            odds_a_raw=2.45,
+            odds_b_raw=2.30,
+            profit_margin_raw=0.05,
+            quote_ts_a=10,
+            quote_ts_b=11,
+            now_ns=12,
+        )
+
+        manual_off = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(opportunity_log_manual_instructions=False),
+        )
+        assert manual_off._fast_diagnostics_instrument_fields(
+            instrument,
+            instrument,
+            2.0,
+            2.0,
+            0.0,
+            0.0,
+        ) == ""
+
+    def test_fast_snapshot_materialized_edge_cases(self):
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                min_profit_margin=Decimal("0.02"),
+                enabled_venues=frozenset(["SXBET"]),
+                opportunity_log_manual_instructions=True,
+            ),
+        )
+        suspect_snapshot = (
+            "a|b",
+            "a",
+            "b",
+            "same_market",
+            1.0,
+            2.45,
+            2.30,
+            0.05,
+            10_000_000_000,
+            10_000_000_000,
+            "same_market",
+            True,
+        )
+        assert strategy._handle_fast_actionable_snapshot(suspect_snapshot, 11_000_000_000) is True
+        assert strategy._matcher_suspect_suppressions == 1
+
+        missing_snapshot = (
+            "a|b",
+            "missing-a",
+            "missing-b",
+            "same_market",
+            1.0,
+            2.45,
+            2.30,
+            0.05,
+            10_000_000_000,
+            10_000_000_000,
+            "same_market",
+            False,
+        )
+        assert strategy._handle_fast_actionable_snapshot(missing_snapshot, 11_000_000_000) is False
+
+        _, _, snapshot = self._fast_candidate_snapshot(strategy)
+        unprofitable_snapshot = (
+            snapshot[0],
+            snapshot[1],
+            snapshot[2],
+            snapshot[3],
+            snapshot[4],
+            1.10,
+            1.10,
+            snapshot[7],
+            snapshot[8],
+            snapshot[9],
+            snapshot[10],
+            snapshot[11],
+        )
+        assert (
+            strategy._handle_fast_actionable_snapshot(
+                unprofitable_snapshot,
+                11_000_000_000,
+            )
+            is False
+        )
+
+    def test_fast_graph_candidate_matches_public_strategy_effects(self):
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                min_profit_margin=Decimal("0.02"),
+                enabled_venues=frozenset(["SXBET"]),
+            ),
+        )
+        strategy._handle_arbitrage_opportunity = Mock()
+        _, _, snapshot = self._fast_candidate_snapshot(strategy)
+
+        strategy._handle_fast_opportunity_candidate(snapshot, 11_000_000_000)
+
+        assert strategy._raw_arbitrage_detections == 1
+        assert strategy._opportunities_found == 1
+        assert strategy._executable_candidates == 1
+        strategy._handle_arbitrage_opportunity.assert_called_once()
+        opportunity, diagnostics = strategy._handle_arbitrage_opportunity.call_args.args
+        assert opportunity.odds_a == Decimal("2.45")
+        assert opportunity.odds_b == Decimal("2.30")
+        assert diagnostics.hedge_match_type == "same_market"
+        assert diagnostics.hedge_confidence == 1.0
+
+    def test_fast_logging_and_suppression_formatters_cover_manual_context(self):
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                min_profit_margin=Decimal("0.02"),
+                enabled_venues=frozenset(["SXBET"]),
+                opportunity_log_manual_instructions=True,
+            ),
+        )
+        instrument_a, instrument_b, snapshot = self._fast_candidate_snapshot(strategy)
+
+        strategy._log_fast_arbitrage_snapshot(
+            snapshot[1],
+            snapshot[2],
+            canonical_pair_id=snapshot[0],
+            match_type=snapshot[10],
+            hedge_type=snapshot[3],
+            hedge_confidence=snapshot[4],
+            odds_a_raw=snapshot[5],
+            odds_b_raw=snapshot[6],
+            profit_margin_raw=snapshot[7],
+            quote_ts_a=snapshot[8],
+            quote_ts_b=snapshot[9],
+            now_ns=11_000_000_000,
+        )
+        strategy._log_fast_stale_suppression(
+            instrument_a,
+            instrument_b,
+            snapshot[5],
+            snapshot[6],
+            snapshot[0],
+            snapshot[10],
+            1.0,
+            1.5,
+            0.5,
+        )
+        strategy._log_fast_suspect_suppression(
+            instrument_a,
+            instrument_b,
+            snapshot[5],
+            snapshot[6],
+            snapshot[0],
+            snapshot[10],
+            snapshot[3],
+            snapshot[4],
+            "event_mismatch",
+            1.0,
+            1.5,
+        )
+
+        assert "Instrument A" in strategy._fast_diagnostics_instrument_fields(
+            instrument_a,
+            instrument_b,
+            snapshot[5],
+            snapshot[6],
+            1.0,
+            1.5,
+        )
+
+    def test_fast_graph_candidate_suppresses_duplicates_before_opportunity_construction(self):
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                min_profit_margin=Decimal("0.02"),
+                enabled_venues=frozenset(["SXBET"]),
+            ),
+        )
+        strategy._handle_arbitrage_opportunity = Mock()
+        instrument_a, instrument_b, snapshot = self._fast_candidate_snapshot(strategy)
+        strategy._seen_opportunity_pairs.add(strategy._canonical_pair_id(instrument_a, instrument_b))
+
+        strategy._handle_fast_opportunity_candidate(snapshot, 11_000_000_000)
+
+        assert strategy._raw_arbitrage_detections == 1
+        assert strategy._duplicate_opportunities_suppressed == 1
+        assert strategy._opportunities_found == 0
+        assert strategy._executable_candidates == 0
+        strategy._handle_arbitrage_opportunity.assert_not_called()
+
+    def test_fast_graph_candidate_suppresses_stale_quotes_before_opportunity_construction(self):
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                min_profit_margin=Decimal("0.02"),
+                enabled_venues=frozenset(["SXBET"]),
+                arbitrage_quote_stale_threshold_secs=1.0,
+            ),
+        )
+        strategy._handle_arbitrage_opportunity = Mock()
+        _, _, snapshot = self._fast_candidate_snapshot(strategy)
+
+        strategy._handle_fast_opportunity_candidate(snapshot, 20_000_000_000)
+
+        assert strategy._raw_arbitrage_detections == 1
+        assert strategy._stale_quote_suppressions == 1
+        assert strategy._opportunities_found == 0
+        assert strategy._executable_candidates == 0
+        strategy._handle_arbitrage_opportunity.assert_not_called()
+
+    def test_fast_graph_batch_suppresses_duplicates_from_snapshot_before_context(self):
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                min_profit_margin=Decimal("0.02"),
+                enabled_venues=frozenset(["SXBET"]),
+            ),
+        )
+        _, _, snapshot = self._fast_candidate_snapshot(strategy)
+        strategy._seen_opportunity_pairs.add(snapshot[0])
+        strategy._opportunity_graph.clear()
+        strategy._latest_quotes.clear()
+
+        strategy._handle_fast_opportunity_snapshots([snapshot], 11_000_000_000)
+
+        assert strategy._raw_arbitrage_detections == 1
+        assert strategy._duplicate_opportunities_suppressed == 1
+        assert strategy._opportunities_found == 0
+        assert strategy._executable_candidates == 0
+        strategy._log_arbitrage_summary.assert_called_once()
+
+    def test_fast_graph_batch_suppresses_stale_quotes_from_snapshot_before_context(self):
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                min_profit_margin=Decimal("0.02"),
+                enabled_venues=frozenset(["SXBET"]),
+                arbitrage_quote_stale_threshold_secs=1.0,
+            ),
+        )
+        _, _, snapshot = self._fast_candidate_snapshot(strategy)
+        strategy._opportunity_graph.clear()
+        strategy._latest_quotes.clear()
+
+        strategy._handle_fast_opportunity_snapshots([snapshot], 20_000_000_000)
+
+        assert strategy._raw_arbitrage_detections == 1
+        assert strategy._stale_quote_suppressions == 1
+        assert strategy._opportunities_found == 0
+        assert strategy._executable_candidates == 0
+        strategy._log_arbitrage_summary.assert_called_once()
+
+    def test_fast_graph_batch_logs_accepted_snapshot_without_materializing(self):
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                min_profit_margin=Decimal("0.02"),
+                enabled_venues=frozenset(["SXBET"]),
+                opportunity_log_manual_instructions=False,
+            ),
+        )
+        _, _, snapshot = self._fast_candidate_snapshot(strategy)
+        strategy._fast_arbitrage_opportunity = Mock(side_effect=AssertionError)
+        strategy._log_fast_arbitrage_snapshot = Mock()
+
+        strategy._handle_fast_opportunity_snapshots([snapshot], 11_000_000_000)
+
+        assert strategy._raw_arbitrage_detections == 1
+        assert strategy._opportunities_found == 1
+        assert strategy._executable_candidates == 1
+        strategy._log_fast_arbitrage_snapshot.assert_called_once()
+        strategy._log_arbitrage_summary.assert_called_once()
+
+    def test_fast_graph_candidate_preserves_auto_execute_behavior(self):
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                min_profit_margin=Decimal("0.02"),
+                enabled_venues=frozenset(["SXBET"]),
+                auto_execute=True,
+            ),
+        )
+        strategy._execute_arbitrage = Mock()
+        _, _, snapshot = self._fast_candidate_snapshot(strategy)
+
+        strategy._handle_fast_opportunity_candidate(snapshot, 11_000_000_000)
+
+        strategy._execute_arbitrage.assert_called_once()
+        opportunity = strategy._execute_arbitrage.call_args.args[0]
+        assert opportunity.odds_a == Decimal("2.45")
+        assert opportunity.odds_b == Decimal("2.30")
+
+    def test_public_candidate_suppression_and_execution_branches(self):
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                min_profit_margin=Decimal("0.02"),
+                enabled_venues=frozenset(["SXBET"]),
+                auto_execute=True,
+            ),
+        )
+        strategy.register(
+            trader_id=TraderId("TESTER-005"),
+            portfolio=TestComponentStubs.portfolio(),
+            msgbus=TestComponentStubs.msgbus(),
+            cache=TestComponentStubs.cache(),
+            clock=TestComponentStubs.clock(),
+        )
+        strategy.submit_order = Mock()
+        instrument_a, instrument_b, snapshot = self._fast_candidate_snapshot(strategy)
+        opportunity = strategy._fast_arbitrage_opportunity(
+            instrument_a,
+            instrument_b,
+            odds_a_raw=snapshot[5],
+            odds_b_raw=snapshot[6],
+            match_type="same_market",
+        )
+        diagnostics = strategy._fast_arbitrage_diagnostics(
+            opportunity=opportunity,
+            canonical_pair_id=snapshot[0],
+            hedge_match_type=snapshot[3],
+            hedge_confidence=snapshot[4],
+            quote_ts_a=snapshot[8],
+            quote_ts_b=snapshot[9],
+            now_ns=11_000_000_000,
+        )
+
+        strategy._handle_arbitrage_opportunity(opportunity)
+        strategy._handle_arbitrage_opportunity(opportunity, diagnostics)
+
+        assert strategy.submit_order.call_count == 4
+        assert strategy._opportunities_executed == 2
+
+        strategy.on_order_filled(Mock())
+        strategy.on_order_rejected(Mock())
+
+    def test_diagnostics_suppression_and_matcher_reason_branches(self):
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["SXBET"]),
+                opportunity_log_manual_instructions=True,
+            ),
+        )
+        instrument_a = self._sxbet_instrument(
+            event_id="market-1",
+            outcome="over",
+            params="line=2.5",
+        )
+        instrument_b = self._sxbet_instrument(
+            event_id="market-1",
+            outcome="under",
+            params="line=2.5",
+        )
+        opportunity = strategy._fast_arbitrage_opportunity(
+            instrument_a,
+            instrument_b,
+            odds_a_raw=2.45,
+            odds_b_raw=2.30,
+            match_type="same_market",
+        )
+        stale = strategy._fast_arbitrage_diagnostics(
+            opportunity=opportunity,
+            canonical_pair_id=strategy._canonical_pair_id(instrument_a, instrument_b),
+            hedge_match_type="same_market",
+            hedge_confidence=1.0,
+            quote_ts_a=1,
+            quote_ts_b=2,
+            now_ns=60_000_000_000,
+        )
+        assert strategy._suppress_arbitrage_candidate(stale) is True
+
+        mismatch = self._sxbet_instrument(
+            event_id="market-2",
+            outcome="under",
+            params="line=2.5",
+        )
+        suspect_opportunity = strategy._fast_arbitrage_opportunity(
+            instrument_a,
+            mismatch,
+            odds_a_raw=2.45,
+            odds_b_raw=2.30,
+            match_type="same_market",
+        )
+        suspect = strategy._build_arbitrage_diagnostics(
+            opportunity=suspect_opportunity,
+            hedge_match_type="same_market",
+            hedge_confidence=1.0,
+            quote_a=TestDataStubs.quote_tick(instrument=instrument_a, ts_event=10),
+            quote_b=TestDataStubs.quote_tick(instrument=mismatch, ts_event=11),
+            now_ns=12,
+        )
+        assert strategy._suppress_arbitrage_candidate(suspect) is True
+        assert "Instrument A" in strategy._diagnostics_instrument_fields(suspect)
+        assert strategy._manual_execution_plan(
+            suspect_opportunity,
+            suspect,
+        )
+
+        manual_off = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(opportunity_log_manual_instructions=False),
+        )
+        assert manual_off._manual_execution_plan(suspect_opportunity, suspect) == ""
+        assert BettingArbitrageStrategy._quote_age_secs(10, Mock(ts_event=0)) == 0.0
+
+        other_event = self._sxbet_instrument(
+            event_id="market-3",
+            event_name="Other vs Team",
+            home_name="Other",
+            away_name="Team",
+            outcome="away",
+            params="line=2.5",
+            venue="BLACKBET",
+        )
+        assert strategy._matcher_suspect_reason(instrument_a, other_event)[1] == "event_mismatch"
+        param_mismatch = self._sxbet_instrument(
+            event_id="market-1",
+            outcome="under",
+            params="line=3.5",
+        )
+        assert (
+            strategy._matcher_suspect_reason(instrument_a, param_mismatch)[1]
+            == "same_market_params_mismatch"
+        )
+
+    def test_fast_graph_batch_preserves_auto_execute_behavior(self):
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                min_profit_margin=Decimal("0.02"),
+                enabled_venues=frozenset(["SXBET"]),
+                auto_execute=True,
+                opportunity_log_manual_instructions=False,
+            ),
+        )
+        strategy._execute_arbitrage = Mock()
+        _, _, snapshot = self._fast_candidate_snapshot(strategy)
+
+        strategy._handle_fast_opportunity_snapshots([snapshot], 11_000_000_000)
+
+        strategy._execute_arbitrage.assert_called_once()
+        opportunity = strategy._execute_arbitrage.call_args.args[0]
+        assert opportunity.odds_a == Decimal("2.45")
+        assert opportunity.odds_b == Decimal("2.30")
+
     def test_arbitrage_diagnostics_flags_same_venue_event_mismatch(self):
         strategy = BettingArbitrageStrategy(
             config=BettingArbitrageConfig(enabled_venues=frozenset(["SXBET"])),
@@ -792,6 +1415,7 @@ class TestBettingArbitrageStrategy:
                 max_total_stake=Decimal(100),
             ),
         )
+
         instrument_a = self._sxbet_instrument(
             event_id="market-1",
             outcome="over",
@@ -1002,6 +1626,54 @@ class TestBettingArbitrageStrategy:
         assert diagnostics.classification == "liquidity_insufficient"
         assert diagnostics.classification_reason == "top_of_book_size"
 
+    def _fast_candidate_snapshot(
+        self,
+        strategy: BettingArbitrageStrategy,
+    ) -> tuple[CryptoBettingInstrument, CryptoBettingInstrument, tuple]:
+        instrument_a = self._sxbet_instrument(
+            event_id="market-1",
+            outcome="over",
+            params="line=2.5",
+        )
+        instrument_b = self._sxbet_instrument(
+            event_id="market-1",
+            outcome="under",
+            params="line=2.5",
+        )
+        tick_a = TestDataStubs.quote_tick(
+            instrument=instrument_a,
+            bid_price=2.30,
+            ask_price=0.0,
+            ts_event=10_000_000_000,
+        )
+        tick_b = TestDataStubs.quote_tick(
+            instrument=instrument_b,
+            bid_price=2.45,
+            ask_price=0.0,
+            ts_event=10_500_000_000,
+        )
+        cast(Any, strategy)._log_arbitrage_summary = Mock()
+        graph = strategy._opportunity_graph
+        graph.build([instrument_a, instrument_b])
+        graph.update_quote(tick_a, odds=Decimal("2.30"), received_ns=11_000_000_000)
+        strategy._latest_quotes[str(instrument_a.id)] = tick_a
+        strategy._latest_quotes[str(instrument_b.id)] = tick_b
+
+        result = graph.update_quote_and_scan_fast(
+            tick_b,
+            odds=Decimal("2.45"),
+            received_ns=11_000_000_000,
+            min_profit_margin=strategy._config.min_profit_margin,
+            now_ns=11_000_000_000,
+        )
+        if result is None:
+            pytest.skip("Rust OpportunityGraphCore is unavailable")
+        assert result is not None
+        quote_updated, snapshots = result
+        assert quote_updated is True
+        assert len(snapshots) == 1
+        return instrument_a, instrument_b, snapshots[0]
+
     @staticmethod
     def _sxbet_instrument(
         *,
@@ -1014,14 +1686,17 @@ class TestBettingArbitrageStrategy:
         params: str = "",
         start_time: str = "2026-03-13T18:00:00Z",
         info: dict | None = None,
+        sport_name: str = "Soccer",
+        live: bool = False,
+        venue: str = "SXBET",
     ) -> CryptoBettingInstrument:
         return CryptoBettingInstrument(
-            venue=Venue("SXBET"),
+            venue=Venue(venue),
             event_id=event_id,
             event_name=event_name,
             home_name=home_name,
             away_name=away_name,
-            sport_name="Soccer",
+            sport_name=sport_name,
             competition_name="Test League",
             market_name=market_name,
             market_type=market_name,
@@ -1032,6 +1707,7 @@ class TestBettingArbitrageStrategy:
             params=params,
             start_time=start_time,
             info=info or {},
+            live=live,
         )
 
 
