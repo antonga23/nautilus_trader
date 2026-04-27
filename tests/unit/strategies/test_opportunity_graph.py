@@ -441,10 +441,12 @@ def test_node_snapshot_helper_fallbacks() -> None:
         node,
         cast(CryptoBettingInstrument, MinimalInstrument()),
     )
+    bad_payload = OpportunityGraph._node_payload_from_node(
+        node,
+        cast(CryptoBettingInstrument, BadStartInstrument()),
+    )
 
     assert payload["event_key_no_time"] == node.canonical_event_key
     assert payload["selection_key"] == node.outcome
     assert payload["start_time_ns"] is None
-    assert (
-        OpportunityGraph._start_time_ns(cast(CryptoBettingInstrument, BadStartInstrument())) is None
-    )
+    assert bad_payload["start_time_ns"] is None
