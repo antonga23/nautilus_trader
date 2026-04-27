@@ -19,6 +19,9 @@ from nautilus_trader.adapters.sxbet.providers import SXBetInstrumentProvider
 from nautilus_trader.adapters.sxbet.signing import decimal_odds_to_percentage
 from nautilus_trader.common.component import Logger
 from nautilus_trader.common.functions import get_event_loop
+from nautilus_trader.core.uuid import UUID4
+from nautilus_trader.data.messages import SubscribeQuoteTicks
+from nautilus_trader.data.messages import UnsubscribeQuoteTicks
 from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.objects import Currency
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
@@ -327,6 +330,64 @@ def test_auto_subscribe_loaded_instruments_respects_limit(monkeypatch):
     assert len(subscribed) == 2
     assert client._polling_task is task
     create_task.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_subscribe_quote_ticks_accepts_nautilus_command(monkeypatch):
+    task = Mock()
+    task.done.return_value = False
+    create_task = Mock(return_value=task)
+    monkeypatch.setattr("nautilus_trader.adapters.sxbet.data.asyncio.create_task", create_task)
+    instrument = _make_instrument()
+    client = SXBetDataClient(
+        loop=get_event_loop(),
+        http_client=Mock(),
+        instrument_provider=Mock(),
+        msgbus=TestComponentStubs.msgbus(),
+        cache=TestComponentStubs.cache(),
+        clock=TestComponentStubs.clock(),
+        logger=Logger(name="test-sxbet-data"),
+        config=SXBetDataClientConfig(),
+    )
+    command = SubscribeQuoteTicks(
+        instrument_id=instrument.id,
+        client_id=None,
+        venue=Venue("SXBET"),
+        command_id=UUID4(),
+        ts_init=TestComponentStubs.clock().timestamp_ns(),
+    )
+
+    await client._subscribe_quote_ticks(command)
+
+    assert client.subscribed_quote_ticks() == [instrument.id]
+    assert client._polling_task is task
+
+
+@pytest.mark.asyncio
+async def test_unsubscribe_quote_ticks_accepts_nautilus_command():
+    instrument = _make_instrument()
+    client = SXBetDataClient(
+        loop=get_event_loop(),
+        http_client=Mock(),
+        instrument_provider=Mock(),
+        msgbus=TestComponentStubs.msgbus(),
+        cache=TestComponentStubs.cache(),
+        clock=TestComponentStubs.clock(),
+        logger=Logger(name="test-sxbet-data"),
+        config=SXBetDataClientConfig(),
+    )
+    client._subscribed_instruments.add(instrument.id)
+    command = UnsubscribeQuoteTicks(
+        instrument_id=instrument.id,
+        client_id=None,
+        venue=Venue("SXBET"),
+        command_id=UUID4(),
+        ts_init=TestComponentStubs.clock().timestamp_ns(),
+    )
+
+    await client._unsubscribe_quote_ticks(command)
+
+    assert client.subscribed_quote_ticks() == []
 
 
 @pytest.mark.asyncio
