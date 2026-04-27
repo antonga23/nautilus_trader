@@ -514,8 +514,15 @@ jobs:
         if: github.event.inputs.image_transport == 'archive'
         env:
           CI_TRANSIENT_RUN_PREFIX: >-
-            ${{ github.repository }}/${{ needs.build-strategy-node-image.outputs.image_archive_namespace || steps.deploy-meta.outputs.image_archive_namespace }}
-          IMAGE_ARCHIVE_KEY: ${{ needs.build-strategy-node-image.outputs.image_archive_key || steps.deploy-meta.outputs.image_archive_key }}
+            ${{ github.repository }}/${{
+              needs.build-strategy-node-image.outputs.image_archive_namespace ||
+              steps.deploy-meta.outputs.image_archive_namespace
+            }}
+          IMAGE_ARCHIVE_KEY: >-
+            ${{
+              needs.build-strategy-node-image.outputs.image_archive_key ||
+              steps.deploy-meta.outputs.image_archive_key
+            }}
         run: >-
           bash scripts/ci/ci_transient_artifacts.sh get
           "$IMAGE_ARCHIVE_KEY"
