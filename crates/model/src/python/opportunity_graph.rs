@@ -36,6 +36,20 @@ type FastCandidateSnapshot = (
     String,
     bool,
 );
+type EdgeExportSnapshot = (
+    String,
+    String,
+    String,
+    String,
+    f64,
+    bool,
+    String,
+    bool,
+    bool,
+    Option<f64>,
+    Option<i64>,
+    Option<i64>,
+);
 
 #[derive(Clone, Debug)]
 struct NodeSnapshot {
@@ -232,22 +246,7 @@ impl OpportunityGraphCore {
         self.quotes_by_node_id.len()
     }
 
-    fn edge_snapshots(
-        &self,
-    ) -> Vec<(
-        String,
-        String,
-        String,
-        String,
-        f64,
-        bool,
-        String,
-        bool,
-        bool,
-        Option<f64>,
-        Option<i64>,
-        Option<i64>,
-    )> {
+    fn edge_snapshots(&self) -> Vec<EdgeExportSnapshot> {
         self.edges_by_id
             .values()
             .map(|edge| {
@@ -771,6 +770,7 @@ fn profit_margin(odds_a: f64, odds_b: f64) -> f64 {
 mod tests {
     use super::*;
     use pyo3::types::PyList;
+    use rstest::rstest;
 
     fn node(id: &str, outcome: &str) -> NodeSnapshot {
         node_with(
@@ -832,7 +832,7 @@ mod tests {
         dict
     }
 
-    #[test]
+    #[rstest]
     fn same_market_opposite_outcomes_connect() {
         let mut core = OpportunityGraphCore::new(true, 0.5);
         core.insert_node(node("a", "over"));
@@ -843,7 +843,7 @@ mod tests {
         assert_eq!(core.connected_edge_count("a"), 1);
     }
 
-    #[test]
+    #[rstest]
     fn quote_evaluation_filters_by_margin() {
         let mut core = OpportunityGraphCore::new(true, 0.5);
         core.insert_node(node("a", "over"));
@@ -858,7 +858,7 @@ mod tests {
         assert!(candidates[0].3 > 0.0);
     }
 
-    #[test]
+    #[rstest]
     fn build_and_add_from_python_payloads() {
         pyo3::Python::initialize();
 
@@ -893,7 +893,7 @@ mod tests {
         });
     }
 
-    #[test]
+    #[rstest]
     fn cross_venue_disabled_and_quote_guards() {
         let mut core = OpportunityGraphCore::new(false, 0.5);
         core.insert_node(node("a", "over"));
@@ -915,7 +915,7 @@ mod tests {
         assert_eq!(core.node_count(), 0);
     }
 
-    #[test]
+    #[rstest]
     fn update_quote_and_evaluate_invalid_node_returns_empty() {
         let mut core = OpportunityGraphCore::new(true, 0.5);
         core.insert_node(node("a", "over"));
@@ -928,7 +928,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[rstest]
     fn cross_market_edges_obey_confidence_threshold() {
         let mut match_odds = node_with(
             "home",
@@ -964,7 +964,7 @@ mod tests {
         assert_eq!(filtered.edge_count(), 0);
     }
 
-    #[test]
+    #[rstest]
     fn cross_market_confidence_variants_are_covered() {
         let mut asian_home = node_with(
             "asian_home",
@@ -1042,7 +1042,7 @@ mod tests {
         assert!(!can_hedge_market("unknown", "match_odds"));
     }
 
-    #[test]
+    #[rstest]
     fn push_capable_edges_are_not_returned_as_candidates() {
         let home = node_with(
             "home",
@@ -1072,7 +1072,7 @@ mod tests {
         assert!(core.evaluate_connected_edges("home", 0.01, 3).is_empty());
     }
 
-    #[test]
+    #[rstest]
     fn missing_start_time_ambiguity_uses_pair_venues_only() {
         let mut early = node("early", "over");
         early.start_time_ns = Some(1_000);
@@ -1103,7 +1103,7 @@ mod tests {
         assert_eq!(unambiguous.edge_count(), 1);
     }
 
-    #[test]
+    #[rstest]
     fn event_matching_rejects_distinct_keys_and_empty_start_clusters() {
         let mut core = OpportunityGraphCore::new(true, 0.5);
         let source = node("a", "over");
@@ -1146,7 +1146,7 @@ mod tests {
         assert!(!core.is_event_match(&missing_source, &target));
     }
 
-    #[test]
+    #[rstest]
     fn existing_edge_is_updated_when_higher_confidence_arrives() {
         let mut core = OpportunityGraphCore::new(true, 0.5);
         core.insert_node(node("a", "over"));
@@ -1163,7 +1163,7 @@ mod tests {
         assert_eq!(snapshot.4, 1.0);
     }
 
-    #[test]
+    #[rstest]
     fn evaluation_updates_edge_snapshot_metadata() {
         let mut core = OpportunityGraphCore::new(true, 0.5);
         core.insert_node(node("a", "over"));
@@ -1181,7 +1181,7 @@ mod tests {
         assert_eq!(snapshots[0].11, Some(13));
     }
 
-    #[test]
+    #[rstest]
     fn fast_scan_returns_primitive_candidate_payload() {
         let mut core = OpportunityGraphCore::new(true, 0.5);
         core.insert_node(node("a", "over"));
@@ -1209,7 +1209,7 @@ mod tests {
         assert_eq!(snapshots[0].11, Some(12));
     }
 
-    #[test]
+    #[rstest]
     fn unprofitable_and_missing_other_quote_evaluations_are_filtered() {
         let mut core = OpportunityGraphCore::new(true, 0.5);
         core.insert_node(node("a", "over"));

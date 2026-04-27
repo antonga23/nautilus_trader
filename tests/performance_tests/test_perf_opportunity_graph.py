@@ -5,6 +5,8 @@
 # -------------------------------------------------------------------------------------------------
 
 from decimal import Decimal
+from typing import Any
+from typing import cast
 
 import pytest
 
@@ -255,9 +257,10 @@ def test_betting_arbitrage_strategy_fast_scan(benchmark, duplicate_heavy: bool) 
             opportunity_log_manual_instructions=False,
         ),
     )
-    strategy._handle_arbitrage_opportunity = lambda opportunity, diagnostics=None: None
-    strategy._log_fast_arbitrage_snapshot = lambda *args, **kwargs: None
-    strategy._log_arbitrage_summary = lambda *args, **kwargs: None
+    strategy_any = cast(Any, strategy)
+    strategy_any._handle_arbitrage_opportunity = lambda opportunity, diagnostics=None: None
+    strategy_any._log_fast_arbitrage_snapshot = lambda *args, **kwargs: None
+    strategy_any._log_arbitrage_summary = lambda *args, **kwargs: None
     graph = strategy._opportunity_graph
     graph.build(instruments)
     odds_by_outcome = {"over": Decimal("2.40"), "under": Decimal("2.55")}
@@ -289,6 +292,7 @@ def test_betting_arbitrage_strategy_fast_scan(benchmark, duplicate_heavy: bool) 
     )
     if result is None:
         pytest.skip("Rust OpportunityGraphCore is unavailable")
+    assert result is not None
     _, initial_snapshots = result
     duplicate_pairs = {
         strategy._canonical_pair_id(
@@ -325,8 +329,9 @@ def test_betting_arbitrage_strategy_public_scan(benchmark, duplicate_heavy: bool
             opportunity_log_manual_instructions=False,
         ),
     )
-    strategy._handle_arbitrage_opportunity = lambda opportunity, diagnostics=None: None
-    strategy._log_arbitrage_summary = lambda *args, **kwargs: None
+    strategy_any = cast(Any, strategy)
+    strategy_any._handle_arbitrage_opportunity = lambda opportunity, diagnostics=None: None
+    strategy_any._log_arbitrage_summary = lambda *args, **kwargs: None
     graph = strategy._opportunity_graph
     graph.build(instruments)
     odds_by_outcome = {"over": Decimal("2.40"), "under": Decimal("2.55")}

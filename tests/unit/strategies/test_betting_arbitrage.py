@@ -1115,7 +1115,7 @@ class TestBettingArbitrageStrategy:
         strategy._handle_arbitrage_opportunity = Mock()
         instrument_a, instrument_b, snapshot = self._fast_candidate_snapshot(strategy)
         strategy._seen_opportunity_pairs.add(
-            strategy._canonical_pair_id(instrument_a, instrument_b)
+            strategy._canonical_pair_id(instrument_a, instrument_b),
         )
 
         strategy._handle_fast_opportunity_candidate(snapshot, 11_000_000_000)

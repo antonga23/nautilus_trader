@@ -5,6 +5,7 @@
 # -------------------------------------------------------------------------------------------------
 
 from decimal import Decimal
+from typing import cast
 
 import pytest
 
@@ -436,9 +437,14 @@ def test_node_snapshot_helper_fallbacks() -> None:
         def parsed_start_time(self):
             return "not-a-datetime"
 
-    payload = OpportunityGraph._node_payload_from_node(node, MinimalInstrument())
+    payload = OpportunityGraph._node_payload_from_node(
+        node,
+        cast(CryptoBettingInstrument, MinimalInstrument()),
+    )
 
     assert payload["event_key_no_time"] == node.canonical_event_key
     assert payload["selection_key"] == node.outcome
     assert payload["start_time_ns"] is None
-    assert OpportunityGraph._start_time_ns(BadStartInstrument()) is None
+    assert (
+        OpportunityGraph._start_time_ns(cast(CryptoBettingInstrument, BadStartInstrument())) is None
+    )

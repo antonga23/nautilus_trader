@@ -24,6 +24,11 @@ Quote ticks only update node state and re-evaluate edges adjacent to the changed
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
+from typing import Any
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from nautilus_trader.core.nautilus_pyo3 import OpportunityGraphCore
 
 from nautilus_trader.adapters.betting.common.enums import MarketType
 from nautilus_trader.adapters.betting.common.enums import Outcome
@@ -33,10 +38,13 @@ from nautilus_trader.adapters.betting.market_matcher import HedgeCandidate
 from nautilus_trader.adapters.betting.market_matcher import MarketMatcher
 from nautilus_trader.model.data import QuoteTick
 
+_OPPORTUNITY_GRAPH_CORE_CLS: Any | None
 try:
-    from nautilus_trader.core.nautilus_pyo3 import OpportunityGraphCore
+    from nautilus_trader.core.nautilus_pyo3 import OpportunityGraphCore as _pyo3_opportunity_graph_core_cls
 except (ImportError, ModuleNotFoundError):
-    OpportunityGraphCore = None
+    _OPPORTUNITY_GRAPH_CORE_CLS = None
+else:
+    _OPPORTUNITY_GRAPH_CORE_CLS = _pyo3_opportunity_graph_core_cls
 
 
 FastCandidateSnapshot = tuple[
@@ -156,15 +164,15 @@ class OpportunityGraph:
         if engine not in {"auto", "python", "rust"}:
             msg = f"Invalid opportunity graph engine: {engine}"
             raise ValueError(msg)
-        if engine == "rust" and OpportunityGraphCore is None:
+        if engine == "rust" and _OPPORTUNITY_GRAPH_CORE_CLS is None:
             msg = "Rust OpportunityGraphCore is unavailable"
             raise ImportError(msg)
 
         self._matcher = matcher
         self._include_cross_venue = include_cross_venue
-        self._rust_core = (
-            OpportunityGraphCore(include_cross_venue, matcher.min_confidence)
-            if engine != "python" and OpportunityGraphCore is not None
+        self._rust_core: Any | None = (
+            _OPPORTUNITY_GRAPH_CORE_CLS(include_cross_venue, matcher.min_confidence)
+            if engine != "python" and _OPPORTUNITY_GRAPH_CORE_CLS is not None
             else None
         )
         self.nodes_by_id: dict[str, OpportunityNode] = {}
@@ -430,6 +438,8 @@ class OpportunityGraph:
         }
 
     def _sync_edges_from_rust(self) -> None:
+        if self._rust_core is None:
+            return
         self.edges_by_id.clear()
         self.edge_ids_by_node_id = {node_id: set() for node_id in self.nodes_by_id}
         for (
