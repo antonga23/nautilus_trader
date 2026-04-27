@@ -192,9 +192,7 @@ def _parse_accepted_line(line_no: int, line: str) -> AcceptedOpportunityRecord |
         opportunity_id=fields.get("opportunity_id"),
         classification=fields.get("classification", "valid"),
         classification_reason=fields.get("classification_reason", "none"),
-        profit_margin=profit_margin_match.group("profit").strip()
-        if profit_margin_match
-        else None,
+        profit_margin=profit_margin_match.group("profit").strip() if profit_margin_match else None,
         expected_profit=_parse_decimal(trailer.get("expected_profit")),
         max_total_stake=_parse_decimal(trailer.get("max_total_stake")),
         execution_enabled=_parse_bool(fields.get("execution_enabled")),
