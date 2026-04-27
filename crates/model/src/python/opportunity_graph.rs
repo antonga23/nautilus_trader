@@ -163,7 +163,7 @@ impl OpportunityGraphCore {
         if self.nodes_by_id.contains_key(&snapshot.node_id) {
             return Ok(false);
         }
-        let mut node_id = String::new();
+        let mut node_id = String::default();
         node_id.clone_from(&snapshot.node_id);
         self.insert_node(snapshot);
         self.connect_node(&node_id);
@@ -272,7 +272,7 @@ impl OpportunityGraphCore {
 
 impl OpportunityGraphCore {
     fn insert_node(&mut self, node: NodeSnapshot) {
-        let mut node_id = String::new();
+        let mut node_id = String::default();
         node_id.clone_from(&node.node_id);
         self.edge_ids_by_node_id.entry(node_id.clone()).or_default();
         self.event_buckets
@@ -309,7 +309,7 @@ impl OpportunityGraphCore {
         let Some(node) = self.nodes_by_id.get(node_id) else {
             return;
         };
-        let mut event_key_no_time = String::new();
+        let mut event_key_no_time = String::default();
         event_key_no_time.clone_from(&node.event_key_no_time);
         let venue_event_key = format!("{}|{}", node.venue, node.event_id);
 
