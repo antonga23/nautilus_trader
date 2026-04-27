@@ -73,6 +73,13 @@ class ArbitrageDiagnostics:
     stale: bool
     matcher_suspect: bool
     suspect_reason: str
+    suggested_stake_a: Decimal
+    suggested_stake_b: Decimal
+    expected_profit: Decimal
+    available_size_a: Decimal
+    available_size_b: Decimal
+    classification: str
+    classification_reason: str
 
 
 class BettingArbitrageConfig(StrategyConfig, frozen=True):
@@ -182,6 +189,8 @@ class BettingArbitrageStrategy(Strategy):
         self._duplicate_opportunities_suppressed = 0
         self._stale_quote_suppressions = 0
         self._matcher_suspect_suppressions = 0
+        self._liquidity_suppressions = 0
+        self._manual_review_suppressions = 0
         self._executable_candidates = 0
         self._seen_opportunity_pairs: set[str] = set()
         self._last_arbitrage_summary_at_ns = 0
@@ -375,6 +384,24 @@ class BettingArbitrageStrategy(Strategy):
 
         return None
 
+    @staticmethod
+    def _quote_available_size(quote: QuoteTick | None) -> Decimal:
+        if quote is None:
+            return Decimal(0)
+
+        bid_price = quote.bid_price.as_decimal()
+        ask_price = quote.ask_price.as_decimal()
+        bid_size = quote.bid_size.as_decimal()
+        ask_size = quote.ask_size.as_decimal()
+
+        if str(quote.instrument_id.venue) == "SXBET" and bid_price > 0:
+            return bid_size
+        if ask_price > 0:
+            return ask_size
+        if bid_price > 0:
+            return bid_size
+        return Decimal(0)
+
     def on_quote_tick(self, tick: QuoteTick) -> None:
         """
         Handle quote tick updates.
@@ -531,7 +558,9 @@ class BettingArbitrageStrategy(Strategy):
             self._stale_quote_suppressions += 1
             self.log.info(
                 "Arbitrage candidate suppressed: "
-                f"reason=stale_quote opportunity_id={diagnostics.opportunity_id} "
+                f"reason=stale_quote classification={diagnostics.classification} "
+                f"classification_reason={diagnostics.classification_reason} "
+                f"opportunity_id={diagnostics.opportunity_id} "
                 f"quote_age_a_secs={diagnostics.quote_age_a_secs:.2f} "
                 f"quote_age_b_secs={diagnostics.quote_age_b_secs:.2f} "
                 f"quote_delta_secs={diagnostics.quote_delta_secs:.2f}"
@@ -543,12 +572,42 @@ class BettingArbitrageStrategy(Strategy):
             self._matcher_suspect_suppressions += 1
             self.log.warning(
                 "Arbitrage candidate suppressed: "
-                f"reason=matcher_suspect suspect_reason={diagnostics.suspect_reason} "
+                f"reason=matcher_suspect classification={diagnostics.classification} "
+                f"classification_reason={diagnostics.classification_reason} "
+                f"suspect_reason={diagnostics.suspect_reason} "
                 f"opportunity_id={diagnostics.opportunity_id} "
                 f"event_id_a={diagnostics.event_id_a} event_id_b={diagnostics.event_id_b} "
                 f"market_id_a={diagnostics.market_id_a} market_id_b={diagnostics.market_id_b} "
                 f"match_type={diagnostics.match_type} hedge_match_type={diagnostics.hedge_match_type} "
                 f"confidence={diagnostics.hedge_confidence:.2f}"
+                f"{self._diagnostics_instrument_fields(diagnostics)}",
+            )
+            return True
+
+        if diagnostics.classification == "liquidity_insufficient":
+            self._liquidity_suppressions += 1
+            self.log.info(
+                "Arbitrage candidate suppressed: "
+                f"reason=liquidity_insufficient classification={diagnostics.classification} "
+                f"classification_reason={diagnostics.classification_reason} "
+                f"opportunity_id={diagnostics.opportunity_id} "
+                f"suggested_stake_a={diagnostics.suggested_stake_a} "
+                f"available_size_a={diagnostics.available_size_a} "
+                f"suggested_stake_b={diagnostics.suggested_stake_b} "
+                f"available_size_b={diagnostics.available_size_b}"
+                f"{self._diagnostics_instrument_fields(diagnostics)}",
+            )
+            return True
+
+        if diagnostics.classification == "needs_manual_review":
+            self._manual_review_suppressions += 1
+            self.log.info(
+                "Arbitrage candidate suppressed: "
+                f"reason=needs_manual_review classification={diagnostics.classification} "
+                f"classification_reason={diagnostics.classification_reason} "
+                f"opportunity_id={diagnostics.opportunity_id} "
+                f"same_quote_cycle={diagnostics.same_quote_cycle} "
+                f"quote_delta_secs={diagnostics.quote_delta_secs:.2f}"
                 f"{self._diagnostics_instrument_fields(diagnostics)}",
             )
             return True
@@ -568,6 +627,7 @@ class BettingArbitrageStrategy(Strategy):
             f"selection={diagnostics.outcome_a!r} "
             f"odds={diagnostics.odds_a} "
             f"market_id={diagnostics.market_id_a} "
+            f"available_size={diagnostics.available_size_a} "
             f"quote_age_secs={diagnostics.quote_age_a_secs:.2f}; "
             "Instrument B: "
             f"instrument_id={diagnostics.instrument_id_b} "
@@ -577,6 +637,7 @@ class BettingArbitrageStrategy(Strategy):
             f"selection={diagnostics.outcome_b!r} "
             f"odds={diagnostics.odds_b} "
             f"market_id={diagnostics.market_id_b} "
+            f"available_size={diagnostics.available_size_b} "
             f"quote_age_secs={diagnostics.quote_age_b_secs:.2f}"
         )
 
@@ -588,11 +649,9 @@ class BettingArbitrageStrategy(Strategy):
         if not self._config.opportunity_log_manual_instructions:
             return ""
 
-        stake_a, stake_b, expected_profit = calculate_arbitrage_stakes(
-            odds_a=opportunity.odds_a,
-            odds_b=opportunity.odds_b,
-            total_stake=self._config.max_total_stake,
-        )
+        stake_a = diagnostics.suggested_stake_a
+        stake_b = diagnostics.suggested_stake_b
+        expected_profit = diagnostics.expected_profit
         return (
             " | Manual execution plan: "
             f"execution_enabled={self._config.auto_execute} "
@@ -604,7 +663,8 @@ class BettingArbitrageStrategy(Strategy):
             f"market={diagnostics.market_name_a!r} "
             f"selection={diagnostics.outcome_a!r} "
             f"odds={diagnostics.odds_a} "
-            f"market_id={diagnostics.market_id_a}; "
+            f"market_id={diagnostics.market_id_a} "
+            f"available_size={diagnostics.available_size_a}; "
             "Instrument B: "
             f"bet={stake_b} "
             f"instrument_id={diagnostics.instrument_id_b} "
@@ -613,7 +673,8 @@ class BettingArbitrageStrategy(Strategy):
             f"market={diagnostics.market_name_b!r} "
             f"selection={diagnostics.outcome_b!r} "
             f"odds={diagnostics.odds_b} "
-            f"market_id={diagnostics.market_id_b}; "
+            f"market_id={diagnostics.market_id_b} "
+            f"available_size={diagnostics.available_size_b}; "
             f"expected_profit={expected_profit} "
             f"max_total_stake={self._config.max_total_stake}"
         )
@@ -645,6 +706,23 @@ class BettingArbitrageStrategy(Strategy):
             or quote_age_b_secs > self._config.arbitrage_quote_stale_threshold_secs
         )
         matcher_suspect, suspect_reason = self._matcher_suspect_reason(inst_a, inst_b)
+        suggested_stake_a, suggested_stake_b, expected_profit = calculate_arbitrage_stakes(
+            odds_a=opportunity.odds_a,
+            odds_b=opportunity.odds_b,
+            total_stake=self._config.max_total_stake,
+        )
+        available_size_a = self._quote_available_size(quote_a)
+        available_size_b = self._quote_available_size(quote_b)
+        classification, classification_reason = self._classify_arbitrage_candidate(
+            stale=stale,
+            matcher_suspect=matcher_suspect,
+            suspect_reason=suspect_reason,
+            same_quote_cycle=quote_delta_secs <= 2.0,
+            suggested_stake_a=suggested_stake_a,
+            suggested_stake_b=suggested_stake_b,
+            available_size_a=available_size_a,
+            available_size_b=available_size_b,
+        )
         return ArbitrageDiagnostics(
             opportunity_id=opportunity_id,
             canonical_pair_id=canonical_pair_id,
@@ -676,6 +754,13 @@ class BettingArbitrageStrategy(Strategy):
             stale=stale,
             matcher_suspect=matcher_suspect,
             suspect_reason=suspect_reason,
+            suggested_stake_a=suggested_stake_a,
+            suggested_stake_b=suggested_stake_b,
+            expected_profit=expected_profit,
+            available_size_a=available_size_a,
+            available_size_b=available_size_b,
+            classification=classification,
+            classification_reason=classification_reason,
         )
 
     @staticmethod
@@ -709,6 +794,36 @@ class BettingArbitrageStrategy(Strategy):
             return True, "same_market_params_mismatch"
         return False, "none"
 
+    @staticmethod
+    def _classify_arbitrage_candidate(
+        *,
+        stale: bool,
+        matcher_suspect: bool,
+        suspect_reason: str,
+        same_quote_cycle: bool,
+        suggested_stake_a: Decimal,
+        suggested_stake_b: Decimal,
+        available_size_a: Decimal,
+        available_size_b: Decimal,
+    ) -> tuple[str, str]:
+        if stale:
+            return "stale", "stale_quote"
+
+        if matcher_suspect:
+            if suspect_reason in {"same_venue_event_id_mismatch", "event_mismatch"}:
+                return "event_mismatch", suspect_reason
+            if suspect_reason == "same_market_params_mismatch":
+                return "line_mismatch", suspect_reason
+            return "needs_manual_review", suspect_reason
+
+        if suggested_stake_a > available_size_a or suggested_stake_b > available_size_b:
+            return "liquidity_insufficient", "top_of_book_size"
+
+        if not same_quote_cycle:
+            return "needs_manual_review", "cross_cycle_quotes"
+
+        return "valid", "none"
+
     def _log_arbitrage_summary(self, *, force: bool = False) -> None:
         now_ns = self.clock.timestamp_ns()
         interval_ns = int(
@@ -729,6 +844,8 @@ class BettingArbitrageStrategy(Strategy):
             f"duplicate_suppressions={self._duplicate_opportunities_suppressed} "
             f"stale_quote_suppressions={self._stale_quote_suppressions} "
             f"matcher_suspect_suppressions={self._matcher_suspect_suppressions} "
+            f"liquidity_suppressions={self._liquidity_suppressions} "
+            f"manual_review_suppressions={self._manual_review_suppressions} "
             f"executable_candidates={self._executable_candidates} "
             f"executed={self._opportunities_executed}",
         )
@@ -756,6 +873,8 @@ class BettingArbitrageStrategy(Strategy):
                 f"match_type={diagnostics.match_type} "
                 f"hedge_match_type={diagnostics.hedge_match_type} "
                 f"confidence={diagnostics.hedge_confidence:.2f} "
+                f"classification={diagnostics.classification} "
+                f"classification_reason={diagnostics.classification_reason} "
                 f"venue_a={diagnostics.venue_a} venue_b={diagnostics.venue_b} "
                 f"event_id_a={diagnostics.event_id_a} event_id_b={diagnostics.event_id_b} "
                 f"market_id_a={diagnostics.market_id_a} market_id_b={diagnostics.market_id_b} "
@@ -870,6 +989,8 @@ class BettingArbitrageStrategy(Strategy):
             "duplicate_opportunities_suppressed": self._duplicate_opportunities_suppressed,
             "stale_quote_suppressions": self._stale_quote_suppressions,
             "matcher_suspect_suppressions": self._matcher_suspect_suppressions,
+            "liquidity_suppressions": self._liquidity_suppressions,
+            "manual_review_suppressions": self._manual_review_suppressions,
             "executable_candidates": self._executable_candidates,
             "success_rate": (
                 self._opportunities_executed / self._opportunities_found
