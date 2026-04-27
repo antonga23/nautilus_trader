@@ -41,7 +41,8 @@ class TestBettingArbitrageIntegration:
     Integration tests for betting arbitrage strategy.
     """
 
-    def teardown_method(self):
+    @staticmethod
+    def teardown_method():
         ensure_all_tasks_completed()
 
     @pytest.fixture
