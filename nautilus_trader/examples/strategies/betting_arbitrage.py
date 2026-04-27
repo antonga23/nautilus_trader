@@ -1062,12 +1062,31 @@ class BettingArbitrageStrategy(Strategy):
     ) -> ArbitrageDiagnostics:
         inst_a = opportunity.instrument_a
         inst_b = opportunity.instrument_b
+        quote_a = self._latest_quotes.get(str(inst_a.id))
+        quote_b = self._latest_quotes.get(str(inst_b.id))
         quote_age_a_secs = self._fast_snapshot_quote_age_secs(now_ns, quote_ts_a)
         quote_age_b_secs = self._fast_snapshot_quote_age_secs(now_ns, quote_ts_b)
         quote_delta_secs = abs(int(quote_ts_a) - int(quote_ts_b)) / NANOSECONDS_PER_SECOND
         stale = (
             quote_age_a_secs > self._config.arbitrage_quote_stale_threshold_secs
             or quote_age_b_secs > self._config.arbitrage_quote_stale_threshold_secs
+        )
+        suggested_stake_a, suggested_stake_b, expected_profit = calculate_arbitrage_stakes(
+            odds_a=opportunity.odds_a,
+            odds_b=opportunity.odds_b,
+            total_stake=self._config.max_total_stake,
+        )
+        available_size_a = self._quote_available_size(quote_a)
+        available_size_b = self._quote_available_size(quote_b)
+        classification, classification_reason = self._classify_arbitrage_candidate(
+            stale=stale,
+            matcher_suspect=False,
+            suspect_reason="",
+            same_quote_cycle=quote_delta_secs <= 2.0,
+            suggested_stake_a=suggested_stake_a,
+            suggested_stake_b=suggested_stake_b,
+            available_size_a=available_size_a,
+            available_size_b=available_size_b,
         )
         return ArbitrageDiagnostics(
             opportunity_id=(
@@ -1103,6 +1122,13 @@ class BettingArbitrageStrategy(Strategy):
             stale=stale,
             matcher_suspect=False,
             suspect_reason="",
+            suggested_stake_a=suggested_stake_a,
+            suggested_stake_b=suggested_stake_b,
+            expected_profit=expected_profit,
+            available_size_a=available_size_a,
+            available_size_b=available_size_b,
+            classification=classification,
+            classification_reason=classification_reason,
         )
 
     def _log_fast_arbitrage_snapshot(
