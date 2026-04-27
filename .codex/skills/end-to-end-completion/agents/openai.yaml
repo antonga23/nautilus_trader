@@ -1,3 +1,8 @@
 display_name: End-to-End Completion
-short_description: Maintains a requirements ledger and drives multi-part plans through verified completion before handoff.
-default_prompt: Use this skill to prevent partial task completion. Build a requirements ledger, apply newer requirements over older ones, exhaust safe workarounds, and verify every requested outcome before returning control.
+short_description: >-
+  Maintains a requirements ledger and drives multi-part plans through verified
+  completion before handoff.
+default_prompt: >-
+  Use this skill to prevent partial task completion. Build a requirements
+  ledger, apply newer requirements over older ones, exhaust safe workarounds,
+  and verify every requested outcome before returning control.
