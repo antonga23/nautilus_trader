@@ -75,6 +75,8 @@ __pycache__/
 build/
 develop-eggs/
 dist/
+!dist/
+!dist/*.whl
 downloads/
 eggs/
 .eggs/
