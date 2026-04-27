@@ -29,6 +29,10 @@ on:
         description: 'How the deploy job gets the built image onto EC2: archive or registry'
         required: false
         default: archive
+      force_rebuild:
+        description: Rebuild the strategy-node image archive even when an R2 archive already exists
+        required: false
+        default: 'false'
 
 permissions:
   contents: read
@@ -62,11 +66,21 @@ jobs:
           workspace_parent="$(dirname "$GITHUB_WORKSPACE")"
           runner_ci_home="${RUNNER_CI_HOME:-}"
           run_maybe_sudo() {
-            if [[ "${EUID}" -ne 0 ]] && command -v sudo > /dev/null 2>&1; then
-              sudo "$@"
-            else
+            if [[ "${EUID}" -eq 0 ]]; then
               "$@"
+              return
             fi
+
+            if "$@"; then
+              return
+            fi
+
+            local status=$?
+            if command -v sudo > /dev/null 2>&1; then
+              sudo -n "$@" && return
+            fi
+
+            return "$status"
           }
 
           if [[ -x /usr/local/bin/repair-github-runner-workspace ]]; then
@@ -183,6 +197,8 @@ jobs:
       packages: write
     outputs:
       image_ref: ${{ steps.meta.outputs.image_ref }}
+      image_archive_key: ${{ steps.meta.outputs.image_archive_key }}
+      image_archive_namespace: ${{ steps.meta.outputs.image_archive_namespace }}
     steps:
       - uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
         with:
@@ -200,11 +216,21 @@ jobs:
           workspace_parent="$(dirname "$GITHUB_WORKSPACE")"
           runner_ci_home="${RUNNER_CI_HOME:-}"
           run_maybe_sudo() {
-            if [[ "${EUID}" -ne 0 ]] && command -v sudo > /dev/null 2>&1; then
-              sudo "$@"
-            else
+            if [[ "${EUID}" -eq 0 ]]; then
               "$@"
+              return
             fi
+
+            if "$@"; then
+              return
+            fi
+
+            local status=$?
+            if command -v sudo > /dev/null 2>&1; then
+              sudo -n "$@" && return
+            fi
+
+            return "$status"
           }
 
           if [[ -x /usr/local/bin/repair-github-runner-workspace ]]; then
@@ -255,7 +281,7 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ secrets.STRATEGY_NODE_GHCR_USERNAME || github.actor }}
-          password: ${{ secrets.STRATEGY_NODE_GHCR_TOKEN || secrets.GITHUB_TOKEN }}
+          password: ${{ secrets.STRATEGY_NODE_GHCR_TOKEN || github.token }}
 
       - name: Resolve image reference
         id: meta
@@ -276,8 +302,32 @@ jobs:
           fi
           image_ref="ghcr.io/${REPOSITORY_OWNER}/cloudbet-market-maker/betting-arbitrage-node:${tag}"
           echo "image_ref=$image_ref" >> "$GITHUB_OUTPUT"
+          echo "image_tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "image_archive_key=betting-arbitrage-node.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "image_archive_namespace=strategy-node-images/$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Check for reusable strategy-node image archive
+        id: image-archive-cache
+        if: >-
+          github.event_name == 'workflow_dispatch' &&
+          github.event.inputs.deploy_enabled == 'true' &&
+          github.event.inputs.image_transport == 'archive' &&
+          github.event.inputs.force_rebuild != 'true'
+        env:
+          CI_TRANSIENT_RUN_PREFIX: >-
+            ${{ github.repository }}/${{ steps.meta.outputs.image_archive_namespace }}
+          IMAGE_ARCHIVE_KEY: ${{ steps.meta.outputs.image_archive_key }}
+        run: |
+          if bash scripts/ci/ci_transient_artifacts.sh exists "$IMAGE_ARCHIVE_KEY"; then
+            echo "archive_exists=true" >> "$GITHUB_OUTPUT"
+            echo "Reusing existing strategy-node image archive: $IMAGE_ARCHIVE_KEY"
+          else
+            echo "archive_exists=false" >> "$GITHUB_OUTPUT"
+            echo "No reusable strategy-node image archive found; build required."
+          fi
 
       - name: Build strategy-node image
+        if: steps.image-archive-cache.outputs.archive_exists != 'true'
         env:
           IMAGE_REF: ${{ steps.meta.outputs.image_ref }}
         run: |
@@ -285,9 +335,10 @@ jobs:
 
       - name: Push strategy-node image to GHCR
         if: >-
-          github.event_name != 'workflow_dispatch' ||
+          ${{ steps.image-archive-cache.outputs.archive_exists != 'true' &&
+          (github.event_name != 'workflow_dispatch' ||
           github.event.inputs.deploy_enabled != 'true' ||
-          github.event.inputs.image_transport != 'archive'
+          github.event.inputs.image_transport != 'archive') }}
         env:
           IMAGE_REF: ${{ steps.meta.outputs.image_ref }}
         run: |
@@ -295,6 +346,7 @@ jobs:
 
       - name: Save strategy-node image archive
         if: >-
+          steps.image-archive-cache.outputs.archive_exists != 'true' &&
           github.event_name == 'workflow_dispatch' &&
           github.event.inputs.deploy_enabled == 'true' &&
           github.event.inputs.image_transport == 'archive'
@@ -308,13 +360,18 @@ jobs:
 
       - name: Upload strategy-node image archive to transient CI storage
         if: >-
+          steps.image-archive-cache.outputs.archive_exists != 'true' &&
           github.event_name == 'workflow_dispatch' &&
           github.event.inputs.deploy_enabled == 'true' &&
           github.event.inputs.image_transport == 'archive'
+        env:
+          CI_TRANSIENT_RUN_PREFIX: >-
+            ${{ github.repository }}/${{ steps.meta.outputs.image_archive_namespace }}
+          IMAGE_ARCHIVE_KEY: ${{ steps.meta.outputs.image_archive_key }}
         run: >-
           bash scripts/ci/ci_transient_artifacts.sh put
           artifacts/strategy-node-image/betting-arbitrage-node.tar.gz
-          strategy-node-image/betting-arbitrage-node.tar.gz
+          "$IMAGE_ARCHIVE_KEY"
 
   deploy-strategy-node:
     name: deploy-strategy-node
@@ -342,11 +399,21 @@ jobs:
           workspace_parent="$(dirname "$GITHUB_WORKSPACE")"
           runner_ci_home="${RUNNER_CI_HOME:-}"
           run_maybe_sudo() {
-            if [[ "${EUID}" -ne 0 ]] && command -v sudo > /dev/null 2>&1; then
-              sudo "$@"
-            else
+            if [[ "${EUID}" -eq 0 ]]; then
               "$@"
+              return
             fi
+
+            if "$@"; then
+              return
+            fi
+
+            local status=$?
+            if command -v sudo > /dev/null 2>&1; then
+              sudo -n "$@" && return
+            fi
+
+            return "$status"
           }
 
           if [[ -x /usr/local/bin/repair-github-runner-workspace ]]; then
@@ -422,9 +489,14 @@ jobs:
 
       - name: Download strategy-node image archive
         if: github.event.inputs.image_transport == 'archive'
+        env:
+          CI_TRANSIENT_RUN_PREFIX: >-
+            ${{ github.repository }}/${{ needs.build-strategy-node-image.outputs.image_archive_namespace }}
+          IMAGE_ARCHIVE_KEY: ${{ needs.build-strategy-node-image.outputs.image_archive_key }}
         run: >-
-          bash scripts/ci/ci_transient_artifacts.sh get-prefix
-          strategy-node-image artifacts/strategy-node-image
+          bash scripts/ci/ci_transient_artifacts.sh get
+          "$IMAGE_ARCHIVE_KEY"
+          artifacts/strategy-node-image/betting-arbitrage-node.tar.gz
 
       - name: Upload manifest and deploy script
         env:

@@ -33,6 +33,8 @@ from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.component import Logger
 from nautilus_trader.common.component import MessageBus
+from nautilus_trader.data.messages import SubscribeQuoteTicks
+from nautilus_trader.data.messages import UnsubscribeQuoteTicks
 from nautilus_trader.live.data_client import LiveMarketDataClient
 from nautilus_trader.model.data import DataType
 from nautilus_trader.model.data import QuoteTick
@@ -136,10 +138,11 @@ class SXBetDataClient(LiveMarketDataClient):
         await self._http_client.disconnect()
         self._log.info("SXBetDataClient disconnected")
 
-    async def _subscribe_quote_ticks(self, instrument_id: InstrumentId) -> None:
+    async def _subscribe_quote_ticks(self, command: SubscribeQuoteTicks) -> None:
         """
         Subscribe to quote ticks for an instrument.
         """
+        instrument_id = command.instrument_id
         self._subscribed_instruments.add(instrument_id)
         msg = f"Subscribed to quote ticks: {instrument_id}"
         self._log.debug(msg)
@@ -148,10 +151,11 @@ class SXBetDataClient(LiveMarketDataClient):
             self._running = True
             self._polling_task = asyncio.create_task(self._poll_order_books())
 
-    async def _unsubscribe_quote_ticks(self, instrument_id: InstrumentId) -> None:
+    async def _unsubscribe_quote_ticks(self, command: UnsubscribeQuoteTicks) -> None:
         """
         Unsubscribe from quote ticks.
         """
+        instrument_id = command.instrument_id
         self._subscribed_instruments.discard(instrument_id)
         msg = f"Unsubscribed from quote ticks: {instrument_id}"
         self._log.debug(msg)
@@ -507,4 +511,6 @@ class SXBetDataClient(LiveMarketDataClient):
         """
         Return subscribed quote tick instrument IDs.
         """
-        return list(self._subscribed_instruments)
+        subscriptions = set(super().subscribed_quote_ticks())
+        subscriptions.update(self._subscribed_instruments)
+        return sorted(subscriptions, key=str)

@@ -20,6 +20,11 @@
 - Before spending a GitHub Actions run for Python validation, prefer the
   `ci-preflight` skill and run the same validation slice on the GCP CI runner
   when that runner is reachable.
+- For multi-part plans, release/runtime recovery, CI migrations, or any request
+  to drive work to completion without stopping, use the `end-to-end-completion`
+  skill. Maintain a requirements ledger, let newer requirements supersede older
+  conflicting ones, exhaust safe workarounds before escalating, and verify every
+  requested outcome before handing work back.
 - Do not persist plaintext cloud passwords in repo files, skills, scripts, logs,
   or documentation. Use interactive auth, short-lived credentials, or an
   approved secret manager.

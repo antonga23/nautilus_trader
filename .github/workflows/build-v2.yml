@@ -43,11 +43,21 @@ jobs:
           workspace_parent="$(dirname "$GITHUB_WORKSPACE")"
           runner_ci_home="${RUNNER_CI_HOME:-}"
           run_maybe_sudo() {
-            if [[ "${EUID}" -ne 0 ]] && command -v sudo > /dev/null 2>&1; then
-              sudo "$@"
-            else
+            if [[ "${EUID}" -eq 0 ]]; then
               "$@"
+              return
             fi
+
+            if "$@"; then
+              return
+            fi
+
+            local status=$?
+            if command -v sudo > /dev/null 2>&1; then
+              sudo -n "$@" && return
+            fi
+
+            return "$status"
           }
 
           if [[ -x /usr/local/bin/repair-github-runner-workspace ]]; then
@@ -110,11 +120,21 @@ jobs:
           workspace_parent="$(dirname "$GITHUB_WORKSPACE")"
           runner_ci_home="${RUNNER_CI_HOME:-}"
           run_maybe_sudo() {
-            if [[ "${EUID}" -ne 0 ]] && command -v sudo > /dev/null 2>&1; then
-              sudo "$@"
-            else
+            if [[ "${EUID}" -eq 0 ]]; then
               "$@"
+              return
             fi
+
+            if "$@"; then
+              return
+            fi
+
+            local status=$?
+            if command -v sudo > /dev/null 2>&1; then
+              sudo -n "$@" && return
+            fi
+
+            return "$status"
           }
 
           if [[ -x /usr/local/bin/repair-github-runner-workspace ]]; then
@@ -169,11 +189,21 @@ jobs:
           workspace_parent="$(dirname "$GITHUB_WORKSPACE")"
           runner_ci_home="${RUNNER_CI_HOME:-}"
           run_maybe_sudo() {
-            if [[ "${EUID}" -ne 0 ]] && command -v sudo > /dev/null 2>&1; then
-              sudo "$@"
-            else
+            if [[ "${EUID}" -eq 0 ]]; then
               "$@"
+              return
             fi
+
+            if "$@"; then
+              return
+            fi
+
+            local status=$?
+            if command -v sudo > /dev/null 2>&1; then
+              sudo -n "$@" && return
+            fi
+
+            return "$status"
           }
 
           if [[ -x /usr/local/bin/repair-github-runner-workspace ]]; then
@@ -266,11 +296,21 @@ jobs:
           workspace_parent="$(dirname "$GITHUB_WORKSPACE")"
           runner_ci_home="${RUNNER_CI_HOME:-}"
           run_maybe_sudo() {
-            if [[ "${EUID}" -ne 0 ]] && command -v sudo > /dev/null 2>&1; then
-              sudo "$@"
-            else
+            if [[ "${EUID}" -eq 0 ]]; then
               "$@"
+              return
             fi
+
+            if "$@"; then
+              return
+            fi
+
+            local status=$?
+            if command -v sudo > /dev/null 2>&1; then
+              sudo -n "$@" && return
+            fi
+
+            return "$status"
           }
 
           if [[ -x /usr/local/bin/repair-github-runner-workspace ]]; then
@@ -381,11 +421,21 @@ jobs:
           workspace_parent="$(dirname "$GITHUB_WORKSPACE")"
           runner_ci_home="${RUNNER_CI_HOME:-}"
           run_maybe_sudo() {
-            if [[ "${EUID}" -ne 0 ]] && command -v sudo > /dev/null 2>&1; then
-              sudo "$@"
-            else
+            if [[ "${EUID}" -eq 0 ]]; then
               "$@"
+              return
             fi
+
+            if "$@"; then
+              return
+            fi
+
+            local status=$?
+            if command -v sudo > /dev/null 2>&1; then
+              sudo -n "$@" && return
+            fi
+
+            return "$status"
           }
 
           if [[ -x /usr/local/bin/repair-github-runner-workspace ]]; then

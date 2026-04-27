@@ -141,6 +141,13 @@ Runner split for this workflow:
 Container image build:
 
 - `.docker/strategy_node.dockerfile`
+- Archive-based workflow dispatches store reusable image archives in Cloudflare
+  R2 under `strategy-node-images/<image_tag>/betting-arbitrage-node.tar.gz`.
+  The release workflow reuses that archive when it exists and only rebuilds when
+  the archive is missing or `force_rebuild=true`.
+- Use `image_transport=archive` for EC2 deploys unless an explicit registry
+  release is required. Archive transport avoids GHCR push/pull failures on the
+  runtime path and keeps transient release handoffs in repo-owned R2 storage.
 
 Host-side scripts:
 

@@ -3,6 +3,9 @@
 ## Role and labels
 
 - Role: primary self-hosted CI runner for this repository
+- Current host: `cloudbet-gcp-ci-runner-20260426` in `us-central1-a`
+- Current machine type: `e2-custom-6-10240`
+- Runner workspace disk: 256 GB `pd-standard` mounted at `/opt/actions-runner`
 - Expected labels: `self-hosted`, `Linux`, `X64`, `cloudbet-market-maker`, `ci`, `gcp`, `ubuntu24`
 - Expected OS: Ubuntu 24.04
 
@@ -31,6 +34,7 @@ systemctl list-units 'actions.runner.antonga23-cloudbet-market-maker*.service'
 The health script reports:
 
 - root disk headroom
+- `/opt/actions-runner` workspace disk headroom
 - runner root, `_diag`, and local cache usage
 - Docker availability
 - `bash`, `python3`, `git`, `uv`, `gcc`, and `clang`

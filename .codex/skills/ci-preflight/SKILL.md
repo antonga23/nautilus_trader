@@ -35,7 +35,8 @@ strategy-node deploy, runtime, lifecycle, health, and log inspection work.
 1. Verify GCP access before any remote CI preflight:
    - active account: `info@unlimitedgames.shop`,
    - project: `shining-sol-493421-h6`,
-   - zone: `europe-west4-c`.
+   - runner host: `cloudbet-gcp-ci-runner-20260426`,
+   - zone: `us-central1-a`.
 2. Sync or fetch the candidate checkout on the GCP CI host.
 3. If the preflight is expected to take longer than 60 seconds, use the
    `background-monitor` skill and run the GCP preflight as a background watcher
@@ -73,7 +74,7 @@ polling:
 
 ```text
 exec_command(
-  cmd="mkdir -p artifacts/monitors && log_path=artifacts/monitors/gcp-ci-preflight.log && set +e; /Users/alatha.ntonga/google-cloud-sdk/bin/gcloud compute ssh instance-20260415-214825 --project=shining-sol-493421-h6 --zone=europe-west4-c --command 'set -euo pipefail; cd /opt/actions-runner/_work/cloudbet-market-maker/cloudbet-market-maker; git config --global --add safe.directory \"$PWD\"; bash scripts/ci/run_ci_preflight.sh' > \"$log_path\" 2>&1; status=$?; set -e; if [ \"$status\" -ne 0 ]; then tail -n 200 \"$log_path\" >&2 || true; fi; exit \"$status\"",
+  cmd="mkdir -p artifacts/monitors && log_path=artifacts/monitors/gcp-ci-preflight.log && set +e; /Users/alatha.ntonga/google-cloud-sdk/bin/gcloud compute ssh cloudbet-gcp-ci-runner-20260426 --project=shining-sol-493421-h6 --zone=us-central1-a --command 'set -euo pipefail; cd /opt/actions-runner/_work/cloudbet-market-maker/cloudbet-market-maker; git config --global --add safe.directory \"$PWD\"; bash scripts/ci/run_ci_preflight.sh' > \"$log_path\" 2>&1; status=$?; set -e; if [ \"$status\" -ne 0 ]; then tail -n 200 \"$log_path\" >&2 || true; fi; exit \"$status\"",
   yield_time_ms=1000,
   max_output_tokens=12000
 )
