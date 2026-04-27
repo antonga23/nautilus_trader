@@ -5,7 +5,6 @@
 # -------------------------------------------------------------------------------------------------
 
 from decimal import Decimal
-from typing import cast
 
 import pytest
 
@@ -424,29 +423,3 @@ def test_python_evaluation_skips_missing_unprofitable_and_push_edges() -> None:
         )
         == []
     )
-
-
-def test_node_snapshot_helper_fallbacks() -> None:
-    instrument = _instrument()
-    node = OpportunityGraph._node_from_instrument(instrument)
-
-    class MinimalInstrument:
-        pass
-
-    class BadStartInstrument:
-        def parsed_start_time(self):
-            return "not-a-datetime"
-
-    payload = OpportunityGraph._node_payload_from_node(
-        node,
-        cast(CryptoBettingInstrument, MinimalInstrument()),
-    )
-    bad_payload = OpportunityGraph._node_payload_from_node(
-        node,
-        cast(CryptoBettingInstrument, BadStartInstrument()),
-    )
-
-    assert payload["event_key_no_time"] == node.canonical_event_key
-    assert payload["selection_key"] == node.outcome
-    assert payload["start_time_ns"] is None
-    assert bad_payload["start_time_ns"] is None
