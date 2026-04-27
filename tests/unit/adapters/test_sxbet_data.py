@@ -20,6 +20,8 @@ from nautilus_trader.adapters.sxbet.signing import decimal_odds_to_percentage
 from nautilus_trader.common.component import Logger
 from nautilus_trader.common.functions import get_event_loop
 from nautilus_trader.core.uuid import UUID4
+from nautilus_trader.data.engine import DataEngine
+from nautilus_trader.data.engine import DataEngineConfig
 from nautilus_trader.data.messages import SubscribeQuoteTicks
 from nautilus_trader.data.messages import UnsubscribeQuoteTicks
 from nautilus_trader.model.identifiers import Venue
@@ -52,6 +54,31 @@ def _make_instrument(
         price=2.0,
         currency=Currency.from_str("USDT"),
         info={"outcome_one": outcome_one},
+    )
+
+
+def _make_provider() -> SXBetInstrumentProvider:
+    return SXBetInstrumentProvider(
+        http_client=Mock(),
+        config=SXBetInstrumentProviderConfig(),
+        logger=Mock(),
+    )
+
+
+def _make_client(
+    *,
+    instrument_provider: SXBetInstrumentProvider | None = None,
+    config: SXBetDataClientConfig | None = None,
+) -> SXBetDataClient:
+    return SXBetDataClient(
+        loop=get_event_loop(),
+        http_client=Mock(),
+        instrument_provider=instrument_provider or _make_provider(),
+        msgbus=TestComponentStubs.msgbus(),
+        cache=TestComponentStubs.cache(),
+        clock=TestComponentStubs.clock(),
+        logger=Logger(name="test-sxbet-data"),
+        config=config or SXBetDataClientConfig(),
     )
 
 
@@ -125,11 +152,7 @@ async def test_fetch_and_publish_quotes_emits_one_sided_quote():
             },
         },
     )
-    instrument_provider = SXBetInstrumentProvider(
-        http_client=Mock(),
-        config=SXBetInstrumentProviderConfig(),
-        logger=Mock(),
-    )
+    instrument_provider = _make_provider()
     instrument_provider.find_by_market_hash = Mock(return_value=[instrument])
     client = SXBetDataClient(
         loop=get_event_loop(),
@@ -178,11 +201,7 @@ async def test_fetch_and_publish_quote_stats_reports_two_sided_liquidity():
             },
         },
     )
-    instrument_provider = SXBetInstrumentProvider(
-        http_client=Mock(),
-        config=SXBetInstrumentProviderConfig(),
-        logger=Mock(),
-    )
+    instrument_provider = _make_provider()
     instrument_provider.find_by_market_hash = Mock(return_value=[instrument_one, instrument_two])
     client = SXBetDataClient(
         loop=get_event_loop(),
@@ -233,11 +252,7 @@ async def test_fetch_and_publish_quotes_ignores_opposite_outcome_orders():
             },
         },
     )
-    instrument_provider = SXBetInstrumentProvider(
-        http_client=Mock(),
-        config=SXBetInstrumentProviderConfig(),
-        logger=Mock(),
-    )
+    instrument_provider = _make_provider()
     instrument_provider.find_by_market_hash = Mock(return_value=[instrument])
     client = SXBetDataClient(
         loop=get_event_loop(),
@@ -266,11 +281,7 @@ async def test_fetch_and_publish_quotes_ignores_opposite_outcome_orders():
 async def test_connect_sends_loaded_instruments_to_data_engine():
     http_client = Mock()
     http_client.connect = AsyncMock()
-    provider = SXBetInstrumentProvider(
-        http_client=Mock(),
-        config=SXBetInstrumentProviderConfig(),
-        logger=Mock(),
-    )
+    provider = _make_provider()
     provider.load_all_async = AsyncMock()
     provider.get_all = Mock(return_value={"inst-1": Mock(), "inst-2": Mock()})
 
@@ -302,20 +313,10 @@ def test_auto_subscribe_loaded_instruments_respects_limit(monkeypatch):
         "inst-2": _make_instrument(market_hash="market-1", outcome="away", outcome_one=False),
         "inst-3": _make_instrument(market_hash="market-2", outcome="home", outcome_one=True),
     }
-    provider = SXBetInstrumentProvider(
-        http_client=Mock(),
-        config=SXBetInstrumentProviderConfig(),
-        logger=Mock(),
-    )
+    provider = _make_provider()
     provider.get_all = Mock(return_value=instruments)
-    client = SXBetDataClient(
-        loop=get_event_loop(),
-        http_client=Mock(),
+    client = _make_client(
         instrument_provider=provider,
-        msgbus=TestComponentStubs.msgbus(),
-        cache=TestComponentStubs.cache(),
-        clock=TestComponentStubs.clock(),
-        logger=Logger(name="test-sxbet-data"),
         config=SXBetDataClientConfig(
             auto_subscribe_quote_ticks=True,
             quote_subscription_limit=2,
@@ -339,16 +340,7 @@ async def test_subscribe_quote_ticks_accepts_nautilus_command(monkeypatch):
     create_task = Mock(return_value=task)
     monkeypatch.setattr("nautilus_trader.adapters.sxbet.data.asyncio.create_task", create_task)
     instrument = _make_instrument()
-    client = SXBetDataClient(
-        loop=get_event_loop(),
-        http_client=Mock(),
-        instrument_provider=Mock(),
-        msgbus=TestComponentStubs.msgbus(),
-        cache=TestComponentStubs.cache(),
-        clock=TestComponentStubs.clock(),
-        logger=Logger(name="test-sxbet-data"),
-        config=SXBetDataClientConfig(),
-    )
+    client = _make_client()
     command = SubscribeQuoteTicks(
         instrument_id=instrument.id,
         client_id=None,
@@ -366,16 +358,7 @@ async def test_subscribe_quote_ticks_accepts_nautilus_command(monkeypatch):
 @pytest.mark.asyncio
 async def test_unsubscribe_quote_ticks_accepts_nautilus_command():
     instrument = _make_instrument()
-    client = SXBetDataClient(
-        loop=get_event_loop(),
-        http_client=Mock(),
-        instrument_provider=Mock(),
-        msgbus=TestComponentStubs.msgbus(),
-        cache=TestComponentStubs.cache(),
-        clock=TestComponentStubs.clock(),
-        logger=Logger(name="test-sxbet-data"),
-        config=SXBetDataClientConfig(),
-    )
+    client = _make_client()
     client._subscribed_instruments.add(instrument.id)
     command = UnsubscribeQuoteTicks(
         instrument_id=instrument.id,
@@ -388,6 +371,52 @@ async def test_unsubscribe_quote_ticks_accepts_nautilus_command():
     await client._unsubscribe_quote_ticks(command)
 
     assert client.subscribed_quote_ticks() == []
+
+
+def test_data_engine_subscribe_quote_ticks_routes_to_sxbet_client(monkeypatch):
+    task = Mock()
+    task.done.return_value = False
+    create_task = Mock(return_value=task)
+    monkeypatch.setattr("nautilus_trader.adapters.sxbet.data.asyncio.create_task", create_task)
+    clock = TestComponentStubs.clock()
+    msgbus = TestComponentStubs.msgbus()
+    cache = TestComponentStubs.cache()
+    data_engine = DataEngine(
+        msgbus=msgbus,
+        cache=cache,
+        clock=clock,
+        config=DataEngineConfig(),
+    )
+    instrument = _make_instrument()
+    provider = _make_provider()
+    provider.find = Mock(return_value=instrument)
+    client = SXBetDataClient(
+        loop=get_event_loop(),
+        http_client=Mock(),
+        instrument_provider=provider,
+        msgbus=msgbus,
+        cache=cache,
+        clock=clock,
+        logger=Logger(name="test-sxbet-data"),
+        config=SXBetDataClientConfig(),
+    )
+    client.create_task = Mock()
+    data_engine.register_client(client)
+    data_engine.process(instrument)
+    command = SubscribeQuoteTicks(
+        instrument_id=instrument.id,
+        client_id=None,
+        venue=Venue("SXBET"),
+        command_id=UUID4(),
+        ts_init=clock.timestamp_ns(),
+    )
+
+    data_engine.execute(command)
+
+    assert data_engine.subscribed_quote_ticks() == [instrument.id]
+    assert client.subscribed_quote_ticks() == [instrument.id]
+    client.create_task.assert_called_once()
+    create_task.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -427,11 +456,7 @@ async def test_fetch_and_publish_best_odds_uses_market_hash_batch():
             },
         },
     )
-    instrument_provider = SXBetInstrumentProvider(
-        http_client=Mock(),
-        config=SXBetInstrumentProviderConfig(),
-        logger=Mock(),
-    )
+    instrument_provider = _make_provider()
     instrument_provider.find_by_market_hash = Mock(return_value=[instrument])
     client = SXBetDataClient(
         loop=get_event_loop(),
@@ -511,11 +536,7 @@ async def test_fetch_and_publish_best_odds_uses_outcome_two_and_skips_unsubscrib
             },
         },
     )
-    instrument_provider = SXBetInstrumentProvider(
-        http_client=Mock(),
-        config=SXBetInstrumentProviderConfig(),
-        logger=Mock(),
-    )
+    instrument_provider = _make_provider()
     instrument_provider.find_by_market_hash = Mock(return_value=[subscribed, unsubscribed])
     client = SXBetDataClient(
         loop=get_event_loop(),

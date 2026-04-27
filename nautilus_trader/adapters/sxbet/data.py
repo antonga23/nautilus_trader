@@ -511,4 +511,6 @@ class SXBetDataClient(LiveMarketDataClient):
         """
         Return subscribed quote tick instrument IDs.
         """
-        return list(self._subscribed_instruments)
+        subscriptions = set(super().subscribed_quote_ticks())
+        subscriptions.update(self._subscribed_instruments)
+        return sorted(subscriptions, key=str)
