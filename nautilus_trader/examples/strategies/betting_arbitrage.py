@@ -539,10 +539,7 @@ class BettingArbitrageStrategy(Strategy):
             if self._suppress_fast_snapshot_before_context(snapshot, now_ns):
                 log_summary = True
                 continue
-            log_summary = (
-                self._handle_fast_actionable_snapshot(snapshot, now_ns)
-                or log_summary
-            )
+            log_summary = self._handle_fast_actionable_snapshot(snapshot, now_ns) or log_summary
         if log_summary:
             self._log_arbitrage_summary()
 
@@ -1134,9 +1131,7 @@ class BettingArbitrageStrategy(Strategy):
         quote_age_a_secs = self._fast_snapshot_quote_age_secs(now_ns, quote_ts_a)
         quote_age_b_secs = self._fast_snapshot_quote_age_secs(now_ns, quote_ts_b)
         quote_delta_secs = abs(int(quote_ts_a) - int(quote_ts_b)) / NANOSECONDS_PER_SECOND
-        opportunity_id = (
-            f"{canonical_pair_id}|{match_type}|{odds_a_raw}:{odds_b_raw}"
-        )
+        opportunity_id = f"{canonical_pair_id}|{match_type}|{odds_a_raw}:{odds_b_raw}"
         diagnostic_suffix = (
             f" | opportunity_id={opportunity_id} "
             f"match_type={match_type} "

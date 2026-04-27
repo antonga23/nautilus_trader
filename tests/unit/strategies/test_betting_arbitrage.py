@@ -928,7 +928,9 @@ class TestBettingArbitrageStrategy:
             "same_market",
             False,
         )
-        assert strategy._handle_fast_opportunity_candidate(missing_snapshot, 11_000_000_000) is False
+        assert (
+            strategy._handle_fast_opportunity_candidate(missing_snapshot, 11_000_000_000) is False
+        )
         strategy._log_fast_arbitrage_snapshot(
             "missing-a",
             "missing-b",
@@ -947,14 +949,17 @@ class TestBettingArbitrageStrategy:
         manual_off = BettingArbitrageStrategy(
             config=BettingArbitrageConfig(opportunity_log_manual_instructions=False),
         )
-        assert manual_off._fast_diagnostics_instrument_fields(
-            instrument,
-            instrument,
-            2.0,
-            2.0,
-            0.0,
-            0.0,
-        ) == ""
+        assert (
+            manual_off._fast_diagnostics_instrument_fields(
+                instrument,
+                instrument,
+                2.0,
+                2.0,
+                0.0,
+                0.0,
+            )
+            == ""
+        )
 
     def test_fast_snapshot_materialized_edge_cases(self):
         strategy = BettingArbitrageStrategy(
@@ -1109,7 +1114,9 @@ class TestBettingArbitrageStrategy:
         )
         strategy._handle_arbitrage_opportunity = Mock()
         instrument_a, instrument_b, snapshot = self._fast_candidate_snapshot(strategy)
-        strategy._seen_opportunity_pairs.add(strategy._canonical_pair_id(instrument_a, instrument_b))
+        strategy._seen_opportunity_pairs.add(
+            strategy._canonical_pair_id(instrument_a, instrument_b)
+        )
 
         strategy._handle_fast_opportunity_candidate(snapshot, 11_000_000_000)
 
