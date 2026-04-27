@@ -381,9 +381,21 @@ jobs:
 
       - name: Validate deploy inputs
         run: |
-          test -n "$STRATEGY_NODE_HOST"
-          test -n "$STRATEGY_NODE_SSH_USER"
-          test -n "$STRATEGY_NODE_SSH_KEY"
+          missing=()
+          for name in \
+            STRATEGY_NODE_HOST \
+            STRATEGY_NODE_SSH_USER \
+            STRATEGY_NODE_SSH_KEY
+          do
+            if [ -z "${!name}" ]; then
+              missing+=("$name")
+            fi
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            printf 'Missing required strategy-node deploy secret(s): %s\n' \
+              "${missing[*]}" >&2
+            exit 1
+          fi
           case "$STRATEGY_NODE_CONTAINER_NAME" in
             ""|*[!A-Za-z0-9_.-]*)
               echo "Invalid STRATEGY_NODE_CONTAINER_NAME: $STRATEGY_NODE_CONTAINER_NAME" >&2
@@ -519,6 +531,12 @@ jobs:
       - name: Cleanup remote helper files
         if: always()
         run: |
+          if [ ! -s strategy-node.key ] \
+            || [ -z "$STRATEGY_NODE_SSH_USER" ] \
+            || [ -z "$STRATEGY_NODE_HOST" ]; then
+            echo "Skipping remote cleanup because SSH deploy inputs were not prepared."
+            exit 0
+          fi
           ssh -i strategy-node.key -o StrictHostKeyChecking=no "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST" \
             'rm -f /tmp/deploy_betting_strategy_node.sh \
               /tmp/runner_health_check.sh \
