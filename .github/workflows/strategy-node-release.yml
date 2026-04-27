@@ -46,7 +46,7 @@ env:
 jobs:
   validate-manifests:
     name: validate-strategy-node-manifests
-    timeout-minutes: 90
+    timeout-minutes: 45
     runs-on: [self-hosted, linux, x64, cloudbet-market-maker, ci, gcp, ubuntu24]
     env:
       UV_PYTHON: "3.12"
@@ -105,14 +105,40 @@ jobs:
           python-version: '3.12'
           free-disk-space: 'false'
           build-type: 'test'
-          skip-install-deps: 'true'
           use-github-actions-cache: 'false'
 
-      - name: Build and install wheel
-        uses: ./.github/actions/common-wheel-build
-        with:
-          python-version: '3.12'
-          github_ref: ${{ github.ref }}
+      - name: Compute wheel cache key
+        id: wheel-key
+        run: echo "key=$(python3 scripts/ci/compute_test_wheel_cache_key.py)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore self-hosted wheel cache
+        id: local-wheel-cache
+        run: bash scripts/ci/self_hosted_wheel_cache.sh restore "${{ steps.wheel-key.outputs.key }}"
+
+      - name: Install dependencies
+        run: uv sync --all-groups --all-extras --no-install-package nautilus_trader
+
+      - name: Build wheel on cache miss
+        if: steps.local-wheel-cache.outputs.cache-hit != 'true'
+        env:
+          BUILD_MODE: release
+        run: |
+          uv build --wheel --python 3.12
+          ls -lh dist/
+
+      - name: Install wheel
+        run: uv pip install dist/*.whl
+
+      - name: Save self-hosted wheel cache
+        if: steps.local-wheel-cache.outputs.cache-hit != 'true'
+        run: bash scripts/ci/self_hosted_wheel_cache.sh save "${{ steps.wheel-key.outputs.key }}"
+
+      - name: Upload validated wheel to transient CI storage
+        run: |
+          wheel_path="$(find dist -maxdepth 1 -name 'nautilus_trader-*.whl' -type f | sort | tail -n 1)"
+          test -n "$wheel_path"
+          bash scripts/ci/ci_transient_artifacts.sh \
+            put "$wheel_path" "strategy-node-wheel/$(basename "$wheel_path")"
 
       - name: Validate SX.bet manifest
         run: >-
@@ -143,7 +169,7 @@ jobs:
 
   build-strategy-node-image:
     name: build-strategy-node-image
-    timeout-minutes: 120
+    timeout-minutes: 45
     needs: [validate-manifests]
     runs-on: [self-hosted, linux, x64, cloudbet-market-maker, ci, gcp, ubuntu24]
     env:
@@ -159,7 +185,11 @@ jobs:
         with:
           egress-policy: audit
           allowed-endpoints: |
+            auth.docker.io:443
+            production.cloudflare.docker.com:443
             ghcr.io:443
+            index.docker.io:443
+            registry-1.docker.io:443
 
       - name: Repair self-hosted workspace
         shell: bash
@@ -210,6 +240,9 @@ jobs:
           git --version
           docker --version
 
+      - name: Download validated wheel
+        run: bash scripts/ci/ci_transient_artifacts.sh get-prefix strategy-node-wheel dist
+
       - name: Log in to GHCR
         if: >-
           github.event_name != 'workflow_dispatch' ||
@@ -245,7 +278,7 @@ jobs:
         env:
           IMAGE_REF: ${{ steps.meta.outputs.image_ref }}
         run: |
-          docker build -t "$IMAGE_REF" -f .docker/strategy_node.dockerfile .
+          docker build --pull -t "$IMAGE_REF" -f .docker/strategy_node.dockerfile .
 
       - name: Push strategy-node image to GHCR
         if: >-
