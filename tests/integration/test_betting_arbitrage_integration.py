@@ -4,15 +4,14 @@
 #  Integration tests for betting arbitrage strategy.
 # -------------------------------------------------------------------------------------------------
 
+from decimal import Decimal
 from unittest.mock import MagicMock
 from unittest.mock import Mock
 
 import pytest
 
-from decimal import Decimal
-
-from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.betting.common.enums import SelectionSide
+from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.betting.semantics import FileRuleCache
 from nautilus_trader.adapters.betting.semantics import RuleClassifier
 from nautilus_trader.adapters.betting.semantics import RuleCorpusManifest
@@ -21,13 +20,17 @@ from nautilus_trader.adapters.betting.semantics import RuleStore
 from nautilus_trader.adapters.betting.semantics import SafetyTier
 from nautilus_trader.adapters.betting.semantics import SemanticRuleTemplate
 from nautilus_trader.adapters.betting.semantics import TemplateSupportStats
+from nautilus_trader.config import LoggingConfig
+from nautilus_trader.config import TradingNodeConfig
 from nautilus_trader.examples.strategies.betting_arbitrage import BettingArbitrageConfig
 from nautilus_trader.examples.strategies.betting_arbitrage import BettingArbitrageStrategy
+from nautilus_trader.live.node import TradingNode
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import Symbol
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.objects import Currency
+from nautilus_trader.test_kit.functions import ensure_all_tasks_completed
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
 from nautilus_trader.test_kit.stubs.data import TestDataStubs
 
@@ -37,6 +40,9 @@ class TestBettingArbitrageIntegration:
     """
     Integration tests for betting arbitrage strategy.
     """
+
+    def teardown_method(self):
+        ensure_all_tasks_completed()
 
     @pytest.fixture
     def mock_instrument_soccer_tenbet(self):
@@ -351,9 +357,104 @@ class TestBettingArbitrageIntegration:
             start_time="2026-03-13T18:00:00Z",
         )
 
+    def test_trading_node_processes_betting_arbitrage_graph_quotes(
+        self,
+        event_loop_for_setup,
+    ):
+        """
+        Run the strategy registered on a real trading node with realistic quote ticks.
+        """
+        node = TradingNode(
+            config=TradingNodeConfig(logging=LoggingConfig(bypass_logging=True)),
+            loop=event_loop_for_setup,
+        )
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                min_profit_margin=Decimal("0.02"),
+                enabled_venues=frozenset(["SXBET", "BLACKBET"]),
+                auto_execute=False,
+            ),
+        )
+        strategy._handle_arbitrage_opportunity = Mock()
+        instrument_a = self._total_goals_instrument(
+            venue="SXBET",
+            event_id="arsenal-chelsea-20260503",
+            outcome="over",
+            price=2.30,
+        )
+        instrument_b = self._total_goals_instrument(
+            venue="BLACKBET",
+            event_id="arsenal-chelsea-20260503",
+            outcome="under",
+            price=2.45,
+        )
 
-# Note: Full end-to-end integration tests would require:
-# - Actual NautilusTrader environment (TradingNode, Cache, MessageBus)
-# - Live or simulated data feeds
-# - Mock order submission and execution
-# These tests focus on filter logic and subscription management.
+        node.cache.add_instrument(instrument_a)
+        node.cache.add_instrument(instrument_b)
+        node.trader.add_strategy(strategy)
+        node.build()
+
+        strategy.on_start()
+
+        now_ns = strategy.clock.timestamp_ns()
+        tick_a = TestDataStubs.quote_tick(
+            instrument=instrument_a,
+            bid_price=2.30,
+            ask_price=2.40,
+            ts_event=now_ns - 250_000_000,
+        )
+        tick_b = TestDataStubs.quote_tick(
+            instrument=instrument_b,
+            bid_price=2.35,
+            ask_price=2.45,
+            ts_event=now_ns,
+        )
+
+        strategy.on_quote_tick(tick_a)
+        strategy._handle_arbitrage_opportunity.assert_not_called()
+
+        strategy.on_quote_tick(tick_b)
+
+        strategy._handle_arbitrage_opportunity.assert_called_once()
+        opportunity, diagnostics = strategy._handle_arbitrage_opportunity.call_args.args
+        assert opportunity.odds_a == Decimal("2.45")
+        assert opportunity.odds_b == Decimal("2.30")
+        assert diagnostics.venue_a == "BLACKBET"
+        assert diagnostics.venue_b == "SXBET"
+        assert diagnostics.match_type == "same_market"
+        assert diagnostics.canonical_pair_id in strategy._seen_opportunity_pairs
+        assert strategy._raw_arbitrage_detections == 1
+        assert strategy._opportunities_found == 1
+        assert strategy._executable_candidates == 1
+        assert strategy._opportunity_graph.node_count == 2
+        assert strategy._opportunity_graph.connected_edge_count(str(instrument_b.id)) == 1
+
+    @staticmethod
+    def _total_goals_instrument(
+        *,
+        venue: str,
+        event_id: str,
+        outcome: str,
+        price: float,
+    ) -> CryptoBettingInstrument:
+        return CryptoBettingInstrument(
+            venue=Venue(venue),
+            event_id=event_id,
+            event_name="Arsenal vs Chelsea",
+            home_name="Arsenal",
+            away_name="Chelsea",
+            sport_name="Soccer",
+            competition_name="English Premier League",
+            market_name="Total Goals",
+            market_type="total_goals",
+            outcome=outcome,
+            side=SelectionSide.BACK,
+            price=price,
+            currency=Currency.from_str("USDC"),
+            params="line=2.5",
+            start_time="2026-05-03T16:30:00Z",
+            live=False,
+        )
+
+
+# External venue connectivity and live order submission remain covered by adapter tests.

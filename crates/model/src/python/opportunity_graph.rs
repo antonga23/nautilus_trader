@@ -1120,7 +1120,9 @@ mod tests {
         assert!(!core.is_event_match(&source, &target));
         assert_eq!(core.start_time_cluster_count_for_pair(&source, &target), 0);
 
-        target.event_key_no_time = source.event_key_no_time.clone();
+        target
+            .event_key_no_time
+            .clone_from(&source.event_key_no_time);
         target.start_time_ns = None;
         let mut missing_source = source.clone();
         missing_source.start_time_ns = None;
