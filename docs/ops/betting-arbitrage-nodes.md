@@ -271,6 +271,30 @@ two instruments, events, selections, odds, suggested stake split, expected
 profit, and `execution_enabled` state. This is intended to make a candidate
 auditable before live execution is enabled.
 
+The runtime quality gate now classifies opportunities before they are counted
+as executable:
+
+- `valid`: fresh, same-cycle candidate with sufficient top-of-book size on both
+  legs
+- `stale`: quote age breached the configured threshold
+- `event_mismatch`: the matched instruments do not resolve to the same event
+- `line_mismatch`: the matched instruments disagree on market params/line
+- `liquidity_insufficient`: suggested stake exceeds top-of-book size on at
+  least one leg
+- `needs_manual_review`: the candidate is fresh but spans different quote
+  cycles or another non-fatal review condition
+
+Use the persisted-log analyzer to turn a session log into a structured summary:
+
+```bash
+python scripts/strategy_nodes/analyze_betting_arbitrage_log.py \
+  /opt/cloudbet/strategy-nodes/betting-arbitrage-node-sxbet/sessions/<sessionId>/node.log \
+  --limit 20
+```
+
+Pass `--json` when you want the accepted/suppressed opportunities as machine-
+readable records for deeper review.
+
 ## Control plane backend hooks
 
 The control-plane backend now exposes:
