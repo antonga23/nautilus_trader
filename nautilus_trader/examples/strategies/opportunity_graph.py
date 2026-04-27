@@ -25,10 +25,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from nautilus_trader.core.nautilus_pyo3 import OpportunityGraphCore
 
 from nautilus_trader.adapters.betting.common.enums import MarketType
 from nautilus_trader.adapters.betting.common.enums import Outcome
