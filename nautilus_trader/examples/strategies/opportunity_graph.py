@@ -40,7 +40,9 @@ from nautilus_trader.model.data import QuoteTick
 
 _OPPORTUNITY_GRAPH_CORE_CLS: Any | None
 try:
-    from nautilus_trader.core.nautilus_pyo3 import OpportunityGraphCore as _pyo3_opportunity_graph_core_cls
+    from nautilus_trader.core.nautilus_pyo3 import (
+        OpportunityGraphCore as _pyo3_opportunity_graph_core_cls,
+    )
 except (ImportError, ModuleNotFoundError):
     _OPPORTUNITY_GRAPH_CORE_CLS = None
 else:
