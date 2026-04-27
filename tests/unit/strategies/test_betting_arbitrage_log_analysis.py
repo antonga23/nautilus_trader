@@ -26,7 +26,7 @@ def test_analyze_betting_arbitrage_log_parses_accepted_manual_execution_records(
     assert record.execution_enabled is False
     assert record.expected_profit == Decimal("8.48")
     assert record.instrument_a.event == "Team A vs Team B"
-    assert record.instrument_a.available_size == Decimal("300")
+    assert record.instrument_a.available_size == Decimal(300)
     assert record.instrument_b.selection == "under"
 
 
@@ -44,7 +44,7 @@ def test_analyze_betting_arbitrage_log_parses_suppressed_classifications_and_sum
     assert suppressed.classification == "liquidity_insufficient"
     assert suppressed.classification_reason == "top_of_book_size"
     assert suppressed.instrument_a is not None
-    assert suppressed.instrument_a.available_size == Decimal("10")
+    assert suppressed.instrument_a.available_size == Decimal(10)
 
     assert analysis.summaries[-1]["liquidity_suppressions"] == 4
     assert analysis.summary_counts()["suppressed_by_reason"] == {"liquidity_insufficient": 1}

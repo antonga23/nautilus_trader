@@ -387,7 +387,7 @@ class BettingArbitrageStrategy(Strategy):
     @staticmethod
     def _quote_available_size(quote: QuoteTick | None) -> Decimal:
         if quote is None:
-            return Decimal("0")
+            return Decimal(0)
 
         bid_price = quote.bid_price.as_decimal()
         ask_price = quote.ask_price.as_decimal()
@@ -400,7 +400,7 @@ class BettingArbitrageStrategy(Strategy):
             return ask_size
         if bid_price > 0:
             return bid_size
-        return Decimal("0")
+        return Decimal(0)
 
     def on_quote_tick(self, tick: QuoteTick) -> None:
         """

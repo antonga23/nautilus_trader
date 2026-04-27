@@ -98,7 +98,7 @@ def _strip_quotes(value: str | None) -> str | None:
 
 
 def _parse_decimal(value: str | None) -> Decimal | None:
-    if value in {None, ""}:
+    if value is None or value == "":
         return None
     try:
         return Decimal(value)
@@ -107,7 +107,7 @@ def _parse_decimal(value: str | None) -> Decimal | None:
 
 
 def _parse_float(value: str | None) -> float | None:
-    if value in {None, ""}:
+    if value is None or value == "":
         return None
     try:
         return float(value)
