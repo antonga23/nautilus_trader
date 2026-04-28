@@ -32,11 +32,13 @@ jobs:
         id: policy
         continue-on-error: true
         env:
+          EVENT_PATH: ${{ github.event_path }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
         run: |
           python3 scripts/ci/enforce_develop_push_policy.py \
-            --repo "${{ github.repository }}" \
-            --event-path "${{ github.event_path }}" \
+            --repo "$REPO" \
+            --event-path "$EVENT_PATH" \
             --output-json develop-guard-decision.json \
             --github-output "$GITHUB_OUTPUT"
 
@@ -45,18 +47,24 @@ jobs:
 
       - name: Configure authenticated git remote
         if: steps.policy.outputs.action != 'allow'
+        env:
+          REPO: ${{ github.repository }}
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git remote set-url origin \
-            "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}"
+            "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/$REPO"
 
       - name: Revert unauthorized develop push
         if: steps.policy.outputs.action == 'revert_range'
+        env:
+          AFTER_SHA: ${{ steps.policy.outputs.after }}
+          BEFORE_SHA: ${{ steps.policy.outputs.before }}
+          POLICY_REASON: ${{ steps.policy.outputs.reason }}
         run: |
           set -euo pipefail
-          before_sha="${{ steps.policy.outputs.before }}"
-          after_sha="${{ steps.policy.outputs.after }}"
+          before_sha="$BEFORE_SHA"
+          after_sha="$AFTER_SHA"
           if [[ -z "$before_sha" || -z "$after_sha" ]]; then
             echo "Missing before/after SHAs for revert" >&2
             exit 1
@@ -80,14 +88,16 @@ jobs:
 
           git commit \
             -m "[develop-guard] Revert unauthorized develop push ${after_sha}" \
-            -m "${{ steps.policy.outputs.reason }}"
+            -m "$POLICY_REASON"
           git push origin HEAD:develop
 
       - name: Restore previous develop ref after forced push
         if: steps.policy.outputs.action == 'restore_ref'
+        env:
+          BEFORE_SHA: ${{ steps.policy.outputs.before }}
         run: |
           set -euo pipefail
-          before_sha="${{ steps.policy.outputs.before }}"
+          before_sha="$BEFORE_SHA"
           if [[ -z "$before_sha" ]]; then
             echo "Missing previous develop SHA for forced-push restore" >&2
             exit 1
@@ -96,6 +106,8 @@ jobs:
 
       - name: Fail on policy violation
         if: steps.policy.outputs.action != 'allow'
+        env:
+          POLICY_REASON: ${{ steps.policy.outputs.reason }}
         run: |
-          echo "Develop branch policy violation: ${{ steps.policy.outputs.reason }}" >&2
+          echo "Develop branch policy violation: $POLICY_REASON" >&2
           exit 1

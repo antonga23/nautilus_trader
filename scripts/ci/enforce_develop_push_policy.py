@@ -77,11 +77,11 @@ class GitHubApiClient:
         try:
             with urllib.request.urlopen(request, timeout=60) as response:  # noqa: S310 - request URL is https-only.
                 return json.load(response)
-        except urllib.error.HTTPError as exc:  # pragma: no cover - surfaced via CLI exit
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"GitHub API {exc.code} for {path}: {detail}") from exc
-        except urllib.error.URLError as exc:  # pragma: no cover - surfaced via CLI exit
-            raise RuntimeError(f"GitHub API request failed for {path}: {exc}") from exc
+        except urllib.error.HTTPError as e:  # pragma: no cover - surfaced via CLI exit
+            detail = e.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"GitHub API {e.code} for {path}: {detail}") from e
+        except urllib.error.URLError as e:  # pragma: no cover - surfaced via CLI exit
+            raise RuntimeError(f"GitHub API request failed for {path}: {e}") from e
 
     def compare_commits(self, repo: str, before: str, after: str) -> dict[str, Any]:
         return self._request_json(f"/repos/{repo}/compare/{before}...{after}")
@@ -125,7 +125,7 @@ def _list_push_commits(
     head_commit = event.get("head_commit")
     if head_commit:
         normalized_head = _normalize_commit(
-            {"sha": after, "message": head_commit.get("message", "")}
+            {"sha": after, "message": head_commit.get("message", "")},
         )
         if normalized_head["sha"] and normalized_head["sha"] not in {
             item["sha"] for item in commits
@@ -136,7 +136,8 @@ def _list_push_commits(
 
 
 def _select_merged_develop_pr(
-    commit_sha: str, pull_requests: list[dict[str, Any]]
+    commit_sha: str,
+    pull_requests: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
     merged = [
         pr
@@ -347,8 +348,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         decision = evaluate_push_policy(GitHubApiClient(args.token), args.repo, event)
-    except Exception as exc:  # pragma: no cover - CLI error handling
-        print(f"develop push policy evaluation failed: {exc}", file=sys.stderr)
+    except Exception as e:  # pragma: no cover - CLI error handling
+        print(f"develop push policy evaluation failed: {e}", file=sys.stderr)
         return 1
 
     payload = decision.to_dict()
