@@ -77,8 +77,6 @@ jobs:
         env:
           RUNNER_ROLE: ci
           ACTIONS_RUNNER_ROOT: /opt/actions-runner
-          GITHUB_RUNNER_SERVICE_NAME: >-
-            actions.runner.antonga23-cloudbet-market-maker.cloudbet-gcp-ci-runner-20260426.service
         run: |
           set -euo pipefail
           bash scripts/ci/runner_health_check.sh
@@ -155,8 +153,6 @@ jobs:
         env:
           RUNNER_ROLE: deploy
           ACTIONS_RUNNER_ROOT: /home/ubuntu/actions-runner
-          GITHUB_RUNNER_SERVICE_NAME: >-
-            actions.runner.antonga23-cloudbet-market-maker.ip-172-31-21-124-cloudbet-market-maker.service
           OPTIONAL_SERVICE_NAMES: control-plane.service,actions-runner-hygiene.timer
         run: |
           set -euo pipefail
