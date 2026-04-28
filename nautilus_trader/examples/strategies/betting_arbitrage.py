@@ -54,10 +54,14 @@ class ArbitrageDiagnostics:
     instrument_id_b: str
     event_name_a: str
     event_name_b: str
+    canonical_event_key_a: str
+    canonical_event_key_b: str
     market_id_a: str
     market_id_b: str
     market_name_a: str
     market_name_b: str
+    params_a: str
+    params_b: str
     outcome_a: str
     outcome_b: str
     venue_a: str
@@ -66,6 +70,8 @@ class ArbitrageDiagnostics:
     odds_b: Decimal
     quote_ts_a: int
     quote_ts_b: int
+    quote_cycle_id_a: str
+    quote_cycle_id_b: str
     quote_age_a_secs: float
     quote_age_b_secs: float
     quote_delta_secs: float
@@ -624,20 +630,24 @@ class BettingArbitrageStrategy(Strategy):
             f"venue={diagnostics.venue_a} "
             f"event={diagnostics.event_name_a!r} "
             f"market={diagnostics.market_name_a!r} "
+            f"params={diagnostics.params_a!r} "
             f"selection={diagnostics.outcome_a!r} "
             f"odds={diagnostics.odds_a} "
             f"market_id={diagnostics.market_id_a} "
             f"available_size={diagnostics.available_size_a} "
+            f"quote_cycle_id={diagnostics.quote_cycle_id_a} "
             f"quote_age_secs={diagnostics.quote_age_a_secs:.2f}; "
             "Instrument B: "
             f"instrument_id={diagnostics.instrument_id_b} "
             f"venue={diagnostics.venue_b} "
             f"event={diagnostics.event_name_b!r} "
             f"market={diagnostics.market_name_b!r} "
+            f"params={diagnostics.params_b!r} "
             f"selection={diagnostics.outcome_b!r} "
             f"odds={diagnostics.odds_b} "
             f"market_id={diagnostics.market_id_b} "
             f"available_size={diagnostics.available_size_b} "
+            f"quote_cycle_id={diagnostics.quote_cycle_id_b} "
             f"quote_age_secs={diagnostics.quote_age_b_secs:.2f}"
         )
 
@@ -661,20 +671,26 @@ class BettingArbitrageStrategy(Strategy):
             f"venue={diagnostics.venue_a} "
             f"event={diagnostics.event_name_a!r} "
             f"market={diagnostics.market_name_a!r} "
+            f"params={diagnostics.params_a!r} "
             f"selection={diagnostics.outcome_a!r} "
             f"odds={diagnostics.odds_a} "
             f"market_id={diagnostics.market_id_a} "
-            f"available_size={diagnostics.available_size_a}; "
+            f"available_size={diagnostics.available_size_a} "
+            f"quote_cycle_id={diagnostics.quote_cycle_id_a} "
+            f"quote_age_secs={diagnostics.quote_age_a_secs:.2f}; "
             "Instrument B: "
             f"bet={stake_b} "
             f"instrument_id={diagnostics.instrument_id_b} "
             f"venue={diagnostics.venue_b} "
             f"event={diagnostics.event_name_b!r} "
             f"market={diagnostics.market_name_b!r} "
+            f"params={diagnostics.params_b!r} "
             f"selection={diagnostics.outcome_b!r} "
             f"odds={diagnostics.odds_b} "
             f"market_id={diagnostics.market_id_b} "
-            f"available_size={diagnostics.available_size_b}; "
+            f"available_size={diagnostics.available_size_b} "
+            f"quote_cycle_id={diagnostics.quote_cycle_id_b} "
+            f"quote_age_secs={diagnostics.quote_age_b_secs:.2f}; "
             f"expected_profit={expected_profit} "
             f"max_total_stake={self._config.max_total_stake}"
         )
@@ -735,10 +751,14 @@ class BettingArbitrageStrategy(Strategy):
             instrument_id_b=str(inst_b.id),
             event_name_a=inst_a.event_name,
             event_name_b=inst_b.event_name,
+            canonical_event_key_a=inst_a.event_key(include_start_time=False),
+            canonical_event_key_b=inst_b.event_key(include_start_time=False),
             market_id_a=str(inst_a.market_id or inst_a.event_id),
             market_id_b=str(inst_b.market_id or inst_b.event_id),
             market_name_a=inst_a.market_name,
             market_name_b=inst_b.market_name,
+            params_a=inst_a.params,
+            params_b=inst_b.params,
             outcome_a=inst_a.outcome,
             outcome_b=inst_b.outcome,
             venue_a=str(inst_a.id.venue),
@@ -747,6 +767,8 @@ class BettingArbitrageStrategy(Strategy):
             odds_b=opportunity.odds_b,
             quote_ts_a=int(quote_a.ts_event),
             quote_ts_b=int(quote_b.ts_event),
+            quote_cycle_id_a=self._quote_cycle_id(quote_a),
+            quote_cycle_id_b=self._quote_cycle_id(quote_b),
             quote_age_a_secs=quote_age_a_secs,
             quote_age_b_secs=quote_age_b_secs,
             quote_delta_secs=quote_delta_secs,
@@ -777,14 +799,37 @@ class BettingArbitrageStrategy(Strategy):
         return max(0.0, (now_ns - int(quote.ts_event)) / NANOSECONDS_PER_SECOND)
 
     @staticmethod
+    def _quote_cycle_id(quote: QuoteTick) -> str:
+        if quote.ts_event <= 0:
+            return "unknown"
+        return str(int(quote.ts_event) // NANOSECONDS_PER_SECOND)
+
+    @staticmethod
+    def _is_trusted_same_venue_match_odds_pair(
+        instrument_a: CryptoBettingInstrument,
+        instrument_b: CryptoBettingInstrument,
+    ) -> bool:
+        if instrument_a.venue_name != instrument_b.venue_name:
+            return False
+        if str(instrument_a.venue_name) != "SXBET":
+            return False
+        if not instrument_a.matches_event(instrument_b):
+            return False
+        if instrument_a.market_name != instrument_b.market_name:
+            return False
+        if instrument_a.params != instrument_b.params:
+            return False
+        if MarketMatcher._is_two_way_match_odds_market(instrument_a) is False:
+            return False
+        if MarketMatcher._is_two_way_match_odds_market(instrument_b) is False:
+            return False
+        return instrument_a.is_opposite_outcome(instrument_b)
+
+    @staticmethod
     def _matcher_suspect_reason(
         instrument_a: CryptoBettingInstrument,
         instrument_b: CryptoBettingInstrument,
     ) -> tuple[bool, str]:
-        if instrument_a.venue_name == instrument_b.venue_name and (
-            instrument_a.event_id != instrument_b.event_id
-        ):
-            return True, "same_venue_event_id_mismatch"
         if not instrument_a.matches_event(instrument_b):
             return True, "event_mismatch"
         if (
@@ -792,6 +837,15 @@ class BettingArbitrageStrategy(Strategy):
             and instrument_a.params != instrument_b.params
         ):
             return True, "same_market_params_mismatch"
+        if instrument_a.venue_name == instrument_b.venue_name and (
+            instrument_a.event_id != instrument_b.event_id
+        ):
+            if BettingArbitrageStrategy._is_trusted_same_venue_match_odds_pair(
+                instrument_a,
+                instrument_b,
+            ):
+                return False, "none"
+            return True, "same_venue_event_id_mismatch"
         return False, "none"
 
     @staticmethod
@@ -840,6 +894,7 @@ class BettingArbitrageStrategy(Strategy):
         self.log.info(
             "Arbitrage quality summary: "
             f"raw_detections={self._raw_arbitrage_detections} "
+            f"valid_opportunities={self._opportunities_found} "
             f"unique_opportunities={len(self._seen_opportunity_pairs)} "
             f"duplicate_suppressions={self._duplicate_opportunities_suppressed} "
             f"stale_quote_suppressions={self._stale_quote_suppressions} "
@@ -877,10 +932,15 @@ class BettingArbitrageStrategy(Strategy):
                 f"classification_reason={diagnostics.classification_reason} "
                 f"venue_a={diagnostics.venue_a} venue_b={diagnostics.venue_b} "
                 f"event_id_a={diagnostics.event_id_a} event_id_b={diagnostics.event_id_b} "
+                f"canonical_event_key_a={diagnostics.canonical_event_key_a!r} "
+                f"canonical_event_key_b={diagnostics.canonical_event_key_b!r} "
                 f"market_id_a={diagnostics.market_id_a} market_id_b={diagnostics.market_id_b} "
                 f"market_a={diagnostics.market_name_a} market_b={diagnostics.market_name_b} "
+                f"params_a={diagnostics.params_a!r} params_b={diagnostics.params_b!r} "
                 f"outcome_a={diagnostics.outcome_a} outcome_b={diagnostics.outcome_b} "
                 f"quote_ts_a={diagnostics.quote_ts_a} quote_ts_b={diagnostics.quote_ts_b} "
+                f"quote_cycle_id_a={diagnostics.quote_cycle_id_a} "
+                f"quote_cycle_id_b={diagnostics.quote_cycle_id_b} "
                 f"quote_age_a_secs={diagnostics.quote_age_a_secs:.2f} "
                 f"quote_age_b_secs={diagnostics.quote_age_b_secs:.2f} "
                 f"quote_delta_secs={diagnostics.quote_delta_secs:.2f} "

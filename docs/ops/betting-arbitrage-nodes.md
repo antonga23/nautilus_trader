@@ -267,9 +267,10 @@ Graph concepts:
 
 Accepted and suppressed arbitrage logs include manual-readable instrument
 context. Accepted candidates include a `Manual execution plan` section with the
-two instruments, events, selections, odds, suggested stake split, expected
-profit, and `execution_enabled` state. This is intended to make a candidate
-auditable before live execution is enabled.
+two instruments, events, market names, market params, selections, odds,
+suggested stake split, available top-of-book size, quote cycle ids, quote age,
+expected profit, and `execution_enabled` state. This is intended to make a
+candidate auditable before live execution is enabled.
 
 The runtime quality gate now classifies opportunities before they are counted
 as executable:
@@ -294,6 +295,10 @@ python scripts/strategy_nodes/analyze_betting_arbitrage_log.py \
 
 Pass `--json` when you want the accepted/suppressed opportunities as machine-
 readable records for deeper review.
+
+Text mode also prints the top repeated `matcher_suspect` clusters so you can
+see which event/market combinations are driving false positives before touching
+execution logic.
 
 ## Control plane backend hooks
 
