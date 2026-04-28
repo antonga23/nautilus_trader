@@ -2,14 +2,14 @@
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import sys
-import urllib.error
 import urllib.parse
-import urllib.request
 from dataclasses import asdict
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 NULL_SHA = "0" * 40
@@ -51,8 +51,11 @@ class GitHubApiClient:
         parsed = urllib.parse.urlparse(api_url)
         if parsed.scheme != "https":
             raise ValueError(f"GitHub API URL must use https, got {api_url!r}")
+        if not parsed.netloc:
+            raise ValueError(f"GitHub API URL must include a host, got {api_url!r}")
         self._token = token
-        self._api_url = api_url.rstrip("/")
+        self._api_host = parsed.netloc
+        self._api_prefix = parsed.path.rstrip("/")
 
     def _request_json(
         self,
@@ -61,27 +64,34 @@ class GitHubApiClient:
         query: dict[str, Any] | None = None,
         accept: str = DEFAULT_ACCEPT,
     ) -> Any:
-        url = f"{self._api_url}{path}"
+        request_path = f"{self._api_prefix}{path}"
         if query:
-            url = f"{url}?{urllib.parse.urlencode(query, doseq=True)}"
+            request_path = f"{request_path}?{urllib.parse.urlencode(query, doseq=True)}"
 
-        request = urllib.request.Request(  # noqa: S310 - api_url is restricted to https during client init.
-            url,
-            headers={
-                "Accept": accept,
-                "Authorization": f"Bearer {self._token}",
-                "User-Agent": "cloudbet-market-maker-develop-guard",
-                "X-GitHub-Api-Version": "2022-11-28",
-            },
-        )
+        connection = http.client.HTTPSConnection(self._api_host, timeout=60)
         try:
-            with urllib.request.urlopen(request, timeout=60) as response:  # noqa: S310 - request URL is https-only.
-                return json.load(response)
-        except urllib.error.HTTPError as e:  # pragma: no cover - surfaced via CLI exit
-            detail = e.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"GitHub API {e.code} for {path}: {detail}") from e
-        except urllib.error.URLError as e:  # pragma: no cover - surfaced via CLI exit
+            connection.request(
+                "GET",
+                request_path,
+                headers={
+                    "Accept": accept,
+                    "Authorization": f"Bearer {self._token}",
+                    "User-Agent": "cloudbet-market-maker-develop-guard",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                },
+            )
+            response = connection.getresponse()
+            payload = response.read().decode("utf-8", errors="replace")
+        except OSError as e:  # pragma: no cover - surfaced via CLI exit
             raise RuntimeError(f"GitHub API request failed for {path}: {e}") from e
+        finally:
+            connection.close()
+
+        if response.status >= 400:
+            raise RuntimeError(f"GitHub API {response.status} for {path}: {payload}")
+        if not payload:
+            return {}
+        return json.loads(payload)
 
     def compare_commits(self, repo: str, before: str, after: str) -> dict[str, Any]:
         return self._request_json(f"/repos/{repo}/compare/{before}...{after}")
@@ -317,8 +327,16 @@ def evaluate_push_policy(
     )
 
 
+def _resolve_output_path(raw_path: str) -> Path:
+    candidate = Path(raw_path).expanduser()
+    if not candidate.name:
+        raise ValueError(f"Output path must point to a file, got {raw_path!r}")
+    return candidate.resolve(strict=False)
+
+
 def _write_github_outputs(path: str, decision: PolicyDecision) -> None:
-    with open(path, "a", encoding="utf-8") as handle:
+    output_path = _resolve_output_path(path)
+    with output_path.open("a", encoding="utf-8") as handle:
         handle.write(f"action={decision.action}\n")
         handle.write(f"reason={decision.reason}\n")
         handle.write(f"before={decision.before}\n")
@@ -355,7 +373,9 @@ def main(argv: list[str] | None = None) -> int:
     payload = decision.to_dict()
     serialized = json.dumps(payload, indent=2, sort_keys=True)
     if args.output_json:
-        with open(args.output_json, "w", encoding="utf-8") as handle:
+        output_json_path = _resolve_output_path(args.output_json)
+        output_json_path.parent.mkdir(parents=True, exist_ok=True)
+        with output_json_path.open("w", encoding="utf-8") as handle:
             handle.write(serialized)
             handle.write("\n")
 

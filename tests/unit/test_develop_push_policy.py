@@ -9,11 +9,18 @@ MODULE_PATH = (
     Path(__file__).resolve().parents[2] / "scripts" / "ci" / "enforce_develop_push_policy.py"
 )
 SPEC = importlib.util.spec_from_file_location("develop_push_policy", MODULE_PATH)
-assert SPEC is not None
-assert SPEC.loader is not None
+if SPEC is None:
+    raise RuntimeError(f"Unable to create import spec for {MODULE_PATH}")
+if SPEC.loader is None:
+    raise RuntimeError(f"Import spec for {MODULE_PATH} is missing a loader")
 MODULE = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
+
+
+def _expect(condition: bool, message: str) -> None:
+    if not condition:
+        raise AssertionError(message)
 
 
 class FakeGitHubApiClient:
@@ -23,16 +30,16 @@ class FakeGitHubApiClient:
         self._runs_by_head_sha = runs_by_head_sha
 
     def compare_commits(self, repo: str, before: str, after: str):
-        assert repo == "antonga23/cloudbet-market-maker"
-        assert before == "before"
+        _expect(repo == "antonga23/cloudbet-market-maker", f"unexpected repo: {repo}")
+        _expect(before == "before", f"unexpected before sha: {before}")
         return {"commits": self._compare_commits}
 
     def associated_pull_requests(self, repo: str, commit_sha: str):
-        assert repo == "antonga23/cloudbet-market-maker"
+        _expect(repo == "antonga23/cloudbet-market-maker", f"unexpected repo: {repo}")
         return self._pull_requests_by_sha.get(commit_sha, [])
 
     def workflow_runs_for_head_sha(self, repo: str, head_sha: str):
-        assert repo == "antonga23/cloudbet-market-maker"
+        _expect(repo == "antonga23/cloudbet-market-maker", f"unexpected repo: {repo}")
         return self._runs_by_head_sha.get(head_sha, [])
 
 
@@ -85,11 +92,17 @@ def test_evaluate_push_policy_allows_green_pr_merge():
         _push_event(head_message="Merge pull request #55"),
     )
 
-    assert decision.action == "allow"
-    assert decision.pr_number == 55
-    assert decision.invalid_commits == []
-    assert len(decision.validations) == 1
-    assert decision.validations[0].pr_validation_run_id == 25049770395
+    _expect(decision.action == "allow", f"unexpected action: {decision.action}")
+    _expect(decision.pr_number == 55, f"unexpected pr_number: {decision.pr_number}")
+    _expect(
+        decision.invalid_commits == [],
+        f"unexpected invalid commits: {decision.invalid_commits}",
+    )
+    _expect(len(decision.validations) == 1, f"unexpected validations: {decision.validations}")
+    _expect(
+        decision.validations[0].pr_validation_run_id == 25049770395,
+        f"unexpected run id: {decision.validations[0].pr_validation_run_id}",
+    )
 
 
 def test_evaluate_push_policy_reverts_direct_push_without_pr():
@@ -105,9 +118,15 @@ def test_evaluate_push_policy_reverts_direct_push_without_pr():
         _push_event(head_message="hotfix directly on develop"),
     )
 
-    assert decision.action == "revert_range"
-    assert decision.invalid_commits == ["after"]
-    assert "not associated with a merged develop pull request" in decision.reason
+    _expect(decision.action == "revert_range", f"unexpected action: {decision.action}")
+    _expect(
+        decision.invalid_commits == ["after"],
+        f"unexpected invalid commits: {decision.invalid_commits}",
+    )
+    _expect(
+        "not associated with a merged develop pull request" in decision.reason,
+        f"unexpected reason: {decision.reason}",
+    )
 
 
 def test_evaluate_push_policy_reverts_pr_without_successful_validation():
@@ -123,9 +142,15 @@ def test_evaluate_push_policy_reverts_pr_without_successful_validation():
         _push_event(head_message="Merge pull request #99"),
     )
 
-    assert decision.action == "revert_range"
-    assert decision.invalid_commits == ["after"]
-    assert "has no successful pr-validation run" in decision.reason
+    _expect(decision.action == "revert_range", f"unexpected action: {decision.action}")
+    _expect(
+        decision.invalid_commits == ["after"],
+        f"unexpected invalid commits: {decision.invalid_commits}",
+    )
+    _expect(
+        "has no successful pr-validation run" in decision.reason,
+        f"unexpected reason: {decision.reason}",
+    )
 
 
 def test_evaluate_push_policy_restores_forced_pushes():
@@ -137,9 +162,15 @@ def test_evaluate_push_policy_restores_forced_pushes():
         _push_event(forced=True, head_message="force update"),
     )
 
-    assert decision.action == "restore_ref"
-    assert decision.invalid_commits == ["after"]
-    assert "forced pushes to develop" in decision.reason
+    _expect(decision.action == "restore_ref", f"unexpected action: {decision.action}")
+    _expect(
+        decision.invalid_commits == ["after"],
+        f"unexpected invalid commits: {decision.invalid_commits}",
+    )
+    _expect(
+        "forced pushes to develop" in decision.reason,
+        f"unexpected reason: {decision.reason}",
+    )
 
 
 def test_evaluate_push_policy_allows_guard_revert_push():
@@ -154,9 +185,12 @@ def test_evaluate_push_policy_allows_guard_revert_push():
         ),
     )
 
-    assert decision.action == "allow"
-    assert decision.reason == "allowing develop-guard remediation push"
-    assert decision.validations == []
+    _expect(decision.action == "allow", f"unexpected action: {decision.action}")
+    _expect(
+        decision.reason == "allowing develop-guard remediation push",
+        f"unexpected reason: {decision.reason}",
+    )
+    _expect(decision.validations == [], f"unexpected validations: {decision.validations}")
 
 
 def test_evaluate_push_policy_reverts_pushes_with_multiple_prs():
@@ -181,6 +215,12 @@ def test_evaluate_push_policy_reverts_pushes_with_multiple_prs():
         _push_event(after="commit-two", head_message="multiple commits"),
     )
 
-    assert decision.action == "revert_range"
-    assert set(decision.invalid_commits) == {"commit-one", "commit-two"}
-    assert "exactly one merged pull request" in decision.reason
+    _expect(decision.action == "revert_range", f"unexpected action: {decision.action}")
+    _expect(
+        set(decision.invalid_commits) == {"commit-one", "commit-two"},
+        f"unexpected invalid commits: {decision.invalid_commits}",
+    )
+    _expect(
+        "exactly one merged pull request" in decision.reason,
+        f"unexpected reason: {decision.reason}",
+    )
