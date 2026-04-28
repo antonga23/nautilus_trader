@@ -77,7 +77,7 @@ runs:
       env:
         BUILD_TYPE: ${{ inputs.build-type }}
       run: |
-        packages=(build-essential curl git make pkg-config shfmt)
+        packages=(build-essential curl git make pkg-config)
 
         if [[ "$BUILD_TYPE" == "pre-commit" ]]; then
           packages+=(ripgrep zlib1g-dev)
@@ -102,6 +102,11 @@ runs:
         sudo apt-get install -y "${missing_packages[@]}" -o Acquire::Retries=5
         sudo apt-get clean
         sudo rm -rf /var/lib/apt/lists/*
+
+    - name: Install shfmt (Linux, pre-commit)
+      if: runner.os == 'Linux' && inputs.build-type == 'pre-commit'
+      shell: bash
+      run: bash scripts/install-shfmt.sh
 
     - name: Install capnp and ripgrep (macOS)
       if: runner.os == 'macOS' && inputs.skip-capnp != 'true'
