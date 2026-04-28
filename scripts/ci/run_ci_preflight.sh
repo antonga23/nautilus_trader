@@ -83,6 +83,7 @@ docker run --rm \
   -e RUNNER_WORKSPACE=/runner-workspace \
   -e UV_PYTHON=3.12 \
   -e PYTEST_XDIST_WORKERS="${PYTEST_XDIST_WORKERS:-6}" \
+  -e FULL_SUITE_PYTEST_XDIST_WORKERS="${FULL_SUITE_PYTEST_XDIST_WORKERS:-4}" \
   -e PYTHONPATH=/workspace \
   -e PGHOST="$postgres_container" \
   -e PGPASSWORD=pass \

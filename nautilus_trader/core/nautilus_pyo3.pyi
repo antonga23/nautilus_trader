@@ -1120,6 +1120,65 @@ class FundingRateUpdate:
     def to_json_bytes(self) -> bytes: ...
     def to_msgpack_bytes(self) -> bytes: ...
 
+class OpportunityGraphCore:
+    def __init__(self, include_cross_venue: bool = True, min_confidence: float = 0.5) -> None: ...
+    def clear(self) -> None: ...
+    def build(self, nodes: Any) -> None: ...
+    def add_instrument(self, node: Any) -> bool: ...
+    def update_quote(
+        self,
+        node_id: str,
+        odds: float,
+        received_ns: int,
+        exchange_ts_ns: int,
+    ) -> bool: ...
+    def evaluate_updated_node(
+        self,
+        node_id: str,
+        min_profit_margin: float,
+        now_ns: int,
+    ) -> list[tuple[str, str, str, float, int, int]]: ...
+    def update_quote_and_evaluate(
+        self,
+        node_id: str,
+        odds: float,
+        received_ns: int,
+        exchange_ts_ns: int,
+        min_profit_margin: float,
+        now_ns: int,
+    ) -> list[tuple[str, str, str, float, int, int]]: ...
+    def update_quote_and_scan_fast(
+        self,
+        node_id: str,
+        odds: float,
+        received_ns: int,
+        exchange_ts_ns: int,
+        min_profit_margin: float,
+        now_ns: int,
+    ) -> list[tuple[str, str, str, str, float, float, float, float, int, int, str, bool]]: ...
+    def connected_edge_count(self, node_id: str) -> int: ...
+    def node_count(self) -> int: ...
+    def edge_count(self) -> int: ...
+    def quote_state_count(self) -> int: ...
+    def edge_snapshots(
+        self,
+    ) -> list[
+        tuple[
+            str,
+            str,
+            str,
+            str,
+            float,
+            bool,
+            str,
+            bool,
+            bool,
+            float | None,
+            int | None,
+            int | None,
+        ]
+    ]: ...
+
 class InstrumentStatus:
     def __init__(
         self,

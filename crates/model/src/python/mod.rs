@@ -25,6 +25,7 @@ pub mod events;
 pub mod identifiers;
 pub mod instruments;
 pub mod macros;
+pub mod opportunity_graph;
 pub mod orderbook;
 pub mod orders;
 pub mod position;
@@ -165,6 +166,7 @@ pub fn model(_: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Order book
     m.add_class::<crate::orderbook::book::OrderBook>()?;
     m.add_class::<crate::orderbook::level::BookLevel>()?;
+    m.add_class::<opportunity_graph::OpportunityGraphCore>()?;
     m.add_function(wrap_pyfunction!(
         crate::python::orderbook::book::py_update_book_with_quote_tick,
         m

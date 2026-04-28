@@ -1,0 +1,500 @@
+# -------------------------------------------------------------------------------------------------
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
+#
+#  Unit tests for opportunity graph engines.
+# -------------------------------------------------------------------------------------------------
+# skipcq: BAN-B101
+# bandit:skip=B101
+# skipcq: PYL-C0114, PYL-C0116, PYL-R0913, PYL-W0212
+# pylint: disable=duplicate-code,missing-function-docstring,no-name-in-module,too-many-arguments,protected-access
+"""
+Parity and fast-path tests for the opportunity graph engines.
+"""
+
+from decimal import Decimal
+from typing import Any
+from typing import cast
+
+import pytest
+
+from nautilus_trader.adapters.betting.common.enums import SelectionSide
+from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
+from nautilus_trader.adapters.betting.market_matcher import MarketMatcher
+from nautilus_trader.examples.strategies.opportunity_graph import OpportunityGraph
+from nautilus_trader.model.identifiers import Venue
+from nautilus_trader.model.objects import Currency
+from nautilus_trader.test_kit.stubs.data import TestDataStubs
+
+
+_CURRENCY = Currency.from_str("USDT")
+
+
+def ensure(condition: bool) -> None:  # skipcq
+    """
+    Raise an assertion error when a boolean expectation is not met.
+    """
+    if not condition:
+        raise AssertionError
+
+
+def _instrument(
+    *,
+    venue: str = "SXBET",
+    event_id: str = "event-1",
+    event_name: str = "Team A vs Team B",
+    home_name: str = "Team A",
+    away_name: str = "Team B",
+    market_name: str = "Total Goals",
+    market_type: str = "total_goals",
+    outcome: str = "over",
+    params: str = "line=2.5",
+    price: float = 2.4,
+    start_time: str | None = "2026-03-13T18:00:00Z",
+    handicap: float | None = None,
+    info: dict | None = None,
+) -> CryptoBettingInstrument:
+    return CryptoBettingInstrument(
+        venue=Venue(venue),
+        event_id=event_id,
+        event_name=event_name,
+        home_name=home_name,
+        away_name=away_name,
+        sport_name="Soccer",
+        competition_name="Test League",
+        market_name=market_name,
+        market_type=market_type,
+        outcome=outcome,
+        side=SelectionSide.BACK,
+        price=price,
+        currency=_CURRENCY,
+        params=params,
+        start_time=start_time,
+        handicap=handicap,
+        info=info,
+    )
+
+
+def _graph(engine: str, instruments: list[CryptoBettingInstrument]) -> OpportunityGraph:  # skipcq
+    try:
+        graph = OpportunityGraph(MarketMatcher(), engine=engine)
+    except ImportError:
+        pytest.skip("Rust OpportunityGraphCore is unavailable")
+    graph.build(instruments)
+    return graph
+
+
+def _edge_snapshot(graph: OpportunityGraph) -> dict[str, tuple[str, str, str, bool]]:  # skipcq
+    return {
+        edge_id: (
+            edge.hedge_type,
+            edge.market_relationship_type,
+            f"{edge.confidence:.2f}",
+            edge.push_capable,
+        )
+        for edge_id, edge in graph.edges_by_id.items()
+    }
+
+
+def _quote(
+    instrument: CryptoBettingInstrument,
+    odds: Decimal,
+    ts_event: int = 1_000,
+) -> object:  # skipcq
+    return TestDataStubs.quote_tick(
+        instrument=instrument,
+        bid_price=float(odds),
+        ask_price=float(odds),
+        ts_event=ts_event,
+    )
+
+
+def _seed_quotes(
+    graph: OpportunityGraph,
+    instruments: list[CryptoBettingInstrument],
+    odds_by_outcome: dict[str, Decimal],
+) -> None:
+    for index, instrument in enumerate(instruments):
+        odds = odds_by_outcome[instrument.outcome]
+        graph.update_quote(
+            _quote(instrument, odds, ts_event=10_000 + index),
+            odds=odds,
+            received_ns=20_000 + index,
+        )
+
+
+@pytest.mark.parametrize("engine", ["python", "rust"])
+def test_builds_same_market_cross_venue_edges(engine: str) -> None:  # skipcq
+    instruments = [
+        _instrument(venue="SXBET", outcome="over"),
+        _instrument(venue="SXBET", outcome="under"),
+        _instrument(venue="BLACKBET", event_id="event-2", outcome="over"),
+        _instrument(venue="BLACKBET", event_id="event-2", outcome="under"),
+    ]
+
+    graph = _graph(engine, instruments)
+
+    ensure(graph.node_count == 4)
+    ensure(graph.edge_count == 4)
+    ensure(all(edge.hedge_type == "same_market" for edge in graph.edges_by_id.values()))
+    ensure(graph.connected_edge_count(str(instruments[0].id)) == 2)
+
+
+def test_rust_and_python_topology_are_identical_for_common_edges() -> None:  # skipcq
+    instruments = [
+        _instrument(venue="SXBET", outcome="over"),
+        _instrument(venue="SXBET", outcome="under"),
+        _instrument(venue="BLACKBET", event_id="event-2", outcome="over"),
+        _instrument(venue="BLACKBET", event_id="event-2", outcome="under"),
+        _instrument(
+            venue="SXBET",
+            market_name="Match Odds",
+            market_type="match_odds",
+            outcome="home",
+            params="",
+            info={"is_two_way_market": True},
+        ),
+        _instrument(
+            venue="SXBET",
+            market_name="Double Chance",
+            market_type="double_chance",
+            outcome="away_draw",
+            params="",
+        ),
+    ]
+
+    python_graph = _graph("python", instruments)
+    rust_graph = _graph("rust", instruments)
+
+    ensure(_edge_snapshot(rust_graph) == _edge_snapshot(python_graph))
+
+
+def test_incremental_add_and_duplicate_match_python_fallback() -> None:  # skipcq
+    base = [_instrument(outcome="over")]
+    under = _instrument(outcome="under")
+    python_graph = _graph("python", base)
+    rust_graph = _graph("rust", base)
+
+    ensure(python_graph.add_instrument(under) is True)
+    ensure(rust_graph.add_instrument(under) is True)
+    ensure(python_graph.add_instrument(under) is False)
+    ensure(rust_graph.add_instrument(under) is False)
+    ensure(_edge_snapshot(rust_graph) == _edge_snapshot(python_graph))
+
+
+def test_update_quote_and_evaluate_matches_python_candidates() -> None:  # skipcq
+    instruments = [
+        _instrument(outcome="over"),
+        _instrument(outcome="under"),
+        _instrument(venue="BLACKBET", event_id="event-2", outcome="under"),
+    ]
+    python_graph = _graph("python", instruments)
+    rust_graph = _graph("rust", instruments)
+    odds_by_outcome = {"over": Decimal("2.40"), "under": Decimal("2.55")}
+    _seed_quotes(python_graph, instruments, odds_by_outcome)
+    _seed_quotes(rust_graph, instruments, odds_by_outcome)
+
+    quote = _quote(instruments[0], Decimal("2.40"), ts_event=99_000)
+    python_state, python_candidates = python_graph.update_quote_and_evaluate(
+        quote,
+        odds=Decimal("2.40"),
+        received_ns=100_000,
+        min_profit_margin=Decimal("0.01"),
+        now_ns=100_000,
+    )
+    rust_state, rust_candidates = rust_graph.update_quote_and_evaluate(
+        quote,
+        odds=Decimal("2.40"),
+        received_ns=100_000,
+        min_profit_margin=Decimal("0.01"),
+        now_ns=100_000,
+    )
+
+    ensure(python_state == rust_state)
+    rust_snapshot = sorted(
+        (candidate.edge.edge_id, candidate.opportunity.profit_margin)
+        for candidate in rust_candidates
+    )
+    python_snapshot = sorted(
+        (candidate.edge.edge_id, candidate.opportunity.profit_margin)
+        for candidate in python_candidates
+    )
+    ensure(rust_snapshot == python_snapshot)
+    ensure({candidate.updated_node_id for candidate in rust_candidates} == {str(instruments[0].id)})
+
+
+def test_update_quote_and_scan_fast_returns_primitive_snapshots() -> None:  # skipcq
+    instruments = [_instrument(outcome="over"), _instrument(outcome="under")]
+    graph = _graph("rust", instruments)
+    graph.update_quote(
+        _quote(instruments[0], Decimal("2.40"), ts_event=10_000),
+        odds=Decimal("2.40"),
+        received_ns=20_000,
+    )
+
+    result = graph.update_quote_and_scan_fast(
+        _quote(instruments[1], Decimal("2.55"), ts_event=10_001),
+        odds=Decimal("2.55"),
+        received_ns=20_001,
+        min_profit_margin=Decimal("0.01"),
+        now_ns=30_000,
+    )
+
+    if result is None:
+        raise AssertionError("Rust fast scan should return snapshots")
+    quote_updated, snapshots = result
+    ensure(quote_updated is True)
+    ensure(graph.quote_state_count == 2)
+    ensure(len(snapshots) == 1)
+    snapshot = snapshots[0]
+    ensure(snapshot[1] == str(instruments[1].id))
+    ensure(snapshot[2] == str(instruments[0].id))
+    ensure(snapshot[3] == "same_market")
+    ensure(snapshot[4] == 1.0)
+    ensure(snapshot[5] == 2.55)
+    ensure(snapshot[6] == 2.4)
+    ensure(snapshot[7] > 0.0)
+    ensure(snapshot[8] == 10_001)
+    ensure(snapshot[9] == 10_000)
+    ensure(snapshot[10] == "same_market")
+    ensure(snapshot[11] is False)
+
+
+def test_update_quote_and_scan_fast_returns_false_for_unknown_rust_node() -> None:  # skipcq
+    instruments = [_instrument(outcome="over"), _instrument(outcome="under")]
+    graph = _graph("rust", instruments)
+    unknown = _instrument(event_id="missing", outcome="away")
+
+    result = graph.update_quote_and_scan_fast(
+        _quote(unknown, Decimal("2.40"), ts_event=99_000),
+        odds=Decimal("2.40"),
+        received_ns=100_000,
+        min_profit_margin=Decimal("0.01"),
+        now_ns=100_000,
+    )
+    if result is None:
+        raise AssertionError("Rust fast scan should return snapshots")
+    ensure(result == (False, []))
+
+
+def test_update_quote_and_scan_fast_is_rust_only() -> None:  # skipcq
+    instrument = _instrument()
+    graph = _graph("python", [instrument])
+
+    ensure(
+        graph.update_quote_and_scan_fast(
+            _quote(instrument, Decimal("2.40")),
+            odds=Decimal("2.40"),
+            received_ns=20_000,
+            min_profit_margin=Decimal("0.01"),
+            now_ns=30_000,
+        )
+        is None,
+    )
+
+
+def test_auto_engine_uses_python_when_matcher_has_rule_store() -> None:  # skipcq
+    matcher = MarketMatcher()
+    matcher._rule_store = cast(Any, object())
+
+    graph = OpportunityGraph(matcher)
+
+    ensure(graph._rust_core is None)
+
+
+def test_node_payload_fallbacks_cover_missing_helper_methods() -> None:  # skipcq
+    template = _instrument()
+
+    class BareInstrument:
+        def __init__(self) -> None:
+            self.id = template.id
+            self.event_id = template.event_id
+            self.event_name = template.event_name
+            self.market_name = template.market_name
+            self.market_type = template.market_type
+            self.outcome = template.outcome
+            self.params = template.params
+            self.handicap = template.handicap
+
+    bare = cast(Any, BareInstrument())
+    node = OpportunityGraph._node_from_instrument(bare)
+    payload = OpportunityGraph._node_payload_from_node(node, bare)
+
+    ensure(node.canonical_event_key == str(template.id))
+    ensure(node.canonical_outcome_key.endswith("|over"))
+    ensure(payload["event_key_no_time"] == str(template.id))
+    ensure(payload["selection_key"] == "over")
+    ensure(payload["start_time_ns"] is None)
+
+
+def test_rust_scan_filters_unprofitable_edges_before_decimal_validation() -> None:  # skipcq
+    instruments = [
+        _instrument(venue=f"VENUE{index}", event_id=f"event-{index}", outcome=outcome)
+        for index in range(12)
+        for outcome in ("over", "under")
+    ]
+    graph = _graph("rust", instruments)
+    _seed_quotes(graph, instruments, {"over": Decimal("1.80"), "under": Decimal("1.80")})
+
+    _, candidates = graph.update_quote_and_evaluate(
+        _quote(instruments[0], Decimal("1.80"), ts_event=99_000),
+        odds=Decimal("1.80"),
+        received_ns=100_000,
+        min_profit_margin=Decimal("0.01"),
+        now_ns=100_000,
+    )
+
+    ensure(graph.connected_edge_count(str(instruments[0].id)) > 1)
+    ensure(not candidates)
+
+
+def test_push_capable_edges_are_built_but_not_evaluated() -> None:  # skipcq
+    instruments = [
+        _instrument(
+            market_name="Draw No Bet",
+            market_type="draw_no_bet",
+            outcome="home",
+            params="",
+        ),
+        _instrument(
+            market_name="Draw No Bet",
+            market_type="draw_no_bet",
+            outcome="away",
+            params="",
+        ),
+    ]
+    graph = _graph("rust", instruments)
+    _seed_quotes(graph, instruments, {"home": Decimal("2.40"), "away": Decimal("2.55")})
+
+    _, candidates = graph.update_quote_and_evaluate(
+        _quote(instruments[0], Decimal("2.40")),
+        odds=Decimal("2.40"),
+        received_ns=100_000,
+        min_profit_margin=Decimal("0.01"),
+        now_ns=100_000,
+    )
+
+    ensure(graph.edge_count == 1)
+    ensure(next(iter(graph.edges_by_id.values())).push_capable is True)
+    ensure(not candidates)
+
+
+def test_missing_start_time_ambiguity_matches_python_fallback() -> None:  # skipcq
+    ambiguous = [
+        _instrument(event_id="early", outcome="over", start_time="2026-03-13T10:00:00Z"),
+        _instrument(event_id="late", outcome="under", start_time="2026-03-13T20:00:00Z"),
+        _instrument(
+            venue="BLACKBET",
+            event_id="missing",
+            outcome="under",
+            start_time=None,
+        ),
+    ]
+    unambiguous = [
+        _instrument(event_id="early", outcome="over", start_time="2026-03-13T10:00:00Z"),
+        _instrument(
+            venue="BLACKBET",
+            event_id="missing",
+            outcome="under",
+            start_time=None,
+        ),
+    ]
+
+    ensure(_graph("rust", ambiguous).edge_count == _graph("python", ambiguous).edge_count == 0)
+    ensure(_graph("rust", unambiguous).edge_count == _graph("python", unambiguous).edge_count == 1)
+
+
+def test_engine_validation_and_missing_node_paths() -> None:  # skipcq
+    instrument = _instrument()
+    quote = _quote(instrument, Decimal("2.00"))
+
+    with pytest.raises(ValueError, match="Invalid opportunity graph engine"):
+        OpportunityGraph(MarketMatcher(), engine="invalid")
+
+    python_graph = _graph("python", [])
+    rust_graph = _graph("rust", [])
+
+    ensure(python_graph.quote_state_count == 0)
+    ensure(python_graph.update_quote(quote, odds=Decimal("2.00"), received_ns=1) is None)
+    ensure(
+        not python_graph.evaluate_updated_node(
+            str(instrument.id),
+            min_profit_margin=Decimal("0.01"),
+            now_ns=1,
+        ),
+    )
+    ensure(
+        python_graph.update_quote_and_evaluate(
+            quote,
+            odds=Decimal("2.00"),
+            received_ns=1,
+            min_profit_margin=Decimal("0.01"),
+            now_ns=1,
+        )
+        == (None, []),
+    )
+    ensure(
+        rust_graph.update_quote_and_evaluate(
+            quote,
+            odds=Decimal("2.00"),
+            received_ns=1,
+            min_profit_margin=Decimal("0.01"),
+            now_ns=1,
+        )
+        == (None, []),
+    )
+
+
+def test_python_evaluation_skips_missing_unprofitable_and_push_edges() -> None:  # skipcq
+    instruments = [_instrument(outcome="over"), _instrument(outcome="under")]
+    graph = _graph("python", instruments)
+    graph.update_quote(
+        _quote(instruments[0], Decimal("1.80")),
+        odds=Decimal("1.80"),
+        received_ns=1,
+    )
+
+    ensure(
+        not graph.evaluate_updated_node(
+            str(instruments[0].id),
+            min_profit_margin=Decimal("0.01"),
+            now_ns=1,
+        ),
+    )
+
+    graph.update_quote(
+        _quote(instruments[1], Decimal("1.80")),
+        odds=Decimal("1.80"),
+        received_ns=2,
+    )
+    ensure(
+        not graph.evaluate_updated_node(
+            str(instruments[0].id),
+            min_profit_margin=Decimal("0.01"),
+            now_ns=3,
+        ),
+    )
+
+    push_instruments = [
+        _instrument(
+            market_name="Draw No Bet",
+            market_type="draw_no_bet",
+            outcome="home",
+            params="",
+        ),
+        _instrument(
+            market_name="Draw No Bet",
+            market_type="draw_no_bet",
+            outcome="away",
+            params="",
+        ),
+    ]
+    push_graph = _graph("python", push_instruments)
+    _seed_quotes(push_graph, push_instruments, {"home": Decimal("2.40"), "away": Decimal("2.55")})
+
+    ensure(
+        not push_graph.evaluate_updated_node(
+            str(push_instruments[0].id),
+            min_profit_margin=Decimal("0.01"),
+            now_ns=4,
+        ),
+    )

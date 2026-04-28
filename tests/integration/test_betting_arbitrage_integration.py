@@ -3,16 +3,22 @@
 #
 #  Integration tests for betting arbitrage strategy.
 # -------------------------------------------------------------------------------------------------
+# skipcq: BAN-B101
+# bandit:skip=B101
+# skipcq: PYL-C0114, PYL-C0115, PYL-C0116, PYL-W0212
+# pylint: disable=missing-function-docstring,no-name-in-module,protected-access
+"""
+Integration coverage for the betting arbitrage strategy on a trading node.
+"""
 
+from decimal import Decimal
 from unittest.mock import MagicMock
 from unittest.mock import Mock
 
 import pytest
 
-from decimal import Decimal
-
-from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.betting.common.enums import SelectionSide
+from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.betting.semantics import FileRuleCache
 from nautilus_trader.adapters.betting.semantics import RuleClassifier
 from nautilus_trader.adapters.betting.semantics import RuleCorpusManifest
@@ -21,22 +27,38 @@ from nautilus_trader.adapters.betting.semantics import RuleStore
 from nautilus_trader.adapters.betting.semantics import SafetyTier
 from nautilus_trader.adapters.betting.semantics import SemanticRuleTemplate
 from nautilus_trader.adapters.betting.semantics import TemplateSupportStats
+from nautilus_trader.config import LoggingConfig
+from nautilus_trader.config import TradingNodeConfig
 from nautilus_trader.examples.strategies.betting_arbitrage import BettingArbitrageConfig
 from nautilus_trader.examples.strategies.betting_arbitrage import BettingArbitrageStrategy
+from nautilus_trader.live.node import TradingNode
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import Symbol
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.objects import Currency
+from nautilus_trader.test_kit.functions import ensure_all_tasks_completed
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
 from nautilus_trader.test_kit.stubs.data import TestDataStubs
 
 
+def ensure(condition: bool) -> None:  # skipcq
+    """
+    Raise an assertion error when a boolean expectation is not met.
+    """
+    if not condition:
+        raise AssertionError
+
+
 @pytest.mark.asyncio
-class TestBettingArbitrageIntegration:
+class TestBettingArbitrageIntegration:  # skipcq
     """
     Integration tests for betting arbitrage strategy.
     """
+
+    @staticmethod
+    def teardown_method():
+        ensure_all_tasks_completed()
 
     @pytest.fixture
     def mock_instrument_soccer_tenbet(self):
@@ -86,10 +108,10 @@ class TestBettingArbitrageIntegration:
         strategy = BettingArbitrageStrategy(config=config)
 
         # Soccer should pass
-        assert strategy._should_process_instrument(mock_instrument_soccer_tenbet)
+        ensure(strategy._should_process_instrument(mock_instrument_soccer_tenbet))
 
         # Basketball should be filtered out
-        assert not strategy._should_process_instrument(mock_instrument_basketball_blackbet)
+        ensure(not strategy._should_process_instrument(mock_instrument_basketball_blackbet))
 
     def test_market_timing_filter_pre_market_only(
         self,
@@ -106,10 +128,10 @@ class TestBettingArbitrageIntegration:
         strategy = BettingArbitrageStrategy(config=config)
 
         # Pre-market should pass
-        assert strategy._should_process_instrument(mock_instrument_soccer_tenbet)
+        ensure(strategy._should_process_instrument(mock_instrument_soccer_tenbet))
 
         # Live market should be filtered out
-        assert not strategy._should_process_instrument(mock_instrument_soccer_live_easybet)
+        ensure(not strategy._should_process_instrument(mock_instrument_soccer_live_easybet))
 
     def test_combined_filters_soccer_pre_market(
         self,
@@ -128,15 +150,15 @@ class TestBettingArbitrageIntegration:
         strategy = BettingArbitrageStrategy(config=config)
 
         # Pre-market soccer should pass
-        assert strategy._should_process_instrument(mock_instrument_soccer_tenbet)
+        ensure(strategy._should_process_instrument(mock_instrument_soccer_tenbet))
 
         # Basketball filtered by sport
-        assert not strategy._should_process_instrument(mock_instrument_basketball_blackbet)
+        ensure(not strategy._should_process_instrument(mock_instrument_basketball_blackbet))
 
         # Live soccer filtered by timing
-        assert not strategy._should_process_instrument(mock_instrument_soccer_live_easybet)
+        ensure(not strategy._should_process_instrument(mock_instrument_soccer_live_easybet))
 
-    def test_is_live_market_detection(self):
+    def test_is_live_market_detection(self):  # skipcq
         """
         Test live market detection logic.
         """
@@ -147,13 +169,13 @@ class TestBettingArbitrageIntegration:
         for params in ["pre_market", "prematch", "upcoming"]:
             inst = Mock(spec=CryptoBettingInstrument)
             inst.params = params
-            assert not strategy._is_live_market(inst)
+            ensure(not strategy._is_live_market(inst))
 
         # Live indicators
         for params in ["live", "in_play", "in-play", "live_match"]:
             inst = Mock(spec=CryptoBettingInstrument)
             inst.params = params
-            assert strategy._is_live_market(inst)
+            ensure(strategy._is_live_market(inst))
 
     def test_subscribe_instruments_with_venue_filter(
         self,
@@ -179,9 +201,9 @@ class TestBettingArbitrageIntegration:
         strategy.subscribe_instruments(instruments)
 
         # Should only subscribe to 10BET instrument
-        assert len(strategy._subscribed_instruments) == 1
-        assert mock_instrument_soccer_tenbet in strategy._subscribed_instruments
-        assert mock_instrument_basketball_blackbet not in strategy._subscribed_instruments
+        ensure(len(strategy._subscribed_instruments) == 1)
+        ensure(mock_instrument_soccer_tenbet in strategy._subscribed_instruments)
+        ensure(mock_instrument_basketball_blackbet not in strategy._subscribed_instruments)
 
     def test_strategy_consumes_promoted_semantic_template_from_file_cache(self, tmp_path):
         cache_dir = tmp_path / "semantic-cache"
@@ -351,9 +373,104 @@ class TestBettingArbitrageIntegration:
             start_time="2026-03-13T18:00:00Z",
         )
 
+    def test_trading_node_processes_betting_arbitrage_graph_quotes(
+        self,
+        event_loop_for_setup,
+    ):
+        """
+        Run the strategy registered on a real trading node with realistic quote ticks.
+        """
+        node = TradingNode(
+            config=TradingNodeConfig(logging=LoggingConfig(bypass_logging=True)),
+            loop=event_loop_for_setup,
+        )
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                min_profit_margin=Decimal("0.02"),
+                enabled_venues=frozenset(["SXBET", "BLACKBET"]),
+                auto_execute=False,
+            ),
+        )
+        strategy._handle_arbitrage_opportunity = Mock()
+        instrument_a = self._total_goals_instrument(
+            venue="SXBET",
+            event_id="arsenal-chelsea-20260503",
+            outcome="over",
+            price=2.30,
+        )
+        instrument_b = self._total_goals_instrument(
+            venue="BLACKBET",
+            event_id="arsenal-chelsea-20260503",
+            outcome="under",
+            price=2.45,
+        )
 
-# Note: Full end-to-end integration tests would require:
-# - Actual NautilusTrader environment (TradingNode, Cache, MessageBus)
-# - Live or simulated data feeds
-# - Mock order submission and execution
-# These tests focus on filter logic and subscription management.
+        node.cache.add_instrument(instrument_a)
+        node.cache.add_instrument(instrument_b)
+        node.trader.add_strategy(strategy)
+        node.build()
+
+        strategy.on_start()
+
+        now_ns = strategy.clock.timestamp_ns()
+        tick_a = TestDataStubs.quote_tick(
+            instrument=instrument_a,
+            bid_price=2.30,
+            ask_price=2.40,
+            ts_event=now_ns - 250_000_000,
+        )
+        tick_b = TestDataStubs.quote_tick(
+            instrument=instrument_b,
+            bid_price=2.35,
+            ask_price=2.45,
+            ts_event=now_ns,
+        )
+
+        strategy.on_quote_tick(tick_a)
+        strategy._handle_arbitrage_opportunity.assert_not_called()
+
+        strategy.on_quote_tick(tick_b)
+
+        strategy._handle_arbitrage_opportunity.assert_called_once()
+        opportunity, diagnostics = strategy._handle_arbitrage_opportunity.call_args.args
+        ensure(opportunity.odds_a == Decimal("2.45"))
+        ensure(opportunity.odds_b == Decimal("2.30"))
+        ensure(diagnostics.venue_a == "BLACKBET")
+        ensure(diagnostics.venue_b == "SXBET")
+        ensure(diagnostics.match_type == "same_market")
+        ensure(diagnostics.canonical_pair_id in strategy._seen_opportunity_pairs)
+        ensure(strategy._raw_arbitrage_detections == 1)
+        ensure(strategy._opportunities_found == 1)
+        ensure(strategy._executable_candidates == 1)
+        ensure(strategy._opportunity_graph.node_count == 2)
+        ensure(strategy._opportunity_graph.connected_edge_count(str(instrument_b.id)) == 1)
+
+    @staticmethod
+    def _total_goals_instrument(
+        *,
+        venue: str,
+        event_id: str,
+        outcome: str,
+        price: float,
+    ) -> CryptoBettingInstrument:
+        return CryptoBettingInstrument(
+            venue=Venue(venue),
+            event_id=event_id,
+            event_name="Arsenal vs Chelsea",
+            home_name="Arsenal",
+            away_name="Chelsea",
+            sport_name="Soccer",
+            competition_name="English Premier League",
+            market_name="Total Goals",
+            market_type="total_goals",
+            outcome=outcome,
+            side=SelectionSide.BACK,
+            price=price,
+            currency=Currency.from_str("USDC"),
+            params="line=2.5",
+            start_time="2026-05-03T16:30:00Z",
+            live=False,
+        )
+
+
+# External venue connectivity and live order submission remain covered by adapter tests.

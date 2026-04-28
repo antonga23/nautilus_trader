@@ -3,6 +3,9 @@ set -euo pipefail
 
 mkdir -p tests/results/custom tests/results/full
 
+custom_workers="${PYTEST_XDIST_WORKERS:-6}"
+full_suite_workers="${FULL_SUITE_PYTEST_XDIST_WORKERS:-$custom_workers}"
+
 bash scripts/ci/run_pytest_with_reporting.sh \
   "Custom logic tests" \
   tests/results/custom/junit.xml \
@@ -12,7 +15,7 @@ bash scripts/ci/run_pytest_with_reporting.sh \
   tests/integration \
   --tb=line \
   -ra \
-  -n "${PYTEST_XDIST_WORKERS:-6}" \
+  -n "$custom_workers" \
   --dist=loadgroup \
   --maxfail=10 \
   --cov=nautilus_trader/adapters/betting \
@@ -33,7 +36,7 @@ bash scripts/ci/run_pytest_with_reporting.sh \
   --ignore=tests/integration_tests/infrastructure/test_cache_database_postgres.py \
   --tb=line \
   -ra \
-  -n "${PYTEST_XDIST_WORKERS:-6}" \
+  -n "$full_suite_workers" \
   --dist=loadgroup \
   --maxfail=50 \
   --durations=25 \
