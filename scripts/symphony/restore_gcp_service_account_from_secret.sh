@@ -60,7 +60,7 @@ else
     done
     if [ -n "$expected_sha" ]; then
       actual_sha="$(
-        python3 - "$tmp_config_b64" <<'PY'
+        python3 - "$tmp_config_b64" << 'PY'
 import hashlib
 import pathlib
 import sys

@@ -124,7 +124,7 @@ class HistoricalRuleValidator:
             if snapshot.provider == "CLOUDBET" and snapshot.endpoint.startswith("/pub/v4/bets"):
                 for observation in self._cloudbet_observations(snapshot.payload):
                     by_event[observation.event_key][observation.signature].add(
-                        observation.settlement
+                        observation.settlement,
                     )
         return by_event
 
@@ -164,7 +164,8 @@ class HistoricalRuleValidator:
         self,
         rule: MinedRule,
         observations: dict[
-            str, dict[tuple[str, str, str, str, tuple[tuple[str, str], ...]], set[str]]
+            str,
+            dict[tuple[str, str, str, str, tuple[tuple[str, str], ...]], set[str]],
         ],
     ) -> RuleValidationStats | None:
         signature_a = self._rule_signature(
@@ -259,6 +260,8 @@ class HistoricalRuleValidator:
             BetResult.CASHED_OUT: SettlementState.UNKNOWN.value,
             BetResult.PENDING: SettlementState.UNKNOWN.value,
         }
+        if result is None:
+            return SettlementState.UNKNOWN.value
         return mapping.get(result, SettlementState.UNKNOWN.value)
 
     @staticmethod

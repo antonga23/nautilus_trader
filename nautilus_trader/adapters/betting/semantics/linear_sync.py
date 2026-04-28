@@ -97,7 +97,7 @@ class LinearIssueSync:
         )
         cafile: str | None = None
         try:
-            import certifi  # type: ignore
+            import certifi
         except ModuleNotFoundError:
             certifi = None
         if certifi is not None:

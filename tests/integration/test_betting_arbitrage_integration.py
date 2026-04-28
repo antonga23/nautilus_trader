@@ -211,7 +211,7 @@ class TestBettingArbitrageIntegration:
         strategy.on_start()
 
         strategy.on_quote_tick(
-            TestDataStubs.quote_tick(instrument=home, bid_price=2.40, ask_price=0.0)
+            TestDataStubs.quote_tick(instrument=home, bid_price=2.40, ask_price=0.0),
         )
         strategy.on_quote_tick(
             TestDataStubs.quote_tick(instrument=away_draw, bid_price=2.45, ask_price=0.0),
@@ -254,10 +254,10 @@ class TestBettingArbitrageIntegration:
         strategy.on_start()
 
         strategy.on_quote_tick(
-            TestDataStubs.quote_tick(instrument=dnb_home, bid_price=2.40, ask_price=0.0)
+            TestDataStubs.quote_tick(instrument=dnb_home, bid_price=2.40, ask_price=0.0),
         )
         strategy.on_quote_tick(
-            TestDataStubs.quote_tick(instrument=ah_home, bid_price=2.45, ask_price=0.0)
+            TestDataStubs.quote_tick(instrument=ah_home, bid_price=2.45, ask_price=0.0),
         )
 
         edge = next(iter(strategy._opportunity_graph.edges_by_id.values()))

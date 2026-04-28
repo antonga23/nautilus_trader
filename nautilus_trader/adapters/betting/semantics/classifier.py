@@ -138,7 +138,7 @@ class RuleClassifier:
         }:
             return False
         return selection_a.selection == selection_b.selection and selection_a.param(
-            "line"
+            "line",
         ) == selection_b.param("line")
 
     @staticmethod

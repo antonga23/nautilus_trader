@@ -598,7 +598,9 @@ def test_catalog_templates_generalize_from_events_without_settled_bets():
             ),
         )
         home = replace(
-            home, event_key=f"catalog-event-{event_index}", instrument_id=f"home-{event_index}"
+            home,
+            event_key=f"catalog-event-{event_index}",
+            instrument_id=f"home-{event_index}",
         )
         away_draw = replace(
             away_draw,

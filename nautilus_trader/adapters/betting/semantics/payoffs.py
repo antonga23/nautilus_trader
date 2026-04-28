@@ -18,6 +18,7 @@ Deterministic payoff vector construction for normalized betting selections.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from decimal import Decimal
 from decimal import InvalidOperation
 from decimal import ROUND_CEILING
@@ -170,6 +171,8 @@ class SettlementPluginRegistry:
         if line is None or selection.selection not in {"OVER", "UNDER"}:
             return cls._unknown(selection)
 
+        states: tuple[str, ...]
+        settlement: tuple[str, ...]
         if cls._is_quarter_line(line):
             lower, upper = cls._split_quarter_line(line)
             whole_component = lower if lower == lower.to_integral_value() else upper
@@ -243,7 +246,7 @@ class SettlementPluginRegistry:
     def _vector(
         selection: NormalizedSelection,
         result_states: tuple[str, ...],
-        settlement_by_selection: dict[str, tuple[str, ...]],
+        settlement_by_selection: Mapping[str, tuple[str, ...]],
     ) -> PayoffVector:
         return PayoffVector(
             sport=selection.sport,

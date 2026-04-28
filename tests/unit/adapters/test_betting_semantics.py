@@ -552,7 +552,9 @@ def test_opportunity_graph_persists_same_venue_execution_eligibility_without_aut
     matcher = MarketMatcher(rule_store=store)
     graph = OpportunityGraph(matcher)
     instrument = betting_instrument(
-        market_name="draw_no_bet", market_type="draw_no_bet", outcome="home"
+        market_name="draw_no_bet",
+        market_type="draw_no_bet",
+        outcome="home",
     )
     hedge = betting_instrument(
         market_name="asian_handicap",

@@ -59,7 +59,7 @@ aws secretsmanager get-secret-value \
   --query SecretString \
   --output text > "$secret_json_file"
 
-python3 - "$tmp_file" "$secret_json_file" <<'PY'
+python3 - "$tmp_file" "$secret_json_file" << 'PY'
 import json
 import re
 import shlex

@@ -43,7 +43,7 @@ def _utc_now() -> str:
 
 def _hash_payload(prefix: str, payload: Any) -> str:
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode(
-        "utf-8"
+        "utf-8",
     )
     return f"{prefix}:{hashlib.sha256(encoded).hexdigest()[:24]}"
 
@@ -120,7 +120,7 @@ class SnapshotIngestor:
                 )
 
             events_response = None
-            selections = []
+            selections: list[Any] = []
             attempt_reports: list[dict[str, Any]] = []
             base_window_seconds = max(to_timestamp - from_timestamp, 24 * 60 * 60)
             window_seconds = min(base_window_seconds, max_window_seconds)
@@ -207,7 +207,7 @@ class SnapshotIngestor:
                             "to": attempt_to,
                             "direction": "past",
                             "event_count": len(
-                                {selection.event_id for selection in past_selections}
+                                {selection.event_id for selection in past_selections},
                             ),
                             "selection_count": len(past_selections),
                         },
@@ -384,7 +384,7 @@ class SnapshotIngestor:
             event_count=event_count,
             selection_count=selection_count,
             market_taxonomy_hash=hashlib.sha256(
-                json.dumps(sorted(market_names), separators=(",", ":")).encode("utf-8")
+                json.dumps(sorted(market_names), separators=(",", ":")).encode("utf-8"),
             ).hexdigest()[:24],
             source_refs=tuple(source_refs),
         )
@@ -503,7 +503,7 @@ class SnapshotIngestor:
             event_count=len(event_keys),
             selection_count=len(normalized_records),
             market_taxonomy_hash=hashlib.sha256(
-                json.dumps(sorted(market_names), separators=(",", ":")).encode("utf-8")
+                json.dumps(sorted(market_names), separators=(",", ":")).encode("utf-8"),
             ).hexdigest()[:24],
             source_refs=tuple(source_refs),
         )
@@ -516,7 +516,7 @@ class SnapshotIngestor:
         *,
         sports: list[str] | None = None,
         limit: int = 200,
-        http_client=None,
+        http_client: Any = None,
     ) -> RuleCorpusManifest:
         import os
         import ssl
@@ -539,7 +539,7 @@ class SnapshotIngestor:
         }
         cafile: str | None = None
         try:
-            import certifi  # type: ignore
+            import certifi
         except ModuleNotFoundError:
             certifi = None
         if certifi is not None:
@@ -644,7 +644,7 @@ class SnapshotIngestor:
             event_count=len(event_keys),
             selection_count=len(normalized_records),
             market_taxonomy_hash=hashlib.sha256(
-                json.dumps(sorted(market_names), separators=(",", ":")).encode("utf-8")
+                json.dumps(sorted(market_names), separators=(",", ":")).encode("utf-8"),
             ).hexdigest()[:24],
             source_refs=tuple(source_refs),
         )
@@ -653,7 +653,7 @@ class SnapshotIngestor:
         return manifest
 
     @staticmethod
-    def _polymarket_get_json(*, request, context, endpoint: str) -> Any:
+    def _polymarket_get_json(*, request: Any, context: Any, endpoint: str) -> Any:
         req = request.Request(
             f"https://gamma-api.polymarket.com{endpoint}",
             headers={
@@ -671,9 +671,9 @@ class SnapshotIngestor:
         sport_metadata: Any,
         target_sports: set[str],
         limit: int,
-        request,
-        parse,
-        context,
+        request: Any,
+        parse: Any,
+        context: Any,
         fetched_at: str,
     ) -> tuple[str, dict[str, dict[str, Any]], dict[str, Any], list[str]] | None:
         from nautilus_trader.adapters.betting.semantics.polymarket_transform import (
@@ -748,9 +748,9 @@ class SnapshotIngestor:
         tag: str,
         selected_tags: list[str],
         limit: int,
-        request,
-        parse,
-        context,
+        request: Any,
+        parse: Any,
+        context: Any,
         fetched_at: str,
     ) -> tuple[list[dict[str, Any]] | None, str | None, dict[str, Any]]:
         endpoint = "/events?" + parse.urlencode(
@@ -819,7 +819,7 @@ class SnapshotIngestor:
                 if not isinstance(market, dict):
                     continue
                 market_id = str(
-                    market.get("id") or market.get("conditionId") or market.get("slug") or ""
+                    market.get("id") or market.get("conditionId") or market.get("slug") or "",
                 )
                 if not market_id:
                     continue
@@ -866,7 +866,7 @@ class SnapshotIngestor:
         return snapshot_id
 
     @staticmethod
-    def _normalized_record_id(provider: str, normalized) -> str:
+    def _normalized_record_id(provider: str, normalized: Any) -> str:
         return _hash_payload(
             "normalized",
             {
@@ -914,7 +914,7 @@ class SnapshotIngestor:
     def _resolve_cloudbet_sports(
         *,
         requested_sports: list[str] | None,
-        available_sports,
+        available_sports: Any,
     ) -> list[str]:
         available_by_key = {sport.key: sport.key for sport in available_sports}
         available_by_name = {

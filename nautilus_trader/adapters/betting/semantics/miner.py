@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Iterable
+from dataclasses import dataclass
 from dataclasses import replace
 from datetime import UTC
 from datetime import datetime
@@ -36,6 +37,19 @@ from nautilus_trader.adapters.betting.semantics.types import TemplateSupportStat
 
 def _utc_now() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+@dataclass
+class _TemplateAccumulator:
+    rule: MinedRule
+    observed_count: int
+    event_keys: set[str]
+    providers: set[str]
+    sports: set[str]
+    example_rule_ids: list[str]
+    caveats: set[str]
+    unknown_settlement_count: int
+    confidence: float
 
 
 class RuleMiner:
@@ -154,84 +168,62 @@ class RuleMiner:
         Generalize event-level candidates into reusable catalog-derived templates.
         """
         now = _utc_now()
-        accumulators: dict[str, dict[str, object]] = {}
+        accumulators: dict[str, _TemplateAccumulator] = {}
 
         for rule in candidates:
             template = SemanticRuleTemplate.from_rule(rule)
             item = accumulators.setdefault(
                 template.template_id,
-                {
-                    "rule": rule,
-                    "observed_count": 0,
-                    "event_keys": set(),
-                    "providers": set(),
-                    "sports": set(),
-                    "example_rule_ids": [],
-                    "caveats": set(),
-                    "unknown_settlement_count": 0,
-                    "confidence": rule.confidence,
-                },
+                _TemplateAccumulator(
+                    rule=rule,
+                    observed_count=0,
+                    event_keys=set(),
+                    providers=set(),
+                    sports=set(),
+                    example_rule_ids=[],
+                    caveats=set(),
+                    unknown_settlement_count=0,
+                    confidence=rule.confidence,
+                ),
             )
-            item["observed_count"] = int(item["observed_count"]) + 1
+            item.observed_count += 1
             if rule.evidence_event_key:
-                event_keys = item["event_keys"]
-                assert isinstance(event_keys, set)
-                event_keys.add(rule.evidence_event_key)
-            providers = item["providers"]
-            assert isinstance(providers, set)
-            providers.update(rule.venue_scope)
-            sports = item["sports"]
-            assert isinstance(sports, set)
-            sports.add(rule.sport)
-            example_rule_ids = item["example_rule_ids"]
-            assert isinstance(example_rule_ids, list)
-            if rule.rule_id not in example_rule_ids and len(example_rule_ids) < 20:
-                example_rule_ids.append(rule.rule_id)
-            caveats = item["caveats"]
-            assert isinstance(caveats, set)
-            caveats.update(rule.caveats)
+                item.event_keys.add(rule.evidence_event_key)
+            item.providers.update(rule.venue_scope)
+            item.sports.add(rule.sport)
+            if rule.rule_id not in item.example_rule_ids and len(item.example_rule_ids) < 20:
+                item.example_rule_ids.append(rule.rule_id)
+            item.caveats.update(rule.caveats)
             if rule.has_unknown:
-                item["unknown_settlement_count"] = int(item["unknown_settlement_count"]) + 1
-            item["confidence"] = min(float(item["confidence"]), rule.confidence)
+                item.unknown_settlement_count += 1
+            item.confidence = min(item.confidence, rule.confidence)
 
         templates: list[SemanticRuleTemplate] = []
         for template_id, item in accumulators.items():
-            rule = item["rule"]
-            assert isinstance(rule, MinedRule)
-            event_keys = item["event_keys"]
-            providers = item["providers"]
-            sports = item["sports"]
-            example_rule_ids = item["example_rule_ids"]
-            caveats = item["caveats"]
-            assert isinstance(event_keys, set)
-            assert isinstance(providers, set)
-            assert isinstance(sports, set)
-            assert isinstance(example_rule_ids, list)
-            assert isinstance(caveats, set)
             support = TemplateSupportStats(
                 template_id=template_id,
-                observed_count=int(item["observed_count"]),
-                event_count=len(event_keys),
-                provider_count=len(providers),
-                providers=tuple(sorted(str(provider) for provider in providers)),
-                sports=tuple(sorted(str(sport) for sport in sports)),
-                example_rule_ids=tuple(str(rule_id) for rule_id in example_rule_ids),
+                observed_count=item.observed_count,
+                event_count=len(item.event_keys),
+                provider_count=len(item.providers),
+                providers=tuple(sorted(item.providers)),
+                sports=tuple(sorted(item.sports)),
+                example_rule_ids=tuple(item.example_rule_ids),
                 first_seen_at=now,
                 last_seen_at=now,
-                deterministic=int(item["unknown_settlement_count"]) == 0,
-                unknown_settlement_count=int(item["unknown_settlement_count"]),
+                deterministic=item.unknown_settlement_count == 0,
+                unknown_settlement_count=item.unknown_settlement_count,
                 mismatch_count=0,
-                confidence=float(item["confidence"]),
+                confidence=item.confidence,
             )
             template = SemanticRuleTemplate.from_rule(
-                rule,
+                item.rule,
                 support=support,
                 provider_scope=support.providers,
             )
             safety_tier, reasons = self._promotion_policy.classify_template_tier(template)
             template = replace(
                 template,
-                caveats=tuple(sorted(str(caveat) for caveat in caveats)),
+                caveats=tuple(sorted(item.caveats)),
                 confidence=support.confidence,
                 safety_tier=safety_tier.value,
                 eligibility_reasons=reasons,

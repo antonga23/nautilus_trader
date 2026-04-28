@@ -13,8 +13,10 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 """
-Transforms Polymarket sports binary options into betting-style instruments when metadata is sufficient.
+Transforms Polymarket sports binary options into betting-style instruments when metadata
+is sufficient.
 """
+# codespell:ignore serie acn
 
 from __future__ import annotations
 
@@ -29,7 +31,8 @@ from nautilus_trader.model.objects import Currency
 
 class PolymarketSportsTransformer:
     """
-    Converts sports-tagged BinaryOption instruments into CryptoBettingInstrument snapshots.
+    Converts sports-tagged BinaryOption instruments into CryptoBettingInstrument
+    snapshots.
     """
 
     SPORT_PATTERNS = (
@@ -208,10 +211,10 @@ class PolymarketSportsTransformer:
             event_id=str(
                 sports_market.get("event_id")
                 or info.get("condition_id")
-                or instrument.id.symbol.value
+                or instrument.id.symbol.value,
             ),
             event_name=str(
-                sports_market.get("event_name") or getattr(instrument, "description", "")
+                sports_market.get("event_name") or getattr(instrument, "description", ""),
             ),
             home_name=str(sports_market.get("home_name") or ""),
             away_name=str(sports_market.get("away_name") or ""),

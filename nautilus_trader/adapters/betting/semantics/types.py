@@ -205,7 +205,19 @@ class SelectionPattern:
             "rules_flags": selection.rules_flags,
             "resolution_policy": selection.resolution_policy,
         }
-        return cls(pattern_id=_stable_digest("pattern", payload), **payload)
+        return cls(
+            pattern_id=_stable_digest("pattern", payload),
+            sport=selection.sport,
+            scope=selection.scope,
+            market_type=selection.market_type,
+            market_family=selection.market_family,
+            selection=selection.selection,
+            params=selection.params,
+            result_states=vector.result_states,
+            settlement=vector.settlement,
+            rules_flags=selection.rules_flags,
+            resolution_policy=selection.resolution_policy,
+        )
 
     @classmethod
     def from_rule_side(
@@ -232,7 +244,21 @@ class SelectionPattern:
             "rules_flags": tuple(sorted(flag for flag in caveats if flag.startswith("includes_"))),
             "resolution_policy": (),
         }
-        return cls(pattern_id=_stable_digest("pattern", payload), **payload)
+        return cls(
+            pattern_id=_stable_digest("pattern", payload),
+            sport=sport,
+            scope=scope,
+            market_type=market_type,
+            market_family=market_type,
+            selection=selection,
+            params=params,
+            result_states=result_states,
+            settlement=settlement,
+            rules_flags=tuple(
+                sorted(flag for flag in caveats if flag.startswith("includes_")),
+            ),
+            resolution_policy=(),
+        )
 
 
 @dataclass(frozen=True)
@@ -584,7 +610,7 @@ class MinedRule:
 
 def _stable_digest(prefix: str, payload: Any) -> str:
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode(
-        "utf-8"
+        "utf-8",
     )
     return f"{prefix}:{hashlib.sha256(encoded).hexdigest()[:24]}"
 

@@ -1,4 +1,6 @@
 exclude: ^examples/live/cloudbet\.py$
+default_language_version:
+  python: python3.12
 
 repos:
   ##############################################################################

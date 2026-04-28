@@ -41,7 +41,7 @@ HTTP_STATUS_TOO_MANY_REQUESTS = 429
 def _sxbet_ssl_context() -> ssl.SSLContext:
     cafile: str | None = None
     try:
-        import certifi  # type: ignore
+        import certifi
     except ModuleNotFoundError:
         certifi = None
 

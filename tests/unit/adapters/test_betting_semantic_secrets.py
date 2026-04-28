@@ -16,10 +16,10 @@ class _Completed:
         self.stdout = stdout
 
 
-def test_load_aws_secret_payload_uses_cli_runner():
-    observed = {}
+def test_load_aws_secret_payload_uses_cli_runner() -> None:
+    observed: dict[str, object] = {}
 
-    def fake_runner(cmd, check, capture_output, text):
+    def fake_runner(cmd: list[str], check: bool, capture_output: bool, text: bool) -> _Completed:
         observed["cmd"] = cmd
         assert check is True
         assert capture_output is True
@@ -33,11 +33,11 @@ def test_load_aws_secret_payload_uses_cli_runner():
     )
 
     assert payload["GCP_SERVICE_ACCOUNT_JSON_B64"] == "abc"
-    assert "--region" in observed["cmd"]
+    assert "--region" in observed["cmd"] if isinstance(observed["cmd"], list) else False
 
 
-def test_restore_gcp_service_account_decodes_base64(tmp_path: Path):
-    payload = {
+def test_restore_gcp_service_account_decodes_base64(tmp_path: Path) -> None:
+    payload: dict[str, object] = {
         "GCP_SERVICE_ACCOUNT_JSON_B64": base64.b64encode(
             b'{"type":"service_account","project_id":"demo"}',
         ).decode("ascii"),

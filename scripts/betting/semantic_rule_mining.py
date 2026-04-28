@@ -15,6 +15,7 @@ from pathlib import Path
 import re
 import sys
 import time
+from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -40,7 +41,7 @@ from nautilus_trader.common.clock import LiveClock
 from nautilus_trader.common.logging import Logger
 
 
-def _build_cache(persist_cache: bool, cache_dir: str | None = None):
+def _build_cache(persist_cache: bool, cache_dir: str | None = None) -> Any:
     if cache_dir:
         return FileRuleCache(cache_dir)
     if persist_cache and all(
@@ -136,12 +137,12 @@ async def _refresh_corpus(args: argparse.Namespace) -> None:
     if args.provider in {"sxbet", "all"}:
         from_timestamp = args.from_timestamp
         to_timestamp = args.to_timestamp
-        client = SXBetHttpClient(api_key=os.getenv("SXBET_API_KEY"))
-        await client.connect()
+        sxbet_client = SXBetHttpClient(api_key=os.getenv("SXBET_API_KEY"))
+        await sxbet_client.connect()
         try:
             manifests.append(
                 await ingestor.refresh_sxbet(
-                    client,
+                    sxbet_client,
                     sport_ids=args.sport_ids or None,
                     from_time=args.from_timestamp,
                     to_time=args.to_timestamp,
@@ -150,7 +151,7 @@ async def _refresh_corpus(args: argparse.Namespace) -> None:
                 ),
             )
         finally:
-            await client.disconnect()
+            await sxbet_client.disconnect()
 
     if args.provider in {"polymarket", "all"}:
         manifests.append(
@@ -489,7 +490,9 @@ def _parse_args() -> argparse.Namespace:
 
     refresh = subparsers.add_parser("refresh-corpus", help="Refresh provider corpora")
     refresh.add_argument(
-        "--provider", choices=("all", "cloudbet", "sxbet", "polymarket"), default="all"
+        "--provider",
+        choices=("all", "cloudbet", "sxbet", "polymarket"),
+        default="all",
     )
     refresh.add_argument("--sports", nargs="*", default=[])
     refresh.add_argument("--sport-ids", nargs="*", type=int, default=[])
@@ -515,7 +518,8 @@ def _parse_args() -> argparse.Namespace:
     refresh.add_argument("--fixture-dir")
 
     mine = subparsers.add_parser(
-        "mine-candidates", help="Mine candidate rules from normalized records"
+        "mine-candidates",
+        help="Mine candidate rules from normalized records",
     )
     mine.add_argument("--provider", choices=("cloudbet", "sxbet", "polymarket"))
     mine.add_argument("--manifest-id")
@@ -523,7 +527,8 @@ def _parse_args() -> argparse.Namespace:
     mine.add_argument("--cache-dir", default=os.getenv("SEMANTIC_RULE_CACHE_DIR"))
 
     generalize = subparsers.add_parser(
-        "generalize-templates", help="Mine reusable semantic templates from normalized records"
+        "generalize-templates",
+        help="Mine reusable semantic templates from normalized records",
     )
     generalize.add_argument("--provider", choices=("cloudbet", "sxbet", "polymarket"))
     generalize.add_argument("--manifest-id")
@@ -532,7 +537,8 @@ def _parse_args() -> argparse.Namespace:
     generalize.add_argument("--cache-dir", default=os.getenv("SEMANTIC_RULE_CACHE_DIR"))
 
     validate = subparsers.add_parser(
-        "validate", help="Validate candidate rules from persisted provider evidence"
+        "validate",
+        help="Validate candidate rules from persisted provider evidence",
     )
     validate.add_argument("--provider", choices=("cloudbet", "sxbet", "polymarket"))
     validate.add_argument("--manifest-id")
@@ -545,7 +551,8 @@ def _parse_args() -> argparse.Namespace:
     promote.add_argument("--allowlisted-scope", action="append", default=[])
 
     promote_templates = subparsers.add_parser(
-        "promote-templates", help="Promote catalog-derived semantic templates"
+        "promote-templates",
+        help="Promote catalog-derived semantic templates",
     )
     promote_templates.add_argument("--persist-cache", action="store_true")
     promote_templates.add_argument("--cache-dir", default=os.getenv("SEMANTIC_RULE_CACHE_DIR"))
@@ -571,7 +578,8 @@ def _parse_args() -> argparse.Namespace:
     report.add_argument("--target-candidates", type=int, default=20)
 
     verify = subparsers.add_parser(
-        "verify-completion", help="Fail unless semantic mining coverage gates pass"
+        "verify-completion",
+        help="Fail unless semantic mining coverage gates pass",
     )
     verify.add_argument("--persist-cache", action="store_true")
     verify.add_argument("--cache-dir", default=os.getenv("SEMANTIC_RULE_CACHE_DIR"))
@@ -592,20 +600,24 @@ def _parse_args() -> argparse.Namespace:
     linear.add_argument("--comment")
 
     restore = subparsers.add_parser(
-        "restore-gcp-auth", help="Restore GCP service-account JSON from AWS Secrets Manager"
+        "restore-gcp-auth",
+        help="Restore GCP service-account JSON from AWS Secrets Manager",
     )
     restore.add_argument(
-        "--secret-id", default=os.getenv("AGENT_SECRET_ID", "cloudbet-market-maker/credentials")
+        "--secret-id",
+        default=os.getenv("AGENT_SECRET_ID", "cloudbet-market-maker/credentials"),
     )
     restore.add_argument("--secret-key", default="GCP_SERVICE_ACCOUNT_JSON_B64")
     restore.add_argument(
         "--output-path",
         default=os.getenv(
-            "GOOGLE_APPLICATION_CREDENTIALS", "/srv/symphony/gcp-service-account.json"
+            "GOOGLE_APPLICATION_CREDENTIALS",
+            "/srv/symphony/gcp-service-account.json",
         ),
     )
     restore.add_argument(
-        "--region", default=os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION")
+        "--region",
+        default=os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION"),
     )
 
     return parser.parse_args()

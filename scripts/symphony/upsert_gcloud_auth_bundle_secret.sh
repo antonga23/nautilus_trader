@@ -36,8 +36,7 @@ for file_name in \
   application_default_credentials.json \
   config_sentinel \
   credentials.db \
-  gce
-do
+  gce; do
   if [ -f "$config_dir/$file_name" ]; then
     cp -p "$config_dir/$file_name" "$tmp_config_dir/$file_name"
   fi
@@ -84,7 +83,7 @@ else
   done
 
   config_sha="$(
-    python3 - "$config_b64_file" <<'PY'
+    python3 - "$config_b64_file" << 'PY'
 import hashlib
 import pathlib
 import sys

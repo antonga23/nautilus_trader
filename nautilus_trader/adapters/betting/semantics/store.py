@@ -71,7 +71,8 @@ class FileRuleCache:
 
 class RuleStore:
     """
-    Persists semantic corpus artifacts and validation stats through Nautilus generic cache keys.
+    Persists semantic corpus artifacts and validation stats through Nautilus generic
+    cache keys.
     """
 
     CANDIDATE_PREFIX = "betting:semantic_rules:candidate"
@@ -140,7 +141,8 @@ class RuleStore:
 
     def save_template_candidate(self, template: SemanticRuleTemplate) -> None:
         self._write_bytes(
-            self.template_candidate_key(template.template_id), template.to_json_bytes()
+            self.template_candidate_key(template.template_id),
+            template.to_json_bytes(),
         )
         self._append_index(self.TEMPLATE_CANDIDATE_INDEX_KEY, template.template_id)
         self.save_template_support(template)
@@ -151,7 +153,8 @@ class RuleStore:
 
     def save_promoted_template(self, template: SemanticRuleTemplate) -> None:
         self._write_bytes(
-            self.template_promoted_key(template.template_id), template.to_json_bytes()
+            self.template_promoted_key(template.template_id),
+            template.to_json_bytes(),
         )
         self._append_index(self.TEMPLATE_PROMOTED_INDEX_KEY, template.template_id)
         self.save_template_support(template)
