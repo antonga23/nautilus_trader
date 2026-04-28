@@ -131,12 +131,12 @@ impl OpportunityGraphCore {
         Self {
             include_cross_venue,
             min_confidence,
-            nodes_by_id: HashMap::new(),
-            edges_by_id: HashMap::new(),
-            edge_ids_by_node_id: HashMap::new(),
-            quotes_by_node_id: HashMap::new(),
-            event_buckets: HashMap::new(),
-            venue_event_buckets: HashMap::new(),
+            nodes_by_id: HashMap::default(),
+            edges_by_id: HashMap::default(),
+            edge_ids_by_node_id: HashMap::default(),
+            quotes_by_node_id: HashMap::default(),
+            event_buckets: HashMap::default(),
+            venue_event_buckets: HashMap::default(),
         }
     }
 
@@ -209,7 +209,7 @@ impl OpportunityGraphCore {
         now_ns: i64,
     ) -> Vec<CandidateSnapshot> {
         if !self.update_quote(node_id, odds, received_ns, exchange_ts_ns) {
-            return Vec::new();
+            return Vec::default();
         }
         self.evaluate_connected_edges(node_id, min_profit_margin, now_ns)
     }
@@ -224,7 +224,7 @@ impl OpportunityGraphCore {
         now_ns: i64,
     ) -> Vec<FastCandidateSnapshot> {
         if !self.update_quote(node_id, odds, received_ns, exchange_ts_ns) {
-            return Vec::new();
+            return Vec::default();
         }
         self.evaluate_connected_edges_fast(node_id, min_profit_margin, now_ns)
     }
@@ -292,7 +292,7 @@ impl OpportunityGraphCore {
             edge_ids.clear();
         }
 
-        let mut visited_pairs = HashSet::new();
+        let mut visited_pairs = HashSet::default();
         let event_buckets: Vec<Vec<String>> = self.event_buckets.values().cloned().collect();
         for bucket in event_buckets {
             self.connect_bucket(&bucket, &mut visited_pairs);
@@ -305,7 +305,7 @@ impl OpportunityGraphCore {
     }
 
     fn connect_node(&mut self, node_id: &str) {
-        let mut visited_pairs = HashSet::new();
+        let mut visited_pairs = HashSet::default();
         let Some(node) = self.nodes_by_id.get(node_id) else {
             return;
         };
@@ -497,13 +497,13 @@ impl OpportunityGraphCore {
         now_ns: i64,
     ) -> Vec<CandidateSnapshot> {
         let Some(updated_quote) = self.quotes_by_node_id.get(node_id).copied() else {
-            return Vec::new();
+            return Vec::default();
         };
         let Some(edge_ids) = self.edge_ids_by_node_id.get(node_id).cloned() else {
-            return Vec::new();
+            return Vec::default();
         };
 
-        let mut candidates = Vec::new();
+        let mut candidates = Vec::default();
         for edge_id in edge_ids {
             let Some(edge) = self.edges_by_id.get_mut(&edge_id) else {
                 continue;
@@ -547,13 +547,13 @@ impl OpportunityGraphCore {
         now_ns: i64,
     ) -> Vec<FastCandidateSnapshot> {
         let Some(updated_quote) = self.quotes_by_node_id.get(node_id).copied() else {
-            return Vec::new();
+            return Vec::default();
         };
         let Some(edge_ids) = self.edge_ids_by_node_id.get(node_id).cloned() else {
-            return Vec::new();
+            return Vec::default();
         };
 
-        let mut candidates = Vec::new();
+        let mut candidates = Vec::default();
         for edge_id in edge_ids {
             let Some(edge) = self.edges_by_id.get_mut(&edge_id) else {
                 continue;

@@ -5,7 +5,7 @@
 # -------------------------------------------------------------------------------------------------
 # skipcq: BAN-B101
 # bandit:skip=B101
-# skipcq: PYL-C0114, PYL-C0116, PYL-R0913
+# skipcq: PYL-C0114, PYL-C0116, PYL-R0913, PYL-W0212
 """
 Parity and fast-path tests for the opportunity graph engines.
 """
