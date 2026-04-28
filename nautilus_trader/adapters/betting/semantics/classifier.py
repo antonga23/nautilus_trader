@@ -143,17 +143,17 @@ class RuleClassifier:
 
     @staticmethod
     def _is_complementary_coverage(vector_a: PayoffVector, vector_b: PayoffVector) -> bool:
-        for state_a, state_b in zip(vector_a.settlement, vector_b.settlement, strict=True):
-            if {state_a, state_b} != {SettlementState.WIN.value, SettlementState.LOSE.value}:
-                return False
-        return True
+        return all(
+            {state_a, state_b} == {SettlementState.WIN.value, SettlementState.LOSE.value}
+            for state_a, state_b in zip(vector_a.settlement, vector_b.settlement, strict=True)
+        )
 
     @staticmethod
     def _has_no_state_where_both_lose(vector_a: PayoffVector, vector_b: PayoffVector) -> bool:
-        for state_a, state_b in zip(vector_a.settlement, vector_b.settlement, strict=True):
-            if state_a == SettlementState.LOSE.value and state_b == SettlementState.LOSE.value:
-                return False
-        return True
+        return all(
+            state_a != SettlementState.LOSE.value or state_b != SettlementState.LOSE.value
+            for state_a, state_b in zip(vector_a.settlement, vector_b.settlement, strict=True)
+        )
 
     @staticmethod
     def _confidence(relationship_type: RelationshipType) -> float:
@@ -179,9 +179,9 @@ class RuleClassifier:
             caveats.add("validate_90_minute_rule_per_venue")
         if selection_a.scope != "full_time" or selection_b.scope != "full_time":
             caveats.add("non_full_time_period")
-        if (
-            selection_a.market_family == CanonicalMarketType.BINARY_OPTION.value
-            or selection_b.market_family == CanonicalMarketType.BINARY_OPTION.value
+        if CanonicalMarketType.BINARY_OPTION.value in (
+            selection_a.market_family,
+            selection_b.market_family,
         ):
             caveats.add("binary_resolution_policy_required")
         if vector_a.has_void or vector_b.has_void:

@@ -134,7 +134,9 @@ class HistoricalRuleValidator:
         except (msgspec.DecodeError, msgspec.ValidationError):
             try:
                 data = json.loads(payload.decode("utf-8"))
-            except (ValueError, UnicodeDecodeError):
+            except UnicodeDecodeError:
+                return []
+            except ValueError:
                 return []
             if not isinstance(data, dict) or "items" not in data:
                 return []

@@ -86,11 +86,15 @@ class PolymarketSportsTransformer:
     }
 
     @classmethod
-    def _canonical_sport(cls, raw_sport: str | None) -> str | None:
+    def canonical_sport(cls, raw_sport: str | None) -> str | None:
         if not raw_sport:
             return None
         normalized = raw_sport.strip().lower().replace("-", "_").replace(" ", "_")
         return cls.SPORT_CODE_MAP.get(normalized, normalized or None)
+
+    @classmethod
+    def _canonical_sport(cls, raw_sport: str | None) -> str | None:
+        return cls.canonical_sport(raw_sport)
 
     @classmethod
     def _infer_sports_market(cls, instrument: BinaryOption, info: dict) -> dict | None:
@@ -104,7 +108,7 @@ class PolymarketSportsTransformer:
             str(event.get("slug") or ""),
         ]
 
-        sport = cls._canonical_sport(
+        sport = cls.canonical_sport(
             str(original.get("sport") or original.get("sportsTag") or event.get("sport") or ""),
         )
         if sport is None:

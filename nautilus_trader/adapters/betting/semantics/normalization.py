@@ -549,7 +549,7 @@ class MarketNormalizer:
         periods = params.get("period", "").split("|") if params.get("period") else []
         normalized_periods = {period.strip().lower() for period in periods if period.strip()}
         text = cls._normalize_text(" ".join([raw_market_name, raw_market_type, str(params)]))
-        if normalized_periods == {"ft", "ot"} or normalized_periods == {"ot", "ft"}:
+        if normalized_periods in ({"ft", "ot"}, {"ot", "ft"}):
             return "full_time_including_overtime"
         if "wo" in normalized_periods:
             return "winner_only"

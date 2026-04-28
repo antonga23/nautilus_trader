@@ -535,7 +535,7 @@ class SnapshotIngestor:
 
         fetched_at = _utc_now()
         target_sports = {
-            PolymarketSportsTransformer._canonical_sport(sport) or sport for sport in (sports or [])
+            PolymarketSportsTransformer.canonical_sport(sport) or sport for sport in (sports or [])
         }
         cafile: str | None = None
         try:
@@ -654,6 +654,8 @@ class SnapshotIngestor:
 
     @staticmethod
     def _polymarket_get_json(*, request: Any, context: Any, endpoint: str) -> Any:
+        if not endpoint.startswith("/") or endpoint.startswith("//"):
+            raise ValueError(f"Invalid Polymarket endpoint: {endpoint}")
         req = request.Request(
             f"https://gamma-api.polymarket.com{endpoint}",
             headers={
@@ -683,7 +685,7 @@ class SnapshotIngestor:
         if not isinstance(sport_metadata, dict):
             return None
         sport_code = str(sport_metadata.get("sport") or "").strip()
-        canonical_sport = PolymarketSportsTransformer._canonical_sport(sport_code)
+        canonical_sport = PolymarketSportsTransformer.canonical_sport(sport_code)
         if canonical_sport is None:
             return None
         if target_sports and canonical_sport not in target_sports:
