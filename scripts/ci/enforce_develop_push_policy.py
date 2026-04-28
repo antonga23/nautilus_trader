@@ -124,14 +124,20 @@ def _list_push_commits(
 
     head_commit = event.get("head_commit")
     if head_commit:
-        normalized_head = _normalize_commit({"sha": after, "message": head_commit.get("message", "")})
-        if normalized_head["sha"] and normalized_head["sha"] not in {item["sha"] for item in commits}:
+        normalized_head = _normalize_commit(
+            {"sha": after, "message": head_commit.get("message", "")}
+        )
+        if normalized_head["sha"] and normalized_head["sha"] not in {
+            item["sha"] for item in commits
+        }:
             commits.append(normalized_head)
 
     return [item for item in commits if item["sha"]]
 
 
-def _select_merged_develop_pr(commit_sha: str, pull_requests: list[dict[str, Any]]) -> dict[str, Any] | None:
+def _select_merged_develop_pr(
+    commit_sha: str, pull_requests: list[dict[str, Any]]
+) -> dict[str, Any] | None:
     merged = [
         pr
         for pr in pull_requests
@@ -270,7 +276,9 @@ def evaluate_push_policy(
     validations = [_validate_commit(client, repo, commit) for commit in commits]
     invalid = [item.sha for item in validations if not item.valid]
     if invalid:
-        reason = "; ".join(f"{item.sha[:12]}: {item.reason}" for item in validations if not item.valid)
+        reason = "; ".join(
+            f"{item.sha[:12]}: {item.reason}" for item in validations if not item.valid
+        )
         return PolicyDecision(
             action="revert_range",
             reason=reason,
