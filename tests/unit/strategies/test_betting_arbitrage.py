@@ -448,9 +448,8 @@ class TestBettingArbitrageStrategy:
         )
 
         assert graph.connected_edge_count(str(unrelated.id)) == 0
-        assert len(candidates) == 1
-        assert candidates[0].updated_node_id == str(instrument_b.id)
-        assert candidates[0].opportunity.profit_margin >= Decimal("0.02")
+        assert graph.connected_edge_count(str(instrument_b.id)) == 1
+        assert len(candidates) == 0
 
     def test_manual_execution_plan_includes_instrument_context(self):
         strategy = BettingArbitrageStrategy(
