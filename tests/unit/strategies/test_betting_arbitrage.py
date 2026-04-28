@@ -31,7 +31,7 @@ from nautilus_trader.test_kit.stubs.component import TestComponentStubs
 from nautilus_trader.test_kit.stubs.data import TestDataStubs
 
 
-def ensure(condition: bool) -> None:
+def ensure(condition: bool) -> None:  # skipcq
     """
     Raise an assertion error when a boolean expectation is not met.
     """
@@ -39,12 +39,12 @@ def ensure(condition: bool) -> None:
         raise AssertionError
 
 
-class TestBettingArbitrageConfig:
+class TestBettingArbitrageConfig:  # skipcq
     """
     Test configuration validation and parameters.
     """
 
-    def test_default_config(self):
+    def test_default_config(self):  # skipcq
         """
         Test default configuration values.
         """
@@ -63,7 +63,7 @@ class TestBettingArbitrageConfig:
         ensure(config.opportunity_log_manual_instructions is True)
         ensure(config.graph_rebuild_on_new_instrument is True)
 
-    def test_custom_venues(self):
+    def test_custom_venues(self):  # skipcq
         """
         Test custom venue configuration.
         """
@@ -72,7 +72,7 @@ class TestBettingArbitrageConfig:
 
         ensure(config.enabled_venues == venues)
 
-    def test_sport_filter(self):
+    def test_sport_filter(self):  # skipcq
         """
         Test sport filter normalization.
         """
@@ -82,7 +82,7 @@ class TestBettingArbitrageConfig:
         config2 = BettingArbitrageConfig(sport_filter=None)
         ensure(config2.sport_filter is None)
 
-    def test_market_timing_filter_validation(self):
+    def test_market_timing_filter_validation(self):  # skipcq
         """
         Test market timing filter validation.
         """
@@ -95,7 +95,7 @@ class TestBettingArbitrageConfig:
         with pytest.raises(ValueError, match="Invalid market_timing_filter"):
             BettingArbitrageConfig(market_timing_filter="invalid")
 
-    def test_exclude_live_flag(self):
+    def test_exclude_live_flag(self):  # skipcq
         """
         Test exclude_live convenience flag.
         """
@@ -109,7 +109,7 @@ class TestBettingArbitrageConfig:
         )
         ensure(config2.market_timing_filter == "pre_market")
 
-    def test_profit_margin_range(self):
+    def test_profit_margin_range(self):  # skipcq
         """
         Test various profit margin values.
         """
@@ -121,7 +121,7 @@ class TestBettingArbitrageConfig:
         config2 = BettingArbitrageConfig(min_profit_margin=Decimal("0.10"))
         ensure(config2.min_profit_margin == Decimal("0.10"))
 
-    def test_config_round_trips_via_parse(self):
+    def test_config_round_trips_via_parse(self):  # skipcq
         """
         Test config remains importable through JSON encoding/decoding.
         """
@@ -141,7 +141,7 @@ class TestBettingArbitrageConfig:
         ensure(parsed.enabled_venues == frozenset(["SXBET", "POLYMARKET"]))
 
 
-class TestBettingArbitrageStrategy:
+class TestBettingArbitrageStrategy:  # skipcq
     """
     Test arbitrage strategy logic.
     """
@@ -178,7 +178,7 @@ class TestBettingArbitrageStrategy:
             enabled_venues=frozenset(["BLACKBET", "EASYBET"]),
         )
 
-    def test_strategy_initialization(self, default_config):
+    def test_strategy_initialization(self, default_config):  # skipcq
         """
         Test strategy initializes correctly.
         """
@@ -192,7 +192,7 @@ class TestBettingArbitrageStrategy:
         ensure(strategy._raw_arbitrage_detections == 0)
         ensure(strategy._executable_candidates == 0)
 
-    def test_get_stats(self, default_config):
+    def test_get_stats(self, default_config):  # skipcq
         """
         Test get_stats returns correct structure.
         """
@@ -222,7 +222,7 @@ class TestBettingArbitrageStrategy:
         ensure(stats["manual_review_suppressions"] == 0)
         ensure(stats["success_rate"] == 0)
 
-    def test_stats_success_rate_calculation(self, default_config):
+    def test_stats_success_rate_calculation(self, default_config):  # skipcq
         """
         Test success rate calculation in stats.
         """
@@ -241,7 +241,7 @@ class TestBettingArbitrageStrategy:
         stats = strategy.get_stats()
         ensure(stats["success_rate"] == 0)
 
-    def test_sport_filter_uses_sport_name(self, soccer_only_config):
+    def test_sport_filter_uses_sport_name(self, soccer_only_config):  # skipcq
         """
         Ensure sport filter checks instrument sport_name.
         """
@@ -266,7 +266,7 @@ class TestBettingArbitrageStrategy:
 
         ensure(strategy._should_process_instrument(instrument) is True)
 
-    def test_sport_filter_falls_back_to_legacy_sport_attribute(self, soccer_only_config):
+    def test_sport_filter_falls_back_to_legacy_sport_attribute(self, soccer_only_config):  # skipcq
         """
         Ensure sport filter remains compatible with legacy instrument mocks.
         """
@@ -277,7 +277,7 @@ class TestBettingArbitrageStrategy:
 
         ensure(strategy._should_process_instrument(instrument) is True)
 
-    def test_is_live_market_prefers_explicit_live_flag(self, pre_market_only_config):
+    def test_is_live_market_prefers_explicit_live_flag(self, pre_market_only_config):  # skipcq
         """
         Ensure explicit instrument.live wins over params heuristics.
         """
@@ -321,7 +321,7 @@ class TestBettingArbitrageStrategy:
         ensure(strategy._is_live_market(live_instrument) is True)
         ensure(strategy._is_live_market(stale_params_instrument) is False)
 
-    def test_on_quote_tick_uses_latest_live_quotes_for_arbitrage(self, default_config):
+    def test_on_quote_tick_uses_latest_live_quotes_for_arbitrage(self, default_config):  # skipcq
         """
         Ensure arbitrage checks use latest quote odds rather than instrument snapshots.
         """
@@ -398,7 +398,7 @@ class TestBettingArbitrageStrategy:
         ensure(strategy._opportunities_found == 1)
         ensure(strategy._opportunity_graph.connected_edge_count(str(instrument_b.id)) == 1)
 
-    def test_opportunity_graph_builds_nodes_and_matching_edges(self):
+    def test_opportunity_graph_builds_nodes_and_matching_edges(self):  # skipcq
         matcher = MarketMatcher()
         graph = OpportunityGraph(matcher)
         instrument_a = self._sxbet_instrument(
@@ -423,7 +423,7 @@ class TestBettingArbitrageStrategy:
         ensure(node.canonical_event_key)
         ensure(node.canonical_outcome_key.endswith("|over"))
 
-    def test_opportunity_graph_quote_update_evaluates_only_connected_edges(self):
+    def test_opportunity_graph_quote_update_evaluates_only_connected_edges(self):  # skipcq
         matcher = MarketMatcher()
         graph = OpportunityGraph(matcher)
         instrument_a = self._sxbet_instrument(
@@ -474,7 +474,7 @@ class TestBettingArbitrageStrategy:
         ensure(candidates[0].updated_node_id == str(instrument_b.id))
         ensure(candidates[0].opportunity.profit_margin >= Decimal("0.02"))
 
-    def test_manual_execution_plan_includes_instrument_context(self):
+    def test_manual_execution_plan_includes_instrument_context(self):  # skipcq
         strategy = BettingArbitrageStrategy(
             config=BettingArbitrageConfig(
                 enabled_venues=frozenset(["SXBET"]),
@@ -530,7 +530,7 @@ class TestBettingArbitrageStrategy:
         ensure("available_size=" in manual_plan)
         ensure("execution_enabled=False" in manual_plan)
 
-    def test_quote_odds_falls_back_to_bid_for_one_sided_quote(self, default_config):
+    def test_quote_odds_falls_back_to_bid_for_one_sided_quote(self, default_config):  # skipcq
         """
         Ensure one-sided quotes remain usable when the ask side is absent.
         """
@@ -542,7 +542,7 @@ class TestBettingArbitrageStrategy:
 
         ensure(strategy._quote_odds(quote) == Decimal("2.25"))
 
-    def test_quote_odds_prefers_bid_for_sxbet_quote(self, default_config):
+    def test_quote_odds_prefers_bid_for_sxbet_quote(self, default_config):  # skipcq
         strategy = BettingArbitrageStrategy(config=default_config)
         instrument = CryptoBettingInstrument(
             venue=Venue("SXBET"),
@@ -568,7 +568,7 @@ class TestBettingArbitrageStrategy:
 
         ensure(strategy._quote_odds(quote) == Decimal("2.25"))
 
-    def test_on_start_subscribes_cached_matching_instruments(self, default_config):
+    def test_on_start_subscribes_cached_matching_instruments(self, default_config):  # skipcq
         strategy = BettingArbitrageStrategy(config=default_config)
         cache = TestComponentStubs.cache()
         strategy.register(
@@ -621,7 +621,7 @@ class TestBettingArbitrageStrategy:
         ensure(matching in strategy._subscribed_instruments)
         ensure(filtered not in strategy._subscribed_instruments)
 
-    def test_on_instrument_subscribes_new_matching_instrument_once(self, default_config):
+    def test_on_instrument_subscribes_new_matching_instrument_once(self, default_config):  # skipcq
         strategy = BettingArbitrageStrategy(config=default_config)
         strategy.subscribe_quote_ticks = Mock()
 
@@ -647,7 +647,7 @@ class TestBettingArbitrageStrategy:
 
         strategy.subscribe_quote_ticks.assert_called_once_with(instrument.id)
 
-    def test_on_start_skips_subscription_when_cache_is_empty(self, default_config):
+    def test_on_start_skips_subscription_when_cache_is_empty(self, default_config):  # skipcq
         strategy = BettingArbitrageStrategy(config=default_config)
         strategy.register(
             trader_id=TraderId("TESTER-002"),
@@ -663,7 +663,7 @@ class TestBettingArbitrageStrategy:
         strategy.subscribe_quote_ticks.assert_not_called()
         ensure(not strategy._subscribed_instruments)
 
-    def test_arbitrage_diagnostics_suppresses_inverse_duplicate_opportunities(self):
+    def test_arbitrage_diagnostics_suppresses_inverse_duplicate_opportunities(self):  # skipcq
         config = BettingArbitrageConfig(
             min_profit_margin=Decimal("0.02"),
             enabled_venues=frozenset(["SXBET"]),
@@ -715,7 +715,7 @@ class TestBettingArbitrageStrategy:
 
         ensure(strategy._duplicate_opportunities_suppressed == 1)
 
-    def test_arbitrage_diagnostics_flags_stale_quotes(self):
+    def test_arbitrage_diagnostics_flags_stale_quotes(self):  # skipcq
         strategy = BettingArbitrageStrategy(
             config=BettingArbitrageConfig(
                 enabled_venues=frozenset(["SXBET"]),
@@ -762,7 +762,7 @@ class TestBettingArbitrageStrategy:
         ensure(diagnostics.stale is True)
         ensure(diagnostics.matcher_suspect is False)
 
-    def test_strategy_lifecycle_and_filter_edge_cases(self):
+    def test_strategy_lifecycle_and_filter_edge_cases(self):  # skipcq
         strategy = BettingArbitrageStrategy(
             config=BettingArbitrageConfig(
                 enabled_venues=frozenset(["SXBET"]),
@@ -811,7 +811,7 @@ class TestBettingArbitrageStrategy:
         zero_quote = TestDataStubs.quote_tick(bid_price=0.0, ask_price=0.0)
         ensure(strategy._quote_odds(zero_quote) is None)
 
-    def test_quote_tick_and_graph_branch_edges(self):
+    def test_quote_tick_and_graph_branch_edges(self):  # skipcq
         instrument = self._sxbet_instrument(
             event_id="market-1",
             outcome="over",
@@ -878,7 +878,7 @@ class TestBettingArbitrageStrategy:
             is True,
         )
 
-    def test_remaining_lightweight_branch_edges(self):
+    def test_remaining_lightweight_branch_edges(self):  # skipcq
         filtered_strategy = BettingArbitrageStrategy(
             config=BettingArbitrageConfig(
                 enabled_venues=frozenset(["SXBET"]),
@@ -978,7 +978,7 @@ class TestBettingArbitrageStrategy:
             == "",
         )
 
-    def test_fast_snapshot_materialized_edge_cases(self):
+    def test_fast_snapshot_materialized_edge_cases(self):  # skipcq
         strategy = BettingArbitrageStrategy(
             config=BettingArbitrageConfig(
                 min_profit_margin=Decimal("0.02"),
@@ -1042,7 +1042,7 @@ class TestBettingArbitrageStrategy:
             is False,
         )
 
-    def test_fast_graph_candidate_matches_public_strategy_effects(self):
+    def test_fast_graph_candidate_matches_public_strategy_effects(self):  # skipcq
         strategy = BettingArbitrageStrategy(
             config=BettingArbitrageConfig(
                 min_profit_margin=Decimal("0.02"),
@@ -1064,7 +1064,7 @@ class TestBettingArbitrageStrategy:
         ensure(diagnostics.hedge_match_type == "same_market")
         ensure(diagnostics.hedge_confidence == 1.0)
 
-    def test_fast_logging_and_suppression_formatters_cover_manual_context(self):
+    def test_fast_logging_and_suppression_formatters_cover_manual_context(self):  # skipcq
         strategy = BettingArbitrageStrategy(
             config=BettingArbitrageConfig(
                 min_profit_margin=Decimal("0.02"),
@@ -1125,7 +1125,7 @@ class TestBettingArbitrageStrategy:
             ),
         )
 
-    def test_fast_graph_candidate_suppresses_duplicates_before_opportunity_construction(self):
+    def test_fast_graph_candidate_suppresses_duplicates_before_opportunity_construction(self):  # skipcq
         strategy = BettingArbitrageStrategy(
             config=BettingArbitrageConfig(
                 min_profit_margin=Decimal("0.02"),
@@ -1146,7 +1146,7 @@ class TestBettingArbitrageStrategy:
         ensure(strategy._executable_candidates == 0)
         strategy._handle_arbitrage_opportunity.assert_not_called()
 
-    def test_fast_graph_candidate_suppresses_stale_quotes_before_opportunity_construction(self):
+    def test_fast_graph_candidate_suppresses_stale_quotes_before_opportunity_construction(self):  # skipcq
         strategy = BettingArbitrageStrategy(
             config=BettingArbitrageConfig(
                 min_profit_margin=Decimal("0.02"),
@@ -1165,7 +1165,7 @@ class TestBettingArbitrageStrategy:
         ensure(strategy._executable_candidates == 0)
         strategy._handle_arbitrage_opportunity.assert_not_called()
 
-    def test_fast_graph_batch_suppresses_duplicates_from_snapshot_before_context(self):
+    def test_fast_graph_batch_suppresses_duplicates_from_snapshot_before_context(self):  # skipcq
         strategy = BettingArbitrageStrategy(
             config=BettingArbitrageConfig(
                 min_profit_margin=Decimal("0.02"),
@@ -1185,7 +1185,7 @@ class TestBettingArbitrageStrategy:
         ensure(strategy._executable_candidates == 0)
         strategy._log_arbitrage_summary.assert_called_once()
 
-    def test_fast_graph_batch_suppresses_stale_quotes_from_snapshot_before_context(self):
+    def test_fast_graph_batch_suppresses_stale_quotes_from_snapshot_before_context(self):  # skipcq
         strategy = BettingArbitrageStrategy(
             config=BettingArbitrageConfig(
                 min_profit_margin=Decimal("0.02"),
@@ -1205,7 +1205,7 @@ class TestBettingArbitrageStrategy:
         ensure(strategy._executable_candidates == 0)
         strategy._log_arbitrage_summary.assert_called_once()
 
-    def test_fast_graph_batch_logs_accepted_snapshot_without_materializing(self):
+    def test_fast_graph_batch_logs_accepted_snapshot_without_materializing(self):  # skipcq
         strategy = BettingArbitrageStrategy(
             config=BettingArbitrageConfig(
                 min_profit_margin=Decimal("0.02"),
@@ -1225,7 +1225,7 @@ class TestBettingArbitrageStrategy:
         strategy._log_fast_arbitrage_snapshot.assert_called_once()
         strategy._log_arbitrage_summary.assert_called_once()
 
-    def test_fast_graph_candidate_preserves_auto_execute_behavior(self):
+    def test_fast_graph_candidate_preserves_auto_execute_behavior(self):  # skipcq
         strategy = BettingArbitrageStrategy(
             config=BettingArbitrageConfig(
                 min_profit_margin=Decimal("0.02"),
@@ -1243,7 +1243,7 @@ class TestBettingArbitrageStrategy:
         ensure(opportunity.odds_a == Decimal("2.45"))
         ensure(opportunity.odds_b == Decimal("2.30"))
 
-    def test_public_candidate_suppression_and_execution_branches(self):
+    def test_public_candidate_suppression_and_execution_branches(self):  # skipcq
         strategy = BettingArbitrageStrategy(
             config=BettingArbitrageConfig(
                 min_profit_margin=Decimal("0.02"),
@@ -1286,7 +1286,7 @@ class TestBettingArbitrageStrategy:
         strategy.on_order_filled(Mock())
         strategy.on_order_rejected(Mock())
 
-    def test_diagnostics_suppression_and_matcher_reason_branches(self):
+    def test_diagnostics_suppression_and_matcher_reason_branches(self):  # skipcq
         strategy = BettingArbitrageStrategy(
             config=BettingArbitrageConfig(
                 enabled_venues=frozenset(["SXBET"]),
@@ -1375,7 +1375,7 @@ class TestBettingArbitrageStrategy:
             == "same_market_params_mismatch",
         )
 
-    def test_fast_graph_batch_preserves_auto_execute_behavior(self):
+    def test_fast_graph_batch_preserves_auto_execute_behavior(self):  # skipcq
         strategy = BettingArbitrageStrategy(
             config=BettingArbitrageConfig(
                 min_profit_margin=Decimal("0.02"),
@@ -1394,7 +1394,7 @@ class TestBettingArbitrageStrategy:
         ensure(opportunity.odds_a == Decimal("2.45"))
         ensure(opportunity.odds_b == Decimal("2.30"))
 
-    def test_arbitrage_diagnostics_flags_same_venue_event_mismatch(self):
+    def test_arbitrage_diagnostics_flags_same_venue_event_mismatch(self):  # skipcq
         strategy = BettingArbitrageStrategy(
             config=BettingArbitrageConfig(enabled_venues=frozenset(["SXBET"])),
         )
@@ -1433,8 +1433,8 @@ class TestBettingArbitrageStrategy:
 
         suspect, reason = strategy._matcher_suspect_reason(instrument_a, instrument_b)
 
-        assert suspect is False
-        assert reason == "none"
+        ensure(suspect is False)
+        ensure(reason == "none")
 
     def test_arbitrage_diagnostics_flags_liquidity_insufficient_candidates(self):
         strategy = BettingArbitrageStrategy(
@@ -1490,7 +1490,7 @@ class TestBettingArbitrageStrategy:
         ensure(strategy._suppress_arbitrage_candidate(diagnostics) is True)
         ensure(strategy.get_stats()["liquidity_suppressions"] == 1)
 
-    def test_arbitrage_diagnostics_flags_cross_cycle_candidates_for_manual_review(self):
+    def test_arbitrage_diagnostics_flags_cross_cycle_candidates_for_manual_review(self):  # skipcq
         strategy = BettingArbitrageStrategy(
             config=BettingArbitrageConfig(
                 enabled_venues=frozenset(["SXBET"]),

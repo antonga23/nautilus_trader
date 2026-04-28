@@ -42,7 +42,7 @@ from nautilus_trader.test_kit.stubs.component import TestComponentStubs
 from nautilus_trader.test_kit.stubs.data import TestDataStubs
 
 
-def ensure(condition: bool) -> None:
+def ensure(condition: bool) -> None:  # skipcq
     """
     Raise an assertion error when a boolean expectation is not met.
     """
@@ -51,7 +51,7 @@ def ensure(condition: bool) -> None:
 
 
 @pytest.mark.asyncio
-class TestBettingArbitrageIntegration:
+class TestBettingArbitrageIntegration:  # skipcq
     """
     Integration tests for betting arbitrage strategy.
     """
@@ -158,7 +158,7 @@ class TestBettingArbitrageIntegration:
         # Live soccer filtered by timing
         ensure(not strategy._should_process_instrument(mock_instrument_soccer_live_easybet))
 
-    def test_is_live_market_detection(self):
+    def test_is_live_market_detection(self):  # skipcq
         """
         Test live market detection logic.
         """

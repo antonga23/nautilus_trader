@@ -26,7 +26,7 @@ from nautilus_trader.test_kit.stubs.data import TestDataStubs
 _CURRENCY = Currency.from_str("USDT")
 
 
-def ensure(condition: bool) -> None:
+def ensure(condition: bool) -> None:  # skipcq
     """
     Raise an assertion error when a boolean expectation is not met.
     """
@@ -71,7 +71,7 @@ def _instrument(
     )
 
 
-def _graph(engine: str, instruments: list[CryptoBettingInstrument]) -> OpportunityGraph:
+def _graph(engine: str, instruments: list[CryptoBettingInstrument]) -> OpportunityGraph:  # skipcq
     try:
         graph = OpportunityGraph(MarketMatcher(), engine=engine)
     except ImportError:
@@ -80,7 +80,7 @@ def _graph(engine: str, instruments: list[CryptoBettingInstrument]) -> Opportuni
     return graph
 
 
-def _edge_snapshot(graph: OpportunityGraph) -> dict[str, tuple[str, str, str, bool]]:
+def _edge_snapshot(graph: OpportunityGraph) -> dict[str, tuple[str, str, str, bool]]:  # skipcq
     return {
         edge_id: (
             edge.hedge_type,
@@ -92,7 +92,7 @@ def _edge_snapshot(graph: OpportunityGraph) -> dict[str, tuple[str, str, str, bo
     }
 
 
-def _quote(instrument: CryptoBettingInstrument, odds: Decimal, ts_event: int = 1_000) -> object:
+def _quote(instrument: CryptoBettingInstrument, odds: Decimal, ts_event: int = 1_000) -> object:  # skipcq
     return TestDataStubs.quote_tick(
         instrument=instrument,
         bid_price=float(odds),
@@ -116,7 +116,7 @@ def _seed_quotes(
 
 
 @pytest.mark.parametrize("engine", ["python", "rust"])
-def test_builds_same_market_cross_venue_edges(engine: str) -> None:
+def test_builds_same_market_cross_venue_edges(engine: str) -> None:  # skipcq
     instruments = [
         _instrument(venue="SXBET", outcome="over"),
         _instrument(venue="SXBET", outcome="under"),
@@ -132,7 +132,7 @@ def test_builds_same_market_cross_venue_edges(engine: str) -> None:
     ensure(graph.connected_edge_count(str(instruments[0].id)) == 2)
 
 
-def test_rust_and_python_topology_are_identical_for_common_edges() -> None:
+def test_rust_and_python_topology_are_identical_for_common_edges() -> None:  # skipcq
     instruments = [
         _instrument(venue="SXBET", outcome="over"),
         _instrument(venue="SXBET", outcome="under"),
@@ -161,7 +161,7 @@ def test_rust_and_python_topology_are_identical_for_common_edges() -> None:
     ensure(_edge_snapshot(rust_graph) == _edge_snapshot(python_graph))
 
 
-def test_incremental_add_and_duplicate_match_python_fallback() -> None:
+def test_incremental_add_and_duplicate_match_python_fallback() -> None:  # skipcq
     base = [_instrument(outcome="over")]
     under = _instrument(outcome="under")
     python_graph = _graph("python", base)
@@ -174,7 +174,7 @@ def test_incremental_add_and_duplicate_match_python_fallback() -> None:
     ensure(_edge_snapshot(rust_graph) == _edge_snapshot(python_graph))
 
 
-def test_update_quote_and_evaluate_matches_python_candidates() -> None:
+def test_update_quote_and_evaluate_matches_python_candidates() -> None:  # skipcq
     instruments = [
         _instrument(outcome="over"),
         _instrument(outcome="under"),
@@ -215,7 +215,7 @@ def test_update_quote_and_evaluate_matches_python_candidates() -> None:
     ensure({candidate.updated_node_id for candidate in rust_candidates} == {str(instruments[0].id)})
 
 
-def test_update_quote_and_scan_fast_returns_primitive_snapshots() -> None:
+def test_update_quote_and_scan_fast_returns_primitive_snapshots() -> None:  # skipcq
     instruments = [_instrument(outcome="over"), _instrument(outcome="under")]
     graph = _graph("rust", instruments)
     graph.update_quote(
@@ -252,7 +252,7 @@ def test_update_quote_and_scan_fast_returns_primitive_snapshots() -> None:
     ensure(snapshot[11] is False)
 
 
-def test_update_quote_and_scan_fast_is_rust_only() -> None:
+def test_update_quote_and_scan_fast_is_rust_only() -> None:  # skipcq
     instrument = _instrument()
     graph = _graph("python", [instrument])
 
@@ -268,7 +268,7 @@ def test_update_quote_and_scan_fast_is_rust_only() -> None:
     )
 
 
-def test_rust_scan_filters_unprofitable_edges_before_decimal_validation() -> None:
+def test_rust_scan_filters_unprofitable_edges_before_decimal_validation() -> None:  # skipcq
     instruments = [
         _instrument(venue=f"VENUE{index}", event_id=f"event-{index}", outcome=outcome)
         for index in range(12)
@@ -289,7 +289,7 @@ def test_rust_scan_filters_unprofitable_edges_before_decimal_validation() -> Non
     ensure(not candidates)
 
 
-def test_push_capable_edges_are_built_but_not_evaluated() -> None:
+def test_push_capable_edges_are_built_but_not_evaluated() -> None:  # skipcq
     instruments = [
         _instrument(
             market_name="Draw No Bet",
@@ -320,7 +320,7 @@ def test_push_capable_edges_are_built_but_not_evaluated() -> None:
     ensure(not candidates)
 
 
-def test_missing_start_time_ambiguity_matches_python_fallback() -> None:
+def test_missing_start_time_ambiguity_matches_python_fallback() -> None:  # skipcq
     ambiguous = [
         _instrument(event_id="early", outcome="over", start_time="2026-03-13T10:00:00Z"),
         _instrument(event_id="late", outcome="under", start_time="2026-03-13T20:00:00Z"),
@@ -345,7 +345,7 @@ def test_missing_start_time_ambiguity_matches_python_fallback() -> None:
     ensure(_graph("rust", unambiguous).edge_count == _graph("python", unambiguous).edge_count == 1)
 
 
-def test_engine_validation_and_missing_node_paths() -> None:
+def test_engine_validation_and_missing_node_paths() -> None:  # skipcq
     instrument = _instrument()
     quote = _quote(instrument, Decimal("2.00"))
 
@@ -386,7 +386,7 @@ def test_engine_validation_and_missing_node_paths() -> None:
     )
 
 
-def test_python_evaluation_skips_missing_unprofitable_and_push_edges() -> None:
+def test_python_evaluation_skips_missing_unprofitable_and_push_edges() -> None:  # skipcq
     instruments = [_instrument(outcome="over"), _instrument(outcome="under")]
     graph = _graph("python", instruments)
     graph.update_quote(

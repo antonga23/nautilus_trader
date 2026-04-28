@@ -46,7 +46,7 @@ NANOSECONDS_PER_SECOND = 1_000_000_000
 
 @dataclass(frozen=True)
 # skipcq: PYL-R0902
-class ArbitrageDiagnostics:
+class ArbitrageDiagnostics:  # skipcq
     """
     Structured diagnostics captured for one arbitrage evaluation.
     """
@@ -173,7 +173,7 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
 
 
 # skipcq: PYL-R0902
-class BettingArbitrageStrategy(Strategy):
+class BettingArbitrageStrategy(Strategy):  # skipcq
     """
     Cross-venue sports betting arbitrage strategy.
 

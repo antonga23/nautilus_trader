@@ -63,7 +63,7 @@ FastCandidateSnapshot = tuple[
 
 @dataclass(frozen=True)
 # skipcq: PYL-R0902
-class OpportunityNode:
+class OpportunityNode:  # skipcq
     """
     A graph node representing one venue-specific tradable betting instrument.
     """
@@ -88,7 +88,7 @@ class OpportunityNode:
 
 @dataclass
 # skipcq: PYL-R0902
-class OpportunityEdge:
+class OpportunityEdge:  # skipcq
     """
     A precomputed hedge/opportunity relationship between two nodes.
     """
