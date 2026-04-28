@@ -208,7 +208,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
 
         # Market matcher for finding arbitrage
         self._matcher = MarketMatcher()
-        self._opportunity_graph = OpportunityGraph(self._matcher)
+        graph_engine = "python" if config.semantic_rule_cache_dir else "auto"
+        self._opportunity_graph = OpportunityGraph(self._matcher, engine=graph_engine)
 
         # Tracking
         self._subscribed_instruments: set[CryptoBettingInstrument] = set()
@@ -1154,10 +1155,14 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             instrument_id_b=str(inst_b.id),
             event_name_a=inst_a.event_name,
             event_name_b=inst_b.event_name,
+            canonical_event_key_a=inst_a.event_key(include_start_time=False),
+            canonical_event_key_b=inst_b.event_key(include_start_time=False),
             market_id_a=str(inst_a.market_id or inst_a.event_id),
             market_id_b=str(inst_b.market_id or inst_b.event_id),
             market_name_a=inst_a.market_name,
             market_name_b=inst_b.market_name,
+            params_a=inst_a.params,
+            params_b=inst_b.params,
             outcome_a=inst_a.outcome,
             outcome_b=inst_b.outcome,
             venue_a=str(inst_a.id.venue),
@@ -1166,6 +1171,16 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             odds_b=opportunity.odds_b,
             quote_ts_a=int(quote_ts_a),
             quote_ts_b=int(quote_ts_b),
+            quote_cycle_id_a=(
+                self._quote_cycle_id(quote_a)
+                if quote_a is not None
+                else str(int(quote_ts_a) // NANOSECONDS_PER_SECOND)
+            ),
+            quote_cycle_id_b=(
+                self._quote_cycle_id(quote_b)
+                if quote_b is not None
+                else str(int(quote_ts_b) // NANOSECONDS_PER_SECOND)
+            ),
             quote_age_a_secs=quote_age_a_secs,
             quote_age_b_secs=quote_age_b_secs,
             quote_delta_secs=quote_delta_secs,
@@ -1371,10 +1386,18 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             f"quote_age_secs={diagnostics.quote_age_b_secs:.2f}"
         )
 
-    def _manual_execution_plan(
-        self,
-        diagnostics: ArbitrageDiagnostics,
-    ) -> str:
+    def _manual_execution_plan(self, *args) -> str:
+        if len(args) == 1:
+            diagnostics = args[0]
+        elif len(args) == 2:
+            diagnostics = args[1]
+        else:
+            msg = "_manual_execution_plan expects diagnostics or opportunity, diagnostics"
+            raise TypeError(msg)
+
+        if not isinstance(diagnostics, ArbitrageDiagnostics):
+            msg = "_manual_execution_plan requires ArbitrageDiagnostics"
+            raise TypeError(msg)
         if not self._config.opportunity_log_manual_instructions:
             return ""
 

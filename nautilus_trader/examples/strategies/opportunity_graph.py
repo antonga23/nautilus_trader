@@ -338,6 +338,7 @@ class OpportunityGraph:
                 continue
 
             opportunity = self._check_edge_opportunity(
+                edge=edge,
                 source_quote=updated_quote,
                 target_quote=other_quote,
             )
@@ -547,10 +548,39 @@ class OpportunityGraph:
             candidates=candidates,
             include_cross_venue=self._include_cross_venue,
         )
+        seen_target_ids: set[str] = set()
         for hedge in hedges:
+            if (
+                hedge.relationship_type == "EQUIVALENT_SELECTION"
+                and not hedge.same_venue_execution_eligible
+            ):
+                continue
+            if self._matcher._is_same_market_hedge(instrument, hedge.instrument):
+                hedge = self._matcher._legacy_same_market_candidate(hedge.instrument)
+            seen_target_ids.add(str(hedge.instrument.id))
             self._upsert_edge(
                 source=instrument,
                 target=hedge.instrument,
+                hedge=hedge,
+            )
+
+        for candidate in candidates:
+            if candidate.id == instrument.id or str(candidate.id) in seen_target_ids:
+                continue
+            if not self._include_cross_venue and candidate.venue_name != instrument.venue_name:
+                continue
+            if not self._matcher._is_hedge_event_match(instrument, candidate, candidates):
+                continue
+            if self._matcher._is_same_market_hedge(instrument, candidate):
+                continue
+
+            hedge = self._legacy_cross_market_candidate(instrument, candidate)
+            if hedge is None:
+                continue
+
+            self._upsert_edge(
+                source=instrument,
+                target=candidate,
                 hedge=hedge,
             )
 
@@ -616,6 +646,7 @@ class OpportunityGraph:
     def _check_edge_opportunity(
         self,
         *,
+        edge: OpportunityEdge,
         source_quote: QuoteState,
         target_quote: QuoteState,
     ) -> ArbitrageOpportunity | None:
@@ -672,6 +703,37 @@ class OpportunityGraph:
             odds_b=target_quote.odds,
             is_same_venue=is_same_venue,
             match_type=match_type,
+        )
+
+    def _legacy_cross_market_candidate(
+        self,
+        source: CryptoBettingInstrument,
+        target: CryptoBettingInstrument,
+    ) -> HedgeCandidate | None:
+        market_a = MarketType.from_string(source.market_name)
+        market_b = MarketType.from_string(target.market_name)
+        outcome_a = Outcome.from_string(source.outcome)
+        outcome_b = Outcome.from_string(target.outcome)
+        confidence = self._matcher._calculate_cross_market_confidence(
+            market_a,
+            market_b,
+            outcome_a,
+            outcome_b,
+            source,
+            target,
+        )
+        if confidence < self._matcher.min_confidence:
+            return None
+
+        return HedgeCandidate(
+            instrument=target,
+            match_type="cross_market",
+            confidence=confidence,
+            relationship_type="COMPLEMENTARY_COVERAGE",
+            execution_safe=True,
+            same_venue_execution_eligible=False,
+            safety_tier="EXECUTION_SAFE",
+            promotion_status="PROMOTED",
         )
 
     @classmethod
