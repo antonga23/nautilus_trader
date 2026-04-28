@@ -32,6 +32,11 @@ from nautilus_trader.config import TradingNodeConfig
 from nautilus_trader.examples.strategies.betting_arbitrage import BettingArbitrageConfig
 from nautilus_trader.examples.strategies.betting_arbitrage import BettingArbitrageStrategy
 from nautilus_trader.live.node import TradingNode
+from nautilus_trader.live.strategy_nodes.betting_arbitrage.builder import build_trading_node_config
+from nautilus_trader.live.strategy_nodes.betting_arbitrage.config import (
+    BettingArbitrageNodeManifest,
+)
+from nautilus_trader.live.strategy_nodes.betting_arbitrage.config import BettingVenueManifest
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import Symbol
 from nautilus_trader.model.identifiers import TraderId
@@ -288,6 +293,60 @@ class TestBettingArbitrageIntegration:  # skipcq
         assert edge.safety_tier == SafetyTier.EXECUTION_SAFE_SAME_VENUE_ELIGIBLE.value
         assert strategy._opportunities_found == 0
         strategy._handle_arbitrage_opportunity.assert_not_called()
+
+    def test_trading_node_strategy_consumes_seeded_semantic_cache(self, tmp_path):
+        cache_dir = tmp_path / "semantic-cache"
+        home = self._instrument(venue="SXBET", market_type="match_odds", outcome="home")
+        away_draw = self._instrument(
+            venue="SXBET",
+            market_type="double_chance",
+            outcome="away_draw",
+        )
+        self._seed_promoted_template(
+            cache_dir=cache_dir,
+            instrument_a=home,
+            instrument_b=away_draw,
+            support=TemplateSupportStats(
+                template_id="node-support",
+                observed_count=10,
+                event_count=10,
+                provider_count=1,
+                providers=("SXBET",),
+                sports=("soccer",),
+                confidence=1.0,
+            ),
+        )
+
+        manifest = BettingArbitrageNodeManifest(
+            node_id="sxbet-node",
+            trader_id="BETARB-NODE-001",
+            validation_mode=True,
+            allow_dummy_credentials=True,
+            semantic_rule_cache_dir=str(cache_dir),
+            venues=[
+                BettingVenueManifest(
+                    venue="SXBET",
+                    client_key="SXBET_PRIMARY",
+                    execution_enabled=False,
+                ),
+            ],
+        )
+        node = TradingNode(config=build_trading_node_config(manifest))
+        try:
+            strategy = node.trader.strategies()[0]
+            assert isinstance(strategy, BettingArbitrageStrategy)
+            node.cache.add_instrument(home)
+            node.cache.add_instrument(away_draw)
+            strategy.subscribe_quote_ticks = Mock()
+
+            strategy.on_start()
+
+            stats = strategy.get_stats()
+            assert stats["subscribed_instruments"] == 2
+            assert stats["opportunity_graph_edges"] >= 1
+            assert stats["opportunity_graph_connected_nodes"] >= 2
+        finally:
+            node.dispose()
 
     @staticmethod
     def _seed_promoted_template(

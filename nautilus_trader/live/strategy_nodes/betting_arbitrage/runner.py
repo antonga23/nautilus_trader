@@ -12,6 +12,12 @@ from nautilus_trader.live.strategy_nodes.betting_arbitrage.builder import defaul
 from nautilus_trader.live.strategy_nodes.betting_arbitrage.builder import load_manifest
 from nautilus_trader.live.strategy_nodes.betting_arbitrage.builder import write_manifest_snapshot
 from nautilus_trader.live.strategy_nodes.betting_arbitrage.builder import write_rendered_node_config
+from nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache import (
+    SemanticCacheStatus,
+)
+from nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache import (
+    ensure_semantic_cache_ready,
+)
 
 
 class HeartbeatWriter(threading.Thread):
@@ -72,33 +78,53 @@ def main(argv: list[str] | None = None) -> int:
     heartbeat_path = (
         Path(manifest.heartbeat_path) if manifest.heartbeat_path else rendered_paths["heartbeat"]
     )
+    semantic_cache: dict[str, object] | None = None
 
-    if args.command == "validate-manifest":
+    try:
+        semantic_cache = _ensure_semantic_cache(manifest)
+
+        if args.command == "validate-manifest":
+            config = build_trading_node_config(manifest)
+            write_manifest_snapshot(manifest, manifest_snapshot)
+            write_rendered_node_config(config, rendered_config_path)
+            _write_json(
+                status_path,
+                {
+                    "nodeId": manifest.node_id,
+                    "status": "validated",
+                    "validatedAt": _utc_now(),
+                    "manifestPath": str(manifest_snapshot),
+                    "renderedConfigPath": str(rendered_config_path),
+                    "semanticCache": semantic_cache,
+                },
+            )
+            return 0
+
         config = build_trading_node_config(manifest)
         write_manifest_snapshot(manifest, manifest_snapshot)
         write_rendered_node_config(config, rendered_config_path)
-        _write_json(
-            status_path,
-            {
-                "nodeId": manifest.node_id,
-                "status": "validated",
-                "validatedAt": _utc_now(),
-                "manifestPath": str(manifest_snapshot),
-                "renderedConfigPath": str(rendered_config_path),
-            },
-        )
-        return 0
 
-    config = build_trading_node_config(manifest)
-    write_manifest_snapshot(manifest, manifest_snapshot)
-    write_rendered_node_config(config, rendered_config_path)
-
-    if args.command == "render-node-config":
-        if args.output:
-            write_rendered_node_config(config, args.output)
-        else:
-            print(rendered_config_path.read_text())
-        return 0
+        if args.command == "render-node-config":
+            if args.output:
+                write_rendered_node_config(config, args.output)
+            else:
+                print(rendered_config_path.read_text())
+            return 0
+    except Exception as exc:
+        if args.command != "render-node-config":
+            _write_json(
+                status_path,
+                {
+                    "nodeId": manifest.node_id,
+                    "status": "failed",
+                    "failedAt": _utc_now(),
+                    "error": repr(exc),
+                    "manifestPath": str(manifest_snapshot),
+                    "renderedConfigPath": str(rendered_config_path),
+                    "semanticCache": semantic_cache,
+                },
+            )
+        raise
 
     from nautilus_trader.live.node import TradingNode
 
@@ -119,6 +145,7 @@ def main(argv: list[str] | None = None) -> int:
             "at": _utc_now(),
             "manifestPath": str(manifest_snapshot),
             "renderedConfigPath": str(rendered_config_path),
+            "semanticCache": semantic_cache,
         },
     )
     node.build()
@@ -130,6 +157,7 @@ def main(argv: list[str] | None = None) -> int:
             "at": _utc_now(),
             "manifestPath": str(manifest_snapshot),
             "renderedConfigPath": str(rendered_config_path),
+            "semanticCache": semantic_cache,
         },
     )
 
@@ -147,6 +175,7 @@ def main(argv: list[str] | None = None) -> int:
             "heartbeatPath": str(heartbeat_path),
             "manifestPath": str(manifest_snapshot),
             "renderedConfigPath": str(rendered_config_path),
+            "semanticCache": semantic_cache,
         },
     )
 
@@ -159,6 +188,7 @@ def main(argv: list[str] | None = None) -> int:
                 "status": "completed",
                 "completedAt": _utc_now(),
                 "heartbeatPath": str(heartbeat_path),
+                "semanticCache": semantic_cache,
             },
         )
         return 0
@@ -171,6 +201,7 @@ def main(argv: list[str] | None = None) -> int:
                 "failedAt": _utc_now(),
                 "error": repr(e),
                 "heartbeatPath": str(heartbeat_path),
+                "semanticCache": semantic_cache,
             },
         )
         raise
@@ -186,6 +217,28 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 
 def _utc_now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _ensure_semantic_cache(manifest) -> dict[str, object] | None:
+    status = ensure_semantic_cache_ready(manifest)
+    return _semantic_cache_payload(status)
+
+
+def _semantic_cache_payload(status: SemanticCacheStatus | None) -> dict[str, object] | None:
+    if status is None:
+        return None
+    payload = status.to_dict()
+    return {
+        "path": payload["path"],
+        "source": payload["source"],
+        "ready": payload["ready"],
+        "manifestCount": payload["manifest_count"],
+        "promotedTemplateCount": payload["promoted_template_count"],
+        "executionSafeTemplateCount": payload["execution_safe_template_count"],
+        "sameVenueExecutionEligibleTemplateCount": (
+            payload["same_venue_execution_eligible_template_count"]
+        ),
+    }
 
 
 if __name__ == "__main__":

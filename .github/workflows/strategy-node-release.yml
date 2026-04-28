@@ -155,6 +155,9 @@ jobs:
             put "$wheel_path" "strategy-node-wheel/$(basename "$wheel_path")"
 
       - name: Validate SX.bet manifest
+        env:
+          SXBET_API_KEY: ${{ secrets.SXBET_API_KEY }}
+          CLOUDBET_API_KEY: ${{ secrets.CLOUDBET_API_KEY }}
         run: |
           cd /tmp
           "$GITHUB_WORKSPACE/.venv/bin/python" -m nautilus_trader.live.strategy_nodes.betting_arbitrage \
