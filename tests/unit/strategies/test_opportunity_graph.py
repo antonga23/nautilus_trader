@@ -271,7 +271,7 @@ def test_rust_scan_filters_unprofitable_edges_before_decimal_validation() -> Non
     )
 
     assert graph.connected_edge_count(str(instruments[0].id)) > 1
-    assert candidates == []
+    assert not candidates
 
 
 def test_push_capable_edges_are_built_but_not_evaluated() -> None:
@@ -302,7 +302,7 @@ def test_push_capable_edges_are_built_but_not_evaluated() -> None:
 
     assert graph.edge_count == 1
     assert next(iter(graph.edges_by_id.values())).push_capable is True
-    assert candidates == []
+    assert not candidates
 
 
 def test_missing_start_time_ambiguity_matches_python_fallback() -> None:
@@ -342,13 +342,10 @@ def test_engine_validation_and_missing_node_paths() -> None:
 
     assert python_graph.quote_state_count == 0
     assert python_graph.update_quote(quote, odds=Decimal("2.00"), received_ns=1) is None
-    assert (
-        python_graph.evaluate_updated_node(
-            str(instrument.id),
-            min_profit_margin=Decimal("0.01"),
-            now_ns=1,
-        )
-        == []
+    assert not python_graph.evaluate_updated_node(
+        str(instrument.id),
+        min_profit_margin=Decimal("0.01"),
+        now_ns=1,
     )
     assert python_graph.update_quote_and_evaluate(
         quote,
@@ -375,13 +372,10 @@ def test_python_evaluation_skips_missing_unprofitable_and_push_edges() -> None:
         received_ns=1,
     )
 
-    assert (
-        graph.evaluate_updated_node(
-            str(instruments[0].id),
-            min_profit_margin=Decimal("0.01"),
-            now_ns=1,
-        )
-        == []
+    assert not graph.evaluate_updated_node(
+        str(instruments[0].id),
+        min_profit_margin=Decimal("0.01"),
+        now_ns=1,
     )
 
     graph.update_quote(
@@ -389,13 +383,10 @@ def test_python_evaluation_skips_missing_unprofitable_and_push_edges() -> None:
         odds=Decimal("1.80"),
         received_ns=2,
     )
-    assert (
-        graph.evaluate_updated_node(
-            str(instruments[0].id),
-            min_profit_margin=Decimal("0.01"),
-            now_ns=3,
-        )
-        == []
+    assert not graph.evaluate_updated_node(
+        str(instruments[0].id),
+        min_profit_margin=Decimal("0.01"),
+        now_ns=3,
     )
 
     push_instruments = [
@@ -415,11 +406,8 @@ def test_python_evaluation_skips_missing_unprofitable_and_push_edges() -> None:
     push_graph = _graph("python", push_instruments)
     _seed_quotes(push_graph, push_instruments, {"home": Decimal("2.40"), "away": Decimal("2.55")})
 
-    assert (
-        push_graph.evaluate_updated_node(
-            str(push_instruments[0].id),
-            min_profit_margin=Decimal("0.01"),
-            now_ns=4,
-        )
-        == []
+    assert not push_graph.evaluate_updated_node(
+        str(push_instruments[0].id),
+        min_profit_margin=Decimal("0.01"),
+        now_ns=4,
     )

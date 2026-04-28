@@ -46,6 +46,8 @@ NANOSECONDS_PER_SECOND = 1_000_000_000
 
 @dataclass(frozen=True)
 class ArbitrageDiagnostics:
+    """Structured diagnostics captured for one arbitrage evaluation."""
+
     opportunity_id: str
     canonical_pair_id: str
     match_type: str
@@ -864,20 +866,19 @@ class BettingArbitrageStrategy(Strategy):
             odds_a,
             odds_b,
         )
+        instrument_fields = self._fast_diagnostics_instrument_fields(
+            instrument_a,
+            instrument_b,
+            odds_a,
+            odds_b,
+            quote_age_a_secs,
+            quote_age_b_secs,
+        )
         self.log.debug(
             "Arbitrage candidate suppressed: "
             f"reason=duplicate opportunity_id={opportunity_id} "
             f"canonical_pair_id={canonical_pair_id}"
-            f"{
-                self._fast_diagnostics_instrument_fields(
-                    instrument_a,
-                    instrument_b,
-                    odds_a,
-                    odds_b,
-                    quote_age_a_secs,
-                    quote_age_b_secs,
-                )
-            }",
+            f"{instrument_fields}",
         )
 
     def _log_fast_stale_suppression(
@@ -898,22 +899,21 @@ class BettingArbitrageStrategy(Strategy):
             odds_a,
             odds_b,
         )
+        instrument_fields = self._fast_diagnostics_instrument_fields(
+            instrument_a,
+            instrument_b,
+            odds_a,
+            odds_b,
+            quote_age_a_secs,
+            quote_age_b_secs,
+        )
         self.log.info(
             "Arbitrage candidate suppressed: "
             f"reason=stale_quote opportunity_id={opportunity_id} "
             f"quote_age_a_secs={quote_age_a_secs:.2f} "
             f"quote_age_b_secs={quote_age_b_secs:.2f} "
             f"quote_delta_secs={quote_delta_secs:.2f}"
-            f"{
-                self._fast_diagnostics_instrument_fields(
-                    instrument_a,
-                    instrument_b,
-                    odds_a,
-                    odds_b,
-                    quote_age_a_secs,
-                    quote_age_b_secs,
-                )
-            }",
+            f"{instrument_fields}",
         )
 
     def _log_fast_suspect_suppression(
@@ -936,6 +936,14 @@ class BettingArbitrageStrategy(Strategy):
             odds_a,
             odds_b,
         )
+        instrument_fields = self._fast_diagnostics_instrument_fields(
+            instrument_a,
+            instrument_b,
+            odds_a,
+            odds_b,
+            quote_age_a_secs,
+            quote_age_b_secs,
+        )
         self.log.warning(
             "Arbitrage candidate suppressed: "
             f"reason=matcher_suspect suspect_reason={suspect_reason} "
@@ -945,16 +953,7 @@ class BettingArbitrageStrategy(Strategy):
             f"market_id_b={instrument_b.market_id or instrument_b.event_id} "
             f"match_type={match_type} hedge_match_type={hedge_type} "
             f"confidence={hedge_confidence:.2f}"
-            f"{
-                self._fast_diagnostics_instrument_fields(
-                    instrument_a,
-                    instrument_b,
-                    odds_a,
-                    odds_b,
-                    quote_age_a_secs,
-                    quote_age_b_secs,
-                )
-            }",
+            f"{instrument_fields}",
         )
 
     @staticmethod
