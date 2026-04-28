@@ -138,7 +138,7 @@ def _build_strategy_importable_config(
     manifest: BettingArbitrageNodeManifest,
     enabled_venues: list[BettingVenueManifest],
 ) -> ImportableStrategyConfig:
-    strategy_config = manifest.strategy.json_primitives()
+    strategy_config: dict[str, Any] = dict(manifest.strategy.json_primitives() or {})
     strategy_config["enabled_venues"] = sorted({venue.venue for venue in enabled_venues})
     if manifest.semantic_rule_cache_dir:
         strategy_config["semantic_rule_cache_dir"] = manifest.semantic_rule_cache_dir

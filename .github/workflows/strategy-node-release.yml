@@ -225,13 +225,7 @@ jobs:
             command -v sudo > /dev/null 2>&1 && sudo -n true > /dev/null 2>&1
           }
           run_maybe_sudo() {
-<<<<<<< HEAD
             if [[ "${EUID}" -eq 0 ]]; then
-=======
-            if [[ "${EUID}" -ne 0 ]] && can_run_sudo; then
-              sudo "$@"
-            else
->>>>>>> aff1daedbe (Guard runner workspace repair sudo usage)
               "$@"
               return
             fi
@@ -257,12 +251,12 @@ jobs:
               "$(id -g)"
           else
             run_maybe_sudo mkdir -p "$GITHUB_WORKSPACE" "$workspace_parent/.ci-cache"
-            run_maybe_sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" "$workspace_parent/.ci-cache"
+            run_maybe_sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" "$workspace_parent/.ci-cache" || true
           fi
 
           if [[ -n "$runner_ci_home" ]]; then
             run_maybe_sudo mkdir -p "$runner_ci_home/.cache"
-            run_maybe_sudo chown -R "$(id -u):$(id -g)" "$runner_ci_home"
+            run_maybe_sudo chown -R "$(id -u):$(id -g)" "$runner_ci_home" || true
           fi
 
           if [[ ! -e "$GITHUB_WORKSPACE/.git" ]]; then
@@ -417,13 +411,7 @@ jobs:
             command -v sudo > /dev/null 2>&1 && sudo -n true > /dev/null 2>&1
           }
           run_maybe_sudo() {
-<<<<<<< HEAD
             if [[ "${EUID}" -eq 0 ]]; then
-=======
-            if [[ "${EUID}" -ne 0 ]] && can_run_sudo; then
-              sudo "$@"
-            else
->>>>>>> aff1daedbe (Guard runner workspace repair sudo usage)
               "$@"
               return
             fi
@@ -449,12 +437,12 @@ jobs:
               "$(id -g)"
           else
             run_maybe_sudo mkdir -p "$GITHUB_WORKSPACE" "$workspace_parent/.ci-cache"
-            run_maybe_sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" "$workspace_parent/.ci-cache"
+            run_maybe_sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" "$workspace_parent/.ci-cache" || true
           fi
 
           if [[ -n "$runner_ci_home" ]]; then
             run_maybe_sudo mkdir -p "$runner_ci_home/.cache"
-            run_maybe_sudo chown -R "$(id -u):$(id -g)" "$runner_ci_home"
+            run_maybe_sudo chown -R "$(id -u):$(id -g)" "$runner_ci_home" || true
           fi
 
           if [[ ! -e "$GITHUB_WORKSPACE/.git" ]]; then

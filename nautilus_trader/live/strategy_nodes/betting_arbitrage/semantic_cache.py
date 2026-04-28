@@ -19,7 +19,9 @@ from nautilus_trader.adapters.cloudbet.client.core import CloudbetClient
 from nautilus_trader.adapters.sxbet.http_client import SXBetHttpClient
 from nautilus_trader.common.clock import LiveClock
 from nautilus_trader.common.logging import Logger
-from nautilus_trader.live.strategy_nodes.betting_arbitrage.config import BettingArbitrageNodeManifest
+from nautilus_trader.live.strategy_nodes.betting_arbitrage.config import (
+    BettingArbitrageNodeManifest,
+)
 from nautilus_trader.live.strategy_nodes.betting_arbitrage.config import BettingVenueManifest
 
 

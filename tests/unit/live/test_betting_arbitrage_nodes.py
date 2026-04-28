@@ -407,7 +407,10 @@ class TestBettingArbitrageNodeRunner:
         deploy_script = Path(
             "scripts/deploy/strategy_nodes/deploy_betting_strategy_node.sh",
         ).read_text()
-        assert 'data["semantic_rule_cache_dir"] = "/var/lib/nautilus-node/semantic-rule-cache"' in deploy_script
+        assert (
+            'data["semantic_rule_cache_dir"] = "/var/lib/nautilus-node/semantic-rule-cache"'
+            in deploy_script
+        )
 
     def test_release_workflow_validates_sxbet_manifest_with_semantic_env(self):
         workflow = Path(".github/workflows/strategy-node-release.yml").read_text()
