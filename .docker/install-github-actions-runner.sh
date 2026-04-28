@@ -69,6 +69,7 @@ tmp_dir="$(mktemp -d)"
 archive="actions-runner-${runner_platform}-${runner_arch}-${runner_version}.tar.gz"
 download_url="https://github.com/actions/runner/releases/download/v${runner_version}/${archive}"
 configured_runner="false"
+runsvc_path="${runner_root}/bin/runsvc.sh"
 
 validate_runner_root_for_destructive_reset() {
   local path
@@ -148,7 +149,7 @@ service_name="$(validate_service_name "$service_name")"
 install -d -m 0755 -o "$runner_user" -g "$runner_group" "$runner_home" "$runner_root" "$runner_workdir"
 chown -R "$runner_user:$runner_group" "$runner_root"
 
-if [[ "$force_reinstall" = "true" || ! -x "$runner_root/config.sh" || ! -x "$runner_root/runsvc.sh" ]]; then
+if [[ "$force_reinstall" = "true" || ! -x "$runner_root/config.sh" || ! -x "$runsvc_path" ]]; then
   rm -rf "$runner_root"
   install -d -m 0755 -o "$runner_user" -g "$runner_group" "$runner_root" "$runner_workdir"
 
@@ -179,7 +180,7 @@ fi
 if [[ -n "$runner_url" && -n "$runner_token" ]]; then
   if [[ "$force_reconfigure" = "true" || ! -f "$runner_root/.runner" ]]; then
     if [[ -f "$runner_root/.runner" ]]; then
-      sudo -u "$runner_user" HOME="$runner_home" "$runner_root/config.sh" remove --unattended --token "$runner_token" || true
+      sudo -u "$runner_user" HOME="$runner_home" "$runner_root/config.sh" remove --token "$runner_token" || true
     fi
 
     config_args=(

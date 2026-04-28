@@ -15,6 +15,93 @@ if [[ -f "$runner_hygiene_config" ]]; then
 fi
 
 runner_role="${RUNNER_ROLE:-generic}"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "$script_dir/../.." && pwd)"
+runner_package_manifest="${RUNNER_PACKAGE_MANIFEST:-$repo_root/.docker/self-hosted-runner-packages.txt}"
+runner_service_name_prefix="${RUNNER_SERVICE_NAME_PREFIX:-actions.runner.antonga23-cloudbet-market-maker}"
+runner_service_glob="${RUNNER_SERVICE_GLOB:-${runner_service_name_prefix}*.service}"
+
+trim_whitespace() {
+  local value="$1"
+
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s\n' "$value"
+}
+
+discover_runner_service_names() {
+  local exact_service
+  local -a matches=()
+
+  if [[ -n "${RUNNER_SERVICE_NAMES:-}" ]]; then
+    printf '%s\n' "$RUNNER_SERVICE_NAMES"
+    return
+  fi
+
+  if [[ -n "${GITHUB_RUNNER_SERVICE_NAME:-}" ]]; then
+    printf '%s\n' "$GITHUB_RUNNER_SERVICE_NAME"
+    return
+  fi
+
+  if ! command -v systemctl > /dev/null 2>&1; then
+    printf '%s\n' ""
+    return
+  fi
+
+  if [[ -n "${RUNNER_NAME:-}" ]]; then
+    exact_service="${runner_service_name_prefix}.${RUNNER_NAME}.service"
+    mapfile -t matches < <(
+      systemctl list-unit-files --type=service --no-legend "$exact_service" 2> /dev/null |
+        awk '{print $1}' |
+        sed '/^$/d'
+    )
+    if [[ "${#matches[@]}" -gt 0 ]]; then
+      printf '%s\n' "$exact_service"
+      return
+    fi
+
+    mapfile -t matches < <(
+      systemctl list-units --all --type=service --no-legend "$exact_service" 2> /dev/null |
+        awk '{print $1}' |
+        sed '/^$/d'
+    )
+    if [[ "${#matches[@]}" -gt 0 ]]; then
+      printf '%s\n' "$exact_service"
+      return
+    fi
+  fi
+
+  mapfile -t matches < <(
+    systemctl list-units --all --type=service --state=active --no-legend "$runner_service_glob" 2> /dev/null |
+      awk '{print $1}' |
+      sed '/^$/d' |
+      sort -u
+  )
+  if [[ "${#matches[@]}" -gt 0 ]]; then
+    (
+      IFS=,
+      printf '%s\n' "${matches[*]}"
+    )
+    return
+  fi
+
+  mapfile -t matches < <(
+    systemctl list-unit-files --type=service --no-legend "$runner_service_glob" 2> /dev/null |
+      awk '{print $1}' |
+      sed '/^$/d' |
+      sort -u
+  )
+  if [[ "${#matches[@]}" -gt 0 ]]; then
+    (
+      IFS=,
+      printf '%s\n' "${matches[*]}"
+    )
+    return
+  fi
+
+  printf '%s\n' ""
+}
+
 detect_runner_root() {
   local candidate
 
@@ -40,8 +127,16 @@ runner_temp_root="${RUNNER_TEMP_ROOT:-$runner_work_root/_temp}"
 runner_ci_home="${RUNNER_CI_HOME:-/tmp/cloudbet-market-maker-ci-home}"
 workspace_root="${SYMPHONY_WORKSPACE_ROOT:-/srv/symphony/workspaces}"
 control_repo_root="${SYMPHONY_CONTROL_REPO_ROOT:-/srv/symphony/control-repo}"
-runner_service_names="${RUNNER_SERVICE_NAMES:-${GITHUB_RUNNER_SERVICE_NAME:-actions.runner.antonga23-cloudbet-market-maker.ip-172-31-21-124-cloudbet-market-maker.service}}"
+runner_service_names="$(discover_runner_service_names)"
 optional_service_names="${OPTIONAL_SERVICE_NAMES:-actions-runner-hygiene.timer}"
+health_failures=0
+
+record_failure() {
+  local message="$1"
+
+  printf 'ERROR\t%s\n' "$message" >&2
+  health_failures=$((health_failures + 1))
+}
 
 print_dir_size() {
   local path="$1"
@@ -75,36 +170,92 @@ print_command_version() {
   fi
 }
 
-print_service_state() {
+service_state() {
   local service="$1"
 
   if [[ -z "$service" ]]; then
+    printf '%s\n' "unconfigured"
     return
   fi
 
   if command -v systemctl > /dev/null 2>&1; then
-    printf '%s\t%s\n' "$service" "$(systemctl is-active "$service" 2> /dev/null || true)"
+    systemctl is-active "$service" 2> /dev/null || true
   else
-    printf '%s\tunavailable (systemctl missing)\n' "$service"
+    printf '%s\n' "unavailable (systemctl missing)"
   fi
 }
 
 print_service_group() {
   local csv="$1"
+  local required="${2:-false}"
   local service
+  local state
+  local found=0
 
   IFS=',' read -r -a service_names <<< "$csv"
   for service in "${service_names[@]}"; do
-    service="${service#"${service%%[![:space:]]*}"}"
-    service="${service%"${service##*[![:space:]]}"}"
-    print_service_state "$service"
+    service="$(trim_whitespace "$service")"
+    if [[ -z "$service" ]]; then
+      continue
+    fi
+
+    found=1
+    state="$(service_state "$service")"
+    printf '%s\t%s\n' "$service" "$state"
+    if [[ "$required" == "true" && "$state" != "active" ]]; then
+      record_failure "required service is not active: $service ($state)"
+    fi
   done
+
+  if [[ "$required" == "true" && "$found" -eq 0 ]]; then
+    printf 'runner-services\tmissing (%s)\n' "$runner_service_glob"
+    record_failure "no runner service matched ${RUNNER_NAME:-<unknown runner name>} or ${runner_service_glob}"
+  fi
+}
+
+print_package_state() {
+  local package="$1"
+
+  if command -v dpkg > /dev/null 2>&1 && dpkg -s "$package" > /dev/null 2>&1; then
+    printf '%s\tinstalled\n' "$package"
+    return 0
+  fi
+
+  printf '%s\tmissing\n' "$package"
+  return 1
+}
+
+check_ci_bootstrap_packages() {
+  local package
+  local -a missing_packages=()
+
+  printf 'manifest\t%s\n' "$runner_package_manifest"
+  if [[ ! -f "$runner_package_manifest" ]]; then
+    record_failure "runner package manifest not found: $runner_package_manifest"
+    return
+  fi
+
+  if ! command -v dpkg > /dev/null 2>&1; then
+    record_failure "dpkg is unavailable; cannot verify CI bootstrap packages"
+    return
+  fi
+
+  while IFS= read -r package; do
+    if ! print_package_state "$package"; then
+      missing_packages+=("$package")
+    fi
+  done < <(grep -Ev '^\s*(#|$)' "$runner_package_manifest")
+
+  if [[ "${#missing_packages[@]}" -gt 0 ]]; then
+    record_failure "CI bootstrap packages missing: ${missing_packages[*]}"
+  fi
 }
 
 echo "== Summary =="
 printf 'host\t%s\n' "$(hostname 2> /dev/null || echo unknown)"
 printf 'role\t%s\n' "$runner_role"
 printf 'runner_root\t%s\n' "$runner_root"
+printf 'runner_service_glob\t%s\n' "$runner_service_glob"
 echo
 
 echo "== Tooling =="
@@ -137,8 +288,14 @@ echo "== Runner work usage =="
 print_dir_children "$runner_work_root" 1
 echo
 
+if [[ "$runner_role" == "ci" ]]; then
+  echo "== CI bootstrap packages =="
+  check_ci_bootstrap_packages
+  echo
+fi
+
 echo "== Services =="
-print_service_group "$runner_service_names"
+print_service_group "$runner_service_names" true
 print_service_group "$optional_service_names"
 echo
 
@@ -162,3 +319,11 @@ if [[ -d "$control_repo_root" ]]; then
     print_dir_size "$control_repo_root/$artifact"
   done
 fi
+
+echo
+if [[ "$health_failures" -gt 0 ]]; then
+  printf 'health\tfailed (%d issue(s))\n' "$health_failures" >&2
+  exit 1
+fi
+
+printf 'health\tok\n'
