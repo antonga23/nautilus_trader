@@ -331,7 +331,31 @@ def _resolve_output_path(raw_path: str) -> Path:
     candidate = Path(raw_path).expanduser()
     if not candidate.name:
         raise ValueError(f"Output path must point to a file, got {raw_path!r}")
-    return candidate.resolve(strict=False)
+    if candidate.is_absolute():
+        allowed_roots = [Path.cwd().resolve()]
+        allowed_roots.extend(
+            Path(os.environ[root_name]).resolve()
+            for root_name in ("RUNNER_TEMP", "GITHUB_WORKSPACE")
+            if os.environ.get(root_name)
+        )
+        resolved = candidate.resolve(strict=False)
+        if allowed_roots and not any(
+            resolved == root or root in resolved.parents for root in allowed_roots
+        ):
+            raise ValueError(
+                f"Absolute output path must remain under workspace or runner temp, got {raw_path!r}",
+            )
+        return resolved
+
+    return (Path.cwd() / candidate).resolve(strict=False)
+
+
+def _resolve_existing_input_path(raw_path: str) -> Path:
+    candidate = Path(raw_path).expanduser()
+    resolved = candidate.resolve(strict=True)
+    if not resolved.is_file():
+        raise ValueError(f"Input path must point to a file, got {raw_path!r}")
+    return resolved
 
 
 def _write_github_outputs(path: str, decision: PolicyDecision) -> None:
@@ -361,7 +385,8 @@ def main(argv: list[str] | None = None) -> int:
         print("GITHUB_TOKEN is required", file=sys.stderr)
         return 1
 
-    with open(args.event_path, encoding="utf-8") as handle:
+    event_path = _resolve_existing_input_path(args.event_path)
+    with event_path.open(encoding="utf-8") as handle:
         event = json.load(handle)
 
     try:

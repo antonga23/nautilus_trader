@@ -4,6 +4,8 @@ import importlib.util
 from pathlib import Path
 import sys
 
+import pytest
+
 
 MODULE_PATH = (
     Path(__file__).resolve().parents[2] / "scripts" / "ci" / "enforce_develop_push_policy.py"
@@ -20,7 +22,7 @@ SPEC.loader.exec_module(MODULE)
 
 def _expect(condition: bool, message: str) -> None:
     if not condition:
-        raise AssertionError(message)
+        pytest.fail(message)
 
 
 class FakeGitHubApiClient:
@@ -224,3 +226,31 @@ def test_evaluate_push_policy_reverts_pushes_with_multiple_prs():
         "exactly one merged pull request" in decision.reason,
         f"unexpected reason: {decision.reason}",
     )
+
+
+def test_resolve_existing_input_path_requires_existing_file(tmp_path):
+    event_path = tmp_path / "event.json"
+    event_path.write_text("{}", encoding="utf-8")
+
+    resolved = MODULE._resolve_existing_input_path(str(event_path))
+
+    _expect(resolved == event_path.resolve(), f"unexpected resolved path: {resolved}")
+
+
+def test_resolve_output_path_rejects_absolute_paths_outside_allowed_roots(
+    tmp_path,
+    monkeypatch,
+):
+    workspace = tmp_path / "workspace"
+    runner_temp = tmp_path / "runner-temp"
+    workspace.mkdir()
+    runner_temp.mkdir()
+    monkeypatch.chdir(workspace)
+    monkeypatch.setenv("GITHUB_WORKSPACE", str(workspace))
+    monkeypatch.setenv("RUNNER_TEMP", str(runner_temp))
+
+    outside_path = tmp_path / "outside" / "guard.json"
+    outside_path.parent.mkdir()
+
+    with pytest.raises(ValueError, match="workspace or runner temp"):
+        MODULE._resolve_output_path(str(outside_path))
