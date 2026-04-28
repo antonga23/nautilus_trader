@@ -176,13 +176,8 @@ class OpportunityGraph:
         self._matcher = matcher
         self._include_cross_venue = include_cross_venue
         rule_store = self._safe_attr(matcher, "_rule_store", None)
-        use_rust_core = (
-            engine == "rust"
-            or (
-                engine == "auto"
-                and rule_store is None
-                and _OPPORTUNITY_GRAPH_CORE_CLS is not None
-            )
+        use_rust_core = engine == "rust" or (
+            engine == "auto" and rule_store is None and _OPPORTUNITY_GRAPH_CORE_CLS is not None
         )
         self._rust_core: Any | None = (
             _OPPORTUNITY_GRAPH_CORE_CLS(include_cross_venue, matcher.min_confidence)
@@ -452,10 +447,7 @@ class OpportunityGraph:
         return True, [
             snapshot
             for snapshot in snapshots
-            if (
-                (edge := self.edges_by_id.get(snapshot[0])) is not None
-                and edge.execution_safe
-            )
+            if ((edge := self.edges_by_id.get(snapshot[0])) is not None and edge.execution_safe)
         ]
 
     def connected_edge_count(self, node_id: str) -> int:
@@ -625,10 +617,7 @@ class OpportunityGraph:
             and not hedge.same_venue_execution_eligible
         ):
             return None
-        if (
-            self._matcher._is_same_market_hedge(source, hedge.instrument)
-            and not hedge.push_capable
-        ):
+        if self._matcher._is_same_market_hedge(source, hedge.instrument) and not hedge.push_capable:
             return self._matcher._legacy_same_market_candidate(hedge.instrument)
         return hedge
 
