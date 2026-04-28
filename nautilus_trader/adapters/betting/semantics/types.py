@@ -151,11 +151,7 @@ class RuleValidationStats:
 
     @property
     def promotable(self) -> bool:
-        return (
-            self.sample_count >= 25
-            and self.mismatch_rate <= 0.01
-            and self.confidence >= 0.99
-        )
+        return self.sample_count >= 25 and self.mismatch_rate <= 0.01 and self.confidence >= 0.99
 
 
 @dataclass(frozen=True)
@@ -587,7 +583,9 @@ class MinedRule:
 
 
 def _stable_digest(prefix: str, payload: Any) -> str:
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode(
+        "utf-8"
+    )
     return f"{prefix}:{hashlib.sha256(encoded).hexdigest()[:24]}"
 
 

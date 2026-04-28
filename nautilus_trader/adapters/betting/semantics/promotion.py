@@ -69,7 +69,9 @@ class RulePromotionPolicy:
             if rule.has_partial:
                 reasons.append("partial_settlement_present")
 
-        execution_scope_ok = allowlisted or tuple(sorted(rule.venue_scope)) in self._allowlisted_venue_scopes
+        execution_scope_ok = (
+            allowlisted or tuple(sorted(rule.venue_scope)) in self._allowlisted_venue_scopes
+        )
         if (
             tier != SafetyTier.AUDIT_ONLY
             and rule.relationship_type == RelationshipType.COMPLEMENTARY_COVERAGE.value
@@ -156,7 +158,9 @@ class RulePromotionPolicy:
             if template.has_partial:
                 reasons.append("partial_settlement_present")
 
-        execution_scope_ok = allowlisted or template.provider_scope in self._allowlisted_venue_scopes
+        execution_scope_ok = (
+            allowlisted or template.provider_scope in self._allowlisted_venue_scopes
+        )
         multi_provider_ok = template.support.provider_count >= 2 or execution_scope_ok
         if (
             template.relationship_type == RelationshipType.COMPLEMENTARY_COVERAGE.value

@@ -137,10 +137,9 @@ class RuleClassifier:
             CanonicalMarketType.EUROPEAN_HANDICAP.value,
         }:
             return False
-        return (
-            selection_a.selection == selection_b.selection
-            and selection_a.param("line") == selection_b.param("line")
-        )
+        return selection_a.selection == selection_b.selection and selection_a.param(
+            "line"
+        ) == selection_b.param("line")
 
     @staticmethod
     def _is_complementary_coverage(vector_a: PayoffVector, vector_b: PayoffVector) -> bool:
@@ -180,7 +179,10 @@ class RuleClassifier:
             caveats.add("validate_90_minute_rule_per_venue")
         if selection_a.scope != "full_time" or selection_b.scope != "full_time":
             caveats.add("non_full_time_period")
-        if selection_a.market_family == CanonicalMarketType.BINARY_OPTION.value or selection_b.market_family == CanonicalMarketType.BINARY_OPTION.value:
+        if (
+            selection_a.market_family == CanonicalMarketType.BINARY_OPTION.value
+            or selection_b.market_family == CanonicalMarketType.BINARY_OPTION.value
+        ):
             caveats.add("binary_resolution_policy_required")
         if vector_a.has_void or vector_b.has_void:
             caveats.add("void_states_present")

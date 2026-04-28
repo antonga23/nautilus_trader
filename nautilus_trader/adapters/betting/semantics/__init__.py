@@ -32,7 +32,9 @@ from nautilus_trader.adapters.betting.semantics.miner import RuleMiner
 from nautilus_trader.adapters.betting.semantics.normalization import MarketNormalizer
 from nautilus_trader.adapters.betting.semantics.payoffs import PayoffVectorBuilder
 from nautilus_trader.adapters.betting.semantics.payoffs import SettlementPluginRegistry
-from nautilus_trader.adapters.betting.semantics.polymarket_transform import PolymarketSportsTransformer
+from nautilus_trader.adapters.betting.semantics.polymarket_transform import (
+    PolymarketSportsTransformer,
+)
 from nautilus_trader.adapters.betting.semantics.promotion import RulePromotionPolicy
 from nautilus_trader.adapters.betting.semantics.secrets import load_aws_secret_payload
 from nautilus_trader.adapters.betting.semantics.secrets import restore_gcp_service_account

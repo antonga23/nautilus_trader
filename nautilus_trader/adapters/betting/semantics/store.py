@@ -139,7 +139,9 @@ class RuleStore:
         return MinedRule.from_json_bytes(raw) if raw else None
 
     def save_template_candidate(self, template: SemanticRuleTemplate) -> None:
-        self._write_bytes(self.template_candidate_key(template.template_id), template.to_json_bytes())
+        self._write_bytes(
+            self.template_candidate_key(template.template_id), template.to_json_bytes()
+        )
         self._append_index(self.TEMPLATE_CANDIDATE_INDEX_KEY, template.template_id)
         self.save_template_support(template)
 
@@ -148,7 +150,9 @@ class RuleStore:
         return SemanticRuleTemplate.from_json_bytes(raw) if raw else None
 
     def save_promoted_template(self, template: SemanticRuleTemplate) -> None:
-        self._write_bytes(self.template_promoted_key(template.template_id), template.to_json_bytes())
+        self._write_bytes(
+            self.template_promoted_key(template.template_id), template.to_json_bytes()
+        )
         self._append_index(self.TEMPLATE_PROMOTED_INDEX_KEY, template.template_id)
         self.save_template_support(template)
 

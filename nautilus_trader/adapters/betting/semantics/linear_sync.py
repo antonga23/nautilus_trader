@@ -104,7 +104,9 @@ class LinearIssueSync:
             cafile = certifi.where()
         elif os.path.exists("/etc/ssl/cert.pem"):
             cafile = "/etc/ssl/cert.pem"
-        context = ssl.create_default_context(cafile=cafile) if cafile else ssl.create_default_context()
+        context = (
+            ssl.create_default_context(cafile=cafile) if cafile else ssl.create_default_context()
+        )
 
         with request.urlopen(req, timeout=30, context=context) as response:  # noqa: S310
             body = json.loads(response.read().decode("utf-8"))

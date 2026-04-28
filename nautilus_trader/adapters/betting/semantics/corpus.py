@@ -42,7 +42,9 @@ def _utc_now() -> str:
 
 
 def _hash_payload(prefix: str, payload: Any) -> str:
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode(
+        "utf-8"
+    )
     return f"{prefix}:{hashlib.sha256(encoded).hexdigest()[:24]}"
 
 
@@ -145,8 +147,7 @@ class SnapshotIngestor:
                 snapshot_id = self._save_snapshot(
                     provider="CLOUDBET",
                     endpoint=(
-                        f"/pub/v2/odds/events?sport={sport_key}"
-                        f"&from={attempt_from}&to={attempt_to}"
+                        f"/pub/v2/odds/events?sport={sport_key}&from={attempt_from}&to={attempt_to}"
                     ),
                     fetched_at=fetched_at,
                     payload=events_response,
@@ -205,7 +206,9 @@ class SnapshotIngestor:
                             "from": attempt_from,
                             "to": attempt_to,
                             "direction": "past",
-                            "event_count": len({selection.event_id for selection in past_selections}),
+                            "event_count": len(
+                                {selection.event_id for selection in past_selections}
+                            ),
                             "selection_count": len(past_selections),
                         },
                     )
@@ -532,8 +535,7 @@ class SnapshotIngestor:
 
         fetched_at = _utc_now()
         target_sports = {
-            PolymarketSportsTransformer._canonical_sport(sport) or sport
-            for sport in (sports or [])
+            PolymarketSportsTransformer._canonical_sport(sport) or sport for sport in (sports or [])
         }
         cafile: str | None = None
         try:
@@ -544,7 +546,9 @@ class SnapshotIngestor:
             cafile = certifi.where()
         elif os.path.exists("/etc/ssl/cert.pem"):
             cafile = "/etc/ssl/cert.pem"
-        context = ssl.create_default_context(cafile=cafile) if cafile else ssl.create_default_context()
+        context = (
+            ssl.create_default_context(cafile=cafile) if cafile else ssl.create_default_context()
+        )
         sports_metadata = self._polymarket_get_json(
             request=request,
             context=context,
@@ -732,9 +736,7 @@ class SnapshotIngestor:
     @staticmethod
     def _polymarket_selected_tags(sport_metadata: dict[str, Any]) -> list[str]:
         tags = [
-            tag.strip()
-            for tag in str(sport_metadata.get("tags") or "").split(",")
-            if tag.strip()
+            tag.strip() for tag in str(sport_metadata.get("tags") or "").split(",") if tag.strip()
         ]
         return [tag for tag in tags if tag not in {"1", "100639"}] or tags[:1]
 
@@ -751,20 +753,17 @@ class SnapshotIngestor:
         context,
         fetched_at: str,
     ) -> tuple[list[dict[str, Any]] | None, str | None, dict[str, Any]]:
-        endpoint = (
-            "/events?"
-            + parse.urlencode(
-                {
-                    "tag_id": tag,
-                    "related_tags": "true",
-                    "active": "true",
-                    "closed": "false",
-                    "archived": "false",
-                    "limit": limit,
-                    "order": "volume",
-                    "ascending": "false",
-                },
-            )
+        endpoint = "/events?" + parse.urlencode(
+            {
+                "tag_id": tag,
+                "related_tags": "true",
+                "active": "true",
+                "closed": "false",
+                "archived": "false",
+                "limit": limit,
+                "order": "volume",
+                "ascending": "false",
+            },
         )
         try:
             events = self._polymarket_get_json(
@@ -773,7 +772,11 @@ class SnapshotIngestor:
                 endpoint=endpoint,
             )
         except Exception as exc:
-            return None, None, {"tag_id": tag, "sport": canonical_sport, "error": type(exc).__name__}
+            return (
+                None,
+                None,
+                {"tag_id": tag, "sport": canonical_sport, "error": type(exc).__name__},
+            )
         snapshot_id = self._save_snapshot(
             provider="POLYMARKET",
             endpoint=f"/gamma{endpoint}",
@@ -790,9 +793,7 @@ class SnapshotIngestor:
                 "selected_tags": selected_tags,
                 "event_count": len([event for event in events if isinstance(event, dict)]),
                 "market_count": sum(
-                    len(event.get("markets", []))
-                    for event in events
-                    if isinstance(event, dict)
+                    len(event.get("markets", [])) for event in events if isinstance(event, dict)
                 ),
             },
         )
@@ -817,7 +818,9 @@ class SnapshotIngestor:
             for market in event.get("markets", []):
                 if not isinstance(market, dict):
                     continue
-                market_id = str(market.get("id") or market.get("conditionId") or market.get("slug") or "")
+                market_id = str(
+                    market.get("id") or market.get("conditionId") or market.get("slug") or ""
+                )
                 if not market_id:
                     continue
                 enriched_market = dict(market)
@@ -951,7 +954,9 @@ class SnapshotIngestor:
             cutoff_time = str(event.get("cutoffTime") or "")
             status = str(event.get("status") or "")
             for market_name, market_value in (event.get("markets") or {}).items():
-                submarkets = market_value.get("submarkets") if isinstance(market_value, dict) else None
+                submarkets = (
+                    market_value.get("submarkets") if isinstance(market_value, dict) else None
+                )
                 if not isinstance(submarkets, dict):
                     continue
                 for submarket_period, submarket_value in submarkets.items():

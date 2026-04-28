@@ -28,7 +28,9 @@ class _Response:
 def _client() -> CloudbetClient:
     loop = asyncio.get_event_loop()
     logger = Logger(clock=LiveClock(), bypass=True)
-    return CloudbetClient(loop=loop, logger=logger, api_key="test-key", api_url="https://sports-api.cloudbet.com/pub")
+    return CloudbetClient(
+        loop=loop, logger=logger, api_key="test-key", api_url="https://sports-api.cloudbet.com/pub"
+    )
 
 
 def test_get_bets_response_decodes_current_v4_shape():

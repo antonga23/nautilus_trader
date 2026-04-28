@@ -135,7 +135,9 @@ def build_completion_report(
 
     manifests_by_provider = Counter(manifest.provider.upper() for manifest in manifests)
     selections_by_provider = Counter(record.provider.upper() for record in normalized_records)
-    selections_by_sport = Counter(_normalize_sport(record.selection.sport) for record in normalized_records)
+    selections_by_sport = Counter(
+        _normalize_sport(record.selection.sport) for record in normalized_records
+    )
     sports_by_provider: dict[str, set[str]] = defaultdict(set)
     for record in normalized_records:
         sports_by_provider[record.provider.upper()].add(_normalize_sport(record.selection.sport))
@@ -216,7 +218,9 @@ def build_completion_report(
         else len(candidate_rules),
         total_template_candidates=len(template_candidates),
         total_promoted_templates=len(promoted_templates),
-        total_execution_safe_templates=sum(1 for template in promoted_templates if template.execution_safe),
+        total_execution_safe_templates=sum(
+            1 for template in promoted_templates if template.execution_safe
+        ),
         safety_tier_counts=tuple(sorted(safety_tier_counts.items())),
         providers=provider_reports,
         sports=sport_reports,

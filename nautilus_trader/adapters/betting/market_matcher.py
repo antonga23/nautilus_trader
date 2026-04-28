@@ -260,7 +260,9 @@ class MarketMatcher:
         tier, reasons = self._promotion_policy.classify_rule_tier(rule, None)
         rule = replace(rule, safety_tier=tier.value, eligibility_reasons=reasons)
         if self._rule_store is None:
-            return rule if self._allow_unpromoted_topology and tier != SafetyTier.AUDIT_ONLY else None
+            return (
+                rule if self._allow_unpromoted_topology and tier != SafetyTier.AUDIT_ONLY else None
+            )
         promoted = self._rule_store.load_promoted(rule.rule_id)
         if promoted is not None:
             return promoted
@@ -319,7 +321,10 @@ class MarketMatcher:
         instrument: CryptoBettingInstrument,
         candidate: CryptoBettingInstrument,
     ) -> str:
-        if instrument.market_name == candidate.market_name and instrument.params == candidate.params:
+        if (
+            instrument.market_name == candidate.market_name
+            and instrument.params == candidate.params
+        ):
             return "same_market"
         return "cross_market"
 
@@ -546,12 +551,8 @@ class MarketMatcher:
         """
         rule = self._resolve_rule(instrument_a, instrument_b)
         if rule is not None:
-            promoted_or_legacy = (
-                rule.execution_safe
-                and (
-                    self._rule_store is None
-                    or rule.promotion_status == PromotionStatus.PROMOTED.value
-                )
+            promoted_or_legacy = rule.execution_safe and (
+                self._rule_store is None or rule.promotion_status == PromotionStatus.PROMOTED.value
             )
             if not promoted_or_legacy and (
                 not self._is_same_market_hedge(instrument_a, instrument_b)

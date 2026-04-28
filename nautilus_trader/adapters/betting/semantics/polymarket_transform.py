@@ -37,8 +37,17 @@ class PolymarketSportsTransformer:
         (re.compile(r"\bNHL\b|hockey|stanley cup", re.IGNORECASE), "ice_hockey"),
         (re.compile(r"\bNFL\b|super bowl|american football", re.IGNORECASE), "american_football"),
         (re.compile(r"\bMLB\b|world series|baseball", re.IGNORECASE), "baseball"),
-        (re.compile(r"premier league|champions league|la liga|serie a|bundesliga|soccer|football", re.IGNORECASE), "soccer"),
-        (re.compile(r"tennis|wimbledon|us open|australian open|french open", re.IGNORECASE), "tennis"),
+        (
+            re.compile(
+                r"premier league|champions league|la liga|serie a|bundesliga|soccer|football",
+                re.IGNORECASE,
+            ),
+            "soccer",
+        ),
+        (
+            re.compile(r"tennis|wimbledon|us open|australian open|french open", re.IGNORECASE),
+            "tennis",
+        ),
         (re.compile(r"cricket", re.IGNORECASE), "cricket"),
         (re.compile(r"rugby", re.IGNORECASE), "rugby"),
         (re.compile(r"ufc|mma", re.IGNORECASE), "mma"),
@@ -196,8 +205,14 @@ class PolymarketSportsTransformer:
 
         return CryptoBettingInstrument(
             venue=Venue("POLYMARKET"),
-            event_id=str(sports_market.get("event_id") or info.get("condition_id") or instrument.id.symbol.value),
-            event_name=str(sports_market.get("event_name") or getattr(instrument, "description", "")),
+            event_id=str(
+                sports_market.get("event_id")
+                or info.get("condition_id")
+                or instrument.id.symbol.value
+            ),
+            event_name=str(
+                sports_market.get("event_name") or getattr(instrument, "description", "")
+            ),
             home_name=str(sports_market.get("home_name") or ""),
             away_name=str(sports_market.get("away_name") or ""),
             sport_name=str(sport),

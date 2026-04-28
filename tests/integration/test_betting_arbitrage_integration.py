@@ -210,7 +210,9 @@ class TestBettingArbitrageIntegration:
         strategy._handle_arbitrage_opportunity = Mock()
         strategy.on_start()
 
-        strategy.on_quote_tick(TestDataStubs.quote_tick(instrument=home, bid_price=2.40, ask_price=0.0))
+        strategy.on_quote_tick(
+            TestDataStubs.quote_tick(instrument=home, bid_price=2.40, ask_price=0.0)
+        )
         strategy.on_quote_tick(
             TestDataStubs.quote_tick(instrument=away_draw, bid_price=2.45, ask_price=0.0),
         )
@@ -251,8 +253,12 @@ class TestBettingArbitrageIntegration:
         strategy._handle_arbitrage_opportunity = Mock()
         strategy.on_start()
 
-        strategy.on_quote_tick(TestDataStubs.quote_tick(instrument=dnb_home, bid_price=2.40, ask_price=0.0))
-        strategy.on_quote_tick(TestDataStubs.quote_tick(instrument=ah_home, bid_price=2.45, ask_price=0.0))
+        strategy.on_quote_tick(
+            TestDataStubs.quote_tick(instrument=dnb_home, bid_price=2.40, ask_price=0.0)
+        )
+        strategy.on_quote_tick(
+            TestDataStubs.quote_tick(instrument=ah_home, bid_price=2.45, ask_price=0.0)
+        )
 
         edge = next(iter(strategy._opportunity_graph.edges_by_id.values()))
         assert edge.execution_safe is False

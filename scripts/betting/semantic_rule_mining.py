@@ -44,8 +44,7 @@ def _build_cache(persist_cache: bool, cache_dir: str | None = None):
     if cache_dir:
         return FileRuleCache(cache_dir)
     if persist_cache and all(
-        os.getenv(name)
-        for name in ("POSTGRES_HOST", "POSTGRES_PASSWORD", "POSTGRES_DATABASE")
+        os.getenv(name) for name in ("POSTGRES_HOST", "POSTGRES_PASSWORD", "POSTGRES_DATABASE")
     ):
         return Cache(database=CachePostgresAdapter())
     return Cache()
@@ -295,8 +294,7 @@ def _promote_rules(args: argparse.Namespace) -> None:
 
     print(json.dumps({"promoted_count": promoted}, indent=2))
     _maybe_linear_comment(
-        "Semantic promotion completed:\n\n"
-        f"- promoted rules: `{promoted}`",
+        f"Semantic promotion completed:\n\n- promoted rules: `{promoted}`",
     )
 
 
@@ -490,7 +488,9 @@ def _parse_args() -> argparse.Namespace:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     refresh = subparsers.add_parser("refresh-corpus", help="Refresh provider corpora")
-    refresh.add_argument("--provider", choices=("all", "cloudbet", "sxbet", "polymarket"), default="all")
+    refresh.add_argument(
+        "--provider", choices=("all", "cloudbet", "sxbet", "polymarket"), default="all"
+    )
     refresh.add_argument("--sports", nargs="*", default=[])
     refresh.add_argument("--sport-ids", nargs="*", type=int, default=[])
     refresh.add_argument("--from-timestamp", type=int)
@@ -514,20 +514,26 @@ def _parse_args() -> argparse.Namespace:
     refresh.add_argument("--cache-dir", default=os.getenv("SEMANTIC_RULE_CACHE_DIR"))
     refresh.add_argument("--fixture-dir")
 
-    mine = subparsers.add_parser("mine-candidates", help="Mine candidate rules from normalized records")
+    mine = subparsers.add_parser(
+        "mine-candidates", help="Mine candidate rules from normalized records"
+    )
     mine.add_argument("--provider", choices=("cloudbet", "sxbet", "polymarket"))
     mine.add_argument("--manifest-id")
     mine.add_argument("--persist-cache", action="store_true")
     mine.add_argument("--cache-dir", default=os.getenv("SEMANTIC_RULE_CACHE_DIR"))
 
-    generalize = subparsers.add_parser("generalize-templates", help="Mine reusable semantic templates from normalized records")
+    generalize = subparsers.add_parser(
+        "generalize-templates", help="Mine reusable semantic templates from normalized records"
+    )
     generalize.add_argument("--provider", choices=("cloudbet", "sxbet", "polymarket"))
     generalize.add_argument("--manifest-id")
     generalize.add_argument("--skip-event-candidates", action="store_true")
     generalize.add_argument("--persist-cache", action="store_true")
     generalize.add_argument("--cache-dir", default=os.getenv("SEMANTIC_RULE_CACHE_DIR"))
 
-    validate = subparsers.add_parser("validate", help="Validate candidate rules from persisted provider evidence")
+    validate = subparsers.add_parser(
+        "validate", help="Validate candidate rules from persisted provider evidence"
+    )
     validate.add_argument("--provider", choices=("cloudbet", "sxbet", "polymarket"))
     validate.add_argument("--manifest-id")
     validate.add_argument("--persist-cache", action="store_true")
@@ -538,7 +544,9 @@ def _parse_args() -> argparse.Namespace:
     promote.add_argument("--cache-dir", default=os.getenv("SEMANTIC_RULE_CACHE_DIR"))
     promote.add_argument("--allowlisted-scope", action="append", default=[])
 
-    promote_templates = subparsers.add_parser("promote-templates", help="Promote catalog-derived semantic templates")
+    promote_templates = subparsers.add_parser(
+        "promote-templates", help="Promote catalog-derived semantic templates"
+    )
     promote_templates.add_argument("--persist-cache", action="store_true")
     promote_templates.add_argument("--cache-dir", default=os.getenv("SEMANTIC_RULE_CACHE_DIR"))
     promote_templates.add_argument("--allowlisted-scope", action="append", default=[])
@@ -562,7 +570,9 @@ def _parse_args() -> argparse.Namespace:
     report.add_argument("--min-candidates", type=int, default=10)
     report.add_argument("--target-candidates", type=int, default=20)
 
-    verify = subparsers.add_parser("verify-completion", help="Fail unless semantic mining coverage gates pass")
+    verify = subparsers.add_parser(
+        "verify-completion", help="Fail unless semantic mining coverage gates pass"
+    )
     verify.add_argument("--persist-cache", action="store_true")
     verify.add_argument("--cache-dir", default=os.getenv("SEMANTIC_RULE_CACHE_DIR"))
     verify.add_argument(
@@ -581,11 +591,22 @@ def _parse_args() -> argparse.Namespace:
     linear = subparsers.add_parser("sync-linear", help="Create the Linear issue hierarchy")
     linear.add_argument("--comment")
 
-    restore = subparsers.add_parser("restore-gcp-auth", help="Restore GCP service-account JSON from AWS Secrets Manager")
-    restore.add_argument("--secret-id", default=os.getenv("AGENT_SECRET_ID", "cloudbet-market-maker/credentials"))
+    restore = subparsers.add_parser(
+        "restore-gcp-auth", help="Restore GCP service-account JSON from AWS Secrets Manager"
+    )
+    restore.add_argument(
+        "--secret-id", default=os.getenv("AGENT_SECRET_ID", "cloudbet-market-maker/credentials")
+    )
     restore.add_argument("--secret-key", default="GCP_SERVICE_ACCOUNT_JSON_B64")
-    restore.add_argument("--output-path", default=os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "/srv/symphony/gcp-service-account.json"))
-    restore.add_argument("--region", default=os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION"))
+    restore.add_argument(
+        "--output-path",
+        default=os.getenv(
+            "GOOGLE_APPLICATION_CREDENTIALS", "/srv/symphony/gcp-service-account.json"
+        ),
+    )
+    restore.add_argument(
+        "--region", default=os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION")
+    )
 
     return parser.parse_args()
 

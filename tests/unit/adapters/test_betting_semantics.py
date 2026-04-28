@@ -432,20 +432,23 @@ def test_market_matcher_marks_same_venue_venue_safe_rules_as_same_venue_eligible
         ),
     )
     assert rule is not None
-    assert policy.promote(
-        store,
-        rule,
-        RuleValidationStats(
-            rule_id=rule.rule_id,
-            venue_id="SXBET",
-            sport="soccer",
-            sample_count=5,
-            match_count=5,
-            mismatch_count=0,
-            confidence=0.95,
-            last_validated_at="2026-04-26T00:00:00Z",
-        ),
-    ) is not None
+    assert (
+        policy.promote(
+            store,
+            rule,
+            RuleValidationStats(
+                rule_id=rule.rule_id,
+                venue_id="SXBET",
+                sport="soccer",
+                sample_count=5,
+                match_count=5,
+                mismatch_count=0,
+                confidence=0.95,
+                last_validated_at="2026-04-26T00:00:00Z",
+            ),
+        )
+        is not None
+    )
 
     matcher = MarketMatcher(rule_store=store)
     hedges = matcher.find_hedges(
@@ -528,24 +531,29 @@ def test_opportunity_graph_persists_same_venue_execution_eligibility_without_aut
         ),
     )
     assert rule is not None
-    assert policy.promote(
-        store,
-        rule,
-        RuleValidationStats(
-            rule_id=rule.rule_id,
-            venue_id="SXBET",
-            sport="soccer",
-            sample_count=5,
-            match_count=5,
-            mismatch_count=0,
-            confidence=0.95,
-            last_validated_at="2026-04-26T00:00:00Z",
-        ),
-    ) is not None
+    assert (
+        policy.promote(
+            store,
+            rule,
+            RuleValidationStats(
+                rule_id=rule.rule_id,
+                venue_id="SXBET",
+                sport="soccer",
+                sample_count=5,
+                match_count=5,
+                mismatch_count=0,
+                confidence=0.95,
+                last_validated_at="2026-04-26T00:00:00Z",
+            ),
+        )
+        is not None
+    )
 
     matcher = MarketMatcher(rule_store=store)
     graph = OpportunityGraph(matcher)
-    instrument = betting_instrument(market_name="draw_no_bet", market_type="draw_no_bet", outcome="home")
+    instrument = betting_instrument(
+        market_name="draw_no_bet", market_type="draw_no_bet", outcome="home"
+    )
     hedge = betting_instrument(
         market_name="asian_handicap",
         market_type="asian_handicap",
@@ -583,4 +591,7 @@ def test_rule_store_persists_template_safety_tier():
 
     store.save_promoted_template(template)
 
-    assert store.load_promoted_template(template.template_id).safety_tier == SafetyTier.EXECUTION_SAFE.value
+    assert (
+        store.load_promoted_template(template.template_id).safety_tier
+        == SafetyTier.EXECUTION_SAFE.value
+    )

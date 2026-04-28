@@ -123,7 +123,9 @@ class HistoricalRuleValidator:
         for snapshot in snapshots:
             if snapshot.provider == "CLOUDBET" and snapshot.endpoint.startswith("/pub/v4/bets"):
                 for observation in self._cloudbet_observations(snapshot.payload):
-                    by_event[observation.event_key][observation.signature].add(observation.settlement)
+                    by_event[observation.event_key][observation.signature].add(
+                        observation.settlement
+                    )
         return by_event
 
     def _cloudbet_observations(self, payload: bytes) -> list[ValidationObservation]:
@@ -161,7 +163,9 @@ class HistoricalRuleValidator:
     def _validate_rule(
         self,
         rule: MinedRule,
-        observations: dict[str, dict[tuple[str, str, str, str, tuple[tuple[str, str], ...]], set[str]]],
+        observations: dict[
+            str, dict[tuple[str, str, str, str, tuple[tuple[str, str], ...]], set[str]]
+        ],
     ) -> RuleValidationStats | None:
         signature_a = self._rule_signature(
             sport=rule.sport,
@@ -240,7 +244,11 @@ class HistoricalRuleValidator:
     @staticmethod
     def _cloudbet_settlement(item: GetBetResponse) -> str:
         selection = item.selection or (item.selections[0] if item.selections else None)
-        result = selection.result if selection is not None and selection.result is not None else item.result
+        result = (
+            selection.result
+            if selection is not None and selection.result is not None
+            else item.result
+        )
         mapping = {
             BetResult.WIN: SettlementState.WIN.value,
             BetResult.LOSS: SettlementState.LOSE.value,

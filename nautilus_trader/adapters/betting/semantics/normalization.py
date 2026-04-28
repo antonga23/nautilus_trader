@@ -118,7 +118,9 @@ class MarketNormalizer:
             selection=selection,
             params=tuple(sorted((str(key), str(value)) for key, value in params.items())),
             raw_market_name=str(getattr(instrument, "market_name", "")),
-            raw_market_type=str(info.get("raw_market_type", getattr(instrument, "market_type", ""))),
+            raw_market_type=str(
+                info.get("raw_market_type", getattr(instrument, "market_type", ""))
+            ),
             raw_outcome=str(getattr(instrument, "outcome", "")),
             outcome_key=str(outcome_key),
             rules_flags=rules_flags,
@@ -137,9 +139,7 @@ class MarketNormalizer:
             or ""
         )
         raw_market_type = str(
-            cls._value(item, "market_type")
-            or parsed_market_url["market_type"]
-            or raw_market_name
+            cls._value(item, "market_type") or parsed_market_url["market_type"] or raw_market_name
         )
         raw_outcome = str(
             cls._value(item, "outcome")
@@ -167,7 +167,11 @@ class MarketNormalizer:
             params.setdefault("line", cls._format_decimal(line))
 
         sport = cls._canonical_sport(
-            str(cls._value(item, "sport_name") or cls._value(item, "sport_key") or info.get("sport", "")),
+            str(
+                cls._value(item, "sport_name")
+                or cls._value(item, "sport_key")
+                or info.get("sport", "")
+            ),
         )
         scope = cls._scope_from_parts(
             raw_market_name=raw_market_name,
@@ -191,7 +195,9 @@ class MarketNormalizer:
             info=info,
         )
 
-        event_id = cls._value(item, "event_id") or cls._value(item, "eventId") or cls._value(item, "id")
+        event_id = (
+            cls._value(item, "event_id") or cls._value(item, "eventId") or cls._value(item, "id")
+        )
         event_key = cls._event_key_from_fields(
             event_id=str(event_id or ""),
             home_name=str(cls._value(item, "home_name") or cls._value(item, "home") or ""),
@@ -214,7 +220,9 @@ class MarketNormalizer:
 
         return NormalizedSelection(
             venue=venue,
-            instrument_id=str(cls._value(item, "instrument_id") or cls._value(item, "id") or event_key),
+            instrument_id=str(
+                cls._value(item, "instrument_id") or cls._value(item, "id") or event_key
+            ),
             sport=sport,
             event_key=event_key,
             period=scope,
@@ -235,12 +243,18 @@ class MarketNormalizer:
     @classmethod
     def _normalize_binary_option(cls, instrument: BinaryOption) -> NormalizedSelection:
         info = instrument.info if isinstance(instrument.info, dict) else {}
-        sports_meta = info.get("sports_market") if isinstance(info.get("sports_market"), dict) else {}
+        sports_meta = (
+            info.get("sports_market") if isinstance(info.get("sports_market"), dict) else {}
+        )
         params = cls._parse_params(sports_meta.get("params") or "")
         sport = cls._canonical_sport(str(sports_meta.get("sport") or info.get("sport") or ""))
         scope = cls._scope_from_parts(
-            raw_market_name=str(sports_meta.get("market_name") or info.get("market_name") or "winner"),
-            raw_market_type=str(sports_meta.get("market_type") or info.get("market_type") or "winner"),
+            raw_market_name=str(
+                sports_meta.get("market_name") or info.get("market_name") or "winner"
+            ),
+            raw_market_type=str(
+                sports_meta.get("market_type") or info.get("market_type") or "winner"
+            ),
             params=params,
         )
         resolution_policy = cls._binary_resolution_policy(
@@ -260,9 +274,7 @@ class MarketNormalizer:
         market_type = CanonicalMarketType.BINARY_OPTION
         condition_id = str(info.get("condition_id") or instrument.id.symbol.value)
         sports_market = (
-            info.get("sports_market")
-            if isinstance(info.get("sports_market"), dict)
-            else {}
+            info.get("sports_market") if isinstance(info.get("sports_market"), dict) else {}
         )
         event_key = cls._event_key_from_fields(
             event_id=condition_id,
@@ -287,8 +299,12 @@ class MarketNormalizer:
             market_family=market_type.value,
             selection=selection,
             params=tuple(sorted((str(key), str(value)) for key, value in params.items())),
-            raw_market_name=str(sports_meta.get("market_name") or info.get("market_name") or "binary_option"),
-            raw_market_type=str(sports_meta.get("market_type") or info.get("market_type") or "binary_option"),
+            raw_market_name=str(
+                sports_meta.get("market_name") or info.get("market_name") or "binary_option"
+            ),
+            raw_market_type=str(
+                sports_meta.get("market_type") or info.get("market_type") or "binary_option"
+            ),
             raw_outcome=str(getattr(instrument, "outcome", "")),
             outcome_key=selection.lower(),
             rules_flags=rules_flags,
@@ -411,13 +427,19 @@ class MarketNormalizer:
         sport: str,
         info: dict[str, Any],
     ) -> CanonicalMarketType:
-        normalized = cls._normalize_text(" ".join([raw_market_name, raw_market_type, str(raw_market_id or "")]))
+        normalized = cls._normalize_text(
+            " ".join([raw_market_name, raw_market_type, str(raw_market_id or "")])
+        )
         try:
             numeric_market_id = int(raw_market_id)
         except (TypeError, ValueError):
             numeric_market_id = raw_market_id
         if numeric_market_id in {0, 52, 226}:
-            return CanonicalMarketType.WINNER if info.get("is_two_way_market") is True else CanonicalMarketType.MATCH_ODDS
+            return (
+                CanonicalMarketType.WINNER
+                if info.get("is_two_way_market") is True
+                else CanonicalMarketType.MATCH_ODDS
+            )
         if numeric_market_id in {1, 201, 342}:
             return CanonicalMarketType.ASIAN_HANDICAP
         if numeric_market_id in {2, 835}:
@@ -489,8 +511,12 @@ class MarketNormalizer:
         sport: str,
         info: dict[str, Any],
     ) -> str:
-        sports_meta = info.get("sports_market") if isinstance(info.get("sports_market"), dict) else info
-        target_role = str(sports_meta.get("selection_role") or sports_meta.get("team_role") or "").upper()
+        sports_meta = (
+            info.get("sports_market") if isinstance(info.get("sports_market"), dict) else info
+        )
+        target_role = str(
+            sports_meta.get("selection_role") or sports_meta.get("team_role") or ""
+        ).upper()
 
         outcome = Outcome.from_string(raw_selection)
         if outcome != Outcome.OTHER:
@@ -564,7 +590,9 @@ class MarketNormalizer:
         return tuple(sorted(flags))
 
     @staticmethod
-    def _binary_resolution_policy(question: str, info: dict[str, Any]) -> tuple[tuple[str, str], ...]:
+    def _binary_resolution_policy(
+        question: str, info: dict[str, Any]
+    ) -> tuple[tuple[str, str], ...]:
         text = " ".join(
             [
                 question,
@@ -595,12 +623,7 @@ class MarketNormalizer:
             parsed = datetime.fromisoformat(raw)
         except ValueError:
             return raw
-        return (
-            parsed.astimezone(UTC)
-            .replace(microsecond=0)
-            .isoformat()
-            .replace("+00:00", "Z")
-        )
+        return parsed.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
     @staticmethod
     def _to_decimal(value: str) -> Decimal | None:

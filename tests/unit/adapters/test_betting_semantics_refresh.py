@@ -91,7 +91,9 @@ def betting_instrument(
 
 
 def _load_cloudbet_selection(filename: str, index: int) -> Selection:
-    path = TESTS_PACKAGE_ROOT / "integration_tests" / "adapters" / "cloudbet" / "resources" / filename
+    path = (
+        TESTS_PACKAGE_ROOT / "integration_tests" / "adapters" / "cloudbet" / "resources" / filename
+    )
     selections = msgspec.json.decode(path.read_bytes(), type=list[Selection])
     return selections[index]
 
@@ -595,7 +597,9 @@ def test_catalog_templates_generalize_from_events_without_settled_bets():
                 outcome="away_draw",
             ),
         )
-        home = replace(home, event_key=f"catalog-event-{event_index}", instrument_id=f"home-{event_index}")
+        home = replace(
+            home, event_key=f"catalog-event-{event_index}", instrument_id=f"home-{event_index}"
+        )
         away_draw = replace(
             away_draw,
             event_key=f"catalog-event-{event_index}",
