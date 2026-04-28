@@ -232,7 +232,7 @@ def test_resolve_existing_input_path_requires_existing_file(tmp_path):
     event_path = tmp_path / "event.json"
     event_path.write_text("{}", encoding="utf-8")
 
-    resolved = MODULE._resolve_existing_input_path(str(event_path))
+    resolved = MODULE.resolve_existing_input_path(str(event_path))
 
     _expect(resolved == event_path.resolve(), f"unexpected resolved path: {resolved}")
 
@@ -253,4 +253,4 @@ def test_resolve_output_path_rejects_absolute_paths_outside_allowed_roots(
     outside_path.parent.mkdir()
 
     with pytest.raises(ValueError, match="workspace or runner temp"):
-        MODULE._resolve_output_path(str(outside_path))
+        MODULE.resolve_output_path(str(outside_path))

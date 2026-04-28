@@ -5,6 +5,7 @@ import argparse
 import http.client
 import json
 import os
+import ssl
 import sys
 import urllib.parse
 from dataclasses import asdict
@@ -68,7 +69,12 @@ class GitHubApiClient:
         if query:
             request_path = f"{request_path}?{urllib.parse.urlencode(query, doseq=True)}"
 
-        connection = http.client.HTTPSConnection(self._api_host, timeout=60)
+        connection = http.client.HTTPSConnection(
+            self._api_host,
+            timeout=60,
+            context=ssl.create_default_context(),
+        )  # skipcq: BAN-B309
+        response: http.client.HTTPResponse | None = None
         try:
             connection.request(
                 "GET",
@@ -81,14 +87,17 @@ class GitHubApiClient:
                 },
             )
             response = connection.getresponse()
+            response_status = response.status
             payload = response.read().decode("utf-8", errors="replace")
         except OSError as e:  # pragma: no cover - surfaced via CLI exit
             raise RuntimeError(f"GitHub API request failed for {path}: {e}") from e
         finally:
+            if response is not None:
+                response.close()
             connection.close()
 
-        if response.status >= 400:
-            raise RuntimeError(f"GitHub API {response.status} for {path}: {payload}")
+        if response_status >= 400:
+            raise RuntimeError(f"GitHub API {response_status} for {path}: {payload}")
         if not payload:
             return {}
         return json.loads(payload)
@@ -327,7 +336,7 @@ def evaluate_push_policy(
     )
 
 
-def _resolve_output_path(raw_path: str) -> Path:
+def resolve_output_path(raw_path: str) -> Path:
     candidate = Path(raw_path).expanduser()
     if not candidate.name:
         raise ValueError(f"Output path must point to a file, got {raw_path!r}")
@@ -350,7 +359,7 @@ def _resolve_output_path(raw_path: str) -> Path:
     return (Path.cwd() / candidate).resolve(strict=False)
 
 
-def _resolve_existing_input_path(raw_path: str) -> Path:
+def resolve_existing_input_path(raw_path: str) -> Path:
     candidate = Path(raw_path).expanduser()
     resolved = candidate.resolve(strict=True)
     if not resolved.is_file():
@@ -359,7 +368,7 @@ def _resolve_existing_input_path(raw_path: str) -> Path:
 
 
 def _write_github_outputs(path: str, decision: PolicyDecision) -> None:
-    output_path = _resolve_output_path(path)
+    output_path = resolve_output_path(path)
     with output_path.open("a", encoding="utf-8") as handle:
         handle.write(f"action={decision.action}\n")
         handle.write(f"reason={decision.reason}\n")
@@ -385,7 +394,7 @@ def main(argv: list[str] | None = None) -> int:
         print("GITHUB_TOKEN is required", file=sys.stderr)
         return 1
 
-    event_path = _resolve_existing_input_path(args.event_path)
+    event_path = resolve_existing_input_path(args.event_path)
     with event_path.open(encoding="utf-8") as handle:
         event = json.load(handle)
 
@@ -398,7 +407,7 @@ def main(argv: list[str] | None = None) -> int:
     payload = decision.to_dict()
     serialized = json.dumps(payload, indent=2, sort_keys=True)
     if args.output_json:
-        output_json_path = _resolve_output_path(args.output_json)
+        output_json_path = resolve_output_path(args.output_json)
         output_json_path.parent.mkdir(parents=True, exist_ok=True)
         with output_json_path.open("w", encoding="utf-8") as handle:
             handle.write(serialized)
