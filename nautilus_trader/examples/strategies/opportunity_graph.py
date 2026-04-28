@@ -175,9 +175,18 @@ class OpportunityGraph:
 
         self._matcher = matcher
         self._include_cross_venue = include_cross_venue
+        rule_store = self._safe_attr(matcher, "_rule_store", None)
+        use_rust_core = (
+            engine == "rust"
+            or (
+                engine == "auto"
+                and rule_store is None
+                and _OPPORTUNITY_GRAPH_CORE_CLS is not None
+            )
+        )
         self._rust_core: Any | None = (
             _OPPORTUNITY_GRAPH_CORE_CLS(include_cross_venue, matcher.min_confidence)
-            if engine != "python" and _OPPORTUNITY_GRAPH_CORE_CLS is not None
+            if use_rust_core and _OPPORTUNITY_GRAPH_CORE_CLS is not None
             else None
         )
         self.nodes_by_id: dict[str, OpportunityNode] = {}
@@ -197,8 +206,6 @@ class OpportunityGraph:
         """
         Return the number of hedge relationships currently tracked.
         """
-        if self._rust_core is not None:
-            return self._rust_core.edge_count()
         return len(self.edges_by_id)
 
     @property
@@ -442,14 +449,19 @@ class OpportunityGraph:
             float(min_profit_margin),
             now_ns,
         )
-        return True, snapshots
+        return True, [
+            snapshot
+            for snapshot in snapshots
+            if (
+                (edge := self.edges_by_id.get(snapshot[0])) is not None
+                and edge.execution_safe
+            )
+        ]
 
     def connected_edge_count(self, node_id: str) -> int:
         """
         Return the number of hedge edges incident to the given node.
         """
-        if self._rust_core is not None:
-            return self._rust_core.connected_edge_count(node_id)
         return len(self.edge_ids_by_node_id.get(node_id, set()))
 
     def stats(self) -> dict[str, int]:
@@ -475,22 +487,43 @@ class OpportunityGraph:
             confidence,
             same_venue,
             market_relationship_type,
-            push_capable,
-            execution_safe,
+            _push_capable,
+            _execution_safe,
             last_margin,
             last_evaluated_ns,
             last_updated_ns,
         ) in self._rust_core.edge_snapshots():
+            source_node = self.nodes_by_id.get(source_node_id)
+            target_node = self.nodes_by_id.get(target_node_id)
+            if source_node is None or target_node is None:
+                continue
+
+            hedge = self._best_public_hedge_candidate(
+                source_node.instrument,
+                target_node.instrument,
+            )
+            if hedge is None:
+                continue
+
             edge = OpportunityEdge(
                 edge_id=edge_id,
                 source_node_id=source_node_id,
                 target_node_id=target_node_id,
-                hedge_type=hedge_type,
-                confidence=confidence,
+                hedge_type=hedge.match_type or hedge_type,
+                confidence=hedge.confidence if hedge.confidence else confidence,
                 same_venue=same_venue,
                 market_relationship_type=market_relationship_type,
-                push_capable=push_capable,
-                execution_safe=execution_safe,
+                push_capable=hedge.push_capable,
+                execution_safe=hedge.execution_safe,
+                rule_id=hedge.rule_id,
+                template_id=hedge.template_id,
+                relationship_type=hedge.relationship_type,
+                caveats=hedge.caveats,
+                promotion_status=hedge.promotion_status,
+                safety_tier=hedge.safety_tier,
+                same_venue_execution_eligible=hedge.same_venue_execution_eligible,
+                void_capable=hedge.push_capable,
+                partial_settlement=hedge.partial_settlement,
                 last_margin=Decimal(str(last_margin)) if last_margin is not None else None,
                 last_evaluated_ns=last_evaluated_ns,
                 last_updated_ns=last_updated_ns,
@@ -508,7 +541,9 @@ class OpportunityGraph:
     ) -> list[OpportunityCandidate]:
         candidates: list[OpportunityCandidate] = []
         for edge_id, source_node_id, target_node_id, _, _, _ in snapshots:
-            edge = self.edges_by_id[edge_id]
+            edge = self.edges_by_id.get(edge_id)
+            if edge is None or not edge.execution_safe:
+                continue
             source_quote = self.quotes_by_node_id.get(source_node_id)
             target_quote = self.quotes_by_node_id.get(target_node_id)
             if source_quote is None or target_quote is None:
@@ -550,18 +585,14 @@ class OpportunityGraph:
         )
         seen_target_ids: set[str] = set()
         for hedge in hedges:
-            if (
-                hedge.relationship_type == "EQUIVALENT_SELECTION"
-                and not hedge.same_venue_execution_eligible
-            ):
+            normalized_hedge = self._normalize_public_hedge(instrument, hedge)
+            if normalized_hedge is None:
                 continue
-            if self._matcher._is_same_market_hedge(instrument, hedge.instrument):
-                hedge = self._matcher._legacy_same_market_candidate(hedge.instrument)
-            seen_target_ids.add(str(hedge.instrument.id))
+            seen_target_ids.add(str(normalized_hedge.instrument.id))
             self._upsert_edge(
                 source=instrument,
-                target=hedge.instrument,
-                hedge=hedge,
+                target=normalized_hedge.instrument,
+                hedge=normalized_hedge,
             )
 
         for candidate in candidates:
@@ -583,6 +614,48 @@ class OpportunityGraph:
                 target=candidate,
                 hedge=legacy_hedge,
             )
+
+    def _normalize_public_hedge(
+        self,
+        source: CryptoBettingInstrument,
+        hedge: HedgeCandidate,
+    ) -> HedgeCandidate | None:
+        if (
+            hedge.relationship_type == "EQUIVALENT_SELECTION"
+            and not hedge.same_venue_execution_eligible
+        ):
+            return None
+        if (
+            self._matcher._is_same_market_hedge(source, hedge.instrument)
+            and not hedge.push_capable
+        ):
+            return self._matcher._legacy_same_market_candidate(hedge.instrument)
+        return hedge
+
+    def _public_hedge_candidate(
+        self,
+        source: CryptoBettingInstrument,
+        target: CryptoBettingInstrument,
+    ) -> HedgeCandidate | None:
+        semantic_hedge = self._matcher._semantic_hedge_candidate(source, target)
+        if semantic_hedge is not None:
+            return self._normalize_public_hedge(source, semantic_hedge)
+        if self._matcher._is_same_market_hedge(source, target):
+            return self._matcher._legacy_same_market_candidate(target)
+        return self._legacy_cross_market_candidate(source, target)
+
+    def _best_public_hedge_candidate(
+        self,
+        source: CryptoBettingInstrument,
+        target: CryptoBettingInstrument,
+    ) -> HedgeCandidate | None:
+        forward = self._public_hedge_candidate(source, target)
+        reverse = self._public_hedge_candidate(target, source)
+        if reverse is None:
+            return forward
+        if forward is None or reverse.confidence > forward.confidence:
+            return reverse
+        return forward
 
     def _upsert_edge(
         self,
@@ -842,12 +915,12 @@ class OpportunityGraph:
 
     @staticmethod
     def _safe_attr(
-        instrument: CryptoBettingInstrument,
+        obj: object,
         name: str,
         default: object,
     ) -> object:
         try:
-            return getattr(instrument, name)
+            return getattr(obj, name)
         except AttributeError:
             return default
 

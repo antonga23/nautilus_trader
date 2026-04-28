@@ -12,6 +12,8 @@ Parity and fast-path tests for the opportunity graph engines.
 """
 
 from decimal import Decimal
+from typing import Any
+from typing import cast
 
 import pytest
 
@@ -257,6 +259,23 @@ def test_update_quote_and_scan_fast_returns_primitive_snapshots() -> None:  # sk
     ensure(snapshot[11] is False)
 
 
+def test_update_quote_and_scan_fast_returns_false_for_unknown_rust_node() -> None:  # skipcq
+    instruments = [_instrument(outcome="over"), _instrument(outcome="under")]
+    graph = _graph("rust", instruments)
+    unknown = _instrument(event_id="missing", outcome="away")
+
+    result = graph.update_quote_and_scan_fast(
+        _quote(unknown, Decimal("2.40"), ts_event=99_000),
+        odds=Decimal("2.40"),
+        received_ns=100_000,
+        min_profit_margin=Decimal("0.01"),
+        now_ns=100_000,
+    )
+    if result is None:
+        raise AssertionError("Rust fast scan should return snapshots")
+    ensure(result == (False, []))
+
+
 def test_update_quote_and_scan_fast_is_rust_only() -> None:  # skipcq
     instrument = _instrument()
     graph = _graph("python", [instrument])
@@ -271,6 +290,40 @@ def test_update_quote_and_scan_fast_is_rust_only() -> None:  # skipcq
         )
         is None,
     )
+
+
+def test_auto_engine_uses_python_when_matcher_has_rule_store() -> None:  # skipcq
+    matcher = MarketMatcher()
+    matcher._rule_store = cast(Any, object())
+
+    graph = OpportunityGraph(matcher)
+
+    ensure(graph._rust_core is None)
+
+
+def test_node_payload_fallbacks_cover_missing_helper_methods() -> None:  # skipcq
+    template = _instrument()
+
+    class BareInstrument:
+        def __init__(self) -> None:
+            self.id = template.id
+            self.event_id = template.event_id
+            self.event_name = template.event_name
+            self.market_name = template.market_name
+            self.market_type = template.market_type
+            self.outcome = template.outcome
+            self.params = template.params
+            self.handicap = template.handicap
+
+    bare = cast(Any, BareInstrument())
+    node = OpportunityGraph._node_from_instrument(bare)
+    payload = OpportunityGraph._node_payload_from_node(node, bare)
+
+    ensure(node.canonical_event_key == str(template.id))
+    ensure(node.canonical_outcome_key.endswith("|over"))
+    ensure(payload["event_key_no_time"] == str(template.id))
+    ensure(payload["selection_key"] == "over")
+    ensure(payload["start_time_ns"] is None)
 
 
 def test_rust_scan_filters_unprofitable_edges_before_decimal_validation() -> None:  # skipcq
