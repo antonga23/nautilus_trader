@@ -66,7 +66,9 @@ FastCandidateSnapshot = tuple[
 @dataclass(frozen=True)
 # skipcq: PYL-R0902
 class OpportunityNode:  # skipcq
-    """A graph node representing one venue-specific tradable betting instrument."""
+    """
+    A graph node representing one venue-specific tradable betting instrument.
+    """
 
     node_id: str
     instrument_id: str
@@ -89,7 +91,9 @@ class OpportunityNode:  # skipcq
 @dataclass
 # skipcq: PYL-R0902
 class OpportunityEdge:  # skipcq
-    """A precomputed hedge/opportunity relationship between two nodes."""
+    """
+    A precomputed hedge/opportunity relationship between two nodes.
+    """
 
     edge_id: str
     source_node_id: str
@@ -116,7 +120,9 @@ class OpportunityEdge:  # skipcq
 
 @dataclass
 class QuoteState:
-    """Latest quote state for a graph node."""
+    """
+    Latest quote state for a graph node.
+    """
 
     node_id: str
     quote: QuoteTick
@@ -129,7 +135,9 @@ class QuoteState:
 
 @dataclass(frozen=True)
 class OpportunityCandidate:
-    """A computed candidate produced by evaluating one graph edge."""
+    """
+    A computed candidate produced by evaluating one graph edge.
+    """
 
     edge: OpportunityEdge
     opportunity: ArbitrageOpportunity
@@ -155,7 +163,9 @@ class OpportunityGraph:
         include_cross_venue: bool = True,
         engine: str = "auto",
     ) -> None:
-        """Initialize the graph matcher and optional Rust engine."""
+        """
+        Initialize the graph matcher and optional Rust engine.
+        """
         if engine not in {"auto", "python", "rust"}:
             msg = f"Invalid opportunity graph engine: {engine}"
             raise ValueError(msg)
@@ -177,25 +187,33 @@ class OpportunityGraph:
 
     @property
     def node_count(self) -> int:
-        """Return the number of indexed opportunity graph nodes."""
+        """
+        Return the number of indexed opportunity graph nodes.
+        """
         return len(self.nodes_by_id)
 
     @property
     def edge_count(self) -> int:
-        """Return the number of hedge relationships currently tracked."""
+        """
+        Return the number of hedge relationships currently tracked.
+        """
         if self._rust_core is not None:
             return self._rust_core.edge_count()
         return len(self.edges_by_id)
 
     @property
     def quote_state_count(self) -> int:
-        """Return the number of nodes with an active quote snapshot."""
+        """
+        Return the number of nodes with an active quote snapshot.
+        """
         if self._rust_core is not None:
             return self._rust_core.quote_state_count()
         return len(self.quotes_by_node_id)
 
     def clear(self) -> None:
-        """Reset all graph topology and cached quote state."""
+        """
+        Reset all graph topology and cached quote state.
+        """
         if self._rust_core is not None:
             self._rust_core.clear()
         self.nodes_by_id.clear()
@@ -204,7 +222,9 @@ class OpportunityGraph:
         self.quotes_by_node_id.clear()
 
     def build(self, instruments: list[CryptoBettingInstrument]) -> None:
-        """Build graph topology from a complete instrument snapshot."""
+        """
+        Build graph topology from a complete instrument snapshot.
+        """
         self.clear()
         rust_nodes: list[dict[str, object]] = []
         for instrument in instruments:
@@ -222,7 +242,9 @@ class OpportunityGraph:
             self._add_edges_for_instrument(instrument, instruments)
 
     def add_instrument(self, instrument: CryptoBettingInstrument) -> bool:
-        """Add one instrument and incrementally connect it to existing topology."""
+        """
+        Add one instrument and incrementally connect it to existing topology.
+        """
         node = self._node_from_instrument(instrument)
         if node.node_id in self.nodes_by_id:
             return False
@@ -253,7 +275,9 @@ class OpportunityGraph:
         odds: Decimal,
         received_ns: int,
     ) -> QuoteState | None:
-        """Update latest quote state for a graph node."""
+        """
+        Update latest quote state for a graph node.
+        """
         node_id = str(quote.instrument_id)
         if node_id not in self.nodes_by_id:
             return None
@@ -284,7 +308,9 @@ class OpportunityGraph:
         min_profit_margin: Decimal,
         now_ns: int,
     ) -> list[OpportunityCandidate]:
-        """Evaluate only edges connected to the updated node."""
+        """
+        Evaluate only edges connected to the updated node.
+        """
         updated_quote = self.quotes_by_node_id.get(node_id)
         if updated_quote is None:
             return []
@@ -346,7 +372,9 @@ class OpportunityGraph:
         min_profit_margin: Decimal,
         now_ns: int,
     ) -> tuple[QuoteState | None, list[OpportunityCandidate]]:
-        """Update latest quote state and evaluate affected graph edges in one operation."""
+        """
+        Update latest quote state and evaluate affected graph edges in one operation.
+        """
         if self._rust_core is None:
             quote_state = self.update_quote(quote, odds=odds, received_ns=received_ns)
             if quote_state is None:
@@ -395,7 +423,9 @@ class OpportunityGraph:
         min_profit_margin: Decimal,
         now_ns: int,
     ) -> tuple[bool, list[FastCandidateSnapshot]] | None:
-        """Update quote state and return compact Rust scan results for strategy hot paths."""
+        """
+        Update quote state and return compact Rust scan results for strategy hot paths.
+        """
         if self._rust_core is None:
             return None
 
@@ -414,13 +444,17 @@ class OpportunityGraph:
         return True, snapshots
 
     def connected_edge_count(self, node_id: str) -> int:
-        """Return the number of hedge edges incident to the given node."""
+        """
+        Return the number of hedge edges incident to the given node.
+        """
         if self._rust_core is not None:
             return self._rust_core.connected_edge_count(node_id)
         return len(self.edge_ids_by_node_id.get(node_id, set()))
 
     def stats(self) -> dict[str, int]:
-        """Return lightweight topology counters for diagnostics and tests."""
+        """
+        Return lightweight topology counters for diagnostics and tests.
+        """
         return {
             "nodes": self.node_count,
             "edges": self.edge_count,
