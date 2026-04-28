@@ -288,6 +288,7 @@ class BettingArbitrageStrategy(Strategy):
             self._log_graph_topology_summary()
 
     def on_instrument(self, instrument: Instrument) -> None:
+        """Subscribe a newly seen betting instrument when it passes the strategy filters."""
         if isinstance(instrument, CryptoBettingInstrument):
             self._maybe_subscribe_instrument(instrument)
 

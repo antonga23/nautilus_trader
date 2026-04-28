@@ -180,21 +180,25 @@ class OpportunityGraph:
 
     @property
     def node_count(self) -> int:
+        """Return the number of indexed opportunity graph nodes."""
         return len(self.nodes_by_id)
 
     @property
     def edge_count(self) -> int:
+        """Return the number of hedge relationships currently tracked."""
         if self._rust_core is not None:
             return self._rust_core.edge_count()
         return len(self.edges_by_id)
 
     @property
     def quote_state_count(self) -> int:
+        """Return the number of nodes with an active quote snapshot."""
         if self._rust_core is not None:
             return self._rust_core.quote_state_count()
         return len(self.quotes_by_node_id)
 
     def clear(self) -> None:
+        """Reset all graph topology and cached quote state."""
         if self._rust_core is not None:
             self._rust_core.clear()
         self.nodes_by_id.clear()
@@ -423,11 +427,13 @@ class OpportunityGraph:
         return True, snapshots
 
     def connected_edge_count(self, node_id: str) -> int:
+        """Return the number of hedge edges incident to the given node."""
         if self._rust_core is not None:
             return self._rust_core.connected_edge_count(node_id)
         return len(self.edge_ids_by_node_id.get(node_id, set()))
 
     def stats(self) -> dict[str, int]:
+        """Return lightweight topology counters for diagnostics and tests."""
         return {
             "nodes": self.node_count,
             "edges": self.edge_count,

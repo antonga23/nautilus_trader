@@ -618,7 +618,7 @@ class CashAccount:
         position: Position | None = None,
     ) -> list[Money]: ...
 
-type Account = Union[CashAccount, MarginAccount]
+Account = Union[CashAccount, MarginAccount]
 
 # Accounting transformers
 
@@ -2040,7 +2040,7 @@ class TrailingStopMarketOrder:
     def create(cls, init: OrderInitialized) -> TrailingStopMarketOrder: ...
     def apply(self, event: object) -> None: ...
 
-type Order = Union[
+Order = Union[
     LimitOrder,
     LimitIfTouchedOrder,
     MarketOrder,
@@ -3167,7 +3167,7 @@ class SyntheticInstrument:
     def ts_init(self) -> int: ...
     def to_dict(self) -> dict[str, Any]: ...
 
-type Instrument = Union[
+Instrument = Union[
     BettingInstrument,
     BinaryOption,
     CryptoFuture,

@@ -5,7 +5,9 @@
 # -------------------------------------------------------------------------------------------------
 # skipcq: BAN-B101
 # bandit:skip=B101
+# skipcq: PYL-C0114, PYL-C0115, PYL-C0116, PYL-C0302, PYL-R0904, PYL-R0913
 # pylint: disable=protected-access
+"""Strategy regression tests for the betting arbitrage fast-path integration."""
 
 from decimal import Decimal
 from typing import Any
@@ -28,6 +30,7 @@ from nautilus_trader.test_kit.stubs.data import TestDataStubs
 
 
 def ensure(condition: bool) -> None:
+    """Raise an assertion error when a boolean expectation is not met."""
     if not condition:
         raise AssertionError
 

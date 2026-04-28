@@ -5,6 +5,8 @@
 # -------------------------------------------------------------------------------------------------
 # skipcq: BAN-B101
 # bandit:skip=B101
+# skipcq: PYL-C0114, PYL-C0116, PYL-R0913
+"""Parity and fast-path tests for the opportunity graph engines."""
 
 from decimal import Decimal
 
@@ -23,6 +25,7 @@ _CURRENCY = Currency.from_str("USDT")
 
 
 def ensure(condition: bool) -> None:
+    """Raise an assertion error when a boolean expectation is not met."""
     if not condition:
         raise AssertionError
 
