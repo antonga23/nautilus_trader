@@ -142,20 +142,17 @@ class TestCloudbetDataClient:
     async def test_send_instruments_data_engine(self, data_client, instruments, data_engine):
         """Test _send_all_instruments_to_data_engine"""
         # Arrange
-        # check cache is empty - excluding instrument provider preloaded instrument
-        cache_instruments = data_client._cache.instrument_ids(venue=CLOUDBET_VENUE)
-        assert (
-            len(data_client._cache.instrument_ids(venue=CLOUDBET_VENUE)) - len(cache_instruments)
-            == 0
-        ), (
-            f"Expected {cache_instruments} instruments, got {len(data_client._cache.instrument_ids(venue=CLOUDBET_VENUE))} instruments"
-        )
+        cache_instruments = set(data_client._cache.instrument_ids(venue=CLOUDBET_VENUE))
+        instrument_ids = {instrument.id for instrument in instruments}
+        expected_cache_instruments = cache_instruments | instrument_ids
         # Arrange, Act
         # load instruments into data engine and cache
         data_client._send_all_instruments_to_data_engine(instruments=instruments)
-        updated_cache_instruments = data_client._cache.instrument_ids(venue=CLOUDBET_VENUE)
-        assert len(instruments) == len(updated_cache_instruments), (
-            f"Expected {len(instruments)} instruments, got {len(data_client.instrument_provider._instruments)} instruments"
+        updated_cache_instruments = set(data_client._cache.instrument_ids(venue=CLOUDBET_VENUE))
+        assert expected_cache_instruments == updated_cache_instruments, (
+            "Expected cache to contain the preloaded Cloudbet instruments plus the "
+            f"{len(instrument_ids)} instruments sent to the DataEngine, got "
+            f"{len(updated_cache_instruments)} instrument ids"
         )
 
     # test disconnect

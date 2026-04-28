@@ -3,4 +3,4 @@
 
 [codespell]
 # Comma-separated list of words to ignore
-ignore-words-list = ACN,ALO,Alo,BadAloPx,CapTable,Serie,arange,crate,datas,deques,disjointness,HIGHTER,Implementors,ot,pre,ser,socio-economic,Superseed,SUPERSEED,trough,usIn,zar
+ignore-words-list = ACN,acn,ALO,Alo,BadAloPx,CapTable,Serie,serie,arange,crate,datas,deques,disjointness,HIGHTER,Implementors,ot,pre,ser,socio-economic,Superseed,SUPERSEED,trough,usIn,zar

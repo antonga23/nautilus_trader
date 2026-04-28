@@ -126,8 +126,10 @@ POSITIONSIDE_ORDERSIDE_MAP = {
     SelectionSide.ODD: PositionSide.LONG,
 }
 
-class AcceptPriceChange(Enum):
-    NONE, ALL, BETTER = "NONE", "ALL", "BETTER"
+class AcceptPriceChange(str, Enum):
+    NONE = "NONE"
+    BETTER = "BETTER"
+    SLIPPAGE_TOLERANCE = "SLIPPAGE_TOLERANCE"
 
 
 class NautiliusOrderStatus(Enum): # for reference, and not direct in class use (use OrderStatus from nautilus_trader.core.rust.model instead)
@@ -159,16 +161,23 @@ class NautiliusOrderStatus(Enum): # for reference, and not direct in class use (
 
 class BetStatus(Enum):
     INTERNAL_SERVER_ERROR = "INTERNAL_SERVER_ERROR"
+    UNAUTHORIZED = "UNAUTHORIZED"
     DUPLICATE_REQUEST = "DUPLICATE_REQUEST"
     MALFORMED_REQUEST = "MALFORMED_REQUEST"
+    NOT_FOUND = "NOT_FOUND"
+    NOT_IMPLEMENTED = "NOT_IMPLEMENTED"
     PRICE_ABOVE_MARKET = "PRICE_ABOVE_MARKET"
     INSUFFICIENT_FUNDS = "INSUFFICIENT_FUNDS"
     STAKE_ABOVE_MAX = "STAKE_ABOVE_MAX"
     STAKE_BELOW_MIN = "STAKE_BELOW_MIN"
     LIABILITY_LIMIT_EXCEEDED = "LIABILITY_LIMIT_EXCEEDED"
     MARKET_SUSPENDED = "MARKET_SUSPENDED"
+    GEO_RESTRICTION = "GEO_RESTRICTION"
     ACCEPTED = "ACCEPTED"
     PENDING_ACCEPTANCE = "PENDING_ACCEPTANCE"
+    REJECTED = "REJECTED"
+    COMPLETED = "COMPLETED"
+    CANCELLED = "CANCELLED"
     RESTRICTED = "RESTRICTED"
     VERIFICATION_REQUIRED = "VERIFICATION_REQUIRED"
     WIN = "WIN"
@@ -177,6 +186,7 @@ class BetStatus(Enum):
     HALF_WIN = "HALF_WIN"
     HALF_LOSS = "HALF_LOSS"
     PARTIAL = "PARTIAL"
+    CASHED_OUT = "CASHED_OUT"
 
     def get_order_status(self): #TODO: change to static so can be called without an instance of BetStatus
         return BETSTATUS_ORDERSTATUS_MAP.get(self, None)
@@ -184,16 +194,24 @@ class BetStatus(Enum):
 
 BETSTATUS_ORDERSTATUS_MAP = {
     BetStatus.INTERNAL_SERVER_ERROR: OrderStatus.REJECTED,  # change to OrderStatus.DENIED ?
+    BetStatus.UNAUTHORIZED: OrderStatus.REJECTED,
     BetStatus.DUPLICATE_REQUEST: OrderStatus.REJECTED,  # change to OrderStatus.DENIED ?
     BetStatus.MALFORMED_REQUEST: OrderStatus.REJECTED,  # change to OrderStatus.DENIED ?
+    BetStatus.NOT_FOUND: OrderStatus.REJECTED,
+    BetStatus.NOT_IMPLEMENTED: OrderStatus.REJECTED,
     BetStatus.PRICE_ABOVE_MARKET: OrderStatus.REJECTED,
+    BetStatus.INSUFFICIENT_FUNDS: OrderStatus.REJECTED,
     BetStatus.STAKE_ABOVE_MAX: OrderStatus.REJECTED,
     BetStatus.STAKE_BELOW_MIN: OrderStatus.REJECTED,
     BetStatus.LIABILITY_LIMIT_EXCEEDED: OrderStatus.REJECTED,
     BetStatus.MARKET_SUSPENDED: OrderStatus.REJECTED,
+    BetStatus.GEO_RESTRICTION: OrderStatus.REJECTED,
     BetStatus.ACCEPTED: OrderStatus.ACCEPTED,
     # optimistaically assume an order was filled ??? and change to OrderStatus.FILLED ?
     BetStatus.PENDING_ACCEPTANCE: OrderStatus.SUBMITTED,
+    BetStatus.REJECTED: OrderStatus.REJECTED,
+    BetStatus.COMPLETED: OrderStatus.FILLED,
+    BetStatus.CANCELLED: OrderStatus.CANCELED,
     BetStatus.RESTRICTED: OrderStatus.REJECTED,
     BetStatus.VERIFICATION_REQUIRED: OrderStatus.REJECTED,
     BetStatus.WIN: OrderStatus.ACCEPTED,  # TODO: change this to FILLED otherwise order is marked as open.....
@@ -202,6 +220,7 @@ BETSTATUS_ORDERSTATUS_MAP = {
     BetStatus.HALF_WIN: OrderStatus.ACCEPTED,  # TODO: change this to FILLED otherwise order is marked as open.....
     BetStatus.HALF_LOSS: OrderStatus.ACCEPTED,
     BetStatus.PARTIAL: OrderStatus.ACCEPTED,
+    BetStatus.CASHED_OUT: OrderStatus.CANCELED,
 }
 
 
@@ -374,6 +393,58 @@ class GetFixturesResponse(msgspec.Struct):
     competition: List[CompetitionWithCategory] = msgspec.field(name="competitions")
 
 
+class PriceChangeConfig(msgspec.Struct, kw_only=True):
+    value: AcceptPriceChange
+    slippage_tolerance_ratio: Optional[str] = msgspec.field(
+        name="slippageToleranceRatio",
+        default=None,
+    )
+
+
+class BetState(str, Enum):
+    PENDING_ACCEPTANCE = "PENDING_ACCEPTANCE"
+    ACCEPTED = "ACCEPTED"
+    REJECTED = "REJECTED"
+    COMPLETED = "COMPLETED"
+    CANCELLED = "CANCELLED"
+
+
+class BetResult(str, Enum):
+    PENDING = "PENDING"
+    WIN = "WIN"
+    LOSS = "LOSS"
+    PUSH = "PUSH"
+    HALF_WIN = "HALF_WIN"
+    HALF_LOSS = "HALF_LOSS"
+    PARTIAL = "PARTIAL"
+    CASHED_OUT = "CASHED_OUT"
+
+
+class RejectionCode(str, Enum):
+    INTERNAL_SERVER_ERROR = "INTERNAL_SERVER_ERROR"
+    UNAUTHORIZED = "UNAUTHORIZED"
+    DUPLICATE_REQUEST = "DUPLICATE_REQUEST"
+    MALFORMED_REQUEST = "MALFORMED_REQUEST"
+    NOT_FOUND = "NOT_FOUND"
+    NOT_IMPLEMENTED = "NOT_IMPLEMENTED"
+    PRICE_ABOVE_MARKET = "PRICE_ABOVE_MARKET"
+    INSUFFICIENT_FUNDS = "INSUFFICIENT_FUNDS"
+    STAKE_ABOVE_MAX = "STAKE_ABOVE_MAX"
+    STAKE_BELOW_MIN = "STAKE_BELOW_MIN"
+    LIABILITY_LIMIT_EXCEEDED = "LIABILITY_LIMIT_EXCEEDED"
+    MARKET_SUSPENDED = "MARKET_SUSPENDED"
+    RESTRICTED = "RESTRICTED"
+    GEO_RESTRICTION = "GEO_RESTRICTION"
+    VERIFICATION_REQUIRED = "VERIFICATION_REQUIRED"
+
+
+class BetType(str, Enum):
+    STRAIGHT = "STRAIGHT"
+    MULTIPLE = "MULTIPLE"
+    CASHOUT = "CASHOUT"
+    SAME_GAME_PARLAY = "SAME_GAME_PARLAY"
+
+
 class BetRequest(msgspec.Struct):
     accept_price_change: AcceptPriceChange = msgspec.field(name="acceptPriceChange")
     # TODO: repalce with Currency types from Cloudbet API
@@ -386,24 +457,116 @@ class BetRequest(msgspec.Struct):
     stake: str = msgspec.field(name="stake")
 
 
+class GetBetsSelection(msgspec.Struct, kw_only=True):
+    event_id: str = msgspec.field(name="eventId")
+    market_url: str = msgspec.field(name="marketUrl")
+    price: Union[float, str, None] = msgspec.field(name="price", default=None)
+    state: Optional[BetState] = msgspec.field(name="state", default=None)
+    result: Optional[BetResult] = msgspec.field(name="result", default=None)
+    rejection_code: Optional[RejectionCode] = msgspec.field(name="rejectionCode", default=None)
+    reoffer_price: Optional[str] = msgspec.field(name="reofferPrice", default=None)
+    market_name: Optional[str] = msgspec.field(name="marketName", default=None)
+    outcome_name: Optional[str] = msgspec.field(name="outcomeName", default=None)
+
+
 class GetBetResponse(msgspec.Struct, kw_only=True):
-    """ BetResponse presents response upon place bet request"""
+    """
+    Compatibility model for Cloudbet place/get-bet responses.
+
+    The current Trading API exposes `GET /pub/v4/bets` as `GetBetsResponse { items, hasNext }`.
+    This struct intentionally accepts both the legacy response shape and the current v4 item shape
+    so the rest of the adapter can migrate incrementally.
+    """
+    bet_type: Optional[BetType] = msgspec.field(name="betType", default=None)
+    bet_id: Optional[str] = msgspec.field(name="betId", default=None)
+    betslip_id: Optional[str] = msgspec.field(name="betslipId", default=None)
+    position_id: Optional[str] = msgspec.field(name="positionId", default=None)
     category_key: Optional[str] = msgspec.field(name="categoryKey", default=None)
     competition_id: Union[str, int, None] = msgspec.field(name="competitionId", default=None)
-    create_time: str = msgspec.field(name="createTime")
-    currency: str = msgspec.field(name="currency")
-    customer_reference: str = msgspec.field(name="customerReference")
+    create_time: Optional[str] = msgspec.field(name="createTime", default=None)
+    complete_time: Optional[str] = msgspec.field(name="completeTime", default=None)
+    settle_time: Optional[str] = msgspec.field(name="settleTime", default=None)
+    currency: str = msgspec.field(name="currency", default="EUR")
+    customer_reference: str = msgspec.field(name="customerReference", default="")
+    reference_id: str = msgspec.field(name="referenceId", default="")
     error: Optional[str] = msgspec.field(name="error", default=None)
-    event_id: str = msgspec.field(name="eventId")
     event_name: Optional[str] = msgspec.field(name="eventName", default=None)
-    market_url: str = msgspec.field(name="marketUrl")
-    price: Union[float, str] = msgspec.field(name="price")
-    reference_id: str = msgspec.field(name="referenceId")
-    return_amount: Union[float, str, None] = msgspec.field(name="returnAmount", default=None)
-    side: SelectionSide = msgspec.field(name="side")
+    channel: Optional[str] = msgspec.field(name="channel", default=None)
+    state: Optional[BetState] = msgspec.field(name="state", default=None)
+    result: Optional[BetResult] = msgspec.field(name="result", default=None)
+    is_settled: Optional[bool] = msgspec.field(name="isSettled", default=None)
+    rejection_code: Optional[RejectionCode] = msgspec.field(name="rejectionCode", default=None)
+    reoffer_stake: Optional[str] = msgspec.field(name="reofferStake", default=None)
+    price_change: Optional[PriceChangeConfig] = msgspec.field(name="priceChange", default=None)
+    accept_partial_stake: Optional[bool] = msgspec.field(name="acceptPartialStake", default=None)
     sport_key: Optional[str] = msgspec.field(name="sportsKey", default=None)
-    stake: Union[float, str] = msgspec.field(name="stake")
-    status: BetStatus = msgspec.field(name="status")
+    legacy_event_id: Union[str, None] = msgspec.field(name="eventId", default=None)
+    legacy_market_url: Optional[str] = msgspec.field(name="marketUrl", default=None)
+    legacy_price: Union[float, str, None] = msgspec.field(name="price", default=None)
+    legacy_return_amount: Union[float, str, None] = msgspec.field(name="returnAmount", default=None)
+    legacy_side: Optional[SelectionSide] = msgspec.field(name="side", default=None)
+    legacy_status: Optional[BetStatus] = msgspec.field(name="status", default=None)
+    stake: Union[float, str, None] = msgspec.field(name="stake", default=None)
+    potential_return_amount: Union[float, str, None] = msgspec.field(
+        name="potentialReturnAmount",
+        default=None,
+    )
+    win_loss: Union[float, str, None] = msgspec.field(name="winLoss", default=None)
+    cashout_amount: Union[float, str, None] = msgspec.field(name="cashoutAmount", default=None)
+    selection: Optional[GetBetsSelection] = msgspec.field(name="selection", default=None)
+    selections: Optional[List[GetBetsSelection]] = msgspec.field(name="selections", default=None)
+
+    @property
+    def event_id(self) -> str:
+        if self.legacy_event_id:
+            return str(self.legacy_event_id)
+        if self.selection is not None:
+            return str(self.selection.event_id)
+        if self.selections:
+            return str(self.selections[0].event_id)
+        return ""
+
+    @property
+    def market_url(self) -> str:
+        if self.legacy_market_url:
+            return self.legacy_market_url
+        if self.selection is not None:
+            return self.selection.market_url
+        if self.selections:
+            return self.selections[0].market_url
+        return ""
+
+    @property
+    def price(self) -> Union[float, str]:
+        if self.legacy_price is not None:
+            return self.legacy_price
+        if self.selection is not None and self.selection.price is not None:
+            return self.selection.price
+        if self.selections and self.selections[0].price is not None:
+            return self.selections[0].price
+        return "0"
+
+    @property
+    def return_amount(self) -> Union[float, str, None]:
+        if self.legacy_return_amount is not None:
+            return self.legacy_return_amount
+        return self.potential_return_amount
+
+    @property
+    def side(self) -> SelectionSide:
+        return self.legacy_side or SelectionSide.BACK
+
+    @property
+    def status(self) -> BetStatus:
+        if self.legacy_status is not None:
+            return self.legacy_status
+        if self.rejection_code is not None:
+            return BetStatus[self.rejection_code.value]
+        if self.result is not None and self.result != BetResult.PENDING:
+            return BetStatus[self.result.value]
+        if self.state is not None:
+            return BetStatus[self.state.value]
+        return BetStatus.PENDING_ACCEPTANCE
 
     def to_dict(self) -> dict:
         """
@@ -414,6 +577,8 @@ class GetBetResponse(msgspec.Struct, kw_only=True):
         dict[str, object]
         """
         return {
+            "betId": self.bet_id,
+            "betType": self.bet_type.value if self.bet_type is not None else None,
             "referenceId": self.reference_id,
             "price": self.price,
             "eventId": self.event_id,
@@ -426,10 +591,30 @@ class GetBetResponse(msgspec.Struct, kw_only=True):
             "returnAmount": self.return_amount,
             "eventName": self.event_name,
             "sportsKey": self.sport_key,
-            "competitionId": self.sport_key,
+            "competitionId": self.competition_id,
             "categoryKey": self.category_key,
             "customerReference": self.customer_reference,
-            "error": self.error
+            "error": self.error,
+            "state": self.state.value if self.state is not None else None,
+            "result": self.result.value if self.result is not None else None,
+            "rejectionCode": (
+                self.rejection_code.value if self.rejection_code is not None else None
+            ),
+            "cashoutAmount": self.cashout_amount,
+            "marketName": (
+                self.selection.market_name
+                if self.selection is not None
+                else self.selections[0].market_name
+                if self.selections
+                else None
+            ),
+            "outcomeName": (
+                self.selection.outcome_name
+                if self.selection is not None
+                else self.selections[0].outcome_name
+                if self.selections
+                else None
+            ),
         }
 
     @classmethod
@@ -440,7 +625,8 @@ class GetBetResponse(msgspec.Struct, kw_only=True):
 class GetBetHistoryResponse(msgspec.Struct):
     """ BetHistoryResponse presents response upon get bet history request"""
     bets: List[GetBetResponse] = msgspec.field(name="bets")
-    total_bets: str = msgspec.field(name="totalBets")
+    total_bets: str = msgspec.field(name="totalBets", default="0")
+    has_next: Optional[bool] = msgspec.field(name="hasNext", default=None)
 
     def to_dict(self) -> dict:
         """
@@ -452,8 +638,22 @@ class GetBetHistoryResponse(msgspec.Struct):
         """
         return {
             "bets": [single_bet.to_dict() for single_bet in self.bets],
-            "totalBets": self.total_bets
+            "totalBets": self.total_bets,
+            "hasNext": self.has_next,
         }
+
+    @classmethod
+    def from_get_bets_response(cls, response: "GetBetsResponse") -> "GetBetHistoryResponse":
+        return cls(
+            bets=response.items,
+            total_bets=str(len(response.items)),
+            has_next=response.has_next,
+        )
+
+
+class GetBetsResponse(msgspec.Struct):
+    items: List[GetBetResponse] = msgspec.field(name="items")
+    has_next: bool = msgspec.field(name="hasNext")
 
 
 def default_team_factory():

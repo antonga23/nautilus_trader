@@ -13,12 +13,8 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
-
 import asyncio
-from pathlib import Path
 from typing import Optional, Union, List, Any
-
-from dotenv import dotenv_values
 from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.clock import LiveClock
 from nautilus_trader.common.enums import LogColor
@@ -26,36 +22,24 @@ from nautilus_trader.common.logging import Logger
 from nautilus_trader.core.rust.model import BookType
 from nautilus_trader.data.messages import RequestInstrument, RequestInstruments
 from nautilus_trader.model.data import DataType
-from nautilus_trader.model.identifiers import ClientId, InstrumentId, Venue
+from nautilus_trader.model.identifiers import ClientId, InstrumentId
 from nautilus_trader.msgbus.bus import MessageBus
 
 from nautilus_trader.adapters.cloudbet.client.core import CLOUDBET_VENUE
 from nautilus_trader.adapters.cloudbet.client.core import CloudbetClient
 from nautilus_trader.adapters.cloudbet.client.schema import (
     SelectionId,
-    GetEventResponse,
     GetLatestOddsResponse,
-    EventStatus,
     SelectionStatus,
 )
 from nautilus_trader.adapters.cloudbet.config import CloudbetDataClientConfig
 from nautilus_trader.adapters.cloudbet.providers import CloudbetInstrumentProvider
-from nautilus_trader.core.uuid import UUID4
-
-from nautilus_trader.core.correctness import PyCondition
 
 from nautilus_trader.adapters.cloudbet.sockets import CloudbetStreamClient
 from nautilus_trader.live.data_client import LiveMarketDataClient
-from nautilus_trader.model.currencies import EUR
-from nautilus_trader.model.data import OrderBookDelta
-from nautilus_trader.model.data import OrderBookDeltas
 from nautilus_trader.model.instruments import Instrument
 from nautilus_trader.model.instruments.crypto_betting import CryptoBettingInstrument
 from nautilus_trader.model.orderbook import OrderBook
-
-# load environment variables from .cloudbet_env file
-env_path = str(Path().cwd() / "../.cloudbet_env")
-cloudbet_secrets = dotenv_values(env_path)
 
 
 class CloudbetDataClient(LiveMarketDataClient):

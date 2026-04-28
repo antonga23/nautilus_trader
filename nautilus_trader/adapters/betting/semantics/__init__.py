@@ -1,0 +1,102 @@
+# -------------------------------------------------------------------------------------------------
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
+#  https://nautechsystems.io
+#
+#  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
+#  You may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at https://www.gnu.org/licenses/lgpl-3.0.en.html
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
+# -------------------------------------------------------------------------------------------------
+"""
+Semantic market normalization and payoff-rule mining for betting adapters.
+"""
+
+from nautilus_trader.adapters.betting.semantics.corpus import SnapshotIngestor
+from nautilus_trader.adapters.betting.semantics.linear_sync import LinearIssueSync
+from nautilus_trader.adapters.betting.semantics.linear_sync import LinearSyncError
+from nautilus_trader.adapters.betting.semantics.classifier import RuleClassifier
+from nautilus_trader.adapters.betting.semantics.completion import build_completion_report
+from nautilus_trader.adapters.betting.semantics.completion import DEFAULT_MIN_CANDIDATES
+from nautilus_trader.adapters.betting.semantics.completion import DEFAULT_REQUIRED_PROVIDERS
+from nautilus_trader.adapters.betting.semantics.completion import DEFAULT_TARGET_CANDIDATES
+from nautilus_trader.adapters.betting.semantics.completion import DEFAULT_TARGET_SPORTS
+from nautilus_trader.adapters.betting.semantics.completion import ProviderCompletion
+from nautilus_trader.adapters.betting.semantics.completion import SemanticMiningCompletionReport
+from nautilus_trader.adapters.betting.semantics.completion import SportCompletion
+from nautilus_trader.adapters.betting.semantics.miner import RuleMiner
+from nautilus_trader.adapters.betting.semantics.normalization import MarketNormalizer
+from nautilus_trader.adapters.betting.semantics.payoffs import PayoffVectorBuilder
+from nautilus_trader.adapters.betting.semantics.payoffs import SettlementPluginRegistry
+from nautilus_trader.adapters.betting.semantics.polymarket_transform import (
+    PolymarketSportsTransformer,
+)
+from nautilus_trader.adapters.betting.semantics.promotion import RulePromotionPolicy
+from nautilus_trader.adapters.betting.semantics.secrets import load_aws_secret_payload
+from nautilus_trader.adapters.betting.semantics.secrets import restore_gcp_service_account
+from nautilus_trader.adapters.betting.semantics.secrets import SecretManagerError
+from nautilus_trader.adapters.betting.semantics.store import FileRuleCache
+from nautilus_trader.adapters.betting.semantics.store import RuleStore
+from nautilus_trader.adapters.betting.semantics.types import CanonicalMarketType
+from nautilus_trader.adapters.betting.semantics.types import CorpusSnapshot
+from nautilus_trader.adapters.betting.semantics.types import MinedRule
+from nautilus_trader.adapters.betting.semantics.types import NormalizedSelection
+from nautilus_trader.adapters.betting.semantics.types import NormalizedSelectionRecord
+from nautilus_trader.adapters.betting.semantics.types import PayoffVector
+from nautilus_trader.adapters.betting.semantics.types import PromotionStatus
+from nautilus_trader.adapters.betting.semantics.types import RelationshipType
+from nautilus_trader.adapters.betting.semantics.types import RuleCorpusManifest
+from nautilus_trader.adapters.betting.semantics.types import RuleValidationStats
+from nautilus_trader.adapters.betting.semantics.types import SafetyTier
+from nautilus_trader.adapters.betting.semantics.types import SettlementState
+from nautilus_trader.adapters.betting.semantics.types import SelectionPattern
+from nautilus_trader.adapters.betting.semantics.types import SemanticRuleTemplate
+from nautilus_trader.adapters.betting.semantics.types import TemplateSupportStats
+from nautilus_trader.adapters.betting.semantics.validation import HistoricalRuleValidator
+
+
+__all__ = [
+    "DEFAULT_MIN_CANDIDATES",
+    "DEFAULT_REQUIRED_PROVIDERS",
+    "DEFAULT_TARGET_CANDIDATES",
+    "DEFAULT_TARGET_SPORTS",
+    "CanonicalMarketType",
+    "CorpusSnapshot",
+    "FileRuleCache",
+    "HistoricalRuleValidator",
+    "LinearIssueSync",
+    "LinearSyncError",
+    "MarketNormalizer",
+    "MinedRule",
+    "NormalizedSelection",
+    "NormalizedSelectionRecord",
+    "PayoffVector",
+    "PayoffVectorBuilder",
+    "PolymarketSportsTransformer",
+    "PromotionStatus",
+    "ProviderCompletion",
+    "RelationshipType",
+    "RuleClassifier",
+    "RuleCorpusManifest",
+    "RuleMiner",
+    "RulePromotionPolicy",
+    "RuleStore",
+    "RuleValidationStats",
+    "SafetyTier",
+    "SecretManagerError",
+    "SelectionPattern",
+    "SemanticMiningCompletionReport",
+    "SemanticRuleTemplate",
+    "SettlementPluginRegistry",
+    "SettlementState",
+    "SnapshotIngestor",
+    "SportCompletion",
+    "TemplateSupportStats",
+    "build_completion_report",
+    "load_aws_secret_payload",
+    "restore_gcp_service_account",
+]

@@ -1,4 +1,6 @@
 exclude: ^examples/live/cloudbet\.py$
+default_language_version:
+  python: python3.12
 
 repos:
   ##############################################################################
@@ -31,11 +33,15 @@ repos:
     hooks:
       - id: gitlint
 
-  - repo: https://github.com/scop/pre-commit-shfmt
-    rev: v3.12.0-2
+  - repo: local
     hooks:
       - id: shfmt
+        name: shfmt
+        description: Formats shell scripts with the runner-installed shfmt binary
+        entry: shfmt
+        language: system
         args: ["-i", "2", "-ci", "-sr", "-ln", "bash", "-w"]
+        types: [shell]
 
   - repo: https://github.com/shellcheck-py/shellcheck-py
     rev: v0.11.0.1

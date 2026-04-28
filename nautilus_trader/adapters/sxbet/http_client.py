@@ -17,7 +17,9 @@ SX.bet HTTP client for REST API interactions.
 """
 
 import asyncio
+import os
 import secrets
+import ssl
 from datetime import UTC
 from datetime import datetime
 from email.utils import parsedate_to_datetime
@@ -34,6 +36,21 @@ from nautilus_trader.common.component import Logger
 HTTP_STATUS_OK_MIN = 200
 HTTP_STATUS_REDIRECT_MIN = 300
 HTTP_STATUS_TOO_MANY_REQUESTS = 429
+
+
+def _sxbet_ssl_context() -> ssl.SSLContext:
+    cafile: str | None = None
+    try:
+        import certifi
+    except ModuleNotFoundError:
+        certifi = None
+
+    if certifi is not None:
+        cafile = certifi.where()
+    elif os.path.exists("/etc/ssl/cert.pem"):
+        cafile = "/etc/ssl/cert.pem"
+
+    return ssl.create_default_context(cafile=cafile) if cafile else ssl.create_default_context()
 
 
 class SXBetHttpClientError(Exception):
@@ -164,6 +181,7 @@ class SXBetHttpClient:
         self._session = aiohttp.ClientSession(
             headers=self.headers,
             timeout=self._request_timeout,
+            connector=aiohttp.TCPConnector(ssl=_sxbet_ssl_context()),
         )
         if self._log:
             self._log.info("SXBetHttpClient connected")

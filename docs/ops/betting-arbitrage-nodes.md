@@ -5,6 +5,9 @@ This repo now contains a repo-owned deployment path for live betting arbitrage n
 ## Runtime contract
 
 - Strategy runtime is config-driven via `BettingArbitrageConfig`.
+- Cross-market execution should consume promoted semantic rules from cache when a persisted corpus manifest exists.
+- Raw provider snapshots, normalized selections, event candidate rules, reusable semantic templates, template support stats, validation stats, and promoted rules are persisted through the cache `general` table via `RuleStore`.
+- Persisted mining uses provider-agnostic canonical event keys derived from sport, participants, and scheduled start time so the same fixture can be bucketed across SXBET, Cloudbet, and transformed Polymarket sports markets.
 - Live node manifests live under `deploy/strategy_nodes/betting_arbitrage/`.
 - The shared runner is `python -m nautilus_trader.live.strategy_nodes.betting_arbitrage`.
 - The builder renders a `TradingNodeConfig` using:
@@ -18,6 +21,21 @@ Supported in the live-node builder:
 
 - `SXBET`
 - `POLYMARKET`
+
+Semantic mining corpus coverage currently includes:
+
+- `SXBET` betting instruments
+- `Cloudbet` feed/trading snapshots normalized from current `v2` feed and `v4` trading schemas
+- `Polymarket` sports `BinaryOption` instruments transformed into betting-style semantic selections when metadata is sufficient
+
+Promotion remains strict:
+
+- `mine-candidates` produces candidate topology only
+- `generalize-templates` turns event-specific catalog relationships into reusable selection-pattern templates
+- `validate` turns optional settled provider evidence into `RuleValidationStats`
+- `promote-templates` lifts catalog-derived templates only when deterministic payoff semantics and repeated corpus observations agree
+- `promote` remains available for legacy event-rule promotion with validation stats
+- runtime arbitrage execution only consumes promoted execution-safe rules
 
 Explicitly blocked for live-node deployment until adapter hardening is completed:
 
@@ -130,6 +148,47 @@ Run a node from a manifest:
 python -m nautilus_trader.live.strategy_nodes.betting_arbitrage run \
   --manifest deploy/strategy_nodes/betting_arbitrage/sxbet-single-venue.json
 ```
+
+Semantic corpus and promotion workflow:
+
+```bash
+.venv/bin/python scripts/betting/semantic_rule_mining.py refresh-corpus \
+  --provider cloudbet \
+  --initial-window-seconds 86400 \
+  --max-window-days 7 \
+  --min-events-per-sport 1 \
+  --cache-dir artifacts/semantic-cache/live-cloudbet \
+  --persist-cache
+
+.venv/bin/python scripts/betting/semantic_rule_mining.py mine-candidates \
+  --cache-dir artifacts/semantic-cache/live-cloudbet
+.venv/bin/python scripts/betting/semantic_rule_mining.py generalize-templates \
+  --cache-dir artifacts/semantic-cache/live-cloudbet
+.venv/bin/python scripts/betting/semantic_rule_mining.py promote-templates \
+  --cache-dir artifacts/semantic-cache/live-cloudbet
+.venv/bin/python scripts/betting/semantic_rule_mining.py report-coverage \
+  --cache-dir artifacts/semantic-cache/live-cloudbet
+```
+
+Settled bets can be appended as secondary evidence, but they are not required to build the semantic repository:
+
+```bash
+.venv/bin/python scripts/betting/semantic_rule_mining.py refresh-corpus \
+  --provider cloudbet \
+  --include-bets \
+  --settled-bets \
+  --bet-from-date 2023-01-01T00:00:00Z \
+  --bet-to-date 2026-04-27T23:59:59Z \
+  --cache-dir artifacts/semantic-cache/live-cloudbet \
+  --persist-cache
+
+.venv/bin/python scripts/betting/semantic_rule_mining.py validate \
+  --provider cloudbet \
+  --cache-dir artifacts/semantic-cache/live-cloudbet \
+  --persist-cache
+```
+
+Use `--cache-dir` for local or VM operator runs when Postgres cache envs are not configured. It uses the same `Cache.add/get` contract and keeps refresh, mine, generalize, validate, promote, and coverage-report state durable across separate commands.
 
 ## Deployment
 
@@ -264,6 +323,26 @@ Graph concepts:
 - quote state: latest odds and timestamps for one node
 - candidate: a computed edge opportunity that still must pass freshness and risk
   gates
+
+Semantic rule mining now supplies the graph edge metadata. Betting selections
+from live/upcoming provider catalogs are normalized into canonical
+market/selection/parameter tuples, converted into payoff vectors, classified
+inside event buckets, and generalized into reusable selection-pattern
+templates. The graph can retain non-executable semantic edges, such as
+draw-no-bet pairs that void on draws or quarter handicap pairs with
+half-win/half-loss settlement, but only promoted `COMPLEMENTARY_COVERAGE`
+templates without void, partial, or unknown settlement states are evaluated for
+live arbitrage execution.
+
+Rule persistence uses the generic Nautilus cache path so configured cache
+databases store the same JSON bytes durably:
+
+- `betting:semantic_rules:candidate:<rule_id>`
+- `betting:semantic_rules:template:candidate:<template_id>`
+- `betting:semantic_rules:template:support:<template_id>`
+- `betting:semantic_rules:template:promoted:<template_id>`
+- `betting:semantic_rules:promoted:<rule_id>`
+- `betting:semantic_rules:validation:<rule_id>`
 
 Accepted and suppressed arbitrage logs include manual-readable instrument
 context. Accepted candidates include a `Manual execution plan` section with the

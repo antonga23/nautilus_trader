@@ -24,6 +24,8 @@ top level, so downstream code can simply import from ``nautilus_trader.adapters.
 
 """
 
+from typing import Any
+
 from nautilus_trader.adapters.polymarket.common.constants import POLYMARKET
 from nautilus_trader.adapters.polymarket.common.constants import POLYMARKET_CLIENT_ID
 from nautilus_trader.adapters.polymarket.common.constants import POLYMARKET_MAX_PRECISION_MAKER
@@ -35,12 +37,42 @@ from nautilus_trader.adapters.polymarket.common.parsing import parse_polymarket_
 from nautilus_trader.adapters.polymarket.common.symbol import get_polymarket_instrument_id
 from nautilus_trader.adapters.polymarket.config import PolymarketDataClientConfig
 from nautilus_trader.adapters.polymarket.config import PolymarketExecClientConfig
-from nautilus_trader.adapters.polymarket.factories import PolymarketLiveDataClientFactory
-from nautilus_trader.adapters.polymarket.factories import PolymarketLiveExecClientFactory
-from nautilus_trader.adapters.polymarket.factories import get_polymarket_http_client
-from nautilus_trader.adapters.polymarket.factories import get_polymarket_instrument_provider
-from nautilus_trader.adapters.polymarket.loaders import PolymarketDataLoader
-from nautilus_trader.adapters.polymarket.providers import PolymarketInstrumentProvider
+
+try:
+    from nautilus_trader.adapters.polymarket.factories import (
+        PolymarketLiveDataClientFactory as _PolymarketLiveDataClientFactory,
+    )
+    from nautilus_trader.adapters.polymarket.factories import (
+        PolymarketLiveExecClientFactory as _PolymarketLiveExecClientFactory,
+    )
+    from nautilus_trader.adapters.polymarket.factories import (
+        get_polymarket_http_client as _get_polymarket_http_client,
+    )
+    from nautilus_trader.adapters.polymarket.factories import (
+        get_polymarket_instrument_provider as _get_polymarket_instrument_provider,
+    )
+    from nautilus_trader.adapters.polymarket.loaders import (
+        PolymarketDataLoader as _PolymarketDataLoader,
+    )
+    from nautilus_trader.adapters.polymarket.providers import (
+        PolymarketInstrumentProvider as _PolymarketInstrumentProvider,
+    )
+except ModuleNotFoundError as e:  # pragma: no cover - depends on optional trading deps
+    if e.name != "py_clob_client":
+        raise
+    PolymarketLiveDataClientFactory: Any = None
+    PolymarketLiveExecClientFactory: Any = None
+    get_polymarket_http_client: Any = None
+    get_polymarket_instrument_provider: Any = None
+    PolymarketDataLoader: Any = None
+    PolymarketInstrumentProvider: Any = None
+else:
+    PolymarketLiveDataClientFactory = _PolymarketLiveDataClientFactory
+    PolymarketLiveExecClientFactory = _PolymarketLiveExecClientFactory
+    get_polymarket_http_client = _get_polymarket_http_client
+    get_polymarket_instrument_provider = _get_polymarket_instrument_provider
+    PolymarketDataLoader = _PolymarketDataLoader
+    PolymarketInstrumentProvider = _PolymarketInstrumentProvider
 
 
 __all__ = [

@@ -140,6 +140,8 @@ def _build_strategy_importable_config(
 ) -> ImportableStrategyConfig:
     strategy_config = manifest.strategy.json_primitives()
     strategy_config["enabled_venues"] = sorted({venue.venue for venue in enabled_venues})
+    if manifest.semantic_rule_cache_dir:
+        strategy_config["semantic_rule_cache_dir"] = manifest.semantic_rule_cache_dir
     if manifest.validation_mode:
         strategy_config["auto_execute"] = False
     return ImportableStrategyConfig(

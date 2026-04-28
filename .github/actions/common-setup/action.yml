@@ -103,6 +103,11 @@ runs:
         sudo apt-get clean
         sudo rm -rf /var/lib/apt/lists/*
 
+    - name: Install shfmt (Linux, pre-commit)
+      if: runner.os == 'Linux' && inputs.build-type == 'pre-commit'
+      shell: bash
+      run: bash scripts/install-shfmt.sh
+
     - name: Install capnp and ripgrep (macOS)
       if: runner.os == 'macOS' && inputs.skip-capnp != 'true'
       shell: bash

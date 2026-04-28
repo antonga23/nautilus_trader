@@ -24,9 +24,9 @@ Quote ticks only update node state and re-evaluate edges adjacent to the changed
 from dataclasses import dataclass
 from decimal import Decimal
 
-from nautilus_trader.adapters.betting.common.enums import MarketType
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.betting.market_matcher import ArbitrageOpportunity
+from nautilus_trader.adapters.betting.market_matcher import HedgeCandidate
 from nautilus_trader.adapters.betting.market_matcher import MarketMatcher
 from nautilus_trader.model.data import QuoteTick
 
@@ -70,6 +70,15 @@ class OpportunityEdge:
     market_relationship_type: str
     push_capable: bool
     execution_safe: bool
+    rule_id: str | None = None
+    template_id: str | None = None
+    relationship_type: str | None = None
+    caveats: tuple[str, ...] = ()
+    promotion_status: str | None = None
+    safety_tier: str | None = None
+    same_venue_execution_eligible: bool = False
+    void_capable: bool = False
+    partial_settlement: bool = False
     last_margin: Decimal | None = None
     last_evaluated_ns: int | None = None
     last_updated_ns: int | None = None
@@ -270,8 +279,7 @@ class OpportunityGraph:
             self._upsert_edge(
                 source=instrument,
                 target=hedge.instrument,
-                hedge_type=hedge.match_type,
-                confidence=hedge.confidence,
+                hedge=hedge,
             )
 
     def _upsert_edge(
@@ -279,8 +287,7 @@ class OpportunityGraph:
         *,
         source: CryptoBettingInstrument,
         target: CryptoBettingInstrument,
-        hedge_type: str,
-        confidence: float,
+        hedge: HedgeCandidate,
     ) -> None:
         source_id = str(source.id)
         target_id = str(target.id)
@@ -290,31 +297,45 @@ class OpportunityGraph:
         edge_id = self._edge_id(source_id, target_id)
         existing = self.edges_by_id.get(edge_id)
         if existing is not None:
-            if confidence > existing.confidence:
-                existing.hedge_type = hedge_type
-                existing.confidence = confidence
+            if hedge.confidence > existing.confidence:
+                existing.hedge_type = hedge.match_type
+                existing.confidence = hedge.confidence
                 existing.source_node_id = source_id
                 existing.target_node_id = target_id
+                existing.rule_id = hedge.rule_id
+                existing.template_id = hedge.template_id
+                existing.relationship_type = hedge.relationship_type
+                existing.caveats = hedge.caveats
+                existing.promotion_status = hedge.promotion_status
+                existing.safety_tier = hedge.safety_tier
+                existing.push_capable = hedge.push_capable
+                existing.void_capable = hedge.push_capable
+                existing.partial_settlement = hedge.partial_settlement
+                existing.execution_safe = hedge.execution_safe
+                existing.same_venue_execution_eligible = hedge.same_venue_execution_eligible
             return
 
-        market_a = MarketType.from_string(source.market_name)
-        market_b = MarketType.from_string(target.market_name)
-        push_capable = (
-            market_a in MarketMatcher.PUSH_CAPABLE_MARKETS
-            or market_b in MarketMatcher.PUSH_CAPABLE_MARKETS
-        )
         edge = OpportunityEdge(
             edge_id=edge_id,
             source_node_id=source_id,
             target_node_id=target_id,
-            hedge_type=hedge_type,
-            confidence=confidence,
+            hedge_type=hedge.match_type,
+            confidence=hedge.confidence,
             same_venue=source.venue_name == target.venue_name,
             market_relationship_type=(
                 "same_market" if source.market_name == target.market_name else "cross_market"
             ),
-            push_capable=push_capable,
-            execution_safe=not push_capable,
+            push_capable=hedge.push_capable,
+            execution_safe=hedge.execution_safe,
+            rule_id=hedge.rule_id,
+            template_id=hedge.template_id,
+            relationship_type=hedge.relationship_type,
+            caveats=hedge.caveats,
+            promotion_status=hedge.promotion_status,
+            safety_tier=hedge.safety_tier,
+            same_venue_execution_eligible=hedge.same_venue_execution_eligible,
+            void_capable=hedge.push_capable,
+            partial_settlement=hedge.partial_settlement,
         )
         self.edges_by_id[edge_id] = edge
         self.edge_ids_by_node_id.setdefault(source_id, set()).add(edge_id)
@@ -327,6 +348,9 @@ class OpportunityGraph:
         source_quote: QuoteState,
         target_quote: QuoteState,
     ) -> ArbitrageOpportunity | None:
+        if not edge.execution_safe:
+            return None
+
         source_node = self.nodes_by_id[source_quote.node_id]
         target_node = self.nodes_by_id[target_quote.node_id]
         return self._matcher.check_arbitrage(

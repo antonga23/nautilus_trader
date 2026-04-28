@@ -50,26 +50,38 @@ if [ -z "$codex_bin" ]; then
   echo "codex CLI not found; rendering CODEX_BIN=codex for later runtime provisioning" >&2
 fi
 
-secret_json=$(
-  aws secretsmanager get-secret-value \
-    --secret-id "$secret_id" \
-    --query SecretString \
-    --output text
-)
-
 tmp_file=$(mktemp)
-trap 'rm -f "$tmp_file"' EXIT
+secret_json_file=$(mktemp)
+trap 'rm -f "$tmp_file" "$secret_json_file"' EXIT
 
-jq -r '
-  to_entries[]
-  | select(.value != null)
-  | "\(.key)=\(.value)"
-' <<< "$secret_json" > "$tmp_file"
+aws secretsmanager get-secret-value \
+  --secret-id "$secret_id" \
+  --query SecretString \
+  --output text > "$secret_json_file"
 
-github_token="$(jq -r '.GITHUB_TOKEN // ""' <<< "$secret_json")"
-gh_token="$(jq -r '.GH_TOKEN // ""' <<< "$secret_json")"
+python3 - "$tmp_file" "$secret_json_file" << 'PY'
+import json
+import re
+import shlex
+import sys
+
+output_path = sys.argv[1]
+secret_json_path = sys.argv[2]
+with open(secret_json_path, encoding="utf-8") as fh:
+    payload = json.load(fh)
+valid_name = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+with open(output_path, "w", encoding="utf-8") as fh:
+    for key, value in payload.items():
+        if value is None or not valid_name.match(key):
+            continue
+        fh.write(f"{key}={shlex.quote(str(value))}\n")
+PY
+
+github_token="$(jq -r '.GITHUB_TOKEN // ""' "$secret_json_file")"
+gh_token="$(jq -r '.GH_TOKEN // ""' "$secret_json_file")"
 if [ -n "$github_token" ] && [ -z "$gh_token" ]; then
-  printf 'GH_TOKEN=%s\n' "$github_token" >> "$tmp_file"
+  printf 'GH_TOKEN=%q\n' "$github_token" >> "$tmp_file"
 fi
 
 cat >> "$tmp_file" << 'EOF'
@@ -79,9 +91,13 @@ SYMPHONY_PORT=4000
 CONTROL_PLANE_PORT=4100
 CONTROL_PLANE_WORKER_CONFIG=/srv/symphony/control-repo/scripts/symphony/workers.json
 AGENT_SECRET_ID=cloudbet-market-maker/credentials
+GCP_SERVICE_ACCOUNT_PATH=/srv/symphony/gcp-service-account.json
+GCP_GCLOUD_CONFIG_DIR=/srv/symphony/gcloud-config
+CLOUDSDK_CONFIG=/srv/symphony/gcloud-config
+GOOGLE_APPLICATION_CREDENTIALS=/srv/symphony/gcp-service-account.json
 EOF
 
-printf 'CODEX_BIN=%s\n' "$codex_bin" >> "$tmp_file"
+printf 'CODEX_BIN=%q\n' "$codex_bin" >> "$tmp_file"
 
 output_dir="$(dirname "$output_path")"
 install -d "$output_dir"

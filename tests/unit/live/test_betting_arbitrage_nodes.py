@@ -30,6 +30,7 @@ class TestBettingArbitrageNodeBuilder:
             node_id="sxbet-validation",
             trader_id="BETARB-TEST-001",
             validation_mode=True,
+            semantic_rule_cache_dir="artifacts/semantic-rule-cache/sxbet-validation",
             allow_dummy_credentials=True,
             strategy=BettingArbitrageConfig(
                 min_profit_margin=Decimal("0.02"),
@@ -51,6 +52,10 @@ class TestBettingArbitrageNodeBuilder:
         assert len(config.strategies) == 1
         assert config.strategies[0].config["auto_execute"] is False
         assert config.strategies[0].config["enabled_venues"] == ["SXBET"]
+        assert (
+            config.strategies[0].config["semantic_rule_cache_dir"]
+            == "artifacts/semantic-rule-cache/sxbet-validation"
+        )
 
     def test_sxbet_exec_client_uses_dummy_credentials(self):
         manifest = BettingArbitrageNodeManifest(

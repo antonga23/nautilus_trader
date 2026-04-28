@@ -1,5 +1,4 @@
 import json
-import pathlib
 import random
 from asyncio import Future
 from typing import List, Optional
@@ -15,28 +14,24 @@ from nautilus_trader.adapters.cloudbet.client.schema import (
     GetEventsForSportResponse,
     GetBetResponse,
     GetBetHistoryResponse,
+    GetBetsResponse,
     GetAccountCurrencies,
     GetAccountBalance,
     GetLatestOddsResponse,
     Selection,
     GetEventResponse,
 )
-from nautilus_trader.adapters.cloudbet.client.util import (
-    extract_cloudbet_symbol,
-    cloudbet_instrument_id,
-)
 from nautilus_trader.adapters.cloudbet.common import CLOUDBET_VENUE
 from nautilus_trader.adapters.cloudbet.providers import CloudbetInstrumentProvider
 from nautilus_trader.config import InstrumentProviderConfig
 from nautilus_trader.model.identifiers import InstrumentId, Symbol
-from nautilus_trader.model.instruments.crypto_betting import CryptoBettingInstrument
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
 from tests import TESTS_PACKAGE_ROOT
 
 TEST_PATH = TESTS_PACKAGE_ROOT / "integration_tests" / "adapters" / "cloudbet" / "resources"
 DATA_PATH = TESTS_PACKAGE_ROOT / "test_data" / "cloudbet"
 
-test_api_key = "eyJhbGciOiJSUzI1NiIsImtpZCI6IkhKcDkyNnF3ZXBjNnF3LU9rMk4zV05pXzBrRFd6cEdwTzAxNlRJUjdRWDAiLCJ0eXAiOiJKV1QifQ.eyJhY2Nlc3NfdGllciI6InRyYWRpbmciLCJleHAiOjIwMDI2MjM5MDgsImlhdCI6MTY4NzI2MzkwOCwianRpIjoiMzlkMTgwODYtNWYxNy00Y2QxLTg5NDEtODU1YzQ4ODAyNWYyIiwic3ViIjoiOGY1OGFiNTAtOGRlMi00N2EwLTkxZjYtMDQzMzg1YWMxOTE3IiwidGVuYW50IjoiY2xvdWRiZXQiLCJ1dWlkIjoiOGY1OGFiNTAtOGRlMi00N2EwLTkxZjYtMDQzMzg1YWMxOTE3In0.Sn7cONVxnz3hmbiWYh8TB0jK_yx86rZ6S-Pd2bw1b0WTA5MK88nHbYmGtHC8Wu8tDegvE5dK_bo-Ra0pcB50Hg-oa_1IkLTh3XwG7aT6tfzg61Qj0_vfkPhw2UPjVrSGw3w8bRxFNXldB3ls1xk2C-5M-f-PA7aPSoG5ebXOGsjmno-rV7HQJ_48xjF8QgLEtt9daxHQAmQ8DNzoAwKJ2ILZHg09GAL2Lfi5m48NMYAUYgInn20QIJVlcDqljltPUG5JQPtWGlVsyMIDz1QwobpcxjdE3zbhHnES64kD3eqjuKX52vMgmeDLgJvth5LbzTgxgHhZl2t9lyr_-x7lig"
+test_api_key = "test-cloudbet-api-key"
 test_api_url = "https://sports-api.cloudbet.com/pub"
 
 
@@ -281,6 +276,10 @@ class CloudbetResponses:
         return CloudbetResponses.load("get_bet_history.json", response_type=GetBetHistoryResponse)
 
     @staticmethod
+    def get_bets_success() -> GetBetsResponse:
+        return CloudbetResponses.load("get_bets.json", response_type=GetBetsResponse)
+
+    @staticmethod
     def get_bet_status_win() -> GetBetResponse:
         return CloudbetResponses.load("get_bet_status.json", response_type=GetBetResponse)
 
@@ -308,10 +307,18 @@ class CloudbetResponses:
         )
 
     @staticmethod
+    def get_bets_no_bets() -> GetBetsResponse:
+        return CloudbetResponses.load("get_bets_no_bets.json", response_type=GetBetsResponse)
+
+    @staticmethod
     def get_bet_history_mixed_status() -> GetBetHistoryResponse:
         return CloudbetResponses.load(
             "get_bet_history_mixed_status.json", response_type=GetBetHistoryResponse
         )
+
+    @staticmethod
+    def get_bets_mixed_status() -> GetBetsResponse:
+        return CloudbetResponses.load("get_bets_mixed_status.json", response_type=GetBetsResponse)
 
     @staticmethod
     def get_event(**kwargs) -> GetEventResponse:

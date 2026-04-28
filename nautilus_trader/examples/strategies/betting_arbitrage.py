@@ -25,6 +25,8 @@ from nautilus_trader.adapters.betting.common.odds import calculate_arbitrage_sta
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.betting.market_matcher import ArbitrageOpportunity
 from nautilus_trader.adapters.betting.market_matcher import MarketMatcher
+from nautilus_trader.adapters.betting.semantics import FileRuleCache
+from nautilus_trader.adapters.betting.semantics import RuleStore
 from nautilus_trader.config import StrategyConfig
 from nautilus_trader.core.message import Event
 from nautilus_trader.examples.strategies.opportunity_graph import OpportunityCandidate
@@ -123,6 +125,8 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         Include manual execution fields in arbitrage logs.
     graph_rebuild_on_new_instrument : bool, default True
         Add newly observed instruments to the opportunity graph incrementally.
+    semantic_rule_cache_dir : str | None, default None
+        Optional file-backed semantic rule cache directory for trading-node runtime.
 
     """
 
@@ -139,11 +143,15 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
     opportunity_graph_enabled: bool = True
     opportunity_log_manual_instructions: bool = True
     graph_rebuild_on_new_instrument: bool = True
+    semantic_rule_cache_dir: str | None = None
 
     def __post_init__(self) -> None:
         enabled_venues = frozenset(self.enabled_venues or DEFAULT_ENABLED_VENUES)
         normalized_sport_filter = self.sport_filter.strip().lower() if self.sport_filter else None
         market_timing_filter = self.market_timing_filter if not self.exclude_live else "pre_market"
+        semantic_rule_cache_dir = (
+            self.semantic_rule_cache_dir.strip() if self.semantic_rule_cache_dir else None
+        )
 
         if market_timing_filter not in VALID_MARKET_TIMINGS:
             msg = (
@@ -155,6 +163,7 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         msgspec.structs.force_setattr(self, "enabled_venues", enabled_venues)
         msgspec.structs.force_setattr(self, "sport_filter", normalized_sport_filter)
         msgspec.structs.force_setattr(self, "market_timing_filter", market_timing_filter)
+        msgspec.structs.force_setattr(self, "semantic_rule_cache_dir", semantic_rule_cache_dir)
 
 
 class BettingArbitrageStrategy(Strategy):
@@ -206,6 +215,9 @@ class BettingArbitrageStrategy(Strategy):
         Actions to perform on strategy start.
         """
         self.log.info("BettingArbitrageStrategy starting...")
+        rule_store = self._semantic_rule_store()
+        if rule_store is not None:
+            self._matcher.set_rule_store(rule_store)
         msg = f"Min profit margin: {self._config.min_profit_margin}"
         self.log.info(msg)
         msg = f"Max total stake: {self._config.max_total_stake}"
@@ -227,6 +239,18 @@ class BettingArbitrageStrategy(Strategy):
         )
         self.log.info(msg)
         self._subscribe_cached_instruments()
+
+    def _semantic_rule_store(self) -> RuleStore | None:
+        if self._config.semantic_rule_cache_dir:
+            rule_store = RuleStore(FileRuleCache(self._config.semantic_rule_cache_dir))
+            return rule_store if self._has_semantic_rules(rule_store) else None
+
+        rule_store = RuleStore(self.cache)
+        return rule_store if self._has_semantic_rules(rule_store) else None
+
+    @staticmethod
+    def _has_semantic_rules(rule_store: RuleStore) -> bool:
+        return bool(rule_store.list_manifest_ids() or rule_store.list_promoted_template_ids())
 
     def on_stop(self) -> None:
         """

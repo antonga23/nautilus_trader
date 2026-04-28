@@ -1,0 +1,958 @@
+# -------------------------------------------------------------------------------------------------
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
+#
+#  Unit tests for the Cloudbet-backed semantic mining refresh.
+# -------------------------------------------------------------------------------------------------
+
+from dataclasses import replace
+from decimal import Decimal
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+import msgspec
+
+from nautilus_trader.adapters.betting.common.enums import SelectionSide
+from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
+from nautilus_trader.adapters.betting.market_matcher import MarketMatcher
+from nautilus_trader.adapters.betting.semantics import CanonicalMarketType
+from nautilus_trader.adapters.betting.semantics import CorpusSnapshot
+from nautilus_trader.adapters.betting.semantics import FileRuleCache
+from nautilus_trader.adapters.betting.semantics import HistoricalRuleValidator
+from nautilus_trader.adapters.betting.semantics import MarketNormalizer
+from nautilus_trader.adapters.betting.semantics import NormalizedSelectionRecord
+from nautilus_trader.adapters.betting.semantics import PolymarketSportsTransformer
+from nautilus_trader.adapters.betting.semantics import RelationshipType
+from nautilus_trader.adapters.betting.semantics import RuleClassifier
+from nautilus_trader.adapters.betting.semantics import RuleCorpusManifest
+from nautilus_trader.adapters.betting.semantics import RuleMiner
+from nautilus_trader.adapters.betting.semantics import RulePromotionPolicy
+from nautilus_trader.adapters.betting.semantics import RuleStore
+from nautilus_trader.adapters.betting.semantics import RuleValidationStats
+from nautilus_trader.adapters.betting.semantics import SafetyTier
+from nautilus_trader.adapters.betting.semantics.corpus import SnapshotIngestor
+from nautilus_trader.adapters.betting.semantics import build_completion_report
+from nautilus_trader.adapters.cloudbet.client.schema import Selection
+from nautilus_trader.model.currencies import USDC_POS
+from nautilus_trader.model.enums import AssetClass
+from nautilus_trader.model.identifiers import InstrumentId
+from nautilus_trader.model.identifiers import Symbol
+from nautilus_trader.model.identifiers import Venue
+from nautilus_trader.model.instruments import BinaryOption
+from nautilus_trader.model.objects import Currency
+from nautilus_trader.model.objects import Price
+from nautilus_trader.model.objects import Quantity
+from tests import TESTS_PACKAGE_ROOT
+
+
+class DictCache:
+    def __init__(self) -> None:
+        self.values: dict[str, bytes] = {}
+
+    def add(self, key: str, value: bytes) -> None:
+        self.values[key] = value
+
+    def get(self, key: str) -> bytes | None:
+        return self.values.get(key)
+
+
+def betting_instrument(
+    *,
+    sport: str = "soccer",
+    market_name: str,
+    market_type: str,
+    outcome: str,
+    params: str = "",
+    venue: str = "SXBET",
+    price: float = 2.1,
+    handicap: float | None = None,
+    info: dict | None = None,
+) -> CryptoBettingInstrument:
+    return CryptoBettingInstrument(
+        venue=Venue(venue),
+        event_id="event-1",
+        event_name="Team A vs Team B",
+        home_name="Team A",
+        away_name="Team B",
+        sport_name=sport,
+        competition_name="Test League",
+        market_name=market_name,
+        market_type=market_type,
+        outcome=outcome,
+        side=SelectionSide.BACK,
+        price=price,
+        currency=Currency.from_str("USDC"),
+        params=params,
+        handicap=handicap,
+        start_time="2026-03-13T18:00:00Z",
+        info=info or {},
+    )
+
+
+def _load_cloudbet_selection(filename: str, index: int) -> Selection:
+    path = (
+        TESTS_PACKAGE_ROOT / "integration_tests" / "adapters" / "cloudbet" / "resources" / filename
+    )
+    selections = msgspec.json.decode(path.read_bytes(), type=list[Selection])
+    return selections[index]
+
+
+def test_cloudbet_basketball_spread_normalizes_from_fixture():
+    normalizer = MarketNormalizer()
+    selection = _load_cloudbet_selection("basketball_selections.json", 3)
+
+    normalized = normalizer.normalize(selection)
+
+    assert normalized.market_type == CanonicalMarketType.POINT_SPREAD.value
+    assert normalized.selection == "HOME"
+    assert normalized.scope == "full_time_including_overtime"
+    assert normalized.param("handicap") == "3.5"
+
+
+def test_cloudbet_soccer_quarter_handicap_preserves_arbitrary_line():
+    normalizer = MarketNormalizer()
+    selection = _load_cloudbet_selection("soccer_selections.json", 2)
+
+    normalized = normalizer.normalize(selection)
+    rule = RuleClassifier().classify(
+        normalized,
+        betting_instrument(
+            sport="soccer",
+            market_name="asian_handicap",
+            market_type="asian_handicap",
+            outcome="away",
+            params="line=0.25",
+            handicap=0.25,
+        ),
+    )
+
+    assert normalized.market_type == CanonicalMarketType.ASIAN_HANDICAP.value
+    assert normalized.param("handicap") == "-0.25"
+    assert rule is not None
+    assert rule.relationship_type == RelationshipType.PARTIAL_SETTLEMENT_HEDGE.value
+
+
+def test_cross_provider_event_key_is_provider_agnostic():
+    normalizer = MarketNormalizer()
+    cloudbet = normalizer.normalize(
+        {
+            "provider": "CLOUDBET",
+            "event_id": "cb-100",
+            "event_name": "Team A vs Team B",
+            "home_name": "Team A",
+            "away_name": "Team B",
+            "sport_key": "soccer",
+            "cutoff_time": "2026-03-13T18:00:00Z",
+            "market_url": "soccer.match_odds/home",
+            "outcome": "home",
+        },
+    )
+    sxbet = normalizer.normalize(
+        betting_instrument(
+            venue="SXBET",
+            sport="soccer",
+            market_name="match_odds",
+            market_type="match_odds",
+            outcome="home",
+            info={"outcome_label": "Home"},
+        ),
+    )
+
+    assert cloudbet.event_key == sxbet.event_key
+
+
+def test_sxbet_negative_three_quarter_handicap_is_supported():
+    classifier = RuleClassifier()
+    home_minus_three_quarter = betting_instrument(
+        market_name="asian_handicap",
+        market_type="asian_handicap",
+        outcome="home",
+        params="line=-3.25",
+        handicap=-3.25,
+    )
+    away_plus_three_quarter = betting_instrument(
+        market_name="asian_handicap",
+        market_type="asian_handicap",
+        outcome="away",
+        params="line=3.25",
+        handicap=3.25,
+    )
+
+    rule = classifier.classify(home_minus_three_quarter, away_plus_three_quarter)
+
+    assert rule is not None
+    assert rule.relationship_type == RelationshipType.PARTIAL_SETTLEMENT_HEDGE.value
+    assert rule.has_partial is True
+
+
+def test_polymarket_sports_binary_transforms_into_betting_instrument():
+    instrument = BinaryOption(
+        instrument_id=InstrumentId(Symbol("cond-1"), Venue("POLYMARKET")),
+        raw_symbol=Symbol("cond-1"),
+        outcome="Yes",
+        description="Will Team A beat Team B? Resolves 50-50 if the game is not completed.",
+        asset_class=AssetClass.ALTERNATIVE,
+        currency=USDC_POS,
+        price_increment=Price.from_str("0.001"),
+        price_precision=3,
+        size_increment=Quantity.from_str("0.000001"),
+        size_precision=6,
+        activation_ns=0,
+        expiration_ns=1,
+        max_quantity=None,
+        min_quantity=Quantity.from_int(5),
+        maker_fee=Decimal(0),
+        taker_fee=Decimal(0),
+        ts_event=0,
+        ts_init=0,
+        info={
+            "condition_id": "0xabc",
+            "sports_market": {
+                "sport": "basketball",
+                "market_name": "basketball.moneyline",
+                "market_type": "basketball.moneyline",
+                "selection_role": "home",
+                "event_name": "Team A vs Team B",
+                "home_name": "Team A",
+                "away_name": "Team B",
+                "competition_name": "NBA",
+                "price": 1.91,
+                "resolution_policy": {"tie_or_unknown": "50_50"},
+            },
+        },
+    )
+
+    transformed = PolymarketSportsTransformer.to_crypto_betting_instrument(instrument)
+    normalized = MarketNormalizer().normalize(instrument)
+
+    assert transformed is not None
+    assert transformed.market_name == "basketball.moneyline"
+    assert transformed.outcome == "home"
+    assert normalized.market_type == CanonicalMarketType.BINARY_OPTION.value
+    assert dict(normalized.resolution_policy)["tie_or_unknown"] == "50_50"
+
+
+def test_polymarket_inferred_sports_market_preserves_yes_no_semantics():
+    base_info = {
+        "condition_id": "0xdef",
+        "question": "Will the Minnesota Vikings win the 2027 NFL league championship?",
+        "_gamma_original": {
+            "sport": "nfl",
+            "description": "This market resolves to Yes if the named team wins the 2027 NFL championship.",
+            "outcomePrices": ["0.14", "0.86"],
+            "events": [{"title": "NFL Champion 2027", "sport": "american_football"}],
+        },
+    }
+    yes_instrument = BinaryOption(
+        instrument_id=InstrumentId(Symbol("cond-yes"), Venue("POLYMARKET")),
+        raw_symbol=Symbol("cond-yes"),
+        outcome="Yes",
+        description=base_info["question"],
+        asset_class=AssetClass.ALTERNATIVE,
+        currency=USDC_POS,
+        price_increment=Price.from_str("0.001"),
+        price_precision=3,
+        size_increment=Quantity.from_str("0.000001"),
+        size_precision=6,
+        activation_ns=0,
+        expiration_ns=1,
+        max_quantity=None,
+        min_quantity=Quantity.from_int(5),
+        maker_fee=Decimal(0),
+        taker_fee=Decimal(0),
+        ts_event=0,
+        ts_init=0,
+        info=base_info,
+    )
+    no_instrument = BinaryOption(
+        instrument_id=InstrumentId(Symbol("cond-no"), Venue("POLYMARKET")),
+        raw_symbol=Symbol("cond-no"),
+        outcome="No",
+        description=base_info["question"],
+        asset_class=AssetClass.ALTERNATIVE,
+        currency=USDC_POS,
+        price_increment=Price.from_str("0.001"),
+        price_precision=3,
+        size_increment=Quantity.from_str("0.000001"),
+        size_precision=6,
+        activation_ns=0,
+        expiration_ns=1,
+        max_quantity=None,
+        min_quantity=Quantity.from_int(5),
+        maker_fee=Decimal(0),
+        taker_fee=Decimal(0),
+        ts_event=0,
+        ts_init=0,
+        info=base_info,
+    )
+
+    transformed_yes = PolymarketSportsTransformer.to_crypto_betting_instrument(yes_instrument)
+    transformed_no = PolymarketSportsTransformer.to_crypto_betting_instrument(no_instrument)
+
+    assert transformed_yes is not None
+    assert transformed_no is not None
+    assert transformed_yes.market_type == "american_football.winner"
+    assert transformed_yes.outcome == "yes"
+    assert transformed_no.outcome == "no"
+
+    rule = RuleClassifier().classify(transformed_yes, transformed_no)
+
+    assert rule is not None
+    assert rule.relationship_type == RelationshipType.COMPLEMENTARY_COVERAGE.value
+
+
+def test_rule_store_persists_corpus_artifacts():
+    cache = DictCache()
+    store = RuleStore(cache)
+    snapshot = CorpusSnapshot(
+        snapshot_id="snapshot-1",
+        provider="CLOUDBET",
+        endpoint="/pub/v2/odds/events?sport=soccer",
+        fetched_at="2026-04-27T00:00:00Z",
+        payload=b'{"events":[]}',
+    )
+    normalized = MarketNormalizer().normalize(
+        betting_instrument(
+            market_name="basketball.handicap",
+            market_type="basketball.handicap",
+            outcome="home",
+            sport="basketball",
+            params="handicap=3.5&period=ot&period=ft",
+        ),
+    )
+    record = NormalizedSelectionRecord(
+        record_id="record-1",
+        provider="SXBET",
+        selection=normalized,
+        manifest_id="manifest-1",
+    )
+    manifest = RuleCorpusManifest(
+        manifest_id="manifest-1",
+        provider="CLOUDBET",
+        fetched_at="2026-04-27T00:00:00Z",
+        endpoint_version="feed:v2,trading:v4",
+        sport_count=2,
+        event_count=10,
+        selection_count=20,
+        market_taxonomy_hash="abc123",
+        source_refs=("snapshot-1",),
+    )
+
+    store.save_snapshot(snapshot)
+    store.save_normalized_selection(record)
+    store.save_manifest(manifest)
+
+    assert store.load_snapshot("snapshot-1") == snapshot
+    assert store.load_normalized_selection("record-1") == record
+    assert store.load_manifest("manifest-1") == manifest
+    assert store.list_snapshot_ids() == ["snapshot-1"]
+    assert store.list_normalized_ids() == ["record-1"]
+    assert store.list_manifest_ids() == ["manifest-1"]
+
+
+def test_cloudbet_competition_outright_totals_are_rewritten_to_totals():
+    competition = {
+        "name": "NFL",
+        "key": "american-football-usa-nfl",
+        "sport": {"name": "American Football", "key": "american-football"},
+        "events": [
+            {
+                "id": 1,
+                "name": "Arizona Cardinals Total Regular Season Wins",
+                "status": "TRADING",
+                "cutoffTime": "2026-09-05T23:00:00Z",
+                "markets": {
+                    "american_football.outright.v3": {
+                        "submarkets": {
+                            "default": {
+                                "sequence": "440",
+                                "selections": [
+                                    {
+                                        "outcome": "s-over-4-dot-5",
+                                        "params": "",
+                                        "marketUrl": "american_football.outright.v3/s-over-4-dot-5",
+                                        "price": 1.91,
+                                        "minStake": 0.1,
+                                        "maxStake": 10,
+                                        "probability": 0.5,
+                                        "status": "SELECTION_ENABLED",
+                                        "side": "BACK",
+                                    },
+                                    {
+                                        "outcome": "s-under-4-dot-5",
+                                        "params": "",
+                                        "marketUrl": "american_football.outright.v3/s-under-4-dot-5",
+                                        "price": 1.91,
+                                        "minStake": 0.1,
+                                        "maxStake": 10,
+                                        "probability": 0.5,
+                                        "status": "SELECTION_ENABLED",
+                                        "side": "BACK",
+                                    },
+                                ],
+                            },
+                        },
+                    },
+                },
+            },
+        ],
+    }
+
+    selections = SnapshotIngestor._cloudbet_competition_to_selections(competition)
+    normalized = [MarketNormalizer().normalize(selection) for selection in selections]
+
+    assert len(normalized) == 2
+    assert all(item.market_type == CanonicalMarketType.TOTALS.value for item in normalized)
+    assert {item.selection for item in normalized} == {"OVER", "UNDER"}
+    assert {item.param("line") for item in normalized} == {"4.5"}
+
+
+def test_rule_miner_persists_candidate_indices():
+    cache = DictCache()
+    store = RuleStore(cache)
+    normalizer = MarketNormalizer()
+    home = normalizer.normalize(
+        betting_instrument(
+            venue="CLOUDBET",
+            market_name="match_odds",
+            market_type="match_odds",
+            outcome="home",
+        ),
+    )
+    away_draw = normalizer.normalize(
+        betting_instrument(
+            venue="SXBET",
+            market_name="double_chance",
+            market_type="double_chance",
+            outcome="away_draw",
+        ),
+    )
+    store.save_normalized_selection(
+        NormalizedSelectionRecord(
+            record_id="record-home",
+            provider="CLOUDBET",
+            selection=home,
+            manifest_id="manifest-1",
+        ),
+    )
+    store.save_normalized_selection(
+        NormalizedSelectionRecord(
+            record_id="record-away-draw",
+            provider="SXBET",
+            selection=away_draw,
+            manifest_id="manifest-1",
+        ),
+    )
+
+    rules = RuleMiner(store).mine_store(manifest_id="manifest-1")
+
+    assert len(rules) == 1
+    assert store.list_candidate_ids() == [rules[0].rule_id]
+
+
+def test_historical_validator_persists_cloudbet_stats_for_cross_provider_rule():
+    classifier = RuleClassifier()
+    cache = DictCache()
+    store = RuleStore(cache)
+    validator = HistoricalRuleValidator(store)
+
+    rule = classifier.classify(
+        betting_instrument(
+            venue="CLOUDBET",
+            market_name="match_odds",
+            market_type="match_odds",
+            outcome="home",
+        ),
+        betting_instrument(
+            venue="SXBET",
+            market_name="double_chance",
+            market_type="double_chance",
+            outcome="away_draw",
+        ),
+    )
+    assert rule is not None
+    store.save_candidate(rule)
+
+    items = []
+    for event_id in range(25):
+        items.extend(
+            [
+                {
+                    "betType": "STRAIGHT",
+                    "betId": f"match-{event_id}",
+                    "betslipId": f"betslip-match-{event_id}",
+                    "positionId": f"position-match-{event_id}",
+                    "currency": "USDC",
+                    "createTime": "2026-04-27T00:00:00Z",
+                    "state": "COMPLETED",
+                    "result": "WIN",
+                    "selection": {
+                        "eventId": str(event_id),
+                        "marketUrl": "soccer.match_odds/home",
+                        "price": "2.1",
+                        "result": "WIN",
+                        "marketName": "soccer.match_odds",
+                        "outcomeName": "home",
+                    },
+                },
+                {
+                    "betType": "STRAIGHT",
+                    "betId": f"double-{event_id}",
+                    "betslipId": f"betslip-double-{event_id}",
+                    "positionId": f"position-double-{event_id}",
+                    "currency": "USDC",
+                    "createTime": "2026-04-27T00:00:00Z",
+                    "state": "COMPLETED",
+                    "result": "LOSS",
+                    "selection": {
+                        "eventId": str(event_id),
+                        "marketUrl": "soccer.double_chance/draw_away",
+                        "price": "1.8",
+                        "result": "LOSS",
+                        "marketName": "soccer.double_chance",
+                        "outcomeName": "draw_away",
+                    },
+                },
+            ],
+        )
+    store.save_snapshot(
+        CorpusSnapshot(
+            snapshot_id="snapshot-bets",
+            provider="CLOUDBET",
+            endpoint="/pub/v4/bets?offset=0&limit=50",
+            fetched_at="2026-04-27T00:00:00Z",
+            payload=msgspec.json.encode({"items": items, "hasNext": False}),
+        ),
+    )
+
+    stats = validator.validate_store(provider="CLOUDBET", persist=True)
+
+    assert len(stats) == 1
+    assert stats[0].sample_count == 25
+    assert stats[0].match_count == 25
+    assert stats[0].mismatch_count == 0
+    assert stats[0].confidence == 1.0
+    assert store.load_validation(rule.rule_id) == stats[0]
+
+
+def test_promotion_policy_and_market_matcher_require_promotion_when_store_is_present():
+    classifier = RuleClassifier()
+    cache = DictCache()
+    store = RuleStore(cache)
+    policy = RulePromotionPolicy(allowlisted_venue_scopes={("CLOUDBET", "SXBET")})
+    matcher = MarketMatcher(rule_store=store)
+    home = betting_instrument(
+        venue="CLOUDBET",
+        market_name="match_odds",
+        market_type="match_odds",
+        outcome="home",
+    )
+    away_draw = betting_instrument(
+        venue="SXBET",
+        market_name="double_chance",
+        market_type="double_chance",
+        outcome="away_draw",
+    )
+    rule = classifier.classify(home, away_draw)
+    assert rule is not None
+    stats = RuleValidationStats(
+        rule_id=rule.rule_id,
+        venue_id="CLOUDBET|SXBET",
+        sport="soccer",
+        sample_count=25,
+        match_count=25,
+        mismatch_count=0,
+        confidence=0.99,
+        last_validated_at="2026-04-27T00:00:00Z",
+    )
+
+    assert matcher.check_arbitrage(home, away_draw) is None
+
+    promoted = policy.promote(store, rule, stats)
+
+    assert promoted is not None
+    assert matcher.check_arbitrage(home, away_draw) is not None
+
+
+def test_catalog_templates_generalize_from_events_without_settled_bets():
+    cache = DictCache()
+    store = RuleStore(cache)
+    normalizer = MarketNormalizer()
+
+    for event_index in range(10):
+        home = normalizer.normalize(
+            betting_instrument(
+                venue="CLOUDBET",
+                market_name="match_odds",
+                market_type="match_odds",
+                outcome="home",
+            ),
+        )
+        away_draw = normalizer.normalize(
+            betting_instrument(
+                venue="CLOUDBET",
+                market_name="double_chance",
+                market_type="double_chance",
+                outcome="away_draw",
+            ),
+        )
+        home = replace(
+            home,
+            event_key=f"catalog-event-{event_index}",
+            instrument_id=f"home-{event_index}",
+        )
+        away_draw = replace(
+            away_draw,
+            event_key=f"catalog-event-{event_index}",
+            instrument_id=f"away-draw-{event_index}",
+        )
+        store.save_normalized_selection(
+            NormalizedSelectionRecord(
+                record_id=f"home-{event_index}",
+                provider="CLOUDBET",
+                selection=home,
+                manifest_id="manifest-catalog",
+            ),
+        )
+        store.save_normalized_selection(
+            NormalizedSelectionRecord(
+                record_id=f"away-draw-{event_index}",
+                provider="CLOUDBET",
+                selection=away_draw,
+                manifest_id="manifest-catalog",
+            ),
+        )
+
+    templates = RuleMiner(store).mine_templates_from_store(manifest_id="manifest-catalog")
+
+    assert len(templates) == 1
+    template = templates[0]
+    assert template.support.observed_count == 10
+    assert template.support.event_count == 10
+    assert template.support.catalog_promotable is True
+    assert template.promotion_status == "CANDIDATE"
+    assert store.list_template_candidate_ids() == [template.template_id]
+
+    promoted = RulePromotionPolicy().promote_template(store, template)
+
+    assert promoted is not None
+    assert promoted.promotion_status == "PROMOTED"
+    assert promoted.execution_safe is True
+
+    matcher = MarketMatcher(rule_store=store)
+    unseen_home = betting_instrument(
+        venue="CLOUDBET",
+        market_name="match_odds",
+        market_type="match_odds",
+        outcome="home",
+    )
+    unseen_away_draw = betting_instrument(
+        venue="CLOUDBET",
+        market_name="double_chance",
+        market_type="double_chance",
+        outcome="away_draw",
+    )
+
+    opportunity = matcher.check_arbitrage(unseen_home, unseen_away_draw)
+
+    assert opportunity is not None
+
+
+def test_sparse_catalog_template_does_not_promote_without_settled_bets():
+    cache = DictCache()
+    store = RuleStore(cache)
+    normalizer = MarketNormalizer()
+    home = replace(
+        normalizer.normalize(
+            betting_instrument(
+                venue="CLOUDBET",
+                market_name="match_odds",
+                market_type="match_odds",
+                outcome="home",
+            ),
+        ),
+        event_key="sparse-event",
+        instrument_id="sparse-home",
+    )
+    away_draw = replace(
+        normalizer.normalize(
+            betting_instrument(
+                venue="CLOUDBET",
+                market_name="double_chance",
+                market_type="double_chance",
+                outcome="away_draw",
+            ),
+        ),
+        event_key="sparse-event",
+        instrument_id="sparse-away-draw",
+    )
+    store.save_normalized_selection(
+        NormalizedSelectionRecord(
+            record_id="sparse-home",
+            provider="CLOUDBET",
+            selection=home,
+            manifest_id="manifest-sparse",
+        ),
+    )
+    store.save_normalized_selection(
+        NormalizedSelectionRecord(
+            record_id="sparse-away-draw",
+            provider="CLOUDBET",
+            selection=away_draw,
+            manifest_id="manifest-sparse",
+        ),
+    )
+
+    templates = RuleMiner(store).mine_templates_from_store(manifest_id="manifest-sparse")
+
+    assert len(templates) == 1
+    assert templates[0].support.catalog_promotable is False
+    promoted = RulePromotionPolicy().promote_template(store, templates[0])
+
+    assert promoted is not None
+    assert promoted.safety_tier == SafetyTier.TOPOLOGY_SAFE.value
+    assert promoted.execution_safe is False
+
+
+def test_completion_report_distinguishes_candidates_from_promotions():
+    cache = DictCache()
+    store = RuleStore(cache)
+    normalizer = MarketNormalizer()
+    providers = ("CLOUDBET", "SXBET", "POLYMARKET")
+
+    for provider in providers:
+        manifest = RuleCorpusManifest(
+            manifest_id=f"manifest-{provider.lower()}",
+            provider=provider,
+            fetched_at="2026-04-27T00:00:00Z",
+            endpoint_version="test",
+            sport_count=1,
+            event_count=10,
+            selection_count=20,
+            market_taxonomy_hash=f"hash-{provider.lower()}",
+            source_refs=(),
+        )
+        store.save_manifest(manifest)
+
+    for event_index in range(10):
+        home = replace(
+            normalizer.normalize(
+                betting_instrument(
+                    venue="CLOUDBET",
+                    market_name="match_odds",
+                    market_type="match_odds",
+                    outcome="home",
+                ),
+            ),
+            event_key=f"soccer-event-{event_index}",
+            instrument_id=f"home-{event_index}",
+        )
+        away_draw = replace(
+            normalizer.normalize(
+                betting_instrument(
+                    venue="SXBET",
+                    market_name="double_chance",
+                    market_type="double_chance",
+                    outcome="away_draw",
+                ),
+            ),
+            event_key=f"soccer-event-{event_index}",
+            instrument_id=f"away-draw-{event_index}",
+        )
+        polymarket_home = replace(
+            normalizer.normalize(
+                betting_instrument(
+                    venue="POLYMARKET",
+                    market_name="match_odds",
+                    market_type="match_odds",
+                    outcome="home",
+                ),
+            ),
+            event_key=f"soccer-event-{event_index}",
+            instrument_id=f"polymarket-home-{event_index}",
+        )
+        for provider, selection in (
+            ("CLOUDBET", home),
+            ("SXBET", away_draw),
+            ("POLYMARKET", polymarket_home),
+        ):
+            store.save_normalized_selection(
+                NormalizedSelectionRecord(
+                    record_id=f"{provider.lower()}-{event_index}",
+                    provider=provider,
+                    selection=selection,
+                    manifest_id=f"manifest-{provider.lower()}",
+                ),
+            )
+
+    RuleMiner(store).mine_templates_from_store()
+    report = build_completion_report(
+        store,
+        required_providers=providers,
+        target_sports=("soccer",),
+        min_candidates=10,
+        target_candidates=40,
+    )
+
+    assert report.total_event_candidates >= 10
+    assert report.total_promoted_templates == 0
+    assert report.passed is True
+    assert report.sports[0].passed is True
+    assert report.sports[0].target_reached is False
+    tier_counts = dict(report.safety_tier_counts)
+    assert tier_counts.get(SafetyTier.EXECUTION_SAFE.value, 0) >= 1
+
+
+def test_completion_report_fails_when_required_provider_has_no_candidates():
+    cache = DictCache()
+    store = RuleStore(cache)
+    store.save_manifest(
+        RuleCorpusManifest(
+            manifest_id="manifest-polymarket",
+            provider="POLYMARKET",
+            fetched_at="2026-04-27T00:00:00Z",
+            endpoint_version="test",
+            sport_count=1,
+            event_count=1,
+            selection_count=1,
+            market_taxonomy_hash="hash-polymarket",
+            source_refs=(),
+        ),
+    )
+
+    report = build_completion_report(
+        store,
+        required_providers=("POLYMARKET",),
+        target_sports=("basketball",),
+        min_candidates=10,
+        target_candidates=20,
+    )
+
+    assert report.passed is False
+    assert report.providers[0].blockers == ("no_normalized_selections", "no_event_candidates")
+    assert report.sports[0].blockers == ("no_normalized_selections", "no_event_candidates")
+
+
+def test_semantic_rule_mining_cli_reports_tiered_promotion_counts(tmp_path):
+    cache_dir = tmp_path / "semantic-cache"
+    store = RuleStore(FileRuleCache(cache_dir))
+    normalizer = MarketNormalizer()
+    store.save_manifest(
+        RuleCorpusManifest(
+            manifest_id="manifest-cloudbet",
+            provider="CLOUDBET",
+            fetched_at="2026-04-27T00:00:00Z",
+            endpoint_version="test",
+            sport_count=1,
+            event_count=3,
+            selection_count=6,
+            market_taxonomy_hash="test",
+            source_refs=(),
+        ),
+    )
+
+    for event_index in range(3):
+        dnb_home = replace(
+            normalizer.normalize(
+                betting_instrument(
+                    venue="CLOUDBET",
+                    market_name="draw_no_bet",
+                    market_type="draw_no_bet",
+                    outcome="home",
+                ),
+            ),
+            event_key=f"cli-event-{event_index}",
+            instrument_id=f"dnb-home-{event_index}",
+        )
+        ah_home = replace(
+            normalizer.normalize(
+                betting_instrument(
+                    venue="CLOUDBET",
+                    market_name="asian_handicap",
+                    market_type="asian_handicap",
+                    outcome="home",
+                    params="line=0",
+                    handicap=0.0,
+                ),
+            ),
+            event_key=f"cli-event-{event_index}",
+            instrument_id=f"ah-home-{event_index}",
+        )
+        for selection in (dnb_home, ah_home):
+            store.save_normalized_selection(
+                NormalizedSelectionRecord(
+                    record_id=selection.instrument_id,
+                    provider="CLOUDBET",
+                    selection=selection,
+                    manifest_id="manifest-cloudbet",
+                ),
+            )
+
+    repo_root = Path(__file__).resolve().parents[3]
+    script = repo_root / "scripts" / "betting" / "semantic_rule_mining.py"
+    common_args = ["--cache-dir", str(cache_dir)]
+    subprocess.run(  # noqa: S603
+        [sys.executable, str(script), "generalize-templates", *common_args],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    promote = subprocess.run(  # noqa: S603
+        [sys.executable, str(script), "promote-templates", *common_args],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    report = subprocess.run(  # noqa: S603
+        [
+            sys.executable,
+            str(script),
+            "report-coverage",
+            *common_args,
+            "--required-provider",
+            "CLOUDBET",
+            "--target-sport",
+            "soccer",
+            "--min-candidates",
+            "1",
+            "--target-candidates",
+            "1",
+        ],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(  # noqa: S603
+        [
+            sys.executable,
+            str(script),
+            "verify-completion",
+            *common_args,
+            "--required-provider",
+            "CLOUDBET",
+            "--target-sport",
+            "soccer",
+            "--min-candidates",
+            "1",
+            "--target-candidates",
+            "1",
+        ],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    promote_payload = json.loads(promote.stdout)
+    report_payload = json.loads(report.stdout)
+
+    assert promote_payload["promoted_template_count"] == 1
+    assert promote_payload["same_venue_execution_eligible_template_count"] == 1
+    assert "safety_tier_counts" in promote_payload
+    assert report_payload["same_venue_execution_eligible_template_count"] == 1
+    assert "candidate_safety_tier_counts" in report_payload
+    assert "promoted_safety_tier_counts" in report_payload
