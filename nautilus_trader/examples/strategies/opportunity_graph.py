@@ -12,6 +12,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
+# skipcq: PYL-E0611, PYL-R0902, PYL-R0913
 """
 Persistent opportunity graph for betting arbitrage strategies.
 
