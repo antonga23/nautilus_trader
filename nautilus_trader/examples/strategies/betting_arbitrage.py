@@ -47,7 +47,9 @@ NANOSECONDS_PER_SECOND = 1_000_000_000
 @dataclass(frozen=True)
 # skipcq: PYL-R0902
 class ArbitrageDiagnostics:
-    """Structured diagnostics captured for one arbitrage evaluation."""
+    """
+    Structured diagnostics captured for one arbitrage evaluation.
+    """
 
     opportunity_id: str
     canonical_pair_id: str
@@ -290,7 +292,9 @@ class BettingArbitrageStrategy(Strategy):
             self._log_graph_topology_summary()
 
     def on_instrument(self, instrument: Instrument) -> None:
-        """Subscribe a newly seen betting instrument when it passes the strategy filters."""
+        """
+        Subscribe a newly seen betting instrument when it passes the strategy filters.
+        """
         if isinstance(instrument, CryptoBettingInstrument):
             self._maybe_subscribe_instrument(instrument)
 

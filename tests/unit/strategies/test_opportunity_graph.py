@@ -228,7 +228,8 @@ def test_update_quote_and_scan_fast_returns_primitive_snapshots() -> None:
         now_ns=30_000,
     )
 
-    ensure(result is not None)
+    if result is None:
+        raise AssertionError("Rust fast scan should return snapshots")
     quote_updated, snapshots = result
     ensure(quote_updated is True)
     ensure(graph.quote_state_count == 2)

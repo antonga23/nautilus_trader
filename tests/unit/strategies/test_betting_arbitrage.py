@@ -1692,8 +1692,7 @@ class TestBettingArbitrageStrategy:
         )
         if result is None:
             pytest.skip("Rust OpportunityGraphCore is unavailable")
-        ensure(result is not None)
-        quote_updated, snapshots = result
+        quote_updated, snapshots = cast(tuple[bool, list[tuple[Any, ...]]], result)
         ensure(quote_updated is True)
         ensure(len(snapshots) == 1)
         return instrument_a, instrument_b, snapshots[0]
