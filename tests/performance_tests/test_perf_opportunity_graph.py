@@ -3,6 +3,7 @@
 #
 #  Performance tests for the betting opportunity graph.
 # -------------------------------------------------------------------------------------------------
+# skipcq: PYL-C0114, PYL-C0115, PYL-C0116, PYL-W0212
 
 from decimal import Decimal
 from typing import Any

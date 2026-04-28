@@ -88,17 +88,22 @@ impl NodeSnapshot {
 }
 
 #[derive(Clone, Debug)]
+struct EdgeFlags {
+    same_venue: bool,
+    push_capable: bool,
+    execution_safe: bool,
+    matcher_suspect: bool,
+}
+
+#[derive(Clone, Debug)]
 struct EdgeSnapshot {
     edge_id: String,
     source_node_id: String,
     target_node_id: String,
     hedge_type: String,
     confidence: f64,
-    same_venue: bool,
+    flags: EdgeFlags,
     market_relationship_type: String,
-    push_capable: bool,
-    execution_safe: bool,
-    matcher_suspect: bool,
     last_margin: Option<f64>,
     last_evaluated_ns: Option<i64>,
     last_updated_ns: Option<i64>,
@@ -257,10 +262,10 @@ impl OpportunityGraphCore {
                     edge.target_node_id.clone(),
                     edge.hedge_type.clone(),
                     edge.confidence,
-                    edge.same_venue,
+                    edge.flags.same_venue,
                     edge.market_relationship_type.clone(),
-                    edge.push_capable,
-                    edge.execution_safe,
+                    edge.flags.push_capable,
+                    edge.flags.execution_safe,
                     edge.last_margin,
                     edge.last_evaluated_ns,
                     edge.last_updated_ns,
@@ -417,15 +422,17 @@ impl OpportunityGraphCore {
             target_node_id: target_id.to_string(),
             hedge_type: hedge_type.to_string(),
             confidence,
-            same_venue: source.venue == target.venue,
+            flags: EdgeFlags {
+                same_venue: source.venue == target.venue,
+                push_capable,
+                execution_safe: !push_capable,
+                matcher_suspect,
+            },
             market_relationship_type: if source.market_name == target.market_name {
                 "same_market".to_string()
             } else {
                 "cross_market".to_string()
             },
-            push_capable,
-            execution_safe: !push_capable,
-            matcher_suspect,
             last_margin: None,
             last_evaluated_ns: None,
             last_updated_ns: None,
@@ -508,7 +515,7 @@ impl OpportunityGraphCore {
             let Some(edge) = self.edges_by_id.get_mut(&edge_id) else {
                 continue;
             };
-            if edge.push_capable {
+            if edge.flags.push_capable {
                 continue;
             }
             let other_node_id = if edge.source_node_id == node_id {
@@ -558,7 +565,7 @@ impl OpportunityGraphCore {
             let Some(edge) = self.edges_by_id.get_mut(&edge_id) else {
                 continue;
             };
-            if edge.push_capable {
+            if edge.flags.push_capable {
                 continue;
             }
             let other_node_id = if edge.source_node_id == node_id {
@@ -590,7 +597,7 @@ impl OpportunityGraphCore {
                 updated_quote.exchange_ts_ns,
                 other_quote.exchange_ts_ns,
                 fast_match_type(edge).to_string(),
-                edge.matcher_suspect,
+                edge.flags.matcher_suspect,
             ));
         }
         candidates
@@ -600,7 +607,7 @@ impl OpportunityGraphCore {
 fn fast_match_type(edge: &EdgeSnapshot) -> &'static str {
     if edge.market_relationship_type == "same_market" {
         "same_market"
-    } else if edge.same_venue {
+    } else if edge.flags.same_venue {
         "cross_market"
     } else {
         "cross_venue"
