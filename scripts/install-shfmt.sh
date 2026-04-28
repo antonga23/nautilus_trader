@@ -5,7 +5,7 @@ version="${SHFMT_VERSION:-3.13.1}"
 install_dir="${HOME}/.local/bin"
 target="${install_dir}/shfmt"
 
-if command -v shfmt >/dev/null 2>&1; then
+if command -v shfmt > /dev/null 2>&1; then
   echo "shfmt already available: $(command -v shfmt)"
   exit 0
 fi
