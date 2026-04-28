@@ -390,6 +390,7 @@ jobs:
       PGHOST: postgres
       UV_PYTHON: "3.12"
       PYTEST_XDIST_WORKERS: "6"
+      FULL_SUITE_PYTEST_XDIST_WORKERS: "4"
       CARGO_HOME: ${{ github.workspace }}/.cache/cargo-home
       PGPASSWORD: pass
       PGUSER: nautilus
