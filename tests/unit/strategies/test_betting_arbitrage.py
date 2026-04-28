@@ -764,6 +764,28 @@ class TestBettingArbitrageStrategy:
         assert suspect is True
         assert reason == "same_venue_event_id_mismatch"
 
+    def test_arbitrage_diagnostics_allows_sxbet_two_way_match_odds_market_hash_drift(self):
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(enabled_venues=frozenset(["SXBET"])),
+        )
+        instrument_a = self._sxbet_instrument(
+            event_id="market-a",
+            outcome="home",
+            market_name="match_odds",
+            info={"is_two_way_market": True},
+        )
+        instrument_b = self._sxbet_instrument(
+            event_id="market-b",
+            outcome="away",
+            market_name="match_odds",
+            info={"is_two_way_market": True},
+        )
+
+        suspect, reason = strategy._matcher_suspect_reason(instrument_a, instrument_b)
+
+        assert suspect is False
+        assert reason == "none"
+
     def test_arbitrage_diagnostics_flags_liquidity_insufficient_candidates(self):
         strategy = BettingArbitrageStrategy(
             config=BettingArbitrageConfig(
@@ -873,6 +895,114 @@ class TestBettingArbitrageStrategy:
         assert strategy._suppress_arbitrage_candidate(diagnostics) is True
         assert strategy.get_stats()["manual_review_suppressions"] == 1
 
+    def test_sxbet_two_sided_quotes_produce_valid_manual_candidate(self):
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["SXBET"]),
+                max_total_stake=Decimal(100),
+            ),
+        )
+        instrument_a = self._sxbet_instrument(
+            event_id="market-a",
+            outcome="home",
+            market_name="match_odds",
+            info={"is_two_way_market": True},
+        )
+        instrument_b = self._sxbet_instrument(
+            event_id="market-b",
+            outcome="away",
+            market_name="match_odds",
+            info={"is_two_way_market": True},
+        )
+        opportunity = strategy._matcher.check_arbitrage(
+            instrument_a,
+            instrument_b,
+            odds_a=Decimal("2.20"),
+            odds_b=Decimal("2.30"),
+        )
+        assert opportunity is not None
+
+        diagnostics = strategy._build_arbitrage_diagnostics(
+            opportunity=opportunity,
+            hedge_match_type="same_market",
+            hedge_confidence=1.0,
+            quote_a=TestDataStubs.quote_tick(
+                instrument=instrument_a,
+                bid_price=2.20,
+                ask_price=0.0,
+                bid_size=100,
+                ask_size=0,
+                ts_event=10_000_000_000,
+            ),
+            quote_b=TestDataStubs.quote_tick(
+                instrument=instrument_b,
+                bid_price=2.30,
+                ask_price=0.0,
+                bid_size=100,
+                ask_size=0,
+                ts_event=10_500_000_000,
+            ),
+            now_ns=11_000_000_000,
+        )
+
+        assert diagnostics.classification == "valid"
+        assert diagnostics.quote_cycle_id_a == "10"
+        assert diagnostics.quote_cycle_id_b == "10"
+        assert "available_size=" in strategy._manual_execution_plan(opportunity, diagnostics)
+
+    def test_sxbet_one_sided_quotes_fail_execution_readiness_gate(self):
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["SXBET"]),
+                max_total_stake=Decimal(100),
+            ),
+        )
+        instrument_a = self._sxbet_instrument(
+            event_id="market-a",
+            outcome="home",
+            market_name="match_odds",
+            info={"is_two_way_market": True},
+        )
+        instrument_b = self._sxbet_instrument(
+            event_id="market-b",
+            outcome="away",
+            market_name="match_odds",
+            info={"is_two_way_market": True},
+        )
+        opportunity = strategy._matcher.check_arbitrage(
+            instrument_a,
+            instrument_b,
+            odds_a=Decimal("2.20"),
+            odds_b=Decimal("2.30"),
+        )
+        assert opportunity is not None
+
+        diagnostics = strategy._build_arbitrage_diagnostics(
+            opportunity=opportunity,
+            hedge_match_type="same_market",
+            hedge_confidence=1.0,
+            quote_a=TestDataStubs.quote_tick(
+                instrument=instrument_a,
+                bid_price=2.20,
+                ask_price=0.0,
+                bid_size=2,
+                ask_size=0,
+                ts_event=10_000_000_000,
+            ),
+            quote_b=TestDataStubs.quote_tick(
+                instrument=instrument_b,
+                bid_price=2.30,
+                ask_price=0.0,
+                bid_size=100,
+                ask_size=0,
+                ts_event=10_500_000_000,
+            ),
+            now_ns=11_000_000_000,
+        )
+
+        assert diagnostics.classification == "liquidity_insufficient"
+        assert diagnostics.classification_reason == "top_of_book_size"
+
     @staticmethod
     def _sxbet_instrument(
         *,
@@ -884,6 +1014,7 @@ class TestBettingArbitrageStrategy:
         market_name: str = "total_goals",
         params: str = "",
         start_time: str = "2026-03-13T18:00:00Z",
+        info: dict | None = None,
     ) -> CryptoBettingInstrument:
         return CryptoBettingInstrument(
             venue=Venue("SXBET"),
@@ -901,6 +1032,7 @@ class TestBettingArbitrageStrategy:
             currency=Currency.from_str("USDC"),
             params=params,
             start_time=start_time,
+            info=info or {},
         )
 
 

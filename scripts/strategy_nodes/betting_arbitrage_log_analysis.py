@@ -32,7 +32,9 @@ class InstrumentLegDiagnostic:
     odds: Decimal | None
     bet: Decimal | None
     market_id: str | None
+    params: str | None
     available_size: Decimal | None
+    quote_cycle_id: str | None
     quote_age_secs: float | None
 
 
@@ -143,7 +145,9 @@ def _parse_instrument_leg(fragment: str) -> InstrumentLegDiagnostic:
         odds=_parse_decimal(fields.get("odds")),
         bet=_parse_decimal(fields.get("bet")),
         market_id=fields.get("market_id"),
+        params=fields.get("params"),
         available_size=_parse_decimal(fields.get("available_size")),
+        quote_cycle_id=fields.get("quote_cycle_id"),
         quote_age_secs=_parse_float(fields.get("quote_age_secs")),
     )
 
@@ -208,9 +212,13 @@ def _parse_accepted_line(line_no: int, line: str) -> AcceptedOpportunityRecord |
             None,
             None,
             None,
+            None,
+            None,
         ),
         instrument_b=leg_b
         or InstrumentLegDiagnostic(
+            None,
+            None,
             None,
             None,
             None,
@@ -276,12 +284,38 @@ def analyze_betting_arbitrage_log_text(text: str) -> BettingArbitrageLogAnalysis
     return analyze_betting_arbitrage_log_lines(text.splitlines())
 
 
+def top_matcher_suspect_clusters(
+    analysis: BettingArbitrageLogAnalysis,
+    *,
+    limit: int = 10,
+) -> list[tuple[str, int]]:
+    counter: Counter[str] = Counter()
+    for record in analysis.suppressed:
+        if record.reason != "matcher_suspect":
+            continue
+        leg_a = record.instrument_a
+        leg_b = record.instrument_b
+        counter[
+            "|".join(
+                [
+                    record.classification_reason,
+                    leg_a.event if leg_a and leg_a.event else "unknown",
+                    leg_a.market if leg_a and leg_a.market else "unknown",
+                    leg_b.event if leg_b and leg_b.event else "unknown",
+                    leg_b.market if leg_b and leg_b.market else "unknown",
+                ],
+            )
+        ] += 1
+    return counter.most_common(limit)
+
+
 def render_betting_arbitrage_analysis(
     analysis: BettingArbitrageLogAnalysis,
     *,
     limit: int = 10,
 ) -> str:
     counts = analysis.summary_counts()
+    suspect_clusters = top_matcher_suspect_clusters(analysis, limit=limit)
     lines = [
         "Betting arbitrage log analysis",
         f"accepted={counts['accepted']}",
@@ -295,13 +329,40 @@ def render_betting_arbitrage_analysis(
     if latest_summary:
         lines.append(f"latest_summary={json.dumps(latest_summary, sort_keys=True)}")
 
+    if suspect_clusters:
+        lines.append("top_matcher_suspect_clusters=" + json.dumps(suspect_clusters))
+
     for record in analysis.accepted[:limit]:
         lines.append(
             "accepted_opportunity "
             f"line={record.line_no} classification={record.classification} "
-            f"profit_margin={record.profit_margin} expected_profit={record.expected_profit} "
-            f"instrument_a={record.instrument_a.event}/{record.instrument_a.market}/{record.instrument_a.selection}@{record.instrument_a.odds} "
-            f"instrument_b={record.instrument_b.event}/{record.instrument_b.market}/{record.instrument_b.selection}@{record.instrument_b.odds}",
+            f"profit_margin={record.profit_margin} expected_profit={record.expected_profit}",
+        )
+        lines.append(
+            "  Instrument A: "
+            f"venue={record.instrument_a.venue} "
+            f"event={record.instrument_a.event!r} "
+            f"market={record.instrument_a.market!r} "
+            f"params={record.instrument_a.params!r} "
+            f"selection={record.instrument_a.selection!r} "
+            f"odds={record.instrument_a.odds} "
+            f"bet={record.instrument_a.bet} "
+            f"available_size={record.instrument_a.available_size} "
+            f"quote_cycle_id={record.instrument_a.quote_cycle_id} "
+            f"quote_age_secs={record.instrument_a.quote_age_secs}",
+        )
+        lines.append(
+            "  Instrument B: "
+            f"venue={record.instrument_b.venue} "
+            f"event={record.instrument_b.event!r} "
+            f"market={record.instrument_b.market!r} "
+            f"params={record.instrument_b.params!r} "
+            f"selection={record.instrument_b.selection!r} "
+            f"odds={record.instrument_b.odds} "
+            f"bet={record.instrument_b.bet} "
+            f"available_size={record.instrument_b.available_size} "
+            f"quote_cycle_id={record.instrument_b.quote_cycle_id} "
+            f"quote_age_secs={record.instrument_b.quote_age_secs}",
         )
 
     return "\n".join(lines)
