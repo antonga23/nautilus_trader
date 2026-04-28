@@ -212,9 +212,13 @@ def _parse_accepted_line(line_no: int, line: str) -> AcceptedOpportunityRecord |
             None,
             None,
             None,
+            None,
+            None,
         ),
         instrument_b=leg_b
         or InstrumentLegDiagnostic(
+            None,
+            None,
             None,
             None,
             None,
