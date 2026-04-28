@@ -5,7 +5,7 @@
 # -------------------------------------------------------------------------------------------------
 # skipcq: BAN-B101
 # bandit:skip=B101
-# skipcq: PYL-C0114, PYL-C0115, PYL-C0116, PYL-C0302, PYL-R0904, PYL-R0913
+# skipcq: PYL-C0114, PYL-C0115, PYL-C0116, PYL-C0302, PYL-R0904, PYL-R0913, PYL-W0212
 # pylint: disable=protected-access
 """
 Strategy regression tests for the betting arbitrage fast-path integration.

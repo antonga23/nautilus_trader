@@ -5,7 +5,7 @@
 # -------------------------------------------------------------------------------------------------
 # skipcq: BAN-B101
 # bandit:skip=B101
-# skipcq: PYL-C0114, PYL-C0115, PYL-C0116
+# skipcq: PYL-C0114, PYL-C0115, PYL-C0116, PYL-W0212
 # pylint: disable=protected-access
 """
 Integration coverage for the betting arbitrage strategy on a trading node.
