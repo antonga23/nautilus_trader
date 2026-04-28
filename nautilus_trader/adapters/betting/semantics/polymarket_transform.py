@@ -16,7 +16,6 @@
 Transforms Polymarket sports binary options into betting-style instruments when metadata
 is sufficient.
 """
-# codespell:ignore serie acn
 
 from __future__ import annotations
 

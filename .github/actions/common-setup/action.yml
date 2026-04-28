@@ -77,7 +77,7 @@ runs:
       env:
         BUILD_TYPE: ${{ inputs.build-type }}
       run: |
-        packages=(build-essential curl git make pkg-config)
+        packages=(build-essential curl git make pkg-config shfmt)
 
         if [[ "$BUILD_TYPE" == "pre-commit" ]]; then
           packages+=(ripgrep zlib1g-dev)
