@@ -3,6 +3,8 @@
 #
 #  Unit tests for betting arbitrage strategy.
 # -------------------------------------------------------------------------------------------------
+# skipcq: BAN-B101
+# bandit:skip=B101
 # pylint: disable=protected-access
 
 from decimal import Decimal

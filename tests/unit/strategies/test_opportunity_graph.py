@@ -3,6 +3,8 @@
 #
 #  Unit tests for opportunity graph engines.
 # -------------------------------------------------------------------------------------------------
+# skipcq: BAN-B101
+# bandit:skip=B101
 
 from decimal import Decimal
 
