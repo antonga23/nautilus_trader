@@ -1125,7 +1125,9 @@ class TestBettingArbitrageStrategy:  # skipcq
             ),
         )
 
-    def test_fast_graph_candidate_suppresses_duplicates_before_opportunity_construction(self):  # skipcq
+    def test_fast_graph_candidate_suppresses_duplicates_before_opportunity_construction(
+        self,
+    ):  # skipcq
         strategy = BettingArbitrageStrategy(
             config=BettingArbitrageConfig(
                 min_profit_margin=Decimal("0.02"),
@@ -1146,7 +1148,9 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(strategy._executable_candidates == 0)
         strategy._handle_arbitrage_opportunity.assert_not_called()
 
-    def test_fast_graph_candidate_suppresses_stale_quotes_before_opportunity_construction(self):  # skipcq
+    def test_fast_graph_candidate_suppresses_stale_quotes_before_opportunity_construction(
+        self,
+    ):  # skipcq
         strategy = BettingArbitrageStrategy(
             config=BettingArbitrageConfig(
                 min_profit_margin=Decimal("0.02"),
