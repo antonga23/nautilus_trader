@@ -12,9 +12,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
-"""
-Cross-venue arbitrage strategy for sports betting.
-"""
+"""Cross-venue arbitrage strategy for sports betting."""
 
 from dataclasses import dataclass
 from decimal import Decimal
@@ -47,9 +45,7 @@ NANOSECONDS_PER_SECOND = 1_000_000_000
 @dataclass(frozen=True)
 # skipcq: PYL-R0902
 class ArbitrageDiagnostics:  # skipcq
-    """
-    Structured diagnostics captured for one arbitrage evaluation.
-    """
+    """Structured diagnostics captured for one arbitrage evaluation."""
 
     opportunity_id: str
     canonical_pair_id: str
@@ -152,6 +148,7 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
     semantic_rule_cache_dir: str | None = None
 
     def __post_init__(self) -> None:
+        """Normalize configured venues and market-timing filters."""
         enabled_venues = frozenset(self.enabled_venues or DEFAULT_ENABLED_VENUES)
         normalized_sport_filter = self.sport_filter.strip().lower() if self.sport_filter else None
         market_timing_filter = self.market_timing_filter if not self.exclude_live else "pre_market"
@@ -195,6 +192,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self,
         config: BettingArbitrageConfig,
     ):
+        """Initialize the strategy state, matcher, and opportunity graph."""
         super().__init__(config)
         self._config = config
 
@@ -218,9 +216,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._last_arbitrage_summary_at_ns = 0
 
     def on_start(self) -> None:
-        """
-        Actions to perform on strategy start.
-        """
+        """Run strategy startup subscriptions and diagnostics logging."""
         self.log.info("BettingArbitrageStrategy starting...")
         rule_store = self._semantic_rule_store()
         if rule_store is not None:
@@ -260,9 +256,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         return bool(rule_store.list_manifest_ids() or rule_store.list_promoted_template_ids())
 
     def on_stop(self) -> None:
-        """
-        Actions to perform on strategy stop.
-        """
+        """Run strategy shutdown logging and final summary emission."""
         self.log.info("BettingArbitrageStrategy stopping...")
         msg = f"Opportunities found: {self._opportunities_found}"
         self.log.info(msg)
@@ -292,9 +286,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             self._log_graph_topology_summary()
 
     def on_instrument(self, instrument: Instrument) -> None:
-        """
-        Subscribe a newly seen betting instrument when it passes the strategy filters.
-        """
+        """Subscribe a newly seen betting instrument when it passes strategy filters."""
         if isinstance(instrument, CryptoBettingInstrument):
             self._maybe_subscribe_instrument(instrument)
 
@@ -1734,23 +1726,17 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self.log.info(msg)
 
     def on_order_filled(self, event: Event) -> None:
-        """
-        Handle order filled events.
-        """
+        """Handle order filled events."""
         msg = f"Order filled: {event}"
         self.log.info(msg)
 
     def on_order_rejected(self, event: Event) -> None:
-        """
-        Handle order rejected events.
-        """
+        """Handle order rejected events."""
         msg = f"Order rejected: {event}"
         self.log.warning(msg)
 
     def get_stats(self) -> dict:
-        """
-        Get strategy statistics.
-        """
+        """Get strategy statistics."""
         return {
             "subscribed_instruments": len(self._subscribed_instruments),
             "opportunity_graph_nodes": self._opportunity_graph.node_count,

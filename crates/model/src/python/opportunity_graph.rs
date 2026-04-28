@@ -91,7 +91,6 @@ impl NodeSnapshot {
 struct EdgeFlags {
     same_venue: bool,
     push_capable: bool,
-    execution_safe: bool,
     matcher_suspect: bool,
 }
 
@@ -265,7 +264,7 @@ impl OpportunityGraphCore {
                     edge.flags.same_venue,
                     edge.market_relationship_type.clone(),
                     edge.flags.push_capable,
-                    edge.flags.execution_safe,
+                    !edge.flags.push_capable,
                     edge.last_margin,
                     edge.last_evaluated_ns,
                     edge.last_updated_ns,
@@ -425,7 +424,6 @@ impl OpportunityGraphCore {
             flags: EdgeFlags {
                 same_venue: source.venue == target.venue,
                 push_capable,
-                execution_safe: !push_capable,
                 matcher_suspect,
             },
             market_relationship_type: if source.market_name == target.market_name {
