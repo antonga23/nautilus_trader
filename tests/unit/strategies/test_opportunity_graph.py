@@ -6,7 +6,9 @@
 # skipcq: BAN-B101
 # bandit:skip=B101
 # skipcq: PYL-C0114, PYL-C0116, PYL-R0913
-"""Parity and fast-path tests for the opportunity graph engines."""
+"""
+Parity and fast-path tests for the opportunity graph engines.
+"""
 
 from decimal import Decimal
 
@@ -25,7 +27,9 @@ _CURRENCY = Currency.from_str("USDT")
 
 
 def ensure(condition: bool) -> None:
-    """Raise an assertion error when a boolean expectation is not met."""
+    """
+    Raise an assertion error when a boolean expectation is not met.
+    """
     if not condition:
         raise AssertionError
 
@@ -260,7 +264,7 @@ def test_update_quote_and_scan_fast_is_rust_only() -> None:
             min_profit_margin=Decimal("0.01"),
             now_ns=30_000,
         )
-        is None
+        is None,
     )
 
 
@@ -358,7 +362,7 @@ def test_engine_validation_and_missing_node_paths() -> None:
             str(instrument.id),
             min_profit_margin=Decimal("0.01"),
             now_ns=1,
-        )
+        ),
     )
     ensure(
         python_graph.update_quote_and_evaluate(
@@ -368,7 +372,7 @@ def test_engine_validation_and_missing_node_paths() -> None:
             min_profit_margin=Decimal("0.01"),
             now_ns=1,
         )
-        == (None, [])
+        == (None, []),
     )
     ensure(
         rust_graph.update_quote_and_evaluate(
@@ -378,7 +382,7 @@ def test_engine_validation_and_missing_node_paths() -> None:
             min_profit_margin=Decimal("0.01"),
             now_ns=1,
         )
-        == (None, [])
+        == (None, []),
     )
 
 
@@ -396,7 +400,7 @@ def test_python_evaluation_skips_missing_unprofitable_and_push_edges() -> None:
             str(instruments[0].id),
             min_profit_margin=Decimal("0.01"),
             now_ns=1,
-        )
+        ),
     )
 
     graph.update_quote(
@@ -409,7 +413,7 @@ def test_python_evaluation_skips_missing_unprofitable_and_push_edges() -> None:
             str(instruments[0].id),
             min_profit_margin=Decimal("0.01"),
             now_ns=3,
-        )
+        ),
     )
 
     push_instruments = [
@@ -434,5 +438,5 @@ def test_python_evaluation_skips_missing_unprofitable_and_push_edges() -> None:
             str(push_instruments[0].id),
             min_profit_margin=Decimal("0.01"),
             now_ns=4,
-        )
+        ),
     )

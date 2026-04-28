@@ -7,7 +7,9 @@
 # bandit:skip=B101
 # skipcq: PYL-C0114, PYL-C0115, PYL-C0116, PYL-C0302, PYL-R0904, PYL-R0913
 # pylint: disable=protected-access
-"""Strategy regression tests for the betting arbitrage fast-path integration."""
+"""
+Strategy regression tests for the betting arbitrage fast-path integration.
+"""
 
 from decimal import Decimal
 from typing import Any
@@ -30,7 +32,9 @@ from nautilus_trader.test_kit.stubs.data import TestDataStubs
 
 
 def ensure(condition: bool) -> None:
-    """Raise an assertion error when a boolean expectation is not met."""
+    """
+    Raise an assertion error when a boolean expectation is not met.
+    """
     if not condition:
         raise AssertionError
 
@@ -871,7 +875,7 @@ class TestBettingArbitrageStrategy:
                 current_odds=Decimal("2.10"),
                 now_ns=10,
             )
-            is True
+            is True,
         )
 
     def test_remaining_lightweight_branch_edges(self):
@@ -924,7 +928,7 @@ class TestBettingArbitrageStrategy:
                 current_odds=Decimal("2.10"),
                 now_ns=10,
             )
-            is False
+            is False,
         )
 
         missing_snapshot = (
@@ -942,7 +946,7 @@ class TestBettingArbitrageStrategy:
             False,
         )
         ensure(
-            strategy._handle_fast_opportunity_candidate(missing_snapshot, 11_000_000_000) is False
+            strategy._handle_fast_opportunity_candidate(missing_snapshot, 11_000_000_000) is False,
         )
         strategy._log_fast_arbitrage_snapshot(
             "missing-a",
@@ -971,7 +975,7 @@ class TestBettingArbitrageStrategy:
                 0.0,
                 0.0,
             )
-            == ""
+            == "",
         )
 
     def test_fast_snapshot_materialized_edge_cases(self):
@@ -1035,7 +1039,7 @@ class TestBettingArbitrageStrategy:
                 unprofitable_snapshot,
                 11_000_000_000,
             )
-            is False
+            is False,
         )
 
     def test_fast_graph_candidate_matches_public_strategy_effects(self):
@@ -1118,7 +1122,7 @@ class TestBettingArbitrageStrategy:
                 snapshot[6],
                 1.0,
                 1.5,
-            )
+            ),
         )
 
     def test_fast_graph_candidate_suppresses_duplicates_before_opportunity_construction(self):
@@ -1342,7 +1346,7 @@ class TestBettingArbitrageStrategy:
         ensure(
             strategy._manual_execution_plan(
                 suspect,
-            )
+            ),
         )
 
         manual_off = BettingArbitrageStrategy(
@@ -1368,7 +1372,7 @@ class TestBettingArbitrageStrategy:
         )
         ensure(
             strategy._matcher_suspect_reason(instrument_a, param_mismatch)[1]
-            == "same_market_params_mismatch"
+            == "same_market_params_mismatch",
         )
 
     def test_fast_graph_batch_preserves_auto_execute_behavior(self):

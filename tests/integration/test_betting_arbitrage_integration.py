@@ -7,7 +7,9 @@
 # bandit:skip=B101
 # skipcq: PYL-C0114, PYL-C0115, PYL-C0116
 # pylint: disable=protected-access
-"""Integration coverage for the betting arbitrage strategy on a trading node."""
+"""
+Integration coverage for the betting arbitrage strategy on a trading node.
+"""
 
 from decimal import Decimal
 from unittest.mock import MagicMock
@@ -41,7 +43,9 @@ from nautilus_trader.test_kit.stubs.data import TestDataStubs
 
 
 def ensure(condition: bool) -> None:
-    """Raise an assertion error when a boolean expectation is not met."""
+    """
+    Raise an assertion error when a boolean expectation is not met.
+    """
     if not condition:
         raise AssertionError
 
