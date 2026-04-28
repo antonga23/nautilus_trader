@@ -1,0 +1,101 @@
+name: develop-branch-guard
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  actions: read
+  contents: write
+  pull-requests: read
+
+on:
+  push:
+    branches: [develop]
+
+jobs:
+  enforce:
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    steps:
+      - uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Evaluate develop push policy
+        id: policy
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 scripts/ci/enforce_develop_push_policy.py \
+            --repo "${{ github.repository }}" \
+            --event-path "${{ github.event_path }}" \
+            --output-json develop-guard-decision.json \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Show develop guard decision
+        run: cat develop-guard-decision.json
+
+      - name: Configure authenticated git remote
+        if: steps.policy.outputs.action != 'allow'
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin \
+            "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}"
+
+      - name: Revert unauthorized develop push
+        if: steps.policy.outputs.action == 'revert_range'
+        run: |
+          set -euo pipefail
+          before_sha="${{ steps.policy.outputs.before }}"
+          after_sha="${{ steps.policy.outputs.after }}"
+          if [[ -z "$before_sha" || -z "$after_sha" ]]; then
+            echo "Missing before/after SHAs for revert" >&2
+            exit 1
+          fi
+
+          mapfile -t commits < <(git rev-list --reverse "${before_sha}..${after_sha}")
+          if [[ "${#commits[@]}" -eq 0 ]]; then
+            echo "No commits found to revert" >&2
+            exit 1
+          fi
+
+          for (( idx=${#commits[@]}-1 ; idx>=0 ; idx-- )); do
+            commit_sha="${commits[$idx]}"
+            parent_count="$(git rev-list --parents -n 1 "$commit_sha" | awk '{print NF-1}')"
+            if [[ "$parent_count" -gt 1 ]]; then
+              git revert --no-edit --no-commit -m 1 "$commit_sha"
+            else
+              git revert --no-edit --no-commit "$commit_sha"
+            fi
+          done
+
+          git commit \
+            -m "[develop-guard] Revert unauthorized develop push ${after_sha}" \
+            -m "${{ steps.policy.outputs.reason }}"
+          git push origin HEAD:develop
+
+      - name: Restore previous develop ref after forced push
+        if: steps.policy.outputs.action == 'restore_ref'
+        run: |
+          set -euo pipefail
+          before_sha="${{ steps.policy.outputs.before }}"
+          if [[ -z "$before_sha" ]]; then
+            echo "Missing previous develop SHA for forced-push restore" >&2
+            exit 1
+          fi
+          git push --force-with-lease origin "${before_sha}:develop"
+
+      - name: Fail on policy violation
+        if: steps.policy.outputs.action != 'allow'
+        run: |
+          echo "Develop branch policy violation: ${{ steps.policy.outputs.reason }}" >&2
+          exit 1

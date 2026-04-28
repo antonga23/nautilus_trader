@@ -43,7 +43,7 @@ else
 fi
 
 rust_pattern='^(crates/|Cargo\.toml$|Cargo\.lock$|deny\.toml$|supply-chain/|rust-toolchain\.toml$|capnp-version$|schema/|\.pre-commit-config\.yaml$|\.pre-commit-hooks/|\.github/workflows/(pr-validation|rust-policy|release-publish)\.yml$|\.github/actions/(common-setup|cargo-tool-install)/action\.yml$|scripts/ci/(detect_changed_surfaces|install-rust|run_pre_commit_fast|run_rust_policy)\.sh$)'
-python_pattern='^(nautilus_trader/|tests/|crates/|Cargo\.toml$|Cargo\.lock$|pyproject\.toml$|uv\.lock$|build\.py$|schema/|capnp-version$|rust-toolchain\.toml$|\.github/workflows/pr-validation\.yml$|\.github/actions/common-setup/action\.yml$|scripts/ci/(detect_changed_surfaces|run_pytest_with_reporting|run_python_test_suites|run_installed_wheel_smoke_test)\.sh$|scripts/test(-coverage|-performance)?\.sh$)'
+python_pattern='^(nautilus_trader/|tests/|crates/|Cargo\.toml$|Cargo\.lock$|pyproject\.toml$|uv\.lock$|build\.py$|schema/|capnp-version$|rust-toolchain\.toml$|\.github/workflows/(pr-validation|develop-branch-guard)\.yml$|\.github/actions/common-setup/action\.yml$|scripts/ci/(detect_changed_surfaces|run_pytest_with_reporting|run_python_test_suites|run_installed_wheel_smoke_test)\.sh$|scripts/ci/enforce_develop_push_policy\.py$|scripts/test(-coverage|-performance)?\.sh$)'
 full_suite_pattern='^(nautilus_trader/|tests/|crates/|Cargo\.toml$|Cargo\.lock$|pyproject\.toml$|uv\.lock$|build\.py$|schema/|capnp-version$|rust-toolchain\.toml$)'
 package_builds_pattern='^(nautilus_trader/|crates/|Cargo\.toml$|Cargo\.lock$|pyproject\.toml$|build\.py$|schema/|capnp-version$|rust-toolchain\.toml$)'
 
