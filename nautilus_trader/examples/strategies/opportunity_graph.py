@@ -574,14 +574,14 @@ class OpportunityGraph:
             if self._matcher._is_same_market_hedge(instrument, candidate):
                 continue
 
-            hedge = self._legacy_cross_market_candidate(instrument, candidate)
-            if hedge is None:
+            legacy_hedge = self._legacy_cross_market_candidate(instrument, candidate)
+            if legacy_hedge is None:
                 continue
 
             self._upsert_edge(
                 source=instrument,
                 target=candidate,
-                hedge=hedge,
+                hedge=legacy_hedge,
             )
 
     def _upsert_edge(
