@@ -23,3 +23,7 @@
 - Do not persist plaintext cloud passwords in repo files, skills, scripts, logs,
   or documentation. Use interactive auth, short-lived credentials, or an
   approved secret manager.
+- Before claiming semantic betting rule mining or market-semantics work is
+  complete, use the `semantic-rule-mining-completion` skill and include the
+  `verify-completion` result. Candidate counts, template counts, promotions,
+  and execution-safe templates must be reported separately.

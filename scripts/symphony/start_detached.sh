@@ -8,6 +8,7 @@ cd "$repo_root"
 ./scripts/symphony/render_env_from_secret.sh
 ./scripts/symphony/restore_worker_auths_from_secret.sh || true
 ./scripts/symphony/restore_antigravity_auths_from_secret.sh || true
+./scripts/symphony/restore_gcp_service_account_from_secret.sh || true
 install -d -m 755 /var/log/symphony
 
 if [ -f "$pid_file" ]; then

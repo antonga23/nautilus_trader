@@ -1,4 +1,5 @@
-from typing import Optional, Union, List
+import os
+from typing import Optional
 
 import pytest
 from nautilus_trader.model.currency import Currency
@@ -7,7 +8,6 @@ from nautilus_trader.model.currencies import PLAY_EUR
 from nautilus_trader.model.events.account import AccountState
 from nautilus_trader.model.identifiers import Venue, AccountId, TradeId, StrategyId, ClientOrderId
 
-from nautilus_trader.adapters.cloudbet.client.core import CloudbetClient
 from nautilus_trader.adapters.cloudbet.common import VENUE
 from nautilus_trader.adapters.cloudbet.config import (
     CloudbetDataClientConfig,
@@ -19,28 +19,12 @@ from nautilus_trader.adapters.cloudbet.factories import (
     CloudbetLiveDataClientFactory,
     CloudbetLiveExecClientFactory,
 )
-from nautilus_trader.adapters.cloudbet.sockets import CloudbetStreamClient
-from nautilus_trader.config import LiveExecClientConfig
 from nautilus_trader.model.instruments.crypto_betting import CryptoBettingInstrument
-from nautilus_trader.model.orders import Order, LimitOrder, MarketOrder
+from nautilus_trader.model.orders import LimitOrder, MarketOrder
 from nautilus_trader.test_kit.providers import TestInstrumentProvider
 from nautilus_trader.test_kit.stubs.events import TestEventStubs
 from nautilus_trader.test_kit.stubs.execution import TestExecStubs
 from tests.integration_tests.adapters.cloudbet.test_kit import CloudbetTestStubs
-from nautilus_trader.common.clock import LiveClock
-from dotenv import dotenv_values, load_dotenv
-from pathlib import Path
-
-project_root = Path(__file__).parents[5]
-env_path = project_root / "nautilus_trader/adapters/cloudbet/.cloudbet_env"
-
-env_path = Path(__file__).parents[4] / ".cloudbet_env"
-
-# Loading the environment variables from .cloudbet_env
-# load_dotenv(dotenv_path=env_path)
-
-cloudbet_secrets = dotenv_values(env_path)
-
 
 @pytest.fixture()
 def exec_client_config(
@@ -50,8 +34,8 @@ def exec_client_config(
     market_filter: Optional[dict] = None,
 ) -> CloudbetExecClientConfig:
     config = CloudbetExecClientConfig(
-        api_key=api_key or cloudbet_secrets.get("CLOUDBET_API_KEY"),  # read from secrets
-        api_url=api_url or cloudbet_secrets.get("CLOUDBET_API_URL"),
+        api_key=api_key or os.getenv("CLOUDBET_API_KEY"),
+        api_url=api_url or os.getenv("CLOUDBET_API_URL"),
         base_currency=base_currency,
         market_filter=market_filter,
     )

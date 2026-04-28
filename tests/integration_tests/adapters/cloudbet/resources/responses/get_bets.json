@@ -1,0 +1,48 @@
+{
+  "items": [
+    {
+      "betType": "STRAIGHT",
+      "betId": "21b40aef-01ed-41cb-8254-27aeba7d8133",
+      "betslipId": "betslip-1",
+      "positionId": "position-1",
+      "currency": "BTC",
+      "createTime": "2026-04-27T00:00:00Z",
+      "state": "COMPLETED",
+      "result": "WIN",
+      "channel": "WEB",
+      "stake": "0.1000",
+      "potentialReturnAmount": "0.1648",
+      "selection": {
+        "eventId": "5945044",
+        "marketUrl": "soccer.total_goals/over?total=3",
+        "price": "1.648",
+        "result": "WIN",
+        "marketName": "Total Goals",
+        "outcomeName": "Over 3"
+      }
+    },
+    {
+      "betType": "STRAIGHT",
+      "betId": "31b40aef-01ed-41cb-8254-27aeba7d8133",
+      "betslipId": "betslip-2",
+      "positionId": "position-2",
+      "currency": "BTC",
+      "createTime": "2026-04-27T00:00:00Z",
+      "state": "REJECTED",
+      "result": "PENDING",
+      "channel": "WEB",
+      "stake": "0.1000",
+      "potentialReturnAmount": "0.1648",
+      "rejectionCode": "PRICE_ABOVE_MARKET",
+      "selection": {
+        "eventId": "5945044",
+        "marketUrl": "soccer.match_odds/home",
+        "price": "2.760",
+        "result": "PENDING",
+        "marketName": "Match Odds",
+        "outcomeName": "Home"
+      }
+    }
+  ],
+  "hasNext": false
+}

@@ -80,6 +80,7 @@ class BettingArbitrageNodeManifest(NautilusConfig, frozen=True):
     node_id: str
     trader_id: str = "BET-ARB-001"
     strategy: BettingArbitrageConfig = BettingArbitrageConfig(auto_execute=False)
+    semantic_rule_cache_dir: str | None = None
     venues: list[BettingVenueManifest] = []
     validation_mode: bool = True
     allow_dummy_credentials: bool = True
@@ -116,6 +117,12 @@ class BettingArbitrageNodeManifest(NautilusConfig, frozen=True):
         msgspec.structs.force_setattr(self, "node_id", node_id)
         msgspec.structs.force_setattr(self, "trader_id", trader_id)
         msgspec.structs.force_setattr(self, "log_level", self.log_level.strip().upper())
+        if self.semantic_rule_cache_dir is not None:
+            msgspec.structs.force_setattr(
+                self,
+                "semantic_rule_cache_dir",
+                self.semantic_rule_cache_dir.strip(),
+            )
 
 
 __all__ = [

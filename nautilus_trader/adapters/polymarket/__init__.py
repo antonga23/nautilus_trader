@@ -35,12 +35,23 @@ from nautilus_trader.adapters.polymarket.common.parsing import parse_polymarket_
 from nautilus_trader.adapters.polymarket.common.symbol import get_polymarket_instrument_id
 from nautilus_trader.adapters.polymarket.config import PolymarketDataClientConfig
 from nautilus_trader.adapters.polymarket.config import PolymarketExecClientConfig
-from nautilus_trader.adapters.polymarket.factories import PolymarketLiveDataClientFactory
-from nautilus_trader.adapters.polymarket.factories import PolymarketLiveExecClientFactory
-from nautilus_trader.adapters.polymarket.factories import get_polymarket_http_client
-from nautilus_trader.adapters.polymarket.factories import get_polymarket_instrument_provider
-from nautilus_trader.adapters.polymarket.loaders import PolymarketDataLoader
-from nautilus_trader.adapters.polymarket.providers import PolymarketInstrumentProvider
+
+try:
+    from nautilus_trader.adapters.polymarket.factories import PolymarketLiveDataClientFactory
+    from nautilus_trader.adapters.polymarket.factories import PolymarketLiveExecClientFactory
+    from nautilus_trader.adapters.polymarket.factories import get_polymarket_http_client
+    from nautilus_trader.adapters.polymarket.factories import get_polymarket_instrument_provider
+    from nautilus_trader.adapters.polymarket.loaders import PolymarketDataLoader
+    from nautilus_trader.adapters.polymarket.providers import PolymarketInstrumentProvider
+except ModuleNotFoundError as exc:  # pragma: no cover - depends on optional trading deps
+    if exc.name != "py_clob_client":
+        raise
+    PolymarketLiveDataClientFactory = None
+    PolymarketLiveExecClientFactory = None
+    get_polymarket_http_client = None
+    get_polymarket_instrument_provider = None
+    PolymarketDataLoader = None
+    PolymarketInstrumentProvider = None
 
 
 __all__ = [

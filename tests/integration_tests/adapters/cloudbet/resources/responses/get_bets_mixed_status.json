@@ -1,0 +1,95 @@
+{
+  "items": [
+    {
+      "betType": "STRAIGHT",
+      "betId": "bet-win",
+      "betslipId": "betslip-win",
+      "positionId": "position-win",
+      "currency": "BTC",
+      "createTime": "2026-04-27T00:00:00Z",
+      "state": "COMPLETED",
+      "result": "WIN",
+      "selection": {
+        "eventId": "1001",
+        "marketUrl": "soccer.match_odds/home",
+        "price": "2.10",
+        "result": "WIN",
+        "marketName": "Match Odds",
+        "outcomeName": "Home"
+      }
+    },
+    {
+      "betType": "STRAIGHT",
+      "betId": "bet-loss",
+      "betslipId": "betslip-loss",
+      "positionId": "position-loss",
+      "currency": "BTC",
+      "createTime": "2026-04-27T00:00:00Z",
+      "state": "COMPLETED",
+      "result": "LOSS",
+      "selection": {
+        "eventId": "1002",
+        "marketUrl": "soccer.match_odds/away",
+        "price": "2.50",
+        "result": "LOSS",
+        "marketName": "Match Odds",
+        "outcomeName": "Away"
+      }
+    },
+    {
+      "betType": "STRAIGHT",
+      "betId": "bet-push",
+      "betslipId": "betslip-push",
+      "positionId": "position-push",
+      "currency": "BTC",
+      "createTime": "2026-04-27T00:00:00Z",
+      "state": "COMPLETED",
+      "result": "PUSH",
+      "selection": {
+        "eventId": "1003",
+        "marketUrl": "soccer.draw_no_bet/home",
+        "price": "1.80",
+        "result": "PUSH",
+        "marketName": "Draw No Bet",
+        "outcomeName": "Home"
+      }
+    },
+    {
+      "betType": "STRAIGHT",
+      "betId": "bet-half-loss",
+      "betslipId": "betslip-half-loss",
+      "positionId": "position-half-loss",
+      "currency": "BTC",
+      "createTime": "2026-04-27T00:00:00Z",
+      "state": "COMPLETED",
+      "result": "HALF_LOSS",
+      "selection": {
+        "eventId": "1004",
+        "marketUrl": "soccer.asian_handicap/away?handicap=0.25",
+        "price": "1.95",
+        "result": "HALF_LOSS",
+        "marketName": "Asian Handicap",
+        "outcomeName": "Away +0.25"
+      }
+    },
+    {
+      "betType": "STRAIGHT",
+      "betId": "bet-partial",
+      "betslipId": "betslip-partial",
+      "positionId": "position-partial",
+      "currency": "BTC",
+      "createTime": "2026-04-27T00:00:00Z",
+      "state": "COMPLETED",
+      "result": "PARTIAL",
+      "selection": {
+        "eventId": "1005",
+        "marketUrl": "soccer.correct_score/score=1:0",
+        "price": "7.00",
+        "result": "PARTIAL",
+        "marketName": "Correct Score",
+        "outcomeName": "1:0"
+      }
+    }
+  ],
+  "hasNext": false
+}

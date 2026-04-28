@@ -17,12 +17,21 @@ MarketMatcher - Cross-venue market matching for arbitrage detection.
 """
 
 from dataclasses import dataclass
+from dataclasses import replace
 from decimal import Decimal
 
 from nautilus_trader.adapters.betting.common.constants import MARKET_HEDGE_MAP
 from nautilus_trader.adapters.betting.common.enums import MarketType
 from nautilus_trader.adapters.betting.common.enums import Outcome
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
+from nautilus_trader.adapters.betting.semantics import PromotionStatus
+from nautilus_trader.adapters.betting.semantics import RelationshipType
+from nautilus_trader.adapters.betting.semantics import RuleClassifier
+from nautilus_trader.adapters.betting.semantics import RulePromotionPolicy
+from nautilus_trader.adapters.betting.semantics import RuleStore
+from nautilus_trader.adapters.betting.semantics import MinedRule
+from nautilus_trader.adapters.betting.semantics import SafetyTier
+from nautilus_trader.adapters.betting.semantics import SemanticRuleTemplate
 
 
 HANDICAP_TOLERANCE = 0.01
@@ -71,6 +80,16 @@ class HedgeCandidate:
     instrument: CryptoBettingInstrument
     match_type: str
     confidence: float  # 0-1, how confident we are this is a valid hedge
+    rule_id: str | None = None
+    template_id: str | None = None
+    relationship_type: str | None = None
+    caveats: tuple[str, ...] = ()
+    push_capable: bool = False
+    partial_settlement: bool = False
+    execution_safe: bool = True
+    same_venue_execution_eligible: bool = False
+    safety_tier: str = SafetyTier.AUDIT_ONLY.value
+    promotion_status: str = PromotionStatus.CANDIDATE.value
 
 
 class MarketMatcher:
@@ -91,7 +110,8 @@ class MarketMatcher:
 
     """
 
-    # Mapping of market types to potential hedge markets
+    # Deprecated: semantic rules now drive cross-market matching. Kept for
+    # backwards-compatible imports and diagnostics.
     MARKET_MAPPER: dict[str, list[str]] = MARKET_HEDGE_MAP.copy()
     PUSH_CAPABLE_MARKETS = frozenset(
         {
@@ -112,7 +132,13 @@ class MarketMatcher:
         },
     }
 
-    def __init__(self, min_confidence: float = 0.5) -> None:
+    def __init__(
+        self,
+        min_confidence: float = 0.5,
+        rule_classifier: RuleClassifier | None = None,
+        rule_store: RuleStore | None = None,
+        allow_unpromoted_topology: bool = True,
+    ) -> None:
         """
         Initialize the MarketMatcher.
 
@@ -120,9 +146,22 @@ class MarketMatcher:
         ----------
         min_confidence : float, default 0.5
             Minimum confidence threshold for hedge candidates.
+        rule_classifier : RuleClassifier, optional
+            Semantic classifier for market settlement relationships.
+        rule_store : RuleStore, optional
+            Persisted semantic rules/templates used for runtime gating.
+        allow_unpromoted_topology : bool, default True
+            Whether candidate-only semantic edges can be exposed as non-executable topology.
 
         """
         self.min_confidence = min_confidence
+        self._rule_classifier = rule_classifier or RuleClassifier()
+        self._rule_store = rule_store
+        self._allow_unpromoted_topology = allow_unpromoted_topology
+        self._promotion_policy = RulePromotionPolicy()
+
+    def set_rule_store(self, rule_store: RuleStore | None) -> None:
+        self._rule_store = rule_store
 
     def find_hedges(
         self,
@@ -162,33 +201,127 @@ class MarketMatcher:
             if not self._is_hedge_event_match(instrument, candidate, candidates):
                 continue
 
-            # Check for same-market hedge
-            if self._is_same_market_hedge(instrument, candidate):
-                hedges.append(
-                    HedgeCandidate(
-                        instrument=candidate,
-                        match_type="same_market",
-                        confidence=1.0,
-                    ),
-                )
+            semantic_candidate = self._semantic_hedge_candidate(instrument, candidate)
+            if semantic_candidate is not None:
+                hedges.append(semantic_candidate)
                 continue
 
-            # Check for cross-market hedge
-            cross_match = self._is_cross_market_hedge(instrument, candidate)
-            if cross_match:
-                hedges.append(
-                    HedgeCandidate(
-                        instrument=candidate,
-                        match_type="cross_market",
-                        confidence=cross_match,
-                    ),
-                )
+            if self._is_same_market_hedge(instrument, candidate):
+                hedges.append(self._legacy_same_market_candidate(candidate))
 
         # Filter by confidence and sort
         hedges = [h for h in hedges if h.confidence >= self.min_confidence]
         hedges.sort(key=lambda h: (-h.confidence, h.match_type))
 
         return hedges
+
+    def _semantic_hedge_candidate(
+        self,
+        instrument: CryptoBettingInstrument,
+        candidate: CryptoBettingInstrument,
+    ) -> HedgeCandidate | None:
+        rule = self._resolve_rule(instrument, candidate)
+        if (
+            rule is None
+            or rule.relationship_type == RelationshipType.DANGEROUS_NON_EQUIVALENT.value
+        ):
+            return None
+
+        if rule.confidence < self.min_confidence:
+            return None
+
+        return HedgeCandidate(
+            instrument=candidate,
+            match_type=self._match_type_for_rule(instrument, candidate),
+            confidence=rule.confidence,
+            rule_id=rule.rule_id,
+            template_id=rule.template_id,
+            relationship_type=rule.relationship_type,
+            caveats=rule.caveats,
+            push_capable=rule.has_void,
+            partial_settlement=rule.has_partial,
+            execution_safe=rule.safety_tier == SafetyTier.EXECUTION_SAFE.value,
+            same_venue_execution_eligible=(
+                rule.safety_tier == SafetyTier.EXECUTION_SAFE_SAME_VENUE_ELIGIBLE.value
+                and instrument.venue_name == candidate.venue_name
+            ),
+            safety_tier=rule.safety_tier,
+            promotion_status=rule.promotion_status,
+        )
+
+    def _resolve_rule(
+        self,
+        instrument: CryptoBettingInstrument,
+        candidate: CryptoBettingInstrument,
+    ) -> MinedRule | None:
+        rule = self._rule_classifier.classify(instrument, candidate)
+        if rule is None:
+            return None
+        tier, reasons = self._promotion_policy.classify_rule_tier(rule, None)
+        rule = replace(rule, safety_tier=tier.value, eligibility_reasons=reasons)
+        if self._rule_store is None:
+            return rule if self._allow_unpromoted_topology and tier != SafetyTier.AUDIT_ONLY else None
+        promoted = self._rule_store.load_promoted(rule.rule_id)
+        if promoted is not None:
+            return promoted
+        template = SemanticRuleTemplate.from_rule(rule)
+        promoted_template = self._rule_store.load_promoted_template(template.template_id)
+        if promoted_template is not None and promoted_template.applies_to_venues(rule.venue_scope):
+            return self._rule_from_template(rule, promoted_template)
+        return (
+            replace(rule, template_id=template.template_id)
+            if self._allow_unpromoted_topology and tier != SafetyTier.AUDIT_ONLY
+            else None
+        )
+
+    @staticmethod
+    def _rule_from_template(
+        rule: MinedRule,
+        template: SemanticRuleTemplate,
+    ) -> MinedRule:
+        return replace(
+            rule,
+            relationship_type=template.relationship_type,
+            sport=template.sport,
+            scope=template.scope,
+            market_a=template.pattern_a.market_type,
+            selection_a=template.pattern_a.selection,
+            params_a=template.pattern_a.params,
+            market_b=template.pattern_b.market_type,
+            selection_b=template.pattern_b.selection,
+            params_b=template.pattern_b.params,
+            result_states=template.result_states,
+            settlement_a=template.settlement_a,
+            settlement_b=template.settlement_b,
+            confidence=template.confidence,
+            caveats=template.caveats,
+            promotion_status=template.promotion_status,
+            safety_tier=template.safety_tier,
+            eligibility_reasons=template.eligibility_reasons,
+            template_id=template.template_id,
+        )
+
+    @staticmethod
+    def _legacy_same_market_candidate(candidate: CryptoBettingInstrument) -> HedgeCandidate:
+        return HedgeCandidate(
+            instrument=candidate,
+            match_type="same_market",
+            confidence=1.0,
+            relationship_type=RelationshipType.COMPLEMENTARY_COVERAGE.value,
+            execution_safe=True,
+            same_venue_execution_eligible=False,
+            safety_tier=SafetyTier.EXECUTION_SAFE.value,
+            promotion_status=PromotionStatus.PROMOTED.value,
+        )
+
+    @staticmethod
+    def _match_type_for_rule(
+        instrument: CryptoBettingInstrument,
+        candidate: CryptoBettingInstrument,
+    ) -> str:
+        if instrument.market_name == candidate.market_name and instrument.params == candidate.params:
+            return "same_market"
+        return "cross_market"
 
     def _is_hedge_event_match(
         self,
@@ -287,28 +420,13 @@ class MarketMatcher:
         if not a.matches_event(b):
             return 0.0
 
-        # Get market types
-        market_a = MarketType.from_string(a.market_name)
-        market_b = MarketType.from_string(b.market_name)
-
-        # Check if markets can hedge each other
-        hedge_markets = self.MARKET_MAPPER.get(market_a.value, [])
-        if market_b.value not in hedge_markets:
+        rule = self._resolve_rule(a, b)
+        if (
+            rule is None
+            or rule.relationship_type == RelationshipType.DANGEROUS_NON_EQUIVALENT.value
+        ):
             return 0.0
-
-        # Check outcome compatibility
-        outcome_a = Outcome.from_string(a.outcome)
-        outcome_b = Outcome.from_string(b.outcome)
-
-        # Specific hedge rules
-        return self._calculate_cross_market_confidence(
-            market_a,
-            market_b,
-            outcome_a,
-            outcome_b,
-            a,
-            b,
-        )
+        return rule.confidence
 
     def _calculate_cross_market_confidence(  # pylint: disable=too-many-arguments
         self,
@@ -398,8 +516,8 @@ class MarketMatcher:
                 return 0.85
         return 0.0
 
-    @staticmethod
     def check_arbitrage(
+        self,
         instrument_a: CryptoBettingInstrument,
         instrument_b: CryptoBettingInstrument,
         odds_a: Decimal | None = None,
@@ -426,21 +544,23 @@ class MarketMatcher:
             not a complete hedge.
 
         """
-        if (
-            instrument_a.market_name == instrument_b.market_name
-            and MarketType.from_string(instrument_a.market_name) == MarketType.MATCH_ODDS
-            and not (
-                MarketMatcher._is_two_way_match_odds_market(instrument_a)
-                and MarketMatcher._is_two_way_match_odds_market(instrument_b)
+        rule = self._resolve_rule(instrument_a, instrument_b)
+        if rule is not None:
+            promoted_or_legacy = (
+                rule.execution_safe
+                and (
+                    self._rule_store is None
+                    or rule.promotion_status == PromotionStatus.PROMOTED.value
+                )
             )
-        ):
-            return None
-
-        if (
-            MarketType.from_string(instrument_a.market_name) in MarketMatcher.PUSH_CAPABLE_MARKETS
-            or MarketType.from_string(instrument_b.market_name)
-            in MarketMatcher.PUSH_CAPABLE_MARKETS
-        ):
+            if not promoted_or_legacy and (
+                not self._is_same_market_hedge(instrument_a, instrument_b)
+                or rule.has_void
+                or rule.has_partial
+                or rule.has_unknown
+            ):
+                return None
+        elif not self._is_same_market_hedge(instrument_a, instrument_b):
             return None
 
         if odds_a is None:

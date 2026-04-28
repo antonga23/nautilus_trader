@@ -34,6 +34,8 @@ Provider-specific keys are optional until those providers are enabled:
 - `ANTIGRAVITY_GOOGLE_CLIENT_ID`
 - `ANTIGRAVITY_GOOGLE_CLIENT_SECRET`
 - `ANTIGRAVITY_GOOGLE_SCOPES`
+- `GCP_SERVICE_ACCOUNT_JSON_B64` for the ephemeral GCP worker/service-account material
+- `GCP_GCLOUD_CONFIG_TAR_B64` for a sanitized `info@unlimitedgames.shop` `gcloud` config bundle when org policy blocks service-account key creation
 - per-worker auth blobs referenced by `scripts/symphony/workers.json`
 
 Strategy-node deployment envs and secrets:
@@ -55,6 +57,40 @@ Strategy-node deployment envs and secrets:
 - `POLYMARKET_FUNDER`
 
 Store strategy-node venue credentials in secret payloads only. Do not commit them to the repo or paste them into operator notes. `STRATEGY_NODE_GHCR_TOKEN` should be a dedicated image-pull PAT rather than a shared general-purpose token.
+
+## Semantic Mining VM
+
+GCP project `shining-sol-493421-h6` currently has two running VMs. Use
+`semantic-rule-miner-20260426` (`e2-custom-6-10240`, Ubuntu 24.04, 100GB disk)
+for Cloudbet/SXBET/Polymarket corpus refresh and semantic template mining. Do
+not run mining jobs on `instance-20260415-214825`; that host is reserved for
+runner capacity.
+
+GCP service-account restoration is handled with:
+
+```sh
+./scripts/symphony/restore_gcp_service_account_from_secret.sh
+```
+
+The semantic mining operator CLI exposes the same restore path for batch jobs and ephemeral workers:
+
+```sh
+.venv/bin/python scripts/betting/semantic_rule_mining.py restore-gcp-auth
+```
+
+To upsert a rotated service-account JSON payload into the shared secret without exposing raw JSON in repo files:
+
+```sh
+./scripts/symphony/upsert_gcp_service_account_secret.sh /path/to/service-account.json
+```
+
+If the project enforces `constraints/iam.disableServiceAccountKeyCreation`, persist a sanitized `gcloud` bundle instead:
+
+```sh
+./scripts/symphony/upsert_gcloud_auth_bundle_secret.sh /path/to/gcloud-config-dir
+```
+
+The gcloud bundle script stores only the active config, credential databases, and config files. It deliberately excludes SDK caches, logs, and virtualenv contents so the payload remains within Secrets Manager limits.
 
 ## Deploy
 
