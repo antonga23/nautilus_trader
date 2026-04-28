@@ -69,11 +69,12 @@ class GitHubApiClient:
         if query:
             request_path = f"{request_path}?{urllib.parse.urlencode(query, doseq=True)}"
 
+        # skipcq: BAN-B309
         connection = http.client.HTTPSConnection(
             self._api_host,
             timeout=60,
             context=ssl.create_default_context(),
-        )  # skipcq: BAN-B309
+        )
         response: http.client.HTTPResponse | None = None
         try:
             connection.request(
@@ -409,9 +410,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.output_json:
         output_json_path = resolve_output_path(args.output_json)
         output_json_path.parent.mkdir(parents=True, exist_ok=True)
-        with output_json_path.open("w", encoding="utf-8") as handle:
-            handle.write(serialized)
-            handle.write("\n")
+        output_json_path.write_text(f"{serialized}\n", encoding="utf-8")
 
     if args.github_output:
         _write_github_outputs(args.github_output, decision)
