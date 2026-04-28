@@ -4,6 +4,8 @@
 #  Performance tests for the betting opportunity graph.
 # -------------------------------------------------------------------------------------------------
 # skipcq: PYL-C0114, PYL-C0115, PYL-C0116, PYL-R0801, PYL-R0913, PYL-W0212
+# pylint: disable=missing-module-docstring,missing-function-docstring,no-name-in-module,protected-access,duplicate-code,too-many-arguments
+"""Performance tests for the betting opportunity graph."""
 
 from decimal import Decimal
 from typing import Any

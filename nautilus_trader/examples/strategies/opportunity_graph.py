@@ -13,6 +13,7 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 # skipcq: PYL-E0611, PYL-R0902, PYL-R0913
+# pylint: disable=no-name-in-module,too-many-arguments,too-many-instance-attributes
 """
 Persistent opportunity graph for betting arbitrage strategies.
 
