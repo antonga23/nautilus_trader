@@ -38,6 +38,11 @@ from nautilus_trader.test_kit.stubs.component import TestComponentStubs
 from nautilus_trader.test_kit.stubs.data import TestDataStubs
 
 
+def ensure(condition: bool) -> None:
+    if not condition:
+        raise AssertionError
+
+
 @pytest.mark.asyncio
 class TestBettingArbitrageIntegration:
     """
@@ -96,10 +101,10 @@ class TestBettingArbitrageIntegration:
         strategy = BettingArbitrageStrategy(config=config)
 
         # Soccer should pass
-        assert strategy._should_process_instrument(mock_instrument_soccer_tenbet)
+        ensure(strategy._should_process_instrument(mock_instrument_soccer_tenbet))
 
         # Basketball should be filtered out
-        assert not strategy._should_process_instrument(mock_instrument_basketball_blackbet)
+        ensure(not strategy._should_process_instrument(mock_instrument_basketball_blackbet))
 
     def test_market_timing_filter_pre_market_only(
         self,
@@ -116,10 +121,10 @@ class TestBettingArbitrageIntegration:
         strategy = BettingArbitrageStrategy(config=config)
 
         # Pre-market should pass
-        assert strategy._should_process_instrument(mock_instrument_soccer_tenbet)
+        ensure(strategy._should_process_instrument(mock_instrument_soccer_tenbet))
 
         # Live market should be filtered out
-        assert not strategy._should_process_instrument(mock_instrument_soccer_live_easybet)
+        ensure(not strategy._should_process_instrument(mock_instrument_soccer_live_easybet))
 
     def test_combined_filters_soccer_pre_market(
         self,
@@ -138,13 +143,13 @@ class TestBettingArbitrageIntegration:
         strategy = BettingArbitrageStrategy(config=config)
 
         # Pre-market soccer should pass
-        assert strategy._should_process_instrument(mock_instrument_soccer_tenbet)
+        ensure(strategy._should_process_instrument(mock_instrument_soccer_tenbet))
 
         # Basketball filtered by sport
-        assert not strategy._should_process_instrument(mock_instrument_basketball_blackbet)
+        ensure(not strategy._should_process_instrument(mock_instrument_basketball_blackbet))
 
         # Live soccer filtered by timing
-        assert not strategy._should_process_instrument(mock_instrument_soccer_live_easybet)
+        ensure(not strategy._should_process_instrument(mock_instrument_soccer_live_easybet))
 
     def test_is_live_market_detection(self):
         """
@@ -157,13 +162,13 @@ class TestBettingArbitrageIntegration:
         for params in ["pre_market", "prematch", "upcoming"]:
             inst = Mock(spec=CryptoBettingInstrument)
             inst.params = params
-            assert not strategy._is_live_market(inst)
+            ensure(not strategy._is_live_market(inst))
 
         # Live indicators
         for params in ["live", "in_play", "in-play", "live_match"]:
             inst = Mock(spec=CryptoBettingInstrument)
             inst.params = params
-            assert strategy._is_live_market(inst)
+            ensure(strategy._is_live_market(inst))
 
     def test_subscribe_instruments_with_venue_filter(
         self,
@@ -189,9 +194,9 @@ class TestBettingArbitrageIntegration:
         strategy.subscribe_instruments(instruments)
 
         # Should only subscribe to 10BET instrument
-        assert len(strategy._subscribed_instruments) == 1
-        assert mock_instrument_soccer_tenbet in strategy._subscribed_instruments
-        assert mock_instrument_basketball_blackbet not in strategy._subscribed_instruments
+        ensure(len(strategy._subscribed_instruments) == 1)
+        ensure(mock_instrument_soccer_tenbet in strategy._subscribed_instruments)
+        ensure(mock_instrument_basketball_blackbet not in strategy._subscribed_instruments)
 
     def test_strategy_consumes_promoted_semantic_template_from_file_cache(self, tmp_path):
         cache_dir = tmp_path / "semantic-cache"
@@ -421,17 +426,17 @@ class TestBettingArbitrageIntegration:
 
         strategy._handle_arbitrage_opportunity.assert_called_once()
         opportunity, diagnostics = strategy._handle_arbitrage_opportunity.call_args.args
-        assert opportunity.odds_a == Decimal("2.45")
-        assert opportunity.odds_b == Decimal("2.30")
-        assert diagnostics.venue_a == "BLACKBET"
-        assert diagnostics.venue_b == "SXBET"
-        assert diagnostics.match_type == "same_market"
-        assert diagnostics.canonical_pair_id in strategy._seen_opportunity_pairs
-        assert strategy._raw_arbitrage_detections == 1
-        assert strategy._opportunities_found == 1
-        assert strategy._executable_candidates == 1
-        assert strategy._opportunity_graph.node_count == 2
-        assert strategy._opportunity_graph.connected_edge_count(str(instrument_b.id)) == 1
+        ensure(opportunity.odds_a == Decimal("2.45"))
+        ensure(opportunity.odds_b == Decimal("2.30"))
+        ensure(diagnostics.venue_a == "BLACKBET")
+        ensure(diagnostics.venue_b == "SXBET")
+        ensure(diagnostics.match_type == "same_market")
+        ensure(diagnostics.canonical_pair_id in strategy._seen_opportunity_pairs)
+        ensure(strategy._raw_arbitrage_detections == 1)
+        ensure(strategy._opportunities_found == 1)
+        ensure(strategy._executable_candidates == 1)
+        ensure(strategy._opportunity_graph.node_count == 2)
+        ensure(strategy._opportunity_graph.connected_edge_count(str(instrument_b.id)) == 1)
 
     @staticmethod
     def _total_goals_instrument(

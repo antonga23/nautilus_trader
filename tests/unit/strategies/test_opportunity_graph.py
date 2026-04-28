@@ -22,6 +22,11 @@ from nautilus_trader.test_kit.stubs.data import TestDataStubs
 _CURRENCY = Currency.from_str("USDT")
 
 
+def ensure(condition: bool) -> None:
+    if not condition:
+        raise AssertionError
+
+
 def _instrument(
     *,
     venue: str = "SXBET",
@@ -114,10 +119,10 @@ def test_builds_same_market_cross_venue_edges(engine: str) -> None:
 
     graph = _graph(engine, instruments)
 
-    assert graph.node_count == 4
-    assert graph.edge_count == 4
-    assert all(edge.hedge_type == "same_market" for edge in graph.edges_by_id.values())
-    assert graph.connected_edge_count(str(instruments[0].id)) == 2
+    ensure(graph.node_count == 4)
+    ensure(graph.edge_count == 4)
+    ensure(all(edge.hedge_type == "same_market" for edge in graph.edges_by_id.values()))
+    ensure(graph.connected_edge_count(str(instruments[0].id)) == 2)
 
 
 def test_rust_and_python_topology_are_identical_for_common_edges() -> None:
@@ -146,7 +151,7 @@ def test_rust_and_python_topology_are_identical_for_common_edges() -> None:
     python_graph = _graph("python", instruments)
     rust_graph = _graph("rust", instruments)
 
-    assert _edge_snapshot(rust_graph) == _edge_snapshot(python_graph)
+    ensure(_edge_snapshot(rust_graph) == _edge_snapshot(python_graph))
 
 
 def test_incremental_add_and_duplicate_match_python_fallback() -> None:
@@ -155,11 +160,11 @@ def test_incremental_add_and_duplicate_match_python_fallback() -> None:
     python_graph = _graph("python", base)
     rust_graph = _graph("rust", base)
 
-    assert python_graph.add_instrument(under) is True
-    assert rust_graph.add_instrument(under) is True
-    assert python_graph.add_instrument(under) is False
-    assert rust_graph.add_instrument(under) is False
-    assert _edge_snapshot(rust_graph) == _edge_snapshot(python_graph)
+    ensure(python_graph.add_instrument(under) is True)
+    ensure(rust_graph.add_instrument(under) is True)
+    ensure(python_graph.add_instrument(under) is False)
+    ensure(rust_graph.add_instrument(under) is False)
+    ensure(_edge_snapshot(rust_graph) == _edge_snapshot(python_graph))
 
 
 def test_update_quote_and_evaluate_matches_python_candidates() -> None:
@@ -190,7 +195,7 @@ def test_update_quote_and_evaluate_matches_python_candidates() -> None:
         now_ns=100_000,
     )
 
-    assert python_state == rust_state
+    ensure(python_state == rust_state)
     rust_snapshot = sorted(
         (candidate.edge.edge_id, candidate.opportunity.profit_margin)
         for candidate in rust_candidates
@@ -199,8 +204,8 @@ def test_update_quote_and_evaluate_matches_python_candidates() -> None:
         (candidate.edge.edge_id, candidate.opportunity.profit_margin)
         for candidate in python_candidates
     )
-    assert rust_snapshot == python_snapshot
-    assert {candidate.updated_node_id for candidate in rust_candidates} == {str(instruments[0].id)}
+    ensure(rust_snapshot == python_snapshot)
+    ensure({candidate.updated_node_id for candidate in rust_candidates} == {str(instruments[0].id)})
 
 
 def test_update_quote_and_scan_fast_returns_primitive_snapshots() -> None:
@@ -220,30 +225,30 @@ def test_update_quote_and_scan_fast_returns_primitive_snapshots() -> None:
         now_ns=30_000,
     )
 
-    assert result is not None
+    ensure(result is not None)
     quote_updated, snapshots = result
-    assert quote_updated is True
-    assert graph.quote_state_count == 2
-    assert len(snapshots) == 1
+    ensure(quote_updated is True)
+    ensure(graph.quote_state_count == 2)
+    ensure(len(snapshots) == 1)
     snapshot = snapshots[0]
-    assert snapshot[1] == str(instruments[1].id)
-    assert snapshot[2] == str(instruments[0].id)
-    assert snapshot[3] == "same_market"
-    assert snapshot[4] == 1.0
-    assert snapshot[5] == 2.55
-    assert snapshot[6] == 2.4
-    assert snapshot[7] > 0.0
-    assert snapshot[8] == 10_001
-    assert snapshot[9] == 10_000
-    assert snapshot[10] == "same_market"
-    assert snapshot[11] is False
+    ensure(snapshot[1] == str(instruments[1].id))
+    ensure(snapshot[2] == str(instruments[0].id))
+    ensure(snapshot[3] == "same_market")
+    ensure(snapshot[4] == 1.0)
+    ensure(snapshot[5] == 2.55)
+    ensure(snapshot[6] == 2.4)
+    ensure(snapshot[7] > 0.0)
+    ensure(snapshot[8] == 10_001)
+    ensure(snapshot[9] == 10_000)
+    ensure(snapshot[10] == "same_market")
+    ensure(snapshot[11] is False)
 
 
 def test_update_quote_and_scan_fast_is_rust_only() -> None:
     instrument = _instrument()
     graph = _graph("python", [instrument])
 
-    assert (
+    ensure(
         graph.update_quote_and_scan_fast(
             _quote(instrument, Decimal("2.40")),
             odds=Decimal("2.40"),
@@ -272,8 +277,8 @@ def test_rust_scan_filters_unprofitable_edges_before_decimal_validation() -> Non
         now_ns=100_000,
     )
 
-    assert graph.connected_edge_count(str(instruments[0].id)) > 1
-    assert not candidates
+    ensure(graph.connected_edge_count(str(instruments[0].id)) > 1)
+    ensure(not candidates)
 
 
 def test_push_capable_edges_are_built_but_not_evaluated() -> None:
@@ -302,9 +307,9 @@ def test_push_capable_edges_are_built_but_not_evaluated() -> None:
         now_ns=100_000,
     )
 
-    assert graph.edge_count == 1
-    assert next(iter(graph.edges_by_id.values())).push_capable is True
-    assert not candidates
+    ensure(graph.edge_count == 1)
+    ensure(next(iter(graph.edges_by_id.values())).push_capable is True)
+    ensure(not candidates)
 
 
 def test_missing_start_time_ambiguity_matches_python_fallback() -> None:
@@ -328,8 +333,8 @@ def test_missing_start_time_ambiguity_matches_python_fallback() -> None:
         ),
     ]
 
-    assert _graph("rust", ambiguous).edge_count == _graph("python", ambiguous).edge_count == 0
-    assert _graph("rust", unambiguous).edge_count == _graph("python", unambiguous).edge_count == 1
+    ensure(_graph("rust", ambiguous).edge_count == _graph("python", ambiguous).edge_count == 0)
+    ensure(_graph("rust", unambiguous).edge_count == _graph("python", unambiguous).edge_count == 1)
 
 
 def test_engine_validation_and_missing_node_paths() -> None:
@@ -342,27 +347,35 @@ def test_engine_validation_and_missing_node_paths() -> None:
     python_graph = _graph("python", [])
     rust_graph = _graph("rust", [])
 
-    assert python_graph.quote_state_count == 0
-    assert python_graph.update_quote(quote, odds=Decimal("2.00"), received_ns=1) is None
-    assert not python_graph.evaluate_updated_node(
-        str(instrument.id),
-        min_profit_margin=Decimal("0.01"),
-        now_ns=1,
+    ensure(python_graph.quote_state_count == 0)
+    ensure(python_graph.update_quote(quote, odds=Decimal("2.00"), received_ns=1) is None)
+    ensure(
+        not python_graph.evaluate_updated_node(
+            str(instrument.id),
+            min_profit_margin=Decimal("0.01"),
+            now_ns=1,
+        )
     )
-    assert python_graph.update_quote_and_evaluate(
-        quote,
-        odds=Decimal("2.00"),
-        received_ns=1,
-        min_profit_margin=Decimal("0.01"),
-        now_ns=1,
-    ) == (None, [])
-    assert rust_graph.update_quote_and_evaluate(
-        quote,
-        odds=Decimal("2.00"),
-        received_ns=1,
-        min_profit_margin=Decimal("0.01"),
-        now_ns=1,
-    ) == (None, [])
+    ensure(
+        python_graph.update_quote_and_evaluate(
+            quote,
+            odds=Decimal("2.00"),
+            received_ns=1,
+            min_profit_margin=Decimal("0.01"),
+            now_ns=1,
+        )
+        == (None, [])
+    )
+    ensure(
+        rust_graph.update_quote_and_evaluate(
+            quote,
+            odds=Decimal("2.00"),
+            received_ns=1,
+            min_profit_margin=Decimal("0.01"),
+            now_ns=1,
+        )
+        == (None, [])
+    )
 
 
 def test_python_evaluation_skips_missing_unprofitable_and_push_edges() -> None:
@@ -374,10 +387,12 @@ def test_python_evaluation_skips_missing_unprofitable_and_push_edges() -> None:
         received_ns=1,
     )
 
-    assert not graph.evaluate_updated_node(
-        str(instruments[0].id),
-        min_profit_margin=Decimal("0.01"),
-        now_ns=1,
+    ensure(
+        not graph.evaluate_updated_node(
+            str(instruments[0].id),
+            min_profit_margin=Decimal("0.01"),
+            now_ns=1,
+        )
     )
 
     graph.update_quote(
@@ -385,10 +400,12 @@ def test_python_evaluation_skips_missing_unprofitable_and_push_edges() -> None:
         odds=Decimal("1.80"),
         received_ns=2,
     )
-    assert not graph.evaluate_updated_node(
-        str(instruments[0].id),
-        min_profit_margin=Decimal("0.01"),
-        now_ns=3,
+    ensure(
+        not graph.evaluate_updated_node(
+            str(instruments[0].id),
+            min_profit_margin=Decimal("0.01"),
+            now_ns=3,
+        )
     )
 
     push_instruments = [
@@ -408,8 +425,10 @@ def test_python_evaluation_skips_missing_unprofitable_and_push_edges() -> None:
     push_graph = _graph("python", push_instruments)
     _seed_quotes(push_graph, push_instruments, {"home": Decimal("2.40"), "away": Decimal("2.55")})
 
-    assert not push_graph.evaluate_updated_node(
-        str(push_instruments[0].id),
-        min_profit_margin=Decimal("0.01"),
-        now_ns=4,
+    ensure(
+        not push_graph.evaluate_updated_node(
+            str(push_instruments[0].id),
+            min_profit_margin=Decimal("0.01"),
+            now_ns=4,
+        )
     )
