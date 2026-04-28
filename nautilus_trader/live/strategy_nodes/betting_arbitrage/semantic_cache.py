@@ -139,8 +139,8 @@ def _run_bootstrap(
                     logger=logger,
                 ),
             )
-        except BaseException as exc:  # pragma: no cover - surfaced below
-            error.append(exc)
+        except BaseException as e:  # pragma: no cover - surfaced below
+            error.append(e)
 
     thread = threading.Thread(target=_bootstrap_in_thread, daemon=True)
     thread.start()
