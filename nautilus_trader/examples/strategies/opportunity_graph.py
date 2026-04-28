@@ -319,7 +319,6 @@ class OpportunityGraph:
                 continue
 
             opportunity = self._check_edge_opportunity(
-                edge=edge,
                 source_quote=updated_quote,
                 target_quote=other_quote,
             )
@@ -590,7 +589,6 @@ class OpportunityGraph:
     def _check_edge_opportunity(
         self,
         *,
-        edge: OpportunityEdge,
         source_quote: QuoteState,
         target_quote: QuoteState,
     ) -> ArbitrageOpportunity | None:

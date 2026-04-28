@@ -3,6 +3,7 @@
 #
 #  Integration tests for betting arbitrage strategy.
 # -------------------------------------------------------------------------------------------------
+# pylint: disable=protected-access
 
 from decimal import Decimal
 from unittest.mock import MagicMock

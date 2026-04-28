@@ -490,12 +490,13 @@ class BettingArbitrageStrategy(Strategy):
         if quote_state is None:
             return
         if candidates:
-            self.log.debug(
-                "Opportunity graph quote evaluation: "
-                f"instrument_id={tick.instrument_id} "
-                f"connected_edges={self._opportunity_graph.connected_edge_count(str(tick.instrument_id))} "
-                f"candidates={len(candidates)}",
-            )
+                self.log.debug(
+                    "Opportunity graph quote evaluation: "
+                    f"instrument_id={tick.instrument_id} "
+                    "connected_edges="
+                    f"{self._opportunity_graph.connected_edge_count(str(tick.instrument_id))} "
+                    f"candidates={len(candidates)}",
+                )
 
         for candidate in candidates:
             self._handle_opportunity_candidate(candidate, now_ns)
@@ -522,7 +523,8 @@ class BettingArbitrageStrategy(Strategy):
                 self.log.debug(
                     "Opportunity graph quote evaluation: "
                     f"instrument_id={tick.instrument_id} "
-                    f"connected_edges={self._opportunity_graph.connected_edge_count(str(tick.instrument_id))} "
+                    "connected_edges="
+                    f"{self._opportunity_graph.connected_edge_count(str(tick.instrument_id))} "
                     f"candidates={len(snapshots)}",
                 )
             self._handle_fast_opportunity_snapshots(snapshots, now_ns)
@@ -866,7 +868,14 @@ class BettingArbitrageStrategy(Strategy):
             "Arbitrage candidate suppressed: "
             f"reason=duplicate opportunity_id={opportunity_id} "
             f"canonical_pair_id={canonical_pair_id}"
-            f"{self._fast_diagnostics_instrument_fields(instrument_a, instrument_b, odds_a, odds_b, quote_age_a_secs, quote_age_b_secs)}",
+            f"{self._fast_diagnostics_instrument_fields(
+                instrument_a,
+                instrument_b,
+                odds_a,
+                odds_b,
+                quote_age_a_secs,
+                quote_age_b_secs,
+            )}",
         )
 
     def _log_fast_stale_suppression(
@@ -893,7 +902,14 @@ class BettingArbitrageStrategy(Strategy):
             f"quote_age_a_secs={quote_age_a_secs:.2f} "
             f"quote_age_b_secs={quote_age_b_secs:.2f} "
             f"quote_delta_secs={quote_delta_secs:.2f}"
-            f"{self._fast_diagnostics_instrument_fields(instrument_a, instrument_b, odds_a, odds_b, quote_age_a_secs, quote_age_b_secs)}",
+            f"{self._fast_diagnostics_instrument_fields(
+                instrument_a,
+                instrument_b,
+                odds_a,
+                odds_b,
+                quote_age_a_secs,
+                quote_age_b_secs,
+            )}",
         )
 
     def _log_fast_suspect_suppression(
@@ -925,7 +941,14 @@ class BettingArbitrageStrategy(Strategy):
             f"market_id_b={instrument_b.market_id or instrument_b.event_id} "
             f"match_type={match_type} hedge_match_type={hedge_type} "
             f"confidence={hedge_confidence:.2f}"
-            f"{self._fast_diagnostics_instrument_fields(instrument_a, instrument_b, odds_a, odds_b, quote_age_a_secs, quote_age_b_secs)}",
+            f"{self._fast_diagnostics_instrument_fields(
+                instrument_a,
+                instrument_b,
+                odds_a,
+                odds_b,
+                quote_age_a_secs,
+                quote_age_b_secs,
+            )}",
         )
 
     @staticmethod
@@ -1250,7 +1273,8 @@ class BettingArbitrageStrategy(Strategy):
                 f"opportunity_id={diagnostics.opportunity_id} "
                 f"event_id_a={diagnostics.event_id_a} event_id_b={diagnostics.event_id_b} "
                 f"market_id_a={diagnostics.market_id_a} market_id_b={diagnostics.market_id_b} "
-                f"match_type={diagnostics.match_type} hedge_match_type={diagnostics.hedge_match_type} "
+                f"match_type={diagnostics.match_type} "
+                f"hedge_match_type={diagnostics.hedge_match_type} "
                 f"confidence={diagnostics.hedge_confidence:.2f}"
                 f"{self._diagnostics_instrument_fields(diagnostics)}",
             )
@@ -1319,7 +1343,6 @@ class BettingArbitrageStrategy(Strategy):
 
     def _manual_execution_plan(
         self,
-        opportunity: ArbitrageOpportunity,
         diagnostics: ArbitrageDiagnostics,
     ) -> str:
         if not self._config.opportunity_log_manual_instructions:
@@ -1611,7 +1634,7 @@ class BettingArbitrageStrategy(Strategy):
                 f"quote_age_b_secs={diagnostics.quote_age_b_secs:.2f} "
                 f"quote_delta_secs={diagnostics.quote_delta_secs:.2f} "
                 f"same_quote_cycle={diagnostics.same_quote_cycle}"
-                f"{self._manual_execution_plan(opportunity, diagnostics)}"
+                f"{self._manual_execution_plan(diagnostics)}"
             )
 
         msg = (

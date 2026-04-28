@@ -3,6 +3,7 @@
 #
 #  Unit tests for betting arbitrage strategy.
 # -------------------------------------------------------------------------------------------------
+# pylint: disable=protected-access
 
 from decimal import Decimal
 from typing import Any
@@ -500,7 +501,7 @@ class TestBettingArbitrageStrategy:
             now_ns=11_000_000_000,
         )
 
-        manual_plan = strategy._manual_execution_plan(opportunity, diagnostics)
+        manual_plan = strategy._manual_execution_plan(diagnostics)
 
         assert "Manual execution plan" in manual_plan
         assert "Instrument A" in manual_plan
@@ -1324,14 +1325,13 @@ class TestBettingArbitrageStrategy:
         assert strategy._suppress_arbitrage_candidate(suspect) is True
         assert "Instrument A" in strategy._diagnostics_instrument_fields(suspect)
         assert strategy._manual_execution_plan(
-            suspect_opportunity,
             suspect,
         )
 
         manual_off = BettingArbitrageStrategy(
             config=BettingArbitrageConfig(opportunity_log_manual_instructions=False),
         )
-        assert manual_off._manual_execution_plan(suspect_opportunity, suspect) == ""
+        assert manual_off._manual_execution_plan(suspect) == ""
         assert BettingArbitrageStrategy._quote_age_secs(10, Mock(ts_event=0)) == 0.0
 
         other_event = self._sxbet_instrument(
