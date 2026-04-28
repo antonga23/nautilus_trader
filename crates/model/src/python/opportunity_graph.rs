@@ -203,12 +203,12 @@ impl OpportunityGraphCore {
         &mut self,
         node_id: &str,
         odds: f64,
-        _received_ns: i64,
+        received_ns: i64,
         exchange_ts_ns: i64,
         min_profit_margin: f64,
         now_ns: i64,
     ) -> Vec<CandidateSnapshot> {
-        if !self.update_quote(node_id, odds, _received_ns, exchange_ts_ns) {
+        if !self.update_quote(node_id, odds, received_ns, exchange_ts_ns) {
             return Vec::new();
         }
         self.evaluate_connected_edges(node_id, min_profit_margin, now_ns)
@@ -218,12 +218,12 @@ impl OpportunityGraphCore {
         &mut self,
         node_id: &str,
         odds: f64,
-        _received_ns: i64,
+        received_ns: i64,
         exchange_ts_ns: i64,
         min_profit_margin: f64,
         now_ns: i64,
     ) -> Vec<FastCandidateSnapshot> {
-        if !self.update_quote(node_id, odds, _received_ns, exchange_ts_ns) {
+        if !self.update_quote(node_id, odds, received_ns, exchange_ts_ns) {
             return Vec::new();
         }
         self.evaluate_connected_edges_fast(node_id, min_profit_margin, now_ns)
@@ -775,6 +775,10 @@ mod tests {
     use pyo3::types::PyList;
     use rstest::rstest;
 
+    fn assert_approx_eq(left: f64, right: f64) {
+        assert!((left - right).abs() < f64::EPSILON);
+    }
+
     fn node(id: &str, outcome: &str) -> NodeSnapshot {
         node_with(
             id,
@@ -958,7 +962,7 @@ mod tests {
         core.insert_node(double_chance.clone());
         core.rebuild_edges();
         assert_eq!(core.edge_count(), 1);
-        assert_eq!(core.edge_snapshots()[0].4, 0.95);
+        assert_approx_eq(core.edge_snapshots()[0].4, 0.95);
 
         let mut filtered = OpportunityGraphCore::new(true, 0.96);
         filtered.insert_node(match_odds);
@@ -1007,8 +1011,8 @@ mod tests {
             Some(0.0)
         );
         assert_eq!(asian_handicap_confidence(&asian_home, &total_goals), None);
-        assert_eq!(cross_market_confidence(&asian_home, &draw_no_bet), 0.75);
-        assert_eq!(cross_market_confidence(&total_goals, &asian_home), 0.0);
+        assert_approx_eq(cross_market_confidence(&asian_home, &draw_no_bet), 0.75);
+        assert_approx_eq(cross_market_confidence(&total_goals, &asian_home), 0.0);
         assert_eq!(
             match_odds_double_chance_confidence(&asian_home, &draw_no_bet),
             None
@@ -1163,7 +1167,7 @@ mod tests {
         assert_eq!(snapshot.1, "b");
         assert_eq!(snapshot.2, "a");
         assert_eq!(snapshot.3, "same_market");
-        assert_eq!(snapshot.4, 1.0);
+        assert_approx_eq(snapshot.4, 1.0);
     }
 
     #[rstest]
@@ -1199,9 +1203,9 @@ mod tests {
         assert_eq!(candidates[0].1, "b");
         assert_eq!(candidates[0].2, "a");
         assert_eq!(candidates[0].3, "same_market");
-        assert_eq!(candidates[0].4, 1.0);
-        assert_eq!(candidates[0].5, 2.55);
-        assert_eq!(candidates[0].6, 2.4);
+        assert_approx_eq(candidates[0].4, 1.0);
+        assert_approx_eq(candidates[0].5, 2.55);
+        assert_approx_eq(candidates[0].6, 2.4);
         assert!(candidates[0].7 > 0.0);
         assert_eq!(candidates[0].8, 101);
         assert_eq!(candidates[0].9, 100);

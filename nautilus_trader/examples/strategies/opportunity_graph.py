@@ -62,6 +62,7 @@ FastCandidateSnapshot = tuple[
 
 
 @dataclass(frozen=True)
+# skipcq: PYL-R0902
 class OpportunityNode:
     """
     A graph node representing one venue-specific tradable betting instrument.
@@ -86,6 +87,7 @@ class OpportunityNode:
 
 
 @dataclass
+# skipcq: PYL-R0902
 class OpportunityEdge:
     """
     A precomputed hedge/opportunity relationship between two nodes.
@@ -347,6 +349,7 @@ class OpportunityGraph:
 
         return candidates
 
+    # skipcq: PYL-R0913
     def update_quote_and_evaluate(
         self,
         quote: QuoteTick,
@@ -397,6 +400,7 @@ class OpportunityGraph:
             now_ns=now_ns,
         )
 
+    # skipcq: PYL-R0913
     def update_quote_and_scan_fast(
         self,
         quote: QuoteTick,

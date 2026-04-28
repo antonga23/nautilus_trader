@@ -45,6 +45,7 @@ NANOSECONDS_PER_SECOND = 1_000_000_000
 
 
 @dataclass(frozen=True)
+# skipcq: PYL-R0902
 class ArbitrageDiagnostics:
     """Structured diagnostics captured for one arbitrage evaluation."""
 
@@ -169,6 +170,7 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         msgspec.structs.force_setattr(self, "semantic_rule_cache_dir", semantic_rule_cache_dir)
 
 
+# skipcq: PYL-R0902
 class BettingArbitrageStrategy(Strategy):
     """
     Cross-venue sports betting arbitrage strategy.
@@ -576,6 +578,7 @@ class BettingArbitrageStrategy(Strategy):
             return 0.0
         return max(0.0, (now_ns - int(quote_ts_ns)) / NANOSECONDS_PER_SECOND)
 
+    # skipcq: PYL-R0914
     def _handle_fast_actionable_snapshot(
         self,
         snapshot: FastCandidateSnapshot,
@@ -653,6 +656,7 @@ class BettingArbitrageStrategy(Strategy):
         self._opportunities_found += 1
         self._executable_candidates += 1
 
+    # skipcq: PYL-R0914
     def _handle_fast_opportunity_candidate(
         self,
         snapshot: FastCandidateSnapshot,
@@ -723,6 +727,7 @@ class BettingArbitrageStrategy(Strategy):
             self._log_arbitrage_summary()
         return True
 
+    # skipcq: PYL-R0914
     def _fast_candidate_context(
         self,
         snapshot: FastCandidateSnapshot,
@@ -773,6 +778,7 @@ class BettingArbitrageStrategy(Strategy):
             quote_delta_secs,
         )
 
+    # skipcq: PYL-R0913, PYL-R0914
     def _suppress_fast_candidate(
         self,
         *,
@@ -850,6 +856,7 @@ class BettingArbitrageStrategy(Strategy):
             return True
         return False
 
+    # skipcq: PYL-R0913, PYL-R0917
     def _log_fast_duplicate_suppression(
         self,
         instrument_a: CryptoBettingInstrument,
@@ -882,6 +889,7 @@ class BettingArbitrageStrategy(Strategy):
             f"{instrument_fields}",
         )
 
+    # skipcq: PYL-R0913, PYL-R0917
     def _log_fast_stale_suppression(
         self,
         instrument_a: CryptoBettingInstrument,
@@ -917,6 +925,7 @@ class BettingArbitrageStrategy(Strategy):
             f"{instrument_fields}",
         )
 
+    # skipcq: PYL-R0913, PYL-R0917
     def _log_fast_suspect_suppression(
         self,
         instrument_a: CryptoBettingInstrument,
@@ -1078,6 +1087,7 @@ class BettingArbitrageStrategy(Strategy):
             match_type=match_type,
         )
 
+    # skipcq: PYL-R0913, PYL-R0914
     def _fast_arbitrage_diagnostics(
         self,
         *,
@@ -1160,6 +1170,7 @@ class BettingArbitrageStrategy(Strategy):
             classification_reason=classification_reason,
         )
 
+    # skipcq: PYL-R0913, PYL-R0914
     def _log_fast_arbitrage_snapshot(
         self,
         source_node_id: str,
@@ -1211,6 +1222,7 @@ class BettingArbitrageStrategy(Strategy):
             f"{diagnostic_suffix}",
         )
 
+    # skipcq: PYL-R0913, PYL-R0917
     def _fast_diagnostics_instrument_fields(
         self,
         instrument_a: CryptoBettingInstrument,
@@ -1390,6 +1402,7 @@ class BettingArbitrageStrategy(Strategy):
             f"max_total_stake={self._config.max_total_stake}"
         )
 
+    # skipcq: PYL-R0913, PYL-R0914
     def _build_arbitrage_diagnostics(
         self,
         *,
@@ -1544,6 +1557,7 @@ class BettingArbitrageStrategy(Strategy):
         return False, "none"
 
     @staticmethod
+    # skipcq: PYL-R0911, PYL-R0913
     def _classify_arbitrage_candidate(
         *,
         stale: bool,
