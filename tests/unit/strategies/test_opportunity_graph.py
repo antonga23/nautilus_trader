@@ -6,6 +6,7 @@
 # skipcq: BAN-B101
 # bandit:skip=B101
 # skipcq: PYL-C0114, PYL-C0116, PYL-R0913, PYL-W0212
+# pylint: disable=duplicate-code,missing-function-docstring,no-name-in-module,too-many-arguments,protected-access
 """
 Parity and fast-path tests for the opportunity graph engines.
 """

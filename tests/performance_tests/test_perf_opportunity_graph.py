@@ -39,23 +39,24 @@ def _instrument(
     market_type: str = "total_goals",
     params: str = "line=2.5",
 ) -> CryptoBettingInstrument:
-    return CryptoBettingInstrument(
-        venue=venue,
-        event_id=f"event-{event_idx}-{venue.value}",
-        event_name=f"Team {event_idx} A vs Team {event_idx} B",
-        home_name=f"Team {event_idx} A",
-        away_name=f"Team {event_idx} B",
-        sport_name="Soccer",
-        competition_name="Benchmark League",
-        market_name=market_name,
-        market_type=market_type,
-        outcome=outcome,
-        side=SelectionSide.BACK,
-        price=2.4 if outcome == "over" else 2.55,
-        currency=_CURRENCY,
-        params=params,
-        start_time="2026-03-13T18:00:00Z",
-    )
+    instrument_kwargs = {
+        "venue": venue,
+        "event_id": f"event-{event_idx}-{venue.value}",
+        "event_name": f"Team {event_idx} A vs Team {event_idx} B",
+        "home_name": f"Team {event_idx} A",
+        "away_name": f"Team {event_idx} B",
+        "sport_name": "Soccer",
+        "competition_name": "Benchmark League",
+        "market_name": market_name,
+        "market_type": market_type,
+        "outcome": outcome,
+        "side": SelectionSide.BACK,
+        "price": 2.4 if outcome == "over" else 2.55,
+        "currency": _CURRENCY,
+        "params": params,
+        "start_time": "2026-03-13T18:00:00Z",
+    }
+    return CryptoBettingInstrument(**instrument_kwargs)
 
 
 def _instruments(event_count: int, *, paired: bool = True) -> list[CryptoBettingInstrument]:
