@@ -17,7 +17,7 @@ exclude_patterns = [
   "tests/integration/**",
   "tests/integration_tests/**",
   "nautilus_trader/core/*.pyi",
-  "crates/model/src/python/opportunity_graph.rs",
+  "crates/model/src/python/**",
   "nautilus_trader/adapters/betfair/**",
   "nautilus_trader/adapters/binance/**",
   "nautilus_trader/adapters/bitmex/**",
