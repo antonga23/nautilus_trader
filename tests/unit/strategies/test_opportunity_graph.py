@@ -93,7 +93,9 @@ def _edge_snapshot(graph: OpportunityGraph) -> dict[str, tuple[str, str, str, bo
 
 
 def _quote(
-    instrument: CryptoBettingInstrument, odds: Decimal, ts_event: int = 1_000
+    instrument: CryptoBettingInstrument,
+    odds: Decimal,
+    ts_event: int = 1_000,
 ) -> object:  # skipcq
     return TestDataStubs.quote_tick(
         instrument=instrument,
