@@ -47,20 +47,20 @@ SXBET_ENDPOINTS = {
 }
 
 # SX.bet sport IDs
+#
+# Keep this as a fallback only. The instrument provider refreshes the mapping
+# from /sports + /leagues/active when the HTTP client exposes it.
 SXBET_SPORT_IDS = {
-    1: "soccer",
-    2: "basketball",
+    1: "basketball",
+    2: "ice_hockey",
     3: "baseball",
-    4: "ice_hockey",
-    5: "american_football",
+    5: "soccer",
     6: "tennis",
     7: "mma",
-    8: "boxing",
     9: "esports",
-    10: "cricket",
-    14: "golf",
-    15: "rugby",
-    17: "table_tennis",
+    15: "cricket",
+    20: "rugby_league",
+    26: "australian_rules",
 }
 
 # Market types

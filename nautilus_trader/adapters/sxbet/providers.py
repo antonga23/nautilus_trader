@@ -82,6 +82,7 @@ class SXBetInstrumentProvider(InstrumentProvider):
         self._sxbet_config = config
         self._instruments: dict[InstrumentId, CryptoBettingInstrument] = {}
         self._market_cache: dict[str, dict] = {}  # market_hash -> market_data
+        self._sport_names_by_id: dict[int, str] = dict(SXBET_SPORT_IDS)
         if logger is not None:
             self._log = logger
 
@@ -110,6 +111,7 @@ class SXBetInstrumentProvider(InstrumentProvider):
             f"liquidity_probe_limit={self._sxbet_config.liquidity_probe_limit} "
             f"min_two_sided_markets={self._sxbet_config.min_two_sided_markets}",
         )
+        await self._refresh_sport_names()
 
         load_started_at = time.perf_counter()
         markets = await self._load_markets(
@@ -352,7 +354,7 @@ class SXBetInstrumentProvider(InstrumentProvider):
         if self._sxbet_config.live_only and not is_live:
             return
 
-        sport_name = SXBET_SPORT_IDS.get(sport_id, "unknown")
+        sport_name = self._sport_name(sport_id)
         league_name = market.get("leagueLabel") or market.get("leagueName") or "Unknown"
         event_id, event_id_source = self._fixture_event_id(
             market,
@@ -596,6 +598,75 @@ class SXBetInstrumentProvider(InstrumentProvider):
             return ""
         normalized = re.sub(r"\s+", " ", str(value).strip().lower())
         return normalized
+
+    async def _refresh_sport_names(self) -> None:
+        get_active_sports = getattr(self._http_client, "get_active_sports", None)
+        if not callable(get_active_sports):
+            return
+
+        try:
+            payload = await get_active_sports()
+        except Exception as exc:  # pragma: no cover - network/client failures are runtime-only
+            self._log.warning(
+                f"Failed to refresh SX.bet active sports; using fallback mapping: {type(exc).__name__}",
+            )
+            return
+
+        sports = payload.get("data", []) if isinstance(payload, dict) else []
+        if not isinstance(sports, list):
+            return
+
+        refreshed = 0
+        for sport in sports:
+            if not isinstance(sport, dict):
+                continue
+            sport_id = self._parse_sport_id(sport.get("sportId") or sport.get("id"))
+            if sport_id is None:
+                continue
+            label = sport.get("label") or sport.get("name") or sport.get("sport")
+            canonical = self._canonical_sport_label(label)
+            if canonical:
+                self._sport_names_by_id[sport_id] = canonical
+                refreshed += 1
+
+        if refreshed:
+            self._log.info(f"Refreshed SX.bet active sport labels: sports={refreshed}")
+
+    def _sport_name(self, sport_id: Any) -> str:
+        parsed = self._parse_sport_id(sport_id)
+        if parsed is None:
+            return "unknown"
+        return self._sport_names_by_id.get(parsed, SXBET_SPORT_IDS.get(parsed, "unknown"))
+
+    @staticmethod
+    def _parse_sport_id(value: Any) -> int | None:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _canonical_sport_label(cls, value: Any) -> str:
+        normalized = cls._fixture_id_component(value)
+        aliases = {
+            "football": "soccer",
+            "soccer": "soccer",
+            "basketball": "basketball",
+            "hockey": "ice_hockey",
+            "ice_hockey": "ice_hockey",
+            "baseball": "baseball",
+            "tennis": "tennis",
+            "mixed_martial_arts": "mma",
+            "mma": "mma",
+            "e_sports": "esports",
+            "esports": "esports",
+            "cricket": "cricket",
+            "rugby_league": "rugby_league",
+            "rugby": "rugby",
+            "afl": "australian_rules",
+            "australian_rules": "australian_rules",
+        }
+        return aliases.get(normalized, normalized or "unknown")
 
     @staticmethod
     def _is_yes_no_pair(outcome_one: str, outcome_two: str) -> bool:

@@ -5,6 +5,7 @@ from collections.abc import Iterable
 from dataclasses import asdict
 from dataclasses import dataclass
 import os
+import shutil
 import threading
 import time
 from pathlib import Path
@@ -26,6 +27,8 @@ from nautilus_trader.live.strategy_nodes.betting_arbitrage.config import Betting
 
 
 DEFAULT_CLOUDBET_SPORTS = ("soccer", "tennis", "basketball", "american_football")
+SEMANTIC_CACHE_COMPATIBILITY_VERSION = "semantic-rule-cache:20260429:sxbet-current-sports-v1"
+SEMANTIC_CACHE_COMPATIBILITY_FILE = ".semantic-cache-version"
 
 
 @dataclass(frozen=True)
@@ -36,6 +39,8 @@ class SemanticCacheStatus:
     promoted_template_count: int
     execution_safe_template_count: int
     same_venue_execution_eligible_template_count: int
+    compatibility_version: str | None = None
+    compatible: bool = True
 
     @property
     def ready(self) -> bool:
@@ -61,15 +66,20 @@ def ensure_semantic_cache_ready(
             promoted_template_count=0,
             execution_safe_template_count=0,
             same_venue_execution_eligible_template_count=0,
+            compatibility_version=SEMANTIC_CACHE_COMPATIBILITY_VERSION,
+            compatible=True,
         )
 
     path = Path(cache_dir)
     path.mkdir(parents=True, exist_ok=True)
     status = semantic_cache_status(path)
-    if status.ready:
+    if status.ready and status.compatible:
         return status
+    if status.ready and not status.compatible:
+        _reset_semantic_cache_dir(path)
 
     _run_bootstrap(manifest=manifest, cache_dir=path, logger=logger)
+    _write_semantic_cache_compatibility(path)
     status = semantic_cache_status(path, source="bootstrapped")
     if not status.ready:
         raise RuntimeError(
@@ -88,6 +98,8 @@ def semantic_cache_status(
     store = RuleStore(FileRuleCache(path))
     manifests = store.list_manifest_ids()
     promoted_template_ids = store.list_promoted_template_ids()
+    compatibility_version = _read_semantic_cache_compatibility(path)
+    compatible = compatibility_version == SEMANTIC_CACHE_COMPATIBILITY_VERSION
 
     execution_safe = 0
     same_venue_eligible = 0
@@ -107,7 +119,33 @@ def semantic_cache_status(
         promoted_template_count=len(promoted_template_ids),
         execution_safe_template_count=execution_safe,
         same_venue_execution_eligible_template_count=same_venue_eligible,
+        compatibility_version=compatibility_version,
+        compatible=compatible,
     )
+
+
+def _read_semantic_cache_compatibility(cache_dir: Path) -> str | None:
+    marker = cache_dir / SEMANTIC_CACHE_COMPATIBILITY_FILE
+    if not marker.exists():
+        return None
+    return marker.read_text(encoding="utf-8").strip() or None
+
+
+def _write_semantic_cache_compatibility(cache_dir: Path) -> None:
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / SEMANTIC_CACHE_COMPATIBILITY_FILE).write_text(
+        f"{SEMANTIC_CACHE_COMPATIBILITY_VERSION}\n",
+        encoding="utf-8",
+    )
+
+
+def _reset_semantic_cache_dir(cache_dir: Path) -> None:
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    for child in cache_dir.iterdir():
+        if child.is_dir():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
 
 
 def _run_bootstrap(

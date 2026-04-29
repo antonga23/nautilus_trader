@@ -7,6 +7,7 @@
 import pytest
 
 from nautilus_trader.adapters.sxbet.config import SXBetInstrumentProviderConfig
+from nautilus_trader.adapters.sxbet.constants import SXBET_SPORT_IDS
 from nautilus_trader.adapters.sxbet.constants import SXBET_TOKENS
 from nautilus_trader.adapters.sxbet.http_client import SXBetHttpClientError
 from nautilus_trader.adapters.sxbet.providers import SXBetInstrumentProvider
@@ -17,6 +18,13 @@ from nautilus_trader.adapters.sxbet.signing import decimal_odds_to_percentage
 
 TWO_INSTRUMENTS = 2
 FOUR_INSTRUMENTS = 4
+
+
+def test_sxbet_static_sport_ids_match_current_active_taxonomy():
+    assert SXBET_SPORT_IDS[1] == "basketball"
+    assert SXBET_SPORT_IDS[5] == "soccer"
+    assert SXBET_SPORT_IDS[20] == "rugby_league"
+    assert SXBET_SPORT_IDS[26] == "australian_rules"
 
 
 @pytest.mark.asyncio
@@ -167,6 +175,67 @@ async def test_sxbet_provider_uses_fixture_event_id_and_keeps_market_hash_as_mar
     assert all(instrument.info["sxbet_market_hash"] == "market-1" for instrument in instruments)
     assert all(instrument.info["sxbet_event_id_source"] == "eventId" for instrument in instruments)
     assert provider.find_by_market_hash("market-1") == instruments
+
+
+@pytest.mark.asyncio
+async def test_sxbet_provider_refreshes_sport_labels_from_active_sports():
+    class RecordingHttpClient:
+        async def get_active_sports(self) -> dict:
+            return {
+                "data": [
+                    {"sportId": 1, "label": "Basketball"},
+                    {"sportId": 5, "label": "Soccer"},
+                    {"sportId": 26, "label": "AFL"},
+                ],
+            }
+
+        async def get_markets(
+            self,
+            sport_id: int | None = None,
+            league_id: int | None = None,
+            only_active: bool = True,
+            pagination_key: str | None = None,
+            page_size: int | None = None,
+        ) -> dict:
+            assert sport_id == 26
+            assert league_id is None
+            assert only_active is True
+            return {
+                "data": {
+                    "markets": [
+                        {
+                            "marketHash": "market-afl",
+                            "teamOneName": "Team A",
+                            "teamTwoName": "Team B",
+                            "sportId": 26,
+                            "leagueName": "AFL",
+                            "type": 52,
+                            "outcomeOneName": "Team A",
+                            "outcomeTwoName": "Team B",
+                        },
+                    ],
+                },
+            }
+
+        async def get_best_odds(
+            self,
+            *,
+            market_hashes: list[str],
+            base_token: str,
+            log_api_error: bool = True,
+        ) -> dict:
+            return {"data": {"bestOdds": []}}
+
+    provider = SXBetInstrumentProvider(
+        http_client=RecordingHttpClient(),
+        config=SXBetInstrumentProviderConfig(sport_ids=frozenset({26})),
+    )
+
+    await provider.load_all_async()
+
+    instruments = list(provider.get_all().values())
+    assert len(instruments) == TWO_INSTRUMENTS
+    assert all(instrument.sport_name == "australian_rules" for instrument in instruments)
 
 
 @pytest.mark.asyncio

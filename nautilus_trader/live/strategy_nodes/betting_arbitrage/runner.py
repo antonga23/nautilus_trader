@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 from decimal import Decimal
 import json
 import threading
@@ -8,6 +9,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from nautilus_trader.adapters.betting.semantics import MarketNormalizer
 from nautilus_trader.live.strategy_nodes.betting_arbitrage.builder import build_trading_node_config
 from nautilus_trader.live.strategy_nodes.betting_arbitrage.builder import default_render_paths
 from nautilus_trader.live.strategy_nodes.betting_arbitrage.builder import load_manifest
@@ -383,6 +385,8 @@ def _semantic_cache_payload(status: SemanticCacheStatus | None) -> dict[str, obj
         "sameVenueExecutionEligibleTemplateCount": (
             payload["same_venue_execution_eligible_template_count"]
         ),
+        "compatibilityVersion": payload.get("compatibility_version"),
+        "compatible": payload.get("compatible", True),
     }
 
 
@@ -478,6 +482,13 @@ def _probe_runtime(
     if run_error:
         raise run_error[0]
 
+    semantic_diagnostics = latest_payload.get("semanticDiagnostics", {})
+    diagnostics_json = json.dumps(
+        semantic_diagnostics,
+        sort_keys=True,
+        default=str,
+        separators=(",", ":"),
+    )[:4000]
     raise RuntimeError(
         "Runtime probe did not observe the required semantic coverage "
         f"(connected_nodes={latest_payload['connectedNodes']}, "
@@ -485,7 +496,8 @@ def _probe_runtime(
         f"positive_margin_candidates={latest_payload['positiveMarginCandidates']['total']}, "
         f"graph_engine={latest_payload.get('graphEngine')}, "
         f"topology_source={latest_payload.get('topologySource')}, "
-        f"semantic_template_count={latest_payload.get('semanticTemplateCount')})",
+        f"semantic_template_count={latest_payload.get('semanticTemplateCount')}, "
+        f"semantic_diagnostics={diagnostics_json})",
     )
 
 
@@ -507,6 +519,7 @@ def _collect_runtime_probe_payload(
     graph = strategy._opportunity_graph
     stats = strategy.get_stats()
     snapshot = _snapshot_probe_graph_state(graph)
+    semantic_diagnostics = _semantic_probe_diagnostics(graph)
     if snapshot is None:
         return {
             "elapsedSeconds": round(elapsed_seconds, 2),
@@ -535,6 +548,7 @@ def _collect_runtime_probe_payload(
                 "total": 0,
             },
             "strategyStats": stats,
+            "semanticDiagnostics": semantic_diagnostics,
             "sampleCandidates": [],
         }
     execution_safe_edges = sum(1 for edge in snapshot["edges"] if edge.execution_safe)
@@ -578,6 +592,7 @@ def _collect_runtime_probe_payload(
             "total": profitability["threshold_execution"] + profitability["threshold_same_venue"],
         },
         "strategyStats": stats,
+        "semanticDiagnostics": semantic_diagnostics,
         "sampleCandidates": profitability["sample_candidates"],
     }
 
@@ -616,6 +631,190 @@ def _snapshot_probe_graph_state(graph) -> dict[str, object] | None:
         }
     except RuntimeError:
         return None
+
+
+def _semantic_probe_diagnostics(graph) -> dict[str, object]:
+    try:
+        nodes = dict(graph.nodes_by_id)
+    except RuntimeError:
+        return {"available": False, "reason": "graph_mutated_during_snapshot"}
+
+    node_diagnostics = _semantic_node_diagnostics(nodes)
+    template_diagnostics = _semantic_template_diagnostics(graph)
+    supported_provider_node_count = _supported_provider_node_count(
+        node_diagnostics["provider_pattern_counts"],
+        template_diagnostics["provider_pattern_counts"],
+    )
+    common_pattern_key_count = len(
+        set(node_diagnostics["pattern_counts"]) & set(template_diagnostics["pattern_counts"]),
+    )
+    return {
+        "available": True,
+        "nodeCount": len(nodes),
+        "normalizedNodeCount": sum(node_diagnostics["pattern_counts"].values()),
+        "normalizationErrorCount": sum(node_diagnostics["normalization_errors"].values()),
+        "supportedProviderNodeCount": supported_provider_node_count,
+        "commonPatternKeyCount": common_pattern_key_count,
+        "templateCount": template_diagnostics["template_count"],
+        "nodeSports": _top_counter(node_diagnostics["sport_counts"]),
+        "nodeMarkets": _top_counter(node_diagnostics["market_counts"]),
+        "templateSports": _top_counter(template_diagnostics["sport_counts"]),
+        "templateSafetyTiers": _top_counter(template_diagnostics["tier_counts"]),
+        "templateProviderScopes": _top_counter(template_diagnostics["provider_scope_counts"]),
+        "nodePatternKeys": _top_counter(node_diagnostics["pattern_counts"]),
+        "templatePatternKeys": _top_counter(template_diagnostics["pattern_counts"]),
+        "normalizationErrors": _top_counter(node_diagnostics["normalization_errors"]),
+        "normalizationErrorSamples": node_diagnostics["normalization_error_samples"],
+        "normalizedNodeSamples": node_diagnostics["normalized_node_samples"],
+    }
+
+
+def _semantic_node_diagnostics(nodes: dict[str, object]) -> dict[str, object]:
+    pattern_counts: Counter[tuple[str, ...]] = Counter()
+    provider_pattern_counts: Counter[tuple[str, ...]] = Counter()
+    sport_counts: Counter[str] = Counter()
+    market_counts: Counter[str] = Counter()
+    normalization_errors: Counter[str] = Counter()
+    normalization_error_samples: list[dict[str, object]] = []
+    normalized_node_samples: list[dict[str, object]] = []
+    for node_id, node in nodes.items():
+        instrument = getattr(node, "instrument", None)
+        try:
+            normalized = MarketNormalizer.normalize(instrument)
+        except (AttributeError, TypeError, ValueError) as exc:
+            error_type = type(exc).__name__
+            normalization_errors[error_type] += 1
+            if len(normalization_error_samples) < 5:
+                normalization_error_samples.append(
+                    {
+                        "nodeId": str(node_id),
+                        "instrumentId": str(getattr(instrument, "id", node_id)),
+                        "marketType": str(getattr(instrument, "market_type", "")),
+                        "outcome": str(getattr(instrument, "outcome", "")),
+                        "errorType": error_type,
+                        "error": str(exc)[:240],
+                    },
+                )
+            continue
+
+        pattern_key = (
+            normalized.sport,
+            normalized.scope,
+            normalized.market_type,
+            normalized.market_family,
+            normalized.selection,
+            _semantic_params_key(normalized.params),
+        )
+        provider_pattern_key = (normalized.venue, *pattern_key)
+        pattern_counts[pattern_key] += 1
+        provider_pattern_counts[provider_pattern_key] += 1
+        sport_counts[normalized.sport] += 1
+        market_counts[normalized.market_type] += 1
+        if len(normalized_node_samples) < 5:
+            normalized_node_samples.append(
+                {
+                    "nodeId": str(node_id),
+                    "venue": normalized.venue,
+                    "sport": normalized.sport,
+                    "scope": normalized.scope,
+                    "marketType": normalized.market_type,
+                    "selection": normalized.selection,
+                    "paramsKey": pattern_key[-1],
+                },
+            )
+
+    return {
+        "pattern_counts": pattern_counts,
+        "provider_pattern_counts": provider_pattern_counts,
+        "sport_counts": sport_counts,
+        "market_counts": market_counts,
+        "normalization_errors": normalization_errors,
+        "normalization_error_samples": normalization_error_samples,
+        "normalized_node_samples": normalized_node_samples,
+    }
+
+
+def _semantic_template_diagnostics(graph) -> dict[str, object]:
+    pattern_counts: Counter[tuple[str, ...]] = Counter()
+    provider_pattern_counts: Counter[tuple[str, ...]] = Counter()
+    sport_counts: Counter[str] = Counter()
+    tier_counts: Counter[str] = Counter()
+    provider_scope_counts: Counter[str] = Counter()
+    templates = _semantic_template_payloads_for_diagnostics(graph)
+    for template in templates:
+        provider_scope = tuple(str(item) for item in template.get("provider_scope", ()))
+        provider_scope_key = ",".join(provider_scope) or "venue_agnostic"
+        provider_scope_counts[provider_scope_key] += 1
+        tier_counts[str(template.get("safety_tier") or "unknown")] += 1
+        for side in ("pattern_a", "pattern_b"):
+            pattern = template.get(side)
+            if not isinstance(pattern, dict):
+                continue
+            pattern_key = _template_pattern_key(pattern)
+            pattern_counts[pattern_key] += 1
+            sport_counts[pattern_key[0]] += 1
+            for provider in provider_scope or ("venue_agnostic",):
+                provider_pattern_counts[(provider, *pattern_key)] += 1
+
+    return {
+        "pattern_counts": pattern_counts,
+        "provider_pattern_counts": provider_pattern_counts,
+        "sport_counts": sport_counts,
+        "tier_counts": tier_counts,
+        "provider_scope_counts": provider_scope_counts,
+        "template_count": len(templates),
+    }
+
+
+def _supported_provider_node_count(
+    node_provider_pattern_counts: Counter[tuple[str, ...]],
+    template_provider_pattern_counts: Counter[tuple[str, ...]],
+) -> int:
+    supported_provider_node_count = 0
+    for provider_pattern_key, count in node_provider_pattern_counts.items():
+        venue = provider_pattern_key[0]
+        pattern_key = provider_pattern_key[1:]
+        if (
+            template_provider_pattern_counts.get((venue, *pattern_key), 0)
+            or template_provider_pattern_counts.get(("venue_agnostic", *pattern_key), 0)
+        ):
+            supported_provider_node_count += count
+    return supported_provider_node_count
+
+
+def _semantic_template_payloads_for_diagnostics(graph) -> list[dict[str, object]]:
+    payloads = getattr(graph, "_semantic_template_payloads", None)
+    if not callable(payloads):
+        return []
+    try:
+        result = payloads()
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return []
+    return [item for item in result if isinstance(item, dict)]
+
+
+def _template_pattern_key(pattern: dict[str, object]) -> tuple[str, ...]:
+    return (
+        str(pattern.get("sport") or ""),
+        str(pattern.get("scope") or ""),
+        str(pattern.get("market_type") or ""),
+        str(pattern.get("market_family") or ""),
+        str(pattern.get("selection") or ""),
+        str(pattern.get("params_key") or ""),
+    )
+
+
+def _semantic_params_key(params: tuple[tuple[str, str], ...] | object) -> str:
+    if isinstance(params, tuple):
+        return json.dumps(list(params), sort_keys=True, separators=(",", ":"))
+    return str(params or "")
+
+
+def _top_counter(counter: Counter, limit: int = 10) -> list[dict[str, object]]:
+    return [
+        {"key": list(key) if isinstance(key, tuple) else str(key), "count": count}
+        for key, count in counter.most_common(limit)
+    ]
 
 
 def _probe_edge_profitability(  # noqa: C901

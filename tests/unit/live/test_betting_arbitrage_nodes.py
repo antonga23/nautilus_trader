@@ -128,6 +128,7 @@ def _seed_promoted_template(
     template = SemanticRuleTemplate.from_rule(rule, support=support)
     promoted = RulePromotionPolicy().promote_template(store, template)
     assert promoted is not None
+    node_cache._write_semantic_cache_compatibility(cache_dir)
 
 
 def _manifest(tmp_path: Path, *, cache_dir: Path | None = None) -> BettingArbitrageNodeManifest:
@@ -442,7 +443,31 @@ class TestSemanticCacheBootstrap:
 
         assert status.source == "existing"
         assert status.ready is True
+        assert status.compatible is True
         assert status.promoted_template_count >= 1
+
+    def test_rebuilds_ready_cache_when_compatibility_marker_is_stale(self, tmp_path, monkeypatch):
+        cache_dir = tmp_path / "semantic-cache"
+        _seed_promoted_template(cache_dir)
+        (cache_dir / node_cache.SEMANTIC_CACHE_COMPATIBILITY_FILE).write_text("stale\n")
+        stale_file = cache_dir / "stale.bin"
+        stale_file.write_text("old")
+        manifest = _manifest(tmp_path, cache_dir=cache_dir)
+
+        def fake_bootstrap(*, cache_dir, **_):
+            assert not stale_file.exists()
+            _seed_promoted_template(cache_dir)
+
+        monkeypatch.setattr(
+            "nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache._run_bootstrap",
+            fake_bootstrap,
+        )
+
+        status = ensure_semantic_cache_ready(manifest)
+
+        assert status.source == "bootstrapped"
+        assert status.ready is True
+        assert status.compatible is True
 
     def test_bootstraps_missing_semantic_cache(self, tmp_path, monkeypatch):
         cache_dir = tmp_path / "semantic-cache"
@@ -1118,6 +1143,53 @@ class TestBettingArbitrageNodeRunner:
         assert payload["runtimeProbe"]["semanticMatchInstruments"] == 2
         assert payload["runtimeProbe"]["positiveMarginCandidates"]["total"] == 1
 
+    def test_semantic_probe_diagnostics_report_live_pattern_template_overlap(self):
+        instrument = _instrument(
+            venue="SXBET",
+            market_type="total_goals",
+            market_name="Total Goals",
+            outcome="over",
+            params="line=2.5",
+            handicap=2.5,
+        )
+
+        class FakeGraph:
+            nodes_by_id = {"node-1": SimpleNamespace(instrument=instrument)}
+
+            @staticmethod
+            def _semantic_template_payloads():
+                params_key = json.dumps([["line", "2.5"]], separators=(",", ":"))
+                return [
+                    {
+                        "provider_scope": ["SXBET"],
+                        "safety_tier": "EXECUTION_SAFE_SAME_VENUE_ELIGIBLE",
+                        "pattern_a": {
+                            "sport": "soccer",
+                            "scope": "full_time",
+                            "market_type": "TOTALS",
+                            "market_family": "TOTALS",
+                            "selection": "OVER",
+                            "params_key": params_key,
+                        },
+                        "pattern_b": {
+                            "sport": "soccer",
+                            "scope": "full_time",
+                            "market_type": "TOTALS",
+                            "market_family": "TOTALS",
+                            "selection": "UNDER",
+                            "params_key": params_key,
+                        },
+                    },
+                ]
+
+        diagnostics = node_runner._semantic_probe_diagnostics(FakeGraph())
+
+        assert diagnostics["normalizedNodeCount"] == 1
+        assert diagnostics["normalizationErrorCount"] == 0
+        assert diagnostics["supportedProviderNodeCount"] == 1
+        assert diagnostics["commonPatternKeyCount"] == 1
+        assert diagnostics["nodeSports"] == [{"key": "soccer", "count": 1}]
+
     def test_run_success_and_failure_paths_record_status_transitions(self, tmp_path, monkeypatch):
         def semantic_status(_manifest):
             return SemanticCacheStatus(
@@ -1211,6 +1283,8 @@ class TestBettingArbitrageNodeRunner:
             "promotedTemplateCount": 3,
             "executionSafeTemplateCount": 1,
             "sameVenueExecutionEligibleTemplateCount": 1,
+            "compatibilityVersion": None,
+            "compatible": True,
         }
         assert node_runner._semantic_cache_payload(None) is None
 
