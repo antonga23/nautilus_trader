@@ -4,6 +4,7 @@
 #  Unit tests for betting semantic rule mining.
 # -------------------------------------------------------------------------------------------------
 
+from dataclasses import replace
 from decimal import Decimal
 
 from nautilus_trader.adapters.betting.common.enums import SelectionSide
@@ -597,3 +598,160 @@ def test_rule_store_persists_template_safety_tier():
         store.load_promoted_template(template.template_id).safety_tier
         == SafetyTier.EXECUTION_SAFE.value
     )
+
+
+def test_promotion_policy_rejects_price_correlation_and_unknown_rule_caveats():
+    base_rule = RuleClassifier().classify(
+        betting_instrument(market_name="match_odds", market_type="match_odds", outcome="home"),
+        betting_instrument(
+            market_name="double_chance",
+            market_type="double_chance",
+            outcome="away_draw",
+        ),
+    )
+    assert base_rule is not None
+    policy = RulePromotionPolicy()
+
+    correlation_rule = replace(base_rule, caveats=("price_correlation_only",))
+    unknown_rule = replace(base_rule, caveats=("unknown_settlement_present",))
+
+    correlation_tier, correlation_reasons = policy.classify_rule_tier(correlation_rule, None)
+    unknown_tier, unknown_reasons = policy.classify_rule_tier(unknown_rule, None)
+
+    assert correlation_tier == SafetyTier.AUDIT_ONLY
+    assert correlation_reasons == ("price_correlation_only",)
+    assert policy.can_promote(correlation_rule, None) is False
+    assert unknown_tier == SafetyTier.AUDIT_ONLY
+    assert unknown_reasons == ("unknown_settlement_present",)
+
+
+def test_promotion_policy_marks_partial_rule_same_venue_eligible_and_promotable():
+    cache = DictCache()
+    store = RuleStore(cache)
+    partial_rule = RuleClassifier().classify(
+        betting_instrument(
+            market_name="asian_handicap",
+            market_type="asian_handicap",
+            outcome="home",
+            params="line=0.25",
+            handicap=0.25,
+        ),
+        betting_instrument(
+            market_name="asian_handicap",
+            market_type="asian_handicap",
+            outcome="away",
+            params="line=-0.25",
+            handicap=-0.25,
+        ),
+    )
+    assert partial_rule is not None
+    policy = RulePromotionPolicy()
+    stats = RuleValidationStats(
+        rule_id=partial_rule.rule_id,
+        venue_id="SXBET",
+        sport="soccer",
+        sample_count=5,
+        match_count=5,
+        mismatch_count=0,
+        confidence=0.95,
+        last_validated_at="2026-04-26T00:00:00Z",
+    )
+
+    tier, reasons = policy.classify_rule_tier(partial_rule, stats)
+    promoted = policy.promote(store, partial_rule, stats)
+
+    assert tier == SafetyTier.EXECUTION_SAFE_SAME_VENUE_ELIGIBLE
+    assert "partial_settlement_present" in reasons
+    assert promoted is not None
+    assert promoted.safety_tier == SafetyTier.EXECUTION_SAFE_SAME_VENUE_ELIGIBLE.value
+
+
+def test_promotion_policy_promote_returns_none_for_audit_only_rule():
+    cache = DictCache()
+    store = RuleStore(cache)
+    base_rule = RuleClassifier().classify(
+        betting_instrument(market_name="match_odds", market_type="match_odds", outcome="home"),
+        betting_instrument(
+            market_name="double_chance",
+            market_type="double_chance",
+            outcome="away_draw",
+        ),
+    )
+    assert base_rule is not None
+    audit_only_rule = replace(base_rule, caveats=("price_correlation_only",))
+
+    assert RulePromotionPolicy().promote(store, audit_only_rule, None) is None
+
+
+def test_template_promotion_policy_handles_audit_only_and_partial_templates():
+    base_rule = RuleClassifier().classify(
+        betting_instrument(market_name="match_odds", market_type="match_odds", outcome="home"),
+        betting_instrument(
+            market_name="double_chance",
+            market_type="double_chance",
+            outcome="away_draw",
+        ),
+    )
+    partial_rule = RuleClassifier().classify(
+        betting_instrument(
+            market_name="asian_handicap",
+            market_type="asian_handicap",
+            outcome="home",
+            params="line=0.25",
+            handicap=0.25,
+        ),
+        betting_instrument(
+            market_name="asian_handicap",
+            market_type="asian_handicap",
+            outcome="away",
+            params="line=-0.25",
+            handicap=-0.25,
+        ),
+    )
+    assert base_rule is not None
+    assert partial_rule is not None
+    policy = RulePromotionPolicy()
+    cache = DictCache()
+    store = RuleStore(cache)
+
+    correlation_template = replace(
+        SemanticRuleTemplate.from_rule(
+            base_rule,
+            support=TemplateSupportStats(
+                template_id="corr-template",
+                observed_count=12,
+                event_count=4,
+                provider_count=2,
+                providers=("CLOUDBET", "SXBET"),
+                sports=("soccer",),
+                confidence=0.99,
+            ),
+        ),
+        caveats=("price_correlation_only",),
+    )
+    unknown_template = replace(correlation_template, caveats=("unknown_settlement_present",))
+    partial_template = SemanticRuleTemplate.from_rule(
+        partial_rule,
+        support=TemplateSupportStats(
+            template_id="partial-template",
+            observed_count=4,
+            event_count=2,
+            provider_count=1,
+            providers=("SXBET",),
+            sports=("soccer",),
+            confidence=0.99,
+        ),
+    )
+
+    correlation_tier, correlation_reasons = policy.classify_template_tier(correlation_template)
+    unknown_tier, unknown_reasons = policy.classify_template_tier(unknown_template)
+    partial_tier, partial_reasons = policy.classify_template_tier(partial_template)
+
+    assert correlation_tier == SafetyTier.AUDIT_ONLY
+    assert correlation_reasons == ("price_correlation_only",)
+    assert policy.can_promote_template(correlation_template) is False
+    assert policy.promote_template(store, correlation_template) is None
+    assert unknown_tier == SafetyTier.AUDIT_ONLY
+    assert unknown_reasons == ("unknown_settlement_present",)
+    assert partial_tier == SafetyTier.EXECUTION_SAFE_SAME_VENUE_ELIGIBLE
+    assert "partial_settlement_present" in partial_reasons
