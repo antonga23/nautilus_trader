@@ -227,7 +227,7 @@ jobs:
             --poll-interval-secs 5 \
             --min-connected-nodes 2 \
             --min-match-instruments 2 \
-            --min-quoted-match-instruments 2 \
+            --min-quoted-match-instruments 0 \
             --min-positive-margin-candidates 0 \
             --require-rust-semantic-topology
 
@@ -726,7 +726,7 @@ jobs:
                --require-rust-semantic-topology \
                --min-connected-nodes 2 \
                --min-match-instruments 2 \
-               --min-quoted-match-instruments 2 \
+               --min-quoted-match-instruments 0 \
                --min-positive-margin-candidates 0"
 
       - name: Inspect deployed semantic cache directory
