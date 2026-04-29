@@ -220,8 +220,9 @@ class OpportunityGraph:
         """
         Return the number of nodes with an active quote snapshot.
         """
-        if self._using_rust_topology():
-            return self._rust_core.quote_state_count()
+        rust_core = self._active_rust_core()
+        if rust_core is not None:
+            return rust_core.quote_state_count()
         return len(self.quotes_by_node_id)
 
     def clear(self) -> None:
@@ -330,8 +331,9 @@ class OpportunityGraph:
             exchange_ts_ns=int(quote.ts_event),
         )
         self.quotes_by_node_id[node_id] = state
-        if self._using_rust_topology():
-            self._rust_core.update_quote(
+        rust_core = self._active_rust_core()
+        if rust_core is not None:
+            rust_core.update_quote(
                 node_id,
                 float(odds),
                 received_ns,
@@ -353,8 +355,9 @@ class OpportunityGraph:
         if updated_quote is None:
             return []
 
-        if self._using_rust_topology():
-            snapshots = self._rust_core.evaluate_updated_node(
+        rust_core = self._active_rust_core()
+        if rust_core is not None:
+            snapshots = rust_core.evaluate_updated_node(
                 node_id,
                 float(min_profit_margin),
                 now_ns,
@@ -414,7 +417,8 @@ class OpportunityGraph:
         """
         Update latest quote state and evaluate affected graph edges in one operation.
         """
-        if not self._using_rust_topology():
+        rust_core = self._active_rust_core()
+        if rust_core is None:
             quote_state = self.update_quote(quote, odds=odds, received_ns=received_ns)
             if quote_state is None:
                 return None, []
@@ -438,7 +442,7 @@ class OpportunityGraph:
             exchange_ts_ns=int(quote.ts_event),
         )
         self.quotes_by_node_id[node_id] = state
-        snapshots = self._rust_core.update_quote_and_evaluate(
+        snapshots = rust_core.update_quote_and_evaluate(
             node_id,
             float(odds),
             received_ns,
@@ -465,14 +469,15 @@ class OpportunityGraph:
         """
         Update quote state and return compact Rust scan results for strategy hot paths.
         """
-        if not self._using_rust_topology():
+        rust_core = self._active_rust_core()
+        if rust_core is None:
             return None
 
         node_id = str(quote.instrument_id)
         if node_id not in self.nodes_by_id:
             return False, []
 
-        snapshots = self._rust_core.update_quote_and_scan_fast(
+        snapshots = rust_core.update_quote_and_scan_fast(
             node_id,
             float(odds),
             received_ns,
@@ -1077,6 +1082,9 @@ class OpportunityGraph:
 
     def _using_rust_topology(self) -> bool:
         return self._rust_core is not None and self._topology_source.startswith("rust")
+
+    def _active_rust_core(self) -> Any | None:
+        return self._rust_core if self._using_rust_topology() else None
 
     def _rust_core_supports_semantic_topology(self) -> bool:
         return self._rust_core is not None and all(
