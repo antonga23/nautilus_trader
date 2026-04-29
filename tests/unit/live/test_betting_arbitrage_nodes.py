@@ -467,6 +467,7 @@ class TestBettingArbitrageNodeRunner:
         assert "--min-positive-margin-candidates 1" in workflow
         assert "Wait for deployed node status and semantic cache" in workflow
         assert "Overlay branch strategy-node sources onto installed wheel" in workflow
+        assert "Build validated wheel from checked-out source" in workflow
         assert "SXBET_API_KEY: ${{ secrets.SXBET_API_KEY }}" in workflow
         assert "CLOUDBET_API_KEY: ${{ secrets.CLOUDBET_API_KEY }}" in workflow
 

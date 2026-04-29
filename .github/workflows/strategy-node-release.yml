@@ -182,6 +182,14 @@ jobs:
                   shutil.copy2(source, destination)
           PY
 
+      - name: Build validated wheel from checked-out source
+        env:
+          BUILD_MODE: release
+        run: |
+          rm -f dist/*.whl
+          uv build --wheel --python 3.12
+          ls -lh dist/
+
       - name: Save self-hosted wheel cache
         if: steps.local-wheel-cache.outputs.cache-hit != 'true'
         run: bash scripts/ci/self_hosted_wheel_cache.sh save "${{ steps.wheel-key.outputs.key }}"
