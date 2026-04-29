@@ -470,6 +470,59 @@ def test_market_matcher_marks_same_venue_venue_safe_rules_as_same_venue_eligible
     assert hedges[0].execution_safe is False
 
 
+def test_market_matcher_can_price_same_venue_execution_eligible_probe_pairs():
+    cache = DictCache()
+    store = RuleStore(cache)
+    policy = RulePromotionPolicy()
+    instrument = betting_instrument(
+        market_name="draw_no_bet",
+        market_type="draw_no_bet",
+        outcome="home",
+    )
+    hedge = betting_instrument(
+        market_name="asian_handicap",
+        market_type="asian_handicap",
+        outcome="home",
+        params="line=0",
+        handicap=0.0,
+    )
+    rule = RuleClassifier().classify(instrument, hedge)
+    assert rule is not None
+    assert (
+        policy.promote(
+            store,
+            rule,
+            RuleValidationStats(
+                rule_id=rule.rule_id,
+                venue_id="SXBET",
+                sport="soccer",
+                sample_count=5,
+                match_count=5,
+                mismatch_count=0,
+                confidence=0.95,
+                last_validated_at="2026-04-26T00:00:00Z",
+            ),
+        )
+        is not None
+    )
+
+    matcher = MarketMatcher(rule_store=store)
+
+    assert matcher.check_arbitrage(instrument, hedge) is None
+
+    opportunity = matcher.check_arbitrage(
+        instrument,
+        hedge,
+        odds_a=Decimal("2.30"),
+        odds_b=Decimal("2.35"),
+        allow_same_venue_execution_eligible=True,
+    )
+
+    assert opportunity is not None
+    assert opportunity.is_same_venue is True
+    assert opportunity.profit_margin > 0
+
+
 def test_opportunity_graph_keeps_void_edges_but_does_not_evaluate_them():
     matcher = MarketMatcher()
     graph = OpportunityGraph(matcher)

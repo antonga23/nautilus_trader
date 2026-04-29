@@ -167,6 +167,21 @@ jobs:
             validate-manifest \
             --manifest "$GITHUB_WORKSPACE/deploy/strategy_nodes/betting_arbitrage/sxbet-single-venue.json"
 
+      - name: Probe SX.bet runtime semantic coverage
+        env:
+          SXBET_API_KEY: ${{ secrets.SXBET_API_KEY }}
+          CLOUDBET_API_KEY: ${{ secrets.CLOUDBET_API_KEY }}
+        run: |
+          cd /tmp
+          "$GITHUB_WORKSPACE/.venv/bin/python" -m nautilus_trader.live.strategy_nodes.betting_arbitrage \
+            probe-runtime \
+            --manifest "$GITHUB_WORKSPACE/deploy/strategy_nodes/betting_arbitrage/sxbet-single-venue.json" \
+            --timeout-seconds 420 \
+            --poll-interval-secs 5 \
+            --min-connected-nodes 2 \
+            --min-match-instruments 2 \
+            --min-positive-margin-candidates 1
+
       - name: Validate Polymarket manifest
         run: |
           cd /tmp
@@ -567,6 +582,9 @@ jobs:
             scripts/deploy/strategy_nodes/deploy_betting_strategy_node.sh \
             "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST:/tmp/deploy_betting_strategy_node.sh"
           scp -i strategy-node.key -o StrictHostKeyChecking=no \
+            scripts/deploy/strategy_nodes/wait_for_strategy_node_status.sh \
+            "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST:/tmp/wait_for_strategy_node_status.sh"
+          scp -i strategy-node.key -o StrictHostKeyChecking=no \
             scripts/ci/runner_health_check.sh \
             "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST:/tmp/runner_health_check.sh"
           if [ -n "$STRATEGY_NODE_ENV_FILE" ]; then
@@ -646,6 +664,42 @@ jobs:
                $registry_args && \
              rm -f /tmp/strategy-node-ghcr-token"
 
+      - name: Wait for deployed node status and semantic cache
+        run: |
+          ssh -i strategy-node.key -o StrictHostKeyChecking=no "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST" \
+            "chmod +x /tmp/wait_for_strategy_node_status.sh && \
+             /tmp/wait_for_strategy_node_status.sh \
+               --status-file /opt/cloudbet/strategy-nodes/$STRATEGY_NODE_CONTAINER_NAME/status.json \
+               --timeout-seconds 900 \
+               --success-status running,completed \
+               --require-semantic-cache-ready"
+
+      - name: Inspect deployed semantic cache directory
+        run: |
+          ssh -i strategy-node.key -o StrictHostKeyChecking=no "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST" \
+            "cache_dir=/opt/cloudbet/strategy-nodes/$STRATEGY_NODE_CONTAINER_NAME/semantic-rule-cache && \
+             test -d \"\$cache_dir\" && \
+             file_count=\$(find \"\$cache_dir\" -type f | wc -l | tr -d ' ') && \
+             printf 'semantic_cache_dir=%s\nsemantic_cache_file_count=%s\n' \"\$cache_dir\" \"\$file_count\" && \
+             test \"\$file_count\" -gt 0"
+
+      - name: Fetch deployed node status artifacts
+        if: always()
+        run: |
+          mkdir -p artifacts/strategy-node-deploy
+          scp -i strategy-node.key -o StrictHostKeyChecking=no \
+            "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST:/opt/cloudbet/strategy-nodes/$STRATEGY_NODE_CONTAINER_NAME/status.json" \
+            "artifacts/strategy-node-deploy/status.json" || true
+          scp -i strategy-node.key -o StrictHostKeyChecking=no \
+            "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST:/opt/cloudbet/strategy-nodes/$STRATEGY_NODE_CONTAINER_NAME/heartbeat.json" \
+            "artifacts/strategy-node-deploy/heartbeat.json" || true
+          scp -i strategy-node.key -o StrictHostKeyChecking=no \
+            "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST:/opt/cloudbet/strategy-nodes/$STRATEGY_NODE_CONTAINER_NAME/manifest.runtime.json" \
+            "artifacts/strategy-node-deploy/manifest.runtime.json" || true
+          scp -i strategy-node.key -o StrictHostKeyChecking=no \
+            "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST:/opt/cloudbet/strategy-nodes/$STRATEGY_NODE_CONTAINER_NAME/release.json" \
+            "artifacts/strategy-node-deploy/release.json" || true
+
       - name: Cleanup remote helper files
         if: always()
         run: |
@@ -657,6 +711,7 @@ jobs:
           fi
           ssh -i strategy-node.key -o StrictHostKeyChecking=no "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST" \
             'rm -f /tmp/deploy_betting_strategy_node.sh \
+              /tmp/wait_for_strategy_node_status.sh \
               /tmp/runner_health_check.sh \
               /tmp/strategy-node-ghcr-token \
               /tmp/strategy-node-image.tar.gz'

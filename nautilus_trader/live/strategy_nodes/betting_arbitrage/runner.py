@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from decimal import Decimal
 import json
 import threading
 import time
@@ -64,6 +65,17 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--manifest", required=True)
     run_parser.add_argument("--no-start", action="store_true")
 
+    probe_parser = subparsers.add_parser(
+        "probe-runtime",
+        help="Run a validation-mode node briefly and report semantic match coverage",
+    )
+    probe_parser.add_argument("--manifest", required=True)
+    probe_parser.add_argument("--timeout-seconds", type=float, default=180.0)
+    probe_parser.add_argument("--poll-interval-secs", type=float, default=5.0)
+    probe_parser.add_argument("--min-connected-nodes", type=int, default=2)
+    probe_parser.add_argument("--min-match-instruments", type=int, default=2)
+    probe_parser.add_argument("--min-positive-margin-candidates", type=int, default=0)
+
     args = parser.parse_args(argv)
 
     manifest = load_manifest(args.manifest)
@@ -87,16 +99,14 @@ def main(argv: list[str] | None = None) -> int:
             config = build_trading_node_config(manifest)
             write_manifest_snapshot(manifest, manifest_snapshot)
             write_rendered_node_config(config, rendered_config_path)
-            _write_json(
+            _write_status(
                 status_path,
-                {
-                    "nodeId": manifest.node_id,
-                    "status": "validated",
-                    "validatedAt": _utc_now(),
-                    "manifestPath": str(manifest_snapshot),
-                    "renderedConfigPath": str(rendered_config_path),
-                    "semanticCache": semantic_cache,
-                },
+                manifest=manifest,
+                status="validated",
+                semantic_cache=semantic_cache,
+                manifest_snapshot=manifest_snapshot,
+                rendered_config_path=rendered_config_path,
+                validatedAt=_utc_now(),
             )
             return 0
 
@@ -112,17 +122,15 @@ def main(argv: list[str] | None = None) -> int:
             return 0
     except Exception as exc:
         if args.command != "render-node-config":
-            _write_json(
+            _write_status(
                 status_path,
-                {
-                    "nodeId": manifest.node_id,
-                    "status": "failed",
-                    "failedAt": _utc_now(),
-                    "error": repr(exc),
-                    "manifestPath": str(manifest_snapshot),
-                    "renderedConfigPath": str(rendered_config_path),
-                    "semanticCache": semantic_cache,
-                },
+                manifest=manifest,
+                status="failed",
+                semantic_cache=semantic_cache,
+                manifest_snapshot=manifest_snapshot,
+                rendered_config_path=rendered_config_path,
+                failedAt=_utc_now(),
+                error=exc,
             )
         raise
 
@@ -137,72 +145,110 @@ def main(argv: list[str] | None = None) -> int:
         stop_event=heartbeat_stop,
     )
 
-    _write_json(
+    _write_status(
         status_path,
-        {
-            "nodeId": manifest.node_id,
-            "status": "building",
-            "at": _utc_now(),
-            "manifestPath": str(manifest_snapshot),
-            "renderedConfigPath": str(rendered_config_path),
-            "semanticCache": semantic_cache,
-        },
+        manifest=manifest,
+        status="building",
+        semantic_cache=semantic_cache,
+        manifest_snapshot=manifest_snapshot,
+        rendered_config_path=rendered_config_path,
+        at=_utc_now(),
     )
     node.build()
-    _write_json(
+    _write_status(
         status_path,
-        {
-            "nodeId": manifest.node_id,
-            "status": "built",
-            "at": _utc_now(),
-            "manifestPath": str(manifest_snapshot),
-            "renderedConfigPath": str(rendered_config_path),
-            "semanticCache": semantic_cache,
-        },
+        manifest=manifest,
+        status="built",
+        semantic_cache=semantic_cache,
+        manifest_snapshot=manifest_snapshot,
+        rendered_config_path=rendered_config_path,
+        at=_utc_now(),
     )
 
-    if args.no_start:
+    if args.command == "run" and args.no_start:
         node.dispose()
         return 0
 
+    if args.command == "probe-runtime":
+        try:
+            payload = _probe_runtime(
+                node=node,
+                manifest=manifest,
+                status_path=status_path,
+                heartbeat_path=heartbeat_path,
+                manifest_snapshot=manifest_snapshot,
+                rendered_config_path=rendered_config_path,
+                semantic_cache=semantic_cache,
+                timeout_seconds=float(args.timeout_seconds),
+                poll_interval_secs=float(args.poll_interval_secs),
+                min_connected_nodes=int(args.min_connected_nodes),
+                min_match_instruments=int(args.min_match_instruments),
+                min_positive_margin_candidates=int(args.min_positive_margin_candidates),
+            )
+            _write_status(
+                status_path,
+                manifest=manifest,
+                status="probed",
+                semantic_cache=semantic_cache,
+                manifest_snapshot=manifest_snapshot,
+                rendered_config_path=rendered_config_path,
+                heartbeat_path=heartbeat_path,
+                completedAt=_utc_now(),
+                runtime_probe=payload,
+            )
+            return 0
+        except Exception as exc:
+            _write_status(
+                status_path,
+                manifest=manifest,
+                status="failed",
+                semantic_cache=semantic_cache,
+                manifest_snapshot=manifest_snapshot,
+                rendered_config_path=rendered_config_path,
+                heartbeat_path=heartbeat_path,
+                failedAt=_utc_now(),
+                error=exc,
+            )
+            raise
+        finally:
+            node.dispose()
+
     heartbeat_writer.start()
-    _write_json(
+    _write_status(
         status_path,
-        {
-            "nodeId": manifest.node_id,
-            "status": "running",
-            "startedAt": _utc_now(),
-            "heartbeatPath": str(heartbeat_path),
-            "manifestPath": str(manifest_snapshot),
-            "renderedConfigPath": str(rendered_config_path),
-            "semanticCache": semantic_cache,
-        },
+        manifest=manifest,
+        status="running",
+        semantic_cache=semantic_cache,
+        manifest_snapshot=manifest_snapshot,
+        rendered_config_path=rendered_config_path,
+        heartbeat_path=heartbeat_path,
+        startedAt=_utc_now(),
     )
 
     try:
         node.run()
-        _write_json(
+        _write_status(
             status_path,
-            {
-                "nodeId": manifest.node_id,
-                "status": "completed",
-                "completedAt": _utc_now(),
-                "heartbeatPath": str(heartbeat_path),
-                "semanticCache": semantic_cache,
-            },
+            manifest=manifest,
+            status="completed",
+            semantic_cache=semantic_cache,
+            manifest_snapshot=manifest_snapshot,
+            rendered_config_path=rendered_config_path,
+            heartbeat_path=heartbeat_path,
+            completedAt=_utc_now(),
         )
         return 0
-    except Exception as e:
-        _write_json(
+    except Exception as exc:
+        _write_status(
             status_path,
-            {
-                "nodeId": manifest.node_id,
-                "status": "failed",
-                "failedAt": _utc_now(),
-                "error": repr(e),
-                "heartbeatPath": str(heartbeat_path),
-                "semanticCache": semantic_cache,
-            },
+            manifest=manifest,
+            status="failed",
+            semantic_cache=semantic_cache,
+            manifest_snapshot=manifest_snapshot,
+            rendered_config_path=rendered_config_path,
+            heartbeat_path=heartbeat_path,
+            failedAt=_utc_now(),
+            error=exc,
         )
         raise
     finally:
@@ -213,6 +259,36 @@ def main(argv: list[str] | None = None) -> int:
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf8")
+
+
+def _write_status(
+    path: Path,
+    *,
+    manifest,
+    status: str,
+    semantic_cache: dict[str, object] | None,
+    manifest_snapshot: Path,
+    rendered_config_path: Path,
+    heartbeat_path: Path | None = None,
+    runtime_probe: dict[str, object] | None = None,
+    error: Exception | str | None = None,
+    **extra: Any,
+) -> None:
+    payload: dict[str, Any] = {
+        "nodeId": manifest.node_id,
+        "status": status,
+        "manifestPath": str(manifest_snapshot),
+        "renderedConfigPath": str(rendered_config_path),
+        "semanticCache": semantic_cache,
+    }
+    if heartbeat_path is not None:
+        payload["heartbeatPath"] = str(heartbeat_path)
+    if runtime_probe is not None:
+        payload["runtimeProbe"] = runtime_probe
+    if error is not None:
+        payload["error"] = repr(error) if isinstance(error, Exception) else str(error)
+    payload.update(extra)
+    _write_json(path, payload)
 
 
 def _utc_now() -> str:
@@ -238,6 +314,307 @@ def _semantic_cache_payload(status: SemanticCacheStatus | None) -> dict[str, obj
         "sameVenueExecutionEligibleTemplateCount": (
             payload["same_venue_execution_eligible_template_count"]
         ),
+    }
+
+
+def _probe_runtime(
+    *,
+    node,
+    manifest,
+    status_path: Path,
+    heartbeat_path: Path,
+    manifest_snapshot: Path,
+    rendered_config_path: Path,
+    semantic_cache: dict[str, object] | None,
+    timeout_seconds: float,
+    poll_interval_secs: float,
+    min_connected_nodes: int,
+    min_match_instruments: int,
+    min_positive_margin_candidates: int,
+) -> dict[str, object]:
+    if not manifest.validation_mode:
+        raise RuntimeError("probe-runtime requires validation_mode=true")
+
+    heartbeat_stop = threading.Event()
+    heartbeat_writer = HeartbeatWriter(
+        heartbeat_path=heartbeat_path,
+        node_id=manifest.node_id,
+        interval_secs=manifest.heartbeat_interval_secs,
+        stop_event=heartbeat_stop,
+    )
+    heartbeat_writer.start()
+
+    strategy = _resolve_betting_strategy(node)
+    run_error: list[BaseException] = []
+
+    def _run_node() -> None:
+        try:
+            node.run(raise_exception=True)
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            run_error.append(exc)
+
+    run_thread = threading.Thread(target=_run_node, daemon=True)
+    run_thread.start()
+
+    started_at = time.monotonic()
+    min_profit_margin = Decimal(str(manifest.strategy.min_profit_margin))
+    latest_payload: dict[str, object] = _collect_runtime_probe_payload(
+        strategy,
+        min_profit_margin=min_profit_margin,
+        elapsed_seconds=0.0,
+    )
+
+    try:
+        while time.monotonic() - started_at < timeout_seconds:
+            latest_payload = _collect_runtime_probe_payload(
+                strategy,
+                min_profit_margin=min_profit_margin,
+                elapsed_seconds=time.monotonic() - started_at,
+            )
+            _write_status(
+                status_path,
+                manifest=manifest,
+                status="probing",
+                semantic_cache=semantic_cache,
+                manifest_snapshot=manifest_snapshot,
+                rendered_config_path=rendered_config_path,
+                heartbeat_path=heartbeat_path,
+                runtime_probe=latest_payload,
+                startedAt=_utc_now(),
+            )
+            if _runtime_probe_satisfied(
+                latest_payload,
+                min_connected_nodes=min_connected_nodes,
+                min_match_instruments=min_match_instruments,
+                min_positive_margin_candidates=min_positive_margin_candidates,
+            ):
+                return latest_payload
+            if run_error:
+                raise run_error[0]
+            if not run_thread.is_alive():
+                break
+            time.sleep(poll_interval_secs)
+    finally:
+        heartbeat_stop.set()
+        node.stop()
+        run_thread.join(
+            timeout=max(
+                5.0,
+                float(manifest.timeout_shutdown) + float(manifest.timeout_disconnection),
+            ),
+        )
+
+    if run_error:
+        raise run_error[0]
+
+    raise RuntimeError(
+        "Runtime probe did not observe the required semantic coverage "
+        f"(connected_nodes={latest_payload['connectedNodes']}, "
+        f"semantic_match_instruments={latest_payload['semanticMatchInstruments']}, "
+        f"positive_margin_candidates={latest_payload['positiveMarginCandidates']['total']})",
+    )
+
+
+def _resolve_betting_strategy(node):
+    from nautilus_trader.examples.strategies.betting_arbitrage import BettingArbitrageStrategy
+
+    for strategy in node.trader.strategies():
+        if isinstance(strategy, BettingArbitrageStrategy):
+            return strategy
+    raise RuntimeError("Trading node did not register a BettingArbitrageStrategy")
+
+
+def _collect_runtime_probe_payload(
+    strategy,
+    *,
+    min_profit_margin: Decimal,
+    elapsed_seconds: float,
+) -> dict[str, object]:
+    graph = strategy._opportunity_graph
+    stats = strategy.get_stats()
+    snapshot = _snapshot_probe_graph_state(graph)
+    if snapshot is None:
+        return {
+            "elapsedSeconds": round(elapsed_seconds, 2),
+            "minProfitMargin": str(min_profit_margin),
+            "subscribedInstruments": stats["subscribed_instruments"],
+            "graphNodes": stats["opportunity_graph_nodes"],
+            "graphEdges": stats["opportunity_graph_edges"],
+            "graphQuoteStates": stats["opportunity_graph_quote_states"],
+            "connectedNodes": stats["opportunity_graph_connected_nodes"],
+            "semanticMatchInstruments": 0,
+            "quotedSemanticMatchInstruments": 0,
+            "executionSafeEdges": 0,
+            "sameVenueExecutionEligibleEdges": 0,
+            "quotedEdges": 0,
+            "positiveMarginCandidates": {
+                "executionSafe": 0,
+                "sameVenueExecutionEligible": 0,
+                "total": 0,
+            },
+            "thresholdMarginCandidates": {
+                "executionSafe": 0,
+                "sameVenueExecutionEligible": 0,
+                "total": 0,
+            },
+            "strategyStats": stats,
+            "sampleCandidates": [],
+        }
+    execution_safe_edges = sum(1 for edge in snapshot["edges"] if edge.execution_safe)
+    same_venue_eligible_edges = sum(
+        1 for edge in snapshot["edges"] if edge.same_venue_execution_eligible
+    )
+    profitability = _probe_edge_profitability(
+        strategy,
+        edges=snapshot["edges"],
+        nodes=snapshot["nodes"],
+        quotes=snapshot["quotes"],
+        min_profit_margin=min_profit_margin,
+    )
+
+    return {
+        "elapsedSeconds": round(elapsed_seconds, 2),
+        "minProfitMargin": str(min_profit_margin),
+        "subscribedInstruments": stats["subscribed_instruments"],
+        "graphNodes": stats["opportunity_graph_nodes"],
+        "graphEdges": stats["opportunity_graph_edges"],
+        "graphQuoteStates": stats["opportunity_graph_quote_states"],
+        "connectedNodes": stats["opportunity_graph_connected_nodes"],
+        "semanticMatchInstruments": len(snapshot["matched_node_ids"]),
+        "quotedSemanticMatchInstruments": sum(
+            1 for node_id in snapshot["matched_node_ids"] if node_id in snapshot["quotes"]
+        ),
+        "executionSafeEdges": execution_safe_edges,
+        "sameVenueExecutionEligibleEdges": same_venue_eligible_edges,
+        "quotedEdges": profitability["quoted_edges"],
+        "positiveMarginCandidates": {
+            "executionSafe": profitability["positive_execution"],
+            "sameVenueExecutionEligible": profitability["positive_same_venue"],
+            "total": profitability["positive_execution"] + profitability["positive_same_venue"],
+        },
+        "thresholdMarginCandidates": {
+            "executionSafe": profitability["threshold_execution"],
+            "sameVenueExecutionEligible": profitability["threshold_same_venue"],
+            "total": profitability["threshold_execution"] + profitability["threshold_same_venue"],
+        },
+        "strategyStats": stats,
+        "sampleCandidates": profitability["sample_candidates"],
+    }
+
+
+def _runtime_probe_satisfied(
+    payload: dict[str, object],
+    *,
+    min_connected_nodes: int,
+    min_match_instruments: int,
+    min_positive_margin_candidates: int,
+) -> bool:
+    positive_candidates = payload["positiveMarginCandidates"]["total"]
+    return (
+        payload["connectedNodes"] >= min_connected_nodes
+        and payload["semanticMatchInstruments"] >= min_match_instruments
+        and positive_candidates >= min_positive_margin_candidates
+    )
+
+
+def _snapshot_probe_graph_state(graph) -> dict[str, object] | None:
+    try:
+        return {
+            "edges": list(graph.edges_by_id.values()),
+            "nodes": dict(graph.nodes_by_id),
+            "quotes": dict(graph.quotes_by_node_id),
+            "matched_node_ids": {
+                node_id
+                for node_id, edge_ids in graph.edge_ids_by_node_id.items()
+                if edge_ids
+            },
+        }
+    except RuntimeError:
+        return None
+
+
+def _probe_edge_profitability(  # noqa: C901
+    strategy,
+    *,
+    edges,
+    nodes,
+    quotes,
+    min_profit_margin: Decimal,
+) -> dict[str, object]:
+    matcher = strategy._matcher
+    quoted_edges = 0
+    positive_execution = 0
+    positive_same_venue = 0
+    threshold_execution = 0
+    threshold_same_venue = 0
+    samples: list[tuple[Decimal, dict[str, object]]] = []
+
+    for edge in edges:
+        quote_a = quotes.get(edge.source_node_id)
+        quote_b = quotes.get(edge.target_node_id)
+        if quote_a is None or quote_b is None:
+            continue
+
+        source_node = nodes.get(edge.source_node_id)
+        target_node = nodes.get(edge.target_node_id)
+        if source_node is None or target_node is None:
+            continue
+
+        quoted_edges += 1
+        allow_same_venue = edge.same_venue_execution_eligible and not edge.execution_safe
+        if not edge.execution_safe and not allow_same_venue:
+            continue
+
+        opportunity = matcher.check_arbitrage(
+            source_node.instrument,
+            target_node.instrument,
+            odds_a=quote_a.odds,
+            odds_b=quote_b.odds,
+            allow_same_venue_execution_eligible=allow_same_venue,
+        )
+        if opportunity is None:
+            continue
+
+        is_positive = opportunity.profit_margin > 0
+        meets_threshold = opportunity.profit_margin >= min_profit_margin
+        if allow_same_venue:
+            if is_positive:
+                positive_same_venue += 1
+            if meets_threshold:
+                threshold_same_venue += 1
+        else:
+            if is_positive:
+                positive_execution += 1
+            if meets_threshold:
+                threshold_execution += 1
+
+        if is_positive:
+            samples.append(
+                (
+                    opportunity.profit_margin,
+                    {
+                        "instrumentIdA": str(source_node.instrument.id),
+                        "instrumentIdB": str(target_node.instrument.id),
+                        "marketA": source_node.market_name,
+                        "marketB": target_node.market_name,
+                        "outcomeA": source_node.outcome,
+                        "outcomeB": target_node.outcome,
+                        "profitMargin": str(opportunity.profit_margin),
+                        "safetyTier": edge.safety_tier,
+                        "executionSafe": edge.execution_safe,
+                        "sameVenueExecutionEligible": edge.same_venue_execution_eligible,
+                    },
+                ),
+            )
+
+    samples.sort(key=lambda item: item[0], reverse=True)
+    return {
+        "quoted_edges": quoted_edges,
+        "positive_execution": positive_execution,
+        "positive_same_venue": positive_same_venue,
+        "threshold_execution": threshold_execution,
+        "threshold_same_venue": threshold_same_venue,
+        "sample_candidates": [payload for _, payload in samples[:10]],
     }
 
 

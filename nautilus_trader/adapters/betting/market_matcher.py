@@ -527,6 +527,8 @@ class MarketMatcher:
         instrument_b: CryptoBettingInstrument,
         odds_a: Decimal | None = None,
         odds_b: Decimal | None = None,
+        *,
+        allow_same_venue_execution_eligible: bool = False,
     ) -> ArbitrageOpportunity | None:
         """
         Check if two instruments create an arbitrage opportunity.
@@ -541,6 +543,10 @@ class MarketMatcher:
             Override odds for instrument A, typically from a live quote.
         odds_b : Decimal, optional
             Override odds for instrument B, typically from a live quote.
+        allow_same_venue_execution_eligible : bool, default False
+            Whether to allow promoted same-venue execution-eligible semantic rules
+            to be priced as theoretical opportunities without treating them as
+            auto-executable runtime opportunities.
 
         Returns
         -------
@@ -554,11 +560,20 @@ class MarketMatcher:
             promoted_or_legacy = rule.execution_safe and (
                 self._rule_store is None or rule.promotion_status == PromotionStatus.PROMOTED.value
             )
+            promoted_same_venue_eligible = (
+                allow_same_venue_execution_eligible
+                and rule.same_venue_execution_eligible
+                and instrument_a.venue_name == instrument_b.venue_name
+                and (self._rule_store is None or rule.promotion_status == PromotionStatus.PROMOTED.value)
+            )
             if not promoted_or_legacy and (
-                not self._is_same_market_hedge(instrument_a, instrument_b)
-                or rule.has_void
-                or rule.has_partial
-                or rule.has_unknown
+                not promoted_same_venue_eligible
+                and (
+                    not self._is_same_market_hedge(instrument_a, instrument_b)
+                    or rule.has_void
+                    or rule.has_partial
+                    or rule.has_unknown
+                )
             ):
                 return None
         elif not self._is_same_market_hedge(instrument_a, instrument_b):

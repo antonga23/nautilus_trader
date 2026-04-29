@@ -1,6 +1,7 @@
 import json
 from decimal import Decimal
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -403,6 +404,52 @@ class TestBettingArbitrageNodeRunner:
         assert payload["semanticCache"]["source"] == "existing"
         assert payload["semanticCache"]["executionSafeTemplateCount"] == 1
 
+    def test_probe_runtime_records_runtime_probe_status(self, tmp_path, monkeypatch):
+        manifest = _manifest(tmp_path, cache_dir=tmp_path / "semantic-cache")
+        manifest_path = tmp_path / "manifest.json"
+        manifest_path.write_bytes(manifest.json())
+
+        monkeypatch.setattr(
+            "nautilus_trader.live.strategy_nodes.betting_arbitrage.runner.ensure_semantic_cache_ready",
+            lambda _: SemanticCacheStatus(
+                path=str(tmp_path / "semantic-cache"),
+                source="existing",
+                manifest_count=1,
+                promoted_template_count=2,
+                execution_safe_template_count=1,
+                same_venue_execution_eligible_template_count=1,
+            ),
+        )
+        monkeypatch.setattr(
+            "nautilus_trader.live.strategy_nodes.betting_arbitrage.runner._probe_runtime",
+            lambda **_: {
+                "connectedNodes": 2,
+                "semanticMatchInstruments": 2,
+                "positiveMarginCandidates": {"executionSafe": 0, "sameVenueExecutionEligible": 1, "total": 1},
+            },
+        )
+
+        class FakeTradingNode:
+            def __init__(self, config):
+                self.config = config
+
+            def build(self):
+                return None
+
+            def dispose(self):
+                return None
+
+        monkeypatch.setattr("nautilus_trader.live.node.TradingNode", FakeTradingNode)
+
+        result = runner_main(["probe-runtime", "--manifest", str(manifest_path)])
+
+        assert result == 0
+        payload = json.loads((tmp_path / "status.json").read_text())
+        assert payload["status"] == "probed"
+        assert payload["runtimeProbe"]["connectedNodes"] == 2
+        assert payload["runtimeProbe"]["semanticMatchInstruments"] == 2
+        assert payload["runtimeProbe"]["positiveMarginCandidates"]["total"] == 1
+
     def test_runtime_manifest_rewrite_includes_semantic_cache_dir(self):
         deploy_script = Path(
             "scripts/deploy/strategy_nodes/deploy_betting_strategy_node.sh",
@@ -415,5 +462,42 @@ class TestBettingArbitrageNodeRunner:
     def test_release_workflow_validates_sxbet_manifest_with_semantic_env(self):
         workflow = Path(".github/workflows/strategy-node-release.yml").read_text()
         assert "Validate SX.bet manifest" in workflow
+        assert "Probe SX.bet runtime semantic coverage" in workflow
+        assert "probe-runtime" in workflow
+        assert "--min-positive-margin-candidates 1" in workflow
+        assert "Wait for deployed node status and semantic cache" in workflow
         assert "SXBET_API_KEY: ${{ secrets.SXBET_API_KEY }}" in workflow
         assert "CLOUDBET_API_KEY: ${{ secrets.CLOUDBET_API_KEY }}" in workflow
+
+    def test_wait_for_strategy_node_status_can_require_ready_semantic_cache(self, tmp_path):
+        status_path = tmp_path / "status.json"
+        script_path = Path("scripts/deploy/strategy_nodes/wait_for_strategy_node_status.sh").resolve()
+        status_path.write_text(
+            json.dumps(
+                {
+                    "status": "running",
+                    "semanticCache": {
+                        "ready": True,
+                    },
+                },
+            ),
+        )
+
+        result = subprocess.run(  # noqa: S603
+            [
+                str(script_path),
+                "--status-file",
+                str(status_path),
+                "--timeout-seconds",
+                "5",
+                "--success-status",
+                "running",
+                "--require-semantic-cache-ready",
+            ],
+            cwd=Path.cwd(),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr

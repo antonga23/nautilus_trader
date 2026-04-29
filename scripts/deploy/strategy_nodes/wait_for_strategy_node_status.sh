@@ -3,13 +3,14 @@ set -euo pipefail
 
 usage() {
   cat << USAGE
-Usage: $0 --status-file <path> [--timeout-seconds <n>] [--success-status <csv>]
+Usage: $0 --status-file <path> [--timeout-seconds <n>] [--success-status <csv>] [--require-semantic-cache-ready]
 USAGE
 }
 
 status_file=""
 timeout_seconds=300
 success_statuses="running,completed,validated,built"
+require_semantic_cache_ready="false"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -24,6 +25,10 @@ while [[ $# -gt 0 ]]; do
     --success-status)
       success_statuses="$2"
       shift 2
+      ;;
+    --require-semantic-cache-ready)
+      require_semantic_cache_ready="true"
+      shift 1
       ;;
     -h | --help)
       usage
@@ -47,7 +52,7 @@ command -v python3 > /dev/null 2>&1 || {
   exit 1
 }
 
-python3 - "$status_file" "$timeout_seconds" "$success_statuses" << 'PY'
+python3 - "$status_file" "$timeout_seconds" "$success_statuses" "$require_semantic_cache_ready" << 'PY'
 import json
 import pathlib
 import sys
@@ -56,9 +61,10 @@ import time
 status_path = pathlib.Path(sys.argv[1])
 timeout_seconds = int(sys.argv[2])
 success_statuses = {item.strip() for item in sys.argv[3].split(',') if item.strip()}
+require_semantic_cache_ready = sys.argv[4].strip().lower() == 'true'
 
 deadline = time.time() + timeout_seconds
-last_status = None
+last_observation = None
 
 while time.time() < deadline:
     if status_path.exists():
@@ -68,10 +74,15 @@ while time.time() < deadline:
             time.sleep(2)
             continue
         status = payload.get('status')
-        if status != last_status:
+        semantic_cache = payload.get('semanticCache') or {}
+        semantic_cache_ready = bool(semantic_cache.get('ready'))
+        observation = (status, semantic_cache_ready)
+        if observation != last_observation:
             print(json.dumps(payload))
-            last_status = status
-        if status in success_statuses:
+            last_observation = observation
+        if status in success_statuses and (
+            not require_semantic_cache_ready or semantic_cache_ready
+        ):
             sys.exit(0)
         if status == 'failed':
             sys.exit(1)
