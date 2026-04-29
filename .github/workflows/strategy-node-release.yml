@@ -146,6 +146,34 @@ jobs:
       - name: Install wheel
         run: uv pip install dist/*.whl
 
+      - name: Overlay branch strategy-node sources onto installed wheel
+        run: |
+          "$GITHUB_WORKSPACE/.venv/bin/python" - <<'PY'
+          import shutil
+          import sysconfig
+          from pathlib import Path
+
+          workspace = Path.cwd()
+          purelib = Path(sysconfig.get_paths()["purelib"])
+          overlays = [
+              (
+                  workspace / "nautilus_trader/live/strategy_nodes/betting_arbitrage",
+                  purelib / "nautilus_trader/live/strategy_nodes/betting_arbitrage",
+              ),
+              (
+                  workspace / "nautilus_trader/adapters/betting/market_matcher.py",
+                  purelib / "nautilus_trader/adapters/betting/market_matcher.py",
+              ),
+          ]
+
+          for source, destination in overlays:
+              if source.is_dir():
+                  shutil.copytree(source, destination, dirs_exist_ok=True)
+              else:
+                  destination.parent.mkdir(parents=True, exist_ok=True)
+                  shutil.copy2(source, destination)
+          PY
+
       - name: Save self-hosted wheel cache
         if: steps.local-wheel-cache.outputs.cache-hit != 'true'
         run: bash scripts/ci/self_hosted_wheel_cache.sh save "${{ steps.wheel-key.outputs.key }}"
@@ -163,7 +191,6 @@ jobs:
           CLOUDBET_API_KEY: ${{ secrets.CLOUDBET_API_KEY }}
         run: |
           cd /tmp
-          export PYTHONPATH="$GITHUB_WORKSPACE${PYTHONPATH:+:$PYTHONPATH}"
           "$GITHUB_WORKSPACE/.venv/bin/python" -m nautilus_trader.live.strategy_nodes.betting_arbitrage \
             validate-manifest \
             --manifest "$GITHUB_WORKSPACE/deploy/strategy_nodes/betting_arbitrage/sxbet-single-venue.json"
@@ -174,7 +201,6 @@ jobs:
           CLOUDBET_API_KEY: ${{ secrets.CLOUDBET_API_KEY }}
         run: |
           cd /tmp
-          export PYTHONPATH="$GITHUB_WORKSPACE${PYTHONPATH:+:$PYTHONPATH}"
           "$GITHUB_WORKSPACE/.venv/bin/python" -m nautilus_trader.live.strategy_nodes.betting_arbitrage \
             probe-runtime \
             --manifest "$GITHUB_WORKSPACE/deploy/strategy_nodes/betting_arbitrage/sxbet-single-venue.json" \
@@ -187,7 +213,6 @@ jobs:
       - name: Validate Polymarket manifest
         run: |
           cd /tmp
-          export PYTHONPATH="$GITHUB_WORKSPACE${PYTHONPATH:+:$PYTHONPATH}"
           "$GITHUB_WORKSPACE/.venv/bin/python" -m nautilus_trader.live.strategy_nodes.betting_arbitrage \
             validate-manifest \
             --manifest "$GITHUB_WORKSPACE/deploy/strategy_nodes/betting_arbitrage/polymarket-single-venue.json"
@@ -195,7 +220,6 @@ jobs:
       - name: Validate Polymarket multi-venue example
         run: |
           cd /tmp
-          export PYTHONPATH="$GITHUB_WORKSPACE${PYTHONPATH:+:$PYTHONPATH}"
           "$GITHUB_WORKSPACE/.venv/bin/python" -m nautilus_trader.live.strategy_nodes.betting_arbitrage \
             validate-manifest \
             --manifest "$GITHUB_WORKSPACE/deploy/strategy_nodes/betting_arbitrage/polymarket-plus-sxbet.example.json"
