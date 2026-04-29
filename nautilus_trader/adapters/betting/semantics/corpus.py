@@ -401,6 +401,9 @@ class SnapshotIngestor:
         to_time: int | None = None,
         instrument_limit: int = 250,
         market_discovery_limit: int = 250,
+        prefer_liquid_markets: bool = False,
+        liquidity_probe_limit: int = 100,
+        min_two_sided_markets: int = 1,
     ) -> RuleCorpusManifest:
         fetched_at = _utc_now()
         active_sports = await client.get_active_sports()
@@ -465,6 +468,9 @@ class SnapshotIngestor:
                 sport_ids=frozenset(selected_sport_ids) if selected_sport_ids else None,
                 instrument_load_limit=instrument_limit,
                 market_discovery_limit=market_discovery_limit,
+                prefer_liquid_markets=prefer_liquid_markets,
+                liquidity_probe_limit=liquidity_probe_limit,
+                min_two_sided_markets=min_two_sided_markets,
             ),
         )
         await provider.load_all_async(

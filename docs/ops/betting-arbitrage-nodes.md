@@ -149,6 +149,23 @@ python -m nautilus_trader.live.strategy_nodes.betting_arbitrage run \
   --manifest deploy/strategy_nodes/betting_arbitrage/sxbet-single-venue.json
 ```
 
+Probe live validation-mode semantic coverage without enabling execution:
+
+```bash
+python -m nautilus_trader.live.strategy_nodes.betting_arbitrage probe-runtime \
+  --manifest deploy/strategy_nodes/betting_arbitrage/sxbet-single-venue.json \
+  --timeout-seconds 420 \
+  --poll-interval-secs 5 \
+  --min-connected-nodes 2 \
+  --min-match-instruments 2 \
+  --min-positive-margin-candidates 1
+```
+
+The runtime node uses the host-mounted semantic cache at:
+
+- `/opt/cloudbet/strategy-nodes/<container-name>/semantic-rule-cache` on the deploy host
+- `/var/lib/nautilus-node/semantic-rule-cache` inside the container
+
 Semantic corpus and promotion workflow:
 
 ```bash

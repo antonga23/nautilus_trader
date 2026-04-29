@@ -11,6 +11,7 @@ import asyncio
 import json
 from decimal import Decimal
 from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -81,6 +82,7 @@ def _seed_promoted_template(
     cache_dir: Path,
     *,
     same_venue_only: bool = False,
+    manifest: BettingArbitrageNodeManifest | None = None,
 ) -> None:
     instrument_a = (
         _instrument(venue="SXBET", market_type="draw_no_bet", outcome="home")
@@ -127,6 +129,7 @@ def _seed_promoted_template(
     template = SemanticRuleTemplate.from_rule(rule, support=support)
     promoted = RulePromotionPolicy().promote_template(store, template)
     assert promoted is not None
+    node_cache._write_semantic_cache_compatibility(cache_dir, manifest=manifest)
 
 
 def _manifest(tmp_path: Path, *, cache_dir: Path | None = None) -> BettingArbitrageNodeManifest:
@@ -203,6 +206,7 @@ class TestBettingArbitrageNodeBuilder:
         assert len(config.strategies) == 1
         assert config.strategies[0].config["auto_execute"] is False
         assert config.strategies[0].config["enabled_venues"] == ["SXBET"]
+        assert config.strategies[0].config["opportunity_graph_engine"] == "auto"
         assert (
             config.strategies[0].config["semantic_rule_cache_dir"]
             == "artifacts/semantic-rule-cache/sxbet-validation"
@@ -428,8 +432,8 @@ class TestSemanticCacheBootstrap:
 
     def test_reuses_existing_semantic_cache_without_bootstrap(self, tmp_path, monkeypatch):
         cache_dir = tmp_path / "semantic-cache"
-        _seed_promoted_template(cache_dir)
         manifest = _manifest(tmp_path, cache_dir=cache_dir)
+        _seed_promoted_template(cache_dir, manifest=manifest)
 
         monkeypatch.setattr(
             "nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache._run_bootstrap",
@@ -440,7 +444,73 @@ class TestSemanticCacheBootstrap:
 
         assert status.source == "existing"
         assert status.ready is True
+        assert status.compatible is True
         assert status.promoted_template_count >= 1
+
+    def test_semantic_cache_scope_mismatch_triggers_bootstrap(self, tmp_path, monkeypatch):
+        cache_dir = tmp_path / "semantic-cache"
+        original_manifest = _manifest(tmp_path, cache_dir=cache_dir)
+        _seed_promoted_template(cache_dir, manifest=original_manifest)
+        scoped_manifest = BettingArbitrageNodeManifest(
+            node_id="sxbet-node",
+            trader_id="BETARB-TEST-SEM",
+            validation_mode=True,
+            allow_dummy_credentials=True,
+            semantic_rule_cache_dir=str(cache_dir),
+            rendered_config_path=str(tmp_path / "trading-node-config.json"),
+            status_path=str(tmp_path / "status.json"),
+            heartbeat_path=str(tmp_path / "heartbeat.json"),
+            venues=[
+                BettingVenueManifest(
+                    venue="SXBET",
+                    client_key="SXBET_PRIMARY",
+                    sport_ids=frozenset({5}),
+                    execution_enabled=False,
+                    instrument_load_limit=10,
+                    market_discovery_limit=10,
+                ),
+            ],
+        )
+        bootstrapped: list[Path] = []
+
+        def fake_bootstrap(*, cache_dir, **_):
+            bootstrapped.append(cache_dir)
+            _seed_promoted_template(cache_dir, manifest=scoped_manifest)
+
+        monkeypatch.setattr(
+            "nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache._run_bootstrap",
+            fake_bootstrap,
+        )
+
+        status = ensure_semantic_cache_ready(scoped_manifest)
+
+        assert bootstrapped == [cache_dir]
+        assert status.source == "bootstrapped"
+        assert status.ready is True
+        assert status.compatible is True
+
+    def test_rebuilds_ready_cache_when_compatibility_marker_is_stale(self, tmp_path, monkeypatch):
+        cache_dir = tmp_path / "semantic-cache"
+        manifest = _manifest(tmp_path, cache_dir=cache_dir)
+        _seed_promoted_template(cache_dir, manifest=manifest)
+        (cache_dir / node_cache.SEMANTIC_CACHE_COMPATIBILITY_FILE).write_text("stale\n")
+        stale_file = cache_dir / "stale.bin"
+        stale_file.write_text("old")
+
+        def fake_bootstrap(*, cache_dir, **_):
+            assert not stale_file.exists()
+            _seed_promoted_template(cache_dir, manifest=manifest)
+
+        monkeypatch.setattr(
+            "nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache._run_bootstrap",
+            fake_bootstrap,
+        )
+
+        status = ensure_semantic_cache_ready(manifest)
+
+        assert status.source == "bootstrapped"
+        assert status.ready is True
+        assert status.compatible is True
 
     def test_bootstraps_missing_semantic_cache(self, tmp_path, monkeypatch):
         cache_dir = tmp_path / "semantic-cache"
@@ -689,6 +759,9 @@ class TestSemanticCacheBootstrap:
                 to_time,
                 instrument_limit,
                 market_discovery_limit,
+                prefer_liquid_markets,
+                liquidity_probe_limit,
+                min_two_sided_markets,
             ):
                 refresh_calls.append(
                     {
@@ -698,6 +771,9 @@ class TestSemanticCacheBootstrap:
                         "to_time": to_time,
                         "instrument_limit": instrument_limit,
                         "market_discovery_limit": market_discovery_limit,
+                        "prefer_liquid_markets": prefer_liquid_markets,
+                        "liquidity_probe_limit": liquidity_probe_limit,
+                        "min_two_sided_markets": min_two_sided_markets,
                     },
                 )
 
@@ -715,6 +791,9 @@ class TestSemanticCacheBootstrap:
                 live_only=True,
                 instrument_load_limit=280,
                 market_discovery_limit=400,
+                prefer_liquid_markets=True,
+                liquidity_probe_limit=350,
+                min_two_sided_markets=2,
             ),
         ]
 
@@ -734,6 +813,9 @@ class TestSemanticCacheBootstrap:
         assert call["to_time"] == 1_000_000 + 6 * 60 * 60
         assert call["instrument_limit"] == 300
         assert call["market_discovery_limit"] == 400
+        assert call["prefer_liquid_markets"] is True
+        assert call["liquidity_probe_limit"] == 350
+        assert call["min_two_sided_markets"] == 2
         assert call["client"].connected is True
         assert call["client"].disconnected is True
 
@@ -1035,6 +1117,125 @@ class TestBettingArbitrageNodeRunner:
         assert payload["semanticCache"]["source"] == "existing"
         assert payload["semanticCache"]["executionSafeTemplateCount"] == 1
 
+    def test_probe_runtime_records_runtime_probe_status(self, tmp_path, monkeypatch):
+        manifest = _manifest(tmp_path, cache_dir=tmp_path / "semantic-cache")
+        manifest_path = tmp_path / "manifest.json"
+        manifest_path.write_bytes(manifest.json())
+
+        monkeypatch.setattr(
+            "nautilus_trader.live.strategy_nodes.betting_arbitrage.runner.ensure_semantic_cache_ready",
+            lambda _: SemanticCacheStatus(
+                path=str(tmp_path / "semantic-cache"),
+                source="existing",
+                manifest_count=1,
+                promoted_template_count=2,
+                execution_safe_template_count=1,
+                same_venue_execution_eligible_template_count=1,
+            ),
+        )
+        observed_probe_kwargs = {}
+
+        def fake_probe_runtime(**kwargs):
+            observed_probe_kwargs.update(kwargs)
+            return {
+                "graphEngine": "rust",
+                "topologySource": "rust_semantic",
+                "semanticTemplateCount": 2,
+                "connectedNodes": 2,
+                "semanticMatchInstruments": 2,
+                "quotedSemanticMatchInstruments": 2,
+                "quotedEdges": 1,
+                "positiveMarginCandidates": {
+                    "executionSafe": 0,
+                    "sameVenueExecutionEligible": 1,
+                    "total": 1,
+                },
+            }
+
+        monkeypatch.setattr(
+            "nautilus_trader.live.strategy_nodes.betting_arbitrage.runner._probe_runtime",
+            fake_probe_runtime,
+        )
+
+        class FakeTradingNode:
+            def __init__(self, config):
+                self.config = config
+
+            def build(self):
+                return None
+
+            def dispose(self):
+                return None
+
+        monkeypatch.setattr("nautilus_trader.live.node.TradingNode", FakeTradingNode)
+
+        result = runner_main(
+            [
+                "probe-runtime",
+                "--manifest",
+                str(manifest_path),
+                "--require-rust-semantic-topology",
+            ],
+        )
+
+        assert result == 0
+        assert observed_probe_kwargs["require_rust_semantic_topology"] is True
+        payload = json.loads((tmp_path / "status.json").read_text())
+        assert payload["status"] == "probed"
+        assert payload["runtimeProbe"]["graphEngine"] == "rust"
+        assert payload["runtimeProbe"]["topologySource"] == "rust_semantic"
+        assert payload["runtimeProbe"]["connectedNodes"] == 2
+        assert payload["runtimeProbe"]["semanticMatchInstruments"] == 2
+        assert payload["runtimeProbe"]["quotedSemanticMatchInstruments"] == 2
+        assert payload["runtimeProbe"]["positiveMarginCandidates"]["total"] == 1
+
+    def test_semantic_probe_diagnostics_report_live_pattern_template_overlap(self):
+        instrument = _instrument(
+            venue="SXBET",
+            market_type="total_goals",
+            market_name="Total Goals",
+            outcome="over",
+            params="line=2.5",
+            handicap=2.5,
+        )
+
+        class FakeGraph:
+            nodes_by_id = {"node-1": SimpleNamespace(instrument=instrument)}
+
+            @staticmethod
+            def _semantic_template_payloads():
+                params_key = json.dumps([["line", "2.5"]], separators=(",", ":"))
+                return [
+                    {
+                        "provider_scope": ["SXBET"],
+                        "safety_tier": "EXECUTION_SAFE_SAME_VENUE_ELIGIBLE",
+                        "pattern_a": {
+                            "sport": "soccer",
+                            "scope": "full_time",
+                            "market_type": "TOTALS",
+                            "market_family": "TOTALS",
+                            "selection": "OVER",
+                            "params_key": params_key,
+                        },
+                        "pattern_b": {
+                            "sport": "soccer",
+                            "scope": "full_time",
+                            "market_type": "TOTALS",
+                            "market_family": "TOTALS",
+                            "selection": "UNDER",
+                            "params_key": params_key,
+                        },
+                    },
+                ]
+
+        diagnostics = node_runner._semantic_probe_diagnostics(FakeGraph())
+
+        assert diagnostics["normalizedNodeCount"] == 1
+        assert diagnostics["normalizationErrorCount"] == 0
+        assert diagnostics["supportedProviderNodeCount"] == 1
+        assert diagnostics["commonPatternKeyCount"] == 1
+        assert diagnostics["nodeSports"] == [{"key": "soccer", "count": 1}]
+
     def test_run_success_and_failure_paths_record_status_transitions(self, tmp_path, monkeypatch):
         def semantic_status(_manifest):
             return SemanticCacheStatus(
@@ -1128,6 +1329,9 @@ class TestBettingArbitrageNodeRunner:
             "promotedTemplateCount": 3,
             "executionSafeTemplateCount": 1,
             "sameVenueExecutionEligibleTemplateCount": 1,
+            "compatibilityVersion": None,
+            "compatibilityScope": None,
+            "compatible": True,
         }
         assert node_runner._semantic_cache_payload(None) is None
 
@@ -1143,5 +1347,68 @@ class TestBettingArbitrageNodeRunner:
     def test_release_workflow_validates_sxbet_manifest_with_semantic_env(self):
         workflow = Path(".github/workflows/strategy-node-release.yml").read_text()
         assert "Validate SX.bet manifest" in workflow
+        assert "Probe SX.bet runtime semantic coverage" in workflow
+        assert "probe-runtime" in workflow
+        assert "--min-quoted-match-instruments 2" in workflow
+        assert "--min-positive-margin-candidates 0" in workflow
+        assert "--require-rust-semantic-topology" in workflow
+        assert "Wait for deployed node status and semantic cache" in workflow
+        assert "--require-runtime-probe" in workflow
+        assert "Overlay branch strategy-node sources onto installed wheel" in workflow
+        assert "Build validated wheel from checked-out source" in workflow
         assert "SXBET_API_KEY: ${{ secrets.SXBET_API_KEY }}" in workflow
         assert "CLOUDBET_API_KEY: ${{ secrets.CLOUDBET_API_KEY }}" in workflow
+
+    def test_wait_for_strategy_node_status_can_require_ready_semantic_cache(self, tmp_path):
+        status_path = tmp_path / "status.json"
+        script_path = Path(
+            "scripts/deploy/strategy_nodes/wait_for_strategy_node_status.sh",
+        ).resolve()
+        status_path.write_text(
+            json.dumps(
+                {
+                    "status": "running",
+                    "semanticCache": {
+                        "ready": True,
+                    },
+                    "runtimeProbe": {
+                        "graphEngine": "rust",
+                        "topologySource": "rust_semantic",
+                        "semanticTemplateCount": 2,
+                        "connectedNodes": 2,
+                        "semanticMatchInstruments": 2,
+                        "quotedSemanticMatchInstruments": 2,
+                        "positiveMarginCandidates": {"total": 0},
+                    },
+                },
+            ),
+        )
+
+        result = subprocess.run(  # noqa: S603
+            [
+                str(script_path),
+                "--status-file",
+                str(status_path),
+                "--timeout-seconds",
+                "5",
+                "--success-status",
+                "running",
+                "--require-semantic-cache-ready",
+                "--require-runtime-probe",
+                "--require-rust-semantic-topology",
+                "--min-connected-nodes",
+                "2",
+                "--min-match-instruments",
+                "2",
+                "--min-quoted-match-instruments",
+                "2",
+                "--min-positive-margin-candidates",
+                "0",
+            ],
+            cwd=Path.cwd(),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr

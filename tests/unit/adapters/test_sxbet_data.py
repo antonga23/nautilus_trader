@@ -41,7 +41,7 @@ def _make_instrument(
 ) -> CryptoBettingInstrument:
     return CryptoBettingInstrument(
         venue=Venue("SXBET"),
-        event_id=market_hash,
+        event_id="fixture-1",
         event_name="Team A vs Team B",
         home_name="Team A",
         away_name="Team B",
@@ -53,6 +53,7 @@ def _make_instrument(
         side=SelectionSide.BACK,
         price=2.0,
         currency=Currency.from_str("USDT"),
+        market_id=market_hash,
         info={"outcome_one": outcome_one},
     )
 
@@ -423,7 +424,7 @@ def test_data_engine_subscribe_quote_ticks_routes_to_sxbet_client(monkeypatch):
 async def test_fetch_and_publish_best_odds_uses_market_hash_batch():
     instrument = CryptoBettingInstrument(
         venue=Venue("SXBET"),
-        event_id="market-1",
+        event_id="fixture-1",
         event_name="Team A vs Team B",
         home_name="Team A",
         away_name="Team B",
@@ -435,6 +436,7 @@ async def test_fetch_and_publish_best_odds_uses_market_hash_batch():
         side=SelectionSide.BACK,
         price=2.0,
         currency=Currency.from_str("USDT"),
+        market_id="market-1",
         info={"outcome_one": True},
     )
 
@@ -487,7 +489,7 @@ async def test_fetch_and_publish_best_odds_uses_market_hash_batch():
 async def test_fetch_and_publish_best_odds_uses_outcome_two_and_skips_unsubscribed():
     subscribed = CryptoBettingInstrument(
         venue=Venue("SXBET"),
-        event_id="market-1",
+        event_id="fixture-1",
         event_name="Team A vs Team B",
         home_name="Team A",
         away_name="Team B",
@@ -499,11 +501,12 @@ async def test_fetch_and_publish_best_odds_uses_outcome_two_and_skips_unsubscrib
         side=SelectionSide.BACK,
         price=2.0,
         currency=Currency.from_str("USDT"),
+        market_id="market-1",
         info={"outcome_one": False},
     )
     unsubscribed = CryptoBettingInstrument(
         venue=Venue("SXBET"),
-        event_id="market-1",
+        event_id="fixture-1",
         event_name="Team A vs Team B",
         home_name="Team A",
         away_name="Team B",
@@ -515,6 +518,7 @@ async def test_fetch_and_publish_best_odds_uses_outcome_two_and_skips_unsubscrib
         side=SelectionSide.BACK,
         price=2.0,
         currency=Currency.from_str("USDT"),
+        market_id="market-1",
         info={"outcome_one": True},
     )
 

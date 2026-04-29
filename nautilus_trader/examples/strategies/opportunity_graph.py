@@ -26,6 +26,8 @@ Quote ticks only update node state and re-evaluate edges adjacent to the changed
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
+import json
+import os
 from typing import Any
 
 from nautilus_trader.adapters.betting.common.enums import MarketType
@@ -34,6 +36,9 @@ from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.betting.market_matcher import ArbitrageOpportunity
 from nautilus_trader.adapters.betting.market_matcher import HedgeCandidate
 from nautilus_trader.adapters.betting.market_matcher import MarketMatcher
+from nautilus_trader.adapters.betting.semantics import MarketNormalizer
+from nautilus_trader.adapters.betting.semantics import RuleStore
+from nautilus_trader.adapters.betting.semantics import SelectionPattern
 from nautilus_trader.model.data import QuoteTick
 
 _OPPORTUNITY_GRAPH_CORE_CLS: Any | None
@@ -166,24 +171,31 @@ class OpportunityGraph:
         """
         Initialize the graph matcher and optional Rust engine.
         """
-        if engine not in {"auto", "python", "rust"}:
+        env_engine = os.getenv("NAUTILUS_BETTING_OPPORTUNITY_GRAPH_ENGINE", "").strip().lower()
+        if env_engine:
+            engine = env_engine
+        if engine not in {"auto", "python", "rust", "semantic_rust"}:
             msg = f"Invalid opportunity graph engine: {engine}"
             raise ValueError(msg)
-        if engine == "rust" and _OPPORTUNITY_GRAPH_CORE_CLS is None:
+        if engine in {"rust", "semantic_rust"} and _OPPORTUNITY_GRAPH_CORE_CLS is None:
             msg = "Rust OpportunityGraphCore is unavailable"
             raise ImportError(msg)
 
         self._matcher = matcher
         self._include_cross_venue = include_cross_venue
-        rule_store = self._safe_attr(matcher, "_rule_store", None)
-        use_rust_core = engine == "rust" or (
-            engine == "auto" and rule_store is None and _OPPORTUNITY_GRAPH_CORE_CLS is not None
-        )
+        self._engine = engine
+        use_rust_core = engine in {"auto", "rust", "semantic_rust"}
         self._rust_core: Any | None = (
             _OPPORTUNITY_GRAPH_CORE_CLS(include_cross_venue, matcher.min_confidence)
             if use_rust_core and _OPPORTUNITY_GRAPH_CORE_CLS is not None
             else None
         )
+        if engine == "semantic_rust" and not self._rust_core_supports_semantic_topology():
+            msg = "Rust OpportunityGraphCore semantic topology API is unavailable"
+            raise ImportError(msg)
+        self._topology_source = "python"
+        self._semantic_template_count = 0
+        self._rust_semantic_templates_loaded = False
         self.nodes_by_id: dict[str, OpportunityNode] = {}
         self.edges_by_id: dict[str, OpportunityEdge] = {}
         self.edge_ids_by_node_id: dict[str, set[str]] = {}
@@ -208,8 +220,9 @@ class OpportunityGraph:
         """
         Return the number of nodes with an active quote snapshot.
         """
-        if self._rust_core is not None:
-            return self._rust_core.quote_state_count()
+        rust_core = self._active_rust_core()
+        if rust_core is not None:
+            return rust_core.quote_state_count()
         return len(self.quotes_by_node_id)
 
     def clear(self) -> None:
@@ -235,11 +248,24 @@ class OpportunityGraph:
             self.edge_ids_by_node_id.setdefault(node.node_id, set())
             rust_nodes.append(self._node_payload_from_node(node, instrument))
 
-        if self._rust_core is not None:
-            self._rust_core.build(rust_nodes)
+        semantic_templates = self._semantic_template_payloads()
+        if self._rust_core is not None and self._should_use_semantic_rust(semantic_templates):
+            self._rust_core.build_semantic(rust_nodes, semantic_templates)
+            self._rust_semantic_templates_loaded = True
+            self._semantic_template_count = len(semantic_templates)
+            self._topology_source = "rust_semantic"
             self._sync_edges_from_rust()
             return
 
+        if self._rust_core is not None and self._should_use_legacy_rust():
+            self._rust_core.build(rust_nodes)
+            self._rust_semantic_templates_loaded = False
+            self._semantic_template_count = 0
+            self._topology_source = "rust_legacy"
+            self._sync_edges_from_rust()
+            return
+
+        self._topology_source = "python"
         for instrument in instruments:
             self._add_edges_for_instrument(instrument, instruments)
 
@@ -255,8 +281,19 @@ class OpportunityGraph:
         self.nodes_by_id[node.node_id] = node
         self.edge_ids_by_node_id.setdefault(node.node_id, set())
 
-        if self._rust_core is not None:
-            added = self._rust_core.add_instrument(self._node_payload_from_node(node, instrument))
+        if self._rust_core is not None and (
+            self._should_use_semantic_rust(self._semantic_template_payloads())
+            or self._should_use_legacy_rust()
+        ):
+            payload = self._node_payload_from_node(node, instrument)
+            semantic_templates = self._semantic_template_payloads()
+            if self._should_use_semantic_rust(semantic_templates):
+                self._ensure_rust_semantic_templates_loaded(semantic_templates)
+                added = self._rust_core.add_instrument_semantic(payload)
+                self._topology_source = "rust_semantic"
+            else:
+                added = self._rust_core.add_instrument(payload)
+                self._topology_source = "rust_legacy"
             if added:
                 self._sync_edges_from_rust()
             else:
@@ -294,8 +331,9 @@ class OpportunityGraph:
             exchange_ts_ns=int(quote.ts_event),
         )
         self.quotes_by_node_id[node_id] = state
-        if self._rust_core is not None:
-            self._rust_core.update_quote(
+        rust_core = self._active_rust_core()
+        if rust_core is not None:
+            rust_core.update_quote(
                 node_id,
                 float(odds),
                 received_ns,
@@ -317,8 +355,9 @@ class OpportunityGraph:
         if updated_quote is None:
             return []
 
-        if self._rust_core is not None:
-            snapshots = self._rust_core.evaluate_updated_node(
+        rust_core = self._active_rust_core()
+        if rust_core is not None:
+            snapshots = rust_core.evaluate_updated_node(
                 node_id,
                 float(min_profit_margin),
                 now_ns,
@@ -378,7 +417,8 @@ class OpportunityGraph:
         """
         Update latest quote state and evaluate affected graph edges in one operation.
         """
-        if self._rust_core is None:
+        rust_core = self._active_rust_core()
+        if rust_core is None:
             quote_state = self.update_quote(quote, odds=odds, received_ns=received_ns)
             if quote_state is None:
                 return None, []
@@ -402,7 +442,7 @@ class OpportunityGraph:
             exchange_ts_ns=int(quote.ts_event),
         )
         self.quotes_by_node_id[node_id] = state
-        snapshots = self._rust_core.update_quote_and_evaluate(
+        snapshots = rust_core.update_quote_and_evaluate(
             node_id,
             float(odds),
             received_ns,
@@ -429,14 +469,25 @@ class OpportunityGraph:
         """
         Update quote state and return compact Rust scan results for strategy hot paths.
         """
-        if self._rust_core is None:
+        rust_core = self._active_rust_core()
+        if rust_core is None:
             return None
 
         node_id = str(quote.instrument_id)
         if node_id not in self.nodes_by_id:
             return False, []
 
-        snapshots = self._rust_core.update_quote_and_scan_fast(
+        state = QuoteState(
+            node_id=node_id,
+            quote=quote,
+            odds=odds,
+            bid_odds=quote.bid_price.as_decimal(),
+            ask_odds=quote.ask_price.as_decimal(),
+            received_ns=received_ns,
+            exchange_ts_ns=int(quote.ts_event),
+        )
+        self.quotes_by_node_id[node_id] = state
+        snapshots = rust_core.update_quote_and_scan_fast(
             node_id,
             float(odds),
             received_ns,
@@ -469,27 +520,58 @@ class OpportunityGraph:
             "edges": self.edge_count,
             "quote_states": self.quote_state_count,
             "connected_nodes": self.connected_node_count,
+            "rust_enabled": int(self._rust_core is not None),
+            "semantic_template_count": self._semantic_template_count,
         }
+
+    @property
+    def graph_engine(self) -> str:
+        return "rust" if self._rust_core is not None else "python"
+
+    @property
+    def topology_source(self) -> str:
+        return self._topology_source
+
+    @property
+    def semantic_template_count(self) -> int:
+        return self._semantic_template_count
 
     def _sync_edges_from_rust(self) -> None:
         if self._rust_core is None:
             return
         self.edges_by_id.clear()
         self.edge_ids_by_node_id = {node_id: set() for node_id in self.nodes_by_id}
-        for (
-            edge_id,
-            source_node_id,
-            target_node_id,
-            hedge_type,
-            confidence,
-            same_venue,
-            market_relationship_type,
-            _push_capable,
-            _execution_safe,
-            last_margin,
-            last_evaluated_ns,
-            last_updated_ns,
-        ) in self._rust_core.edge_snapshots():
+        for snapshot in self._rust_core.edge_snapshots():
+            (
+                edge_id,
+                source_node_id,
+                target_node_id,
+                hedge_type,
+                confidence,
+                same_venue,
+                raw_market_relationship_type,
+                rust_push_capable,
+                rust_execution_safe,
+                last_margin,
+                last_evaluated_ns,
+                last_updated_ns,
+            ) = snapshot[:12]
+            metadata = self._rust_edge_metadata(raw_market_relationship_type)
+            if not metadata and len(snapshot) > 12:
+                metadata = self._rust_edge_metadata(snapshot[12])
+            market_relationship_type = (
+                self._metadata_str(metadata, "market_relationship_type")
+                or raw_market_relationship_type
+            )
+            template_id = self._metadata_str(metadata, "template_id")
+            relationship_type = self._metadata_str(metadata, "relationship_type")
+            promotion_status = self._metadata_str(metadata, "promotion_status")
+            safety_tier = self._metadata_str(metadata, "safety_tier")
+            same_venue_execution_eligible = bool(
+                metadata.get("same_venue_execution_eligible"),
+            )
+            partial_settlement = bool(metadata.get("partial_settlement"))
+            caveats = self._metadata_str_tuple(metadata, "caveats")
             source_node = self.nodes_by_id.get(source_node_id)
             target_node = self.nodes_by_id.get(target_node_id)
             if source_node is None or target_node is None:
@@ -499,28 +581,42 @@ class OpportunityGraph:
                 source_node.instrument,
                 target_node.instrument,
             )
-            if hedge is None:
+            if hedge is None and not template_id:
                 continue
 
             edge = OpportunityEdge(
                 edge_id=edge_id,
                 source_node_id=source_node_id,
                 target_node_id=target_node_id,
-                hedge_type=hedge.match_type or hedge_type,
-                confidence=hedge.confidence if hedge.confidence else confidence,
+                hedge_type=hedge.match_type
+                if hedge is not None and hedge.match_type
+                else hedge_type,
+                confidence=hedge.confidence
+                if hedge is not None and hedge.confidence
+                else confidence,
                 same_venue=same_venue,
                 market_relationship_type=market_relationship_type,
-                push_capable=hedge.push_capable,
-                execution_safe=hedge.execution_safe,
-                rule_id=hedge.rule_id,
-                template_id=hedge.template_id,
-                relationship_type=hedge.relationship_type,
-                caveats=hedge.caveats,
-                promotion_status=hedge.promotion_status,
-                safety_tier=hedge.safety_tier,
-                same_venue_execution_eligible=hedge.same_venue_execution_eligible,
-                void_capable=hedge.push_capable,
-                partial_settlement=hedge.partial_settlement,
+                push_capable=hedge.push_capable if hedge is not None else rust_push_capable,
+                execution_safe=(hedge.execution_safe if hedge is not None else rust_execution_safe),
+                rule_id=hedge.rule_id if hedge is not None else None,
+                template_id=hedge.template_id if hedge is not None else template_id,
+                relationship_type=(
+                    hedge.relationship_type if hedge is not None else relationship_type
+                ),
+                caveats=hedge.caveats if hedge is not None else caveats,
+                promotion_status=(
+                    hedge.promotion_status if hedge is not None else promotion_status
+                ),
+                safety_tier=hedge.safety_tier if hedge is not None else safety_tier,
+                same_venue_execution_eligible=(
+                    hedge.same_venue_execution_eligible
+                    if hedge is not None
+                    else same_venue_execution_eligible
+                ),
+                void_capable=hedge.push_capable if hedge is not None else rust_push_capable,
+                partial_settlement=(
+                    hedge.partial_settlement if hedge is not None else partial_settlement
+                ),
                 last_margin=Decimal(str(last_margin)) if last_margin is not None else None,
                 last_evaluated_ns=last_evaluated_ns,
                 last_updated_ns=last_updated_ns,
@@ -569,6 +665,16 @@ class OpportunityGraph:
                 ),
             )
         return candidates
+
+    @staticmethod
+    def _rust_edge_metadata(raw: object) -> dict[str, object]:
+        if not isinstance(raw, str) or not raw:
+            return {}
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        return payload if isinstance(payload, dict) else {}
 
     def _add_edges_for_instrument(
         self,
@@ -880,6 +986,7 @@ class OpportunityGraph:
 
         raw_market_type = str(cls._safe_attr(instrument, "market_type", ""))
         market_type = MarketType.from_string(raw_market_type or node.market_name).value
+        semantic_payload = cls._semantic_node_payload(instrument)
 
         return {
             "node_id": node.node_id,
@@ -894,7 +1001,143 @@ class OpportunityGraph:
             "handicap": node.handicap,
             "start_time_ns": cls._start_time_ns(instrument),
             "two_way_market": node.two_way_market,
+            **semantic_payload,
         }
+
+    @classmethod
+    def _semantic_node_payload(cls, instrument: CryptoBettingInstrument) -> dict[str, object]:
+        try:
+            normalized = MarketNormalizer.normalize(instrument)
+        except (AttributeError, TypeError, ValueError):
+            raw_market_type = str(cls._safe_attr(instrument, "market_type", ""))
+            market_type = MarketType.from_string(
+                raw_market_type or str(cls._safe_attr(instrument, "market_name", "")),
+            ).value
+            return {
+                "semantic_sport": str(cls._safe_attr(instrument, "sport_name", "")).lower(),
+                "semantic_scope": "full_time",
+                "semantic_market_type": market_type,
+                "semantic_market_family": market_type,
+                "semantic_selection": Outcome.from_string(
+                    str(cls._safe_attr(instrument, "outcome", "unknown")),
+                ).value,
+                "semantic_params_key": str(cls._safe_attr(instrument, "params", "")),
+            }
+        return {
+            "semantic_sport": normalized.sport,
+            "semantic_scope": normalized.scope,
+            "semantic_market_type": normalized.market_type,
+            "semantic_market_family": normalized.market_family,
+            "semantic_selection": normalized.selection,
+            "semantic_params_key": cls._params_key(normalized.params),
+        }
+
+    def _semantic_template_payloads(self) -> list[dict[str, object]]:
+        rule_store = self._semantic_rule_store()
+        if rule_store is None or not hasattr(rule_store, "list_promoted_template_ids"):
+            return []
+
+        payloads: list[dict[str, object]] = []
+        for template_id in rule_store.list_promoted_template_ids():
+            template = rule_store.load_promoted_template(template_id)
+            if template is None:
+                continue
+            payloads.append(
+                {
+                    "template_id": template.template_id,
+                    "relationship_type": template.relationship_type,
+                    "pattern_a": self._semantic_pattern_payload(template.pattern_a),
+                    "pattern_b": self._semantic_pattern_payload(template.pattern_b),
+                    "confidence": template.confidence,
+                    "provider_scope": list(template.provider_scope),
+                    "venue_agnostic": template.venue_agnostic,
+                    "safety_tier": template.safety_tier,
+                    "promotion_status": template.promotion_status,
+                    "caveats": list(template.caveats),
+                    "push_capable": template.has_void,
+                    "partial_settlement": template.has_partial,
+                    "execution_safe": template.execution_safe,
+                    "same_venue_execution_eligible": template.same_venue_execution_eligible,
+                },
+            )
+        return payloads
+
+    @classmethod
+    def _semantic_pattern_payload(cls, pattern: SelectionPattern) -> dict[str, object]:
+        return {
+            "sport": pattern.sport,
+            "scope": pattern.scope,
+            "market_type": pattern.market_type,
+            "market_family": pattern.market_family,
+            "selection": pattern.selection,
+            "params_key": cls._params_key(pattern.params),
+        }
+
+    @staticmethod
+    def _params_key(params: tuple[tuple[str, str], ...] | object) -> str:
+        if isinstance(params, tuple):
+            return json.dumps(list(params), sort_keys=True, separators=(",", ":"))
+        return str(params or "")
+
+    def _should_use_semantic_rust(self, semantic_templates: list[dict[str, object]]) -> bool:
+        return self._rust_core_supports_semantic_topology() and (
+            self._engine == "semantic_rust" or (self._engine == "auto" and bool(semantic_templates))
+        )
+
+    def _should_use_legacy_rust(self) -> bool:
+        return self._rust_core is not None and (
+            self._engine == "rust"
+            or (self._engine == "auto" and self._semantic_rule_store() is None)
+        )
+
+    def _using_rust_topology(self) -> bool:
+        return self._rust_core is not None and self._topology_source.startswith("rust")
+
+    def _active_rust_core(self) -> Any | None:
+        return self._rust_core if self._using_rust_topology() else None
+
+    def _rust_core_supports_semantic_topology(self) -> bool:
+        return self._rust_core is not None and all(
+            callable(getattr(self._rust_core, method, None))
+            for method in (
+                "build_semantic",
+                "add_instrument_semantic",
+                "load_semantic_templates",
+            )
+        )
+
+    @staticmethod
+    def _metadata_str(metadata: dict[str, object], key: str) -> str | None:
+        value = metadata.get(key)
+        return value if isinstance(value, str) and value else None
+
+    @staticmethod
+    def _metadata_str_tuple(metadata: dict[str, object], key: str) -> tuple[str, ...]:
+        value = metadata.get(key)
+        if value is None:
+            return ()
+        if isinstance(value, str):
+            return (value,) if value else ()
+        if isinstance(value, list | tuple):
+            return tuple(str(item) for item in value)
+        return (str(value),)
+
+    def _semantic_rule_store(self) -> RuleStore | None:
+        return self._matcher.rule_store
+
+    def _ensure_rust_semantic_templates_loaded(
+        self,
+        semantic_templates: list[dict[str, object]],
+    ) -> None:
+        if self._rust_core is None:
+            return
+        if self._rust_semantic_templates_loaded and (
+            self._semantic_template_count == len(semantic_templates)
+        ):
+            return
+        self._rust_core.load_semantic_templates(semantic_templates)
+        self._rust_semantic_templates_loaded = True
+        self._semantic_template_count = len(semantic_templates)
 
     @classmethod
     def _start_time_ns(cls, instrument: CryptoBettingInstrument) -> int | None:

@@ -222,8 +222,8 @@ class SXBetDataClient(LiveMarketDataClient):
         market_hashes: set[str] = set()
         for instrument_id in list(self._subscribed_instruments):
             instrument = self._instrument_provider.find(instrument_id)
-            if isinstance(instrument, CryptoBettingInstrument):
-                market_hashes.add(instrument.event_id)
+            if isinstance(instrument, CryptoBettingInstrument) and instrument.market_id:
+                market_hashes.add(instrument.market_id)
         return market_hashes
 
     async def _fetch_order_book_results(

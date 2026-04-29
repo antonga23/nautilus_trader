@@ -12,6 +12,7 @@ Parity and fast-path tests for the opportunity graph engines.
 """
 
 from decimal import Decimal
+import json
 from typing import Any
 from typing import cast
 
@@ -20,6 +21,13 @@ import pytest
 from nautilus_trader.adapters.betting.common.enums import SelectionSide
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.betting.market_matcher import MarketMatcher
+from nautilus_trader.adapters.betting.semantics import FileRuleCache
+from nautilus_trader.adapters.betting.semantics import PromotionStatus
+from nautilus_trader.adapters.betting.semantics import RuleClassifier
+from nautilus_trader.adapters.betting.semantics import RuleStore
+from nautilus_trader.adapters.betting.semantics import SafetyTier
+from nautilus_trader.adapters.betting.semantics import SemanticRuleTemplate
+from nautilus_trader.adapters.betting.semantics import TemplateSupportStats
 from nautilus_trader.examples.strategies.opportunity_graph import OpportunityGraph
 from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.objects import Currency
@@ -81,6 +89,34 @@ def _graph(engine: str, instruments: list[CryptoBettingInstrument]) -> Opportuni
         pytest.skip("Rust OpportunityGraphCore is unavailable")
     graph.build(instruments)
     return graph
+
+
+def _semantic_rule_store(
+    cache_dir,
+    source: CryptoBettingInstrument,
+    target: CryptoBettingInstrument,
+) -> RuleStore:
+    store = RuleStore(FileRuleCache(cache_dir))
+    rule = RuleClassifier().classify(source, target)
+    if rule is None:
+        raise AssertionError("Expected semantic rule")
+    template = SemanticRuleTemplate.from_rule(
+        rule,
+        support=TemplateSupportStats(
+            template_id=SemanticRuleTemplate.from_rule(rule).template_id,
+            observed_count=10,
+            event_count=3,
+            provider_count=1,
+            providers=("SXBET",),
+            sports=("soccer",),
+            confidence=1.0,
+        ),
+        provider_scope=("SXBET",),
+        promotion_status=PromotionStatus.PROMOTED.value,
+        safety_tier=SafetyTier.EXECUTION_SAFE.value,
+    )
+    store.save_promoted_template(template)
+    return store
 
 
 def _edge_snapshot(graph: OpportunityGraph) -> dict[str, tuple[str, str, str, bool]]:  # skipcq
@@ -244,6 +280,8 @@ def test_update_quote_and_scan_fast_returns_primitive_snapshots() -> None:  # sk
     quote_updated, snapshots = result
     ensure(quote_updated is True)
     ensure(graph.quote_state_count == 2)
+    ensure(str(instruments[1].id) in graph.quotes_by_node_id)
+    ensure(graph.quotes_by_node_id[str(instruments[1].id)].odds == Decimal("2.55"))
     ensure(len(snapshots) == 1)
     snapshot = snapshots[0]
     ensure(snapshot[1] == str(instruments[1].id))
@@ -292,13 +330,89 @@ def test_update_quote_and_scan_fast_is_rust_only() -> None:  # skipcq
     )
 
 
-def test_auto_engine_uses_python_when_matcher_has_rule_store() -> None:  # skipcq
+def test_python_engine_can_still_be_forced_when_matcher_has_rule_store() -> None:  # skipcq
     matcher = MarketMatcher()
     matcher._rule_store = cast(Any, object())
 
-    graph = OpportunityGraph(matcher)
+    graph = OpportunityGraph(matcher, engine="python")
 
     ensure(graph._rust_core is None)
+
+
+def test_semantic_rust_builds_topology_from_promoted_templates(tmp_path) -> None:  # skipcq
+    instruments = [_instrument(outcome="over"), _instrument(outcome="under")]
+    store = _semantic_rule_store(tmp_path / "rules", instruments[0], instruments[1])
+    matcher = MarketMatcher(rule_store=store, allow_unpromoted_topology=False)
+    try:
+        graph = OpportunityGraph(matcher, engine="semantic_rust")
+    except ImportError:
+        pytest.skip("Rust OpportunityGraphCore is unavailable")
+
+    graph.build(instruments)
+
+    ensure(graph.graph_engine == "rust")
+    ensure(graph.topology_source == "rust_semantic")
+    ensure(graph.semantic_template_count == 1)
+    ensure(graph.edge_count == 1)
+    ensure(next(iter(graph.edges_by_id.values())).execution_safe is True)
+
+
+def test_sync_keeps_rust_semantic_edges_without_python_rediscovery() -> None:  # skipcq
+    matcher = MarketMatcher(allow_unpromoted_topology=False)
+    instruments = [
+        _instrument(outcome="over", params="line=3.5"),
+        _instrument(outcome="under", params="line=4.5"),
+    ]
+    graph = OpportunityGraph(matcher, engine="python")
+    for instrument in instruments:
+        node = graph._node_from_instrument(instrument)
+        graph.nodes_by_id[node.node_id] = node
+        graph.edge_ids_by_node_id[node.node_id] = set()
+    edge_id = graph._edge_id(str(instruments[0].id), str(instruments[1].id))
+    metadata = json.dumps(
+        {
+            "template_id": "template:rust-semantic",
+            "relationship_type": "COMPLEMENTARY_COVERAGE",
+            "promotion_status": "PROMOTED",
+            "safety_tier": "EXECUTION_SAFE",
+            "market_relationship_type": "same_market",
+            "same_venue_execution_eligible": False,
+            "partial_settlement": False,
+            "caveats": [],
+        },
+    )
+
+    class FakeRustCore:
+        def edge_snapshots(self):
+            return [
+                (
+                    edge_id,
+                    str(instruments[0].id),
+                    str(instruments[1].id),
+                    "same_market",
+                    1.0,
+                    True,
+                    metadata,
+                    False,
+                    True,
+                    None,
+                    None,
+                    None,
+                ),
+            ]
+
+    graph._rust_core = cast(Any, FakeRustCore())
+
+    ensure(matcher._semantic_hedge_candidate(instruments[0], instruments[1]) is None)
+
+    graph._sync_edges_from_rust()
+
+    ensure(graph.edge_count == 1)
+    edge = next(iter(graph.edges_by_id.values()))
+    ensure(edge.template_id == "template:rust-semantic")
+    ensure(edge.relationship_type == "COMPLEMENTARY_COVERAGE")
+    ensure(edge.safety_tier == "EXECUTION_SAFE")
+    ensure(edge.execution_safe is True)
 
 
 def test_node_payload_fallbacks_cover_missing_helper_methods() -> None:  # skipcq

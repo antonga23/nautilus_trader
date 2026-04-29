@@ -226,6 +226,26 @@ runs:
       uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
       continue-on-error: true # Build continues without cache if sccache setup fails
 
+    - name: Disable sccache env vars when unavailable
+      if: inputs.build-type == 'test' || inputs.build-type == 'release'
+      shell: bash
+      run: |
+        if command -v sccache > /dev/null 2>&1; then
+          exit 0
+        fi
+
+        echo "sccache unavailable; building without compiler cache"
+        {
+          echo "RUSTC_WRAPPER="
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            echo "CMAKE_C_COMPILER_LAUNCHER="
+            echo "CMAKE_CXX_COMPILER_LAUNCHER="
+          else
+            echo "CC=clang"
+            echo "CXX=clang++"
+          fi
+        } >> "$GITHUB_ENV"
+
     # > --------------------------------------------------
     # > Python
     - name: Set up Python environment

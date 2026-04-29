@@ -189,8 +189,8 @@ class SXBetExecutionClient(LiveExecutionClient):
             )
             return
 
-        # Get market hash (stored as event_id)
-        market_hash = instrument.event_id
+        # SX.bet orders use the market-level hash; event_id is fixture-level.
+        market_hash = instrument.market_id or instrument.event_id
 
         # Determine outcome
         is_outcome_one = self._instrument_is_outcome_one(instrument)

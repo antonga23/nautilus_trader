@@ -146,6 +146,53 @@ jobs:
       - name: Install wheel
         run: uv pip install dist/*.whl
 
+      - name: Overlay branch strategy-node sources onto installed wheel
+        run: |
+          "$GITHUB_WORKSPACE/.venv/bin/python" - <<'PY'
+          import shutil
+          import sysconfig
+          from pathlib import Path
+
+          workspace = Path.cwd()
+          purelib = Path(sysconfig.get_paths()["purelib"])
+          overlays = [
+              (
+                  workspace / "nautilus_trader/live/strategy_nodes/betting_arbitrage",
+                  purelib / "nautilus_trader/live/strategy_nodes/betting_arbitrage",
+              ),
+              (
+                  workspace / "nautilus_trader/adapters/betting",
+                  purelib / "nautilus_trader/adapters/betting",
+              ),
+              (
+                  workspace / "nautilus_trader/examples/strategies/betting_arbitrage.py",
+                  purelib / "nautilus_trader/examples/strategies/betting_arbitrage.py",
+              ),
+              (
+                  workspace / "nautilus_trader/examples/strategies/opportunity_graph.py",
+                  purelib / "nautilus_trader/examples/strategies/opportunity_graph.py",
+              ),
+          ]
+
+          for source, destination in overlays:
+              if source.is_dir():
+                  shutil.copytree(source, destination, dirs_exist_ok=True)
+              else:
+                  destination.parent.mkdir(parents=True, exist_ok=True)
+                  shutil.copy2(source, destination)
+          PY
+
+      - name: Build validated wheel from checked-out source
+        env:
+          BUILD_MODE: release
+        run: |
+          rm -f dist/*.whl
+          uv build --wheel --python 3.12
+          ls -lh dist/
+
+      - name: Install validated wheel
+        run: uv pip install --force-reinstall --no-deps dist/*.whl
+
       - name: Save self-hosted wheel cache
         if: steps.local-wheel-cache.outputs.cache-hit != 'true'
         run: bash scripts/ci/self_hosted_wheel_cache.sh save "${{ steps.wheel-key.outputs.key }}"
@@ -166,6 +213,23 @@ jobs:
           "$GITHUB_WORKSPACE/.venv/bin/python" -m nautilus_trader.live.strategy_nodes.betting_arbitrage \
             validate-manifest \
             --manifest "$GITHUB_WORKSPACE/deploy/strategy_nodes/betting_arbitrage/sxbet-single-venue.json"
+
+      - name: Probe SX.bet runtime semantic coverage
+        env:
+          SXBET_API_KEY: ${{ secrets.SXBET_API_KEY }}
+          CLOUDBET_API_KEY: ${{ secrets.CLOUDBET_API_KEY }}
+        run: |
+          cd /tmp
+          "$GITHUB_WORKSPACE/.venv/bin/python" -m nautilus_trader.live.strategy_nodes.betting_arbitrage \
+            probe-runtime \
+            --manifest "$GITHUB_WORKSPACE/deploy/strategy_nodes/betting_arbitrage/sxbet-single-venue.json" \
+            --timeout-seconds 420 \
+            --poll-interval-secs 5 \
+            --min-connected-nodes 2 \
+            --min-match-instruments 2 \
+            --min-quoted-match-instruments 2 \
+            --min-positive-margin-candidates 0 \
+            --require-rust-semantic-topology
 
       - name: Validate Polymarket manifest
         run: |
@@ -567,6 +631,9 @@ jobs:
             scripts/deploy/strategy_nodes/deploy_betting_strategy_node.sh \
             "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST:/tmp/deploy_betting_strategy_node.sh"
           scp -i strategy-node.key -o StrictHostKeyChecking=no \
+            scripts/deploy/strategy_nodes/wait_for_strategy_node_status.sh \
+            "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST:/tmp/wait_for_strategy_node_status.sh"
+          scp -i strategy-node.key -o StrictHostKeyChecking=no \
             scripts/ci/runner_health_check.sh \
             "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST:/tmp/runner_health_check.sh"
           if [ -n "$STRATEGY_NODE_ENV_FILE" ]; then
@@ -646,6 +713,50 @@ jobs:
                $registry_args && \
              rm -f /tmp/strategy-node-ghcr-token"
 
+      - name: Wait for deployed node status and semantic cache
+        run: |
+          ssh -i strategy-node.key -o StrictHostKeyChecking=no "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST" \
+            "chmod +x /tmp/wait_for_strategy_node_status.sh && \
+             /tmp/wait_for_strategy_node_status.sh \
+               --status-file /opt/cloudbet/strategy-nodes/$STRATEGY_NODE_CONTAINER_NAME/status.json \
+               --timeout-seconds 900 \
+               --success-status running,completed \
+               --require-semantic-cache-ready \
+               --require-runtime-probe \
+               --require-rust-semantic-topology \
+               --min-connected-nodes 2 \
+               --min-match-instruments 2 \
+               --min-quoted-match-instruments 2 \
+               --min-positive-margin-candidates 0"
+
+      - name: Inspect deployed semantic cache directory
+        run: |
+          ssh -i strategy-node.key -o StrictHostKeyChecking=no "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST" \
+            "cache_dir=/opt/cloudbet/strategy-nodes/$STRATEGY_NODE_CONTAINER_NAME/semantic-rule-cache && \
+             test -d \"\$cache_dir\" && \
+             file_count=\$(find \"\$cache_dir\" -type f | wc -l | tr -d ' ') && \
+             printf 'semantic_cache_dir=%s\nsemantic_cache_file_count=%s\n' \"\$cache_dir\" \"\$file_count\" && \
+             test \"\$file_count\" -gt 0"
+
+      - name: Fetch deployed node status artifacts
+        if: always()
+        run: |
+          mkdir -p artifacts/strategy-node-deploy
+          remote="$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST"
+          node_dir="/opt/cloudbet/strategy-nodes/$STRATEGY_NODE_CONTAINER_NAME"
+          scp -i strategy-node.key -o StrictHostKeyChecking=no \
+            "$remote:$node_dir/status.json" \
+            "artifacts/strategy-node-deploy/status.json" || true
+          scp -i strategy-node.key -o StrictHostKeyChecking=no \
+            "$remote:$node_dir/heartbeat.json" \
+            "artifacts/strategy-node-deploy/heartbeat.json" || true
+          scp -i strategy-node.key -o StrictHostKeyChecking=no \
+            "$remote:$node_dir/manifest.runtime.json" \
+            "artifacts/strategy-node-deploy/manifest.runtime.json" || true
+          scp -i strategy-node.key -o StrictHostKeyChecking=no \
+            "$remote:$node_dir/release.json" \
+            "artifacts/strategy-node-deploy/release.json" || true
+
       - name: Cleanup remote helper files
         if: always()
         run: |
@@ -657,6 +768,7 @@ jobs:
           fi
           ssh -i strategy-node.key -o StrictHostKeyChecking=no "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST" \
             'rm -f /tmp/deploy_betting_strategy_node.sh \
+              /tmp/wait_for_strategy_node_status.sh \
               /tmp/runner_health_check.sh \
               /tmp/strategy-node-ghcr-token \
               /tmp/strategy-node-image.tar.gz'

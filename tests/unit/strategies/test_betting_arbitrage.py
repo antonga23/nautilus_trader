@@ -62,6 +62,7 @@ class TestBettingArbitrageConfig:  # skipcq
         ensure(config.opportunity_graph_enabled is True)
         ensure(config.opportunity_log_manual_instructions is True)
         ensure(config.graph_rebuild_on_new_instrument is True)
+        ensure(config.opportunity_graph_engine == "auto")
 
     def test_custom_venues(self):  # skipcq
         """
@@ -94,6 +95,14 @@ class TestBettingArbitrageConfig:  # skipcq
         # Invalid filter
         with pytest.raises(ValueError, match="Invalid market_timing_filter"):
             BettingArbitrageConfig(market_timing_filter="invalid")
+
+    def test_opportunity_graph_engine_validation(self):  # skipcq
+        for engine in ["auto", "python", "rust", "semantic_rust"]:
+            config = BettingArbitrageConfig(opportunity_graph_engine=engine.upper())
+            ensure(config.opportunity_graph_engine == engine)
+
+        with pytest.raises(ValueError, match="Invalid opportunity_graph_engine"):
+            BettingArbitrageConfig(opportunity_graph_engine="invalid")
 
     def test_exclude_live_flag(self):  # skipcq
         """
@@ -207,6 +216,9 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure("opportunity_graph_nodes" in stats)
         ensure("opportunity_graph_edges" in stats)
         ensure("opportunity_graph_quote_states" in stats)
+        ensure("opportunity_graph_rust_enabled" in stats)
+        ensure("opportunity_graph_topology_source" in stats)
+        ensure("opportunity_graph_semantic_template_count" in stats)
         ensure("duplicate_opportunities_suppressed" in stats)
         ensure("stale_quote_suppressions" in stats)
         ensure("matcher_suspect_suppressions" in stats)
@@ -710,7 +722,11 @@ class TestBettingArbitrageStrategy:  # skipcq
         )
 
         ensure(strategy._suppress_arbitrage_candidate(diagnostics) is False)
-        strategy._seen_opportunity_pairs.add(diagnostics.canonical_pair_id)
+        strategy._record_opportunity_pair(
+            diagnostics.canonical_pair_id,
+            diagnostics.opportunity_id,
+            11_000_000_000,
+        )
         ensure(strategy._suppress_arbitrage_candidate(diagnostics) is True)
 
         ensure(strategy._duplicate_opportunities_suppressed == 1)
@@ -1136,8 +1152,10 @@ class TestBettingArbitrageStrategy:  # skipcq
         )
         strategy._handle_arbitrage_opportunity = Mock()
         instrument_a, instrument_b, snapshot = self._fast_candidate_snapshot(strategy)
-        strategy._seen_opportunity_pairs.add(
+        strategy._record_opportunity_pair(
             strategy._canonical_pair_id(instrument_a, instrument_b),
+            strategy._fast_opportunity_id(snapshot[0], snapshot[10], snapshot[5], snapshot[6]),
+            10_000_000_000,
         )
 
         strategy._handle_fast_opportunity_candidate(snapshot, 11_000_000_000)
@@ -1177,7 +1195,11 @@ class TestBettingArbitrageStrategy:  # skipcq
             ),
         )
         _, _, snapshot = self._fast_candidate_snapshot(strategy)
-        strategy._seen_opportunity_pairs.add(snapshot[0])
+        strategy._record_opportunity_pair(
+            snapshot[0],
+            strategy._fast_opportunity_id(snapshot[0], snapshot[10], snapshot[5], snapshot[6]),
+            10_000_000_000,
+        )
         strategy._opportunity_graph.clear()
         strategy._latest_quotes.clear()
 
@@ -1188,6 +1210,35 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(strategy._opportunities_found == 0)
         ensure(strategy._executable_candidates == 0)
         strategy._log_arbitrage_summary.assert_called_once()
+
+    def test_duplicate_pair_state_expires_after_cooldown(self):  # skipcq
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["SXBET"]),
+                duplicate_suppression_cooldown_secs=1.0,
+            ),
+        )
+
+        strategy._record_opportunity_pair("pair-a", "pair-a|same_market|2.1:2.2", 1_000_000_000)
+
+        ensure(
+            strategy._is_duplicate_opportunity_pair(
+                "pair-a",
+                "pair-a|same_market|2.1:2.2",
+                1_500_000_000,
+            )
+            is True,
+        )
+        ensure(
+            strategy._is_duplicate_opportunity_pair(
+                "pair-a",
+                "pair-a|same_market|2.1:2.2",
+                3_000_000_000,
+            )
+            is False,
+        )
+        ensure("pair-a" in strategy._seen_opportunity_pairs)
+        ensure("pair-a" not in strategy._active_opportunity_pairs)
 
     def test_fast_graph_batch_suppresses_stale_quotes_from_snapshot_before_context(self):  # skipcq
         strategy = BettingArbitrageStrategy(

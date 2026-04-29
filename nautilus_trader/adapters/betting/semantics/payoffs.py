@@ -173,23 +173,32 @@ class SettlementPluginRegistry:
 
         states: tuple[str, ...]
         settlement: tuple[str, ...]
+        line_key = cls._line_key(line)
         if cls._is_quarter_line(line):
             lower, upper = cls._split_quarter_line(line)
             whole_component = lower if lower == lower.to_integral_value() else upper
             lower_is_whole = whole_component == lower
-            states = ("TOTAL_ABOVE", "TOTAL_AT_WHOLE", "TOTAL_BELOW")
+            states = (
+                f"TOTAL_ABOVE_{line_key}",
+                f"TOTAL_AT_SPLIT_{line_key}",
+                f"TOTAL_BELOW_{line_key}",
+            )
             if selection.selection == "OVER":
                 settlement = (WIN, HALF_LOSE if lower_is_whole else HALF_WIN, LOSE)
             else:
                 settlement = (LOSE, HALF_WIN if lower_is_whole else HALF_LOSE, WIN)
         elif line == line.to_integral_value():
-            states = ("TOTAL_OVER", "TOTAL_EQUAL", "TOTAL_UNDER")
+            states = (
+                f"TOTAL_OVER_{line_key}",
+                f"TOTAL_EQUAL_{line_key}",
+                f"TOTAL_UNDER_{line_key}",
+            )
             if selection.selection == "OVER":
                 settlement = (WIN, VOID, LOSE)
             else:
                 settlement = (LOSE, VOID, WIN)
         else:
-            states = ("TOTAL_OVER", "TOTAL_UNDER")
+            states = (f"TOTAL_OVER_{line_key}", f"TOTAL_UNDER_{line_key}")
             if selection.selection == "OVER":
                 settlement = (WIN, LOSE)
             else:
@@ -291,6 +300,12 @@ class SettlementPluginRegistry:
         lower = (line * 2).to_integral_value(rounding=ROUND_FLOOR) / Decimal(2)
         upper = lower + Decimal("0.5")
         return lower, upper
+
+    @staticmethod
+    def _line_key(line: Decimal) -> str:
+        if line == 0:
+            return "0"
+        return format(line.normalize(), "f").replace("-", "minus_").replace(".", "_")
 
     @classmethod
     def _handicap_states(

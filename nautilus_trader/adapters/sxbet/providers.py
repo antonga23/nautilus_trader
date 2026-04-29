@@ -18,6 +18,7 @@ SX.bet Instrument Provider.
 
 from datetime import UTC
 from datetime import datetime
+import hashlib
 import re
 import time
 from typing import Any
@@ -81,6 +82,7 @@ class SXBetInstrumentProvider(InstrumentProvider):
         self._sxbet_config = config
         self._instruments: dict[InstrumentId, CryptoBettingInstrument] = {}
         self._market_cache: dict[str, dict] = {}  # market_hash -> market_data
+        self._sport_names_by_id: dict[int, str] = dict(SXBET_SPORT_IDS)
         if logger is not None:
             self._log = logger
 
@@ -109,6 +111,7 @@ class SXBetInstrumentProvider(InstrumentProvider):
             f"liquidity_probe_limit={self._sxbet_config.liquidity_probe_limit} "
             f"min_two_sided_markets={self._sxbet_config.min_two_sided_markets}",
         )
+        await self._refresh_sport_names()
 
         load_started_at = time.perf_counter()
         markets = await self._load_markets(
@@ -351,8 +354,16 @@ class SXBetInstrumentProvider(InstrumentProvider):
         if self._sxbet_config.live_only and not is_live:
             return
 
-        sport_name = SXBET_SPORT_IDS.get(sport_id, "unknown")
+        sport_name = self._sport_name(sport_id)
         league_name = market.get("leagueLabel") or market.get("leagueName") or "Unknown"
+        event_id, event_id_source = self._fixture_event_id(
+            market,
+            sport_name=sport_name,
+            competition_name=league_name,
+            team_one=team_one,
+            team_two=team_two,
+            start_time=start_time,
+        )
         normalized_market_type = self._normalize_market_type(market)
         outcome_labels, proposition_subject = self._resolve_outcome_names(
             market,
@@ -381,6 +392,8 @@ class SXBetInstrumentProvider(InstrumentProvider):
                 break
             instrument = self._create_instrument(
                 market_hash=market_hash,
+                event_id=event_id,
+                event_id_source=event_id_source,
                 event_name=f"{team_one} vs {team_two}",
                 home_name=team_one,
                 away_name=team_two,
@@ -443,6 +456,33 @@ class SXBetInstrumentProvider(InstrumentProvider):
                 best_odds = 1 / implied
 
         return best_odds
+
+    @classmethod
+    def _fixture_event_id(
+        cls,
+        market: dict[str, Any],
+        *,
+        sport_name: str,
+        competition_name: str,
+        team_one: str,
+        team_two: str,
+        start_time: str | None,
+    ) -> tuple[str, str]:
+        for key in ("eventId", "eventID", "fixtureId", "fixtureID", "gameId", "gameID"):
+            value = market.get(key)
+            if value not in (None, ""):
+                return str(value), key
+
+        payload = "|".join(
+            cls._fixture_id_component(value)
+            for value in (sport_name, competition_name, team_one, team_two, start_time or "")
+        )
+        digest = hashlib.sha256(payload.encode()).hexdigest()[:16]
+        return f"sxbet-{digest}", "derived_fixture_key"
+
+    @staticmethod
+    def _fixture_id_component(value: Any) -> str:
+        return re.sub(r"[^a-z0-9]+", "_", str(value).strip().lower()).strip("_")
 
     def _normalize_market_type(self, market: dict[str, Any]) -> str:
         raw_market_type = market.get("type")
@@ -559,6 +599,75 @@ class SXBetInstrumentProvider(InstrumentProvider):
         normalized = re.sub(r"\s+", " ", str(value).strip().lower())
         return normalized
 
+    async def _refresh_sport_names(self) -> None:
+        get_active_sports = getattr(self._http_client, "get_active_sports", None)
+        if not callable(get_active_sports):
+            return
+
+        try:
+            payload = await get_active_sports()
+        except Exception as e:  # pragma: no cover - network/client failures are runtime-only
+            self._log.warning(
+                f"Failed to refresh SX.bet active sports; using fallback mapping: {type(e).__name__}",
+            )
+            return
+
+        sports = payload.get("data", []) if isinstance(payload, dict) else []
+        if not isinstance(sports, list):
+            return
+
+        refreshed = 0
+        for sport in sports:
+            if not isinstance(sport, dict):
+                continue
+            sport_id = self._parse_sport_id(sport.get("sportId") or sport.get("id"))
+            if sport_id is None:
+                continue
+            label = sport.get("label") or sport.get("name") or sport.get("sport")
+            canonical = self._canonical_sport_label(label)
+            if canonical:
+                self._sport_names_by_id[sport_id] = canonical
+                refreshed += 1
+
+        if refreshed:
+            self._log.info(f"Refreshed SX.bet active sport labels: sports={refreshed}")
+
+    def _sport_name(self, sport_id: Any) -> str:
+        parsed = self._parse_sport_id(sport_id)
+        if parsed is None:
+            return "unknown"
+        return self._sport_names_by_id.get(parsed, SXBET_SPORT_IDS.get(parsed, "unknown"))
+
+    @staticmethod
+    def _parse_sport_id(value: Any) -> int | None:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _canonical_sport_label(cls, value: Any) -> str:
+        normalized = cls._fixture_id_component(value)
+        aliases = {
+            "football": "soccer",
+            "soccer": "soccer",
+            "basketball": "basketball",
+            "hockey": "ice_hockey",
+            "ice_hockey": "ice_hockey",
+            "baseball": "baseball",
+            "tennis": "tennis",
+            "mixed_martial_arts": "mma",
+            "mma": "mma",
+            "e_sports": "esports",
+            "esports": "esports",
+            "cricket": "cricket",
+            "rugby_league": "rugby_league",
+            "rugby": "rugby",
+            "afl": "australian_rules",
+            "australian_rules": "australian_rules",
+        }
+        return aliases.get(normalized, normalized or "unknown")
+
     @staticmethod
     def _is_yes_no_pair(outcome_one: str, outcome_two: str) -> bool:
         return {outcome_one, outcome_two} == {"yes", "no"}
@@ -624,6 +733,8 @@ class SXBetInstrumentProvider(InstrumentProvider):
     def _create_instrument(
         self,
         market_hash: str,
+        event_id: str,
+        event_id_source: str,
         event_name: str,
         home_name: str,
         away_name: str,
@@ -647,7 +758,7 @@ class SXBetInstrumentProvider(InstrumentProvider):
         try:
             return CryptoBettingInstrument(
                 venue=SXBET_VENUE,
-                event_id=market_hash,
+                event_id=event_id,
                 event_name=event_name,
                 home_name=home_name,
                 away_name=away_name,
@@ -666,12 +777,15 @@ class SXBetInstrumentProvider(InstrumentProvider):
                 handicap=handicap,
                 trading_status="ACTIVE",
                 market_id=market_hash,
+                instrument_key=market_hash,
                 info={
                     "outcome_one": is_outcome_one,
                     "raw_market_type": raw_market_type,
                     "is_two_way_market": market_type == MarketType.MATCH_ODDS.value,
                     "has_best_odds": has_best_odds,
                     "outcome_label": outcome_label,
+                    "sxbet_market_hash": market_hash,
+                    "sxbet_event_id_source": event_id_source,
                 },
             )
         except (TypeError, ValueError) as e:
@@ -719,7 +833,7 @@ class SXBetInstrumentProvider(InstrumentProvider):
         """
         Find all instruments for a specific market hash.
         """
-        return [inst for inst in self._instruments.values() if inst.event_id == market_hash]
+        return [inst for inst in self._instruments.values() if inst.market_id == market_hash]
 
     def get_market_data(self, market_hash: str) -> dict | None:
         """
