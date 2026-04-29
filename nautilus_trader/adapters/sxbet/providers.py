@@ -18,6 +18,7 @@ SX.bet Instrument Provider.
 
 from datetime import UTC
 from datetime import datetime
+import hashlib
 import re
 import time
 from typing import Any
@@ -353,6 +354,14 @@ class SXBetInstrumentProvider(InstrumentProvider):
 
         sport_name = SXBET_SPORT_IDS.get(sport_id, "unknown")
         league_name = market.get("leagueLabel") or market.get("leagueName") or "Unknown"
+        event_id, event_id_source = self._fixture_event_id(
+            market,
+            sport_name=sport_name,
+            competition_name=league_name,
+            team_one=team_one,
+            team_two=team_two,
+            start_time=start_time,
+        )
         normalized_market_type = self._normalize_market_type(market)
         outcome_labels, proposition_subject = self._resolve_outcome_names(
             market,
@@ -381,6 +390,8 @@ class SXBetInstrumentProvider(InstrumentProvider):
                 break
             instrument = self._create_instrument(
                 market_hash=market_hash,
+                event_id=event_id,
+                event_id_source=event_id_source,
                 event_name=f"{team_one} vs {team_two}",
                 home_name=team_one,
                 away_name=team_two,
@@ -443,6 +454,33 @@ class SXBetInstrumentProvider(InstrumentProvider):
                 best_odds = 1 / implied
 
         return best_odds
+
+    @classmethod
+    def _fixture_event_id(
+        cls,
+        market: dict[str, Any],
+        *,
+        sport_name: str,
+        competition_name: str,
+        team_one: str,
+        team_two: str,
+        start_time: str | None,
+    ) -> tuple[str, str]:
+        for key in ("eventId", "eventID", "fixtureId", "fixtureID", "gameId", "gameID"):
+            value = market.get(key)
+            if value not in (None, ""):
+                return str(value), key
+
+        payload = "|".join(
+            cls._fixture_id_component(value)
+            for value in (sport_name, competition_name, team_one, team_two, start_time or "")
+        )
+        digest = hashlib.sha256(payload.encode()).hexdigest()[:16]
+        return f"sxbet-{digest}", "derived_fixture_key"
+
+    @staticmethod
+    def _fixture_id_component(value: Any) -> str:
+        return re.sub(r"[^a-z0-9]+", "_", str(value).strip().lower()).strip("_")
 
     def _normalize_market_type(self, market: dict[str, Any]) -> str:
         raw_market_type = market.get("type")
@@ -624,6 +662,8 @@ class SXBetInstrumentProvider(InstrumentProvider):
     def _create_instrument(
         self,
         market_hash: str,
+        event_id: str,
+        event_id_source: str,
         event_name: str,
         home_name: str,
         away_name: str,
@@ -647,7 +687,7 @@ class SXBetInstrumentProvider(InstrumentProvider):
         try:
             return CryptoBettingInstrument(
                 venue=SXBET_VENUE,
-                event_id=market_hash,
+                event_id=event_id,
                 event_name=event_name,
                 home_name=home_name,
                 away_name=away_name,
@@ -666,12 +706,15 @@ class SXBetInstrumentProvider(InstrumentProvider):
                 handicap=handicap,
                 trading_status="ACTIVE",
                 market_id=market_hash,
+                instrument_key=market_hash,
                 info={
                     "outcome_one": is_outcome_one,
                     "raw_market_type": raw_market_type,
                     "is_two_way_market": market_type == MarketType.MATCH_ODDS.value,
                     "has_best_odds": has_best_odds,
                     "outcome_label": outcome_label,
+                    "sxbet_market_hash": market_hash,
+                    "sxbet_event_id_source": event_id_source,
                 },
             )
         except (TypeError, ValueError) as e:
@@ -719,7 +762,7 @@ class SXBetInstrumentProvider(InstrumentProvider):
         """
         Find all instruments for a specific market hash.
         """
-        return [inst for inst in self._instruments.values() if inst.event_id == market_hash]
+        return [inst for inst in self._instruments.values() if inst.market_id == market_hash]
 
     def get_market_data(self, market_hash: str) -> dict | None:
         """

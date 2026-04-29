@@ -724,7 +724,9 @@ impl OpportunityGraphCore {
         let target = &self.nodes_by_id[target_id];
         let push_capable =
             is_push_capable(&source.market_type) || is_push_capable(&target.market_type);
-        let matcher_suspect = source.venue == target.venue && source.event_id != target.event_id;
+        let matcher_suspect = source.venue == target.venue
+            && source.event_id != target.event_id
+            && !is_trusted_same_venue_event_id_mismatch(source, target);
         let edge = EdgeSnapshot {
             edge_id: edge_id.clone(),
             source_node_id: source_id.to_string(),
@@ -780,7 +782,9 @@ impl OpportunityGraphCore {
 
         let source = &self.nodes_by_id[source_id];
         let target = &self.nodes_by_id[target_id];
-        let matcher_suspect = source.venue == target.venue && source.event_id != target.event_id;
+        let matcher_suspect = source.venue == target.venue
+            && source.event_id != target.event_id
+            && !is_trusted_same_venue_event_id_mismatch(source, target);
         let market_relationship_type = if source.semantic_market_type == target.semantic_market_type
             && source.semantic_params_key == target.semantic_params_key
         {
@@ -871,8 +875,11 @@ impl OpportunityGraphCore {
     }
 
     fn is_event_match(&self, source: &NodeSnapshot, target: &NodeSnapshot) -> bool {
-        if source.venue == target.venue && source.event_id == target.event_id {
-            return true;
+        if source.venue == target.venue {
+            if source.event_id == target.event_id {
+                return true;
+            }
+            return is_trusted_same_venue_event_id_mismatch(source, target);
         }
         if source.event_key_no_time != target.event_key_no_time {
             return false;
@@ -1102,10 +1109,35 @@ fn is_push_capable(market_type: &str) -> bool {
 }
 
 fn is_same_market_hedge(source: &NodeSnapshot, target: &NodeSnapshot) -> bool {
+    if source.venue == target.venue
+        && source.event_id != target.event_id
+        && !is_trusted_same_venue_event_id_mismatch(source, target)
+    {
+        return false;
+    }
     if source.market_name != target.market_name || source.params != target.params {
         return false;
     }
     if source.market_type == "match_odds" && !(source.two_way_market && target.two_way_market) {
+        return false;
+    }
+    is_opposite_outcome(source, target)
+}
+
+fn is_trusted_same_venue_event_id_mismatch(source: &NodeSnapshot, target: &NodeSnapshot) -> bool {
+    if source.venue != target.venue || source.venue != "SXBET" {
+        return false;
+    }
+    if source.event_key_no_time != target.event_key_no_time {
+        return false;
+    }
+    if source.market_name != target.market_name || source.params != target.params {
+        return false;
+    }
+    if source.market_type != "match_odds" || target.market_type != "match_odds" {
+        return false;
+    }
+    if !(source.two_way_market && target.two_way_market) {
         return false;
     }
     is_opposite_outcome(source, target)
@@ -1521,6 +1553,62 @@ mod tests {
                 .unwrap();
             assert_eq!(core.edge_count(), 1);
         });
+    }
+
+    #[rstest]
+    fn same_venue_event_id_mismatch_is_rejected_unless_trusted_match_odds() {
+        let mut core = OpportunityGraphCore::new(true, 0.5);
+        let source = node_with(
+            "a",
+            "SXBET",
+            "market-a",
+            "Total Goals",
+            "total_goals",
+            "over",
+        );
+        let target = node_with(
+            "b",
+            "SXBET",
+            "market-b",
+            "Total Goals",
+            "total_goals",
+            "under",
+        );
+        core.insert_node(source);
+        core.insert_node(target);
+        core.rebuild_edges();
+        assert_eq!(core.edge_count(), 0);
+
+        let mut home = node_with(
+            "home",
+            "SXBET",
+            "market-home",
+            "match_odds",
+            "match_odds",
+            "home",
+        );
+        home.params.clear();
+        home.two_way_market = true;
+        let mut away = node_with(
+            "away",
+            "SXBET",
+            "market-away",
+            "match_odds",
+            "match_odds",
+            "away",
+        );
+        away.params.clear();
+        away.two_way_market = true;
+        core.clear();
+        core.insert_node(home);
+        core.insert_node(away);
+        core.rebuild_edges();
+
+        assert_eq!(core.edge_count(), 1);
+        core.update_quote("home", 2.4, 10, 100);
+        let candidates = core.update_quote_and_scan_fast("away", 2.55, 11, 101, 0.01, 12);
+        assert_eq!(candidates.len(), 1);
+        assert!(!candidates[0].11);
     }
 
     #[rstest]

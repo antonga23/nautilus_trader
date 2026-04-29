@@ -338,7 +338,9 @@ class MarketMatcher:
             return False
 
         if instrument.venue_name == candidate.venue_name:
-            return True
+            if instrument.event_id == candidate.event_id:
+                return True
+            return self.is_trusted_same_venue_event_id_mismatch(instrument, candidate)
 
         instrument_start = instrument.parsed_start_time()
         candidate_start = candidate.parsed_start_time()
@@ -382,6 +384,28 @@ class MarketMatcher:
         return info.get("is_two_way_market") is True
 
     @staticmethod
+    def is_trusted_same_venue_event_id_mismatch(
+        instrument: CryptoBettingInstrument,
+        candidate: CryptoBettingInstrument,
+    ) -> bool:
+        if instrument.venue_name != candidate.venue_name:
+            return False
+        if str(instrument.venue_name) != "SXBET":
+            return False
+        if not instrument.matches_event(candidate):
+            return False
+        if instrument.market_name != candidate.market_name:
+            return False
+        if instrument.params != candidate.params:
+            return False
+        if not (
+            MarketMatcher._is_two_way_match_odds_market(instrument)
+            and MarketMatcher._is_two_way_match_odds_market(candidate)
+        ):
+            return False
+        return instrument.is_opposite_outcome(candidate)
+
+    @staticmethod
     def _is_same_market_hedge(
         a: CryptoBettingInstrument,
         b: CryptoBettingInstrument,
@@ -394,6 +418,12 @@ class MarketMatcher:
         """
         # Must be same event
         if not a.matches_event(b):
+            return False
+        if (
+            a.venue_name == b.venue_name
+            and a.event_id != b.event_id
+            and not MarketMatcher.is_trusted_same_venue_event_id_mismatch(a, b)
+        ):
             return False
 
         # Must be same market type and params

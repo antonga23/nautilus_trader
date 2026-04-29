@@ -1065,6 +1065,34 @@ class TestMarketMatcher:
             is False
         )
 
+    def test_same_venue_event_id_mismatch_rejected_before_topology(self, market_matcher):
+        instrument_a = make_instrument(event_id="fixture-a", outcome="over")
+        instrument_b = make_instrument(event_id="fixture-b", outcome="under")
+
+        assert market_matcher.find_hedges(instrument_a, [instrument_b]) == []
+        assert market_matcher.check_arbitrage(instrument_a, instrument_b) is None
+
+    def test_trusted_sxbet_two_way_match_odds_event_id_mismatch_allowed(self, market_matcher):
+        instrument_a = make_instrument(
+            event_id="market-a",
+            market_name="match_odds",
+            market_type="match_odds",
+            outcome="home",
+            info={"is_two_way_market": True},
+        )
+        instrument_b = make_instrument(
+            event_id="market-b",
+            market_name="match_odds",
+            market_type="match_odds",
+            outcome="away",
+            info={"is_two_way_market": True},
+        )
+
+        hedges = market_matcher.find_hedges(instrument_a, [instrument_b])
+
+        assert len(hedges) == 1
+        assert hedges[0].match_type == "same_market"
+
     def test_cross_market_confidence_helpers(self, market_matcher):
         match_home = make_instrument(
             market_name="match_odds",

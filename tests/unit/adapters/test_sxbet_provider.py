@@ -133,7 +133,40 @@ async def test_sxbet_provider_sets_live_flag_and_honors_live_only():
 
     assert len(instruments) == TWO_INSTRUMENTS
     assert all(instrument.live is True for instrument in instruments)
-    assert all(instrument.event_id == "market-live" for instrument in instruments)
+    assert all(instrument.event_id.startswith("sxbet-") for instrument in instruments)
+    assert all(instrument.market_id == "market-live" for instrument in instruments)
+    assert all(instrument.info["sxbet_event_id_source"] == "derived_fixture_key" for instrument in instruments)
+
+
+@pytest.mark.asyncio
+async def test_sxbet_provider_uses_fixture_event_id_and_keeps_market_hash_as_market_id():
+    provider = SXBetInstrumentProvider(
+        http_client=object(),
+        config=SXBetInstrumentProviderConfig(),
+    )
+
+    await provider._process_market(
+        {
+            "marketHash": "market-1",
+            "eventId": 123456,
+            "teamOneName": "Team A",
+            "teamTwoName": "Team B",
+            "sportId": 1,
+            "leagueName": "Premier League",
+            "type": 52,
+            "outcomeOneName": "Team A",
+            "outcomeTwoName": "Team B",
+        },
+    )
+
+    instruments = list(provider.get_all().values())
+
+    assert len(instruments) == TWO_INSTRUMENTS
+    assert all(instrument.event_id == "123456" for instrument in instruments)
+    assert all(instrument.market_id == "market-1" for instrument in instruments)
+    assert all(instrument.info["sxbet_market_hash"] == "market-1" for instrument in instruments)
+    assert all(instrument.info["sxbet_event_id_source"] == "eventId" for instrument in instruments)
+    assert provider.find_by_market_hash("market-1") == instruments
 
 
 @pytest.mark.asyncio

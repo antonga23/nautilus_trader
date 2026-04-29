@@ -98,6 +98,16 @@ class ArbitrageDiagnostics:  # skipcq
     classification_reason: str
 
 
+@dataclass(frozen=True)
+class OpportunityPairState:
+    """
+    Active duplicate-suppression state for a continuously visible pair.
+    """
+
+    last_opportunity_id: str
+    last_seen_ns: int
+
+
 class BettingArbitrageConfig(StrategyConfig, frozen=True):
     """
     Configuration for betting arbitrage strategy.
@@ -125,6 +135,8 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         Automatically execute arbitrage when found.
     arbitrage_quote_stale_threshold_secs : float, default 30.0
         Maximum quote age before an arbitrage candidate is treated as stale.
+    duplicate_suppression_cooldown_secs : float, default 60.0
+        Candidate gap after which the same pair may be logged as a fresh opportunity.
     arbitrage_summary_interval_secs : float, default 60.0
         Minimum interval between arbitrage quality summary log lines.
     opportunity_graph_enabled : bool, default True
@@ -149,6 +161,7 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
     rollover_aware: bool = True
     auto_execute: bool = False
     arbitrage_quote_stale_threshold_secs: float = 30.0
+    duplicate_suppression_cooldown_secs: float = 60.0
     arbitrage_summary_interval_secs: float = 60.0
     opportunity_graph_enabled: bool = True
     opportunity_log_manual_instructions: bool = True
@@ -179,6 +192,9 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
                 f"Invalid opportunity_graph_engine: {opportunity_graph_engine}. "
                 "Must be one of {'auto', 'python', 'rust', 'semantic_rust'}"
             )
+            raise ValueError(msg)
+        if self.duplicate_suppression_cooldown_secs < 0:
+            msg = "duplicate_suppression_cooldown_secs must be non-negative"
             raise ValueError(msg)
 
         msgspec.structs.force_setattr(self, "enabled_venues", enabled_venues)
@@ -237,6 +253,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._manual_review_suppressions = 0
         self._executable_candidates = 0
         self._seen_opportunity_pairs: set[str] = set()
+        self._active_opportunity_pairs: dict[str, OpportunityPairState] = {}
         self._last_arbitrage_summary_at_ns = 0
 
     def on_start(self) -> None:
@@ -584,7 +601,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         now_ns: int,
     ) -> bool:
         edge_id = snapshot[0]
-        if edge_id in self._seen_opportunity_pairs:
+        opportunity_id = self._fast_opportunity_id(edge_id, snapshot[10], snapshot[5], snapshot[6])
+        if self._is_duplicate_opportunity_pair(edge_id, opportunity_id, now_ns):
             self._raw_arbitrage_detections += 1
             self._duplicate_opportunities_suppressed += 1
             return True
@@ -632,7 +650,13 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             return True
 
         if not self._config.auto_execute and not self._config.opportunity_log_manual_instructions:
-            self._record_fast_opportunity(canonical_pair_id)
+            opportunity_id = self._fast_opportunity_id(
+                canonical_pair_id,
+                match_type,
+                odds_a_raw,
+                odds_b_raw,
+            )
+            self._record_fast_opportunity(canonical_pair_id, opportunity_id, now_ns)
             self._log_fast_arbitrage_snapshot(
                 source_node_id,
                 target_node_id,
@@ -675,14 +699,70 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             quote_ts_b=quote_ts_b,
             now_ns=now_ns,
         )
-        self._record_fast_opportunity(diagnostics.canonical_pair_id)
+        self._record_fast_opportunity(
+            diagnostics.canonical_pair_id,
+            diagnostics.opportunity_id,
+            now_ns,
+        )
         self._handle_arbitrage_opportunity(opportunity, diagnostics)
         return True
 
-    def _record_fast_opportunity(self, canonical_pair_id: str) -> None:
-        self._seen_opportunity_pairs.add(canonical_pair_id)
+    def _record_fast_opportunity(
+        self,
+        canonical_pair_id: str,
+        opportunity_id: str,
+        now_ns: int,
+    ) -> None:
+        self._record_opportunity_pair(canonical_pair_id, opportunity_id, now_ns)
         self._opportunities_found += 1
         self._executable_candidates += 1
+
+    def _record_opportunity_pair(
+        self,
+        canonical_pair_id: str,
+        opportunity_id: str,
+        now_ns: int,
+    ) -> None:
+        self._seen_opportunity_pairs.add(canonical_pair_id)
+        self._active_opportunity_pairs[canonical_pair_id] = OpportunityPairState(
+            last_opportunity_id=opportunity_id,
+            last_seen_ns=now_ns,
+        )
+
+    def _is_duplicate_opportunity_pair(
+        self,
+        canonical_pair_id: str,
+        opportunity_id: str,
+        now_ns: int,
+    ) -> bool:
+        self._prune_inactive_opportunity_pairs(now_ns)
+        state = self._active_opportunity_pairs.get(canonical_pair_id)
+        if state is None:
+            return False
+
+        cooldown_ns = self._duplicate_suppression_cooldown_ns()
+        if now_ns - state.last_seen_ns > cooldown_ns:
+            self._active_opportunity_pairs.pop(canonical_pair_id, None)
+            return False
+
+        self._active_opportunity_pairs[canonical_pair_id] = OpportunityPairState(
+            last_opportunity_id=opportunity_id,
+            last_seen_ns=now_ns,
+        )
+        return True
+
+    def _prune_inactive_opportunity_pairs(self, now_ns: int) -> None:
+        cooldown_ns = self._duplicate_suppression_cooldown_ns()
+        expired = [
+            pair_id
+            for pair_id, state in self._active_opportunity_pairs.items()
+            if now_ns - state.last_seen_ns > cooldown_ns
+        ]
+        for pair_id in expired:
+            self._active_opportunity_pairs.pop(pair_id, None)
+
+    def _duplicate_suppression_cooldown_ns(self) -> int:
+        return int(self._config.duplicate_suppression_cooldown_secs * NANOSECONDS_PER_SECOND)
 
     # skipcq: PYL-R0914
     def _handle_fast_opportunity_candidate(
@@ -724,6 +804,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             quote_age_a_secs=quote_age_a_secs,
             quote_age_b_secs=quote_age_b_secs,
             quote_delta_secs=quote_delta_secs,
+            now_ns=now_ns,
             emit_summary=emit_summary,
             emit_suppression_log=emit_suppression_log,
         ):
@@ -747,7 +828,11 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             quote_b=quote_b,
             now_ns=now_ns,
         )
-        self._seen_opportunity_pairs.add(diagnostics.canonical_pair_id)
+        self._record_opportunity_pair(
+            diagnostics.canonical_pair_id,
+            diagnostics.opportunity_id,
+            now_ns,
+        )
         self._opportunities_found += 1
         self._executable_candidates += 1
         self._handle_arbitrage_opportunity(opportunity, diagnostics)
@@ -821,10 +906,17 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         quote_age_a_secs: float,
         quote_age_b_secs: float,
         quote_delta_secs: float,
+        now_ns: int,
         emit_summary: bool,
         emit_suppression_log: bool,
     ) -> bool:
-        if canonical_pair_id in self._seen_opportunity_pairs:
+        opportunity_id = self._fast_opportunity_id(
+            canonical_pair_id,
+            match_type,
+            odds_a_raw,
+            odds_b_raw,
+        )
+        if self._is_duplicate_opportunity_pair(canonical_pair_id, opportunity_id, now_ns):
             self._duplicate_opportunities_suppressed += 1
             if emit_suppression_log:
                 self._log_fast_duplicate_suppression(
@@ -1034,19 +1126,24 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
 
             if opportunity and opportunity.profit_margin >= self._config.min_profit_margin:
                 self._raw_arbitrage_detections += 1
+                now_ns = self.clock.timestamp_ns()
                 diagnostics = self._build_arbitrage_diagnostics(
                     opportunity=opportunity,
                     hedge_match_type=hedge.match_type,
                     hedge_confidence=hedge.confidence,
                     quote_a=tick,
                     quote_b=hedge_quote,
-                    now_ns=self.clock.timestamp_ns(),
+                    now_ns=now_ns,
                 )
                 if self._suppress_arbitrage_candidate(diagnostics):
                     self._log_arbitrage_summary()
                     continue
 
-                self._seen_opportunity_pairs.add(diagnostics.canonical_pair_id)
+                self._record_opportunity_pair(
+                    diagnostics.canonical_pair_id,
+                    diagnostics.opportunity_id,
+                    now_ns,
+                )
                 self._opportunities_found += 1
                 self._executable_candidates += 1
                 self._handle_arbitrage_opportunity(opportunity, diagnostics)
@@ -1070,7 +1167,11 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             self._log_arbitrage_summary()
             return
 
-        self._seen_opportunity_pairs.add(diagnostics.canonical_pair_id)
+        self._record_opportunity_pair(
+            diagnostics.canonical_pair_id,
+            diagnostics.opportunity_id,
+            now_ns,
+        )
         self._opportunities_found += 1
         self._executable_candidates += 1
         self._handle_arbitrage_opportunity(candidate.opportunity, diagnostics)
@@ -1299,7 +1400,12 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         )
 
     def _suppress_arbitrage_candidate(self, diagnostics: ArbitrageDiagnostics) -> bool:
-        if diagnostics.canonical_pair_id in self._seen_opportunity_pairs:
+        now_ns = self._diagnostics_observed_at_ns(diagnostics)
+        if self._is_duplicate_opportunity_pair(
+            diagnostics.canonical_pair_id,
+            diagnostics.opportunity_id,
+            now_ns,
+        ):
             self._duplicate_opportunities_suppressed += 1
             self.log.debug(
                 "Arbitrage candidate suppressed: "
@@ -1369,6 +1475,18 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             return True
 
         return False
+
+    @staticmethod
+    def _diagnostics_observed_at_ns(diagnostics: ArbitrageDiagnostics) -> int:
+        observed_a = int(
+            diagnostics.quote_ts_a
+            + diagnostics.quote_age_a_secs * NANOSECONDS_PER_SECOND,
+        )
+        observed_b = int(
+            diagnostics.quote_ts_b
+            + diagnostics.quote_age_b_secs * NANOSECONDS_PER_SECOND,
+        )
+        return max(observed_a, observed_b, diagnostics.quote_ts_a, diagnostics.quote_ts_b)
 
     def _diagnostics_instrument_fields(self, diagnostics: ArbitrageDiagnostics) -> str:
         if not self._config.opportunity_log_manual_instructions:
@@ -1569,19 +1687,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
     ) -> bool:
         if instrument_a.venue_name != instrument_b.venue_name:
             return False
-        if str(instrument_a.venue_name) != "SXBET":
-            return False
-        if not instrument_a.matches_event(instrument_b):
-            return False
-        if instrument_a.market_name != instrument_b.market_name:
-            return False
-        if instrument_a.params != instrument_b.params:
-            return False
-        if MarketMatcher._is_two_way_match_odds_market(instrument_a) is False:
-            return False
-        if MarketMatcher._is_two_way_match_odds_market(instrument_b) is False:
-            return False
-        return instrument_a.is_opposite_outcome(instrument_b)
+        return MarketMatcher.is_trusted_same_venue_event_id_mismatch(instrument_a, instrument_b)
 
     @staticmethod
     def _matcher_suspect_reason(

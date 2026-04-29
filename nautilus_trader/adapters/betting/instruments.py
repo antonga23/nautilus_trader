@@ -201,6 +201,7 @@ class CryptoBettingInstrument(Instrument):
         fees: Any | None = None,
         ts_event: int | None = None,
         ts_init: int | None = None,
+        instrument_key: str | None = None,
         info: dict | None = None,
     ) -> None:
         # Validate parameters
@@ -237,6 +238,7 @@ class CryptoBettingInstrument(Instrument):
         self.competition_id = competition_id
         self.fees = fees
         self.venue_name = venue
+        self.instrument_key = instrument_key
 
         # Normalize size values
         if max_size is not None:
@@ -247,13 +249,19 @@ class CryptoBettingInstrument(Instrument):
         self.max_size = max_size
         self.min_size = min_size
 
+        instrument_id_params = params
+        if instrument_key:
+            instrument_id_params = (
+                f"{params}|key={instrument_key}" if params else f"key={instrument_key}"
+            )
+
         # Generate instrument ID
         instrument_id = make_crypto_betting_instrument_id(
             venue=venue,
             event_id=event_id,
             market_name=market_name,
             outcome=outcome,
-            params=params,
+            params=instrument_id_params,
         )
 
         # Timestamps
@@ -386,6 +394,7 @@ class CryptoBettingInstrument(Instrument):
             "fees": obj.fees,
             "ts_event": obj.ts_event,
             "ts_init": obj.ts_init,
+            "instrument_key": obj.instrument_key,
         }
 
     @staticmethod
