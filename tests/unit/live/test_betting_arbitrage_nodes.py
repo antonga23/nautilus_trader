@@ -399,8 +399,7 @@ class TestBettingArbitrageNodeBuilder:
         assert node_builder._resolve_secret("SXBET", "API_KEY", False) == "env-secret"
         monkeypatch.delenv("SXBET_API_KEY", raising=False)
         assert (
-            node_builder._resolve_secret("CUSTOM", "API_SECRET", True)
-            == "dummy-custom-api-secret"
+            node_builder._resolve_secret("CUSTOM", "API_SECRET", True) == "dummy-custom-api-secret"
         )
         with pytest.raises(node_builder.MissingCredentialError, match="SXBET_API_KEY"):
             node_builder._resolve_secret("SXBET", "API_KEY", False)

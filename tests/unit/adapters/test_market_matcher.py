@@ -1055,7 +1055,10 @@ class TestMarketMatcher:
             outcome="under",
         )
 
-        assert market_matcher._is_hedge_event_match(instrument_a, instrument_b, [instrument_b]) is False
+        assert (
+            market_matcher._is_hedge_event_match(instrument_a, instrument_b, [instrument_b])
+            is False
+        )
 
     def test_cross_market_confidence_helpers(self, market_matcher):
         match_home = make_instrument(
