@@ -280,6 +280,8 @@ def test_update_quote_and_scan_fast_returns_primitive_snapshots() -> None:  # sk
     quote_updated, snapshots = result
     ensure(quote_updated is True)
     ensure(graph.quote_state_count == 2)
+    ensure(str(instruments[1].id) in graph.quotes_by_node_id)
+    ensure(graph.quotes_by_node_id[str(instruments[1].id)].odds == Decimal("2.55"))
     ensure(len(snapshots) == 1)
     snapshot = snapshots[0]
     ensure(snapshot[1] == str(instruments[1].id))

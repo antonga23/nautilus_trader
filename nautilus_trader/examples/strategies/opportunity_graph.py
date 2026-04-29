@@ -477,6 +477,16 @@ class OpportunityGraph:
         if node_id not in self.nodes_by_id:
             return False, []
 
+        state = QuoteState(
+            node_id=node_id,
+            quote=quote,
+            odds=odds,
+            bid_odds=quote.bid_price.as_decimal(),
+            ask_odds=quote.ask_price.as_decimal(),
+            received_ns=received_ns,
+            exchange_ts_ns=int(quote.ts_event),
+        )
+        self.quotes_by_node_id[node_id] = state
         snapshots = rust_core.update_quote_and_scan_fast(
             node_id,
             float(odds),

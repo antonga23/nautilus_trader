@@ -1349,7 +1349,7 @@ class TestBettingArbitrageNodeRunner:
         assert "Validate SX.bet manifest" in workflow
         assert "Probe SX.bet runtime semantic coverage" in workflow
         assert "probe-runtime" in workflow
-        assert "--min-quoted-match-instruments 0" in workflow
+        assert "--min-quoted-match-instruments 2" in workflow
         assert "--min-positive-margin-candidates 0" in workflow
         assert "--require-rust-semantic-topology" in workflow
         assert "Wait for deployed node status and semantic cache" in workflow
@@ -1401,7 +1401,7 @@ class TestBettingArbitrageNodeRunner:
                 "--min-match-instruments",
                 "2",
                 "--min-quoted-match-instruments",
-                "0",
+                "2",
                 "--min-positive-margin-candidates",
                 "0",
             ],
