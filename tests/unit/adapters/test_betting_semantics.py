@@ -140,6 +140,45 @@ def test_match_odds_home_and_double_chance_away_draw_are_safe_coverage():
     assert rule.safety_tier == SafetyTier.AUDIT_ONLY.value
 
 
+def test_totals_only_match_same_line_semantics():
+    classifier = RuleClassifier()
+    over_two_five = betting_instrument(
+        market_name="total_goals",
+        market_type="total_goals",
+        outcome="over",
+        params="line=2.5",
+        handicap=2.5,
+    )
+    under_two_five = betting_instrument(
+        market_name="total_goals",
+        market_type="total_goals",
+        outcome="under",
+        params="line=2.5",
+        handicap=2.5,
+    )
+    under_three_five = betting_instrument(
+        market_name="total_goals",
+        market_type="total_goals",
+        outcome="under",
+        params="line=3.5",
+        handicap=3.5,
+    )
+    over_three_five = betting_instrument(
+        market_name="total_goals",
+        market_type="total_goals",
+        outcome="over",
+        params="line=3.5",
+        handicap=3.5,
+    )
+
+    same_line = classifier.classify(over_two_five, under_two_five)
+
+    assert same_line is not None
+    assert same_line.relationship_type == RelationshipType.COMPLEMENTARY_COVERAGE.value
+    assert classifier.classify(over_two_five, under_three_five) is None
+    assert classifier.classify(over_two_five, over_three_five) is None
+
+
 def test_dnb_home_and_dnb_away_are_void_compatible_not_executable():
     classifier = RuleClassifier()
     dnb_home = betting_instrument(

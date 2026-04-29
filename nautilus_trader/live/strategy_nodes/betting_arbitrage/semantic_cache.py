@@ -4,6 +4,8 @@ import asyncio
 from collections.abc import Iterable
 from dataclasses import asdict
 from dataclasses import dataclass
+import hashlib
+import json
 import os
 import shutil
 import threading
@@ -40,6 +42,7 @@ class SemanticCacheStatus:
     execution_safe_template_count: int
     same_venue_execution_eligible_template_count: int
     compatibility_version: str | None = None
+    compatibility_scope: str | None = None
     compatible: bool = True
 
     @property
@@ -72,15 +75,15 @@ def ensure_semantic_cache_ready(
 
     path = Path(cache_dir)
     path.mkdir(parents=True, exist_ok=True)
-    status = semantic_cache_status(path)
+    status = semantic_cache_status(path, manifest=manifest)
     if status.ready and status.compatible:
         return status
     if status.ready and not status.compatible:
         _reset_semantic_cache_dir(path)
 
     _run_bootstrap(manifest=manifest, cache_dir=path, logger=logger)
-    _write_semantic_cache_compatibility(path)
-    status = semantic_cache_status(path, source="bootstrapped")
+    _write_semantic_cache_compatibility(path, manifest=manifest)
+    status = semantic_cache_status(path, source="bootstrapped", manifest=manifest)
     if not status.ready:
         raise RuntimeError(
             "Semantic cache bootstrap completed without a usable cache "
@@ -93,13 +96,19 @@ def semantic_cache_status(
     cache_dir: str | Path,
     *,
     source: str = "existing",
+    manifest: BettingArbitrageNodeManifest | None = None,
 ) -> SemanticCacheStatus:
     path = Path(cache_dir)
     store = RuleStore(FileRuleCache(path))
     manifests = store.list_manifest_ids()
     promoted_template_ids = store.list_promoted_template_ids()
-    compatibility_version = _read_semantic_cache_compatibility(path)
-    compatible = compatibility_version == SEMANTIC_CACHE_COMPATIBILITY_VERSION
+    compatibility = _read_semantic_cache_compatibility(path)
+    compatibility_version = compatibility.get("version")
+    compatibility_scope = compatibility.get("scope")
+    expected_scope = _semantic_cache_scope_key(manifest) if manifest is not None else None
+    compatible = compatibility_version == SEMANTIC_CACHE_COMPATIBILITY_VERSION and (
+        expected_scope is None or compatibility_scope == expected_scope
+    )
 
     execution_safe = 0
     same_venue_eligible = 0
@@ -120,23 +129,69 @@ def semantic_cache_status(
         execution_safe_template_count=execution_safe,
         same_venue_execution_eligible_template_count=same_venue_eligible,
         compatibility_version=compatibility_version,
+        compatibility_scope=compatibility_scope,
         compatible=compatible,
     )
 
 
-def _read_semantic_cache_compatibility(cache_dir: Path) -> str | None:
+def _read_semantic_cache_compatibility(cache_dir: Path) -> dict[str, str | None]:
     marker = cache_dir / SEMANTIC_CACHE_COMPATIBILITY_FILE
     if not marker.exists():
-        return None
-    return marker.read_text(encoding="utf-8").strip() or None
+        return {"version": None, "scope": None}
+    raw = marker.read_text(encoding="utf-8").strip()
+    if not raw:
+        return {"version": None, "scope": None}
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return {"version": raw, "scope": None}
+    if not isinstance(payload, dict):
+        return {"version": None, "scope": None}
+    version = payload.get("version")
+    scope = payload.get("scope")
+    return {
+        "version": str(version) if version is not None else None,
+        "scope": str(scope) if scope is not None else None,
+    }
 
 
-def _write_semantic_cache_compatibility(cache_dir: Path) -> None:
+def _write_semantic_cache_compatibility(
+    cache_dir: Path,
+    manifest: BettingArbitrageNodeManifest | None = None,
+) -> None:
     cache_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "version": SEMANTIC_CACHE_COMPATIBILITY_VERSION,
+        "scope": _semantic_cache_scope_key(manifest) if manifest is not None else None,
+    }
     (cache_dir / SEMANTIC_CACHE_COMPATIBILITY_FILE).write_text(
-        f"{SEMANTIC_CACHE_COMPATIBILITY_VERSION}\n",
+        json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
         encoding="utf-8",
     )
+
+
+def _semantic_cache_scope_key(manifest: BettingArbitrageNodeManifest | None) -> str | None:
+    if manifest is None:
+        return None
+    venues: list[dict[str, object]] = []
+    enabled_venues = (item for item in manifest.venues if item.enabled)
+    for venue in sorted(enabled_venues, key=lambda item: item.venue):
+        venues.append(
+            {
+                "venue": venue.venue,
+                "sport_ids": sorted(venue.sport_ids) if venue.sport_ids else "all",
+                "league_ids": sorted(venue.league_ids) if venue.league_ids else "all",
+                "live_only": bool(venue.live_only),
+                "instrument_load_limit": venue.instrument_load_limit,
+                "market_discovery_limit": venue.market_discovery_limit,
+                "prefer_liquid_markets": bool(venue.prefer_liquid_markets),
+                "liquidity_probe_limit": venue.liquidity_probe_limit,
+                "min_two_sided_markets": venue.min_two_sided_markets,
+            },
+        )
+    payload = {"providers": venues}
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:24]
 
 
 def _reset_semantic_cache_dir(cache_dir: Path) -> None:

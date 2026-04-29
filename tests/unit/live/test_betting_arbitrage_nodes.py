@@ -82,6 +82,7 @@ def _seed_promoted_template(
     cache_dir: Path,
     *,
     same_venue_only: bool = False,
+    manifest: BettingArbitrageNodeManifest | None = None,
 ) -> None:
     instrument_a = (
         _instrument(venue="SXBET", market_type="draw_no_bet", outcome="home")
@@ -128,7 +129,7 @@ def _seed_promoted_template(
     template = SemanticRuleTemplate.from_rule(rule, support=support)
     promoted = RulePromotionPolicy().promote_template(store, template)
     assert promoted is not None
-    node_cache._write_semantic_cache_compatibility(cache_dir)
+    node_cache._write_semantic_cache_compatibility(cache_dir, manifest=manifest)
 
 
 def _manifest(tmp_path: Path, *, cache_dir: Path | None = None) -> BettingArbitrageNodeManifest:
@@ -431,8 +432,8 @@ class TestSemanticCacheBootstrap:
 
     def test_reuses_existing_semantic_cache_without_bootstrap(self, tmp_path, monkeypatch):
         cache_dir = tmp_path / "semantic-cache"
-        _seed_promoted_template(cache_dir)
         manifest = _manifest(tmp_path, cache_dir=cache_dir)
+        _seed_promoted_template(cache_dir, manifest=manifest)
 
         monkeypatch.setattr(
             "nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache._run_bootstrap",
@@ -446,17 +447,59 @@ class TestSemanticCacheBootstrap:
         assert status.compatible is True
         assert status.promoted_template_count >= 1
 
+    def test_semantic_cache_scope_mismatch_triggers_bootstrap(self, tmp_path, monkeypatch):
+        cache_dir = tmp_path / "semantic-cache"
+        original_manifest = _manifest(tmp_path, cache_dir=cache_dir)
+        _seed_promoted_template(cache_dir, manifest=original_manifest)
+        scoped_manifest = BettingArbitrageNodeManifest(
+            node_id="sxbet-node",
+            trader_id="BETARB-TEST-SEM",
+            validation_mode=True,
+            allow_dummy_credentials=True,
+            semantic_rule_cache_dir=str(cache_dir),
+            rendered_config_path=str(tmp_path / "trading-node-config.json"),
+            status_path=str(tmp_path / "status.json"),
+            heartbeat_path=str(tmp_path / "heartbeat.json"),
+            venues=[
+                BettingVenueManifest(
+                    venue="SXBET",
+                    client_key="SXBET_PRIMARY",
+                    sport_ids=frozenset({5}),
+                    execution_enabled=False,
+                    instrument_load_limit=10,
+                    market_discovery_limit=10,
+                ),
+            ],
+        )
+        bootstrapped: list[Path] = []
+
+        def fake_bootstrap(*, cache_dir, **_):
+            bootstrapped.append(cache_dir)
+            _seed_promoted_template(cache_dir, manifest=scoped_manifest)
+
+        monkeypatch.setattr(
+            "nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache._run_bootstrap",
+            fake_bootstrap,
+        )
+
+        status = ensure_semantic_cache_ready(scoped_manifest)
+
+        assert bootstrapped == [cache_dir]
+        assert status.source == "bootstrapped"
+        assert status.ready is True
+        assert status.compatible is True
+
     def test_rebuilds_ready_cache_when_compatibility_marker_is_stale(self, tmp_path, monkeypatch):
         cache_dir = tmp_path / "semantic-cache"
-        _seed_promoted_template(cache_dir)
+        manifest = _manifest(tmp_path, cache_dir=cache_dir)
+        _seed_promoted_template(cache_dir, manifest=manifest)
         (cache_dir / node_cache.SEMANTIC_CACHE_COMPATIBILITY_FILE).write_text("stale\n")
         stale_file = cache_dir / "stale.bin"
         stale_file.write_text("old")
-        manifest = _manifest(tmp_path, cache_dir=cache_dir)
 
         def fake_bootstrap(*, cache_dir, **_):
             assert not stale_file.exists()
-            _seed_promoted_template(cache_dir)
+            _seed_promoted_template(cache_dir, manifest=manifest)
 
         monkeypatch.setattr(
             "nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache._run_bootstrap",
@@ -1284,6 +1327,7 @@ class TestBettingArbitrageNodeRunner:
             "executionSafeTemplateCount": 1,
             "sameVenueExecutionEligibleTemplateCount": 1,
             "compatibilityVersion": None,
+            "compatibilityScope": None,
             "compatible": True,
         }
         assert node_runner._semantic_cache_payload(None) is None

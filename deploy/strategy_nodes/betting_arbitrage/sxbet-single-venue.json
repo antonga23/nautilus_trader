@@ -26,6 +26,7 @@
       "execution_enabled": false,
       "credential_prefix": "SXBET",
       "load_all_instruments": true,
+      "sport_ids": [5],
       "instrument_load_limit": 250,
       "market_discovery_limit": 250,
       "prefer_liquid_markets": true,
