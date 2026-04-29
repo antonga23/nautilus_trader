@@ -12,6 +12,7 @@ Parity and fast-path tests for the opportunity graph engines.
 """
 
 from decimal import Decimal
+import json
 from typing import Any
 from typing import cast
 
@@ -339,7 +340,7 @@ def test_python_engine_can_still_be_forced_when_matcher_has_rule_store() -> None
 def test_semantic_rust_builds_topology_from_promoted_templates(tmp_path) -> None:  # skipcq
     instruments = [_instrument(outcome="over"), _instrument(outcome="under")]
     store = _semantic_rule_store(tmp_path / "rules", instruments[0], instruments[1])
-    matcher = MarketMatcher(rule_store=store)
+    matcher = MarketMatcher(rule_store=store, allow_unpromoted_topology=False)
     try:
         graph = OpportunityGraph(matcher, engine="semantic_rust")
     except ImportError:
@@ -352,6 +353,64 @@ def test_semantic_rust_builds_topology_from_promoted_templates(tmp_path) -> None
     ensure(graph.semantic_template_count == 1)
     ensure(graph.edge_count == 1)
     ensure(next(iter(graph.edges_by_id.values())).execution_safe is True)
+
+
+def test_sync_keeps_rust_semantic_edges_without_python_rediscovery() -> None:  # skipcq
+    matcher = MarketMatcher(allow_unpromoted_topology=False)
+    instruments = [
+        _instrument(outcome="over", params="line=3.5"),
+        _instrument(outcome="under", params="line=4.5"),
+    ]
+    graph = OpportunityGraph(matcher, engine="python")
+    for instrument in instruments:
+        node = graph._node_from_instrument(instrument)
+        graph.nodes_by_id[node.node_id] = node
+        graph.edge_ids_by_node_id[node.node_id] = set()
+    edge_id = graph._edge_id(str(instruments[0].id), str(instruments[1].id))
+    metadata = json.dumps(
+        {
+            "template_id": "template:rust-semantic",
+            "relationship_type": "COMPLEMENTARY_COVERAGE",
+            "promotion_status": "PROMOTED",
+            "safety_tier": "EXECUTION_SAFE",
+            "market_relationship_type": "same_market",
+            "same_venue_execution_eligible": False,
+            "partial_settlement": False,
+            "caveats": [],
+        },
+    )
+
+    class FakeRustCore:
+        def edge_snapshots(self):
+            return [
+                (
+                    edge_id,
+                    str(instruments[0].id),
+                    str(instruments[1].id),
+                    "same_market",
+                    1.0,
+                    True,
+                    metadata,
+                    False,
+                    True,
+                    None,
+                    None,
+                    None,
+                ),
+            ]
+
+    graph._rust_core = cast(Any, FakeRustCore())
+
+    ensure(matcher._semantic_hedge_candidate(instruments[0], instruments[1]) is None)
+
+    graph._sync_edges_from_rust()
+
+    ensure(graph.edge_count == 1)
+    edge = next(iter(graph.edges_by_id.values()))
+    ensure(edge.template_id == "template:rust-semantic")
+    ensure(edge.relationship_type == "COMPLEMENTARY_COVERAGE")
+    ensure(edge.safety_tier == "EXECUTION_SAFE")
+    ensure(edge.execution_safe is True)
 
 
 def test_node_payload_fallbacks_cover_missing_helper_methods() -> None:  # skipcq

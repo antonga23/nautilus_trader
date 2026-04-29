@@ -16,7 +16,7 @@
 use std::collections::{HashMap, HashSet};
 
 use pyo3::{exceptions::PyKeyError, prelude::*, types::PyDict};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 const HANDICAP_TOLERANCE: f64 = 0.01;
 const PROFIT_MARGIN_EPSILON: f64 = 1e-12;
@@ -127,6 +127,13 @@ struct EdgeSnapshot {
     last_margin: Option<f64>,
     last_evaluated_ns: Option<i64>,
     last_updated_ns: Option<i64>,
+    template_id: Option<String>,
+    relationship_type: Option<String>,
+    promotion_status: Option<String>,
+    safety_tier: Option<String>,
+    same_venue_execution_eligible: bool,
+    partial_settlement: bool,
+    caveats: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -174,6 +181,9 @@ struct SemanticTemplateSnapshot {
     promotion_status: String,
     push_capable: bool,
     execution_safe: bool,
+    same_venue_execution_eligible: bool,
+    partial_settlement: bool,
+    caveats: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -182,6 +192,13 @@ struct SemanticTemplateMatch {
     confidence: f64,
     push_capable: bool,
     execution_safe: bool,
+    template_id: String,
+    relationship_type: String,
+    promotion_status: String,
+    safety_tier: String,
+    same_venue_execution_eligible: bool,
+    partial_settlement: bool,
+    caveats: Vec<String>,
 }
 
 impl SemanticTemplateSnapshot {
@@ -207,6 +224,13 @@ impl SemanticTemplateSnapshot {
             promotion_status: get_string(dict, "promotion_status")?,
             push_capable: get_bool(dict, "push_capable")?,
             execution_safe: get_bool(dict, "execution_safe")?,
+            same_venue_execution_eligible: get_optional_bool(
+                dict,
+                "same_venue_execution_eligible",
+            )?
+            .unwrap_or(false),
+            partial_settlement: get_optional_bool(dict, "partial_settlement")?.unwrap_or(false),
+            caveats: get_string_vec(dict, "caveats")?,
         })
     }
 
@@ -240,6 +264,13 @@ impl SemanticTemplateSnapshot {
             confidence: self.confidence,
             push_capable: self.push_capable,
             execution_safe: self.execution_safe,
+            template_id: self.template_id.clone(),
+            relationship_type: self.relationship_type.clone(),
+            promotion_status: self.promotion_status.clone(),
+            safety_tier: self.safety_tier.clone(),
+            same_venue_execution_eligible: self.same_venue_execution_eligible,
+            partial_settlement: self.partial_settlement,
+            caveats: self.caveats.clone(),
         })
     }
 
@@ -494,7 +525,7 @@ impl OpportunityGraphCore {
                     edge.hedge_type.clone(),
                     edge.confidence,
                     edge.flags.same_venue,
-                    edge.market_relationship_type.clone(),
+                    semantic_edge_metadata(edge),
                     edge.flags.push_capable,
                     edge.flags.execution_safe,
                     edge.last_margin,
@@ -765,6 +796,13 @@ impl OpportunityGraphCore {
             last_margin: None,
             last_evaluated_ns: None,
             last_updated_ns: None,
+            template_id: None,
+            relationship_type: None,
+            promotion_status: None,
+            safety_tier: None,
+            same_venue_execution_eligible: false,
+            partial_settlement: false,
+            caveats: Vec::default(),
         };
         self.edges_by_id.insert(edge_id.clone(), edge);
         self.edge_ids_by_node_id
@@ -794,6 +832,14 @@ impl OpportunityGraphCore {
                 existing.target_node_id = target_id.to_string();
                 existing.flags.push_capable = template_match.push_capable;
                 existing.flags.execution_safe = template_match.execution_safe;
+                existing.template_id = Some(template_match.template_id);
+                existing.relationship_type = Some(template_match.relationship_type);
+                existing.promotion_status = Some(template_match.promotion_status);
+                existing.safety_tier = Some(template_match.safety_tier);
+                existing.same_venue_execution_eligible =
+                    template_match.same_venue_execution_eligible;
+                existing.partial_settlement = template_match.partial_settlement;
+                existing.caveats = template_match.caveats;
             }
             return;
         }
@@ -826,6 +872,13 @@ impl OpportunityGraphCore {
             last_margin: None,
             last_evaluated_ns: None,
             last_updated_ns: None,
+            template_id: Some(template_match.template_id),
+            relationship_type: Some(template_match.relationship_type),
+            promotion_status: Some(template_match.promotion_status),
+            safety_tier: Some(template_match.safety_tier),
+            same_venue_execution_eligible: template_match.same_venue_execution_eligible,
+            partial_settlement: template_match.partial_settlement,
+            caveats: template_match.caveats,
         };
         self.insert_edge(edge);
     }
@@ -862,6 +915,17 @@ impl OpportunityGraphCore {
             last_margin: None,
             last_evaluated_ns: None,
             last_updated_ns: None,
+            template_id: get_optional_string(dict, "template_id")?,
+            relationship_type: get_optional_string(dict, "relationship_type")?,
+            promotion_status: get_optional_string(dict, "promotion_status")?,
+            safety_tier: get_optional_string(dict, "safety_tier")?,
+            same_venue_execution_eligible: get_optional_bool(
+                dict,
+                "same_venue_execution_eligible",
+            )?
+            .unwrap_or(false),
+            partial_settlement: get_optional_bool(dict, "partial_settlement")?.unwrap_or(false),
+            caveats: get_string_vec(dict, "caveats")?,
         })
     }
 
@@ -1120,6 +1184,20 @@ fn edge_id(source_id: &str, target_id: &str) -> String {
     } else {
         format!("{target_id}|{source_id}")
     }
+}
+
+fn semantic_edge_metadata(edge: &EdgeSnapshot) -> String {
+    json!({
+        "template_id": edge.template_id.as_deref(),
+        "relationship_type": edge.relationship_type.as_deref(),
+        "promotion_status": edge.promotion_status.as_deref(),
+        "safety_tier": edge.safety_tier.as_deref(),
+        "market_relationship_type": edge.market_relationship_type.as_str(),
+        "same_venue_execution_eligible": edge.same_venue_execution_eligible,
+        "partial_settlement": edge.partial_settlement,
+        "caveats": &edge.caveats,
+    })
+    .to_string()
 }
 
 fn line_params_compatible(

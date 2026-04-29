@@ -691,6 +691,9 @@ class TestSemanticCacheBootstrap:
                 to_time,
                 instrument_limit,
                 market_discovery_limit,
+                prefer_liquid_markets,
+                liquidity_probe_limit,
+                min_two_sided_markets,
             ):
                 refresh_calls.append(
                     {
@@ -700,6 +703,9 @@ class TestSemanticCacheBootstrap:
                         "to_time": to_time,
                         "instrument_limit": instrument_limit,
                         "market_discovery_limit": market_discovery_limit,
+                        "prefer_liquid_markets": prefer_liquid_markets,
+                        "liquidity_probe_limit": liquidity_probe_limit,
+                        "min_two_sided_markets": min_two_sided_markets,
                     },
                 )
 
@@ -717,6 +723,9 @@ class TestSemanticCacheBootstrap:
                 live_only=True,
                 instrument_load_limit=280,
                 market_discovery_limit=400,
+                prefer_liquid_markets=True,
+                liquidity_probe_limit=350,
+                min_two_sided_markets=2,
             ),
         ]
 
@@ -736,6 +745,9 @@ class TestSemanticCacheBootstrap:
         assert call["to_time"] == 1_000_000 + 6 * 60 * 60
         assert call["instrument_limit"] == 300
         assert call["market_discovery_limit"] == 400
+        assert call["prefer_liquid_markets"] is True
+        assert call["liquidity_probe_limit"] == 350
+        assert call["min_two_sided_markets"] == 2
         assert call["client"].connected is True
         assert call["client"].disconnected is True
 

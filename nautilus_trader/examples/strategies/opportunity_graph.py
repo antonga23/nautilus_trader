@@ -521,20 +521,36 @@ class OpportunityGraph:
             return
         self.edges_by_id.clear()
         self.edge_ids_by_node_id = {node_id: set() for node_id in self.nodes_by_id}
-        for (
-            edge_id,
-            source_node_id,
-            target_node_id,
-            hedge_type,
-            confidence,
-            same_venue,
-            market_relationship_type,
-            _push_capable,
-            _execution_safe,
-            last_margin,
-            last_evaluated_ns,
-            last_updated_ns,
-        ) in self._rust_core.edge_snapshots():
+        for snapshot in self._rust_core.edge_snapshots():
+            (
+                edge_id,
+                source_node_id,
+                target_node_id,
+                hedge_type,
+                confidence,
+                same_venue,
+                raw_market_relationship_type,
+                rust_push_capable,
+                rust_execution_safe,
+                last_margin,
+                last_evaluated_ns,
+                last_updated_ns,
+            ) = snapshot[:12]
+            metadata = self._rust_edge_metadata(raw_market_relationship_type)
+            if not metadata and len(snapshot) > 12:
+                metadata = self._rust_edge_metadata(snapshot[12])
+            market_relationship_type = str(
+                metadata.get("market_relationship_type") or raw_market_relationship_type,
+            )
+            template_id = metadata.get("template_id")
+            relationship_type = metadata.get("relationship_type")
+            promotion_status = metadata.get("promotion_status")
+            safety_tier = metadata.get("safety_tier")
+            same_venue_execution_eligible = bool(
+                metadata.get("same_venue_execution_eligible"),
+            )
+            partial_settlement = bool(metadata.get("partial_settlement"))
+            caveats = tuple(str(item) for item in metadata.get("caveats", ()))
             source_node = self.nodes_by_id.get(source_node_id)
             target_node = self.nodes_by_id.get(target_node_id)
             if source_node is None or target_node is None:
@@ -544,28 +560,40 @@ class OpportunityGraph:
                 source_node.instrument,
                 target_node.instrument,
             )
-            if hedge is None:
+            if hedge is None and not template_id:
                 continue
 
             edge = OpportunityEdge(
                 edge_id=edge_id,
                 source_node_id=source_node_id,
                 target_node_id=target_node_id,
-                hedge_type=hedge.match_type or hedge_type,
-                confidence=hedge.confidence if hedge.confidence else confidence,
+                hedge_type=hedge.match_type if hedge is not None and hedge.match_type else hedge_type,
+                confidence=hedge.confidence if hedge is not None and hedge.confidence else confidence,
                 same_venue=same_venue,
                 market_relationship_type=market_relationship_type,
-                push_capable=hedge.push_capable,
-                execution_safe=hedge.execution_safe,
-                rule_id=hedge.rule_id,
-                template_id=hedge.template_id,
-                relationship_type=hedge.relationship_type,
-                caveats=hedge.caveats,
-                promotion_status=hedge.promotion_status,
-                safety_tier=hedge.safety_tier,
-                same_venue_execution_eligible=hedge.same_venue_execution_eligible,
-                void_capable=hedge.push_capable,
-                partial_settlement=hedge.partial_settlement,
+                push_capable=hedge.push_capable if hedge is not None else rust_push_capable,
+                execution_safe=(
+                    hedge.execution_safe if hedge is not None else rust_execution_safe
+                ),
+                rule_id=hedge.rule_id if hedge is not None else None,
+                template_id=hedge.template_id if hedge is not None else template_id,
+                relationship_type=(
+                    hedge.relationship_type if hedge is not None else relationship_type
+                ),
+                caveats=hedge.caveats if hedge is not None else caveats,
+                promotion_status=(
+                    hedge.promotion_status if hedge is not None else promotion_status
+                ),
+                safety_tier=hedge.safety_tier if hedge is not None else safety_tier,
+                same_venue_execution_eligible=(
+                    hedge.same_venue_execution_eligible
+                    if hedge is not None
+                    else same_venue_execution_eligible
+                ),
+                void_capable=hedge.push_capable if hedge is not None else rust_push_capable,
+                partial_settlement=(
+                    hedge.partial_settlement if hedge is not None else partial_settlement
+                ),
                 last_margin=Decimal(str(last_margin)) if last_margin is not None else None,
                 last_evaluated_ns=last_evaluated_ns,
                 last_updated_ns=last_updated_ns,
@@ -614,6 +642,16 @@ class OpportunityGraph:
                 ),
             )
         return candidates
+
+    @staticmethod
+    def _rust_edge_metadata(raw: object) -> dict[str, object]:
+        if not isinstance(raw, str) or not raw:
+            return {}
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        return payload if isinstance(payload, dict) else {}
 
     def _add_edges_for_instrument(
         self,
@@ -992,8 +1030,11 @@ class OpportunityGraph:
                     "venue_agnostic": template.venue_agnostic,
                     "safety_tier": template.safety_tier,
                     "promotion_status": template.promotion_status,
+                    "caveats": list(template.caveats),
                     "push_capable": template.has_void,
+                    "partial_settlement": template.has_partial,
                     "execution_safe": template.execution_safe,
+                    "same_venue_execution_eligible": template.same_venue_execution_eligible,
                 },
             )
         return payloads

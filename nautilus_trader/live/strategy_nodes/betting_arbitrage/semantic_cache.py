@@ -197,6 +197,9 @@ async def _refresh_required_sxbet_corpus(
     sport_ids: set[int] = set()
     instrument_limit = 250
     market_discovery_limit = 250
+    prefer_liquid_markets = False
+    liquidity_probe_limit = 100
+    min_two_sided_markets = 1
     live_only = False
     for venue in sxbet_venues:
         if venue.sport_ids:
@@ -205,6 +208,9 @@ async def _refresh_required_sxbet_corpus(
             instrument_limit = max(instrument_limit, int(venue.instrument_load_limit))
         if venue.market_discovery_limit is not None:
             market_discovery_limit = max(market_discovery_limit, int(venue.market_discovery_limit))
+        prefer_liquid_markets = prefer_liquid_markets or bool(venue.prefer_liquid_markets)
+        liquidity_probe_limit = max(liquidity_probe_limit, int(venue.liquidity_probe_limit))
+        min_two_sided_markets = max(min_two_sided_markets, int(venue.min_two_sided_markets))
         live_only = live_only or venue.live_only
 
     now = int(time.time())
@@ -220,6 +226,9 @@ async def _refresh_required_sxbet_corpus(
             to_time=to_time,
             instrument_limit=instrument_limit,
             market_discovery_limit=market_discovery_limit,
+            prefer_liquid_markets=prefer_liquid_markets,
+            liquidity_probe_limit=liquidity_probe_limit,
+            min_two_sided_markets=min_two_sided_markets,
         )
     finally:
         await client.disconnect()
