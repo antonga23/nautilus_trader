@@ -504,6 +504,133 @@ class TestBettingArbitrageIntegration:  # skipcq
         ensure(strategy._opportunity_graph.node_count == 2)
         ensure(strategy._opportunity_graph.connected_edge_count(str(instrument_b.id)) == 1)
 
+    def test_trading_node_suppresses_stale_arbitrage_candidates(
+        self,
+        event_loop_for_setup,
+    ):
+        node = TradingNode(
+            config=TradingNodeConfig(logging=LoggingConfig(bypass_logging=True)),
+            loop=event_loop_for_setup,
+        )
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                min_profit_margin=Decimal("0.02"),
+                enabled_venues=frozenset(["SXBET", "BLACKBET"]),
+                auto_execute=False,
+                arbitrage_quote_stale_threshold_secs=0.25,
+            ),
+        )
+        strategy._handle_arbitrage_opportunity = Mock()
+        instrument_a = self._total_goals_instrument(
+            venue="SXBET",
+            event_id="arsenal-chelsea-20260503",
+            outcome="over",
+            price=2.30,
+        )
+        instrument_b = self._total_goals_instrument(
+            venue="BLACKBET",
+            event_id="arsenal-chelsea-20260503",
+            outcome="under",
+            price=2.45,
+        )
+
+        node.cache.add_instrument(instrument_a)
+        node.cache.add_instrument(instrument_b)
+        node.trader.add_strategy(strategy)
+        node.build()
+        strategy.on_start()
+
+        now_ns = strategy.clock.timestamp_ns()
+        strategy.on_quote_tick(
+            TestDataStubs.quote_tick(
+                instrument=instrument_a,
+                bid_price=2.30,
+                ask_price=2.40,
+                ts_event=now_ns - 5_000_000_000,
+            ),
+        )
+        strategy.on_quote_tick(
+            TestDataStubs.quote_tick(
+                instrument=instrument_b,
+                bid_price=2.35,
+                ask_price=2.45,
+                ts_event=now_ns,
+            ),
+        )
+
+        strategy._handle_arbitrage_opportunity.assert_not_called()
+        ensure(strategy._raw_arbitrage_detections == 1)
+        ensure(strategy._stale_quote_suppressions == 1)
+        ensure(strategy._opportunities_found == 0)
+        ensure(strategy._seen_opportunity_pairs == set())
+
+    def test_trading_node_suppresses_duplicate_graph_opportunities(
+        self,
+        event_loop_for_setup,
+    ):
+        node = TradingNode(
+            config=TradingNodeConfig(logging=LoggingConfig(bypass_logging=True)),
+            loop=event_loop_for_setup,
+        )
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                min_profit_margin=Decimal("0.02"),
+                enabled_venues=frozenset(["SXBET", "BLACKBET"]),
+                auto_execute=False,
+            ),
+        )
+        strategy._handle_arbitrage_opportunity = Mock()
+        instrument_a = self._total_goals_instrument(
+            venue="SXBET",
+            event_id="arsenal-chelsea-20260503",
+            outcome="over",
+            price=2.30,
+        )
+        instrument_b = self._total_goals_instrument(
+            venue="BLACKBET",
+            event_id="arsenal-chelsea-20260503",
+            outcome="under",
+            price=2.45,
+        )
+
+        node.cache.add_instrument(instrument_a)
+        node.cache.add_instrument(instrument_b)
+        node.trader.add_strategy(strategy)
+        node.build()
+        strategy.on_start()
+
+        now_ns = strategy.clock.timestamp_ns()
+        strategy.on_quote_tick(
+            TestDataStubs.quote_tick(
+                instrument=instrument_a,
+                bid_price=2.30,
+                ask_price=2.40,
+                ts_event=now_ns - 250_000_000,
+            ),
+        )
+        strategy.on_quote_tick(
+            TestDataStubs.quote_tick(
+                instrument=instrument_b,
+                bid_price=2.35,
+                ask_price=2.45,
+                ts_event=now_ns,
+            ),
+        )
+        strategy.on_quote_tick(
+            TestDataStubs.quote_tick(
+                instrument=instrument_a,
+                bid_price=2.30,
+                ask_price=2.40,
+                ts_event=now_ns + 250_000_000,
+            ),
+        )
+
+        strategy._handle_arbitrage_opportunity.assert_called_once()
+        ensure(strategy._raw_arbitrage_detections == 2)
+        ensure(strategy._opportunities_found == 1)
+        ensure(strategy._duplicate_opportunities_suppressed == 1)
+        ensure(len(strategy._seen_opportunity_pairs) == 1)
+
     @staticmethod
     def _total_goals_instrument(
         *,

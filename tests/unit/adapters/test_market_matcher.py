@@ -3,18 +3,89 @@
 #
 #  Unit tests for MarketMatcher.
 # -------------------------------------------------------------------------------------------------
-# pylint: disable=duplicate-code
+# skipcq: PYL-C0114, PYL-C0115, PYL-C0116, PYL-W0212, PYL-R0903
+# skipcq: PYL-R0904, PYL-R0913, PYL-C0302, PYL-E0611
+# pylint: disable=duplicate-code,missing-module-docstring,missing-class-docstring
+# pylint: disable=missing-function-docstring,protected-access
+# pylint: disable=too-few-public-methods,too-many-public-methods
+# pylint: disable=too-many-arguments,too-many-lines,no-name-in-module
 
 from decimal import Decimal
 from decimal import DivisionByZero
 
 import pytest
 
+from nautilus_trader.adapters.betting.common.enums import MarketType
+from nautilus_trader.adapters.betting.common.enums import Outcome
 from nautilus_trader.adapters.betting.common.enums import SelectionSide
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
+from nautilus_trader.adapters.betting.market_matcher import ArbitrageOpportunity
 from nautilus_trader.adapters.betting.market_matcher import MarketMatcher
+from nautilus_trader.adapters.betting.semantics import PromotionStatus
+from nautilus_trader.adapters.betting.semantics import RuleClassifier
+from nautilus_trader.adapters.betting.semantics import RulePromotionPolicy
+from nautilus_trader.adapters.betting.semantics import RuleStore
+from nautilus_trader.adapters.betting.semantics import SafetyTier
+from nautilus_trader.adapters.betting.semantics import SemanticRuleTemplate
+from nautilus_trader.adapters.betting.semantics import TemplateSupportStats
 from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.objects import Currency
+
+
+class DictCache:
+    def __init__(self) -> None:
+        self.values: dict[str, bytes] = {}
+
+    def add(self, key: str, value: bytes) -> None:
+        self.values[key] = value
+
+    def get(self, key: str) -> bytes | None:
+        return self.values.get(key)
+
+
+class StubRuleClassifier:
+    def __init__(self, rule) -> None:
+        self._rule = rule
+
+    def classify(self, *_args, **_kwargs):
+        return self._rule
+
+
+def make_instrument(
+    *,
+    venue: str = "SXBET",
+    event_id: str = "event-123",
+    event_name: str = "Team A vs Team B",
+    home_name: str = "Team A",
+    away_name: str = "Team B",
+    market_name: str = "Total Goals",
+    market_type: str = "total_goals",
+    outcome: str,
+    price: float = 2.10,
+    params: str = "",
+    handicap: float | None = None,
+    info: dict | None = None,
+    start_time: str | None = "2026-03-13T18:00:00Z",
+) -> CryptoBettingInstrument:
+    return CryptoBettingInstrument(
+        venue=Venue(venue),
+        event_id=event_id,
+        event_name=event_name,
+        home_name=home_name,
+        away_name=away_name,
+        sport_name="soccer",
+        competition_name="Test League",
+        market_name=market_name,
+        market_type=market_type,
+        outcome=outcome,
+        side=SelectionSide.BACK,
+        price=price,
+        currency=Currency.from_str("USDT"),
+        params=params,
+        handicap=handicap,
+        info=info or {},
+        start_time=start_time,
+    )
 
 
 class TestMarketMatcher:
@@ -864,3 +935,326 @@ class TestMarketMatcher:
 
         assert len(hedges) == 1
         assert market_matcher.check_arbitrage(inst_a, inst_b) is None
+
+    def test_arbitrage_opportunity_repr_and_negative_margin_property(
+        self,
+        sample_instrument_a,
+        sample_instrument_b,
+    ):
+        opportunity = ArbitrageOpportunity(
+            instrument_a=sample_instrument_a,
+            instrument_b=sample_instrument_b,
+            probability_a=Decimal("0.50"),
+            probability_b=Decimal("0.51"),
+            total_probability=Decimal("1.01"),
+            profit_margin=Decimal("-0.01"),
+            odds_a=Decimal("2.00"),
+            odds_b=Decimal("1.96"),
+            is_same_venue=False,
+            match_type="cross_market",
+        )
+
+        assert opportunity.is_arbitrage is False
+        assert "profit=-1.00%" in repr(opportunity)
+
+    def test_find_hedges_respects_include_cross_venue_flag(self, market_matcher):
+        inst_a = make_instrument(venue="CLOUDBET", outcome="over", params="line=2.5")
+        inst_b = make_instrument(
+            venue="SXBET",
+            outcome="under",
+            params="line=2.5",
+        )
+
+        assert market_matcher.find_hedges(inst_a, [inst_b], include_cross_venue=False) == []
+
+    def test_find_hedges_filters_semantic_candidates_below_min_confidence(self):
+        instrument_a = make_instrument(
+            venue="CLOUDBET",
+            market_name="match_odds",
+            market_type="match_odds",
+            outcome="home",
+        )
+        instrument_b = make_instrument(
+            venue="SXBET",
+            market_name="double_chance",
+            market_type="double_chance",
+            outcome="away_draw",
+            price=1.85,
+        )
+        rule = RuleClassifier().classify(instrument_a, instrument_b)
+        assert rule is not None
+
+        matcher = MarketMatcher(
+            min_confidence=1.01,
+            rule_classifier=StubRuleClassifier(rule),
+        )
+
+        assert matcher.find_hedges(instrument_a, [instrument_b]) == []
+
+    def test_resolve_rule_uses_promoted_template_from_store(self):
+        cache = DictCache()
+        store = RuleStore(cache)
+        instrument_a = make_instrument(
+            venue="CLOUDBET",
+            market_name="match_odds",
+            market_type="match_odds",
+            outcome="home",
+        )
+        instrument_b = make_instrument(
+            venue="SXBET",
+            market_name="double_chance",
+            market_type="double_chance",
+            outcome="away_draw",
+            price=1.85,
+        )
+        rule = RuleClassifier().classify(instrument_a, instrument_b)
+        assert rule is not None
+        template = SemanticRuleTemplate.from_rule(
+            rule,
+            support=TemplateSupportStats(
+                template_id="cross-provider-template",
+                observed_count=20,
+                event_count=8,
+                provider_count=2,
+                providers=("CLOUDBET", "SXBET"),
+                sports=("soccer",),
+                confidence=0.99,
+            ),
+        )
+        promoted_template = RulePromotionPolicy().promote_template(store, template)
+        assert promoted_template is not None
+
+        matcher = MarketMatcher(rule_store=store)
+        resolved = matcher._resolve_rule(instrument_a, instrument_b)
+
+        assert resolved is not None
+        assert resolved.template_id == promoted_template.template_id
+        assert resolved.promotion_status == PromotionStatus.PROMOTED.value
+        assert resolved.safety_tier == SafetyTier.EXECUTION_SAFE.value
+
+    def test_resolve_rule_disallows_unpromoted_topology_when_disabled(self):
+        instrument_a = make_instrument(
+            venue="CLOUDBET",
+            market_name="match_odds",
+            market_type="match_odds",
+            outcome="home",
+        )
+        instrument_b = make_instrument(
+            venue="SXBET",
+            market_name="double_chance",
+            market_type="double_chance",
+            outcome="away_draw",
+            price=1.85,
+        )
+        matcher = MarketMatcher(allow_unpromoted_topology=False)
+
+        assert matcher._resolve_rule(instrument_a, instrument_b) is None
+
+    def test_hedge_event_match_rejects_event_mismatch(self, market_matcher):
+        instrument_a = make_instrument(event_name="Team A vs Team B", outcome="over")
+        instrument_b = make_instrument(
+            venue="BLACKBET",
+            event_name="Team C vs Team D",
+            home_name="Team C",
+            away_name="Team D",
+            outcome="under",
+        )
+
+        assert (
+            market_matcher._is_hedge_event_match(instrument_a, instrument_b, [instrument_b])
+            is False
+        )
+
+    def test_cross_market_confidence_helpers(self, market_matcher):
+        match_home = make_instrument(
+            market_name="match_odds",
+            market_type="match_odds",
+            outcome="home",
+        )
+        double_chance = make_instrument(
+            market_name="double_chance",
+            market_type="double_chance",
+            outcome="away_draw",
+        )
+        dnb_home = make_instrument(
+            market_name="draw_no_bet",
+            market_type="draw_no_bet",
+            outcome="home",
+        )
+        ah_away = make_instrument(
+            market_name="asian_handicap",
+            market_type="asian_handicap",
+            outcome="away",
+            params="line=0",
+            handicap=0.0,
+        )
+        ah_home = make_instrument(
+            market_name="asian_handicap",
+            market_type="asian_handicap",
+            outcome="home",
+            params="line=1.5",
+            handicap=1.5,
+        )
+        dangerous_home = make_instrument(
+            market_name="european_handicap",
+            market_type="european_handicap",
+            outcome="home",
+            params="line=1.5",
+            handicap=1.5,
+        )
+        ah_away_opposite = make_instrument(
+            market_name="asian_handicap",
+            market_type="asian_handicap",
+            outcome="away",
+            params="line=-1.5",
+            handicap=-1.5,
+        )
+
+        assert market_matcher._is_cross_market_hedge(match_home, double_chance) == 1.0
+        assert market_matcher._is_cross_market_hedge(ah_home, dangerous_home) == 0.0
+        assert (
+            market_matcher._calculate_cross_market_confidence(
+                MarketType.DRAW_NO_BET,
+                MarketType.ASIAN_HANDICAP,
+                Outcome.HOME,
+                Outcome.AWAY,
+                dnb_home,
+                ah_away,
+            )
+            == 0.75
+        )
+        assert (
+            market_matcher._calculate_cross_market_confidence(
+                MarketType.MATCH_ODDS,
+                MarketType.ASIAN_HANDICAP,
+                Outcome.HOME,
+                Outcome.AWAY,
+                match_home,
+                ah_away,
+            )
+            == 0.0
+        )
+        assert (
+            market_matcher._confidence_match_odds_double_chance(
+                MarketType.MATCH_ODDS,
+                MarketType.DOUBLE_CHANCE,
+                Outcome.HOME,
+                Outcome.HOME_DRAW,
+            )
+            == 0.0
+        )
+        assert (
+            market_matcher._confidence_match_odds_double_chance(
+                MarketType.DRAW_NO_BET,
+                MarketType.ASIAN_HANDICAP,
+                Outcome.HOME,
+                Outcome.AWAY,
+            )
+            is None
+        )
+        assert (
+            market_matcher._confidence_asian_handicap(
+                MarketType.MATCH_ODDS,
+                MarketType.DOUBLE_CHANCE,
+                Outcome.HOME,
+                Outcome.AWAY_DRAW,
+                match_home,
+                double_chance,
+            )
+            is None
+        )
+        assert (
+            market_matcher._confidence_asian_handicap(
+                MarketType.ASIAN_HANDICAP,
+                MarketType.ASIAN_HANDICAP,
+                Outcome.HOME,
+                Outcome.AWAY,
+                ah_home,
+                ah_away_opposite,
+            )
+            == 0.85
+        )
+        assert (
+            market_matcher._confidence_asian_handicap(
+                MarketType.ASIAN_HANDICAP,
+                MarketType.ASIAN_HANDICAP,
+                Outcome.HOME,
+                Outcome.HOME,
+                ah_home,
+                ah_home,
+            )
+            == 0.0
+        )
+
+    def test_find_arbitrage_opportunities_deduplicates_and_sorts(self, market_matcher):
+        event_one_over = make_instrument(
+            venue="CLOUDBET",
+            event_id="event-1",
+            outcome="over",
+            price=2.30,
+            params="line=2.5",
+        )
+        event_one_under = make_instrument(
+            venue="SXBET",
+            event_id="event-1",
+            outcome="under",
+            price=2.45,
+            params="line=2.5",
+        )
+        event_two_over = make_instrument(
+            venue="CLOUDBET",
+            event_id="event-2",
+            outcome="over",
+            price=2.05,
+            params="line=3.5",
+        )
+        event_two_under = make_instrument(
+            venue="SXBET",
+            event_id="event-2",
+            outcome="under",
+            price=2.20,
+            params="line=3.5",
+        )
+
+        opportunities = market_matcher.find_arbitrage_opportunities(
+            [event_one_over, event_one_under, event_two_over, event_two_under],
+            min_profit_margin=Decimal("0.01"),
+        )
+
+        assert len(opportunities) == 2
+        assert opportunities[0].profit_margin > opportunities[1].profit_margin
+        assert {
+            tuple(sorted([opportunity.instrument_a.event_id, opportunity.instrument_b.event_id]))
+            for opportunity in opportunities
+        } == {("event-1", "event-1"), ("event-2", "event-2")}
+
+    def test_event_and_team_name_normalizers(self, market_matcher):
+        assert market_matcher.normalize_event_name("Arsenal vs Chelsea") == "arsenal chelsea"
+        assert market_matcher.normalize_event_name("Team A @ Team B") == "team a team b"
+        assert market_matcher._normalize_team_name("Manchester City FC") == "manchester"
+        assert market_matcher._normalize_team_name("Leeds United") == "leeds"
+
+    def test_are_matching_selections_rejects_param_and_market_mismatches(self, market_matcher):
+        instrument_a = make_instrument(
+            market_name="Total Goals",
+            market_type="total_goals",
+            outcome="over",
+            params="line=2.5",
+        )
+        param_mismatch = make_instrument(
+            venue="BLACKBET",
+            market_name="Total Goals",
+            market_type="total_goals",
+            outcome="over",
+            params="line=3.5",
+        )
+        market_mismatch = make_instrument(
+            venue="BLACKBET",
+            market_name="Match Odds",
+            market_type="match_odds",
+            outcome="home",
+            params="line=2.5",
+        )
+
+        assert market_matcher._are_matching_selections(instrument_a, param_mismatch) is False
+        assert market_matcher._are_matching_selections(instrument_a, market_mismatch) is False

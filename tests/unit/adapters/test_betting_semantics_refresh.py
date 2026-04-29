@@ -10,9 +10,11 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import msgspec
 
+from nautilus_trader.adapters.betting.semantics import completion as completion_module
 from nautilus_trader.adapters.betting.common.enums import SelectionSide
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.betting.market_matcher import MarketMatcher
@@ -31,6 +33,9 @@ from nautilus_trader.adapters.betting.semantics import RulePromotionPolicy
 from nautilus_trader.adapters.betting.semantics import RuleStore
 from nautilus_trader.adapters.betting.semantics import RuleValidationStats
 from nautilus_trader.adapters.betting.semantics import SafetyTier
+from nautilus_trader.adapters.betting.semantics import SemanticRuleTemplate
+from nautilus_trader.adapters.betting.semantics import SettlementState
+from nautilus_trader.adapters.betting.semantics import TemplateSupportStats
 from nautilus_trader.adapters.betting.semantics.corpus import SnapshotIngestor
 from nautilus_trader.adapters.betting.semantics import build_completion_report
 from nautilus_trader.adapters.cloudbet.client.schema import Selection
@@ -956,3 +961,275 @@ def test_semantic_rule_mining_cli_reports_tiered_promotion_counts(tmp_path):
     assert report_payload["same_venue_execution_eligible_template_count"] == 1
     assert "candidate_safety_tier_counts" in report_payload
     assert "promoted_safety_tier_counts" in report_payload
+
+
+def test_historical_validator_handles_missing_manifest_and_mismatched_outcomes():
+    cache = DictCache()
+    store = RuleStore(cache)
+    validator = HistoricalRuleValidator(store)
+    rule = RuleClassifier().classify(
+        betting_instrument(
+            venue="CLOUDBET",
+            market_name="match_odds",
+            market_type="match_odds",
+            outcome="home",
+        ),
+        betting_instrument(
+            venue="SXBET",
+            market_name="double_chance",
+            market_type="double_chance",
+            outcome="away_draw",
+        ),
+    )
+    assert rule is not None
+    store.save_candidate(rule)
+
+    assert validator.validate_store(manifest_id="missing-manifest") == []
+
+    signature_a = validator._rule_signature(
+        sport=rule.sport,
+        scope=rule.scope,
+        market_type=rule.market_a,
+        selection=rule.selection_a,
+        params=rule.params_a,
+    )
+    signature_b = validator._rule_signature(
+        sport=rule.sport,
+        scope=rule.scope,
+        market_type=rule.market_b,
+        selection=rule.selection_b,
+        params=rule.params_b,
+    )
+    mismatch_stats = validator._validate_rule(
+        rule,
+        {
+            "event-1": {
+                signature_a: {SettlementState.WIN.value},
+                signature_b: {SettlementState.WIN.value},
+            },
+        },
+    )
+
+    assert mismatch_stats is not None
+    assert mismatch_stats.sample_count == 1
+    assert mismatch_stats.match_count == 0
+    assert mismatch_stats.mismatch_count == 1
+    assert mismatch_stats.confidence == 0.0
+    assert validator._validate_rule(rule, {}) is None
+
+
+def test_historical_validator_cloudbet_observations_fallback_and_error_paths():
+    validator = HistoricalRuleValidator(RuleStore(DictCache()))
+
+    assert validator._cloudbet_observations(b"\xff") == []
+    assert validator._cloudbet_observations(b'{"not_items": []}') == []
+
+    payload = json.dumps(
+        {
+            "items": [
+                {
+                    "betType": "STRAIGHT",
+                    "betId": "home-1",
+                    "betslipId": "betslip-home-1",
+                    "positionId": "position-home-1",
+                    "currency": "USDC",
+                    "createTime": "2026-04-27T00:00:00Z",
+                    "state": "COMPLETED",
+                    "result": "WIN",
+                    "selection": {
+                        "eventId": "fixture-1",
+                        "marketUrl": "soccer.match_odds/home",
+                        "price": "2.1",
+                        "result": "WIN",
+                        "marketName": "soccer.match_odds",
+                        "outcomeName": "home",
+                    },
+                },
+            ],
+            "has_next": False,
+        },
+    ).encode("utf-8")
+    observations = validator._cloudbet_observations(payload)
+
+    assert len(observations) == 1
+    assert observations[0].provider == "CLOUDBET"
+    assert observations[0].settlement == SettlementState.WIN.value
+
+
+def test_cloudbet_settlement_handles_none_and_unknown_results():
+    validator = HistoricalRuleValidator(RuleStore(DictCache()))
+
+    assert (
+        validator._cloudbet_settlement(
+            SimpleNamespace(selection=None, selections=[], result=None),
+        )
+        == SettlementState.UNKNOWN.value
+    )
+    assert (
+        validator._cloudbet_settlement(
+            SimpleNamespace(selection=None, selections=[], result="UNEXPECTED"),
+        )
+        == SettlementState.UNKNOWN.value
+    )
+
+
+def test_completion_report_uses_candidate_rules_without_templates_and_to_dict():
+    cache = DictCache()
+    store = RuleStore(cache)
+    rule = RuleClassifier().classify(
+        betting_instrument(
+            venue="CLOUDBET",
+            market_name="match_odds",
+            market_type="match_odds",
+            outcome="home",
+        ),
+        betting_instrument(
+            venue="SXBET",
+            market_name="double_chance",
+            market_type="double_chance",
+            outcome="away_draw",
+        ),
+    )
+    assert rule is not None
+    normalizer = MarketNormalizer()
+    store.save_manifest(
+        RuleCorpusManifest(
+            manifest_id="manifest-cloudbet",
+            provider="CLOUDBET",
+            fetched_at="2026-04-27T00:00:00Z",
+            endpoint_version="test",
+            sport_count=1,
+            event_count=1,
+            selection_count=1,
+            market_taxonomy_hash="hash-cloudbet",
+            source_refs=(),
+        ),
+    )
+    store.save_manifest(
+        RuleCorpusManifest(
+            manifest_id="manifest-sxbet",
+            provider="SXBET",
+            fetched_at="2026-04-27T00:00:00Z",
+            endpoint_version="test",
+            sport_count=1,
+            event_count=1,
+            selection_count=1,
+            market_taxonomy_hash="hash-sxbet",
+            source_refs=(),
+        ),
+    )
+    store.save_normalized_selection(
+        NormalizedSelectionRecord(
+            record_id="cloudbet-home",
+            provider="CLOUDBET",
+            selection=normalizer.normalize(
+                betting_instrument(
+                    venue="CLOUDBET",
+                    market_name="match_odds",
+                    market_type="match_odds",
+                    outcome="home",
+                ),
+            ),
+            manifest_id="manifest-cloudbet",
+        ),
+    )
+    store.save_normalized_selection(
+        NormalizedSelectionRecord(
+            record_id="sxbet-away-draw",
+            provider="SXBET",
+            selection=normalizer.normalize(
+                betting_instrument(
+                    venue="SXBET",
+                    market_name="double_chance",
+                    market_type="double_chance",
+                    outcome="away_draw",
+                ),
+            ),
+            manifest_id="manifest-sxbet",
+        ),
+    )
+    store.save_candidate(rule)
+
+    report = build_completion_report(
+        store,
+        required_providers=("CLOUDBET", "SXBET"),
+        target_sports=("soccer",),
+        min_candidates=1,
+        target_candidates=2,
+    )
+
+    assert report.total_event_candidates == 1
+    assert report.total_template_candidates == 0
+    assert report.to_dict()["total_event_candidates"] == 1
+    assert report.providers[0].passed is True
+    assert report.providers[1].passed is True
+
+
+def test_completion_helpers_report_blockers_and_normalize_sport_aliases():
+    provider_report = completion_module._provider_report(
+        provider="SXBET",
+        manifest_count=0,
+        selection_count=0,
+        event_candidate_count=0,
+        template_candidate_count=0,
+        promoted_template_count=0,
+        execution_safe_template_count=0,
+        sports=(),
+    )
+    sport_report = completion_module._sport_report(
+        sport="soccer",
+        selection_count=1,
+        event_candidate_count=5,
+        template_candidate_count=0,
+        providers=("SXBET",),
+        min_candidates=10,
+        target_candidates=20,
+    )
+    base_rule = RuleClassifier().classify(
+        betting_instrument(
+            market_name="match_odds",
+            market_type="match_odds",
+            outcome="home",
+        ),
+        betting_instrument(
+            market_name="double_chance",
+            market_type="double_chance",
+            outcome="away_draw",
+        ),
+    )
+    assert base_rule is not None
+    template = replace(
+        SemanticRuleTemplate.from_rule(
+            base_rule,
+            support=TemplateSupportStats(
+                template_id="blocked-template",
+                observed_count=5,
+                event_count=2,
+                provider_count=1,
+                providers=("SXBET",),
+                sports=("soccer",),
+                confidence=0.99,
+            ),
+        ),
+        relationship_type=RelationshipType.DANGEROUS_NON_EQUIVALENT.value,
+        safety_tier=SafetyTier.AUDIT_ONLY.value,
+        settlement_a=(SettlementState.UNKNOWN.value, SettlementState.HALF_WIN.value),
+        settlement_b=(SettlementState.VOID.value,),
+    )
+    blockers = completion_module._promotion_blockers([template])
+
+    assert provider_report.blockers == (
+        "missing_manifest",
+        "no_normalized_selections",
+        "no_event_candidates",
+    )
+    assert sport_report.blockers == ("below_min_candidate_count",)
+    assert blockers["dangerous_non_equivalent"] == 1
+    assert blockers["audit_only"] == 1
+    assert blockers["unknown_settlement"] == 1
+    assert blockers["void_settlement"] == 1
+    assert blockers["partial_settlement"] == 1
+    assert blockers["observed_count_below_10"] == 1
+    assert blockers["event_count_below_3"] == 1
+    assert blockers["single_provider_support"] == 1
+    assert completion_module._normalize_sport("Football") == "american_football"
