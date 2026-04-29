@@ -3,7 +3,12 @@
 #
 #  Unit tests for MarketMatcher.
 # -------------------------------------------------------------------------------------------------
-# pylint: disable=duplicate-code
+# skipcq: PYL-C0114, PYL-C0115, PYL-C0116, PYL-W0212, PYL-R0903
+# skipcq: PYL-R0904, PYL-R0913, PYL-C0302, PYL-E0611
+# pylint: disable=duplicate-code,missing-module-docstring,missing-class-docstring
+# pylint: disable=missing-function-docstring,protected-access
+# pylint: disable=too-few-public-methods,too-many-public-methods
+# pylint: disable=too-many-arguments,too-many-lines,no-name-in-module
 
 from decimal import Decimal
 from decimal import DivisionByZero

@@ -1,10 +1,20 @@
+# skipcq: PYL-C0114, PYL-C0115, PYL-C0116, PYL-W0212, PYL-W0613
+# skipcq: PYL-W0108, PYL-W1514, PYL-R0903, PYL-R0913, PYL-C0301
+# skipcq: PYL-C0302, PYL-E0401, PYL-C0411
+# pylint: disable=missing-module-docstring,missing-class-docstring
+# pylint: disable=missing-function-docstring,protected-access,unused-argument
+# pylint: disable=unnecessary-lambda,unspecified-encoding,too-few-public-methods
+# pylint: disable=too-many-arguments,line-too-long,too-many-lines
+# pylint: disable=import-error,wrong-import-order
+
 import asyncio
 import json
-import msgspec
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
+
+import msgspec
 
 import pytest
 
@@ -939,7 +949,10 @@ class TestBettingArbitrageNodeRunner:
             same_venue_execution_eligible_template_count=1,
         )
         monkeypatch.setattr(
-            "nautilus_trader.live.strategy_nodes.betting_arbitrage.runner.ensure_semantic_cache_ready",
+            (
+                "nautilus_trader.live.strategy_nodes.betting_arbitrage.runner."
+                "ensure_semantic_cache_ready"
+            ),
             lambda _: expected_status,
         )
 
@@ -988,7 +1001,10 @@ class TestBettingArbitrageNodeRunner:
         manifest_path.write_bytes(manifest.json())
 
         monkeypatch.setattr(
-            "nautilus_trader.live.strategy_nodes.betting_arbitrage.runner.ensure_semantic_cache_ready",
+            (
+                "nautilus_trader.live.strategy_nodes.betting_arbitrage.runner."
+                "ensure_semantic_cache_ready"
+            ),
             lambda _: SemanticCacheStatus(
                 path=str(tmp_path / "semantic-cache"),
                 source="existing",
