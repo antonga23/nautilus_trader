@@ -310,10 +310,12 @@ jobs:
             tag="${GITHUB_SHA::12}"
           fi
           image_ref="ghcr.io/${REPOSITORY_OWNER}/cloudbet-market-maker/betting-arbitrage-node:${tag}"
-          echo "image_ref=$image_ref" >> "$GITHUB_OUTPUT"
-          echo "image_tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "image_archive_key=betting-arbitrage-node.tar.gz" >> "$GITHUB_OUTPUT"
-          echo "image_archive_namespace=strategy-node-images/$tag" >> "$GITHUB_OUTPUT"
+          {
+            echo "image_ref=$image_ref"
+            echo "image_tag=$tag"
+            echo "image_archive_key=betting-arbitrage-node.tar.gz"
+            echo "image_archive_namespace=strategy-node-images/$tag"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Check for reusable strategy-node image archive
         id: image-archive-cache
@@ -517,10 +519,12 @@ jobs:
             tag="${GITHUB_SHA::12}"
           fi
           image_ref="ghcr.io/${REPOSITORY_OWNER}/cloudbet-market-maker/betting-arbitrage-node:${tag}"
-          echo "image_ref=$image_ref" >> "$GITHUB_OUTPUT"
-          echo "image_tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "image_archive_key=betting-arbitrage-node.tar.gz" >> "$GITHUB_OUTPUT"
-          echo "image_archive_namespace=strategy-node-images/$tag" >> "$GITHUB_OUTPUT"
+          {
+            echo "image_ref=$image_ref"
+            echo "image_tag=$tag"
+            echo "image_archive_key=betting-arbitrage-node.tar.gz"
+            echo "image_archive_namespace=strategy-node-images/$tag"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Download strategy-node image archive
         if: github.event.inputs.image_transport == 'archive'
