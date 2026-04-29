@@ -65,24 +65,43 @@ struct NodeSnapshot {
     handicap: Option<f64>,
     start_time_ns: Option<i64>,
     two_way_market: bool,
+    semantic_sport: String,
+    semantic_scope: String,
+    semantic_market_type: String,
+    semantic_market_family: String,
+    semantic_selection: String,
+    semantic_params_key: String,
 }
 
 impl NodeSnapshot {
     fn from_py(value: &Bound<'_, PyAny>) -> PyResult<Self> {
         let dict = value.cast::<PyDict>()?;
+        let market_type = get_string(dict, "market_type")?;
+        let outcome = get_string(dict, "outcome")?;
+        let params = get_string(dict, "params")?;
         Ok(Self {
             node_id: get_string(dict, "node_id")?,
             venue: get_string(dict, "venue")?,
             event_id: get_string(dict, "event_id")?,
             event_key_no_time: get_string(dict, "event_key_no_time")?,
             market_name: get_string(dict, "market_name")?,
-            market_type: get_string(dict, "market_type")?,
-            outcome: get_string(dict, "outcome")?,
+            market_type: market_type.clone(),
+            outcome: outcome.clone(),
             selection_key: get_string(dict, "selection_key")?,
-            params: get_string(dict, "params")?,
+            params: params.clone(),
             handicap: get_optional_f64(dict, "handicap")?,
             start_time_ns: get_optional_i64(dict, "start_time_ns")?,
             two_way_market: get_bool(dict, "two_way_market")?,
+            semantic_sport: get_optional_string(dict, "semantic_sport")?.unwrap_or_default(),
+            semantic_scope: get_optional_string(dict, "semantic_scope")?.unwrap_or_default(),
+            semantic_market_type: get_optional_string(dict, "semantic_market_type")?
+                .unwrap_or_else(|| market_type.clone()),
+            semantic_market_family: get_optional_string(dict, "semantic_market_family")?
+                .unwrap_or_else(|| market_type.clone()),
+            semantic_selection: get_optional_string(dict, "semantic_selection")?
+                .unwrap_or_else(|| outcome.clone()),
+            semantic_params_key: get_optional_string(dict, "semantic_params_key")?
+                .unwrap_or(params),
         })
     }
 }
@@ -91,6 +110,7 @@ impl NodeSnapshot {
 struct EdgeFlags {
     same_venue: bool,
     push_capable: bool,
+    execution_safe: bool,
     matcher_suspect: bool,
 }
 
@@ -106,6 +126,137 @@ struct EdgeSnapshot {
     last_margin: Option<f64>,
     last_evaluated_ns: Option<i64>,
     last_updated_ns: Option<i64>,
+}
+
+#[derive(Clone, Debug)]
+struct SemanticPatternSnapshot {
+    sport: String,
+    scope: String,
+    market_type: String,
+    market_family: String,
+    selection: String,
+    params_key: String,
+}
+
+impl SemanticPatternSnapshot {
+    fn from_py(value: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let dict = value.cast::<PyDict>()?;
+        Ok(Self {
+            sport: get_string(dict, "sport")?,
+            scope: get_string(dict, "scope")?,
+            market_type: get_string(dict, "market_type")?,
+            market_family: get_string(dict, "market_family")?,
+            selection: get_string(dict, "selection")?,
+            params_key: get_string(dict, "params_key")?,
+        })
+    }
+
+    fn matches_node(&self, node: &NodeSnapshot) -> bool {
+        self.sport == node.semantic_sport
+            && self.scope == node.semantic_scope
+            && self.market_type == node.semantic_market_type
+            && self.market_family == node.semantic_market_family
+            && self.selection == node.semantic_selection
+            && self.params_key == node.semantic_params_key
+    }
+}
+
+#[derive(Clone, Debug)]
+struct SemanticTemplateSnapshot {
+    template_id: String,
+    relationship_type: String,
+    pattern_a: SemanticPatternSnapshot,
+    pattern_b: SemanticPatternSnapshot,
+    confidence: f64,
+    provider_scope: Vec<String>,
+    venue_agnostic: bool,
+    safety_tier: String,
+    promotion_status: String,
+    push_capable: bool,
+    execution_safe: bool,
+}
+
+#[derive(Clone, Debug)]
+struct SemanticTemplateMatch {
+    hedge_type: String,
+    confidence: f64,
+    push_capable: bool,
+    execution_safe: bool,
+}
+
+impl SemanticTemplateSnapshot {
+    fn from_py(value: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let dict = value.cast::<PyDict>()?;
+        Ok(Self {
+            template_id: get_string(dict, "template_id")?,
+            relationship_type: get_string(dict, "relationship_type")?,
+            pattern_a: SemanticPatternSnapshot::from_py(
+                &dict
+                    .get_item("pattern_a")?
+                    .ok_or_else(|| PyKeyError::new_err("pattern_a"))?,
+            )?,
+            pattern_b: SemanticPatternSnapshot::from_py(
+                &dict
+                    .get_item("pattern_b")?
+                    .ok_or_else(|| PyKeyError::new_err("pattern_b"))?,
+            )?,
+            confidence: get_f64(dict, "confidence")?,
+            provider_scope: get_string_vec(dict, "provider_scope")?,
+            venue_agnostic: get_bool(dict, "venue_agnostic")?,
+            safety_tier: get_string(dict, "safety_tier")?,
+            promotion_status: get_string(dict, "promotion_status")?,
+            push_capable: get_bool(dict, "push_capable")?,
+            execution_safe: get_bool(dict, "execution_safe")?,
+        })
+    }
+
+    fn matches_pair(
+        &self,
+        source: &NodeSnapshot,
+        target: &NodeSnapshot,
+    ) -> Option<SemanticTemplateMatch> {
+        if self.template_id.is_empty()
+            || self.relationship_type.is_empty()
+            || self.promotion_status != "PROMOTED"
+            || self.safety_tier == "AUDIT_ONLY"
+        {
+            return None;
+        }
+        if !self.applies_to_venues(source, target) {
+            return None;
+        }
+        if !self.patterns_match(source, target) {
+            return None;
+        }
+        let hedge_type = if source.semantic_market_type == target.semantic_market_type
+            && source.semantic_params_key == target.semantic_params_key
+        {
+            "same_market"
+        } else {
+            "cross_market"
+        };
+        Some(SemanticTemplateMatch {
+            hedge_type: hedge_type.to_string(),
+            confidence: self.confidence,
+            push_capable: self.push_capable,
+            execution_safe: self.execution_safe,
+        })
+    }
+
+    fn patterns_match(&self, source: &NodeSnapshot, target: &NodeSnapshot) -> bool {
+        (self.pattern_a.matches_node(source) && self.pattern_b.matches_node(target))
+            || (self.pattern_b.matches_node(source) && self.pattern_a.matches_node(target))
+    }
+
+    fn applies_to_venues(&self, source: &NodeSnapshot, target: &NodeSnapshot) -> bool {
+        if self.venue_agnostic {
+            return true;
+        }
+        if self.provider_scope.is_empty() {
+            return false;
+        }
+        self.provider_scope.contains(&source.venue) && self.provider_scope.contains(&target.venue)
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -125,6 +276,7 @@ pub struct OpportunityGraphCore {
     quotes_by_node_id: HashMap<String, QuoteSnapshot>,
     event_buckets: HashMap<String, Vec<String>>,
     venue_event_buckets: HashMap<String, Vec<String>>,
+    semantic_templates: Vec<SemanticTemplateSnapshot>,
 }
 
 #[pymethods]
@@ -141,6 +293,7 @@ impl OpportunityGraphCore {
             quotes_by_node_id: HashMap::default(),
             event_buckets: HashMap::default(),
             venue_event_buckets: HashMap::default(),
+            semantic_templates: Vec::default(),
         }
     }
 
@@ -151,6 +304,7 @@ impl OpportunityGraphCore {
         self.quotes_by_node_id.clear();
         self.event_buckets.clear();
         self.venue_event_buckets.clear();
+        self.semantic_templates.clear();
     }
 
     fn build(&mut self, nodes: &Bound<'_, PyAny>) -> PyResult<()> {
@@ -159,6 +313,45 @@ impl OpportunityGraphCore {
             self.insert_node(NodeSnapshot::from_py(&item?)?);
         }
         self.rebuild_edges();
+        Ok(())
+    }
+
+    fn build_with_edges(
+        &mut self,
+        nodes: &Bound<'_, PyAny>,
+        edges: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        self.clear();
+        for item in nodes.try_iter()? {
+            self.insert_node(NodeSnapshot::from_py(&item?)?);
+        }
+        for item in edges.try_iter()? {
+            let edge = self.edge_from_py(&item?)?;
+            self.insert_edge(edge);
+        }
+        Ok(())
+    }
+
+    fn load_semantic_templates(&mut self, templates: &Bound<'_, PyAny>) -> PyResult<usize> {
+        self.semantic_templates.clear();
+        for item in templates.try_iter()? {
+            self.semantic_templates
+                .push(SemanticTemplateSnapshot::from_py(&item?)?);
+        }
+        Ok(self.semantic_templates.len())
+    }
+
+    fn build_semantic(
+        &mut self,
+        nodes: &Bound<'_, PyAny>,
+        templates: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        self.clear();
+        self.load_semantic_templates(templates)?;
+        for item in nodes.try_iter()? {
+            self.insert_node(NodeSnapshot::from_py(&item?)?);
+        }
+        self.rebuild_semantic_edges();
         Ok(())
     }
 
@@ -172,6 +365,23 @@ impl OpportunityGraphCore {
         self.insert_node(snapshot);
         self.connect_node(&node_id);
         Ok(true)
+    }
+
+    fn add_instrument_semantic(&mut self, node: &Bound<'_, PyAny>) -> PyResult<bool> {
+        let snapshot = NodeSnapshot::from_py(node)?;
+        if self.nodes_by_id.contains_key(&snapshot.node_id) {
+            return Ok(false);
+        }
+        let mut node_id = String::default();
+        node_id.clone_from(&snapshot.node_id);
+        self.insert_node(snapshot);
+        self.connect_node_semantic(&node_id);
+        Ok(true)
+    }
+
+    fn add_edge(&mut self, edge: &Bound<'_, PyAny>) -> PyResult<bool> {
+        let edge = self.edge_from_py(edge)?;
+        Ok(self.insert_edge(edge))
     }
 
     fn update_quote(
@@ -251,6 +461,10 @@ impl OpportunityGraphCore {
         self.quotes_by_node_id.len()
     }
 
+    fn semantic_template_count(&self) -> usize {
+        self.semantic_templates.len()
+    }
+
     fn edge_snapshots(&self) -> Vec<EdgeExportSnapshot> {
         self.edges_by_id
             .values()
@@ -264,7 +478,7 @@ impl OpportunityGraphCore {
                     edge.flags.same_venue,
                     edge.market_relationship_type.clone(),
                     edge.flags.push_capable,
-                    !edge.flags.push_capable,
+                    edge.flags.execution_safe,
                     edge.last_margin,
                     edge.last_evaluated_ns,
                     edge.last_updated_ns,
@@ -308,6 +522,24 @@ impl OpportunityGraphCore {
         }
     }
 
+    fn rebuild_semantic_edges(&mut self) {
+        self.edges_by_id.clear();
+        for edge_ids in self.edge_ids_by_node_id.values_mut() {
+            edge_ids.clear();
+        }
+
+        let mut visited_pairs = HashSet::default();
+        let event_buckets: Vec<Vec<String>> = self.event_buckets.values().cloned().collect();
+        for bucket in event_buckets {
+            self.connect_semantic_bucket(&bucket, &mut visited_pairs);
+        }
+        let venue_event_buckets: Vec<Vec<String>> =
+            self.venue_event_buckets.values().cloned().collect();
+        for bucket in venue_event_buckets {
+            self.connect_semantic_bucket(&bucket, &mut visited_pairs);
+        }
+    }
+
     fn connect_node(&mut self, node_id: &str) {
         let mut visited_pairs = HashSet::default();
         let Some(node) = self.nodes_by_id.get(node_id) else {
@@ -325,10 +557,35 @@ impl OpportunityGraphCore {
         }
     }
 
+    fn connect_node_semantic(&mut self, node_id: &str) {
+        let mut visited_pairs = HashSet::default();
+        let Some(node) = self.nodes_by_id.get(node_id) else {
+            return;
+        };
+        let mut event_key_no_time = String::default();
+        event_key_no_time.clone_from(&node.event_key_no_time);
+        let venue_event_key = format!("{}|{}", node.venue, node.event_id);
+
+        if let Some(bucket) = self.event_buckets.get(&event_key_no_time).cloned() {
+            self.connect_node_to_semantic_bucket(node_id, &bucket, &mut visited_pairs);
+        }
+        if let Some(bucket) = self.venue_event_buckets.get(&venue_event_key).cloned() {
+            self.connect_node_to_semantic_bucket(node_id, &bucket, &mut visited_pairs);
+        }
+    }
+
     fn connect_bucket(&mut self, bucket: &[String], visited_pairs: &mut HashSet<String>) {
         for (index, source_id) in bucket.iter().enumerate() {
             for target_id in bucket.iter().skip(index + 1) {
                 self.connect_pair(source_id, target_id, visited_pairs);
+            }
+        }
+    }
+
+    fn connect_semantic_bucket(&mut self, bucket: &[String], visited_pairs: &mut HashSet<String>) {
+        for (index, source_id) in bucket.iter().enumerate() {
+            for target_id in bucket.iter().skip(index + 1) {
+                self.connect_pair_semantic(source_id, target_id, visited_pairs);
             }
         }
     }
@@ -342,6 +599,19 @@ impl OpportunityGraphCore {
         for target_id in bucket {
             if target_id != node_id {
                 self.connect_pair(node_id, target_id, visited_pairs);
+            }
+        }
+    }
+
+    fn connect_node_to_semantic_bucket(
+        &mut self,
+        node_id: &str,
+        bucket: &[String],
+        visited_pairs: &mut HashSet<String>,
+    ) {
+        for target_id in bucket {
+            if target_id != node_id {
+                self.connect_pair_semantic(node_id, target_id, visited_pairs);
             }
         }
     }
@@ -392,6 +662,46 @@ impl OpportunityGraphCore {
         self.upsert_edge(source_id, target_id, hedge_type, confidence, pair_id);
     }
 
+    fn connect_pair_semantic(
+        &mut self,
+        source_id: &str,
+        target_id: &str,
+        visited_pairs: &mut HashSet<String>,
+    ) {
+        let pair_id = edge_id(source_id, target_id);
+        if !visited_pairs.insert(pair_id.clone()) {
+            return;
+        }
+
+        let Some(source) = self.nodes_by_id.get(source_id) else {
+            return;
+        };
+        let Some(target) = self.nodes_by_id.get(target_id) else {
+            return;
+        };
+
+        if !self.include_cross_venue && source.venue != target.venue {
+            return;
+        }
+        if !self.is_event_match(source, target) {
+            return;
+        }
+
+        let Some(template_match) = self
+            .semantic_templates
+            .iter()
+            .find_map(|template| template.matches_pair(source, target))
+        else {
+            return;
+        };
+
+        if template_match.confidence < self.min_confidence {
+            return;
+        }
+
+        self.upsert_semantic_edge(source_id, target_id, template_match, pair_id);
+    }
+
     fn upsert_edge(
         &mut self,
         source_id: &str,
@@ -424,6 +734,7 @@ impl OpportunityGraphCore {
             flags: EdgeFlags {
                 same_venue: source.venue == target.venue,
                 push_capable,
+                execution_safe: !push_capable,
                 matcher_suspect,
             },
             market_relationship_type: if source.market_name == target.market_name {
@@ -444,6 +755,119 @@ impl OpportunityGraphCore {
             .entry(target_id.to_string())
             .or_default()
             .push(edge_id);
+    }
+
+    fn upsert_semantic_edge(
+        &mut self,
+        source_id: &str,
+        target_id: &str,
+        template_match: SemanticTemplateMatch,
+        edge_id: String,
+    ) {
+        if let Some(existing) = self.edges_by_id.get_mut(&edge_id) {
+            if template_match.confidence > existing.confidence
+                || (template_match.execution_safe && !existing.flags.execution_safe)
+            {
+                existing.hedge_type = template_match.hedge_type;
+                existing.confidence = template_match.confidence;
+                existing.source_node_id = source_id.to_string();
+                existing.target_node_id = target_id.to_string();
+                existing.flags.push_capable = template_match.push_capable;
+                existing.flags.execution_safe = template_match.execution_safe;
+            }
+            return;
+        }
+
+        let source = &self.nodes_by_id[source_id];
+        let target = &self.nodes_by_id[target_id];
+        let matcher_suspect = source.venue == target.venue && source.event_id != target.event_id;
+        let market_relationship_type = if source.semantic_market_type == target.semantic_market_type
+            && source.semantic_params_key == target.semantic_params_key
+        {
+            "same_market"
+        } else {
+            "cross_market"
+        };
+        let edge = EdgeSnapshot {
+            edge_id: edge_id.clone(),
+            source_node_id: source_id.to_string(),
+            target_node_id: target_id.to_string(),
+            hedge_type: template_match.hedge_type,
+            confidence: template_match.confidence,
+            flags: EdgeFlags {
+                same_venue: source.venue == target.venue,
+                push_capable: template_match.push_capable,
+                execution_safe: template_match.execution_safe,
+                matcher_suspect,
+            },
+            market_relationship_type: market_relationship_type.to_string(),
+            last_margin: None,
+            last_evaluated_ns: None,
+            last_updated_ns: None,
+        };
+        self.insert_edge(edge);
+    }
+
+    fn edge_from_py(&self, value: &Bound<'_, PyAny>) -> PyResult<EdgeSnapshot> {
+        let dict = value.cast::<PyDict>()?;
+        let source_node_id = get_string(dict, "source_node_id")?;
+        let target_node_id = get_string(dict, "target_node_id")?;
+        let edge_id_value = get_optional_string(dict, "edge_id")?
+            .unwrap_or_else(|| edge_id(&source_node_id, &target_node_id));
+        let source = self.nodes_by_id.get(&source_node_id);
+        let target = self.nodes_by_id.get(&target_node_id);
+        let same_venue = get_optional_bool(dict, "same_venue")?.unwrap_or_else(|| {
+            source
+                .zip(target)
+                .is_some_and(|(left, right)| left.venue == right.venue)
+        });
+        let push_capable = get_optional_bool(dict, "push_capable")?.unwrap_or(false);
+        Ok(EdgeSnapshot {
+            edge_id: edge_id_value,
+            source_node_id,
+            target_node_id,
+            hedge_type: get_optional_string(dict, "hedge_type")?
+                .unwrap_or_else(|| "semantic".to_string()),
+            confidence: get_optional_f64(dict, "confidence")?.unwrap_or(1.0),
+            flags: EdgeFlags {
+                same_venue,
+                push_capable,
+                execution_safe: get_optional_bool(dict, "execution_safe")?.unwrap_or(!push_capable),
+                matcher_suspect: get_optional_bool(dict, "matcher_suspect")?.unwrap_or(false),
+            },
+            market_relationship_type: get_optional_string(dict, "market_relationship_type")?
+                .unwrap_or_else(|| "cross_market".to_string()),
+            last_margin: None,
+            last_evaluated_ns: None,
+            last_updated_ns: None,
+        })
+    }
+
+    fn insert_edge(&mut self, edge: EdgeSnapshot) -> bool {
+        if !self.nodes_by_id.contains_key(&edge.source_node_id)
+            || !self.nodes_by_id.contains_key(&edge.target_node_id)
+            || edge.confidence < self.min_confidence
+        {
+            return false;
+        }
+        let edge_id_value = edge.edge_id.clone();
+        let source_node_id = edge.source_node_id.clone();
+        let target_node_id = edge.target_node_id.clone();
+        let replaced = self
+            .edges_by_id
+            .insert(edge_id_value.clone(), edge)
+            .is_some();
+        if !replaced {
+            self.edge_ids_by_node_id
+                .entry(source_node_id)
+                .or_default()
+                .push(edge_id_value.clone());
+            self.edge_ids_by_node_id
+                .entry(target_node_id)
+                .or_default()
+                .push(edge_id_value);
+        }
+        true
     }
 
     fn is_event_match(&self, source: &NodeSnapshot, target: &NodeSnapshot) -> bool {
@@ -513,7 +937,7 @@ impl OpportunityGraphCore {
             let Some(edge) = self.edges_by_id.get_mut(&edge_id) else {
                 continue;
             };
-            if edge.flags.push_capable {
+            if edge.flags.push_capable || !edge.flags.execution_safe {
                 continue;
             }
             let other_node_id = if edge.source_node_id == node_id {
@@ -563,7 +987,7 @@ impl OpportunityGraphCore {
             let Some(edge) = self.edges_by_id.get_mut(&edge_id) else {
                 continue;
             };
-            if edge.flags.push_capable {
+            if edge.flags.push_capable || !edge.flags.execution_safe {
                 continue;
             }
             let other_node_id = if edge.source_node_id == node_id {
@@ -618,10 +1042,30 @@ fn get_string(dict: &Bound<'_, PyDict>, key: &str) -> PyResult<String> {
         .extract()
 }
 
+fn get_f64(dict: &Bound<'_, PyDict>, key: &str) -> PyResult<f64> {
+    dict.get_item(key)?
+        .ok_or_else(|| PyKeyError::new_err(key.to_string()))?
+        .extract()
+}
+
 fn get_bool(dict: &Bound<'_, PyDict>, key: &str) -> PyResult<bool> {
     dict.get_item(key)?
         .ok_or_else(|| PyKeyError::new_err(key.to_string()))?
         .extract()
+}
+
+fn get_optional_string(dict: &Bound<'_, PyDict>, key: &str) -> PyResult<Option<String>> {
+    match dict.get_item(key)? {
+        Some(value) if !value.is_none() => value.extract().map(Some),
+        _ => Ok(None),
+    }
+}
+
+fn get_optional_bool(dict: &Bound<'_, PyDict>, key: &str) -> PyResult<Option<bool>> {
+    match dict.get_item(key)? {
+        Some(value) if !value.is_none() => value.extract().map(Some),
+        _ => Ok(None),
+    }
 }
 
 fn get_optional_f64(dict: &Bound<'_, PyDict>, key: &str) -> PyResult<Option<f64>> {
@@ -635,6 +1079,13 @@ fn get_optional_i64(dict: &Bound<'_, PyDict>, key: &str) -> PyResult<Option<i64>
     match dict.get_item(key)? {
         Some(value) if !value.is_none() => value.extract().map(Some),
         _ => Ok(None),
+    }
+}
+
+fn get_string_vec(dict: &Bound<'_, PyDict>, key: &str) -> PyResult<Vec<String>> {
+    match dict.get_item(key)? {
+        Some(value) if !value.is_none() => value.extract(),
+        _ => Ok(Vec::default()),
     }
 }
 
@@ -816,6 +1267,12 @@ mod tests {
             handicap: None,
             start_time_ns: Some(1_778_000_000_000_000_000),
             two_way_market: false,
+            semantic_sport: "soccer".to_string(),
+            semantic_scope: "full_time".to_string(),
+            semantic_market_type: market_type.to_string(),
+            semantic_market_family: market_type.to_string(),
+            semantic_selection: outcome.to_string(),
+            semantic_params_key: "line=2.5".to_string(),
         }
     }
 
@@ -841,6 +1298,70 @@ mod tests {
         }
         dict.set_item("two_way_market", node.two_way_market)
             .unwrap();
+        dict.set_item("semantic_sport", &node.semantic_sport)
+            .unwrap();
+        dict.set_item("semantic_scope", &node.semantic_scope)
+            .unwrap();
+        dict.set_item("semantic_market_type", &node.semantic_market_type)
+            .unwrap();
+        dict.set_item("semantic_market_family", &node.semantic_market_family)
+            .unwrap();
+        dict.set_item("semantic_selection", &node.semantic_selection)
+            .unwrap();
+        dict.set_item("semantic_params_key", &node.semantic_params_key)
+            .unwrap();
+        dict
+    }
+
+    fn py_pattern<'py>(py: Python<'py>, market_type: &str, selection: &str) -> Bound<'py, PyDict> {
+        let dict = PyDict::new(py);
+        dict.set_item("sport", "soccer").unwrap();
+        dict.set_item("scope", "full_time").unwrap();
+        dict.set_item("market_type", market_type).unwrap();
+        dict.set_item("market_family", market_type).unwrap();
+        dict.set_item("selection", selection).unwrap();
+        dict.set_item("params_key", "line=2.5").unwrap();
+        dict
+    }
+
+    fn py_semantic_template<'py>(
+        py: Python<'py>,
+        provider_scope: Vec<&str>,
+        venue_agnostic: bool,
+    ) -> Bound<'py, PyDict> {
+        let dict = PyDict::new(py);
+        dict.set_item("template_id", "template-total-goals")
+            .unwrap();
+        dict.set_item("relationship_type", "COMPLEMENTARY_COVERAGE")
+            .unwrap();
+        dict.set_item("pattern_a", py_pattern(py, "total_goals", "over"))
+            .unwrap();
+        dict.set_item("pattern_b", py_pattern(py, "total_goals", "under"))
+            .unwrap();
+        dict.set_item("confidence", 1.0).unwrap();
+        dict.set_item("provider_scope", provider_scope).unwrap();
+        dict.set_item("venue_agnostic", venue_agnostic).unwrap();
+        dict.set_item("safety_tier", "EXECUTION_SAFE").unwrap();
+        dict.set_item("promotion_status", "PROMOTED").unwrap();
+        dict.set_item("push_capable", false).unwrap();
+        dict.set_item("execution_safe", true).unwrap();
+        dict
+    }
+
+    fn py_edge<'py>(py: Python<'py>, source_id: &str, target_id: &str) -> Bound<'py, PyDict> {
+        let dict = PyDict::new(py);
+        dict.set_item("edge_id", edge_id(source_id, target_id))
+            .unwrap();
+        dict.set_item("source_node_id", source_id).unwrap();
+        dict.set_item("target_node_id", target_id).unwrap();
+        dict.set_item("hedge_type", "same_market").unwrap();
+        dict.set_item("confidence", 1.0).unwrap();
+        dict.set_item("same_venue", true).unwrap();
+        dict.set_item("market_relationship_type", "same_market")
+            .unwrap();
+        dict.set_item("push_capable", false).unwrap();
+        dict.set_item("execution_safe", true).unwrap();
+        dict.set_item("matcher_suspect", false).unwrap();
         dict
     }
 
@@ -902,6 +1423,103 @@ mod tests {
             assert_eq!(candidates.len(), 1);
             assert_eq!(candidates[0].1, "b");
             assert_eq!(candidates[0].2, "a");
+        });
+    }
+
+    #[rstest]
+    fn explicit_edge_payloads_drive_fast_scan_without_heuristics() {
+        pyo3::Python::initialize();
+
+        Python::attach(|py| {
+            let mut source = node("a", "over");
+            let mut target = node("b", "under");
+            source.params = "line=3.5".to_string();
+            target.params = "line=4.5".to_string();
+            let nodes = PyList::empty(py);
+            nodes.append(py_payload(py, &source)).unwrap();
+            nodes.append(py_payload(py, &target)).unwrap();
+            let edges = PyList::empty(py);
+            edges.append(py_edge(py, "a", "b")).unwrap();
+
+            let mut core = OpportunityGraphCore::new(true, 0.5);
+            core.build_with_edges(nodes.as_any(), edges.as_any())
+                .unwrap();
+
+            assert_eq!(core.edge_count(), 1);
+            assert!(core.update_quote("a", 2.4, 10, 100));
+            let candidates = core.update_quote_and_scan_fast("b", 2.55, 11, 101, 0.01, 12);
+            assert_eq!(candidates.len(), 1);
+            assert_eq!(candidates[0].3, "same_market");
+        });
+    }
+
+    #[rstest]
+    fn semantic_templates_are_the_only_authority_in_semantic_mode() {
+        pyo3::Python::initialize();
+
+        Python::attach(|py| {
+            let nodes = PyList::empty(py);
+            nodes.append(py_payload(py, &node("a", "over"))).unwrap();
+            nodes.append(py_payload(py, &node("b", "under"))).unwrap();
+            let empty_templates = PyList::empty(py);
+
+            let mut core = OpportunityGraphCore::new(true, 0.5);
+            core.build_semantic(nodes.as_any(), empty_templates.as_any())
+                .unwrap();
+            assert_eq!(core.edge_count(), 0);
+
+            let templates = PyList::empty(py);
+            templates
+                .append(py_semantic_template(py, vec!["SXBET"], false))
+                .unwrap();
+            core.build_semantic(nodes.as_any(), templates.as_any())
+                .unwrap();
+
+            assert_eq!(core.semantic_template_count(), 1);
+            assert_eq!(core.edge_count(), 1);
+            assert!(core.update_quote("a", 2.4, 10, 100));
+            let candidates = core.update_quote_and_scan_fast("b", 2.55, 11, 101, 0.01, 12);
+            assert_eq!(candidates.len(), 1);
+        });
+    }
+
+    #[rstest]
+    fn semantic_provider_scope_filters_edges() {
+        pyo3::Python::initialize();
+
+        Python::attach(|py| {
+            let nodes = PyList::empty(py);
+            nodes.append(py_payload(py, &node("a", "over"))).unwrap();
+            nodes
+                .append(py_payload(
+                    py,
+                    &node_with(
+                        "b",
+                        "BLACKBET",
+                        "event-2",
+                        "Total Goals",
+                        "total_goals",
+                        "under",
+                    ),
+                ))
+                .unwrap();
+            let templates = PyList::empty(py);
+            templates
+                .append(py_semantic_template(py, vec!["SXBET"], false))
+                .unwrap();
+
+            let mut core = OpportunityGraphCore::new(true, 0.5);
+            core.build_semantic(nodes.as_any(), templates.as_any())
+                .unwrap();
+            assert_eq!(core.edge_count(), 0);
+
+            let venue_agnostic = PyList::empty(py);
+            venue_agnostic
+                .append(py_semantic_template(py, vec![], true))
+                .unwrap();
+            core.build_semantic(nodes.as_any(), venue_agnostic.as_any())
+                .unwrap();
+            assert_eq!(core.edge_count(), 1);
         });
     }
 

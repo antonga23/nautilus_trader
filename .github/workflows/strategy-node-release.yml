@@ -224,7 +224,8 @@ jobs:
             --poll-interval-secs 5 \
             --min-connected-nodes 2 \
             --min-match-instruments 2 \
-            --min-positive-margin-candidates 1
+            --min-positive-margin-candidates 1 \
+            --require-rust-semantic-topology
 
       - name: Validate Polymarket manifest
         run: |
@@ -716,7 +717,12 @@ jobs:
                --status-file /opt/cloudbet/strategy-nodes/$STRATEGY_NODE_CONTAINER_NAME/status.json \
                --timeout-seconds 900 \
                --success-status running,completed \
-               --require-semantic-cache-ready"
+               --require-semantic-cache-ready \
+               --require-runtime-probe \
+               --require-rust-semantic-topology \
+               --min-connected-nodes 2 \
+               --min-match-instruments 2 \
+               --min-positive-margin-candidates 1"
 
       - name: Inspect deployed semantic cache directory
         run: |

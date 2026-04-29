@@ -47,7 +47,54 @@ class HeartbeatWriter(threading.Thread):
             )
 
 
-def main(argv: list[str] | None = None) -> int:
+class RuntimeProbeStatusWriter(threading.Thread):
+    def __init__(
+        self,
+        status_path: Path,
+        *,
+        manifest,
+        strategy,
+        semantic_cache: dict[str, object] | None,
+        manifest_snapshot: Path,
+        rendered_config_path: Path,
+        heartbeat_path: Path,
+        interval_secs: float,
+        stop_event: threading.Event,
+    ) -> None:
+        super().__init__(daemon=True)
+        self._status_path = status_path
+        self._manifest = manifest
+        self._strategy = strategy
+        self._semantic_cache = semantic_cache
+        self._manifest_snapshot = manifest_snapshot
+        self._rendered_config_path = rendered_config_path
+        self._heartbeat_path = heartbeat_path
+        self._interval_secs = interval_secs
+        self._stop_event = stop_event
+        self._started_at = time.monotonic()
+
+    def run(self) -> None:
+        min_profit_margin = Decimal(str(self._manifest.strategy.min_profit_margin))
+        while not self._stop_event.wait(self._interval_secs):
+            runtime_probe = _collect_runtime_probe_payload(
+                self._strategy,
+                min_profit_margin=min_profit_margin,
+                elapsed_seconds=time.monotonic() - self._started_at,
+            )
+            _write_status(
+                self._status_path,
+                manifest=self._manifest,
+                status="running",
+                semantic_cache=self._semantic_cache,
+                manifest_snapshot=self._manifest_snapshot,
+                rendered_config_path=self._rendered_config_path,
+                heartbeat_path=self._heartbeat_path,
+                runtime_probe=runtime_probe,
+                updatedAt=_utc_now(),
+            )
+
+
+def main(argv: list[str] | None = None) -> int:  # noqa: C901
     parser = argparse.ArgumentParser(description="Betting arbitrage trading-node runner")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -75,6 +122,7 @@ def main(argv: list[str] | None = None) -> int:
     probe_parser.add_argument("--min-connected-nodes", type=int, default=2)
     probe_parser.add_argument("--min-match-instruments", type=int, default=2)
     probe_parser.add_argument("--min-positive-margin-candidates", type=int, default=0)
+    probe_parser.add_argument("--require-rust-semantic-topology", action="store_true")
 
     args = parser.parse_args(argv)
 
@@ -184,6 +232,7 @@ def main(argv: list[str] | None = None) -> int:
                 min_connected_nodes=int(args.min_connected_nodes),
                 min_match_instruments=int(args.min_match_instruments),
                 min_positive_margin_candidates=int(args.min_positive_margin_candidates),
+                require_rust_semantic_topology=bool(args.require_rust_semantic_topology),
             )
             _write_status(
                 status_path,
@@ -213,6 +262,22 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             node.dispose()
 
+    runtime_probe_stop: threading.Event | None = None
+    runtime_probe_writer: RuntimeProbeStatusWriter | None = None
+    if manifest.validation_mode and hasattr(node, "trader"):
+        runtime_probe_stop = threading.Event()
+        runtime_probe_writer = RuntimeProbeStatusWriter(
+            status_path=status_path,
+            manifest=manifest,
+            strategy=_resolve_betting_strategy(node),
+            semantic_cache=semantic_cache,
+            manifest_snapshot=manifest_snapshot,
+            rendered_config_path=rendered_config_path,
+            heartbeat_path=heartbeat_path,
+            interval_secs=max(1.0, manifest.heartbeat_interval_secs),
+            stop_event=runtime_probe_stop,
+        )
+
     heartbeat_writer.start()
     _write_status(
         status_path,
@@ -224,6 +289,8 @@ def main(argv: list[str] | None = None) -> int:
         heartbeat_path=heartbeat_path,
         startedAt=_utc_now(),
     )
+    if runtime_probe_writer is not None:
+        runtime_probe_writer.start()
 
     try:
         node.run()
@@ -253,6 +320,8 @@ def main(argv: list[str] | None = None) -> int:
         raise
     finally:
         heartbeat_stop.set()
+        if runtime_probe_stop is not None:
+            runtime_probe_stop.set()
         node.dispose()
 
 
@@ -331,6 +400,7 @@ def _probe_runtime(
     min_connected_nodes: int,
     min_match_instruments: int,
     min_positive_margin_candidates: int,
+    require_rust_semantic_topology: bool,
 ) -> dict[str, object]:
     if not manifest.validation_mode:
         raise RuntimeError("probe-runtime requires validation_mode=true")
@@ -387,6 +457,7 @@ def _probe_runtime(
                 min_connected_nodes=min_connected_nodes,
                 min_match_instruments=min_match_instruments,
                 min_positive_margin_candidates=min_positive_margin_candidates,
+                require_rust_semantic_topology=require_rust_semantic_topology,
             ):
                 return latest_payload
             if run_error:
@@ -411,7 +482,10 @@ def _probe_runtime(
         "Runtime probe did not observe the required semantic coverage "
         f"(connected_nodes={latest_payload['connectedNodes']}, "
         f"semantic_match_instruments={latest_payload['semanticMatchInstruments']}, "
-        f"positive_margin_candidates={latest_payload['positiveMarginCandidates']['total']})",
+        f"positive_margin_candidates={latest_payload['positiveMarginCandidates']['total']}, "
+        f"graph_engine={latest_payload.get('graphEngine')}, "
+        f"topology_source={latest_payload.get('topologySource')}, "
+        f"semantic_template_count={latest_payload.get('semanticTemplateCount')})",
     )
 
 
@@ -442,6 +516,9 @@ def _collect_runtime_probe_payload(
             "graphEdges": stats["opportunity_graph_edges"],
             "graphQuoteStates": stats["opportunity_graph_quote_states"],
             "connectedNodes": stats["opportunity_graph_connected_nodes"],
+            "graphEngine": "rust" if stats.get("opportunity_graph_rust_enabled") else "python",
+            "topologySource": stats.get("opportunity_graph_topology_source", "unknown"),
+            "semanticTemplateCount": stats.get("opportunity_graph_semantic_template_count", 0),
             "semanticMatchInstruments": 0,
             "quotedSemanticMatchInstruments": 0,
             "executionSafeEdges": 0,
@@ -480,6 +557,9 @@ def _collect_runtime_probe_payload(
         "graphEdges": stats["opportunity_graph_edges"],
         "graphQuoteStates": stats["opportunity_graph_quote_states"],
         "connectedNodes": stats["opportunity_graph_connected_nodes"],
+        "graphEngine": "rust" if stats.get("opportunity_graph_rust_enabled") else "python",
+        "topologySource": stats.get("opportunity_graph_topology_source", "unknown"),
+        "semanticTemplateCount": stats.get("opportunity_graph_semantic_template_count", 0),
         "semanticMatchInstruments": len(snapshot["matched_node_ids"]),
         "quotedSemanticMatchInstruments": sum(
             1 for node_id in snapshot["matched_node_ids"] if node_id in snapshot["quotes"]
@@ -508,12 +588,19 @@ def _runtime_probe_satisfied(
     min_connected_nodes: int,
     min_match_instruments: int,
     min_positive_margin_candidates: int,
+    require_rust_semantic_topology: bool = False,
 ) -> bool:
     positive_candidates = payload["positiveMarginCandidates"]["total"]
+    rust_semantic_topology_ok = (
+        payload.get("graphEngine") == "rust"
+        and payload.get("topologySource") == "rust_semantic"
+        and int(payload.get("semanticTemplateCount") or 0) > 0
+    )
     return (
         payload["connectedNodes"] >= min_connected_nodes
         and payload["semanticMatchInstruments"] >= min_match_instruments
         and positive_candidates >= min_positive_margin_candidates
+        and (rust_semantic_topology_ok or not require_rust_semantic_topology)
     )
 
 
@@ -524,9 +611,7 @@ def _snapshot_probe_graph_state(graph) -> dict[str, object] | None:
             "nodes": dict(graph.nodes_by_id),
             "quotes": dict(graph.quotes_by_node_id),
             "matched_node_ids": {
-                node_id
-                for node_id, edge_ids in graph.edge_ids_by_node_id.items()
-                if edge_ids
+                node_id for node_id, edge_ids in graph.edge_ids_by_node_id.items() if edge_ids
             },
         }
     except RuntimeError:

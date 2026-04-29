@@ -204,6 +204,7 @@ class TestBettingArbitrageNodeBuilder:
         assert len(config.strategies) == 1
         assert config.strategies[0].config["auto_execute"] is False
         assert config.strategies[0].config["enabled_venues"] == ["SXBET"]
+        assert config.strategies[0].config["opportunity_graph_engine"] == "auto"
         assert (
             config.strategies[0].config["semantic_rule_cache_dir"]
             == "artifacts/semantic-rule-cache/sxbet-validation"
@@ -1052,13 +1053,26 @@ class TestBettingArbitrageNodeRunner:
                 same_venue_execution_eligible_template_count=1,
             ),
         )
-        monkeypatch.setattr(
-            "nautilus_trader.live.strategy_nodes.betting_arbitrage.runner._probe_runtime",
-            lambda **_: {
+        observed_probe_kwargs = {}
+
+        def fake_probe_runtime(**kwargs):
+            observed_probe_kwargs.update(kwargs)
+            return {
+                "graphEngine": "rust",
+                "topologySource": "rust_semantic",
+                "semanticTemplateCount": 2,
                 "connectedNodes": 2,
                 "semanticMatchInstruments": 2,
-                "positiveMarginCandidates": {"executionSafe": 0, "sameVenueExecutionEligible": 1, "total": 1},
-            },
+                "positiveMarginCandidates": {
+                    "executionSafe": 0,
+                    "sameVenueExecutionEligible": 1,
+                    "total": 1,
+                },
+            }
+
+        monkeypatch.setattr(
+            "nautilus_trader.live.strategy_nodes.betting_arbitrage.runner._probe_runtime",
+            fake_probe_runtime,
         )
 
         class FakeTradingNode:
@@ -1073,11 +1087,21 @@ class TestBettingArbitrageNodeRunner:
 
         monkeypatch.setattr("nautilus_trader.live.node.TradingNode", FakeTradingNode)
 
-        result = runner_main(["probe-runtime", "--manifest", str(manifest_path)])
+        result = runner_main(
+            [
+                "probe-runtime",
+                "--manifest",
+                str(manifest_path),
+                "--require-rust-semantic-topology",
+            ],
+        )
 
         assert result == 0
+        assert observed_probe_kwargs["require_rust_semantic_topology"] is True
         payload = json.loads((tmp_path / "status.json").read_text())
         assert payload["status"] == "probed"
+        assert payload["runtimeProbe"]["graphEngine"] == "rust"
+        assert payload["runtimeProbe"]["topologySource"] == "rust_semantic"
         assert payload["runtimeProbe"]["connectedNodes"] == 2
         assert payload["runtimeProbe"]["semanticMatchInstruments"] == 2
         assert payload["runtimeProbe"]["positiveMarginCandidates"]["total"] == 1
@@ -1193,7 +1217,9 @@ class TestBettingArbitrageNodeRunner:
         assert "Probe SX.bet runtime semantic coverage" in workflow
         assert "probe-runtime" in workflow
         assert "--min-positive-margin-candidates 1" in workflow
+        assert "--require-rust-semantic-topology" in workflow
         assert "Wait for deployed node status and semantic cache" in workflow
+        assert "--require-runtime-probe" in workflow
         assert "Overlay branch strategy-node sources onto installed wheel" in workflow
         assert "Build validated wheel from checked-out source" in workflow
         assert "SXBET_API_KEY: ${{ secrets.SXBET_API_KEY }}" in workflow
@@ -1201,13 +1227,23 @@ class TestBettingArbitrageNodeRunner:
 
     def test_wait_for_strategy_node_status_can_require_ready_semantic_cache(self, tmp_path):
         status_path = tmp_path / "status.json"
-        script_path = Path("scripts/deploy/strategy_nodes/wait_for_strategy_node_status.sh").resolve()
+        script_path = Path(
+            "scripts/deploy/strategy_nodes/wait_for_strategy_node_status.sh"
+        ).resolve()
         status_path.write_text(
             json.dumps(
                 {
                     "status": "running",
                     "semanticCache": {
                         "ready": True,
+                    },
+                    "runtimeProbe": {
+                        "graphEngine": "rust",
+                        "topologySource": "rust_semantic",
+                        "semanticTemplateCount": 2,
+                        "connectedNodes": 2,
+                        "semanticMatchInstruments": 2,
+                        "positiveMarginCandidates": {"total": 1},
                     },
                 },
             ),
@@ -1223,6 +1259,14 @@ class TestBettingArbitrageNodeRunner:
                 "--success-status",
                 "running",
                 "--require-semantic-cache-ready",
+                "--require-runtime-probe",
+                "--require-rust-semantic-topology",
+                "--min-connected-nodes",
+                "2",
+                "--min-match-instruments",
+                "2",
+                "--min-positive-margin-candidates",
+                "1",
             ],
             cwd=Path.cwd(),
             capture_output=True,

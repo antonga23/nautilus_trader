@@ -62,6 +62,7 @@ class TestBettingArbitrageConfig:  # skipcq
         ensure(config.opportunity_graph_enabled is True)
         ensure(config.opportunity_log_manual_instructions is True)
         ensure(config.graph_rebuild_on_new_instrument is True)
+        ensure(config.opportunity_graph_engine == "auto")
 
     def test_custom_venues(self):  # skipcq
         """
@@ -94,6 +95,14 @@ class TestBettingArbitrageConfig:  # skipcq
         # Invalid filter
         with pytest.raises(ValueError, match="Invalid market_timing_filter"):
             BettingArbitrageConfig(market_timing_filter="invalid")
+
+    def test_opportunity_graph_engine_validation(self):  # skipcq
+        for engine in ["auto", "python", "rust", "semantic_rust"]:
+            config = BettingArbitrageConfig(opportunity_graph_engine=engine.upper())
+            ensure(config.opportunity_graph_engine == engine)
+
+        with pytest.raises(ValueError, match="Invalid opportunity_graph_engine"):
+            BettingArbitrageConfig(opportunity_graph_engine="invalid")
 
     def test_exclude_live_flag(self):  # skipcq
         """
@@ -207,6 +216,9 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure("opportunity_graph_nodes" in stats)
         ensure("opportunity_graph_edges" in stats)
         ensure("opportunity_graph_quote_states" in stats)
+        ensure("opportunity_graph_rust_enabled" in stats)
+        ensure("opportunity_graph_topology_source" in stats)
+        ensure("opportunity_graph_semantic_template_count" in stats)
         ensure("duplicate_opportunities_suppressed" in stats)
         ensure("stale_quote_suppressions" in stats)
         ensure("matcher_suspect_suppressions" in stats)

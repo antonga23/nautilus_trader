@@ -20,6 +20,13 @@ import pytest
 from nautilus_trader.adapters.betting.common.enums import SelectionSide
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.betting.market_matcher import MarketMatcher
+from nautilus_trader.adapters.betting.semantics import FileRuleCache
+from nautilus_trader.adapters.betting.semantics import PromotionStatus
+from nautilus_trader.adapters.betting.semantics import RuleClassifier
+from nautilus_trader.adapters.betting.semantics import RuleStore
+from nautilus_trader.adapters.betting.semantics import SafetyTier
+from nautilus_trader.adapters.betting.semantics import SemanticRuleTemplate
+from nautilus_trader.adapters.betting.semantics import TemplateSupportStats
 from nautilus_trader.examples.strategies.opportunity_graph import OpportunityGraph
 from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.objects import Currency
@@ -81,6 +88,34 @@ def _graph(engine: str, instruments: list[CryptoBettingInstrument]) -> Opportuni
         pytest.skip("Rust OpportunityGraphCore is unavailable")
     graph.build(instruments)
     return graph
+
+
+def _semantic_rule_store(
+    cache_dir,
+    source: CryptoBettingInstrument,
+    target: CryptoBettingInstrument,
+) -> RuleStore:
+    store = RuleStore(FileRuleCache(cache_dir))
+    rule = RuleClassifier().classify(source, target)
+    if rule is None:
+        raise AssertionError("Expected semantic rule")
+    template = SemanticRuleTemplate.from_rule(
+        rule,
+        support=TemplateSupportStats(
+            template_id=SemanticRuleTemplate.from_rule(rule).template_id,
+            observed_count=10,
+            event_count=3,
+            provider_count=1,
+            providers=("SXBET",),
+            sports=("soccer",),
+            confidence=1.0,
+        ),
+        provider_scope=("SXBET",),
+        promotion_status=PromotionStatus.PROMOTED.value,
+        safety_tier=SafetyTier.EXECUTION_SAFE.value,
+    )
+    store.save_promoted_template(template)
+    return store
 
 
 def _edge_snapshot(graph: OpportunityGraph) -> dict[str, tuple[str, str, str, bool]]:  # skipcq
@@ -292,13 +327,31 @@ def test_update_quote_and_scan_fast_is_rust_only() -> None:  # skipcq
     )
 
 
-def test_auto_engine_uses_python_when_matcher_has_rule_store() -> None:  # skipcq
+def test_python_engine_can_still_be_forced_when_matcher_has_rule_store() -> None:  # skipcq
     matcher = MarketMatcher()
     matcher._rule_store = cast(Any, object())
 
-    graph = OpportunityGraph(matcher)
+    graph = OpportunityGraph(matcher, engine="python")
 
     ensure(graph._rust_core is None)
+
+
+def test_semantic_rust_builds_topology_from_promoted_templates(tmp_path) -> None:  # skipcq
+    instruments = [_instrument(outcome="over"), _instrument(outcome="under")]
+    store = _semantic_rule_store(tmp_path / "rules", instruments[0], instruments[1])
+    matcher = MarketMatcher(rule_store=store)
+    try:
+        graph = OpportunityGraph(matcher, engine="semantic_rust")
+    except ImportError:
+        pytest.skip("Rust OpportunityGraphCore is unavailable")
+
+    graph.build(instruments)
+
+    ensure(graph.graph_engine == "rust")
+    ensure(graph.topology_source == "rust_semantic")
+    ensure(graph.semantic_template_count == 1)
+    ensure(graph.edge_count == 1)
+    ensure(next(iter(graph.edges_by_id.values())).execution_safe is True)
 
 
 def test_node_payload_fallbacks_cover_missing_helper_methods() -> None:  # skipcq

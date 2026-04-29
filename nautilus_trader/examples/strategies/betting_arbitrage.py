@@ -133,6 +133,8 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         Include manual execution fields in arbitrage logs.
     graph_rebuild_on_new_instrument : bool, default True
         Add newly observed instruments to the opportunity graph incrementally.
+    opportunity_graph_engine : str, default "auto"
+        Opportunity graph engine: "auto", "python", "rust", or "semantic_rust".
     semantic_rule_cache_dir : str | None, default None
         Optional file-backed semantic rule cache directory for trading-node runtime.
 
@@ -151,6 +153,7 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
     opportunity_graph_enabled: bool = True
     opportunity_log_manual_instructions: bool = True
     graph_rebuild_on_new_instrument: bool = True
+    opportunity_graph_engine: str = "auto"
     semantic_rule_cache_dir: str | None = None
 
     def __post_init__(self) -> None:
@@ -163,6 +166,7 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         semantic_rule_cache_dir = (
             self.semantic_rule_cache_dir.strip() if self.semantic_rule_cache_dir else None
         )
+        opportunity_graph_engine = self.opportunity_graph_engine.strip().lower()
 
         if market_timing_filter not in VALID_MARKET_TIMINGS:
             msg = (
@@ -170,10 +174,17 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
                 f"Must be one of {VALID_MARKET_TIMINGS}"
             )
             raise ValueError(msg)
+        if opportunity_graph_engine not in {"auto", "python", "rust", "semantic_rust"}:
+            msg = (
+                f"Invalid opportunity_graph_engine: {opportunity_graph_engine}. "
+                "Must be one of {'auto', 'python', 'rust', 'semantic_rust'}"
+            )
+            raise ValueError(msg)
 
         msgspec.structs.force_setattr(self, "enabled_venues", enabled_venues)
         msgspec.structs.force_setattr(self, "sport_filter", normalized_sport_filter)
         msgspec.structs.force_setattr(self, "market_timing_filter", market_timing_filter)
+        msgspec.structs.force_setattr(self, "opportunity_graph_engine", opportunity_graph_engine)
         msgspec.structs.force_setattr(self, "semantic_rule_cache_dir", semantic_rule_cache_dir)
 
 
@@ -208,8 +219,10 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
 
         # Market matcher for finding arbitrage
         self._matcher = MarketMatcher()
-        graph_engine = "python" if config.semantic_rule_cache_dir else "auto"
-        self._opportunity_graph = OpportunityGraph(self._matcher, engine=graph_engine)
+        self._opportunity_graph = OpportunityGraph(
+            self._matcher,
+            engine=config.opportunity_graph_engine,
+        )
 
         # Tracking
         self._subscribed_instruments: set[CryptoBettingInstrument] = set()
@@ -251,6 +264,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             f"quote_stale_threshold_secs={self._config.arbitrage_quote_stale_threshold_secs} "
             f"summary_interval_secs={self._config.arbitrage_summary_interval_secs} "
             f"opportunity_graph_enabled={self._config.opportunity_graph_enabled} "
+            f"opportunity_graph_engine={self._config.opportunity_graph_engine} "
             f"manual_instructions={self._config.opportunity_log_manual_instructions}"
         )
         self.log.info(msg)
@@ -1789,6 +1803,11 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             "opportunity_graph_edges": self._opportunity_graph.edge_count,
             "opportunity_graph_quote_states": self._opportunity_graph.quote_state_count,
             "opportunity_graph_connected_nodes": self._opportunity_graph.connected_node_count,
+            "opportunity_graph_rust_enabled": int(self._opportunity_graph.graph_engine == "rust"),
+            "opportunity_graph_topology_source": self._opportunity_graph.topology_source,
+            "opportunity_graph_semantic_template_count": (
+                self._opportunity_graph.semantic_template_count
+            ),
             "opportunities_found": self._opportunities_found,
             "opportunities_executed": self._opportunities_executed,
             "raw_arbitrage_detections": self._raw_arbitrage_detections,
