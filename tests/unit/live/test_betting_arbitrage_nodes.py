@@ -466,6 +466,7 @@ class TestBettingArbitrageNodeRunner:
         assert "probe-runtime" in workflow
         assert "--min-positive-margin-candidates 1" in workflow
         assert "Wait for deployed node status and semantic cache" in workflow
+        assert 'export PYTHONPATH="$GITHUB_WORKSPACE${PYTHONPATH:+:$PYTHONPATH}"' in workflow
         assert "SXBET_API_KEY: ${{ secrets.SXBET_API_KEY }}" in workflow
         assert "CLOUDBET_API_KEY: ${{ secrets.CLOUDBET_API_KEY }}" in workflow
 
