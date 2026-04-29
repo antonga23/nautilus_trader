@@ -161,8 +161,16 @@ jobs:
                   purelib / "nautilus_trader/live/strategy_nodes/betting_arbitrage",
               ),
               (
-                  workspace / "nautilus_trader/adapters/betting/market_matcher.py",
-                  purelib / "nautilus_trader/adapters/betting/market_matcher.py",
+                  workspace / "nautilus_trader/adapters/betting",
+                  purelib / "nautilus_trader/adapters/betting",
+              ),
+              (
+                  workspace / "nautilus_trader/examples/strategies/betting_arbitrage.py",
+                  purelib / "nautilus_trader/examples/strategies/betting_arbitrage.py",
+              ),
+              (
+                  workspace / "nautilus_trader/examples/strategies/opportunity_graph.py",
+                  purelib / "nautilus_trader/examples/strategies/opportunity_graph.py",
               ),
           ]
 
