@@ -774,10 +774,9 @@ def _supported_provider_node_count(
     for provider_pattern_key, count in node_provider_pattern_counts.items():
         venue = provider_pattern_key[0]
         pattern_key = provider_pattern_key[1:]
-        if (
-            template_provider_pattern_counts.get((venue, *pattern_key), 0)
-            or template_provider_pattern_counts.get(("venue_agnostic", *pattern_key), 0)
-        ):
+        if template_provider_pattern_counts.get(
+            (venue, *pattern_key), 0
+        ) or template_provider_pattern_counts.get(("venue_agnostic", *pattern_key), 0):
             supported_provider_node_count += count
     return supported_provider_node_count
 

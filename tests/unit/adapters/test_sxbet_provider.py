@@ -143,7 +143,10 @@ async def test_sxbet_provider_sets_live_flag_and_honors_live_only():
     assert all(instrument.live is True for instrument in instruments)
     assert all(instrument.event_id.startswith("sxbet-") for instrument in instruments)
     assert all(instrument.market_id == "market-live" for instrument in instruments)
-    assert all(instrument.info["sxbet_event_id_source"] == "derived_fixture_key" for instrument in instruments)
+    assert all(
+        instrument.info["sxbet_event_id_source"] == "derived_fixture_key"
+        for instrument in instruments
+    )
 
 
 @pytest.mark.asyncio

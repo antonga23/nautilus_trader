@@ -594,7 +594,10 @@ class MarketMatcher:
                 allow_same_venue_execution_eligible
                 and rule.same_venue_execution_eligible
                 and instrument_a.venue_name == instrument_b.venue_name
-                and (self._rule_store is None or rule.promotion_status == PromotionStatus.PROMOTED.value)
+                and (
+                    self._rule_store is None
+                    or rule.promotion_status == PromotionStatus.PROMOTED.value
+                )
             )
             if not promoted_or_legacy and (
                 not promoted_same_venue_eligible
