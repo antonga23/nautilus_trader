@@ -1,6 +1,6 @@
 interface:
   display_name: "Continuous Experimentation"
   short_description: "Choose and validate the next experimental branch"
-  default_prompt: "Use $continuous-experimentation to turn the next strategy or adapter idea into a tested experimental branch."
+  default_prompt: "Use $continuous-experimentation to plan and validate the next experimental branch."
 policy:
   allow_implicit_invocation: true
