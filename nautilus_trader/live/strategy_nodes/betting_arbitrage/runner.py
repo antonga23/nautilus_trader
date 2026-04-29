@@ -57,6 +57,12 @@ class ProbeProfitabilityCounters:
         }
 
 
+class RuntimeProbeCoverageError(RuntimeError):
+    def __init__(self, message: str, payload: dict[str, object]) -> None:
+        super().__init__(message)
+        self.payload = payload
+
+
 class HeartbeatWriter(threading.Thread):
     def __init__(
         self,
@@ -186,6 +192,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     probe_parser.add_argument("--poll-interval-secs", type=float, default=5.0)
     probe_parser.add_argument("--min-connected-nodes", type=int, default=2)
     probe_parser.add_argument("--min-match-instruments", type=int, default=2)
+    probe_parser.add_argument("--min-quoted-match-instruments", type=int, default=0)
+    probe_parser.add_argument("--min-quoted-edges", type=int, default=0)
     probe_parser.add_argument("--min-positive-margin-candidates", type=int, default=0)
     probe_parser.add_argument("--require-rust-semantic-topology", action="store_true")
 
@@ -307,6 +315,8 @@ def _handle_probe_runtime_command(args, node, context: RunnerContext) -> int:
             poll_interval_secs=float(args.poll_interval_secs),
             min_connected_nodes=int(args.min_connected_nodes),
             min_match_instruments=int(args.min_match_instruments),
+            min_quoted_match_instruments=int(args.min_quoted_match_instruments),
+            min_quoted_edges=int(args.min_quoted_edges),
             min_positive_margin_candidates=int(args.min_positive_margin_candidates),
             require_rust_semantic_topology=bool(args.require_rust_semantic_topology),
         )
@@ -331,6 +341,7 @@ def _handle_probe_runtime_command(args, node, context: RunnerContext) -> int:
             manifest_snapshot=context.manifest_snapshot,
             rendered_config_path=context.rendered_config_path,
             heartbeat_path=context.heartbeat_path,
+            runtime_probe=getattr(exc, "payload", None),
             failedAt=_utc_now(),
             error=exc,
         )
@@ -487,6 +498,8 @@ def _probe_runtime(
     poll_interval_secs: float,
     min_connected_nodes: int,
     min_match_instruments: int,
+    min_quoted_match_instruments: int,
+    min_quoted_edges: int,
     min_positive_margin_candidates: int,
     require_rust_semantic_topology: bool,
 ) -> dict[str, object]:
@@ -544,6 +557,8 @@ def _probe_runtime(
                 latest_payload,
                 min_connected_nodes=min_connected_nodes,
                 min_match_instruments=min_match_instruments,
+                min_quoted_match_instruments=min_quoted_match_instruments,
+                min_quoted_edges=min_quoted_edges,
                 min_positive_margin_candidates=min_positive_margin_candidates,
                 require_rust_semantic_topology=require_rust_semantic_topology,
             ):
@@ -573,15 +588,18 @@ def _probe_runtime(
         default=str,
         separators=(",", ":"),
     )[:4000]
-    raise RuntimeError(
+    raise RuntimeProbeCoverageError(
         "Runtime probe did not observe the required semantic coverage "
         f"(connected_nodes={latest_payload['connectedNodes']}, "
         f"semantic_match_instruments={latest_payload['semanticMatchInstruments']}, "
+        f"quoted_semantic_match_instruments={latest_payload['quotedSemanticMatchInstruments']}, "
+        f"quoted_edges={latest_payload['quotedEdges']}, "
         f"positive_margin_candidates={latest_payload['positiveMarginCandidates']['total']}, "
         f"graph_engine={latest_payload.get('graphEngine')}, "
         f"topology_source={latest_payload.get('topologySource')}, "
         f"semantic_template_count={latest_payload.get('semanticTemplateCount')}, "
         f"semantic_diagnostics={diagnostics_json})",
+        latest_payload,
     )
 
 
@@ -686,7 +704,9 @@ def _runtime_probe_satisfied(
     *,
     min_connected_nodes: int,
     min_match_instruments: int,
-    min_positive_margin_candidates: int,
+    min_quoted_match_instruments: int = 0,
+    min_quoted_edges: int = 0,
+    min_positive_margin_candidates: int = 0,
     require_rust_semantic_topology: bool = False,
 ) -> bool:
     positive_candidates = payload["positiveMarginCandidates"]["total"]
@@ -698,6 +718,8 @@ def _runtime_probe_satisfied(
     return (
         payload["connectedNodes"] >= min_connected_nodes
         and payload["semanticMatchInstruments"] >= min_match_instruments
+        and payload["quotedSemanticMatchInstruments"] >= min_quoted_match_instruments
+        and payload["quotedEdges"] >= min_quoted_edges
         and positive_candidates >= min_positive_margin_candidates
         and (rust_semantic_topology_ok or not require_rust_semantic_topology)
     )

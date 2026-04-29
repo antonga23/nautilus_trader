@@ -117,7 +117,8 @@ jobs:
             --require-rust-semantic-topology \
             --min-connected-nodes 2 \
             --min-match-instruments 2 \
-            --min-positive-margin-candidates 1
+            --min-quoted-match-instruments 2 \
+            --min-positive-margin-candidates 0
 
           docker_state="$(docker inspect --format '{{.State.Status}}' "$container_name")"
           docker_running="$(docker inspect --format '{{.State.Running}}' "$container_name")"

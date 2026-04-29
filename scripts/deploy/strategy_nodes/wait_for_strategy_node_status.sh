@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat << USAGE
-Usage: $0 --status-file <path> [--timeout-seconds <n>] [--success-status <csv>] [--require-semantic-cache-ready] [--require-runtime-probe] [--require-rust-semantic-topology] [--min-connected-nodes <n>] [--min-match-instruments <n>] [--min-positive-margin-candidates <n>]
+Usage: $0 --status-file <path> [--timeout-seconds <n>] [--success-status <csv>] [--require-semantic-cache-ready] [--require-runtime-probe] [--require-rust-semantic-topology] [--min-connected-nodes <n>] [--min-match-instruments <n>] [--min-quoted-match-instruments <n>] [--min-positive-margin-candidates <n>]
 USAGE
 }
 
@@ -15,6 +15,7 @@ require_runtime_probe="false"
 require_rust_semantic_topology="false"
 min_connected_nodes=0
 min_match_instruments=0
+min_quoted_match_instruments=0
 min_positive_margin_candidates=0
 
 while [[ $# -gt 0 ]]; do
@@ -49,6 +50,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --min-match-instruments)
       min_match_instruments="$2"
+      shift 2
+      ;;
+    --min-quoted-match-instruments)
+      min_quoted_match_instruments="$2"
       shift 2
       ;;
     --min-positive-margin-candidates)
@@ -86,6 +91,7 @@ python3 - \
   "$require_rust_semantic_topology" \
   "$min_connected_nodes" \
   "$min_match_instruments" \
+  "$min_quoted_match_instruments" \
   "$min_positive_margin_candidates" << 'PY'
 import json
 import pathlib
@@ -100,7 +106,8 @@ require_runtime_probe = sys.argv[5].strip().lower() == 'true'
 require_rust_semantic_topology = sys.argv[6].strip().lower() == 'true'
 min_connected_nodes = int(sys.argv[7])
 min_match_instruments = int(sys.argv[8])
-min_positive_margin_candidates = int(sys.argv[9])
+min_quoted_match_instruments = int(sys.argv[9])
+min_positive_margin_candidates = int(sys.argv[10])
 
 deadline = time.time() + timeout_seconds
 last_observation = None
@@ -120,6 +127,7 @@ while time.time() < deadline:
         runtime_probe_ready = bool(runtime_probe) and (
             int(runtime_probe.get('connectedNodes') or 0) >= min_connected_nodes
             and int(runtime_probe.get('semanticMatchInstruments') or 0) >= min_match_instruments
+            and int(runtime_probe.get('quotedSemanticMatchInstruments') or 0) >= min_quoted_match_instruments
             and int(positive_margin_candidates.get('total') or 0) >= min_positive_margin_candidates
         )
         rust_semantic_topology_ready = (

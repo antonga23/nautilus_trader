@@ -227,7 +227,8 @@ jobs:
             --poll-interval-secs 5 \
             --min-connected-nodes 2 \
             --min-match-instruments 2 \
-            --min-positive-margin-candidates 1 \
+            --min-quoted-match-instruments 2 \
+            --min-positive-margin-candidates 0 \
             --require-rust-semantic-topology
 
       - name: Validate Polymarket manifest
@@ -725,7 +726,8 @@ jobs:
                --require-rust-semantic-topology \
                --min-connected-nodes 2 \
                --min-match-instruments 2 \
-               --min-positive-margin-candidates 1"
+               --min-quoted-match-instruments 2 \
+               --min-positive-margin-candidates 0"
 
       - name: Inspect deployed semantic cache directory
         run: |
