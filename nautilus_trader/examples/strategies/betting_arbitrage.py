@@ -256,6 +256,20 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._active_opportunity_pairs: dict[str, OpportunityPairState] = {}
         self._last_arbitrage_summary_at_ns = 0
 
+    @property
+    def market_matcher(self) -> MarketMatcher:
+        """
+        Matcher used by runtime diagnostics and node probes.
+        """
+        return self._matcher
+
+    @property
+    def opportunity_graph(self) -> OpportunityGraph:
+        """
+        Opportunity graph used by runtime diagnostics and node probes.
+        """
+        return self._opportunity_graph
+
     def on_start(self) -> None:
         """
         Run strategy startup subscriptions and diagnostics logging.
@@ -1479,12 +1493,10 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
     @staticmethod
     def _diagnostics_observed_at_ns(diagnostics: ArbitrageDiagnostics) -> int:
         observed_a = int(
-            diagnostics.quote_ts_a
-            + diagnostics.quote_age_a_secs * NANOSECONDS_PER_SECOND,
+            diagnostics.quote_ts_a + diagnostics.quote_age_a_secs * NANOSECONDS_PER_SECOND,
         )
         observed_b = int(
-            diagnostics.quote_ts_b
-            + diagnostics.quote_age_b_secs * NANOSECONDS_PER_SECOND,
+            diagnostics.quote_ts_b + diagnostics.quote_age_b_secs * NANOSECONDS_PER_SECOND,
         )
         return max(observed_a, observed_b, diagnostics.quote_ts_a, diagnostics.quote_ts_b)
 

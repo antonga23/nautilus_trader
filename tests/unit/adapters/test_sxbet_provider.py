@@ -183,7 +183,8 @@ async def test_sxbet_provider_uses_fixture_event_id_and_keeps_market_hash_as_mar
 @pytest.mark.asyncio
 async def test_sxbet_provider_refreshes_sport_labels_from_active_sports():
     class RecordingHttpClient:
-        async def get_active_sports(self) -> dict:
+        @staticmethod
+        async def get_active_sports() -> dict:
             return {
                 "data": [
                     {"sportId": 1, "label": "Basketball"},
@@ -192,8 +193,8 @@ async def test_sxbet_provider_refreshes_sport_labels_from_active_sports():
                 ],
             }
 
+        @staticmethod
         async def get_markets(
-            self,
             sport_id: int | None = None,
             league_id: int | None = None,
             only_active: bool = True,
@@ -220,8 +221,8 @@ async def test_sxbet_provider_refreshes_sport_labels_from_active_sports():
                 },
             }
 
+        @staticmethod
         async def get_best_odds(
-            self,
             *,
             market_hashes: list[str],
             base_token: str,

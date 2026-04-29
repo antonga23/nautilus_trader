@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+from dataclasses import dataclass
+from dataclasses import field
+from dataclasses import replace
 from decimal import Decimal
 import json
 import threading
@@ -21,6 +24,37 @@ from nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache import
 from nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache import (
     ensure_semantic_cache_ready,
 )
+
+
+@dataclass(frozen=True)
+class RunnerContext:
+    manifest: Any
+    manifest_snapshot: Path
+    rendered_config_path: Path
+    status_path: Path
+    heartbeat_path: Path
+    semantic_cache: dict[str, object] | None = None
+
+
+@dataclass
+class ProbeProfitabilityCounters:
+    quoted_edges: int = 0
+    positive_execution: int = 0
+    positive_same_venue: int = 0
+    threshold_execution: int = 0
+    threshold_same_venue: int = 0
+    samples: list[tuple[Decimal, dict[str, object]]] = field(default_factory=list)
+
+    def to_payload(self) -> dict[str, object]:
+        self.samples.sort(key=lambda item: item[0], reverse=True)
+        return {
+            "quoted_edges": self.quoted_edges,
+            "positive_execution": self.positive_execution,
+            "positive_same_venue": self.positive_same_venue,
+            "threshold_execution": self.threshold_execution,
+            "threshold_same_venue": self.threshold_same_venue,
+            "sample_candidates": [payload for _, payload in self.samples[:10]],
+        }
 
 
 class HeartbeatWriter(threading.Thread):
@@ -96,7 +130,36 @@ class RuntimeProbeStatusWriter(threading.Thread):
             )
 
 
-def main(argv: list[str] | None = None) -> int:  # noqa: C901
+def main(argv: list[str] | None = None) -> int:
+    parser = _build_arg_parser()
+    args = parser.parse_args(argv)
+    context = _load_runner_context(args)
+
+    try:
+        context = replace(context, semantic_cache=_ensure_semantic_cache(context.manifest))
+        pre_node_result = _handle_pre_node_command(args, context)
+        if pre_node_result is not None:
+            return pre_node_result
+        config = _write_node_config(context)
+    except Exception as exc:
+        _write_pre_node_failure(args, context, exc)
+        raise
+
+    from nautilus_trader.live.node import TradingNode
+
+    node = TradingNode(config=config)
+    try:
+        _build_node(node, context)
+        return _handle_built_node_command(args, node, context)
+    except Exception:
+        node.dispose()
+        raise
+    finally:
+        if args.command == "run" and args.no_start:
+            node.dispose()
+
+
+def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Betting arbitrage trading-node runner")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -126,8 +189,10 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901
     probe_parser.add_argument("--min-positive-margin-candidates", type=int, default=0)
     probe_parser.add_argument("--require-rust-semantic-topology", action="store_true")
 
-    args = parser.parse_args(argv)
+    return parser
 
+
+def _load_runner_context(args) -> RunnerContext:
     manifest = load_manifest(args.manifest)
     rendered_paths = default_render_paths(manifest)
     manifest_snapshot = rendered_paths["manifest"]
@@ -140,155 +205,173 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901
     heartbeat_path = (
         Path(manifest.heartbeat_path) if manifest.heartbeat_path else rendered_paths["heartbeat"]
     )
-    semantic_cache: dict[str, object] | None = None
-
-    try:
-        semantic_cache = _ensure_semantic_cache(manifest)
-
-        if args.command == "validate-manifest":
-            config = build_trading_node_config(manifest)
-            write_manifest_snapshot(manifest, manifest_snapshot)
-            write_rendered_node_config(config, rendered_config_path)
-            _write_status(
-                status_path,
-                manifest=manifest,
-                status="validated",
-                semantic_cache=semantic_cache,
-                manifest_snapshot=manifest_snapshot,
-                rendered_config_path=rendered_config_path,
-                validatedAt=_utc_now(),
-            )
-            return 0
-
-        config = build_trading_node_config(manifest)
-        write_manifest_snapshot(manifest, manifest_snapshot)
-        write_rendered_node_config(config, rendered_config_path)
-
-        if args.command == "render-node-config":
-            if args.output:
-                write_rendered_node_config(config, args.output)
-            else:
-                print(rendered_config_path.read_text())
-            return 0
-    except Exception as exc:
-        if args.command != "render-node-config":
-            _write_status(
-                status_path,
-                manifest=manifest,
-                status="failed",
-                semantic_cache=semantic_cache,
-                manifest_snapshot=manifest_snapshot,
-                rendered_config_path=rendered_config_path,
-                failedAt=_utc_now(),
-                error=exc,
-            )
-        raise
-
-    from nautilus_trader.live.node import TradingNode
-
-    node = TradingNode(config=config)
-    heartbeat_stop = threading.Event()
-    heartbeat_writer = HeartbeatWriter(
-        heartbeat_path=heartbeat_path,
-        node_id=manifest.node_id,
-        interval_secs=manifest.heartbeat_interval_secs,
-        stop_event=heartbeat_stop,
-    )
-
-    _write_status(
-        status_path,
+    return RunnerContext(
         manifest=manifest,
-        status="building",
-        semantic_cache=semantic_cache,
         manifest_snapshot=manifest_snapshot,
         rendered_config_path=rendered_config_path,
+        status_path=status_path,
+        heartbeat_path=heartbeat_path,
+    )
+
+
+def _write_node_config(context: RunnerContext):
+    config = build_trading_node_config(context.manifest)
+    write_manifest_snapshot(context.manifest, context.manifest_snapshot)
+    write_rendered_node_config(config, context.rendered_config_path)
+    return config
+
+
+def _handle_pre_node_command(args, context: RunnerContext) -> int | None:
+    if args.command == "validate-manifest":
+        _write_node_config(context)
+        _write_status(
+            context.status_path,
+            manifest=context.manifest,
+            status="validated",
+            semantic_cache=context.semantic_cache,
+            manifest_snapshot=context.manifest_snapshot,
+            rendered_config_path=context.rendered_config_path,
+            validatedAt=_utc_now(),
+        )
+        return 0
+
+    if args.command == "render-node-config":
+        config = _write_node_config(context)
+        if args.output:
+            write_rendered_node_config(config, args.output)
+        else:
+            print(context.rendered_config_path.read_text())
+        return 0
+
+    return None
+
+
+def _write_pre_node_failure(args, context: RunnerContext, error: Exception) -> None:
+    if args.command == "render-node-config":
+        return
+    _write_status(
+        context.status_path,
+        manifest=context.manifest,
+        status="failed",
+        semantic_cache=context.semantic_cache,
+        manifest_snapshot=context.manifest_snapshot,
+        rendered_config_path=context.rendered_config_path,
+        failedAt=_utc_now(),
+        error=error,
+    )
+
+
+def _build_node(node, context: RunnerContext) -> None:
+    _write_status(
+        context.status_path,
+        manifest=context.manifest,
+        status="building",
+        semantic_cache=context.semantic_cache,
+        manifest_snapshot=context.manifest_snapshot,
+        rendered_config_path=context.rendered_config_path,
         at=_utc_now(),
     )
     node.build()
     _write_status(
-        status_path,
-        manifest=manifest,
+        context.status_path,
+        manifest=context.manifest,
         status="built",
-        semantic_cache=semantic_cache,
-        manifest_snapshot=manifest_snapshot,
-        rendered_config_path=rendered_config_path,
+        semantic_cache=context.semantic_cache,
+        manifest_snapshot=context.manifest_snapshot,
+        rendered_config_path=context.rendered_config_path,
         at=_utc_now(),
     )
 
+
+def _handle_built_node_command(args, node, context: RunnerContext) -> int:
     if args.command == "run" and args.no_start:
-        node.dispose()
         return 0
 
     if args.command == "probe-runtime":
-        try:
-            payload = _probe_runtime(
-                node=node,
-                manifest=manifest,
-                status_path=status_path,
-                heartbeat_path=heartbeat_path,
-                manifest_snapshot=manifest_snapshot,
-                rendered_config_path=rendered_config_path,
-                semantic_cache=semantic_cache,
-                timeout_seconds=float(args.timeout_seconds),
-                poll_interval_secs=float(args.poll_interval_secs),
-                min_connected_nodes=int(args.min_connected_nodes),
-                min_match_instruments=int(args.min_match_instruments),
-                min_positive_margin_candidates=int(args.min_positive_margin_candidates),
-                require_rust_semantic_topology=bool(args.require_rust_semantic_topology),
-            )
-            _write_status(
-                status_path,
-                manifest=manifest,
-                status="probed",
-                semantic_cache=semantic_cache,
-                manifest_snapshot=manifest_snapshot,
-                rendered_config_path=rendered_config_path,
-                heartbeat_path=heartbeat_path,
-                completedAt=_utc_now(),
-                runtime_probe=payload,
-            )
-            return 0
-        except Exception as exc:
-            _write_status(
-                status_path,
-                manifest=manifest,
-                status="failed",
-                semantic_cache=semantic_cache,
-                manifest_snapshot=manifest_snapshot,
-                rendered_config_path=rendered_config_path,
-                heartbeat_path=heartbeat_path,
-                failedAt=_utc_now(),
-                error=exc,
-            )
-            raise
-        finally:
-            node.dispose()
+        return _handle_probe_runtime_command(args, node, context)
 
+    return _run_node(node, context)
+
+
+def _handle_probe_runtime_command(args, node, context: RunnerContext) -> int:
+    try:
+        payload = _probe_runtime(
+            node=node,
+            manifest=context.manifest,
+            status_path=context.status_path,
+            heartbeat_path=context.heartbeat_path,
+            manifest_snapshot=context.manifest_snapshot,
+            rendered_config_path=context.rendered_config_path,
+            semantic_cache=context.semantic_cache,
+            timeout_seconds=float(args.timeout_seconds),
+            poll_interval_secs=float(args.poll_interval_secs),
+            min_connected_nodes=int(args.min_connected_nodes),
+            min_match_instruments=int(args.min_match_instruments),
+            min_positive_margin_candidates=int(args.min_positive_margin_candidates),
+            require_rust_semantic_topology=bool(args.require_rust_semantic_topology),
+        )
+        _write_status(
+            context.status_path,
+            manifest=context.manifest,
+            status="probed",
+            semantic_cache=context.semantic_cache,
+            manifest_snapshot=context.manifest_snapshot,
+            rendered_config_path=context.rendered_config_path,
+            heartbeat_path=context.heartbeat_path,
+            completedAt=_utc_now(),
+            runtime_probe=payload,
+        )
+        return 0
+    except Exception as exc:
+        _write_status(
+            context.status_path,
+            manifest=context.manifest,
+            status="failed",
+            semantic_cache=context.semantic_cache,
+            manifest_snapshot=context.manifest_snapshot,
+            rendered_config_path=context.rendered_config_path,
+            heartbeat_path=context.heartbeat_path,
+            failedAt=_utc_now(),
+            error=exc,
+        )
+        raise
+    finally:
+        node.dispose()
+
+
+def _run_node(node, context: RunnerContext) -> int:
+    heartbeat_stop = threading.Event()
+    heartbeat_writer = HeartbeatWriter(
+        heartbeat_path=context.heartbeat_path,
+        node_id=context.manifest.node_id,
+        interval_secs=context.manifest.heartbeat_interval_secs,
+        stop_event=heartbeat_stop,
+    )
     runtime_probe_stop: threading.Event | None = None
     runtime_probe_writer: RuntimeProbeStatusWriter | None = None
-    if manifest.validation_mode and hasattr(node, "trader"):
+    if context.manifest.validation_mode and hasattr(node, "trader"):
         runtime_probe_stop = threading.Event()
         runtime_probe_writer = RuntimeProbeStatusWriter(
-            status_path=status_path,
-            manifest=manifest,
+            status_path=context.status_path,
+            manifest=context.manifest,
             strategy=_resolve_betting_strategy(node),
-            semantic_cache=semantic_cache,
-            manifest_snapshot=manifest_snapshot,
-            rendered_config_path=rendered_config_path,
-            heartbeat_path=heartbeat_path,
-            interval_secs=max(1.0, manifest.heartbeat_interval_secs),
+            semantic_cache=context.semantic_cache,
+            manifest_snapshot=context.manifest_snapshot,
+            rendered_config_path=context.rendered_config_path,
+            heartbeat_path=context.heartbeat_path,
+            interval_secs=max(1.0, context.manifest.heartbeat_interval_secs),
             stop_event=runtime_probe_stop,
         )
 
     heartbeat_writer.start()
     _write_status(
-        status_path,
-        manifest=manifest,
+        context.status_path,
+        manifest=context.manifest,
         status="running",
-        semantic_cache=semantic_cache,
-        manifest_snapshot=manifest_snapshot,
-        rendered_config_path=rendered_config_path,
-        heartbeat_path=heartbeat_path,
+        semantic_cache=context.semantic_cache,
+        manifest_snapshot=context.manifest_snapshot,
+        rendered_config_path=context.rendered_config_path,
+        heartbeat_path=context.heartbeat_path,
         startedAt=_utc_now(),
     )
     if runtime_probe_writer is not None:
@@ -297,25 +380,25 @@ def main(argv: list[str] | None = None) -> int:  # noqa: C901
     try:
         node.run()
         _write_status(
-            status_path,
-            manifest=manifest,
+            context.status_path,
+            manifest=context.manifest,
             status="completed",
-            semantic_cache=semantic_cache,
-            manifest_snapshot=manifest_snapshot,
-            rendered_config_path=rendered_config_path,
-            heartbeat_path=heartbeat_path,
+            semantic_cache=context.semantic_cache,
+            manifest_snapshot=context.manifest_snapshot,
+            rendered_config_path=context.rendered_config_path,
+            heartbeat_path=context.heartbeat_path,
             completedAt=_utc_now(),
         )
         return 0
     except Exception as exc:
         _write_status(
-            status_path,
-            manifest=manifest,
+            context.status_path,
+            manifest=context.manifest,
             status="failed",
-            semantic_cache=semantic_cache,
-            manifest_snapshot=manifest_snapshot,
-            rendered_config_path=rendered_config_path,
-            heartbeat_path=heartbeat_path,
+            semantic_cache=context.semantic_cache,
+            manifest_snapshot=context.manifest_snapshot,
+            rendered_config_path=context.rendered_config_path,
+            heartbeat_path=context.heartbeat_path,
             failedAt=_utc_now(),
             error=exc,
         )
@@ -517,7 +600,7 @@ def _collect_runtime_probe_payload(
     min_profit_margin: Decimal,
     elapsed_seconds: float,
 ) -> dict[str, object]:
-    graph = strategy._opportunity_graph
+    graph = strategy.opportunity_graph
     stats = strategy.get_stats()
     snapshot = _snapshot_probe_graph_state(graph)
     semantic_diagnostics = _semantic_probe_diagnostics(graph)
@@ -817,7 +900,7 @@ def _top_counter(counter: Counter, limit: int = 10) -> list[dict[str, object]]:
     ]
 
 
-def _probe_edge_profitability(  # noqa: C901
+def _probe_edge_profitability(
     strategy,
     *,
     edges,
@@ -825,26 +908,16 @@ def _probe_edge_profitability(  # noqa: C901
     quotes,
     min_profit_margin: Decimal,
 ) -> dict[str, object]:
-    matcher = strategy._matcher
-    quoted_edges = 0
-    positive_execution = 0
-    positive_same_venue = 0
-    threshold_execution = 0
-    threshold_same_venue = 0
-    samples: list[tuple[Decimal, dict[str, object]]] = []
+    matcher = strategy.market_matcher
+    counters = ProbeProfitabilityCounters()
 
     for edge in edges:
-        quote_a = quotes.get(edge.source_node_id)
-        quote_b = quotes.get(edge.target_node_id)
-        if quote_a is None or quote_b is None:
+        quoted_edge = _quoted_probe_edge(edge, nodes, quotes)
+        if quoted_edge is None:
             continue
+        source_node, target_node, quote_a, quote_b = quoted_edge
 
-        source_node = nodes.get(edge.source_node_id)
-        target_node = nodes.get(edge.target_node_id)
-        if source_node is None or target_node is None:
-            continue
-
-        quoted_edges += 1
+        counters.quoted_edges += 1
         allow_same_venue = edge.same_venue_execution_eligible and not edge.execution_safe
         if not edge.execution_safe and not allow_same_venue:
             continue
@@ -859,47 +932,72 @@ def _probe_edge_profitability(  # noqa: C901
         if opportunity is None:
             continue
 
-        is_positive = opportunity.profit_margin > 0
-        meets_threshold = opportunity.profit_margin >= min_profit_margin
-        if allow_same_venue:
-            if is_positive:
-                positive_same_venue += 1
-            if meets_threshold:
-                threshold_same_venue += 1
-        else:
-            if is_positive:
-                positive_execution += 1
-            if meets_threshold:
-                threshold_execution += 1
+        _record_probe_opportunity(
+            counters,
+            opportunity=opportunity,
+            edge=edge,
+            source_node=source_node,
+            target_node=target_node,
+            allow_same_venue=allow_same_venue,
+            min_profit_margin=min_profit_margin,
+        )
 
-        if is_positive:
-            samples.append(
-                (
-                    opportunity.profit_margin,
-                    {
-                        "instrumentIdA": str(source_node.instrument.id),
-                        "instrumentIdB": str(target_node.instrument.id),
-                        "marketA": source_node.market_name,
-                        "marketB": target_node.market_name,
-                        "outcomeA": source_node.outcome,
-                        "outcomeB": target_node.outcome,
-                        "profitMargin": str(opportunity.profit_margin),
-                        "safetyTier": edge.safety_tier,
-                        "executionSafe": edge.execution_safe,
-                        "sameVenueExecutionEligible": edge.same_venue_execution_eligible,
-                    },
-                ),
-            )
+    return counters.to_payload()
 
-    samples.sort(key=lambda item: item[0], reverse=True)
-    return {
-        "quoted_edges": quoted_edges,
-        "positive_execution": positive_execution,
-        "positive_same_venue": positive_same_venue,
-        "threshold_execution": threshold_execution,
-        "threshold_same_venue": threshold_same_venue,
-        "sample_candidates": [payload for _, payload in samples[:10]],
-    }
+
+def _quoted_probe_edge(edge, nodes, quotes) -> tuple[object, object, object, object] | None:
+    quote_a = quotes.get(edge.source_node_id)
+    quote_b = quotes.get(edge.target_node_id)
+    if quote_a is None or quote_b is None:
+        return None
+
+    source_node = nodes.get(edge.source_node_id)
+    target_node = nodes.get(edge.target_node_id)
+    if source_node is None or target_node is None:
+        return None
+
+    return source_node, target_node, quote_a, quote_b
+
+
+def _record_probe_opportunity(
+    counters: ProbeProfitabilityCounters,
+    *,
+    opportunity,
+    edge,
+    source_node,
+    target_node,
+    allow_same_venue: bool,
+    min_profit_margin: Decimal,
+) -> None:
+    is_positive = opportunity.profit_margin > 0
+    meets_threshold = opportunity.profit_margin >= min_profit_margin
+    if allow_same_venue:
+        counters.positive_same_venue += int(is_positive)
+        counters.threshold_same_venue += int(meets_threshold)
+    else:
+        counters.positive_execution += int(is_positive)
+        counters.threshold_execution += int(meets_threshold)
+
+    if not is_positive:
+        return
+
+    counters.samples.append(
+        (
+            opportunity.profit_margin,
+            {
+                "instrumentIdA": str(source_node.instrument.id),
+                "instrumentIdB": str(target_node.instrument.id),
+                "marketA": source_node.market_name,
+                "marketB": target_node.market_name,
+                "outcomeA": source_node.outcome,
+                "outcomeB": target_node.outcome,
+                "profitMargin": str(opportunity.profit_margin),
+                "safetyTier": edge.safety_tier,
+                "executionSafe": edge.execution_safe,
+                "sameVenueExecutionEligible": edge.same_venue_execution_eligible,
+            },
+        ),
+    )
 
 
 if __name__ == "__main__":
