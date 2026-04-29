@@ -1362,7 +1362,7 @@ class TestBettingArbitrageNodeRunner:
     def test_wait_for_strategy_node_status_can_require_ready_semantic_cache(self, tmp_path):
         status_path = tmp_path / "status.json"
         script_path = Path(
-            "scripts/deploy/strategy_nodes/wait_for_strategy_node_status.sh"
+            "scripts/deploy/strategy_nodes/wait_for_strategy_node_status.sh",
         ).resolve()
         status_path.write_text(
             json.dumps(

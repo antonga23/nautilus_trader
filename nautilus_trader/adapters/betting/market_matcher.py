@@ -163,6 +163,10 @@ class MarketMatcher:
     def set_rule_store(self, rule_store: RuleStore | None) -> None:
         self._rule_store = rule_store
 
+    @property
+    def rule_store(self) -> RuleStore | None:
+        return self._rule_store
+
     def find_hedges(
         self,
         instrument: CryptoBettingInstrument,

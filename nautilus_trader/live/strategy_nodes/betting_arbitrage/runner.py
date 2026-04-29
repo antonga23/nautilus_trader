@@ -521,8 +521,8 @@ def _probe_runtime(
     def _run_node() -> None:
         try:
             node.run(raise_exception=True)
-        except BaseException as exc:  # pragma: no cover - surfaced below
-            run_error.append(exc)
+        except BaseException as e:  # pragma: no cover - surfaced below
+            run_error.append(e)
 
     run_thread = threading.Thread(target=_run_node, daemon=True)
     run_thread.start()
@@ -881,7 +881,8 @@ def _supported_provider_node_count(
         venue = provider_pattern_key[0]
         pattern_key = provider_pattern_key[1:]
         if template_provider_pattern_counts.get(
-            (venue, *pattern_key), 0
+            (venue, *pattern_key),
+            0,
         ) or template_provider_pattern_counts.get(("venue_agnostic", *pattern_key), 0):
             supported_provider_node_count += count
     return supported_provider_node_count

@@ -606,9 +606,9 @@ class SXBetInstrumentProvider(InstrumentProvider):
 
         try:
             payload = await get_active_sports()
-        except Exception as exc:  # pragma: no cover - network/client failures are runtime-only
+        except Exception as e:  # pragma: no cover - network/client failures are runtime-only
             self._log.warning(
-                f"Failed to refresh SX.bet active sports; using fallback mapping: {type(exc).__name__}",
+                f"Failed to refresh SX.bet active sports; using fallback mapping: {type(e).__name__}",
             )
             return
 

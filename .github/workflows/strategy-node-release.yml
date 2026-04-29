@@ -742,17 +742,19 @@ jobs:
         if: always()
         run: |
           mkdir -p artifacts/strategy-node-deploy
+          remote="$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST"
+          node_dir="/opt/cloudbet/strategy-nodes/$STRATEGY_NODE_CONTAINER_NAME"
           scp -i strategy-node.key -o StrictHostKeyChecking=no \
-            "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST:/opt/cloudbet/strategy-nodes/$STRATEGY_NODE_CONTAINER_NAME/status.json" \
+            "$remote:$node_dir/status.json" \
             "artifacts/strategy-node-deploy/status.json" || true
           scp -i strategy-node.key -o StrictHostKeyChecking=no \
-            "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST:/opt/cloudbet/strategy-nodes/$STRATEGY_NODE_CONTAINER_NAME/heartbeat.json" \
+            "$remote:$node_dir/heartbeat.json" \
             "artifacts/strategy-node-deploy/heartbeat.json" || true
           scp -i strategy-node.key -o StrictHostKeyChecking=no \
-            "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST:/opt/cloudbet/strategy-nodes/$STRATEGY_NODE_CONTAINER_NAME/manifest.runtime.json" \
+            "$remote:$node_dir/manifest.runtime.json" \
             "artifacts/strategy-node-deploy/manifest.runtime.json" || true
           scp -i strategy-node.key -o StrictHostKeyChecking=no \
-            "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST:/opt/cloudbet/strategy-nodes/$STRATEGY_NODE_CONTAINER_NAME/release.json" \
+            "$remote:$node_dir/release.json" \
             "artifacts/strategy-node-deploy/release.json" || true
 
       - name: Cleanup remote helper files

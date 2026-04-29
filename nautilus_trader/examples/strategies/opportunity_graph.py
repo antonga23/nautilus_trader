@@ -37,6 +37,8 @@ from nautilus_trader.adapters.betting.market_matcher import ArbitrageOpportunity
 from nautilus_trader.adapters.betting.market_matcher import HedgeCandidate
 from nautilus_trader.adapters.betting.market_matcher import MarketMatcher
 from nautilus_trader.adapters.betting.semantics import MarketNormalizer
+from nautilus_trader.adapters.betting.semantics import RuleStore
+from nautilus_trader.adapters.betting.semantics import SelectionPattern
 from nautilus_trader.model.data import QuoteTick
 
 _OPPORTUNITY_GRAPH_CORE_CLS: Any | None
@@ -188,6 +190,9 @@ class OpportunityGraph:
             if use_rust_core and _OPPORTUNITY_GRAPH_CORE_CLS is not None
             else None
         )
+        if engine == "semantic_rust" and not self._rust_core_supports_semantic_topology():
+            msg = "Rust OpportunityGraphCore semantic topology API is unavailable"
+            raise ImportError(msg)
         self._topology_source = "python"
         self._semantic_template_count = 0
         self._rust_semantic_templates_loaded = False
@@ -539,18 +544,19 @@ class OpportunityGraph:
             metadata = self._rust_edge_metadata(raw_market_relationship_type)
             if not metadata and len(snapshot) > 12:
                 metadata = self._rust_edge_metadata(snapshot[12])
-            market_relationship_type = str(
-                metadata.get("market_relationship_type") or raw_market_relationship_type,
+            market_relationship_type = (
+                self._metadata_str(metadata, "market_relationship_type")
+                or raw_market_relationship_type
             )
-            template_id = metadata.get("template_id")
-            relationship_type = metadata.get("relationship_type")
-            promotion_status = metadata.get("promotion_status")
-            safety_tier = metadata.get("safety_tier")
+            template_id = self._metadata_str(metadata, "template_id")
+            relationship_type = self._metadata_str(metadata, "relationship_type")
+            promotion_status = self._metadata_str(metadata, "promotion_status")
+            safety_tier = self._metadata_str(metadata, "safety_tier")
             same_venue_execution_eligible = bool(
                 metadata.get("same_venue_execution_eligible"),
             )
             partial_settlement = bool(metadata.get("partial_settlement"))
-            caveats = tuple(str(item) for item in metadata.get("caveats", ()))
+            caveats = self._metadata_str_tuple(metadata, "caveats")
             source_node = self.nodes_by_id.get(source_node_id)
             target_node = self.nodes_by_id.get(target_node_id)
             if source_node is None or target_node is None:
@@ -567,14 +573,16 @@ class OpportunityGraph:
                 edge_id=edge_id,
                 source_node_id=source_node_id,
                 target_node_id=target_node_id,
-                hedge_type=hedge.match_type if hedge is not None and hedge.match_type else hedge_type,
-                confidence=hedge.confidence if hedge is not None and hedge.confidence else confidence,
+                hedge_type=hedge.match_type
+                if hedge is not None and hedge.match_type
+                else hedge_type,
+                confidence=hedge.confidence
+                if hedge is not None and hedge.confidence
+                else confidence,
                 same_venue=same_venue,
                 market_relationship_type=market_relationship_type,
                 push_capable=hedge.push_capable if hedge is not None else rust_push_capable,
-                execution_safe=(
-                    hedge.execution_safe if hedge is not None else rust_execution_safe
-                ),
+                execution_safe=(hedge.execution_safe if hedge is not None else rust_execution_safe),
                 rule_id=hedge.rule_id if hedge is not None else None,
                 template_id=hedge.template_id if hedge is not None else template_id,
                 relationship_type=(
@@ -1040,7 +1048,7 @@ class OpportunityGraph:
         return payloads
 
     @classmethod
-    def _semantic_pattern_payload(cls, pattern) -> dict[str, object]:
+    def _semantic_pattern_payload(cls, pattern: SelectionPattern) -> dict[str, object]:
         return {
             "sport": pattern.sport,
             "scope": pattern.scope,
@@ -1057,7 +1065,7 @@ class OpportunityGraph:
         return str(params or "")
 
     def _should_use_semantic_rust(self, semantic_templates: list[dict[str, object]]) -> bool:
-        return self._rust_core is not None and (
+        return self._rust_core_supports_semantic_topology() and (
             self._engine == "semantic_rust" or (self._engine == "auto" and bool(semantic_templates))
         )
 
@@ -1067,8 +1075,34 @@ class OpportunityGraph:
             or (self._engine == "auto" and self._semantic_rule_store() is None)
         )
 
-    def _semantic_rule_store(self) -> object | None:
-        return self._safe_attr(self._matcher, "_rule_store", None)
+    def _rust_core_supports_semantic_topology(self) -> bool:
+        return self._rust_core is not None and all(
+            callable(getattr(self._rust_core, method, None))
+            for method in (
+                "build_semantic",
+                "add_instrument_semantic",
+                "load_semantic_templates",
+            )
+        )
+
+    @staticmethod
+    def _metadata_str(metadata: dict[str, object], key: str) -> str | None:
+        value = metadata.get(key)
+        return value if isinstance(value, str) and value else None
+
+    @staticmethod
+    def _metadata_str_tuple(metadata: dict[str, object], key: str) -> tuple[str, ...]:
+        value = metadata.get(key)
+        if value is None:
+            return ()
+        if isinstance(value, str):
+            return (value,) if value else ()
+        if isinstance(value, list | tuple):
+            return tuple(str(item) for item in value)
+        return (str(value),)
+
+    def _semantic_rule_store(self) -> RuleStore | None:
+        return self._matcher.rule_store
 
     def _ensure_rust_semantic_templates_loaded(
         self,
