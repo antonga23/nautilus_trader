@@ -1,0 +1,258 @@
+name: strategy-node-runtime-verify
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      container_name:
+        description: Target strategy-node container name
+        required: false
+        default: betting-arbitrage-node-sxbet
+      root_dir:
+        description: Host root containing strategy-node runtime artifacts
+        required: false
+        default: /opt/cloudbet/strategy-nodes
+      expected_session_id:
+        description: Optional expected current session id from the triggering deploy
+        required: false
+        default: ''
+      timeout_seconds:
+        description: Status wait timeout in seconds
+        required: false
+        default: '180'
+      heartbeat_updates_required:
+        description: Number of heartbeat timestamp changes required after verification starts
+        required: false
+        default: '2'
+
+jobs:
+  verify-runtime:
+    name: verify-runtime
+    timeout-minutes: 10
+    runs-on: [self-hosted, linux, x64, ec2, deploy, trading]
+    steps:
+      - name: Repair self-hosted workspace
+        shell: bash
+        env:
+          ACTIONS_RUNNER_ROOT: /home/ubuntu/actions-runner
+        run: |
+          workspace_parent="$(dirname "$GITHUB_WORKSPACE")"
+          runner_ci_home="${RUNNER_CI_HOME:-}"
+          run_maybe_sudo() {
+            if [[ "${EUID}" -eq 0 ]]; then
+              "$@"
+              return
+            fi
+
+            if "$@"; then
+              return
+            fi
+
+            local status=$?
+            if command -v sudo > /dev/null 2>&1; then
+              sudo -n "$@" && return
+            fi
+
+            return "$status"
+          }
+
+          if [[ -x /usr/local/bin/repair-github-runner-workspace ]]; then
+            run_maybe_sudo \
+              /usr/local/bin/repair-github-runner-workspace \
+              "$GITHUB_WORKSPACE" \
+              "$workspace_parent/.ci-cache" \
+              "$(id -u)" \
+              "$(id -g)"
+          else
+            run_maybe_sudo mkdir -p "$GITHUB_WORKSPACE" "$workspace_parent/.ci-cache"
+            run_maybe_sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" "$workspace_parent/.ci-cache"
+          fi
+
+          if [[ -n "$runner_ci_home" ]]; then
+            run_maybe_sudo mkdir -p "$runner_ci_home/.cache"
+            run_maybe_sudo chown -R "$(id -u):$(id -g)" "$runner_ci_home"
+          fi
+
+          if [[ ! -e "$GITHUB_WORKSPACE/.git" ]]; then
+            find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+
+      - name: Verify deployed strategy-node runtime
+        shell: bash
+        env:
+          INPUT_CONTAINER_NAME: ${{ github.event.inputs.container_name }}
+          INPUT_ROOT_DIR: ${{ github.event.inputs.root_dir }}
+          INPUT_EXPECTED_SESSION_ID: ${{ github.event.inputs.expected_session_id }}
+          INPUT_TIMEOUT_SECONDS: ${{ github.event.inputs.timeout_seconds }}
+          INPUT_HEARTBEAT_UPDATES_REQUIRED: ${{ github.event.inputs.heartbeat_updates_required }}
+        run: |
+          set -euo pipefail
+
+          container_name="${INPUT_CONTAINER_NAME:-betting-arbitrage-node-sxbet}"
+          root_dir="${INPUT_ROOT_DIR:-/opt/cloudbet/strategy-nodes}"
+          expected_session_id="${INPUT_EXPECTED_SESSION_ID:-}"
+          timeout_seconds="${INPUT_TIMEOUT_SECONDS:-180}"
+          heartbeat_updates_required="${INPUT_HEARTBEAT_UPDATES_REQUIRED:-2}"
+
+          node_dir="$root_dir/$container_name"
+          status_file="$node_dir/status.json"
+          heartbeat_file="$node_dir/heartbeat.json"
+          current_session_file="$node_dir/current-session.json"
+
+          test -d "$node_dir"
+
+          bash scripts/deploy/strategy_nodes/wait_for_strategy_node_status.sh \
+            --status-file "$status_file" \
+            --timeout-seconds "$timeout_seconds" \
+            --success-status running
+
+          docker_state="$(docker inspect --format '{{.State.Status}}' "$container_name")"
+          docker_running="$(docker inspect --format '{{.State.Running}}' "$container_name")"
+          docker_image="$(docker inspect --format '{{.Config.Image}}' "$container_name")"
+          echo "container=$container_name"
+          echo "docker_state=$docker_state"
+          echo "docker_running=$docker_running"
+          echo "docker_image=$docker_image"
+
+          if [[ "$docker_running" != "true" ]]; then
+            echo "Container is not running" >&2
+            exit 1
+          fi
+
+          python3 - \
+            "$status_file" \
+            "$heartbeat_file" \
+            "$current_session_file" \
+            "$expected_session_id" \
+            "$heartbeat_updates_required" <<'PY'
+          import json
+          import pathlib
+          import sys
+          import time
+
+          status_path = pathlib.Path(sys.argv[1])
+          heartbeat_path = pathlib.Path(sys.argv[2])
+          current_session_path = pathlib.Path(sys.argv[3])
+          expected_session_id = sys.argv[4].strip()
+          heartbeat_updates_required = int(sys.argv[5])
+
+          def load_json(path: pathlib.Path) -> dict:
+              if not path.exists():
+                  raise SystemExit(f"Missing required file: {path}")
+              return json.loads(path.read_text())
+
+          status_payload = load_json(status_path)
+          if status_payload.get("status") != "running":
+              raise SystemExit(
+                  f"Expected running status, found {status_payload.get('status')!r} in {status_path}",
+              )
+
+          session_payload = load_json(current_session_path)
+          session_id = session_payload.get("sessionId")
+          if not session_id:
+              raise SystemExit(f"current-session.json missing sessionId: {current_session_path}")
+          if expected_session_id and session_id != expected_session_id:
+              raise SystemExit(
+                  f"Expected current session {expected_session_id}, found {session_id}",
+              )
+
+          log_path = pathlib.Path(session_payload.get("logPath") or "")
+          event_log_path = pathlib.Path(session_payload.get("eventLogPath") or "")
+          if not log_path.exists():
+              raise SystemExit(f"Missing node log file: {log_path}")
+          if not event_log_path.exists():
+              raise SystemExit(f"Missing event log file: {event_log_path}")
+
+          heartbeat_payload = load_json(heartbeat_path)
+          initial_heartbeat_at = heartbeat_payload.get("at")
+          if not initial_heartbeat_at:
+              raise SystemExit(f"heartbeat.json missing at field: {heartbeat_path}")
+
+          heartbeat_history = [initial_heartbeat_at]
+          deadline = time.time() + 45
+          while time.time() < deadline and len(heartbeat_history) - 1 < heartbeat_updates_required:
+              time.sleep(2)
+              heartbeat_payload = load_json(heartbeat_path)
+              current_at = heartbeat_payload.get("at")
+              if current_at and current_at != heartbeat_history[-1]:
+                  heartbeat_history.append(current_at)
+
+          observed_updates = len(heartbeat_history) - 1
+          if observed_updates < heartbeat_updates_required:
+              raise SystemExit(
+                  "Heartbeat did not update enough times after verification started "
+                  f"(required={heartbeat_updates_required}, observed={observed_updates}, "
+                  f"history={heartbeat_history})",
+              )
+
+          event_lines = [
+              json.loads(line)
+              for line in event_log_path.read_text().splitlines()
+              if line.strip()
+          ]
+          event_names = [entry.get("event") for entry in event_lines]
+          required_events = {"deploy_started", "container_started", "process_started"}
+          missing_events = sorted(required_events.difference(event_names))
+          if missing_events:
+              raise SystemExit(f"Missing required lifecycle events: {missing_events}")
+          terminal_failures = [name for name in event_names if name and "failed" in name.lower()]
+          if terminal_failures:
+              raise SystemExit(f"Found failure events in lifecycle log: {terminal_failures}")
+
+          log_text = log_path.read_text(encoding="utf8")
+          error_markers = ("Traceback", "Fatal Python error", "panic", "uncaught exception")
+          found_error_markers = [marker for marker in error_markers if marker in log_text]
+          if found_error_markers:
+              raise SystemExit(
+                  f"Node log contains uncaught error markers: {found_error_markers}",
+              )
+
+          summary = {
+              "status": status_payload.get("status"),
+              "statusPath": str(status_path),
+              "heartbeatPath": str(heartbeat_path),
+              "heartbeatHistory": heartbeat_history,
+              "currentSessionPath": str(current_session_path),
+              "sessionId": session_id,
+              "logPath": str(log_path),
+              "eventLogPath": str(event_log_path),
+              "eventNames": event_names,
+              "logLineCount": len(log_text.splitlines()),
+          }
+          print(json.dumps(summary, indent=2))
+          PY
+
+          current_log_path="$(python3 - "$current_session_file" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          payload = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          print(payload["logPath"])
+          PY
+          )"
+          current_event_log_path="$(python3 - "$current_session_file" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          payload = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          print(payload["eventLogPath"])
+          PY
+          )"
+
+          echo
+          echo "node_log_tail<<EOF"
+          tail -n 40 "$current_log_path"
+          echo "EOF"
+          echo
+          echo "events_tail<<EOF"
+          tail -n 40 "$current_event_log_path"
+          echo "EOF"
