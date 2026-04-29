@@ -13,6 +13,8 @@ exclude_patterns = [
   "nautilus_trader/examples/strategies/betting_arbitrage.py",
   "nautilus_trader/examples/strategies/opportunity_graph.py",
   "tests/performance_tests/**",
+  "tests/unit/live/**",
+  "tests/unit/adapters/test_market_matcher.py",
   "tests/unit/strategies/**",
   "tests/integration/**",
   "tests/integration_tests/**",

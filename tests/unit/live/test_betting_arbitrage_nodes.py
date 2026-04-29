@@ -1,6 +1,20 @@
+# skipcq: PYL-C0114, PYL-C0115, PYL-C0116, PYL-W0212, PYL-W0613
+# skipcq: PYL-W0108, PYL-W1514, PYL-R0903, PYL-R0913, PYL-C0301
+# skipcq: PYL-C0302, PYL-E0401, PYL-C0411
+# pylint: disable=missing-module-docstring,missing-class-docstring
+# pylint: disable=missing-function-docstring,protected-access,unused-argument
+# pylint: disable=unnecessary-lambda,unspecified-encoding,too-few-public-methods
+# pylint: disable=too-many-arguments,line-too-long,too-many-lines
+# pylint: disable=import-error,wrong-import-order
+
+import asyncio
 import json
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
+
+import msgspec
 
 import pytest
 
@@ -15,6 +29,9 @@ from nautilus_trader.adapters.betting.semantics import SemanticRuleTemplate
 from nautilus_trader.adapters.betting.semantics import TemplateSupportStats
 from nautilus_trader.config import ImportableConfig
 from nautilus_trader.examples.strategies.betting_arbitrage import BettingArbitrageConfig
+from nautilus_trader.live.strategy_nodes.betting_arbitrage import builder as node_builder
+from nautilus_trader.live.strategy_nodes.betting_arbitrage import runner as node_runner
+from nautilus_trader.live.strategy_nodes.betting_arbitrage import semantic_cache as node_cache
 from nautilus_trader.live.strategy_nodes.betting_arbitrage.builder import build_trading_node_config
 from nautilus_trader.live.strategy_nodes.betting_arbitrage.config import (
     BettingArbitrageNodeManifest,
@@ -148,6 +165,17 @@ class TestBettingArbitrageNodeManifest:
 
 
 class TestBettingArbitrageNodeBuilder:
+    def test_manifest_json_helpers_round_trip(self, tmp_path):
+        manifest = _manifest(tmp_path)
+        manifest_path = tmp_path / "manifest.json"
+        manifest_path.write_bytes(node_builder.manifest_to_json(manifest))
+
+        loaded = node_builder.load_manifest(manifest_path)
+        config = build_trading_node_config(manifest)
+
+        assert loaded.node_id == manifest.node_id
+        assert node_builder.render_trading_node_config_json(config) == config.json()
+
     def test_validation_mode_forces_safe_strategy_and_no_exec_clients(self):
         manifest = BettingArbitrageNodeManifest(
             node_id="sxbet-validation",
@@ -290,8 +318,114 @@ class TestBettingArbitrageNodeBuilder:
 
         assert config.strategies[0].config["enabled_venues"] == ["POLYMARKET", "SXBET"]
 
+    def test_custom_credential_prefix_and_secret_pool_are_applied(self, monkeypatch):
+        monkeypatch.setenv("CUSTOMSXBET_API_KEY", "explicit-api-key")
+        monkeypatch.setenv("CUSTOMSXBET_API_KEYS", "pool-a, pool-b pool-c")
+
+        manifest = BettingArbitrageNodeManifest(
+            node_id="sxbet-custom-prefix",
+            trader_id="BETARB-TEST-005",
+            validation_mode=True,
+            allow_dummy_credentials=False,
+            venues=[
+                BettingVenueManifest(
+                    venue="SXBET",
+                    client_key="SXBET_PRIMARY",
+                    credential_prefix="customsxbet",
+                ),
+            ],
+        )
+
+        config = build_trading_node_config(manifest)
+        data_client = config.data_clients["SXBET_PRIMARY"]
+
+        assert data_client.config["api_key"] == "explicit-api-key"
+        assert data_client.config["api_key_pool"] == ("pool-a", "pool-b", "pool-c")
+
+    def test_polymarket_exec_client_uses_non_validation_credentials(self, monkeypatch):
+        monkeypatch.setenv("CUSTOMPOLY_PRIVATE_KEY", "0x" + "a" * 64)
+        monkeypatch.setenv("CUSTOMPOLY_FUNDER", "0x" + "b" * 40)
+        monkeypatch.setenv("CUSTOMPOLY_API_KEY", "poly-api-key")
+        monkeypatch.setenv("CUSTOMPOLY_API_SECRET", "poly-api-secret")
+        monkeypatch.setenv("CUSTOMPOLY_PASSPHRASE", "poly-passphrase")
+
+        manifest = BettingArbitrageNodeManifest(
+            node_id="polymarket-live",
+            trader_id="BETARB-TEST-006",
+            validation_mode=False,
+            allow_dummy_credentials=False,
+            venues=[
+                BettingVenueManifest(
+                    venue="POLYMARKET",
+                    client_key="POLYMARKET_PRIMARY",
+                    credential_prefix="CUSTOMPOLY",
+                    execution_enabled=True,
+                    use_data_api=True,
+                ),
+            ],
+        )
+
+        config = build_trading_node_config(manifest)
+        exec_client = config.exec_clients["POLYMARKET_PRIMARY"]
+
+        assert isinstance(exec_client, ImportableConfig)
+        assert exec_client.config["private_key"] == "0x" + "a" * 64
+        assert exec_client.config["funder"] == "0x" + "b" * 40
+        assert exec_client.config["api_key"] == "poly-api-key"
+        assert exec_client.config["api_secret"] == "poly-api-secret"
+        assert exec_client.config["passphrase"] == "poly-passphrase"
+        assert exec_client.config["use_data_api"] is True
+
+    def test_builder_rejects_unsupported_venue_branch(self, tmp_path):
+        manifest = _manifest(tmp_path)
+        msgspec.structs.force_setattr(manifest.venues[0], "venue", "UNSUPPORTED")
+
+        with pytest.raises(ValueError, match="Unsupported venue UNSUPPORTED"):
+            build_trading_node_config(manifest)
+
+    def test_secret_helpers_cover_missing_and_dummy_paths(self, monkeypatch):
+        monkeypatch.delenv("SXBET_API_KEYS", raising=False)
+        monkeypatch.setenv("SXBET_API_KEY", "single-key")
+        assert node_builder._resolve_secret_pool("SXBET", "API_KEYS", False) == ("single-key",)
+
+        monkeypatch.setenv("SXBET_API_KEYS", " key-1, key-2  key-3 ")
+        assert node_builder._resolve_secret_pool("SXBET", "API_KEYS", False) == (
+            "key-1",
+            "key-2",
+            "key-3",
+        )
+
+        monkeypatch.setenv("SXBET_API_KEYS", "   ")
+        assert node_builder._resolve_secret_pool("SXBET", "API_KEYS", False) is None
+
+        monkeypatch.delenv("SXBET_API_KEYS", raising=False)
+        monkeypatch.delenv("SXBET_API_KEY", raising=False)
+        assert node_builder._resolve_secret_pool("SXBET", "API_KEYS", False) is None
+        assert node_builder._resolve_secret_pool("SXBET", "API_KEYS", True) == (
+            "dummy-sxbet-api-key",
+        )
+
+        monkeypatch.setenv("SXBET_API_KEY", "env-secret")
+        assert node_builder._resolve_secret("SXBET", "API_KEY", False) == "env-secret"
+        monkeypatch.delenv("SXBET_API_KEY", raising=False)
+        assert (
+            node_builder._resolve_secret("CUSTOM", "API_SECRET", True) == "dummy-custom-api-secret"
+        )
+        with pytest.raises(node_builder.MissingCredentialError, match="SXBET_API_KEY"):
+            node_builder._resolve_secret("SXBET", "API_KEY", False)
+
 
 class TestSemanticCacheBootstrap:
+    def test_disabled_cache_returns_disabled_status(self, tmp_path):
+        manifest = _manifest(tmp_path, cache_dir=None)
+        msgspec.structs.force_setattr(manifest, "semantic_rule_cache_dir", None)
+
+        status = ensure_semantic_cache_ready(manifest)
+
+        assert status.path is None
+        assert status.source == "disabled"
+        assert status.ready is False
+
     def test_reuses_existing_semantic_cache_without_bootstrap(self, tmp_path, monkeypatch):
         cache_dir = tmp_path / "semantic-cache"
         _seed_promoted_template(cache_dir)
@@ -338,8 +472,470 @@ class TestSemanticCacheBootstrap:
         with pytest.raises(RuntimeError, match="usable cache"):
             ensure_semantic_cache_ready(manifest)
 
+    def test_semantic_cache_status_counts_missing_and_same_venue_templates(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        class FakeStore:
+            def __init__(self, _cache):
+                pass
+
+            def list_manifest_ids(self):
+                return ["manifest-a", "manifest-b"]
+
+            def list_promoted_template_ids(self):
+                return ["missing-template", "exec-safe", "same-venue"]
+
+            def load_promoted_template(self, template_id):
+                mapping = {
+                    "exec-safe": SimpleNamespace(
+                        safety_tier=node_cache.SafetyTier.EXECUTION_SAFE.value,
+                    ),
+                    "same-venue": SimpleNamespace(
+                        safety_tier=(
+                            node_cache.SafetyTier.EXECUTION_SAFE_SAME_VENUE_ELIGIBLE.value
+                        ),
+                    ),
+                }
+                return mapping.get(template_id)
+
+        monkeypatch.setattr(node_cache, "FileRuleCache", lambda path: path)
+        monkeypatch.setattr(node_cache, "RuleStore", FakeStore)
+
+        status = node_cache.semantic_cache_status(tmp_path)
+
+        assert status.manifest_count == 2
+        assert status.promoted_template_count == 3
+        assert status.execution_safe_template_count == 1
+        assert status.same_venue_execution_eligible_template_count == 1
+
+    def test_run_bootstrap_without_running_loop_executes_async_path(self, tmp_path, monkeypatch):
+        manifest = _manifest(tmp_path, cache_dir=tmp_path / "semantic-cache")
+        calls: list[tuple[Path, object]] = []
+
+        async def fake_bootstrap(*, manifest, cache_dir, logger):
+            calls.append((cache_dir, logger))
+
+        monkeypatch.setattr(node_cache, "_bootstrap_semantic_cache", fake_bootstrap)
+
+        node_cache._run_bootstrap(
+            manifest=manifest,
+            cache_dir=tmp_path / "semantic-cache",
+            logger=None,
+        )
+
+        assert calls == [(tmp_path / "semantic-cache", None)]
+
+    def test_run_bootstrap_with_running_loop_uses_thread_and_propagates_errors(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        manifest = _manifest(tmp_path, cache_dir=tmp_path / "semantic-cache")
+        thread_targets: list[object] = []
+
+        class InlineThread:
+            def __init__(self, *, target, daemon):
+                self._target = target
+                self._daemon = daemon
+
+            def start(self):
+                thread_targets.append(self._daemon)
+                self._target()
+
+            def join(self):
+                return None
+
+        async def fake_bootstrap(*, manifest, cache_dir, logger):
+            return None
+
+        monkeypatch.setattr(node_cache.asyncio, "get_running_loop", lambda: object())
+        monkeypatch.setattr(node_cache.threading, "Thread", InlineThread)
+        monkeypatch.setattr(node_cache, "_bootstrap_semantic_cache", fake_bootstrap)
+
+        node_cache._run_bootstrap(
+            manifest=manifest,
+            cache_dir=tmp_path / "semantic-cache",
+            logger=None,
+        )
+
+        assert thread_targets == [True]
+
+        async def failing_bootstrap(*, manifest, cache_dir, logger):
+            raise RuntimeError("bootstrap-failed")
+
+        monkeypatch.setattr(node_cache, "_bootstrap_semantic_cache", failing_bootstrap)
+        with pytest.raises(RuntimeError, match="bootstrap-failed"):
+            node_cache._run_bootstrap(
+                manifest=manifest,
+                cache_dir=tmp_path / "semantic-cache",
+                logger=None,
+            )
+
+    def test_bootstrap_semantic_cache_runs_refresh_mine_and_promotion(self, tmp_path, monkeypatch):
+        manifest = _manifest(tmp_path, cache_dir=tmp_path / "semantic-cache")
+        store_marker = object()
+        promoted: list[tuple[object, str]] = []
+        refresh_calls: list[str] = []
+        mine_store_calls: list[bool] = []
+        mine_templates_calls: list[tuple[bool, bool]] = []
+
+        class FakeStore:
+            def __init__(self, _cache):
+                pass
+
+        class FakeMiner:
+            def __init__(self, store):
+                assert isinstance(store, FakeStore)
+
+            def mine_store(self, *, persist):
+                mine_store_calls.append(persist)
+
+            def mine_templates_from_store(self, *, persist, persist_event_candidates):
+                mine_templates_calls.append((persist, persist_event_candidates))
+                return ["template-a", "template-b"]
+
+        class FakePromotionPolicy:
+            def promote_template(self, store, template):
+                promoted.append((store, template))
+                return template
+
+        monkeypatch.setattr(node_cache, "FileRuleCache", lambda path: path)
+        monkeypatch.setattr(node_cache, "RuleStore", FakeStore)
+        monkeypatch.setattr(node_cache, "SnapshotIngestor", lambda store: store_marker)
+        monkeypatch.setattr(node_cache, "RuleMiner", FakeMiner)
+        monkeypatch.setattr(node_cache, "RulePromotionPolicy", FakePromotionPolicy)
+
+        async def fake_required(*, manifest, venues, ingestor, logger):
+            assert ingestor is store_marker
+            refresh_calls.append("sxbet")
+
+        async def fake_optional(*, manifest, ingestor, logger):
+            assert ingestor is store_marker
+            refresh_calls.append("cloudbet")
+
+        monkeypatch.setattr(node_cache, "_refresh_required_sxbet_corpus", fake_required)
+        monkeypatch.setattr(node_cache, "_refresh_optional_cloudbet_corpus", fake_optional)
+
+        asyncio.run(
+            node_cache._bootstrap_semantic_cache(
+                manifest=manifest,
+                cache_dir=tmp_path / "semantic-cache",
+                logger=None,
+            ),
+        )
+
+        assert refresh_calls == ["sxbet", "cloudbet"]
+        assert mine_store_calls == [True]
+        assert mine_templates_calls == [(True, False)]
+        assert [template for _, template in promoted] == ["template-a", "template-b"]
+
+    def test_refresh_required_sxbet_corpus_skips_when_no_sxbet_venues(self):
+        ingestor = Mock()
+
+        asyncio.run(
+            node_cache._refresh_required_sxbet_corpus(
+                manifest=None,
+                venues=[BettingVenueManifest(venue="POLYMARKET")],
+                ingestor=ingestor,
+                logger=None,
+            ),
+        )
+
+        assert not ingestor.mock_calls
+
+    def test_refresh_required_sxbet_corpus_requires_api_key(self, monkeypatch):
+        monkeypatch.delenv("SXBET_API_KEY", raising=False)
+
+        with pytest.raises(RuntimeError, match="SXBET_API_KEY"):
+            asyncio.run(
+                node_cache._refresh_required_sxbet_corpus(
+                    manifest=None,
+                    venues=[BettingVenueManifest(venue="SXBET")],
+                    ingestor=Mock(),
+                    logger=None,
+                ),
+            )
+
+    def test_refresh_required_sxbet_corpus_derives_window_and_disconnects(
+        self,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("SXBET_API_KEY", "sxbet-live-key")
+        monkeypatch.setattr(node_cache.time, "time", lambda: 1_000_000)
+        refresh_calls: list[dict[str, object]] = []
+
+        class FakeClient:
+            def __init__(self, *, api_key, logger):
+                self.api_key = api_key
+                self.logger = logger
+                self.connected = False
+                self.disconnected = False
+
+            async def connect(self):
+                self.connected = True
+
+            async def disconnect(self):
+                self.disconnected = True
+
+        class FakeIngestor:
+            async def refresh_sxbet(
+                self,
+                client,
+                *,
+                sport_ids,
+                from_time,
+                to_time,
+                instrument_limit,
+                market_discovery_limit,
+            ):
+                refresh_calls.append(
+                    {
+                        "client": client,
+                        "sport_ids": sport_ids,
+                        "from_time": from_time,
+                        "to_time": to_time,
+                        "instrument_limit": instrument_limit,
+                        "market_discovery_limit": market_discovery_limit,
+                    },
+                )
+
+        monkeypatch.setattr(node_cache, "SXBetHttpClient", FakeClient)
+        venues = [
+            BettingVenueManifest(
+                venue="SXBET",
+                sport_ids=frozenset({77}),
+                instrument_load_limit=300,
+                market_discovery_limit=275,
+            ),
+            BettingVenueManifest(
+                venue="SXBET",
+                sport_ids=frozenset({3}),
+                live_only=True,
+                instrument_load_limit=280,
+                market_discovery_limit=400,
+            ),
+        ]
+
+        asyncio.run(
+            node_cache._refresh_required_sxbet_corpus(
+                manifest=None,
+                venues=venues,
+                ingestor=FakeIngestor(),
+                logger=None,
+            ),
+        )
+
+        assert len(refresh_calls) == 1
+        call = refresh_calls[0]
+        assert call["sport_ids"] == [3, 77]
+        assert call["from_time"] == 1_000_000 - 6 * 60 * 60
+        assert call["to_time"] == 1_000_000 + 6 * 60 * 60
+        assert call["instrument_limit"] == 300
+        assert call["market_discovery_limit"] == 400
+        assert call["client"].connected is True
+        assert call["client"].disconnected is True
+
+    def test_refresh_required_sxbet_corpus_disconnects_after_failure(self, monkeypatch):
+        monkeypatch.setenv("SXBET_API_KEY", "sxbet-live-key")
+
+        class FakeClient:
+            disconnected = False
+
+            def __init__(self, *, api_key, logger):
+                pass
+
+            async def connect(self):
+                return None
+
+            async def disconnect(self):
+                type(self).disconnected = True
+
+        class FailingIngestor:
+            async def refresh_sxbet(self, *args, **kwargs):
+                raise RuntimeError("refresh-failed")
+
+        monkeypatch.setattr(node_cache, "SXBetHttpClient", FakeClient)
+
+        with pytest.raises(RuntimeError, match="refresh-failed"):
+            asyncio.run(
+                node_cache._refresh_required_sxbet_corpus(
+                    manifest=None,
+                    venues=[BettingVenueManifest(venue="SXBET")],
+                    ingestor=FailingIngestor(),
+                    logger=None,
+                ),
+            )
+
+        assert FakeClient.disconnected is True
+
+    def test_refresh_optional_cloudbet_skips_without_api_key(self, monkeypatch):
+        monkeypatch.delenv("CLOUDBET_API_KEY", raising=False)
+        ingestor = Mock()
+
+        asyncio.run(
+            node_cache._refresh_optional_cloudbet_corpus(
+                manifest=None,
+                ingestor=ingestor,
+                logger=None,
+            ),
+        )
+
+        assert not ingestor.mock_calls
+
+    def test_refresh_optional_cloudbet_success_and_warning_paths(self, monkeypatch):
+        monkeypatch.setenv("CLOUDBET_API_KEY", "cloudbet-key")
+        monkeypatch.setattr(node_cache.time, "time", lambda: 2_000_000)
+        refresh_calls: list[dict[str, object]] = []
+        disconnects: list[str] = []
+
+        class FakeClient:
+            def __init__(self, *, loop, logger, api_key):
+                self.loop = loop
+                self.logger = logger
+                self.api_key = api_key
+
+            async def connect(self):
+                return None
+
+            async def disconnect(self):
+                disconnects.append("disconnect")
+
+        class SuccessIngestor:
+            async def refresh_cloudbet(
+                self,
+                client,
+                *,
+                sports,
+                from_timestamp,
+                to_timestamp,
+                limit,
+                adaptive_window,
+                max_window_seconds,
+                min_events_per_sport,
+                include_recent_past_on_sparse,
+                include_bets,
+            ):
+                refresh_calls.append(
+                    {
+                        "client": client,
+                        "sports": sports,
+                        "from_timestamp": from_timestamp,
+                        "to_timestamp": to_timestamp,
+                        "limit": limit,
+                        "adaptive_window": adaptive_window,
+                        "max_window_seconds": max_window_seconds,
+                        "min_events_per_sport": min_events_per_sport,
+                        "include_recent_past_on_sparse": include_recent_past_on_sparse,
+                        "include_bets": include_bets,
+                    },
+                )
+
+        class FailingIngestor:
+            async def refresh_cloudbet(self, *args, **kwargs):
+                raise RuntimeError("cloudbet-failed")
+
+        monkeypatch.setattr(node_cache, "CloudbetClient", FakeClient)
+
+        asyncio.run(
+            node_cache._refresh_optional_cloudbet_corpus(
+                manifest=None,
+                ingestor=SuccessIngestor(),
+                logger=None,
+            ),
+        )
+
+        assert len(refresh_calls) == 1
+        call = refresh_calls[0]
+        assert call["client"].api_key == "cloudbet-key"
+        assert call["sports"] == list(node_cache.DEFAULT_CLOUDBET_SPORTS)
+        assert call["from_timestamp"] == 2_000_000
+        assert call["to_timestamp"] == 2_000_000 + 24 * 60 * 60
+        assert call["limit"] == 20
+        assert call["adaptive_window"] is True
+        assert call["max_window_seconds"] == 7 * 24 * 60 * 60
+        assert call["min_events_per_sport"] == 1
+        assert call["include_recent_past_on_sparse"] is True
+        assert call["include_bets"] is False
+
+        logger = Mock()
+        asyncio.run(
+            node_cache._refresh_optional_cloudbet_corpus(
+                manifest=None,
+                ingestor=FailingIngestor(),
+                logger=logger,
+            ),
+        )
+
+        logger.warning.assert_called_once()
+        assert disconnects == ["disconnect", "disconnect"]
+
 
 class TestBettingArbitrageNodeRunner:
+    def test_heartbeat_writer_emits_alive_payload(self, tmp_path, monkeypatch):
+        heartbeat_path = tmp_path / "heartbeat.json"
+
+        class FakeStopEvent:
+            def __init__(self):
+                self.calls = 0
+
+            def wait(self, _interval_secs):
+                self.calls += 1
+                return self.calls > 1
+
+        monkeypatch.setattr(node_runner, "_utc_now", lambda: "2026-04-29T10:00:00Z")
+        writer = node_runner.HeartbeatWriter(
+            heartbeat_path=heartbeat_path,
+            node_id="sxbet-node",
+            interval_secs=0.0,
+            stop_event=FakeStopEvent(),
+        )
+
+        writer.run()
+
+        payload = json.loads(heartbeat_path.read_text())
+        assert payload == {
+            "nodeId": "sxbet-node",
+            "status": "alive",
+            "at": "2026-04-29T10:00:00Z",
+        }
+
+    def test_render_node_config_supports_stdout_and_explicit_output(
+        self,
+        tmp_path,
+        monkeypatch,
+        capsys,
+    ):
+        manifest = _manifest(tmp_path, cache_dir=tmp_path / "semantic-cache")
+        manifest_path = tmp_path / "manifest.json"
+        manifest_path.write_bytes(manifest.json())
+        monkeypatch.setattr(
+            node_runner,
+            "ensure_semantic_cache_ready",
+            lambda _: None,
+        )
+
+        result = runner_main(["render-node-config", "--manifest", str(manifest_path)])
+
+        assert result == 0
+        rendered_stdout = capsys.readouterr().out
+        assert json.loads(rendered_stdout)["trader_id"] == manifest.trader_id
+
+        explicit_output = tmp_path / "rendered-explicit.json"
+        result = runner_main(
+            [
+                "render-node-config",
+                "--manifest",
+                str(manifest_path),
+                "--output",
+                str(explicit_output),
+            ],
+        )
+
+        assert result == 0
+        assert json.loads(explicit_output.read_text())["trader_id"] == manifest.trader_id
+
     def test_validate_manifest_writes_semantic_cache_status(self, tmp_path, monkeypatch):
         manifest = _manifest(tmp_path, cache_dir=tmp_path / "semantic-cache")
         manifest_path = tmp_path / "manifest.json"
@@ -353,7 +949,10 @@ class TestBettingArbitrageNodeRunner:
             same_venue_execution_eligible_template_count=1,
         )
         monkeypatch.setattr(
-            "nautilus_trader.live.strategy_nodes.betting_arbitrage.runner.ensure_semantic_cache_ready",
+            (
+                "nautilus_trader.live.strategy_nodes.betting_arbitrage.runner."
+                "ensure_semantic_cache_ready"
+            ),
             lambda _: expected_status,
         )
 
@@ -366,13 +965,46 @@ class TestBettingArbitrageNodeRunner:
         assert payload["semanticCache"]["promotedTemplateCount"] == 2
         assert payload["semanticCache"]["sameVenueExecutionEligibleTemplateCount"] == 1
 
+    def test_validate_manifest_failure_writes_failed_status(self, tmp_path, monkeypatch):
+        manifest = _manifest(tmp_path, cache_dir=tmp_path / "semantic-cache")
+        manifest_path = tmp_path / "manifest.json"
+        manifest_path.write_bytes(manifest.json())
+        monkeypatch.setattr(
+            node_runner,
+            "ensure_semantic_cache_ready",
+            lambda _: SemanticCacheStatus(
+                path=str(tmp_path / "semantic-cache"),
+                source="existing",
+                manifest_count=1,
+                promoted_template_count=1,
+                execution_safe_template_count=1,
+                same_venue_execution_eligible_template_count=0,
+            ),
+        )
+        monkeypatch.setattr(
+            node_runner,
+            "build_trading_node_config",
+            lambda manifest: (_ for _ in ()).throw(ValueError("bad-config")),
+        )
+
+        with pytest.raises(ValueError, match="bad-config"):
+            runner_main(["validate-manifest", "--manifest", str(manifest_path)])
+
+        payload = json.loads((tmp_path / "status.json").read_text())
+        assert payload["status"] == "failed"
+        assert payload["error"] == "ValueError('bad-config')"
+        assert payload["semanticCache"]["ready"] is True
+
     def test_run_no_start_records_semantic_cache_status(self, tmp_path, monkeypatch):
         manifest = _manifest(tmp_path, cache_dir=tmp_path / "semantic-cache")
         manifest_path = tmp_path / "manifest.json"
         manifest_path.write_bytes(manifest.json())
 
         monkeypatch.setattr(
-            "nautilus_trader.live.strategy_nodes.betting_arbitrage.runner.ensure_semantic_cache_ready",
+            (
+                "nautilus_trader.live.strategy_nodes.betting_arbitrage.runner."
+                "ensure_semantic_cache_ready"
+            ),
             lambda _: SemanticCacheStatus(
                 path=str(tmp_path / "semantic-cache"),
                 source="existing",
@@ -402,6 +1034,102 @@ class TestBettingArbitrageNodeRunner:
         assert payload["status"] == "built"
         assert payload["semanticCache"]["source"] == "existing"
         assert payload["semanticCache"]["executionSafeTemplateCount"] == 1
+
+    def test_run_success_and_failure_paths_record_status_transitions(self, tmp_path, monkeypatch):
+        def semantic_status(_manifest):
+            return SemanticCacheStatus(
+                path=str(tmp_path / "semantic-cache"),
+                source="bootstrapped",
+                manifest_count=1,
+                promoted_template_count=1,
+                execution_safe_template_count=1,
+                same_venue_execution_eligible_template_count=0,
+            )
+
+        monkeypatch.setattr(node_runner, "ensure_semantic_cache_ready", semantic_status)
+        monkeypatch.setattr(node_runner.HeartbeatWriter, "start", lambda self: None)
+
+        original_write_json = node_runner._write_json
+        observed_statuses: list[str] = []
+
+        def tracking_write_json(path, payload):
+            if "status" in payload:
+                observed_statuses.append(payload["status"])
+            return original_write_json(path, payload)
+
+        monkeypatch.setattr(node_runner, "_write_json", tracking_write_json)
+
+        class SuccessTradingNode:
+            instances: list["SuccessTradingNode"] = []
+
+            def __init__(self, config):
+                self.config = config
+                self.disposed = False
+                type(self).instances.append(self)
+
+            def build(self):
+                return None
+
+            def run(self):
+                return None
+
+            def dispose(self):
+                self.disposed = True
+
+        monkeypatch.setattr("nautilus_trader.live.node.TradingNode", SuccessTradingNode)
+        manifest = _manifest(tmp_path, cache_dir=tmp_path / "semantic-cache")
+        manifest_path = tmp_path / "manifest-success.json"
+        manifest_path.write_bytes(manifest.json())
+
+        assert runner_main(["run", "--manifest", str(manifest_path)]) == 0
+        success_payload = json.loads((tmp_path / "status.json").read_text())
+        assert observed_statuses[-4:] == ["building", "built", "running", "completed"]
+        assert success_payload["status"] == "completed"
+        assert success_payload["heartbeatPath"] == str(tmp_path / "heartbeat.json")
+        assert SuccessTradingNode.instances[-1].disposed is True
+
+        observed_statuses.clear()
+
+        class FailingTradingNode(SuccessTradingNode):
+            def run(self):
+                raise RuntimeError("node-run-failed")
+
+        monkeypatch.setattr("nautilus_trader.live.node.TradingNode", FailingTradingNode)
+        failing_manifest_path = tmp_path / "manifest-failure.json"
+        failing_manifest_path.write_bytes(manifest.json())
+
+        with pytest.raises(RuntimeError, match="node-run-failed"):
+            runner_main(["run", "--manifest", str(failing_manifest_path)])
+
+        failure_payload = json.loads((tmp_path / "status.json").read_text())
+        assert observed_statuses[-4:] == ["building", "built", "running", "failed"]
+        assert failure_payload["status"] == "failed"
+        assert failure_payload["error"] == "RuntimeError('node-run-failed')"
+        assert FailingTradingNode.instances[-1].disposed is True
+
+    def test_semantic_cache_payload_helpers(self, tmp_path, monkeypatch):
+        expected_status = SemanticCacheStatus(
+            path=str(tmp_path / "semantic-cache"),
+            source="bootstrapped",
+            manifest_count=2,
+            promoted_template_count=3,
+            execution_safe_template_count=1,
+            same_venue_execution_eligible_template_count=1,
+        )
+        monkeypatch.setattr(node_runner, "ensure_semantic_cache_ready", lambda _: expected_status)
+
+        payload = node_runner._ensure_semantic_cache(_manifest(tmp_path, cache_dir=tmp_path / "x"))
+
+        assert payload == {
+            "path": str(tmp_path / "semantic-cache"),
+            "source": "bootstrapped",
+            "ready": True,
+            "manifestCount": 2,
+            "promotedTemplateCount": 3,
+            "executionSafeTemplateCount": 1,
+            "sameVenueExecutionEligibleTemplateCount": 1,
+        }
+        assert node_runner._semantic_cache_payload(None) is None
 
     def test_runtime_manifest_rewrite_includes_semantic_cache_dir(self):
         deploy_script = Path(
