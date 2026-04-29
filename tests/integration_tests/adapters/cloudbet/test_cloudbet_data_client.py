@@ -1,44 +1,18 @@
 import asyncio
-from collections import Counter
 from unittest.mock import patch, AsyncMock, MagicMock
 
-import msgspec
 import pytest
 from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.data.messages import RequestInstrument
-from nautilus_trader.model.instruments import Instrument
 
 from nautilus_trader.adapters.cloudbet.client.core import CloudbetClient
 from nautilus_trader.adapters.cloudbet.client.schema import (
     GetLatestOddsResponse,
     SelectionStatus,
-    GetEventResponse,
-    EventStatus,
 )
 from nautilus_trader.adapters.cloudbet.common import CLOUDBET_VENUE
-from nautilus_trader.adapters.cloudbet.data_client import CloudbetDataClient
 from nautilus_trader.adapters.cloudbet.providers import CloudbetInstrumentProvider
-from nautilus_trader.common.clock import LiveClock
-from nautilus_trader.common.enums import LogLevel
-from nautilus_trader.common.logging import Logger
-from nautilus_trader.model.data import BookOrder
-from nautilus_trader.model.data import InstrumentClose
-from nautilus_trader.model.data import OrderBookDelta
-from nautilus_trader.model.data import OrderBookDeltas
-from nautilus_trader.model.data import TradeTick
-from nautilus_trader.model.enums import BookAction
-from nautilus_trader.model.enums import BookType
-from nautilus_trader.model.enums import InstrumentCloseType
-from nautilus_trader.model.enums import MarketStatus
-from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.identifiers import ClientId
-from nautilus_trader.model.identifiers import InstrumentId
-from nautilus_trader.model.identifiers import Symbol
-from nautilus_trader.model.objects import Price
-from nautilus_trader.model.orderbook import OrderBook
-from nautilus_trader.test_kit.providers import TestInstrumentProvider
-from nautilus_trader.test_kit.stubs.data import TestDataStubs
-from tests.integration_tests.adapters.cloudbet.test_kit import CloudbetResponses
 
 
 async def wait_for_data_client_state(
@@ -64,7 +38,7 @@ async def wait_for_data_client_state(
 
 class TestCloudbetDataClient:
     # @pytest.mark.dependency()
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_connect(self, data_client):
         """Test connect"""
         # Arrange
@@ -98,9 +72,7 @@ class TestCloudbetDataClient:
                 new_callable=AsyncMock,
                 side_effect=async_side_effect_load_ids,
             ) as mocked_load_ids,
-            patch.object(
-                data_client, "_send_all_instruments_to_data_engine", new_callable=MagicMock
-            ) as mocked_send_all,
+            patch.object(data_client, "_send_all_instruments_to_data_engine", new_callable=MagicMock),
         ):
             update_task = asyncio.create_task(data_client._update_instruments())
 
@@ -122,7 +94,7 @@ class TestCloudbetDataClient:
         # Assertions related to the mocked calls
         assert mocked_load_ids.call_count == iterations
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 552)], indirect=["instruments"])
     # @patch("nautilus_trader.adapters.cloudbet.sockets.CloudbetStreamClient.connect")
     async def test_update_instruments(self, instrument_provider, data_client, instruments):
@@ -137,7 +109,7 @@ class TestCloudbetDataClient:
         assert data_client._update_instrument_interval == 2
         assert data_client._update_instruments_task is not None
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 552)], indirect=["instruments"])
     async def test_send_instruments_data_engine(self, data_client, instruments, data_engine):
         """Test _send_all_instruments_to_data_engine"""
@@ -156,7 +128,7 @@ class TestCloudbetDataClient:
         )
 
     # test disconnect
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     @patch("nautilus_trader.adapters.cloudbet.sockets.CloudbetStreamClient.disconnect")
     async def test_disconnect(self, mock_stream_disconnect, data_client):
         """Test disconnect"""
@@ -175,7 +147,7 @@ class TestCloudbetDataClient:
             f"Expected data client to be disconnected, got {data_client.is_connected}"
         )
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     async def test_reset(self, data_client):
         """Test _reset"""
         data_client._update_instruments_task = asyncio.create_task(asyncio.sleep(3600))
@@ -187,7 +159,7 @@ class TestCloudbetDataClient:
         assert data_client.subscribed_market_names == {}
         assert data_client._update_instruments_task is None
 
-    @pytest.mark.asyncio()
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 1)], indirect=["instruments"])
     # @patch('nautilus_trader.adapters.cloudbet.client.core.CloudbetClient.get_latest_odds')
     @patch.object(CloudbetClient, "get_latest_odds", new_callable=AsyncMock)

@@ -346,7 +346,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             "Opportunity graph topology: "
             f"nodes={graph_stats['nodes']} "
             f"edges={graph_stats['edges']} "
-            f"quote_states={graph_stats['quote_states']}",
+            f"quote_states={graph_stats['quote_states']} "
+            f"connected_nodes={graph_stats['connected_nodes']}",
         )
 
     def _should_process_instrument(self, instrument: CryptoBettingInstrument) -> bool:
@@ -1787,6 +1788,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             "opportunity_graph_nodes": self._opportunity_graph.node_count,
             "opportunity_graph_edges": self._opportunity_graph.edge_count,
             "opportunity_graph_quote_states": self._opportunity_graph.quote_state_count,
+            "opportunity_graph_connected_nodes": self._opportunity_graph.connected_node_count,
             "opportunities_found": self._opportunities_found,
             "opportunities_executed": self._opportunities_executed,
             "raw_arbitrage_detections": self._raw_arbitrage_detections,

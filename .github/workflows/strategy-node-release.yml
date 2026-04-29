@@ -65,6 +65,9 @@ jobs:
         run: |
           workspace_parent="$(dirname "$GITHUB_WORKSPACE")"
           runner_ci_home="${RUNNER_CI_HOME:-}"
+          can_run_sudo() {
+            command -v sudo > /dev/null 2>&1 && sudo -n true > /dev/null 2>&1
+          }
           run_maybe_sudo() {
             if [[ "${EUID}" -eq 0 ]]; then
               "$@"
@@ -92,12 +95,12 @@ jobs:
               "$(id -g)"
           else
             run_maybe_sudo mkdir -p "$GITHUB_WORKSPACE" "$workspace_parent/.ci-cache"
-            run_maybe_sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" "$workspace_parent/.ci-cache"
+            run_maybe_sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" "$workspace_parent/.ci-cache" || true
           fi
 
           if [[ -n "$runner_ci_home" ]]; then
             run_maybe_sudo mkdir -p "$runner_ci_home/.cache"
-            run_maybe_sudo chown -R "$(id -u):$(id -g)" "$runner_ci_home"
+            run_maybe_sudo chown -R "$(id -u):$(id -g)" "$runner_ci_home" || true
           fi
 
           if [[ ! -e "$GITHUB_WORKSPACE/.git" ]]; then
@@ -155,6 +158,9 @@ jobs:
             put "$wheel_path" "strategy-node-wheel/$(basename "$wheel_path")"
 
       - name: Validate SX.bet manifest
+        env:
+          SXBET_API_KEY: ${{ secrets.SXBET_API_KEY }}
+          CLOUDBET_API_KEY: ${{ secrets.CLOUDBET_API_KEY }}
         run: |
           cd /tmp
           "$GITHUB_WORKSPACE/.venv/bin/python" -m nautilus_trader.live.strategy_nodes.betting_arbitrage \
@@ -215,6 +221,9 @@ jobs:
         run: |
           workspace_parent="$(dirname "$GITHUB_WORKSPACE")"
           runner_ci_home="${RUNNER_CI_HOME:-}"
+          can_run_sudo() {
+            command -v sudo > /dev/null 2>&1 && sudo -n true > /dev/null 2>&1
+          }
           run_maybe_sudo() {
             if [[ "${EUID}" -eq 0 ]]; then
               "$@"
@@ -242,12 +251,12 @@ jobs:
               "$(id -g)"
           else
             run_maybe_sudo mkdir -p "$GITHUB_WORKSPACE" "$workspace_parent/.ci-cache"
-            run_maybe_sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" "$workspace_parent/.ci-cache"
+            run_maybe_sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" "$workspace_parent/.ci-cache" || true
           fi
 
           if [[ -n "$runner_ci_home" ]]; then
             run_maybe_sudo mkdir -p "$runner_ci_home/.cache"
-            run_maybe_sudo chown -R "$(id -u):$(id -g)" "$runner_ci_home"
+            run_maybe_sudo chown -R "$(id -u):$(id -g)" "$runner_ci_home" || true
           fi
 
           if [[ ! -e "$GITHUB_WORKSPACE/.git" ]]; then
@@ -301,10 +310,12 @@ jobs:
             tag="${GITHUB_SHA::12}"
           fi
           image_ref="ghcr.io/${REPOSITORY_OWNER}/cloudbet-market-maker/betting-arbitrage-node:${tag}"
-          echo "image_ref=$image_ref" >> "$GITHUB_OUTPUT"
-          echo "image_tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "image_archive_key=betting-arbitrage-node.tar.gz" >> "$GITHUB_OUTPUT"
-          echo "image_archive_namespace=strategy-node-images/$tag" >> "$GITHUB_OUTPUT"
+          {
+            echo "image_ref=$image_ref"
+            echo "image_tag=$tag"
+            echo "image_archive_key=betting-arbitrage-node.tar.gz"
+            echo "image_archive_namespace=strategy-node-images/$tag"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Check for reusable strategy-node image archive
         id: image-archive-cache
@@ -398,6 +409,9 @@ jobs:
         run: |
           workspace_parent="$(dirname "$GITHUB_WORKSPACE")"
           runner_ci_home="${RUNNER_CI_HOME:-}"
+          can_run_sudo() {
+            command -v sudo > /dev/null 2>&1 && sudo -n true > /dev/null 2>&1
+          }
           run_maybe_sudo() {
             if [[ "${EUID}" -eq 0 ]]; then
               "$@"
@@ -425,12 +439,12 @@ jobs:
               "$(id -g)"
           else
             run_maybe_sudo mkdir -p "$GITHUB_WORKSPACE" "$workspace_parent/.ci-cache"
-            run_maybe_sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" "$workspace_parent/.ci-cache"
+            run_maybe_sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" "$workspace_parent/.ci-cache" || true
           fi
 
           if [[ -n "$runner_ci_home" ]]; then
             run_maybe_sudo mkdir -p "$runner_ci_home/.cache"
-            run_maybe_sudo chown -R "$(id -u):$(id -g)" "$runner_ci_home"
+            run_maybe_sudo chown -R "$(id -u):$(id -g)" "$runner_ci_home" || true
           fi
 
           if [[ ! -e "$GITHUB_WORKSPACE/.git" ]]; then
@@ -505,10 +519,12 @@ jobs:
             tag="${GITHUB_SHA::12}"
           fi
           image_ref="ghcr.io/${REPOSITORY_OWNER}/cloudbet-market-maker/betting-arbitrage-node:${tag}"
-          echo "image_ref=$image_ref" >> "$GITHUB_OUTPUT"
-          echo "image_tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "image_archive_key=betting-arbitrage-node.tar.gz" >> "$GITHUB_OUTPUT"
-          echo "image_archive_namespace=strategy-node-images/$tag" >> "$GITHUB_OUTPUT"
+          {
+            echo "image_ref=$image_ref"
+            echo "image_tag=$tag"
+            echo "image_archive_key=betting-arbitrage-node.tar.gz"
+            echo "image_archive_namespace=strategy-node-images/$tag"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Download strategy-node image archive
         if: github.event.inputs.image_transport == 'archive'

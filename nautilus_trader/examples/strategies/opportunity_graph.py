@@ -456,6 +456,10 @@ class OpportunityGraph:
         """
         return len(self.edge_ids_by_node_id.get(node_id, set()))
 
+    @property
+    def connected_node_count(self) -> int:
+        return sum(1 for edge_ids in self.edge_ids_by_node_id.values() if edge_ids)
+
     def stats(self) -> dict[str, int]:
         """
         Return lightweight topology counters for diagnostics and tests.
@@ -464,6 +468,7 @@ class OpportunityGraph:
             "nodes": self.node_count,
             "edges": self.edge_count,
             "quote_states": self.quote_state_count,
+            "connected_nodes": self.connected_node_count,
         }
 
     def _sync_edges_from_rust(self) -> None:
