@@ -16,6 +16,7 @@
 use std::collections::{HashMap, HashSet};
 
 use pyo3::{exceptions::PyKeyError, prelude::*, types::PyDict};
+use serde_json::Value;
 
 const HANDICAP_TOLERANCE: f64 = 0.01;
 const PROFIT_MARGIN_EPSILON: f64 = 1e-12;
@@ -151,13 +152,12 @@ impl SemanticPatternSnapshot {
         })
     }
 
-    fn matches_node(&self, node: &NodeSnapshot) -> bool {
+    fn matches_node_identity(&self, node: &NodeSnapshot) -> bool {
         self.sport == node.semantic_sport
             && self.scope == node.semantic_scope
             && self.market_type == node.semantic_market_type
             && self.market_family == node.semantic_market_family
             && self.selection == node.semantic_selection
-            && self.params_key == node.semantic_params_key
     }
 }
 
@@ -244,8 +244,26 @@ impl SemanticTemplateSnapshot {
     }
 
     fn patterns_match(&self, source: &NodeSnapshot, target: &NodeSnapshot) -> bool {
-        (self.pattern_a.matches_node(source) && self.pattern_b.matches_node(target))
-            || (self.pattern_b.matches_node(source) && self.pattern_a.matches_node(target))
+        self.patterns_match_order(&self.pattern_a, source, &self.pattern_b, target)
+            || self.patterns_match_order(&self.pattern_b, source, &self.pattern_a, target)
+    }
+
+    fn patterns_match_order(
+        &self,
+        pattern_a: &SemanticPatternSnapshot,
+        node_a: &NodeSnapshot,
+        pattern_b: &SemanticPatternSnapshot,
+        node_b: &NodeSnapshot,
+    ) -> bool {
+        if !(pattern_a.matches_node_identity(node_a) && pattern_b.matches_node_identity(node_b)) {
+            return false;
+        }
+        if pattern_a.params_key == node_a.semantic_params_key
+            && pattern_b.params_key == node_b.semantic_params_key
+        {
+            return true;
+        }
+        line_params_compatible(pattern_a, node_a, pattern_b, node_b)
     }
 
     fn applies_to_venues(&self, source: &NodeSnapshot, target: &NodeSnapshot) -> bool {
@@ -1104,6 +1122,53 @@ fn edge_id(source_id: &str, target_id: &str) -> String {
     }
 }
 
+fn line_params_compatible(
+    pattern_a: &SemanticPatternSnapshot,
+    node_a: &NodeSnapshot,
+    pattern_b: &SemanticPatternSnapshot,
+    node_b: &NodeSnapshot,
+) -> bool {
+    let Some(pattern_line_a) = only_line_param(&pattern_a.params_key) else {
+        return false;
+    };
+    let Some(pattern_line_b) = only_line_param(&pattern_b.params_key) else {
+        return false;
+    };
+    let Some(node_line_a) = only_line_param(&node_a.semantic_params_key) else {
+        return false;
+    };
+    let Some(node_line_b) = only_line_param(&node_b.semantic_params_key) else {
+        return false;
+    };
+
+    if approx_eq(pattern_line_a, pattern_line_b) && approx_eq(node_line_a, node_line_b) {
+        return true;
+    }
+
+    approx_eq(pattern_line_a + pattern_line_b, 0.0) && approx_eq(node_line_a + node_line_b, 0.0)
+}
+
+fn only_line_param(params_key: &str) -> Option<f64> {
+    let params: Value = serde_json::from_str(params_key).ok()?;
+    let pairs = params.as_array()?;
+    if pairs.len() != 1 {
+        return None;
+    }
+    let pair = pairs.first()?.as_array()?;
+    if pair.len() != 2 || pair.first()?.as_str()? != "line" {
+        return None;
+    }
+    match pair.get(1)? {
+        Value::String(value) => value.parse::<f64>().ok(),
+        Value::Number(value) => value.as_f64(),
+        _ => None,
+    }
+}
+
+fn approx_eq(left: f64, right: f64) -> bool {
+    (left - right).abs() <= HANDICAP_TOLERANCE
+}
+
 fn is_push_capable(market_type: &str) -> bool {
     matches!(market_type, "draw_no_bet" | "asian_handicap")
 }
@@ -1356,6 +1421,17 @@ mod tests {
         dict
     }
 
+    fn py_pattern_with_params<'py>(
+        py: Python<'py>,
+        market_type: &str,
+        selection: &str,
+        params_key: &str,
+    ) -> Bound<'py, PyDict> {
+        let dict = py_pattern(py, market_type, selection);
+        dict.set_item("params_key", params_key).unwrap();
+        dict
+    }
+
     fn py_semantic_template<'py>(
         py: Python<'py>,
         provider_scope: Vec<&str>,
@@ -1550,6 +1626,137 @@ mod tests {
                 .append(py_semantic_template(py, vec![], true))
                 .unwrap();
             core.build_semantic(nodes.as_any(), venue_agnostic.as_any())
+                .unwrap();
+            assert_eq!(core.edge_count(), 1);
+        });
+    }
+
+    #[rstest]
+    fn semantic_line_params_generalize_same_and_opposite_line_templates() {
+        pyo3::Python::initialize();
+
+        Python::attach(|py| {
+            let mut over = node_with("over", "SXBET", "event-1", "Totals", "TOTALS", "OVER");
+            over.params = "line=2.5".to_string();
+            over.semantic_params_key = "[[\"line\",\"2.5\"]]".to_string();
+            let mut under = node_with("under", "SXBET", "event-1", "Totals", "TOTALS", "UNDER");
+            under.params = "line=2.5".to_string();
+            under.semantic_params_key = "[[\"line\",\"2.5\"]]".to_string();
+
+            let nodes = PyList::empty(py);
+            nodes.append(py_payload(py, &over)).unwrap();
+            nodes.append(py_payload(py, &under)).unwrap();
+
+            let same_line_template = PyDict::new(py);
+            same_line_template
+                .set_item("template_id", "template-total-goals-any-line")
+                .unwrap();
+            same_line_template
+                .set_item("relationship_type", "COMPLEMENTARY_COVERAGE")
+                .unwrap();
+            same_line_template
+                .set_item(
+                    "pattern_a",
+                    py_pattern_with_params(py, "TOTALS", "OVER", "[[\"line\",\"52.5\"]]"),
+                )
+                .unwrap();
+            same_line_template
+                .set_item(
+                    "pattern_b",
+                    py_pattern_with_params(py, "TOTALS", "UNDER", "[[\"line\",\"52.5\"]]"),
+                )
+                .unwrap();
+            same_line_template.set_item("confidence", 1.0).unwrap();
+            same_line_template
+                .set_item("provider_scope", vec!["SXBET"])
+                .unwrap();
+            same_line_template
+                .set_item("venue_agnostic", false)
+                .unwrap();
+            same_line_template
+                .set_item("safety_tier", "EXECUTION_SAFE")
+                .unwrap();
+            same_line_template
+                .set_item("promotion_status", "PROMOTED")
+                .unwrap();
+            same_line_template.set_item("push_capable", false).unwrap();
+            same_line_template.set_item("execution_safe", true).unwrap();
+
+            let templates = PyList::empty(py);
+            templates.append(same_line_template).unwrap();
+
+            let mut core = OpportunityGraphCore::new(true, 0.5);
+            core.build_semantic(nodes.as_any(), templates.as_any())
+                .unwrap();
+            assert_eq!(core.edge_count(), 1);
+
+            let mut home = node_with(
+                "home",
+                "SXBET",
+                "event-2",
+                "Spread",
+                "ASIAN_HANDICAP",
+                "HOME",
+            );
+            home.params = "line=-3.5".to_string();
+            home.semantic_params_key = "[[\"line\",\"-3.5\"]]".to_string();
+            let mut away = node_with(
+                "away",
+                "SXBET",
+                "event-2",
+                "Spread",
+                "ASIAN_HANDICAP",
+                "AWAY",
+            );
+            away.params = "line=3.5".to_string();
+            away.semantic_params_key = "[[\"line\",\"3.5\"]]".to_string();
+            let spread_nodes = PyList::empty(py);
+            spread_nodes.append(py_payload(py, &home)).unwrap();
+            spread_nodes.append(py_payload(py, &away)).unwrap();
+
+            let opposite_line_template = PyDict::new(py);
+            opposite_line_template
+                .set_item("template_id", "template-spread-any-opposite-line")
+                .unwrap();
+            opposite_line_template
+                .set_item("relationship_type", "COMPLEMENTARY_COVERAGE")
+                .unwrap();
+            opposite_line_template
+                .set_item(
+                    "pattern_a",
+                    py_pattern_with_params(py, "ASIAN_HANDICAP", "HOME", "[[\"line\",\"-1.5\"]]"),
+                )
+                .unwrap();
+            opposite_line_template
+                .set_item(
+                    "pattern_b",
+                    py_pattern_with_params(py, "ASIAN_HANDICAP", "AWAY", "[[\"line\",\"1.5\"]]"),
+                )
+                .unwrap();
+            opposite_line_template.set_item("confidence", 1.0).unwrap();
+            opposite_line_template
+                .set_item("provider_scope", vec!["SXBET"])
+                .unwrap();
+            opposite_line_template
+                .set_item("venue_agnostic", false)
+                .unwrap();
+            opposite_line_template
+                .set_item("safety_tier", "EXECUTION_SAFE")
+                .unwrap();
+            opposite_line_template
+                .set_item("promotion_status", "PROMOTED")
+                .unwrap();
+            opposite_line_template
+                .set_item("push_capable", true)
+                .unwrap();
+            opposite_line_template
+                .set_item("execution_safe", false)
+                .unwrap();
+
+            let spread_templates = PyList::empty(py);
+            spread_templates.append(opposite_line_template).unwrap();
+
+            core.build_semantic(spread_nodes.as_any(), spread_templates.as_any())
                 .unwrap();
             assert_eq!(core.edge_count(), 1);
         });
