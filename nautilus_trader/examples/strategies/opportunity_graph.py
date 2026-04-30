@@ -1076,7 +1076,10 @@ class OpportunityGraph:
     @staticmethod
     def _params_key(params: tuple[tuple[str, str], ...] | object) -> str:
         if isinstance(params, tuple):
-            return json.dumps(list(params), sort_keys=True, separators=(",", ":"))
+            semantic_params = [
+                (key, value) for key, value in params if str(key).lower() not in {"period"}
+            ]
+            return json.dumps(semantic_params, sort_keys=True, separators=(",", ":"))
         return str(params or "")
 
     def _should_use_semantic_rust(self, semantic_templates: list[dict[str, object]]) -> bool:
