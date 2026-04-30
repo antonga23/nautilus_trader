@@ -320,6 +320,70 @@ class TestBettingArbitrageNodeBuilder:
         assert data_client.config["quote_poll_summary_interval_secs"] == 31.0
         assert data_client.config["quote_poll_concurrency"] == 3
 
+    def test_cloudbet_factories_match_live_node_builder_signature(self, monkeypatch):
+        from nautilus_trader.adapters.cloudbet import factories as cloudbet_factories
+        from nautilus_trader.adapters.cloudbet.config import CloudbetDataClientConfig
+        from nautilus_trader.adapters.cloudbet.config import CloudbetExecClientConfig
+
+        class FakeClient:
+            pass
+
+        class FakeProvider:
+            pass
+
+        class FakeDataClient:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+        class FakeExecClient:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+        def fake_cached_client(*, logger, **kwargs):
+            assert logger is not None
+            return FakeClient()
+
+        def fake_cached_provider(*, logger, **kwargs):
+            assert logger is not None
+            return FakeProvider()
+
+        monkeypatch.setattr(
+            cloudbet_factories,
+            "get_cached_cloudbet_client",
+            fake_cached_client,
+        )
+        monkeypatch.setattr(
+            cloudbet_factories,
+            "get_cached_cloudbet_instrument_provider",
+            fake_cached_provider,
+        )
+        monkeypatch.setattr(cloudbet_factories, "CloudbetDataClient", FakeDataClient)
+        monkeypatch.setattr(
+            cloudbet_factories,
+            "CloudbetLiveExecutionClient",
+            FakeExecClient,
+        )
+
+        data_client = cloudbet_factories.CloudbetLiveDataClientFactory.create(
+            loop=Mock(),
+            name="CLOUDBET",
+            config=CloudbetDataClientConfig(),
+            msgbus=Mock(),
+            cache=Mock(),
+            clock=Mock(),
+        )
+        exec_client = cloudbet_factories.CloudbetLiveExecClientFactory.create(
+            loop=Mock(),
+            name="CLOUDBET",
+            config=CloudbetExecClientConfig(),
+            msgbus=Mock(),
+            cache=Mock(),
+            clock=Mock(),
+        )
+
+        assert data_client.kwargs["logger"] is not None
+        assert exec_client.kwargs["logger"] is not None
+
     def test_polymarket_instrument_ids_flow_into_importable_config(self):
         manifest = BettingArbitrageNodeManifest(
             node_id="polymarket-validation",
