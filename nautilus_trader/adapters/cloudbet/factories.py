@@ -53,7 +53,7 @@ def get_cached_cloudbet_client(
     """
     global CLIENTS
 
-    key: str = "|".join((api_url, api_key))
+    key: str = "|".join((api_url or "", api_key or ""))
     if key not in CLIENTS:
         LoggerAdapter("CloudbetFactory", logger).warning(
             "Creating new instance of CloudbetClient",

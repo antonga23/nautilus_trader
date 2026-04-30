@@ -277,6 +277,49 @@ class TestBettingArbitrageNodeBuilder:
         assert data_client.config["order_book_concurrency"] == 8
         assert data_client.config["api_key_pool"] == ("dummy-sxbet-api-key",)
 
+    def test_cloudbet_data_client_receives_runtime_settings(self):
+        manifest = BettingArbitrageNodeManifest(
+            node_id="cloudbet-validation",
+            trader_id="BETARB-TEST-CB",
+            validation_mode=True,
+            allow_dummy_credentials=True,
+            semantic_rule_cache_dir="artifacts/semantic-rule-cache/cloudbet-validation",
+            venues=[
+                BettingVenueManifest(
+                    venue="CLOUDBET",
+                    client_key="CLOUDBET_PRIMARY",
+                    sport_keys=frozenset({"soccer", "basketball"}),
+                    instrument_load_limit=40,
+                    auto_subscribe_quote_ticks=True,
+                    quote_subscription_limit=60,
+                    order_book_poll_interval_secs=7.0,
+                    order_book_poll_summary_interval_secs=31.0,
+                    order_book_concurrency=3,
+                ),
+            ],
+        )
+
+        config = build_trading_node_config(manifest)
+        data_client = config.data_clients["CLOUDBET_PRIMARY"]
+
+        assert config.exec_clients == {}
+        assert config.strategies[0].config["enabled_venues"] == ["CLOUDBET"]
+        assert data_client.path == (
+            "nautilus_trader.adapters.cloudbet.config:CloudbetDataClientConfig"
+        )
+        assert data_client.config["api_key"] == "dummy-cloudbet-api-key"
+        assert data_client.config["instrument_provider"]["load_all"] is True
+        assert data_client.config["instrument_provider"]["filters"]["sport_key"] == [
+            "basketball",
+            "soccer",
+        ]
+        assert data_client.config["instrument_provider"]["filters"]["limit"] == 40
+        assert data_client.config["auto_subscribe_quote_ticks"] is True
+        assert data_client.config["quote_subscription_limit"] == 60
+        assert data_client.config["quote_poll_interval_secs"] == 7.0
+        assert data_client.config["quote_poll_summary_interval_secs"] == 31.0
+        assert data_client.config["quote_poll_concurrency"] == 3
+
     def test_polymarket_instrument_ids_flow_into_importable_config(self):
         manifest = BettingArbitrageNodeManifest(
             node_id="polymarket-validation",
@@ -681,12 +724,13 @@ class TestSemanticCacheBootstrap:
             assert ingestor is store_marker
             refresh_calls.append("sxbet")
 
-        async def fake_optional(*, manifest, ingestor, logger):
+        async def fake_cloudbet(*, manifest, venues, ingestor, logger):
             assert ingestor is store_marker
+            assert [venue.venue for venue in venues] == ["SXBET"]
             refresh_calls.append("cloudbet")
 
         monkeypatch.setattr(node_cache, "_refresh_required_sxbet_corpus", fake_required)
-        monkeypatch.setattr(node_cache, "_refresh_optional_cloudbet_corpus", fake_optional)
+        monkeypatch.setattr(node_cache, "_refresh_cloudbet_corpus", fake_cloudbet)
 
         asyncio.run(
             node_cache._bootstrap_semantic_cache(
@@ -952,6 +996,97 @@ class TestSemanticCacheBootstrap:
 
         logger.warning.assert_called_once()
         assert disconnects == ["disconnect", "disconnect"]
+
+    def test_refresh_cloudbet_corpus_required_without_api_key_fails(self, monkeypatch):
+        monkeypatch.delenv("CLOUDBET_API_KEY", raising=False)
+
+        with pytest.raises(RuntimeError, match="CLOUDBET_API_KEY"):
+            asyncio.run(
+                node_cache._refresh_cloudbet_corpus(
+                    manifest=None,
+                    venues=[BettingVenueManifest(venue="CLOUDBET")],
+                    ingestor=Mock(),
+                    logger=None,
+                ),
+            )
+
+    def test_refresh_cloudbet_corpus_derives_required_scope(self, monkeypatch):
+        monkeypatch.setenv("CLOUDBET_API_KEY", "cloudbet-key")
+        monkeypatch.setattr(node_cache.time, "time", lambda: 2_000_000)
+        refresh_calls: list[dict[str, object]] = []
+
+        class FakeClient:
+            def __init__(self, *, loop, logger, api_key):
+                self.loop = loop
+                self.logger = logger
+                self.api_key = api_key
+                self.disconnected = False
+
+            async def connect(self):
+                return None
+
+            async def disconnect(self):
+                self.disconnected = True
+
+        class SuccessIngestor:
+            async def refresh_cloudbet(
+                self,
+                client,
+                *,
+                sports,
+                from_timestamp,
+                to_timestamp,
+                limit,
+                adaptive_window,
+                max_window_seconds,
+                min_events_per_sport,
+                include_recent_past_on_sparse,
+                include_bets,
+            ):
+                refresh_calls.append(
+                    {
+                        "client": client,
+                        "sports": sports,
+                        "from_timestamp": from_timestamp,
+                        "to_timestamp": to_timestamp,
+                        "limit": limit,
+                        "adaptive_window": adaptive_window,
+                        "max_window_seconds": max_window_seconds,
+                        "min_events_per_sport": min_events_per_sport,
+                        "include_recent_past_on_sparse": include_recent_past_on_sparse,
+                        "include_bets": include_bets,
+                    },
+                )
+
+        monkeypatch.setattr(node_cache, "CloudbetClient", FakeClient)
+
+        asyncio.run(
+            node_cache._refresh_cloudbet_corpus(
+                manifest=None,
+                venues=[
+                    BettingVenueManifest(
+                        venue="CLOUDBET",
+                        sport_keys=frozenset({"soccer", "basketball"}),
+                        instrument_load_limit=35,
+                    ),
+                ],
+                ingestor=SuccessIngestor(),
+                logger=None,
+            ),
+        )
+
+        assert len(refresh_calls) == 1
+        call = refresh_calls[0]
+        assert call["client"].api_key == "cloudbet-key"
+        assert call["client"].disconnected is True
+        assert call["sports"] == ["basketball", "soccer"]
+        assert call["from_timestamp"] == 2_000_000
+        assert call["to_timestamp"] == 2_000_000 + 24 * 60 * 60
+        assert call["limit"] == 35
+        assert call["adaptive_window"] is True
+        assert call["max_window_seconds"] == 7 * 24 * 60 * 60
+        assert call["include_recent_past_on_sparse"] is True
+        assert call["include_bets"] is False
 
 
 class TestBettingArbitrageNodeRunner:
@@ -1348,6 +1483,9 @@ class TestBettingArbitrageNodeRunner:
         workflow = Path(".github/workflows/strategy-node-release.yml").read_text()
         assert "Validate SX.bet manifest" in workflow
         assert "Probe SX.bet runtime semantic coverage" in workflow
+        assert "Validate Cloudbet manifest" in workflow
+        assert "Probe Cloudbet runtime semantic coverage" in workflow
+        assert "cloudbet-single-venue.json" in workflow
         assert "probe-runtime" in workflow
         assert "--min-quoted-match-instruments 2" in workflow
         assert "--min-positive-margin-candidates 0" in workflow

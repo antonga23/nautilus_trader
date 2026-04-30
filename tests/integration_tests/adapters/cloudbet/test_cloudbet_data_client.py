@@ -72,7 +72,9 @@ class TestCloudbetDataClient:
                 new_callable=AsyncMock,
                 side_effect=async_side_effect_load_ids,
             ) as mocked_load_ids,
-            patch.object(data_client, "_send_all_instruments_to_data_engine", new_callable=MagicMock),
+            patch.object(
+                data_client, "_send_all_instruments_to_data_engine", new_callable=MagicMock
+            ),
         ):
             update_task = asyncio.create_task(data_client._update_instruments())
 
@@ -158,6 +160,43 @@ class TestCloudbetDataClient:
         assert data_client.subscribed_event_ids == {}
         assert data_client.subscribed_market_names == {}
         assert data_client._update_instruments_task is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 1)], indirect=["instruments"])
+    @patch.object(CloudbetClient, "get_latest_odds", new_callable=AsyncMock)
+    async def test_poll_quote_ticks_publishes_latest_cloudbet_price(
+        self,
+        mock_get_latest_odds,
+        data_client,
+        instruments,
+        monkeypatch,
+    ):
+        instrument = instruments[0]
+        data_client.instrument_provider.add(instrument)
+        data_client._subscribed_quote_instruments.add(instrument.id)
+        handled = []
+        monkeypatch.setattr(data_client, "_handle_data", handled.append)
+        mock_get_latest_odds.return_value = GetLatestOddsResponse(
+            max_stake=123,
+            min_stake=1,
+            price=2.34,
+            status=SelectionStatus.ENABLED,
+            outcome=instrument.outcome,
+            params=instrument.params,
+            probability=0.3,
+            side=instrument.side,
+        )
+
+        published, requested = await data_client._poll_quote_ticks_once()
+
+        assert requested == 1
+        assert published == 1
+        assert len(handled) == 1
+        quote = handled[0]
+        assert quote.instrument_id == instrument.id
+        assert quote.ask_price.as_decimal() > 0
+        assert quote.bid_price.as_decimal() == 0
+        mock_get_latest_odds.assert_called_once()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 1)], indirect=["instruments"])

@@ -29,7 +29,7 @@ from nautilus_trader.live.strategy_nodes.betting_arbitrage.config import Betting
 
 
 DEFAULT_CLOUDBET_SPORTS = ("soccer", "tennis", "basketball", "american_football")
-SEMANTIC_CACHE_COMPATIBILITY_VERSION = "semantic-rule-cache:20260429:sxbet-current-sports-v1"
+SEMANTIC_CACHE_COMPATIBILITY_VERSION = "semantic-rule-cache:20260430:venue-scoped-current-sports-v1"
 SEMANTIC_CACHE_COMPATIBILITY_FILE = ".semantic-cache-version"
 
 
@@ -179,6 +179,7 @@ def _semantic_cache_scope_key(manifest: BettingArbitrageNodeManifest | None) -> 
         venues.append(
             {
                 "venue": venue.venue,
+                "sport_keys": sorted(venue.sport_keys) if venue.sport_keys else "default",
                 "sport_ids": sorted(venue.sport_ids) if venue.sport_ids else "all",
                 "league_ids": sorted(venue.league_ids) if venue.league_ids else "all",
                 "live_only": bool(venue.live_only),
@@ -260,8 +261,9 @@ async def _bootstrap_semantic_cache(
         ingestor=ingestor,
         logger=logger,
     )
-    await _refresh_optional_cloudbet_corpus(
+    await _refresh_cloudbet_corpus(
         manifest=manifest,
+        venues=venues,
         ingestor=ingestor,
         logger=logger,
     )
@@ -327,16 +329,26 @@ async def _refresh_required_sxbet_corpus(
         await client.disconnect()
 
 
-async def _refresh_optional_cloudbet_corpus(
+async def _refresh_cloudbet_corpus(
     *,
     manifest: BettingArbitrageNodeManifest,
+    venues: Iterable[BettingVenueManifest],
     ingestor: SnapshotIngestor,
     logger: Logger | None,
 ) -> None:
+    active_venues = list(venues)
+    if not active_venues and manifest is not None:
+        active_venues = [venue for venue in manifest.venues if venue.enabled]
+    cloudbet_venues = [venue for venue in active_venues if venue.venue == "CLOUDBET"]
     api_key = (os.getenv("CLOUDBET_API_KEY") or "").strip()
     if not api_key:
+        if cloudbet_venues:
+            raise RuntimeError("CLOUDBET_API_KEY is required for Cloudbet semantic cache bootstrap")
         return
 
+    sports = _cloudbet_sports_for_venues(cloudbet_venues)
+    event_limit = _cloudbet_event_limit_for_venues(cloudbet_venues)
+    window_seconds = _cloudbet_window_seconds_for_venues(cloudbet_venues)
     loop = asyncio.get_running_loop()
     cloudbet_logger = logger or Logger(clock=LiveClock(), bypass=True)
     client = CloudbetClient(loop=loop, logger=cloudbet_logger, api_key=api_key)
@@ -345,23 +357,64 @@ async def _refresh_optional_cloudbet_corpus(
         now = int(time.time())
         await ingestor.refresh_cloudbet(
             client,
-            sports=list(DEFAULT_CLOUDBET_SPORTS),
+            sports=sports,
             from_timestamp=now,
-            to_timestamp=now + 24 * 60 * 60,
-            limit=20,
+            to_timestamp=now + min(24 * 60 * 60, window_seconds),
+            limit=event_limit,
             adaptive_window=True,
-            max_window_seconds=7 * 24 * 60 * 60,
+            max_window_seconds=window_seconds,
             min_events_per_sport=1,
             include_recent_past_on_sparse=True,
             include_bets=False,
         )
     except Exception:
+        if cloudbet_venues:
+            raise
         if logger is not None:
             logger.warning(
                 "Optional Cloudbet semantic enrichment failed; continuing with SXBET corpus only",
             )
     finally:
         await client.disconnect()
+
+
+async def _refresh_optional_cloudbet_corpus(
+    *,
+    manifest: BettingArbitrageNodeManifest,
+    ingestor: SnapshotIngestor,
+    logger: Logger | None,
+) -> None:
+    await _refresh_cloudbet_corpus(
+        manifest=manifest,
+        venues=(),
+        ingestor=ingestor,
+        logger=logger,
+    )
+
+
+def _cloudbet_sports_for_venues(venues: Iterable[BettingVenueManifest]) -> list[str]:
+    sports: set[str] = set()
+    for venue in venues:
+        if venue.sport_keys:
+            sports.update(key.strip().lower() for key in venue.sport_keys if key.strip())
+    return sorted(sports) or list(DEFAULT_CLOUDBET_SPORTS)
+
+
+def _cloudbet_event_limit_for_venues(venues: Iterable[BettingVenueManifest]) -> int:
+    limit = 20
+    for venue in venues:
+        if venue.instrument_load_limit is not None:
+            limit = max(limit, int(venue.instrument_load_limit))
+        if venue.market_discovery_limit is not None:
+            limit = max(limit, int(venue.market_discovery_limit))
+    return limit
+
+
+def _cloudbet_window_seconds_for_venues(venues: Iterable[BettingVenueManifest]) -> int:
+    for venue in venues:
+        if venue.live_only:
+            return 6 * 60 * 60
+    return 7 * 24 * 60 * 60
 
 
 __all__ = [

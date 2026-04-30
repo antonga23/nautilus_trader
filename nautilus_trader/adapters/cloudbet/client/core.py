@@ -292,14 +292,14 @@ class CloudbetClient(HttpClient):
 
         """
 
-        # Default filter values
-        if filters is None:
-            filters = {
-                'from_timestamp': int(time.time()),
-                'to_timestamp': int(time.time()) + 7200,
-                'live': 'false',
-                'limit': 2
-            }
+        now = int(time.time())
+        filters = {
+            'from_timestamp': now,
+            'to_timestamp': now + 7 * 24 * 60 * 60,
+            'live': 'false',
+            'limit': 20,
+            **(filters or {}),
+        }
 
         filtered_sports: List[GetSportsResponseSport] = []
         self._log.info(f"Loading selections for {filters}")

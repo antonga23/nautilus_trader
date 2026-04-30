@@ -21,6 +21,14 @@ SXBET_DATA_CONFIG_PATH = "nautilus_trader.adapters.sxbet.config:SXBetDataClientC
 SXBET_EXEC_CONFIG_PATH = "nautilus_trader.adapters.sxbet.config:SXBetExecClientConfig"
 SXBET_DATA_FACTORY_PATH = "nautilus_trader.adapters.sxbet.factories:SXBetLiveDataClientFactory"
 SXBET_EXEC_FACTORY_PATH = "nautilus_trader.adapters.sxbet.factories:SXBetLiveExecClientFactory"
+CLOUDBET_DATA_CONFIG_PATH = "nautilus_trader.adapters.cloudbet.config:CloudbetDataClientConfig"
+CLOUDBET_EXEC_CONFIG_PATH = "nautilus_trader.adapters.cloudbet.config:CloudbetExecClientConfig"
+CLOUDBET_DATA_FACTORY_PATH = (
+    "nautilus_trader.adapters.cloudbet.factories:CloudbetLiveDataClientFactory"
+)
+CLOUDBET_EXEC_FACTORY_PATH = (
+    "nautilus_trader.adapters.cloudbet.factories:CloudbetLiveExecClientFactory"
+)
 POLYMARKET_DATA_CONFIG_PATH = (
     "nautilus_trader.adapters.polymarket.config:PolymarketDataClientConfig"
 )
@@ -44,6 +52,7 @@ DUMMY_SECRETS = {
     "SXBET_API_KEYS": "dummy-sxbet-api-key",
     "SXBET_PRIVATE_KEY": "0x" + "1" * 64,
     "SXBET_WALLET_ADDRESS": "0x" + "2" * 40,
+    "CLOUDBET_API_KEY": "dummy-cloudbet-api-key",
     "POLYMARKET_API_KEY": "dummy-polymarket-api-key",
     "POLYMARKET_API_SECRET": "dummy-polymarket-api-secret",
     "POLYMARKET_PASSPHRASE": "dummy-polymarket-passphrase",
@@ -89,18 +98,13 @@ def build_trading_node_config(manifest: BettingArbitrageNodeManifest) -> Trading
 
     for index, venue in enumerate(enabled_venues, start=1):
         client_key = _client_key(venue, index)
-        if venue.venue == "SXBET":
-            if venue.data_enabled:
-                data_clients[client_key] = _build_sxbet_data_importable(venue, manifest)
-            if venue.execution_enabled and not manifest.validation_mode:
-                exec_clients[client_key] = _build_sxbet_exec_importable(venue, manifest)
-        elif venue.venue == "POLYMARKET":
-            if venue.data_enabled:
-                data_clients[client_key] = _build_polymarket_data_importable(venue, manifest)
-            if venue.execution_enabled and not manifest.validation_mode:
-                exec_clients[client_key] = _build_polymarket_exec_importable(venue, manifest)
-        else:
-            raise ValueError(f"Unsupported venue {venue.venue}")
+        _add_venue_clients(
+            venue=venue,
+            manifest=manifest,
+            client_key=client_key,
+            data_clients=data_clients,
+            exec_clients=exec_clients,
+        )
 
     logging = LoggingConfig(
         log_level=manifest.log_level,
@@ -132,6 +136,32 @@ def build_trading_node_config(manifest: BettingArbitrageNodeManifest) -> Trading
         timeout_post_stop=manifest.timeout_post_stop,
         timeout_shutdown=manifest.timeout_shutdown,
     )
+
+
+def _add_venue_clients(
+    *,
+    venue: BettingVenueManifest,
+    manifest: BettingArbitrageNodeManifest,
+    client_key: str,
+    data_clients: dict[str, Any],
+    exec_clients: dict[str, Any],
+) -> None:
+    if venue.venue == "SXBET":
+        data_builder = _build_sxbet_data_importable
+        exec_builder = _build_sxbet_exec_importable
+    elif venue.venue == "CLOUDBET":
+        data_builder = _build_cloudbet_data_importable
+        exec_builder = _build_cloudbet_exec_importable
+    elif venue.venue == "POLYMARKET":
+        data_builder = _build_polymarket_data_importable
+        exec_builder = _build_polymarket_exec_importable
+    else:
+        raise ValueError(f"Unsupported venue {venue.venue}")
+
+    if venue.data_enabled:
+        data_clients[client_key] = data_builder(venue, manifest)
+    if venue.execution_enabled and not manifest.validation_mode:
+        exec_clients[client_key] = exec_builder(venue, manifest)
 
 
 def _build_strategy_importable_config(
@@ -237,6 +267,68 @@ def _build_sxbet_exec_importable(
         config=_drop_none(config),
         factory=ImportableFactoryConfig(path=SXBET_EXEC_FACTORY_PATH),
     )
+
+
+def _build_cloudbet_data_importable(
+    venue: BettingVenueManifest,
+    manifest: BettingArbitrageNodeManifest,
+) -> ImportableConfig:
+    prefix = _credential_prefix(venue)
+    filters = _cloudbet_selection_filters(venue)
+    provider_config = {
+        "load_all": venue.load_all_instruments,
+        "load_ids": sorted(venue.instrument_ids or []) if not venue.load_all_instruments else None,
+        "filters": filters,
+    }
+    config = {
+        "api_key": _resolve_secret(prefix, "API_KEY", manifest.allow_dummy_credentials),
+        "api_url": venue.api_url,
+        "instrument_provider": provider_config,
+        "market_filter": tuple(sorted(filters.items())) if filters else None,
+        "auto_subscribe_quote_ticks": venue.auto_subscribe_quote_ticks,
+        "quote_subscription_limit": venue.quote_subscription_limit,
+        "quote_poll_interval_secs": venue.order_book_poll_interval_secs,
+        "quote_poll_summary_interval_secs": venue.order_book_poll_summary_interval_secs,
+        "quote_poll_concurrency": venue.order_book_concurrency,
+        "routing": {"venues": [venue.venue]},
+    }
+    return ImportableConfig(
+        path=CLOUDBET_DATA_CONFIG_PATH,
+        config=_drop_none(config),
+        factory=ImportableFactoryConfig(path=CLOUDBET_DATA_FACTORY_PATH),
+    )
+
+
+def _build_cloudbet_exec_importable(
+    venue: BettingVenueManifest,
+    manifest: BettingArbitrageNodeManifest,
+) -> ImportableConfig:
+    prefix = _credential_prefix(venue)
+    filters = _cloudbet_selection_filters(venue)
+    config = {
+        "api_key": _resolve_secret(prefix, "API_KEY", manifest.allow_dummy_credentials),
+        "api_url": venue.api_url,
+        "market_filter": dict(filters) if filters else None,
+        "routing": {"venues": [venue.venue]},
+    }
+    return ImportableConfig(
+        path=CLOUDBET_EXEC_CONFIG_PATH,
+        config=_drop_none(config),
+        factory=ImportableFactoryConfig(path=CLOUDBET_EXEC_FACTORY_PATH),
+    )
+
+
+def _cloudbet_selection_filters(venue: BettingVenueManifest) -> dict[str, Any]:
+    filters: dict[str, Any] = {}
+    if venue.sport_keys:
+        filters["sport_key"] = sorted(venue.sport_keys)
+    if venue.live_only:
+        filters["live"] = "true"
+    else:
+        filters["live"] = "false"
+    if venue.instrument_load_limit is not None:
+        filters["limit"] = int(venue.instrument_load_limit)
+    return filters
 
 
 def _build_polymarket_data_importable(

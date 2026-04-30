@@ -231,6 +231,35 @@ jobs:
             --min-positive-margin-candidates 0 \
             --require-rust-semantic-topology
 
+      - name: Validate Cloudbet manifest
+        env:
+          CLOUDBET_API_KEY: ${{ secrets.CLOUDBET_API_KEY }}
+        run: |
+          cd /tmp
+          "$GITHUB_WORKSPACE/.venv/bin/python" -m nautilus_trader.live.strategy_nodes.betting_arbitrage \
+            validate-manifest \
+            --manifest "$GITHUB_WORKSPACE/deploy/strategy_nodes/betting_arbitrage/cloudbet-single-venue.json"
+
+      - name: Probe Cloudbet runtime semantic coverage
+        if: >-
+          github.event_name == 'workflow_dispatch' &&
+          github.event.inputs.manifest_path ==
+          'deploy/strategy_nodes/betting_arbitrage/cloudbet-single-venue.json'
+        env:
+          CLOUDBET_API_KEY: ${{ secrets.CLOUDBET_API_KEY }}
+        run: |
+          cd /tmp
+          "$GITHUB_WORKSPACE/.venv/bin/python" -m nautilus_trader.live.strategy_nodes.betting_arbitrage \
+            probe-runtime \
+            --manifest "$GITHUB_WORKSPACE/deploy/strategy_nodes/betting_arbitrage/cloudbet-single-venue.json" \
+            --timeout-seconds 420 \
+            --poll-interval-secs 5 \
+            --min-connected-nodes 2 \
+            --min-match-instruments 2 \
+            --min-quoted-match-instruments 2 \
+            --min-positive-margin-candidates 0 \
+            --require-rust-semantic-topology
+
       - name: Validate Polymarket manifest
         run: |
           cd /tmp
