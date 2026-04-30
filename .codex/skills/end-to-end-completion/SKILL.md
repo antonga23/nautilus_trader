@@ -46,6 +46,9 @@ Escalate only for irreversible destructive action, material unapproved cost incr
 ## Validation Discipline
 
 - Use `background-monitor` for waits expected to exceed 60 seconds.
+- During long watcher waits, continue bounded independent work in a separate
+  worktree when available, then pause that side work and return to the original
+  task as soon as the watcher fires.
 - Use GCP CI runners for pre-commit, tests, wheel builds, Rust policy, and strategy-node image builds.
 - Use EC2 only for strategy-node deploy/runtime/lifecycle/health/logs.
 - Prefer `ci-preflight` before spending GitHub Actions runs when the GCP runner is reachable.
