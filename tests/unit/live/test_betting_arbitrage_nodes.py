@@ -315,11 +315,34 @@ class TestBettingArbitrageNodeBuilder:
             "soccer",
         ]
         assert data_client.config["instrument_provider"]["filters"]["limit"] == 40
-        assert data_client.config["auto_subscribe_quote_ticks"] is True
+        assert data_client.config["auto_subscribe_quote_ticks"] is False
         assert data_client.config["quote_subscription_limit"] == 60
         assert data_client.config["quote_poll_interval_secs"] == 7.0
         assert data_client.config["quote_poll_summary_interval_secs"] == 31.0
         assert data_client.config["quote_poll_concurrency"] == 3
+
+    def test_cloudbet_data_client_keeps_auto_subscribe_without_semantic_cache(self):
+        manifest = BettingArbitrageNodeManifest(
+            node_id="cloudbet-no-semantic-cache",
+            trader_id="BETARB-TEST-CB",
+            validation_mode=True,
+            allow_dummy_credentials=True,
+            venues=[
+                BettingVenueManifest(
+                    venue="CLOUDBET",
+                    client_key="CLOUDBET_PRIMARY",
+                    instrument_load_limit=40,
+                    auto_subscribe_quote_ticks=True,
+                    quote_subscription_limit=60,
+                ),
+            ],
+        )
+
+        config = build_trading_node_config(manifest)
+        data_client = config.data_clients["CLOUDBET_PRIMARY"]
+
+        assert data_client.config["auto_subscribe_quote_ticks"] is True
+        assert data_client.config["quote_subscription_limit"] == 60
 
     def test_cloudbet_factories_match_live_node_builder_signature(self, monkeypatch):
         from nautilus_trader.adapters.cloudbet import factories as cloudbet_factories
