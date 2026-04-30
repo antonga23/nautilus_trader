@@ -39,12 +39,17 @@ from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.enums import TimeInForce
 from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.instruments.base import Instrument
+from nautilus_trader.model.instruments.crypto_betting import (
+    CryptoBettingInstrument as LegacyCryptoBettingInstrument,
+)
 from nautilus_trader.trading.strategy import Strategy
 
 
 VALID_MARKET_TIMINGS = frozenset({"all", "pre_market", "live"})
 DEFAULT_ENABLED_VENUES = frozenset({"CLOUDBET", "SXBET", "10BET"})
 NANOSECONDS_PER_SECOND = 1_000_000_000
+BettingInstrument = CryptoBettingInstrument | LegacyCryptoBettingInstrument
+BETTING_INSTRUMENT_TYPES = (CryptoBettingInstrument, LegacyCryptoBettingInstrument)
 
 
 @dataclass(frozen=True)
@@ -242,7 +247,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         )
 
         # Tracking
-        self._subscribed_instruments: set[CryptoBettingInstrument] = set()
+        self._subscribed_instruments: set[BettingInstrument] = set()
         self._latest_quotes: dict[str, QuoteTick] = {}
         self._opportunities_found = 0
         self._opportunities_executed = 0
@@ -326,7 +331,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self.log.info(msg)
         self._log_arbitrage_summary(force=True)
 
-    def subscribe_instruments(self, instruments: list[CryptoBettingInstrument]) -> None:
+    def subscribe_instruments(self, instruments: list[BettingInstrument]) -> None:
         """
         Subscribe to instruments for arbitrage monitoring.
 
@@ -336,7 +341,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
 
         Parameters
         ----------
-        instruments : list[CryptoBettingInstrument]
+        instruments : list[BettingInstrument]
             Instruments to monitor.
 
         """
@@ -351,14 +356,14 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         """
         Subscribe a newly seen betting instrument when it passes strategy filters.
         """
-        if isinstance(instrument, CryptoBettingInstrument):
+        if isinstance(instrument, BETTING_INSTRUMENT_TYPES):
             self._maybe_subscribe_instrument(instrument)
 
     def _subscribe_cached_instruments(self) -> None:
         cached_instruments = [
             instrument
             for instrument in self.cache.instruments()
-            if isinstance(instrument, CryptoBettingInstrument)
+            if isinstance(instrument, BETTING_INSTRUMENT_TYPES)
         ]
         if not cached_instruments:
             self.log.warning("No cached betting instruments available at strategy start")
@@ -375,7 +380,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                     f"venue={venue_value} error={exc}",
                 )
 
-    def _maybe_subscribe_instrument(self, instrument: CryptoBettingInstrument) -> bool:
+    def _maybe_subscribe_instrument(self, instrument: BettingInstrument) -> bool:
         # Venue filter
         if instrument.id.venue.value not in self._config.enabled_venues:
             return False
@@ -407,13 +412,13 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             f"connected_nodes={graph_stats['connected_nodes']}",
         )
 
-    def _should_process_instrument(self, instrument: CryptoBettingInstrument) -> bool:
+    def _should_process_instrument(self, instrument: BettingInstrument) -> bool:
         """
         Check if instrument should be processed based on filters.
 
         Parameters
         ----------
-        instrument : CryptoBettingInstrument
+        instrument : BettingInstrument
             Instrument to check.
 
         Returns
@@ -444,7 +449,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         return True
 
     @staticmethod
-    def _is_live_market(instrument: CryptoBettingInstrument) -> bool:
+    def _is_live_market(instrument: BettingInstrument) -> bool:
         """
         Determine if instrument represents a live/in-play market.
 
@@ -529,7 +534,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
 
         # Get instrument
         instrument = self.cache.instrument(tick.instrument_id)
-        if not isinstance(instrument, CryptoBettingInstrument):
+        if not isinstance(instrument, BETTING_INSTRUMENT_TYPES):
             return
 
         if self._config.opportunity_graph_enabled:
@@ -541,7 +546,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
     def _handle_graph_quote_tick(
         self,
         tick: QuoteTick,
-        instrument: CryptoBettingInstrument,
+        instrument: BettingInstrument,
     ) -> None:
         current_odds = self._quote_odds(tick)
         if current_odds is None:
@@ -1543,7 +1548,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             f"quote_age_secs={diagnostics.quote_age_b_secs:.2f}"
         )
 
-    def _manual_execution_plan(self, *args) -> str:
+    def _manual_execution_plan(self, *args: object) -> str:
         if len(args) == 1:
             diagnostics = args[0]
         elif len(args) == 2:
