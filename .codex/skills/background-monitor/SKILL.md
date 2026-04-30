@@ -41,6 +41,25 @@ tail loops from the conversation.
    `ci-preflight` slice before dispatching a new Actions run when the GCP CI
    runner is reachable.
 
+## Active Waiting
+
+When a watcher is expected to run for several minutes, keep useful work moving
+without obscuring the watched task:
+
+1. Write down the watched run/command, branch, terminal condition, and durable
+   log path before switching context.
+2. Continue only independent work that cannot corrupt the watched branch or
+   deployed runtime. Prefer a separate worktree for stacked PRs, experiments, or
+   Linear follow-ups.
+3. Do not dispatch another run for the same branch or mutate the same release
+   surface while its watcher is active, unless the watcher has failed or the run
+   has been explicitly cancelled.
+4. Post concise Linear progress comments for long waits and any independent
+   work completed during the wait.
+5. As soon as the watcher exits, pause the side task at a clean boundary,
+   inspect the watcher result, and resume the original task before continuing
+   experimentation.
+
 ## Runner Boundary
 
 - Use GCP self-hosted runners for pre-commit, tests, Rust policy checks, wheel
