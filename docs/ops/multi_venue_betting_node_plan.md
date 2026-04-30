@@ -28,12 +28,42 @@
 - Require nonzero semantic graph edges or hedge candidates.
 - Require quoted match instruments where provider data is available.
 - Do not require positive-margin arbitrage for the initial multi-venue validation gate.
+- Capture the node status payload, semantic diagnostics, and strategy summary in the PR so reviewers can distinguish:
+  - instruments loaded but unmatched by semantics,
+  - semantic matches that are topology-only,
+  - same-venue eligible matches that remain risk-engine gated,
+  - strict execution-safe candidates.
 
 ## Phase 4: Execution Readiness
 
 - Add risk-engine policy for same-event identity, venue scope, settlement caveats, stake sizing, and execution ordering.
 - Keep real order submission disabled until a human explicitly approves live execution.
 - Use mocks, simulation, or validation-mode dry runs for all execution-path tests before any funded deployment.
+
+## Release Workflow
+
+The validation dispatch should use the normal strategy-node release path, with deployment enabled only for a validation-mode node:
+
+```sh
+gh workflow run strategy-node-release.yml \
+  --repo antonga23/cloudbet-market-maker \
+  --ref codex/multi-venue-polymarket-sports \
+  -f manifest_path=deploy/strategy_nodes/betting_arbitrage/multi-venue-validation.json \
+  -f deploy_enabled=true \
+  -f container_name=betting-arbitrage-node-multivenue \
+  -f image_transport=archive \
+  -f force_rebuild=true
+```
+
+After deploy, run the runtime verifier against `betting-arbitrage-node-multivenue`.
+The verifier should require a ready semantic cache, Rust semantic topology when available, nonzero graph edges, and nonzero semantic match instruments. Positive-margin arbitrage remains a reported metric, not a hard gate for the first multi-venue validation.
+
+## Safety Boundary
+
+- `auto_execute=false` in the manifest.
+- All venue `execution_enabled=false` until the risk engine explicitly enables funded execution.
+- Polymarket quote subscriptions use original `BinaryOption` instrument IDs; only in-memory strategy topology sees transformed betting instruments.
+- Any execution-ordering or stake-sizing test must use mocks, simulated clients, or validation mode unless a human explicitly approves real funds in the current thread.
 
 ## Acceptance Criteria
 
@@ -42,3 +72,4 @@
 - Multi-venue validation node reports graph topology, matched instruments, and semantic cache metadata.
 - Polymarket sports binaries are visible to the strategy as betting-style topology while preserving original quote subscriptions.
 - No code path enables real-money execution by default.
+- Runtime logs include a clear count of loaded instruments by venue, connected semantic matches, duplicate suppressions, matcher-suspect suppressions, and executable candidate counts.
