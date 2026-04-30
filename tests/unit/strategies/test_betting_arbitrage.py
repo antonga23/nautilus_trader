@@ -208,6 +208,7 @@ class TestBettingArbitrageStrategy:  # skipcq
         *,
         symbol_value: str = "cond-home",
         outcome: str = "Yes",
+        selection_role: str = "home",
     ) -> BinaryOption:
         return BinaryOption(
             instrument_id=InstrumentId(Symbol(symbol_value), Venue("POLYMARKET")),
@@ -234,7 +235,7 @@ class TestBettingArbitrageStrategy:  # skipcq
                     "sport": "basketball",
                     "market_name": "basketball.moneyline",
                     "market_type": "basketball.moneyline",
-                    "selection_role": "home",
+                    "selection_role": selection_role,
                     "event_name": "Team A vs Team B",
                     "home_name": "Team A",
                     "away_name": "Team B",
@@ -733,6 +734,37 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(transformed.market_type == "basketball.moneyline")
         ensure(transformed.outcome == "home")
         strategy.subscribe_quote_ticks.assert_called_once_with(binary_option.id)
+
+    def test_semantic_batch_transforms_polymarket_sports_binary_options(
+        self,
+        tmp_path: Path,
+    ):  # skipcq
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["POLYMARKET"]),
+                opportunity_graph_engine="python",
+            ),
+        )
+        strategy._matcher.set_rule_store(RuleStore(FileRuleCache(tmp_path / "rules")))
+        strategy.subscribe_quote_ticks = Mock()
+        home = self._polymarket_sports_binary_option(
+            symbol_value="cond-home",
+            selection_role="home",
+        )
+        away = self._polymarket_sports_binary_option(
+            symbol_value="cond-away",
+            selection_role="away",
+        )
+
+        strategy.subscribe_instruments([home, away])
+
+        subscribed = tuple(strategy._subscribed_instruments)
+        ensure(len(subscribed) == 2)
+        ensure({instrument.outcome for instrument in subscribed} == {"home", "away"})
+        quoted_ids = {call.args[0] for call in strategy.subscribe_quote_ticks.call_args_list}
+        ensure(quoted_ids == {home.id, away.id})
+        ensure(all(str(instrument.id) != str(home.id) for instrument in subscribed))
+        ensure(all(str(instrument.id) != str(away.id) for instrument in subscribed))
 
     def test_on_quote_tick_remaps_polymarket_binary_option_to_betting_instrument(self):
         strategy = BettingArbitrageStrategy(

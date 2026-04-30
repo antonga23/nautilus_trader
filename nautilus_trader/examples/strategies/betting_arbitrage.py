@@ -443,19 +443,22 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
 
     def _subscribe_instruments_semantic_batch(
         self,
-        instruments: list[BettingInstrument],
+        instruments: list[Instrument],
     ) -> None:
         subscribed_before = len(self._subscribed_instruments)
         existing_ids = {str(instrument.id) for instrument in self._subscribed_instruments}
         for instrument in instruments:
-            if instrument.id.venue.value not in self._config.enabled_venues:
+            betting_instrument = self._coerce_betting_instrument(instrument)
+            if betting_instrument is None:
                 continue
-            if not self._should_process_instrument(instrument):
+            if betting_instrument.id.venue.value not in self._config.enabled_venues:
                 continue
-            if str(instrument.id) in existing_ids:
+            if not self._should_process_instrument(betting_instrument):
                 continue
-            self._subscribed_instruments.add(instrument)
-            existing_ids.add(str(instrument.id))
+            if str(betting_instrument.id) in existing_ids:
+                continue
+            self._subscribed_instruments.add(betting_instrument)
+            existing_ids.add(str(betting_instrument.id))
 
         if len(self._subscribed_instruments) == subscribed_before:
             return
