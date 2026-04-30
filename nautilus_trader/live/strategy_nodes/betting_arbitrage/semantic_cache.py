@@ -331,14 +331,14 @@ async def _refresh_required_sxbet_corpus(
 
 async def _refresh_cloudbet_corpus(
     *,
-    manifest: BettingArbitrageNodeManifest,
+    manifest: BettingArbitrageNodeManifest | None,
     venues: Iterable[BettingVenueManifest],
     ingestor: SnapshotIngestor,
     logger: Logger | None,
 ) -> None:
     active_venues = list(venues)
-    if not active_venues and manifest is not None:
-        active_venues = [venue for venue in manifest.venues if venue.enabled]
+    if not active_venues:
+        active_venues = [venue for venue in manifest.venues if venue.enabled] if manifest else []
     cloudbet_venues = [venue for venue in active_venues if venue.venue == "CLOUDBET"]
     api_key = (os.getenv("CLOUDBET_API_KEY") or "").strip()
     if not api_key:
