@@ -211,7 +211,10 @@ def _build_sxbet_data_importable(
         "sport_ids": sorted(venue.sport_ids) if venue.sport_ids else None,
         "reconnect_on_disconnect": True,
         "max_reconnect_attempts": 5,
-        "auto_subscribe_quote_ticks": venue.auto_subscribe_quote_ticks,
+        "auto_subscribe_quote_ticks": _provider_auto_subscribe_quote_ticks(
+            venue,
+            manifest,
+        ),
         "quote_subscription_limit": venue.quote_subscription_limit,
         "order_book_poll_interval_secs": venue.order_book_poll_interval_secs,
         "order_book_poll_summary_interval_secs": venue.order_book_poll_summary_interval_secs,
@@ -285,7 +288,10 @@ def _build_cloudbet_data_importable(
         "api_url": venue.api_url,
         "instrument_provider": provider_config,
         "market_filter": tuple(sorted(filters.items())) if filters else None,
-        "auto_subscribe_quote_ticks": venue.auto_subscribe_quote_ticks,
+        "auto_subscribe_quote_ticks": _provider_auto_subscribe_quote_ticks(
+            venue,
+            manifest,
+        ),
         "quote_subscription_limit": venue.quote_subscription_limit,
         "quote_poll_interval_secs": venue.order_book_poll_interval_secs,
         "quote_poll_summary_interval_secs": venue.order_book_poll_summary_interval_secs,
@@ -316,6 +322,15 @@ def _build_cloudbet_exec_importable(
         config=_drop_none(config),
         factory=ImportableFactoryConfig(path=CLOUDBET_EXEC_FACTORY_PATH),
     )
+
+
+def _provider_auto_subscribe_quote_ticks(
+    venue: BettingVenueManifest,
+    manifest: BettingArbitrageNodeManifest,
+) -> bool:
+    if manifest.semantic_rule_cache_dir:
+        return False
+    return venue.auto_subscribe_quote_ticks
 
 
 def _cloudbet_selection_filters(venue: BettingVenueManifest) -> dict[str, Any]:
