@@ -429,6 +429,43 @@ class TestBettingArbitrageNodeBuilder:
 
         assert config.strategies[0].config["enabled_venues"] == ["POLYMARKET", "SXBET"]
 
+    def test_multi_venue_validation_manifest_builds_without_exec_clients(self, monkeypatch):
+        monkeypatch.setenv("SXBET_API_KEY", "sxbet-api-key")
+        monkeypatch.setenv("SXBET_PRIVATE_KEY", "0x" + "1" * 64)
+        monkeypatch.setenv("SXBET_WALLET_ADDRESS", "0x" + "2" * 40)
+        monkeypatch.setenv("CLOUDBET_API_KEY", "cloudbet-api-key")
+        monkeypatch.setenv("POLYMARKET_PRIVATE_KEY", "0x" + "3" * 64)
+        monkeypatch.setenv("POLYMARKET_FUNDER", "0x" + "4" * 40)
+        monkeypatch.setenv("POLYMARKET_API_KEY", "polymarket-api-key")
+        monkeypatch.setenv("POLYMARKET_API_SECRET", "polymarket-api-secret")
+        monkeypatch.setenv("POLYMARKET_PASSPHRASE", "polymarket-passphrase")
+
+        manifest = node_builder.load_manifest(
+            Path("deploy/strategy_nodes/betting_arbitrage/multi-venue-validation.json"),
+        )
+        config = build_trading_node_config(manifest)
+
+        assert sorted(config.data_clients) == [
+            "CLOUDBET_PRIMARY",
+            "POLYMARKET_PRIMARY",
+            "SXBET_PRIMARY",
+        ]
+        assert config.exec_clients == {}
+        assert config.strategies[0].config["auto_execute"] is False
+        assert config.strategies[0].config["enabled_venues"] == [
+            "CLOUDBET",
+            "POLYMARKET",
+            "SXBET",
+        ]
+        assert (
+            config.strategies[0].config["semantic_rule_cache_dir"]
+            == "artifacts/semantic-rule-cache/multi-venue-validation"
+        )
+        assert (
+            config.data_clients["POLYMARKET_PRIMARY"].config["instrument_provider"]["load_all"]
+            is False
+        )
+
     def test_custom_credential_prefix_and_secret_pool_are_applied(self, monkeypatch):
         monkeypatch.setenv("CUSTOMSXBET_API_KEY", "explicit-api-key")
         monkeypatch.setenv("CUSTOMSXBET_API_KEYS", "pool-a, pool-b pool-c")
