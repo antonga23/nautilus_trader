@@ -13,6 +13,7 @@ Parity and fast-path tests for the opportunity graph engines.
 
 from decimal import Decimal
 import json
+from pathlib import Path
 from typing import Any
 from typing import cast
 
@@ -92,7 +93,7 @@ def _graph(engine: str, instruments: list[CryptoBettingInstrument]) -> Opportuni
 
 
 def _semantic_rule_store(
-    cache_dir,
+    cache_dir: Path,
     source: CryptoBettingInstrument,
     target: CryptoBettingInstrument,
 ) -> RuleStore:
@@ -339,7 +340,7 @@ def test_python_engine_can_still_be_forced_when_matcher_has_rule_store() -> None
     ensure(graph._rust_core is None)
 
 
-def test_semantic_rust_builds_topology_from_promoted_templates(tmp_path) -> None:  # skipcq
+def test_semantic_rust_builds_topology_from_promoted_templates(tmp_path: Path) -> None:  # skipcq
     instruments = [_instrument(outcome="over"), _instrument(outcome="under")]
     store = _semantic_rule_store(tmp_path / "rules", instruments[0], instruments[1])
     matcher = MarketMatcher(rule_store=store, allow_unpromoted_topology=False)
@@ -357,7 +358,7 @@ def test_semantic_rust_builds_topology_from_promoted_templates(tmp_path) -> None
     ensure(next(iter(graph.edges_by_id.values())).execution_safe is True)
 
 
-def test_semantic_rust_ignores_scope_only_period_params(tmp_path) -> None:  # skipcq
+def test_semantic_rust_ignores_scope_only_period_params(tmp_path: Path) -> None:  # skipcq
     template_instruments = [
         _instrument(outcome="over", params="line=2.5&period=ft"),
         _instrument(outcome="under", params="line=2.5&period=ft"),
@@ -378,7 +379,8 @@ def test_semantic_rust_ignores_scope_only_period_params(tmp_path) -> None:  # sk
         pytest.skip("Rust OpportunityGraphCore is unavailable")
 
     payloads = graph._semantic_template_payloads()
-    ensure("period" not in str(payloads[0]["pattern_a"]["params_key"]))
+    pattern_a = cast(dict[str, object], payloads[0]["pattern_a"])
+    ensure("period" not in str(pattern_a["params_key"]))
 
     graph.build(live_instruments)
 
