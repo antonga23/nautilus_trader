@@ -251,6 +251,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
 
         # Tracking
         self._subscribed_instruments: set[BettingInstrument] = set()
+        self._quote_subscribed_instrument_ids: set[str] = set()
         self._betting_instruments_by_source_id: dict[str, CryptoBettingInstrument] = {}
         self._source_ids_by_betting_instrument_id: dict[str, InstrumentId] = {}
         self._latest_quotes: dict[str, QuoteTick] = {}
@@ -403,9 +404,10 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._subscribed_instruments.add(betting_instrument)
         if self._config.opportunity_graph_enabled and self._config.graph_rebuild_on_new_instrument:
             self._opportunity_graph.add_instrument(betting_instrument)
-        quote_instrument_id = self._quote_subscription_instrument_id(betting_instrument)
-        self.subscribe_quote_ticks(quote_instrument_id)
-        self.log.info(f"Subscribed to {quote_instrument_id}")
+        if self._semantic_quote_priority_enabled():
+            self._subscribe_semantic_connected_quote_ticks()
+        else:
+            self._subscribe_quote_ticks_for_instrument(betting_instrument)
         return True
 
     def _coerce_betting_instrument(self, instrument: Instrument | None) -> BettingInstrument | None:
@@ -426,6 +428,37 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._betting_instruments_by_source_id[source_id] = transformed
         self._source_ids_by_betting_instrument_id[str(transformed.id)] = instrument.id
         return transformed
+
+    def _semantic_quote_priority_enabled(self) -> bool:
+        return self._config.opportunity_graph_enabled and self._matcher.rule_store is not None
+
+    def _subscribe_quote_ticks_for_instrument(self, instrument: BettingInstrument) -> bool:
+        quote_instrument_id = self._quote_subscription_instrument_id(instrument)
+        instrument_id = str(quote_instrument_id)
+        if instrument_id in self._quote_subscribed_instrument_ids:
+            return False
+        self._quote_subscribed_instrument_ids.add(instrument_id)
+        self.subscribe_quote_ticks(quote_instrument_id)
+        self.log.info(f"Subscribed to {quote_instrument_id}")
+        return True
+
+    def _subscribe_semantic_connected_quote_ticks(self) -> int:
+        subscribed_count = 0
+        for node_id, edge_ids in self._opportunity_graph.edge_ids_by_node_id.items():
+            if not edge_ids:
+                continue
+            node = self._opportunity_graph.nodes_by_id.get(node_id)
+            if node is None:
+                continue
+            if self._subscribe_quote_ticks_for_instrument(node.instrument):
+                subscribed_count += 1
+        if subscribed_count:
+            self.log.info(
+                "Subscribed semantic-connected quote streams: "
+                f"new={subscribed_count} "
+                f"total={len(self._quote_subscribed_instrument_ids)}",
+            )
+        return subscribed_count
 
     def _quote_subscription_instrument_id(
         self,
@@ -1985,6 +2018,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         """
         return {
             "subscribed_instruments": len(self._subscribed_instruments),
+            "quote_subscribed_instruments": len(self._quote_subscribed_instrument_ids),
             "opportunity_graph_nodes": self._opportunity_graph.node_count,
             "opportunity_graph_edges": self._opportunity_graph.edge_count,
             "opportunity_graph_quote_states": self._opportunity_graph.quote_state_count,

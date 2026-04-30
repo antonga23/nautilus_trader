@@ -12,6 +12,7 @@ Strategy regression tests for the betting arbitrage fast-path integration.
 """
 
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 from typing import cast
 from unittest.mock import Mock
@@ -21,6 +22,8 @@ import pytest
 from nautilus_trader.adapters.betting.common.enums import SelectionSide
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.betting.market_matcher import MarketMatcher
+from nautilus_trader.adapters.betting.semantics import FileRuleCache
+from nautilus_trader.adapters.betting.semantics import RuleStore
 from nautilus_trader.adapters.cloudbet.client.schema import (
     SelectionSide as CloudbetSelectionSide,
 )
@@ -833,6 +836,67 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(over.matches_event(under))
         ensure(over.is_opposite_outcome(under))
         ensure(MarketMatcher._is_same_market_hedge(over, under))
+
+    def test_semantic_rule_store_quotes_connected_instruments_first(
+        self,
+        tmp_path: Path,
+    ) -> None:  # skipcq
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["CLOUDBET"]),
+                opportunity_graph_engine="python",
+            ),
+        )
+        strategy._matcher.set_rule_store(RuleStore(FileRuleCache(tmp_path / "rules")))
+        strategy.subscribe_quote_ticks = Mock()
+
+        over = LegacyCryptoBettingInstrument(
+            home_name="Team A",
+            away_name="Team B",
+            sport_name="Basketball",
+            competition_name="Test League",
+            price=2.0,
+            currency=Currency.from_str("USDT"),
+            event_name="Team A vs Team B",
+            market_name="basketball.total_points",
+            venue=Venue("CLOUDBET"),
+            live=False,
+            enabled=True,
+            outcome="over",
+            side=CloudbetSelectionSide.BACK,
+            params="line=2.5",
+            market_type="basketball.total_points",
+            start_time="2026-03-13T18:00:00Z",
+            event_id=1,
+        )
+        under = LegacyCryptoBettingInstrument(
+            home_name="Team A",
+            away_name="Team B",
+            sport_name="Basketball",
+            competition_name="Test League",
+            price=2.0,
+            currency=Currency.from_str("USDT"),
+            event_name="Team A vs Team B",
+            market_name="basketball.total_points",
+            venue=Venue("CLOUDBET"),
+            live=False,
+            enabled=True,
+            outcome="under",
+            side=CloudbetSelectionSide.BACK,
+            params="line=2.5",
+            market_type="basketball.total_points",
+            start_time="2026-03-13T18:00:00Z",
+            event_id=1,
+        )
+
+        strategy.subscribe_instruments([over])
+        strategy.subscribe_quote_ticks.assert_not_called()
+
+        strategy.subscribe_instruments([under])
+
+        quoted_ids = {call.args[0] for call in strategy.subscribe_quote_ticks.call_args_list}
+        ensure(quoted_ids == {over.id, under.id})
+        ensure(strategy.get_stats()["quote_subscribed_instruments"] == 2)
 
     def test_on_start_skips_subscription_when_cache_is_empty(self, default_config):  # skipcq
         strategy = BettingArbitrageStrategy(config=default_config)

@@ -135,7 +135,7 @@ class CryptoBettingInstrument(Instrument):
         | None = None,  # TODO: Fix a handicap type...eg. tuple[outcome, handicap_value, etc]
         trading_status: str | None = None,
         # NB: event_id should be a unique per event but the same across all venues
-        event_id: str | None = None,
+        event_id: str | int | None = None,
     ):
         # Event level data
         self.home_name = home_name
