@@ -790,6 +790,50 @@ class TestBettingArbitrageStrategy:  # skipcq
         strategy.subscribe_quote_ticks.assert_called_once_with(instrument.id)
         ensure(instrument in strategy._subscribed_instruments)
 
+    def test_legacy_cloudbet_instruments_support_market_matching(self):  # skipcq
+        over = LegacyCryptoBettingInstrument(
+            home_name="Team A",
+            away_name="Team B",
+            sport_name="Basketball",
+            competition_name="Test League",
+            price=2.0,
+            currency=Currency.from_str("USDT"),
+            event_name="Team A vs Team B",
+            market_name="basketball.total_points",
+            venue=Venue("CLOUDBET"),
+            live=False,
+            enabled=True,
+            outcome="over",
+            side=CloudbetSelectionSide.BACK,
+            params="line=2.5",
+            market_type="basketball.total_points",
+            start_time="2026-03-13T18:00:00Z",
+            event_id=1,
+        )
+        under = LegacyCryptoBettingInstrument(
+            home_name="Team A",
+            away_name="Team B",
+            sport_name="Basketball",
+            competition_name="Test League",
+            price=2.0,
+            currency=Currency.from_str("USDT"),
+            event_name="Team A vs Team B",
+            market_name="basketball.total_points",
+            venue=Venue("CLOUDBET"),
+            live=False,
+            enabled=True,
+            outcome="under",
+            side=CloudbetSelectionSide.BACK,
+            params="line=2.5",
+            market_type="basketball.total_points",
+            start_time="2026-03-13T18:00:00Z",
+            event_id=1,
+        )
+
+        ensure(over.matches_event(under))
+        ensure(over.is_opposite_outcome(under))
+        ensure(MarketMatcher._is_same_market_hedge(over, under))
+
     def test_on_start_skips_subscription_when_cache_is_empty(self, default_config):  # skipcq
         strategy = BettingArbitrageStrategy(config=default_config)
         strategy.register(
