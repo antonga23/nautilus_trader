@@ -352,6 +352,10 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
 
         """
         subscribed_before = len(self._subscribed_instruments)
+        if self._semantic_batch_subscription_enabled():
+            self._subscribe_instruments_semantic_batch(instruments)
+            return
+
         for instrument in instruments:
             if not self._maybe_subscribe_instrument(instrument):
                 continue
@@ -431,6 +435,34 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
 
     def _semantic_quote_priority_enabled(self) -> bool:
         return self._config.opportunity_graph_enabled and self._matcher.rule_store is not None
+
+    def _semantic_batch_subscription_enabled(self) -> bool:
+        return (
+            self._semantic_quote_priority_enabled() and self._config.graph_rebuild_on_new_instrument
+        )
+
+    def _subscribe_instruments_semantic_batch(
+        self,
+        instruments: list[BettingInstrument],
+    ) -> None:
+        subscribed_before = len(self._subscribed_instruments)
+        existing_ids = {str(instrument.id) for instrument in self._subscribed_instruments}
+        for instrument in instruments:
+            if instrument.id.venue.value not in self._config.enabled_venues:
+                continue
+            if not self._should_process_instrument(instrument):
+                continue
+            if str(instrument.id) in existing_ids:
+                continue
+            self._subscribed_instruments.add(instrument)
+            existing_ids.add(str(instrument.id))
+
+        if len(self._subscribed_instruments) == subscribed_before:
+            return
+
+        self._opportunity_graph.build(list(self._subscribed_instruments))
+        self._subscribe_semantic_connected_quote_ticks()
+        self._log_graph_topology_summary()
 
     def _subscribe_quote_ticks_for_instrument(self, instrument: BettingInstrument) -> bool:
         quote_instrument_id = self._quote_subscription_instrument_id(instrument)
