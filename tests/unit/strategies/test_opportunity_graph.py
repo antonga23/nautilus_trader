@@ -357,6 +357,35 @@ def test_semantic_rust_builds_topology_from_promoted_templates(tmp_path) -> None
     ensure(next(iter(graph.edges_by_id.values())).execution_safe is True)
 
 
+def test_semantic_rust_ignores_scope_only_period_params(tmp_path) -> None:  # skipcq
+    template_instruments = [
+        _instrument(outcome="over", params="line=2.5&period=ft"),
+        _instrument(outcome="under", params="line=2.5&period=ft"),
+    ]
+    live_instruments = [
+        _instrument(outcome="over", params="line=2.5"),
+        _instrument(outcome="under", params="line=2.5"),
+    ]
+    store = _semantic_rule_store(
+        tmp_path / "period-rules",
+        template_instruments[0],
+        template_instruments[1],
+    )
+    matcher = MarketMatcher(rule_store=store, allow_unpromoted_topology=False)
+    try:
+        graph = OpportunityGraph(matcher, engine="semantic_rust")
+    except ImportError:
+        pytest.skip("Rust OpportunityGraphCore is unavailable")
+
+    payloads = graph._semantic_template_payloads()
+    ensure("period" not in str(payloads[0]["pattern_a"]["params_key"]))
+
+    graph.build(live_instruments)
+
+    ensure(graph.topology_source == "rust_semantic")
+    ensure(graph.edge_count == 1)
+
+
 def test_sync_keeps_rust_semantic_edges_without_python_rediscovery() -> None:  # skipcq
     matcher = MarketMatcher(allow_unpromoted_topology=False)
     instruments = [
