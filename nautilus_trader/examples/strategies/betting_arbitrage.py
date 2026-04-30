@@ -37,6 +37,7 @@ from nautilus_trader.examples.strategies.opportunity_graph import OpportunityGra
 from nautilus_trader.model.data import QuoteTick
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.enums import TimeInForce
+from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.instruments.base import Instrument
 from nautilus_trader.trading.strategy import Strategy
 
@@ -299,6 +300,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             f"manual_instructions={self._config.opportunity_log_manual_instructions}"
         )
         self.log.info(msg)
+        self._subscribe_enabled_venue_instrument_updates()
         self._subscribe_cached_instruments()
 
     def _semantic_rule_store(self) -> RuleStore | None:
@@ -362,6 +364,16 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             self.log.warning("No cached betting instruments available at strategy start")
             return
         self.subscribe_instruments(cached_instruments)
+
+    def _subscribe_enabled_venue_instrument_updates(self) -> None:
+        for venue_value in sorted(self._config.enabled_venues):
+            try:
+                Strategy.subscribe_instruments(self, Venue(venue_value))
+            except Exception as exc:
+                self.log.warning(
+                    "Unable to subscribe to venue instrument updates: "
+                    f"venue={venue_value} error={exc}",
+                )
 
     def _maybe_subscribe_instrument(self, instrument: CryptoBettingInstrument) -> bool:
         # Venue filter

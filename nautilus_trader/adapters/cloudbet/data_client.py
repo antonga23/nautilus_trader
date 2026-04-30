@@ -16,13 +16,14 @@
 import asyncio
 import contextlib
 import time
-from typing import Optional, Union, List, Any
+from typing import Any
 from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.clock import LiveClock
 from nautilus_trader.common.enums import LogColor
 from nautilus_trader.common.logging import Logger
 from nautilus_trader.core.rust.model import BookType
 from nautilus_trader.data.messages import RequestInstrument, RequestInstruments
+from nautilus_trader.data.messages import SubscribeInstruments
 from nautilus_trader.data.messages import SubscribeQuoteTicks
 from nautilus_trader.data.messages import UnsubscribeQuoteTicks
 from nautilus_trader.model.data import DataType
@@ -51,9 +52,9 @@ from nautilus_trader.model.orderbook import OrderBook
 
 class CloudbetDataClient(LiveMarketDataClient):
     """
-        Provides a data client of common methods for Cloudbet adapter.
+    Provides a data client of common methods for Cloudbet adapter.
 
-        Parameters
+    Parameters
     ----------
     loop : asyncio.AbstractEventLoop
         The event loop for the client.
@@ -84,9 +85,9 @@ class CloudbetDataClient(LiveMarketDataClient):
         clock: LiveClock,
         logger: Logger,
         market_filter: dict,
-        instrument_provider: Optional[CloudbetInstrumentProvider] = None,
-        stream_client: Optional[CloudbetStreamClient] = None,
-        config: Optional[CloudbetDataClientConfig] = None,
+        instrument_provider: CloudbetInstrumentProvider | None = None,
+        stream_client: CloudbetStreamClient | None = None,
+        config: CloudbetDataClientConfig | None = None,
     ):
         super().__init__(
             loop=loop,
@@ -111,12 +112,12 @@ class CloudbetDataClient(LiveMarketDataClient):
 
         # TODO: pass from config and and function to update interval
         self._update_instrument_interval: int = 60 * 5  # Once per hour (hardcode)
-        self._update_instruments_task: Optional[asyncio.Task] = None
+        self._update_instruments_task: asyncio.Task | None = None
         self._interval_update_requested: bool = False
         self._updates_received: int = 0  # Counter to track the number of updates
         self._update_event = asyncio.Event()  # native asyncio flag to track cycles/events
         self._subscribed_quote_instruments: set[InstrumentId] = set()
-        self._quote_polling_task: Optional[asyncio.Task] = None
+        self._quote_polling_task: asyncio.Task | None = None
         self._quote_polling_enabled = bool(
             getattr(self._config, "auto_subscribe_quote_ticks", False),
         )
@@ -234,8 +235,12 @@ class CloudbetDataClient(LiveMarketDataClient):
         self.subscribed_selection_ids.update({instrument_id: instrument_selection_id})
         self._log.debug(f"Subscribed to ID: {instrument.id}. Sending to Data engine...")
 
-    async def _subscribe_instruments(self) -> None:
+    async def _subscribe_instruments(self, command: SubscribeInstruments) -> None:
         instruments: list[Instrument] = self._instrument_provider.list_all()
+        if len(instruments) == 0:
+            self._log.debug("No Cloudbet instruments loaded; initializing provider")
+            await self._instrument_provider.initialize()
+            instruments = self._instrument_provider.list_all()
         if len(instruments) == 0:
             self._log.debug("No instruments to subscribe to")
             return
@@ -257,14 +262,15 @@ class CloudbetDataClient(LiveMarketDataClient):
             self.subscribed_event_ids.update({instrument.id: instrument_event_id})
             self.subscribed_selection_ids.update({instrument.id: instrument_selection_id})
             self._log.debug(f"Subscribed to ID: {instrument.id}. Sending to Data engine...")
+        self._send_all_instruments_to_data_engine(instruments=instruments)
 
-    async def subscribe_order_book_snapshots(  # noqa (too complex)
+    async def subscribe_order_book_snapshots(
         self,
         instrument_id: InstrumentId,
         book_type: BookType,
         # generally BookType.L1_MBP or BookType.L3_MBO since cloudbet only supports top-level orderbook
-        depth: Optional[int] = None,
-        kwargs: Optional[dict[str, Any]] = None,  # generally update_speed
+        depth: int | None = None,
+        kwargs: dict[str, Any] | None = None,  # generally update_speed
     ) -> None:
         # if self._stream is None:
         #     self._log.error("Cannot subscribe to order book snapshots: no stream client.")
@@ -312,8 +318,8 @@ class CloudbetDataClient(LiveMarketDataClient):
         self,
         instrument_id: InstrumentId,
         book_type: BookType,
-        depth: Optional[int] = None,
-        kwargs: Optional[dict] = None,
+        depth: int | None = None,
+        kwargs: dict | None = None,
     ) -> None:
         raise NotImplementedError(  # pragma: no cover
             "Cannot subscribe to Orderbook Delta for  Cloudbet",  # pragma: no cover
@@ -385,9 +391,7 @@ class CloudbetDataClient(LiveMarketDataClient):
 
     def _send_all_instruments_to_data_engine(self, **kwargs) -> None:
         if kwargs.get("instruments") is not None:
-            instruments: List[Union[Instrument, CryptoBettingInstrument]] = kwargs.get(
-                "instruments"
-            )
+            instruments: list[Instrument | CryptoBettingInstrument] = kwargs.get("instruments")
             for instrument in instruments:
                 self._handle_data(instrument)
                 self._log.debug(f"Sending {instrument.id} to Data engine...", LogColor.GREEN)
@@ -562,7 +566,7 @@ class CloudbetDataClient(LiveMarketDataClient):
         except asyncio.CancelledError:
             self._log.debug("`update_instruments` task was canceled.")
         except Exception as e:
-            self._log.error(f"An error occurred during `update_instruments` task: {str(e)}")
+            self._log.error(f"An error occurred during `update_instruments` task: {e!s}")
 
     def update_interval(self, new_interval: int):
         """Update the interval at which instruments are updated."""
@@ -591,8 +595,8 @@ class CloudbetDataClient(LiveMarketDataClient):
         """Request instrument data for the given instrument ID."""
         instrument_id = request.instrument_id
         self._log.debug(f"RequestID: {request.id} ... Requesting instrument {instrument_id}...")
-        instrument: Optional[Union[Instrument, CryptoBettingInstrument]] = (
-            self._instrument_provider.find(instrument_id)
+        instrument: Instrument | CryptoBettingInstrument | None = self._instrument_provider.find(
+            instrument_id
         )
         if instrument is not None:
             self._log.debug(
@@ -611,7 +615,7 @@ class CloudbetDataClient(LiveMarketDataClient):
                 instrument.max_size = odds.max_stake
                 instrument.min_size = odds.min_stake
                 instrument.price = odds.price
-                instrument.enabled = True if odds.status == SelectionStatus.ENABLED else False
+                instrument.enabled = odds.status == SelectionStatus.ENABLED
                 self._instrument_provider.add(instrument)
                 self._handle_instrument(
                     instrument,
@@ -632,7 +636,7 @@ class CloudbetDataClient(LiveMarketDataClient):
 
     async def _request_instruments(self, request: RequestInstruments) -> None:
         """Request all instrument data for the given venue."""
-        instruments: List[Union[Instrument, CryptoBettingInstrument]] = (
+        instruments: list[Instrument | CryptoBettingInstrument] = (
             self._instrument_provider.list_all()
         )
         for instrument in instruments:
