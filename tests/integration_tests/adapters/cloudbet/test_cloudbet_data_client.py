@@ -4,6 +4,7 @@ from unittest.mock import patch, AsyncMock, MagicMock
 import pytest
 from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.data.messages import RequestInstrument
+from nautilus_trader.data.messages import SubscribeInstruments
 
 from nautilus_trader.adapters.cloudbet.client.core import CloudbetClient
 from nautilus_trader.adapters.cloudbet.client.schema import (
@@ -127,6 +128,37 @@ class TestCloudbetDataClient:
             "Expected cache to contain the preloaded Cloudbet instruments plus the "
             f"{len(instrument_ids)} instruments sent to the DataEngine, got "
             f"{len(updated_cache_instruments)} instrument ids"
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 2)], indirect=["instruments"])
+    async def test_subscribe_instruments_republishes_loaded_instruments(
+        self,
+        data_client,
+        instruments,
+        monkeypatch,
+    ):
+        """Venue-level subscriptions must publish loaded instruments to strategies."""
+        for instrument in instruments:
+            data_client.instrument_provider.add(instrument)
+        handled = []
+        monkeypatch.setattr(data_client, "_handle_data", handled.append)
+
+        command = SubscribeInstruments(
+            client_id=ClientId(CLOUDBET_VENUE.value),
+            venue=CLOUDBET_VENUE,
+            command_id=UUID4(),
+            ts_init=data_client._clock.timestamp_ns(),
+            params=None,
+        )
+
+        await data_client._subscribe_instruments(command)
+
+        assert {instrument.id for instrument in handled}.issuperset(
+            {instrument.id for instrument in instruments},
+        )
+        assert set(data_client.subscribed_instruments()).issuperset(
+            {instrument.id for instrument in instruments},
         )
 
     # test disconnect

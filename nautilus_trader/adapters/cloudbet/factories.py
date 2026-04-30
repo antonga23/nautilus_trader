@@ -69,7 +69,6 @@ def get_cached_cloudbet_client(
     return CLIENTS[key]
 
 
-@lru_cache(1)
 def get_cached_cloudbet_instrument_provider(
     client: CloudbetClient,
     logger: Logger,

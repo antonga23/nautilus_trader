@@ -29,6 +29,7 @@ from nautilus_trader.adapters.betting.semantics import RuleStore
 from nautilus_trader.adapters.betting.semantics import SemanticRuleTemplate
 from nautilus_trader.adapters.betting.semantics import TemplateSupportStats
 from nautilus_trader.config import ImportableConfig
+from nautilus_trader.config import InstrumentProviderConfig
 from nautilus_trader.examples.strategies.betting_arbitrage import BettingArbitrageConfig
 from nautilus_trader.live.strategy_nodes.betting_arbitrage import builder as node_builder
 from nautilus_trader.live.strategy_nodes.betting_arbitrage import runner as node_runner
@@ -367,7 +368,12 @@ class TestBettingArbitrageNodeBuilder:
         data_client = cloudbet_factories.CloudbetLiveDataClientFactory.create(
             loop=Mock(),
             name="CLOUDBET",
-            config=CloudbetDataClientConfig(),
+            config=CloudbetDataClientConfig(
+                instrument_provider=InstrumentProviderConfig(
+                    load_all=True,
+                    filters={"sport_key": ["soccer", "basketball"]},
+                ),
+            ),
             msgbus=Mock(),
             cache=Mock(),
             clock=Mock(),
@@ -383,6 +389,30 @@ class TestBettingArbitrageNodeBuilder:
 
         assert data_client.kwargs["logger"] is not None
         assert exec_client.kwargs["logger"] is not None
+
+    def test_cloudbet_instrument_provider_cache_accepts_list_filters(self, monkeypatch):
+        from nautilus_trader.adapters.cloudbet import factories as cloudbet_factories
+
+        class FakeProvider:
+            def __init__(self, *, client, logger, config):
+                self.client = client
+                self.logger = logger
+                self.config = config
+
+        monkeypatch.setattr(cloudbet_factories, "INSTRUMENT_PROVIDER", None)
+        monkeypatch.setattr(cloudbet_factories, "CloudbetInstrumentProvider", FakeProvider)
+
+        config = InstrumentProviderConfig(
+            load_all=True,
+            filters={"sport_key": ["soccer", "basketball"]},
+        )
+        provider = cloudbet_factories.get_cached_cloudbet_instrument_provider(
+            client=Mock(),
+            logger=Mock(),
+            config=config,
+        )
+
+        assert provider.config is config
 
     def test_polymarket_instrument_ids_flow_into_importable_config(self):
         manifest = BettingArbitrageNodeManifest(

@@ -21,6 +21,9 @@ import pytest
 from nautilus_trader.adapters.betting.common.enums import SelectionSide
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.betting.market_matcher import MarketMatcher
+from nautilus_trader.adapters.cloudbet.client.schema import (
+    SelectionSide as CloudbetSelectionSide,
+)
 from nautilus_trader.examples.strategies.betting_arbitrage import BettingArbitrageConfig
 from nautilus_trader.examples.strategies.betting_arbitrage import BettingArbitrageStrategy
 from nautilus_trader.examples.strategies.opportunity_graph import OpportunityGraph
@@ -31,6 +34,9 @@ from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.currencies import USDC_POS
 from nautilus_trader.model.enums import AssetClass
 from nautilus_trader.model.instruments import BinaryOption
+from nautilus_trader.model.instruments.crypto_betting import (
+    CryptoBettingInstrument as LegacyCryptoBettingInstrument,
+)
 from nautilus_trader.model.objects import Currency
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
@@ -753,6 +759,36 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(transformed.id.venue == Venue("POLYMARKET"))
         ensure(str(remapped_tick.instrument_id) == str(transformed.id))
         ensure(str(remapped_tick.instrument_id) != str(binary_option.id))
+
+    def test_on_instrument_subscribes_legacy_cloudbet_instrument(self):  # skipcq
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(enabled_venues=frozenset(["CLOUDBET"])),
+        )
+        strategy.subscribe_quote_ticks = Mock()
+
+        instrument = LegacyCryptoBettingInstrument(
+            home_name="Team A",
+            away_name="Team B",
+            sport_name="Soccer",
+            competition_name="Test League",
+            price=2.0,
+            currency=Currency.from_str("USDT"),
+            event_name="Team A vs Team B",
+            market_name="soccer.match_odds",
+            venue=Venue("CLOUDBET"),
+            live=False,
+            enabled=True,
+            outcome="home",
+            side=CloudbetSelectionSide.BACK,
+            params="",
+            market_type="soccer.match_odds",
+            event_id=1,
+        )
+
+        strategy.on_instrument(instrument)
+
+        strategy.subscribe_quote_ticks.assert_called_once_with(instrument.id)
+        ensure(instrument in strategy._subscribed_instruments)
 
     def test_on_start_skips_subscription_when_cache_is_empty(self, default_config):  # skipcq
         strategy = BettingArbitrageStrategy(config=default_config)
