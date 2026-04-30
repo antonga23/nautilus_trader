@@ -12,10 +12,13 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
+import re
 import time
+from datetime import UTC
+from datetime import datetime
 from decimal import Decimal
 
-from typing import Union, Optional, Any
+from typing import Any
 
 from nautilus_trader.core.correctness import PyCondition
 
@@ -118,22 +121,21 @@ class CryptoBettingInstrument(Instrument):
         params: str,
         market_type: str,
         # ToDo: create enum for all possible market_types eg over +25; under 0.5, match_odds, etc
-        market_id: Optional[str] = None,
-        home_id: Optional[str] = None,
-        away_id: Optional[str] = None,
-        sport_id: Optional[str] = None,
-        competition_id: Optional[str] = None,
-        max_size: Union[float, Decimal, int, None] = None,
-        min_size: Union[float, Decimal, int, None] = None,
-        start_time: Optional[str] = None,
-        end_time: Optional[str] = None,
-        fees: Optional[Any] = None,
-        handicap: Optional[
-            Any
-        ] = None,  # TODO: Fix a handicap type...eg. tuple[outcome, handicap_value, etc]
-        trading_status: Optional[str] = None,
+        market_id: str | None = None,
+        home_id: str | None = None,
+        away_id: str | None = None,
+        sport_id: str | None = None,
+        competition_id: str | None = None,
+        max_size: float | Decimal | None = None,
+        min_size: float | Decimal | None = None,
+        start_time: str | None = None,
+        end_time: str | None = None,
+        fees: Any | None = None,
+        handicap: Any
+        | None = None,  # TODO: Fix a handicap type...eg. tuple[outcome, handicap_value, etc]
+        trading_status: str | None = None,
         # NB: event_id should be a unique per event but the same across all venues
-        event_id: Optional[str] = None,
+        event_id: str | None = None,
     ):
         # Event level data
         self.home_name = home_name
@@ -216,14 +218,122 @@ class CryptoBettingInstrument(Instrument):
         )
 
     @staticmethod
+    def _normalize_event_component(value: str | None) -> str:
+        if not value:
+            return ""
+        normalized = re.sub(r"[^a-z0-9]+", " ", value.lower())
+        return " ".join(normalized.split())
+
+    @classmethod
+    def _normalize_team_name(cls, name: str | None) -> str:
+        normalized = cls._normalize_event_component(name)
+        if not normalized:
+            return ""
+        ignored_tokens = {"fc", "afc", "sc", "cf"}
+        tokens = [token for token in normalized.split() if token not in ignored_tokens]
+        return " ".join(tokens)
+
+    def _team_key(self) -> tuple[str, ...]:
+        participants = sorted(
+            {
+                self._normalize_team_name(self.home_name),
+                self._normalize_team_name(self.away_name),
+            }
+            - {""},
+        )
+        if participants:
+            return tuple(participants)
+
+        normalized_event = self._normalize_event_component(self.event_name)
+        return (normalized_event,) if normalized_event else ()
+
+    def parsed_start_time(self) -> datetime | None:
+        if not self.start_time:
+            return None
+
+        start_time = self.start_time.replace("Z", "+00:00")
+        try:
+            parsed = datetime.fromisoformat(start_time)
+        except ValueError:
+            return None
+
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC)
+
+    def event_key(self, include_start_time: bool = True) -> str:
+        parts = [self._normalize_event_component(self.sport_name), *self._team_key()]
+        start_time = self.parsed_start_time()
+        if include_start_time and start_time is not None:
+            parts.append(start_time.strftime("%Y-%m-%dT%H"))
+        return ":".join(part for part in parts if part)
+
+    def selection_key(self) -> str:
+        outcome = str(self.outcome).lower().replace(" ", "_").replace("-", "_")
+        if outcome == "home":
+            return f"team:{self._normalize_team_name(self.home_name)}"
+        if outcome == "away":
+            return f"team:{self._normalize_team_name(self.away_name)}"
+        return outcome
+
+    def matches_event(self, other: "CryptoBettingInstrument") -> bool:
+        if (
+            self.venue_name == other.venue_name
+            and self.event_id is not None
+            and self.event_id == other.event_id
+        ):
+            return True
+
+        if self._normalize_event_component(self.sport_name) != self._normalize_event_component(
+            other.sport_name,
+        ):
+            return False
+
+        if self._team_key() != other._team_key():
+            return False
+
+        self_start = self.parsed_start_time()
+        other_start = other.parsed_start_time()
+        if self_start is None or other_start is None:
+            return True
+
+        return abs((self_start - other_start).total_seconds()) <= 6 * 60 * 60
+
+    def matches_market(self, other: "CryptoBettingInstrument") -> bool:
+        return (
+            self.matches_event(other)
+            and self.market_name == other.market_name
+            and self.params == other.params
+        )
+
+    def matches_selection(self, other: "CryptoBettingInstrument") -> bool:
+        return self.matches_event(other) and self.selection_key() == other.selection_key()
+
+    def is_opposite_outcome(self, other: "CryptoBettingInstrument") -> bool:
+        if not self.matches_event(other):
+            return False
+
+        outcome_self = str(self.outcome).lower().replace(" ", "_").replace("-", "_")
+        outcome_other = str(other.outcome).lower().replace(" ", "_").replace("-", "_")
+
+        if {outcome_self, outcome_other} <= {"home", "away"}:
+            return self.selection_key() != other.selection_key()
+
+        return frozenset((outcome_self, outcome_other)) in {
+            frozenset(("over", "under")),
+            frozenset(("yes", "no")),
+        }
+
+    @staticmethod
     def from_dict(values: dict[str, Any]) -> "CryptoBettingInstrument":
         """
-        Creates a new `CryptoBettingInstrument` from a dictionary.
+        Create a new `CryptoBettingInstrument` from a dictionary.
 
         Parameters
         ----------
         values : dict[str, object]
             The values to initialize the instrument with.
+
         Returns
         -------
         CryptoBettingInstrument
@@ -252,7 +362,7 @@ class CryptoBettingInstrument(Instrument):
         str, Any
     ]:  # to allow serialization for Cython use explict type "obj : 'CryptoBettingInstrument'" instead of self
         """
-        Converts a `CryptoBettingInstrument` to a dictionary.
+        Convert a `CryptoBettingInstrument` to a dictionary.
 
         Returns
         -------
@@ -294,7 +404,7 @@ class CryptoBettingInstrument(Instrument):
     # TODO: implement venue specific creation helper method
     def from_venue(venue: Venue, **kwargs) -> "CryptoBettingInstrument":
         """
-        Creates a new `CryptoBettingInstrument` from a venue.
+        Create a new `CryptoBettingInstrument` from a venue.
 
         Parameters
         ----------
@@ -302,16 +412,12 @@ class CryptoBettingInstrument(Instrument):
             The venue to create the instrument from.
         kwargs : dict[str, object]
             The values to initialize the instrument with.
+
         Returns
         -------
         CryptoBettingInstrument
         """
         PyCondition.not_none(venue, "venue")
         if venue == Venue.CLOUDBET:
-            if kwargs.get("evevnt"):
-                event = kwargs["event"]
-            if kwargs.get("odds"):
-                odds = kwargs["odds"]
-            # TODO: implement this
-        else:
-            raise ValueError(f"Unsupported venue: {venue}")
+            raise NotImplementedError("Cloudbet venue factory is not implemented")
+        raise ValueError(f"Unsupported venue: {venue}")
