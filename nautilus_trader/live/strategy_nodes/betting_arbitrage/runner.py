@@ -648,6 +648,14 @@ def _collect_runtime_probe_payload(
     snapshot = _snapshot_probe_graph_state(graph)
     semantic_diagnostics = _semantic_probe_diagnostics(graph)
     if snapshot is None:
+        venue_coverage = _venue_pair_coverage(
+            strategy,
+            edges=[],
+            nodes={},
+            quotes={},
+            matched_node_ids=set(),
+            candidate_venue_pairs={},
+        )
         return {
             "elapsedSeconds": round(elapsed_seconds, 2),
             "minProfitMargin": str(min_profit_margin),
@@ -677,6 +685,7 @@ def _collect_runtime_probe_payload(
             "candidateQuality": _empty_candidate_quality_payload(),
             "strategyStats": stats,
             "semanticDiagnostics": semantic_diagnostics,
+            "venueCoverage": venue_coverage,
             "sampleCandidates": [],
             "negativeNearMisses": [],
         }
@@ -731,6 +740,14 @@ def _collect_runtime_probe_payload(
         },
         "strategyStats": stats,
         "semanticDiagnostics": semantic_diagnostics,
+        "venueCoverage": _venue_pair_coverage(
+            strategy,
+            edges=snapshot["edges"],
+            nodes=snapshot["nodes"],
+            quotes=snapshot["quotes"],
+            matched_node_ids=snapshot["matched_node_ids"],
+            candidate_venue_pairs=profitability["venue_pairs"],
+        ),
         "sampleCandidates": profitability["sample_candidates"],
         "negativeNearMisses": profitability["negative_near_misses"],
     }
@@ -786,6 +803,140 @@ def _snapshot_probe_graph_state(graph) -> dict[str, object] | None:
         }
     except RuntimeError:
         return None
+
+
+def _venue_pair_coverage(
+    strategy,
+    *,
+    edges: Any,
+    nodes: dict[Any, object],
+    quotes: dict[Any, object],
+    matched_node_ids: set[Any],
+    candidate_venue_pairs: Any,
+) -> dict[str, object]:
+    venues = _enabled_probe_venues(strategy, nodes)
+    node_counts: Counter[str] = Counter()
+    quoted_node_counts: Counter[str] = Counter()
+    matched_node_counts: Counter[str] = Counter()
+    quoted_matched_node_counts: Counter[str] = Counter()
+    edge_counts: Counter[str] = Counter()
+    quoted_edge_counts: Counter[str] = Counter()
+
+    for node_id, node in nodes.items():
+        venue = _probe_node_venue(node)
+        if venue is None:
+            continue
+        node_counts[venue] += 1
+        if node_id in quotes:
+            quoted_node_counts[venue] += 1
+        if node_id in matched_node_ids:
+            matched_node_counts[venue] += 1
+            if node_id in quotes:
+                quoted_matched_node_counts[venue] += 1
+
+    for edge in edges:
+        source_node = nodes.get(edge.source_node_id)
+        target_node = nodes.get(edge.target_node_id)
+        source_venue = _probe_node_venue(source_node)
+        target_venue = _probe_node_venue(target_node)
+        if source_venue is None or target_venue is None:
+            continue
+        pair = f"{source_venue}->{target_venue}"
+        edge_counts[pair] += 1
+        if _quoted_probe_edge(edge, nodes, quotes) is not None:
+            quoted_edge_counts[pair] += 1
+
+    all_pairs = [f"{source}->{target}" for source in venues for target in venues]
+    candidate_counts = _venue_pair_candidate_counts(candidate_venue_pairs)
+    zero_pairs = [
+        {
+            "venuePair": pair,
+            "reason": _zero_venue_pair_reason(
+                pair,
+                node_counts=node_counts,
+                edge_counts=edge_counts,
+                quoted_edge_counts=quoted_edge_counts,
+            ),
+        }
+        for pair in all_pairs
+        if candidate_counts.get(pair, 0) == 0
+    ]
+    cross_venue_candidate_count = sum(
+        count for pair, count in candidate_counts.items() if _is_cross_venue_pair(pair)
+    )
+
+    return {
+        "enabledVenues": venues,
+        "nodeCounts": {venue: node_counts.get(venue, 0) for venue in venues},
+        "quotedNodeCounts": {venue: quoted_node_counts.get(venue, 0) for venue in venues},
+        "semanticMatchedNodeCounts": {venue: matched_node_counts.get(venue, 0) for venue in venues},
+        "quotedSemanticMatchedNodeCounts": {
+            venue: quoted_matched_node_counts.get(venue, 0) for venue in venues
+        },
+        "edgeCounts": {pair: edge_counts.get(pair, 0) for pair in all_pairs},
+        "quotedEdgeCounts": {pair: quoted_edge_counts.get(pair, 0) for pair in all_pairs},
+        "candidateCounts": {pair: candidate_counts.get(pair, 0) for pair in all_pairs},
+        "crossVenueCandidateCount": cross_venue_candidate_count,
+        "crossVenuePairsWithCandidates": [
+            pair
+            for pair in all_pairs
+            if _is_cross_venue_pair(pair) and candidate_counts.get(pair, 0) > 0
+        ],
+        "zeroCandidateVenuePairs": zero_pairs,
+    }
+
+
+def _venue_pair_candidate_counts(candidate_venue_pairs: Any) -> dict[str, int]:
+    if not isinstance(candidate_venue_pairs, dict):
+        return {}
+    return {
+        str(pair): sum(int(value) for value in buckets.values())
+        for pair, buckets in candidate_venue_pairs.items()
+        if isinstance(buckets, dict)
+    }
+
+
+def _enabled_probe_venues(strategy, nodes: dict[Any, object]) -> list[str]:
+    config = getattr(strategy, "_config", None)
+    enabled_venues = {
+        str(venue).upper() for venue in getattr(config, "enabled_venues", ()) or () if str(venue)
+    }
+    for node in nodes.values():
+        venue = _probe_node_venue(node)
+        if venue:
+            enabled_venues.add(venue)
+    return sorted(enabled_venues)
+
+
+def _probe_node_venue(node) -> str | None:
+    instrument = getattr(node, "instrument", None)
+    instrument_id = getattr(instrument, "id", None)
+    venue = getattr(instrument_id, "venue", None)
+    if venue is None:
+        venue = getattr(instrument, "venue_name", None)
+    return str(venue).upper() if venue else None
+
+
+def _zero_venue_pair_reason(
+    pair: str,
+    *,
+    node_counts: Counter[str],
+    edge_counts: Counter[str],
+    quoted_edge_counts: Counter[str],
+) -> str:
+    source, target = pair.split("->", maxsplit=1)
+    if node_counts.get(source, 0) == 0 or node_counts.get(target, 0) == 0:
+        return "missing_instruments"
+    if edge_counts.get(pair, 0) == 0:
+        return "no_semantic_edge"
+    if quoted_edge_counts.get(pair, 0) == 0:
+        return "no_quoted_semantic_edge"
+    return "no_positive_or_threshold_candidate"
+
+
+def _is_cross_venue_pair(pair: str) -> bool:
+    source, target = pair.split("->", maxsplit=1)
+    return source != target
 
 
 def _semantic_probe_diagnostics(graph) -> dict[str, object]:
