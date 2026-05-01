@@ -1516,6 +1516,13 @@ class TestBettingArbitrageNodeRunner:
                     "sameVenueExecutionEligible": 1,
                     "total": 1,
                 },
+                "venueCoverage": {
+                    "crossVenueCandidateCount": 1,
+                    "quotedNodeCounts": {
+                        "CLOUDBET": 2,
+                        "SXBET": 2,
+                    },
+                },
             }
 
         monkeypatch.setattr(
@@ -1541,11 +1548,22 @@ class TestBettingArbitrageNodeRunner:
                 "--manifest",
                 str(manifest_path),
                 "--require-rust-semantic-topology",
+                "--min-cross-venue-candidates",
+                "1",
+                "--min-quoted-node-count",
+                "CLOUDBET:2",
+                "--min-quoted-node-count",
+                "SXBET:2",
             ],
         )
 
         assert result == 0
         assert observed_probe_kwargs["require_rust_semantic_topology"] is True
+        assert observed_probe_kwargs["min_cross_venue_candidates"] == 1
+        assert observed_probe_kwargs["min_quoted_node_counts"] == {
+            "CLOUDBET": 2,
+            "SXBET": 2,
+        }
         payload = json.loads((tmp_path / "status.json").read_text())
         assert payload["status"] == "probed"
         assert payload["runtimeProbe"]["graphEngine"] == "rust"
@@ -1877,17 +1895,23 @@ class TestBettingArbitrageNodeRunner:
         assert "Probe SX.bet runtime semantic coverage" in workflow
         assert "Validate Cloudbet manifest" in workflow
         assert "Probe Cloudbet runtime semantic coverage" in workflow
+        assert "Probe selected multi-venue runtime semantic coverage" in workflow
         assert "cloudbet-single-venue.json" in workflow
         assert "probe-runtime" in workflow
         assert "--min-quoted-match-instruments 2" in workflow
         assert "--min-positive-margin-candidates 0" in workflow
+        assert "--min-cross-venue-candidates 1" in workflow
+        assert "--min-quoted-node-count CLOUDBET:2" in workflow
+        assert "--min-quoted-node-count SXBET:2" in workflow
         assert "min_positive_margin_candidates=0" in workflow
         assert (
             '[ "$manifest_path" = "deploy/strategy_nodes/betting_arbitrage/multi-venue-validation.json" ]'
             in workflow
         )
         assert "min_positive_margin_candidates=1" in workflow
+        assert "min_cross_venue_candidates=1" in workflow
         assert "--min-positive-margin-candidates $min_positive_margin_candidates" in workflow
+        assert "--min-cross-venue-candidates $min_cross_venue_candidates" in workflow
         assert "--require-rust-semantic-topology" in workflow
         assert "Wait for deployed node status and semantic cache" in workflow
         assert "--require-runtime-probe" in workflow
@@ -1911,6 +1935,9 @@ class TestBettingArbitrageNodeRunner:
         assert "trap 'status=$?;" in workflow
         assert "node_log_tail" in workflow
         assert "events_tail" in workflow
+        assert "min_cross_venue_candidates" in workflow
+        assert "min_quoted_node_counts" in workflow
+        assert "runtime_probe_summary<<EOF" in workflow
 
     def test_strategy_node_maintenance_workflow_archives_before_stop(self):
         workflow = Path(".github/workflows/strategy-node-maintenance.yml").read_text()
@@ -1945,6 +1972,13 @@ class TestBettingArbitrageNodeRunner:
                         "semanticMatchInstruments": 2,
                         "quotedSemanticMatchInstruments": 2,
                         "positiveMarginCandidates": {"total": 0},
+                        "venueCoverage": {
+                            "crossVenueCandidateCount": 1,
+                            "quotedNodeCounts": {
+                                "CLOUDBET": 2,
+                                "SXBET": 2,
+                            },
+                        },
                     },
                 },
             ),
@@ -1970,6 +2004,12 @@ class TestBettingArbitrageNodeRunner:
                 "2",
                 "--min-positive-margin-candidates",
                 "0",
+                "--min-cross-venue-candidates",
+                "1",
+                "--min-quoted-node-count",
+                "CLOUDBET:2",
+                "--min-quoted-node-count",
+                "SXBET:2",
             ],
             cwd=Path.cwd(),
             capture_output=True,

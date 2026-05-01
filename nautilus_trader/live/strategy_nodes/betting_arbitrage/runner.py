@@ -212,6 +212,14 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     probe_parser.add_argument("--min-quoted-match-instruments", type=int, default=0)
     probe_parser.add_argument("--min-quoted-edges", type=int, default=0)
     probe_parser.add_argument("--min-positive-margin-candidates", type=int, default=0)
+    probe_parser.add_argument("--min-cross-venue-candidates", type=int, default=0)
+    probe_parser.add_argument(
+        "--min-quoted-node-count",
+        action="append",
+        default=[],
+        metavar="VENUE:COUNT",
+        help="Require at least COUNT quoted nodes for VENUE. May be repeated.",
+    )
     probe_parser.add_argument("--require-rust-semantic-topology", action="store_true")
 
     return parser
@@ -335,6 +343,10 @@ def _handle_probe_runtime_command(args, node, context: RunnerContext) -> int:
             min_quoted_match_instruments=int(args.min_quoted_match_instruments),
             min_quoted_edges=int(args.min_quoted_edges),
             min_positive_margin_candidates=int(args.min_positive_margin_candidates),
+            min_cross_venue_candidates=int(args.min_cross_venue_candidates),
+            min_quoted_node_counts=_parse_venue_count_requirements(
+                args.min_quoted_node_count,
+            ),
             require_rust_semantic_topology=bool(args.require_rust_semantic_topology),
         )
         _write_status(
@@ -518,6 +530,8 @@ def _probe_runtime(
     min_quoted_match_instruments: int,
     min_quoted_edges: int,
     min_positive_margin_candidates: int,
+    min_cross_venue_candidates: int,
+    min_quoted_node_counts: dict[str, int],
     require_rust_semantic_topology: bool,
 ) -> dict[str, object]:
     if not manifest.validation_mode:
@@ -577,6 +591,8 @@ def _probe_runtime(
                 min_quoted_match_instruments=min_quoted_match_instruments,
                 min_quoted_edges=min_quoted_edges,
                 min_positive_margin_candidates=min_positive_margin_candidates,
+                min_cross_venue_candidates=min_cross_venue_candidates,
+                min_quoted_node_counts=min_quoted_node_counts,
                 require_rust_semantic_topology=require_rust_semantic_topology,
             ):
                 return latest_payload
@@ -619,9 +635,12 @@ def _probe_runtime(
         f"quoted_semantic_match_instruments={latest_payload['quotedSemanticMatchInstruments']}, "
         f"quoted_edges={latest_payload['quotedEdges']}, "
         f"positive_margin_candidates={latest_payload['positiveMarginCandidates']['total']}, "
+        f"cross_venue_candidate_count="
+        f"{(latest_payload.get('venueCoverage') or {}).get('crossVenueCandidateCount', 0)}, "
         f"graph_engine={latest_payload.get('graphEngine')}, "
         f"topology_source={latest_payload.get('topologySource')}, "
         f"semantic_template_count={latest_payload.get('semanticTemplateCount')}, "
+        f"venue_coverage={json.dumps(latest_payload.get('venueCoverage') or {}, sort_keys=True, default=str)[:2000]}, "
         f"semantic_diagnostics={diagnostics_json}, "
         f"candidate_quality={candidate_quality_json})",
         latest_payload,
@@ -761,9 +780,24 @@ def _runtime_probe_satisfied(
     min_quoted_match_instruments: int = 0,
     min_quoted_edges: int = 0,
     min_positive_margin_candidates: int = 0,
+    min_cross_venue_candidates: int = 0,
+    min_quoted_node_counts: dict[str, int] | None = None,
     require_rust_semantic_topology: bool = False,
 ) -> bool:
     positive_candidates = payload["positiveMarginCandidates"]["total"]
+    venue_coverage = payload.get("venueCoverage") or {}
+    if not isinstance(venue_coverage, dict):
+        venue_coverage = {}
+    quoted_node_counts = venue_coverage.get("quotedNodeCounts") or {}
+    if not isinstance(quoted_node_counts, dict):
+        quoted_node_counts = {}
+    venue_quoted_ok = all(
+        int(quoted_node_counts.get(venue, 0) or 0) >= minimum
+        for venue, minimum in (min_quoted_node_counts or {}).items()
+    )
+    cross_venue_candidate_count = int(
+        venue_coverage.get("crossVenueCandidateCount") or 0,
+    )
     rust_semantic_topology_ok = (
         payload.get("graphEngine") == "rust"
         and payload.get("topologySource") == "rust_semantic"
@@ -775,8 +809,35 @@ def _runtime_probe_satisfied(
         and payload["quotedSemanticMatchInstruments"] >= min_quoted_match_instruments
         and payload["quotedEdges"] >= min_quoted_edges
         and positive_candidates >= min_positive_margin_candidates
+        and cross_venue_candidate_count >= min_cross_venue_candidates
+        and venue_quoted_ok
         and (rust_semantic_topology_ok or not require_rust_semantic_topology)
     )
+
+
+def _parse_venue_count_requirements(values: list[str] | tuple[str, ...]) -> dict[str, int]:
+    requirements: dict[str, int] = {}
+    for raw_value in values:
+        if not raw_value:
+            continue
+        if ":" not in raw_value:
+            msg = f"Venue count requirement must use VENUE:COUNT, got {raw_value!r}"
+            raise ValueError(msg)
+        raw_venue, raw_count = raw_value.split(":", maxsplit=1)
+        venue = raw_venue.strip().upper()
+        if not venue:
+            msg = f"Venue count requirement has empty venue: {raw_value!r}"
+            raise ValueError(msg)
+        try:
+            count = int(raw_count)
+        except ValueError as exc:
+            msg = f"Venue count requirement has invalid count: {raw_value!r}"
+            raise ValueError(msg) from exc
+        if count < 0:
+            msg = f"Venue count requirement count must be non-negative: {raw_value!r}"
+            raise ValueError(msg)
+        requirements[venue] = count
+    return requirements
 
 
 def _empty_candidate_quality_payload() -> dict[str, object]:
