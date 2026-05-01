@@ -270,6 +270,7 @@ elif [[ -f "$current_image_file" ]]; then
 fi
 
 printf '%s\n' "$image_ref" > "$current_image_file"
+rm -f "$node_dir/status.json" "$node_dir/heartbeat.json"
 
 run_args=(
   run -d

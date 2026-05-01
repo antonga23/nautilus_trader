@@ -14,15 +14,23 @@
 # -------------------------------------------------------------------------------------------------
 
 import asyncio
-from typing import Optional, Union, List, Any
+import contextlib
+import time
+from typing import Any
 from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.clock import LiveClock
 from nautilus_trader.common.enums import LogColor
 from nautilus_trader.common.logging import Logger
 from nautilus_trader.core.rust.model import BookType
 from nautilus_trader.data.messages import RequestInstrument, RequestInstruments
+from nautilus_trader.data.messages import SubscribeInstruments
+from nautilus_trader.data.messages import SubscribeQuoteTicks
+from nautilus_trader.data.messages import UnsubscribeQuoteTicks
 from nautilus_trader.model.data import DataType
+from nautilus_trader.model.data import QuoteTick
 from nautilus_trader.model.identifiers import ClientId, InstrumentId
+from nautilus_trader.model.objects import Price
+from nautilus_trader.model.objects import Quantity
 from nautilus_trader.msgbus.bus import MessageBus
 
 from nautilus_trader.adapters.cloudbet.client.core import CLOUDBET_VENUE
@@ -44,9 +52,9 @@ from nautilus_trader.model.orderbook import OrderBook
 
 class CloudbetDataClient(LiveMarketDataClient):
     """
-        Provides a data client of common methods for Cloudbet adapter.
+    Provides a data client of common methods for Cloudbet adapter.
 
-        Parameters
+    Parameters
     ----------
     loop : asyncio.AbstractEventLoop
         The event loop for the client.
@@ -77,9 +85,9 @@ class CloudbetDataClient(LiveMarketDataClient):
         clock: LiveClock,
         logger: Logger,
         market_filter: dict,
-        instrument_provider: Optional[CloudbetInstrumentProvider] = None,
-        stream_client: Optional[CloudbetStreamClient] = None,
-        config: Optional[CloudbetDataClientConfig] = None,
+        instrument_provider: CloudbetInstrumentProvider | None = None,
+        stream_client: CloudbetStreamClient | None = None,
+        config: CloudbetDataClientConfig | None = None,
     ):
         super().__init__(
             loop=loop,
@@ -96,6 +104,7 @@ class CloudbetDataClient(LiveMarketDataClient):
             config=config,
         )
         self._client: CloudbetClient = client
+        self._config = config or CloudbetDataClientConfig()
         self._market_filter = market_filter
         self._stream = stream_client or CloudbetStreamClient(
             client=client, logger=logger, message_handler=self.on_market_update
@@ -103,10 +112,24 @@ class CloudbetDataClient(LiveMarketDataClient):
 
         # TODO: pass from config and and function to update interval
         self._update_instrument_interval: int = 60 * 5  # Once per hour (hardcode)
-        self._update_instruments_task: Optional[asyncio.Task] = None
+        self._update_instruments_task: asyncio.Task | None = None
         self._interval_update_requested: bool = False
         self._updates_received: int = 0  # Counter to track the number of updates
         self._update_event = asyncio.Event()  # native asyncio flag to track cycles/events
+        self._subscribed_quote_instruments: set[InstrumentId] = set()
+        self._quote_polling_task: asyncio.Task | None = None
+        self._quote_polling_enabled = bool(
+            getattr(self._config, "auto_subscribe_quote_ticks", False),
+        )
+        self._quote_polling_interval = float(
+            getattr(self._config, "quote_poll_interval_secs", 10.0),
+        )
+        self._quote_poll_summary_interval = float(
+            getattr(self._config, "quote_poll_summary_interval_secs", 30.0),
+        )
+        self._quote_poll_concurrency = int(getattr(self._config, "quote_poll_concurrency", 4))
+        self._last_quote_poll_summary_at = 0.0
+        self._quote_polling_running = False
 
         # Hot caches
         self.subscribed_orderbooks: dict[InstrumentId, OrderBook] = {}
@@ -135,6 +158,7 @@ class CloudbetDataClient(LiveMarketDataClient):
 
     async def _connect(self):
         self._log.info("Initialising instruments...")
+        await self._client.connect()
         # load all instruments asynchronously or load instruments based on config and filters (Default: None)
         await self._instrument_provider.initialize()
         # publish instruments to data engine => Data engine will handle propagating to relevant actors/strategies
@@ -143,6 +167,7 @@ class CloudbetDataClient(LiveMarketDataClient):
             f"Successfully sent {self._instrument_provider.count} instruments to the Data engine.",
             LogColor.GREEN,
         )
+        self._auto_subscribe_loaded_instruments()
         self._update_instruments_task = self.create_task(self._update_instruments())
 
     async def _disconnect(self) -> None:
@@ -151,6 +176,7 @@ class CloudbetDataClient(LiveMarketDataClient):
             return
         self._log.info("Disconnecting Data Client...")
         await self._reset()
+        await self._client.disconnect()
 
     async def _reset(self) -> None:
         # clear "hot" caches
@@ -158,8 +184,18 @@ class CloudbetDataClient(LiveMarketDataClient):
         self.subscribed_orderbooks = {}
         self.subscribed_event_ids: dict[InstrumentId, int] = {}
         self.subscribed_market_names: dict[InstrumentId, str] = {}
-        self._update_instruments_task.cancel()
+        if self._update_instruments_task is not None:
+            self._update_instruments_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._update_instruments_task
         self._update_instruments_task = None
+        self._quote_polling_running = False
+        self._subscribed_quote_instruments.clear()
+        if self._quote_polling_task is not None:
+            self._quote_polling_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._quote_polling_task
+        self._quote_polling_task = None
         # TODO: create and then remove data_client specific cache
         # await self._remove_all_instruments_from_data_engine()
 
@@ -199,8 +235,12 @@ class CloudbetDataClient(LiveMarketDataClient):
         self.subscribed_selection_ids.update({instrument_id: instrument_selection_id})
         self._log.debug(f"Subscribed to ID: {instrument.id}. Sending to Data engine...")
 
-    async def _subscribe_instruments(self) -> None:
+    async def _subscribe_instruments(self, command: SubscribeInstruments) -> None:
         instruments: list[Instrument] = self._instrument_provider.list_all()
+        if len(instruments) == 0:
+            self._log.debug("No Cloudbet instruments loaded; initializing provider")
+            await self._instrument_provider.initialize()
+            instruments = self._instrument_provider.list_all()
         if len(instruments) == 0:
             self._log.debug("No instruments to subscribe to")
             return
@@ -222,14 +262,15 @@ class CloudbetDataClient(LiveMarketDataClient):
             self.subscribed_event_ids.update({instrument.id: instrument_event_id})
             self.subscribed_selection_ids.update({instrument.id: instrument_selection_id})
             self._log.debug(f"Subscribed to ID: {instrument.id}. Sending to Data engine...")
+        self._send_all_instruments_to_data_engine(instruments=instruments)
 
-    async def subscribe_order_book_snapshots(  # noqa (too complex)
+    async def subscribe_order_book_snapshots(
         self,
         instrument_id: InstrumentId,
         book_type: BookType,
         # generally BookType.L1_MBP or BookType.L3_MBO since cloudbet only supports top-level orderbook
-        depth: Optional[int] = None,
-        kwargs: Optional[dict[str, Any]] = None,  # generally update_speed
+        depth: int | None = None,
+        kwargs: dict[str, Any] | None = None,  # generally update_speed
     ) -> None:
         # if self._stream is None:
         #     self._log.error("Cannot subscribe to order book snapshots: no stream client.")
@@ -277,8 +318,8 @@ class CloudbetDataClient(LiveMarketDataClient):
         self,
         instrument_id: InstrumentId,
         book_type: BookType,
-        depth: Optional[int] = None,
-        kwargs: Optional[dict] = None,
+        depth: int | None = None,
+        kwargs: dict | None = None,
     ) -> None:
         raise NotImplementedError(  # pragma: no cover
             "Cannot subscribe to Orderbook Delta for  Cloudbet",  # pragma: no cover
@@ -293,6 +334,19 @@ class CloudbetDataClient(LiveMarketDataClient):
         raise NotImplementedError(  # pragma: no cover
             "Cannot subscribe to Orderbook Delta for  Cloudbet",  # pragma: no cover
         )
+
+    async def _subscribe_quote_ticks(self, command: SubscribeQuoteTicks) -> None:
+        instrument_id = command.instrument_id
+        self._subscribed_quote_instruments.add(instrument_id)
+        self._log.debug(f"Subscribed to quote ticks: {instrument_id}")
+        self._start_quote_polling()
+
+    async def _unsubscribe_quote_ticks(self, command: UnsubscribeQuoteTicks) -> None:
+        instrument_id = command.instrument_id
+        self._subscribed_quote_instruments.discard(instrument_id)
+        self._log.debug(f"Unsubscribed from quote ticks: {instrument_id}")
+        if not self._subscribed_quote_instruments:
+            self._quote_polling_running = False
 
     async def _unsubscribe_instrument(self, instrument_id: InstrumentId) -> None:
         if instrument_id in self.subscribed_instruments:
@@ -337,9 +391,7 @@ class CloudbetDataClient(LiveMarketDataClient):
 
     def _send_all_instruments_to_data_engine(self, **kwargs) -> None:
         if kwargs.get("instruments") is not None:
-            instruments: List[Union[Instrument, CryptoBettingInstrument]] = kwargs.get(
-                "instruments"
-            )
+            instruments: list[Instrument | CryptoBettingInstrument] = kwargs.get("instruments")
             for instrument in instruments:
                 self._handle_data(instrument)
                 self._log.debug(f"Sending {instrument.id} to Data engine...", LogColor.GREEN)
@@ -355,6 +407,131 @@ class CloudbetDataClient(LiveMarketDataClient):
         )
         for currency in self._instrument_provider.currencies().values():
             self._cache.add_currency(currency)
+
+    def _auto_subscribe_loaded_instruments(self) -> int:
+        if not self._quote_polling_enabled:
+            return 0
+
+        loaded_instruments = [
+            instrument
+            for instrument in self._instrument_provider.list_all()
+            if isinstance(instrument, CryptoBettingInstrument)
+        ]
+        loaded_instruments.sort(key=lambda instrument: str(instrument.id))
+        limit = getattr(self._config, "quote_subscription_limit", None)
+        selected_instruments = (
+            loaded_instruments[:limit] if limit is not None else loaded_instruments
+        )
+        for instrument in selected_instruments:
+            self._subscribed_quote_instruments.add(instrument.id)
+
+        selected_count = len(selected_instruments)
+        if selected_count == 0:
+            self._log.warning("Cloudbet auto-subscription enabled but no instruments were loaded")
+            return 0
+
+        self._log.info(
+            f"Auto-subscribed {selected_count} of {len(loaded_instruments)} loaded "
+            "Cloudbet instruments for quote polling",
+        )
+        self._start_quote_polling()
+        return selected_count
+
+    def _start_quote_polling(self) -> None:
+        if not self._subscribed_quote_instruments:
+            return
+        self._quote_polling_running = True
+        if self._quote_polling_task is None or self._quote_polling_task.done():
+            self._quote_polling_task = asyncio.create_task(self._poll_quote_ticks())
+
+    async def _poll_quote_ticks(self) -> None:
+        self._log.info("Starting Cloudbet quote polling loop")
+        while self._quote_polling_running:
+            try:
+                await self._poll_quote_ticks_once()
+                await asyncio.sleep(self._quote_polling_interval)
+            except asyncio.CancelledError:
+                break
+            except (RuntimeError, ValueError, TypeError, KeyError) as e:
+                self._log.warning(f"Error in Cloudbet quote polling: {e}")
+                await asyncio.sleep(self._quote_polling_interval)
+        self._log.info("Stopped Cloudbet quote polling loop")
+
+    async def _poll_quote_ticks_once(self) -> tuple[int, int]:
+        instrument_ids = sorted(self._subscribed_quote_instruments, key=str)
+        if not instrument_ids:
+            return (0, 0)
+
+        started_at = time.perf_counter()
+        semaphore = asyncio.Semaphore(max(1, self._quote_poll_concurrency))
+
+        async def _fetch(instrument_id: InstrumentId) -> QuoteTick | None:
+            async with semaphore:
+                return await self._fetch_quote_tick(instrument_id)
+
+        results = await asyncio.gather(*[_fetch(instrument_id) for instrument_id in instrument_ids])
+        published = 0
+        for quote in results:
+            if quote is None:
+                continue
+            self._handle_data(quote)
+            published += 1
+
+        self._log_quote_poll_summary(
+            instrument_count=len(instrument_ids),
+            quote_count=published,
+            cycle_elapsed=time.perf_counter() - started_at,
+        )
+        return published, len(instrument_ids)
+
+    async def _fetch_quote_tick(self, instrument_id: InstrumentId) -> QuoteTick | None:
+        instrument = self._instrument_provider.find(instrument_id)
+        if not isinstance(instrument, CryptoBettingInstrument):
+            return None
+
+        market_url = (
+            instrument.market_name + "/" + instrument.outcome + "?" + instrument.params
+            if instrument.params is not None
+            else instrument.market_name + "/" + instrument.outcome
+        )
+        odds = await self._client.get_latest_odds(
+            event_id=instrument.event_id,
+            market_url=market_url,
+        )
+        price = float(odds.price)
+        if price <= 0:
+            return None
+
+        max_stake = float(odds.max_stake or 0)
+        return QuoteTick(
+            instrument_id=instrument.id,
+            bid_price=Price(0, precision=2),
+            ask_price=Price(price, precision=2),
+            bid_size=Quantity(0, precision=2),
+            ask_size=Quantity(max_stake, precision=2)
+            if max_stake > 0
+            else Quantity(0, precision=2),
+            ts_event=self._clock.timestamp_ns(),
+            ts_init=self._clock.timestamp_ns(),
+        )
+
+    def _log_quote_poll_summary(
+        self,
+        *,
+        instrument_count: int,
+        quote_count: int,
+        cycle_elapsed: float,
+    ) -> None:
+        now = time.monotonic()
+        if now - self._last_quote_poll_summary_at < self._quote_poll_summary_interval:
+            return
+        self._last_quote_poll_summary_at = now
+        self._log.info(
+            "Cloudbet quote poll cycle: "
+            f"instruments={instrument_count} quotes={quote_count} "
+            f"concurrency={self._quote_poll_concurrency} "
+            f"cycle_elapsed={cycle_elapsed:.2f}s",
+        )
 
     # async def _remove_all_instruments_from_data_engine(self) -> None:
     #     # TODO: cleanup instruments from provider, cache and data engine
@@ -389,7 +566,7 @@ class CloudbetDataClient(LiveMarketDataClient):
         except asyncio.CancelledError:
             self._log.debug("`update_instruments` task was canceled.")
         except Exception as e:
-            self._log.error(f"An error occurred during `update_instruments` task: {str(e)}")
+            self._log.error(f"An error occurred during `update_instruments` task: {e!s}")
 
     def update_interval(self, new_interval: int):
         """Update the interval at which instruments are updated."""
@@ -418,8 +595,8 @@ class CloudbetDataClient(LiveMarketDataClient):
         """Request instrument data for the given instrument ID."""
         instrument_id = request.instrument_id
         self._log.debug(f"RequestID: {request.id} ... Requesting instrument {instrument_id}...")
-        instrument: Optional[Union[Instrument, CryptoBettingInstrument]] = (
-            self._instrument_provider.find(instrument_id)
+        instrument: Instrument | CryptoBettingInstrument | None = self._instrument_provider.find(
+            instrument_id
         )
         if instrument is not None:
             self._log.debug(
@@ -438,7 +615,7 @@ class CloudbetDataClient(LiveMarketDataClient):
                 instrument.max_size = odds.max_stake
                 instrument.min_size = odds.min_stake
                 instrument.price = odds.price
-                instrument.enabled = True if odds.status == SelectionStatus.ENABLED else False
+                instrument.enabled = odds.status == SelectionStatus.ENABLED
                 self._instrument_provider.add(instrument)
                 self._handle_instrument(
                     instrument,
@@ -459,7 +636,7 @@ class CloudbetDataClient(LiveMarketDataClient):
 
     async def _request_instruments(self, request: RequestInstruments) -> None:
         """Request all instrument data for the given venue."""
-        instruments: List[Union[Instrument, CryptoBettingInstrument]] = (
+        instruments: list[Instrument | CryptoBettingInstrument] = (
             self._instrument_provider.list_all()
         )
         for instrument in instruments:

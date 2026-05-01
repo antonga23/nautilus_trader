@@ -1,7 +1,5 @@
 import asyncio
-import os
 from functools import lru_cache
-from typing import Optional, Any, Union
 
 from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.clock import LiveClock
@@ -16,12 +14,10 @@ from nautilus_trader.adapters.cloudbet.config import (
 from nautilus_trader.adapters.cloudbet.data_client import CloudbetDataClient
 from nautilus_trader.adapters.cloudbet.execution import CloudbetLiveExecutionClient
 from nautilus_trader.adapters.cloudbet.providers import CloudbetInstrumentProvider
-from nautilus_trader.config import LiveExecClientConfig, InstrumentProviderConfig
+from nautilus_trader.config import InstrumentProviderConfig
 from nautilus_trader.live.factories import LiveDataClientFactory
 from nautilus_trader.live.factories import LiveExecClientFactory
 from nautilus_trader.msgbus.bus import MessageBus
-
-from nautilus_trader.model.objects import Currency
 
 CLIENTS: dict[str, CloudbetClient] = {}
 INSTRUMENT_PROVIDER = None
@@ -31,8 +27,8 @@ INSTRUMENT_PROVIDER = None
 def get_cached_cloudbet_client(
     loop: asyncio.AbstractEventLoop,
     logger: Logger,
-    api_key: Optional[str] = None,
-    api_url: Optional[str] = None,
+    api_key: str | None = None,
+    api_url: str | None = None,
 ) -> CloudbetClient:
     """
     Cache and return a Cloudbet HTTP client with the given credentials.
@@ -46,6 +42,11 @@ def get_cached_cloudbet_client(
         The event loop for the client.
     logger : Logger
         The logger for the client.
+    api_key : str, optional
+        The Cloudbet API key.
+    api_url : str, optional
+        The Cloudbet API URL.
+
     Returns
     -------
     CloudbetClient
@@ -53,7 +54,7 @@ def get_cached_cloudbet_client(
     """
     global CLIENTS
 
-    key: str = "|".join((api_url, api_key))
+    key: str = "|".join((api_url or "", api_key or ""))
     if key not in CLIENTS:
         LoggerAdapter("CloudbetFactory", logger).warning(
             "Creating new instance of CloudbetClient",
@@ -68,11 +69,10 @@ def get_cached_cloudbet_client(
     return CLIENTS[key]
 
 
-@lru_cache(1)
 def get_cached_cloudbet_instrument_provider(
     client: CloudbetClient,
     logger: Logger,
-    config: Optional[InstrumentProviderConfig] = None,
+    config: InstrumentProviderConfig | None = None,
 ) -> CloudbetInstrumentProvider:
     """
     Cache and return a CloudbetInstrumentProvider.
@@ -85,8 +85,8 @@ def get_cached_cloudbet_instrument_provider(
         The client for the instrument provider.
     logger : Logger
         The logger for the instrument provider.
-    market_filter : tuple
-        The market filter to load into the instrument provider.
+    config : InstrumentProviderConfig, optional
+        The instrument provider configuration.
 
     Returns
     -------
@@ -119,7 +119,7 @@ class CloudbetLiveDataClientFactory(LiveDataClientFactory):
         msgbus: MessageBus,
         cache: Cache,
         clock: LiveClock,
-        logger: Logger,
+        logger: Logger | None = None,
     ) -> CloudbetDataClient:
         """
         Create a new Cloudbet data client.
@@ -146,9 +146,9 @@ class CloudbetLiveDataClientFactory(LiveDataClientFactory):
         CloudbetDataClient
 
         """
+        logger = logger or Logger(name=f"CloudbetDataClient-{name}")
         market_filter: tuple = config.market_filter or ()
 
-        # Create client
         client = get_cached_cloudbet_client(
             loop=loop, logger=logger, api_key=config.api_key, api_url=config.api_url
         )
@@ -185,7 +185,7 @@ class CloudbetLiveExecClientFactory(LiveExecClientFactory):
         msgbus: MessageBus,
         cache: Cache,
         clock: LiveClock,
-        logger: Logger,
+        logger: Logger | None = None,
     ) -> CloudbetLiveExecutionClient:
         """
         Create a new Cloudbet execution client.
@@ -206,14 +206,16 @@ class CloudbetLiveExecClientFactory(LiveExecClientFactory):
             The clock for the client.
         logger : Logger
             The logger for the client.
-        base_currency : Union[Currency, None]
+        base_currency : Currency, optional
             The base currency for the client. Explicitly pass None for multi-currency exec clients.
+
         Returns
         -------
         CloudbetLiveExecutionClient
 
         """
-        market_filter: tuple = dict or ()
+        logger = logger or Logger(name=f"CloudbetExecutionClient-{name}")
+        market_filter: tuple = ()
 
         client = get_cached_cloudbet_client(
             loop=loop, logger=logger, api_key=config.api_key, api_url=config.api_url

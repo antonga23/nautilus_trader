@@ -17,8 +17,12 @@ from typing import Optional
 
 from nautilus_trader.model.objects import Currency
 
-from nautilus_trader.config import LiveDataClientConfig, InstrumentProviderConfig, RoutingConfig
+from nautilus_trader.config import InstrumentProviderConfig
 from nautilus_trader.config import LiveExecClientConfig
+from nautilus_trader.config import LiveDataClientConfig
+from nautilus_trader.config import PositiveFloat
+from nautilus_trader.config import PositiveInt
+from nautilus_trader.config import RoutingConfig
 
 
 class CloudbetDataClientConfig(LiveDataClientConfig, frozen=True):
@@ -40,6 +44,11 @@ class CloudbetDataClientConfig(LiveDataClientConfig, frozen=True):
     api_url: Optional[str] = None
     market_filter: Optional[tuple] = None
     handle_revised_bars: bool = False
+    auto_subscribe_quote_ticks: bool = False
+    quote_subscription_limit: PositiveInt | None = None
+    quote_poll_interval_secs: PositiveFloat = 10.0
+    quote_poll_summary_interval_secs: PositiveFloat = 30.0
+    quote_poll_concurrency: PositiveInt = 4
 
 
 class CloudbetInstrumentProviderConfig(InstrumentProviderConfig, frozen=True):

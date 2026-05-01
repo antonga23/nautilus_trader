@@ -37,13 +37,19 @@ from nautilus_trader.examples.strategies.opportunity_graph import OpportunityGra
 from nautilus_trader.model.data import QuoteTick
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.enums import TimeInForce
+from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.instruments.base import Instrument
+from nautilus_trader.model.instruments.crypto_betting import (
+    CryptoBettingInstrument as LegacyCryptoBettingInstrument,
+)
 from nautilus_trader.trading.strategy import Strategy
 
 
 VALID_MARKET_TIMINGS = frozenset({"all", "pre_market", "live"})
 DEFAULT_ENABLED_VENUES = frozenset({"CLOUDBET", "SXBET", "10BET"})
 NANOSECONDS_PER_SECOND = 1_000_000_000
+BettingInstrument = CryptoBettingInstrument | LegacyCryptoBettingInstrument
+BETTING_INSTRUMENT_TYPES = (CryptoBettingInstrument, LegacyCryptoBettingInstrument)
 
 
 @dataclass(frozen=True)
@@ -241,7 +247,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         )
 
         # Tracking
-        self._subscribed_instruments: set[CryptoBettingInstrument] = set()
+        self._subscribed_instruments: set[BettingInstrument] = set()
+        self._quote_subscribed_instrument_ids: set[str] = set()
         self._latest_quotes: dict[str, QuoteTick] = {}
         self._opportunities_found = 0
         self._opportunities_executed = 0
@@ -299,6 +306,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             f"manual_instructions={self._config.opportunity_log_manual_instructions}"
         )
         self.log.info(msg)
+        self._subscribe_enabled_venue_instrument_updates()
         self._subscribe_cached_instruments()
 
     def _semantic_rule_store(self) -> RuleStore | None:
@@ -324,7 +332,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self.log.info(msg)
         self._log_arbitrage_summary(force=True)
 
-    def subscribe_instruments(self, instruments: list[CryptoBettingInstrument]) -> None:
+    def subscribe_instruments(self, instruments: list[BettingInstrument]) -> None:
         """
         Subscribe to instruments for arbitrage monitoring.
 
@@ -334,11 +342,15 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
 
         Parameters
         ----------
-        instruments : list[CryptoBettingInstrument]
+        instruments : list[BettingInstrument]
             Instruments to monitor.
 
         """
         subscribed_before = len(self._subscribed_instruments)
+        if self._semantic_batch_subscription_enabled():
+            self._subscribe_instruments_semantic_batch(instruments)
+            return
+
         for instrument in instruments:
             if not self._maybe_subscribe_instrument(instrument):
                 continue
@@ -349,21 +361,31 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         """
         Subscribe a newly seen betting instrument when it passes strategy filters.
         """
-        if isinstance(instrument, CryptoBettingInstrument):
+        if isinstance(instrument, BETTING_INSTRUMENT_TYPES):
             self._maybe_subscribe_instrument(instrument)
 
     def _subscribe_cached_instruments(self) -> None:
         cached_instruments = [
             instrument
             for instrument in self.cache.instruments()
-            if isinstance(instrument, CryptoBettingInstrument)
+            if isinstance(instrument, BETTING_INSTRUMENT_TYPES)
         ]
         if not cached_instruments:
             self.log.warning("No cached betting instruments available at strategy start")
             return
         self.subscribe_instruments(cached_instruments)
 
-    def _maybe_subscribe_instrument(self, instrument: CryptoBettingInstrument) -> bool:
+    def _subscribe_enabled_venue_instrument_updates(self) -> None:
+        for venue_value in sorted(self._config.enabled_venues):
+            try:
+                Strategy.subscribe_instruments(self, Venue(venue_value))
+            except Exception as exc:
+                self.log.warning(
+                    "Unable to subscribe to venue instrument updates: "
+                    f"venue={venue_value} error={exc}",
+                )
+
+    def _maybe_subscribe_instrument(self, instrument: BettingInstrument) -> bool:
         # Venue filter
         if instrument.id.venue.value not in self._config.enabled_venues:
             return False
@@ -378,9 +400,69 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._subscribed_instruments.add(instrument)
         if self._config.opportunity_graph_enabled and self._config.graph_rebuild_on_new_instrument:
             self._opportunity_graph.add_instrument(instrument)
+        if self._semantic_quote_priority_enabled():
+            self._subscribe_semantic_connected_quote_ticks()
+        else:
+            self._subscribe_quote_ticks_for_instrument(instrument)
+        return True
+
+    def _semantic_quote_priority_enabled(self) -> bool:
+        return self._config.opportunity_graph_enabled and self._matcher.rule_store is not None
+
+    def _semantic_batch_subscription_enabled(self) -> bool:
+        return (
+            self._semantic_quote_priority_enabled() and self._config.graph_rebuild_on_new_instrument
+        )
+
+    def _subscribe_instruments_semantic_batch(
+        self,
+        instruments: list[BettingInstrument],
+    ) -> None:
+        subscribed_before = len(self._subscribed_instruments)
+        existing_ids = {str(instrument.id) for instrument in self._subscribed_instruments}
+        for instrument in instruments:
+            if instrument.id.venue.value not in self._config.enabled_venues:
+                continue
+            if not self._should_process_instrument(instrument):
+                continue
+            if str(instrument.id) in existing_ids:
+                continue
+            self._subscribed_instruments.add(instrument)
+            existing_ids.add(str(instrument.id))
+
+        if len(self._subscribed_instruments) == subscribed_before:
+            return
+
+        self._opportunity_graph.build(list(self._subscribed_instruments))
+        self._subscribe_semantic_connected_quote_ticks()
+        self._log_graph_topology_summary()
+
+    def _subscribe_quote_ticks_for_instrument(self, instrument: BettingInstrument) -> bool:
+        instrument_id = str(instrument.id)
+        if instrument_id in self._quote_subscribed_instrument_ids:
+            return False
+        self._quote_subscribed_instrument_ids.add(instrument_id)
         self.subscribe_quote_ticks(instrument.id)
         self.log.info(f"Subscribed to {instrument.id}")
         return True
+
+    def _subscribe_semantic_connected_quote_ticks(self) -> int:
+        subscribed_count = 0
+        for node_id, edge_ids in self._opportunity_graph.edge_ids_by_node_id.items():
+            if not edge_ids:
+                continue
+            node = self._opportunity_graph.nodes_by_id.get(node_id)
+            if node is None:
+                continue
+            if self._subscribe_quote_ticks_for_instrument(node.instrument):
+                subscribed_count += 1
+        if subscribed_count:
+            self.log.info(
+                "Subscribed semantic-connected quote streams: "
+                f"new={subscribed_count} "
+                f"total={len(self._quote_subscribed_instrument_ids)}",
+            )
+        return subscribed_count
 
     def _log_graph_topology_summary(self) -> None:
         if not self._config.opportunity_graph_enabled:
@@ -395,13 +477,13 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             f"connected_nodes={graph_stats['connected_nodes']}",
         )
 
-    def _should_process_instrument(self, instrument: CryptoBettingInstrument) -> bool:
+    def _should_process_instrument(self, instrument: BettingInstrument) -> bool:
         """
         Check if instrument should be processed based on filters.
 
         Parameters
         ----------
-        instrument : CryptoBettingInstrument
+        instrument : BettingInstrument
             Instrument to check.
 
         Returns
@@ -432,7 +514,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         return True
 
     @staticmethod
-    def _is_live_market(instrument: CryptoBettingInstrument) -> bool:
+    def _is_live_market(instrument: BettingInstrument) -> bool:
         """
         Determine if instrument represents a live/in-play market.
 
@@ -517,7 +599,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
 
         # Get instrument
         instrument = self.cache.instrument(tick.instrument_id)
-        if not isinstance(instrument, CryptoBettingInstrument):
+        if not isinstance(instrument, BETTING_INSTRUMENT_TYPES):
             return
 
         if self._config.opportunity_graph_enabled:
@@ -529,7 +611,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
     def _handle_graph_quote_tick(
         self,
         tick: QuoteTick,
-        instrument: CryptoBettingInstrument,
+        instrument: BettingInstrument,
     ) -> None:
         current_odds = self._quote_odds(tick)
         if current_odds is None:
@@ -1531,7 +1613,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             f"quote_age_secs={diagnostics.quote_age_b_secs:.2f}"
         )
 
-    def _manual_execution_plan(self, *args) -> str:
+    def _manual_execution_plan(self, *args: object) -> str:
         if len(args) == 1:
             diagnostics = args[0]
         elif len(args) == 2:
@@ -1917,6 +1999,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         """
         return {
             "subscribed_instruments": len(self._subscribed_instruments),
+            "quote_subscribed_instruments": len(self._quote_subscribed_instrument_ids),
             "opportunity_graph_nodes": self._opportunity_graph.node_count,
             "opportunity_graph_edges": self._opportunity_graph.edge_count,
             "opportunity_graph_quote_states": self._opportunity_graph.quote_state_count,

@@ -8,7 +8,7 @@ from nautilus_trader.common.config import PositiveFloat
 from nautilus_trader.common.config import PositiveInt
 from nautilus_trader.examples.strategies.betting_arbitrage import BettingArbitrageConfig
 
-SUPPORTED_BETTING_NODE_VENUES = frozenset({"SXBET", "POLYMARKET"})
+SUPPORTED_BETTING_NODE_VENUES = frozenset({"CLOUDBET", "SXBET", "POLYMARKET"})
 BLOCKED_SPORTSBOOK_VENUES = frozenset({"10BET", "BLACKBET", "WSB", "EASYBET"})
 
 
@@ -25,6 +25,7 @@ class BettingVenueManifest(NautilusConfig, frozen=True):
     credential_prefix: str | None = None
     load_all_instruments: bool = True
     instrument_ids: frozenset[str] | None = None
+    sport_keys: frozenset[str] | None = None
     sport_ids: frozenset[int] | None = None
     league_ids: frozenset[int] | None = None
     live_only: bool = False
@@ -49,7 +50,7 @@ class BettingVenueManifest(NautilusConfig, frozen=True):
         if normalized_venue in BLOCKED_SPORTSBOOK_VENUES:
             raise ValueError(
                 f"Venue {normalized_venue} is not deployment-ready. "
-                "Only SXBET and POLYMARKET are currently supported in the live node builder.",
+                "Only CLOUDBET, SXBET, and POLYMARKET are currently supported in the live node builder.",
             )
         if normalized_venue not in SUPPORTED_BETTING_NODE_VENUES:
             raise ValueError(

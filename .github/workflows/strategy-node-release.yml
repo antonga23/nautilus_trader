@@ -231,6 +231,35 @@ jobs:
             --min-positive-margin-candidates 0 \
             --require-rust-semantic-topology
 
+      - name: Validate Cloudbet manifest
+        env:
+          CLOUDBET_API_KEY: ${{ secrets.CLOUDBET_API_KEY }}
+        run: |
+          cd /tmp
+          "$GITHUB_WORKSPACE/.venv/bin/python" -m nautilus_trader.live.strategy_nodes.betting_arbitrage \
+            validate-manifest \
+            --manifest "$GITHUB_WORKSPACE/deploy/strategy_nodes/betting_arbitrage/cloudbet-single-venue.json"
+
+      - name: Probe Cloudbet runtime semantic coverage
+        if: >-
+          github.event_name == 'workflow_dispatch' &&
+          github.event.inputs.manifest_path ==
+          'deploy/strategy_nodes/betting_arbitrage/cloudbet-single-venue.json'
+        env:
+          CLOUDBET_API_KEY: ${{ secrets.CLOUDBET_API_KEY }}
+        run: |
+          cd /tmp
+          "$GITHUB_WORKSPACE/.venv/bin/python" -m nautilus_trader.live.strategy_nodes.betting_arbitrage \
+            probe-runtime \
+            --manifest "$GITHUB_WORKSPACE/deploy/strategy_nodes/betting_arbitrage/cloudbet-single-venue.json" \
+            --timeout-seconds 420 \
+            --poll-interval-secs 5 \
+            --min-connected-nodes 2 \
+            --min-match-instruments 2 \
+            --min-quoted-match-instruments 2 \
+            --min-positive-margin-candidates 0 \
+            --require-rust-semantic-topology
+
       - name: Validate Polymarket manifest
         run: |
           cd /tmp
@@ -461,6 +490,16 @@ jobs:
       STRATEGY_NODE_ENV_FILE: ${{ secrets.STRATEGY_NODE_ENV_FILE }}
       STRATEGY_NODE_GHCR_USERNAME: ${{ secrets.STRATEGY_NODE_GHCR_USERNAME }}
       STRATEGY_NODE_GHCR_TOKEN: ${{ secrets.STRATEGY_NODE_GHCR_TOKEN }}
+      SXBET_API_KEY: ${{ secrets.SXBET_API_KEY }}
+      SXBET_PRIVATE_KEY: ${{ secrets.SXBET_PRIVATE_KEY }}
+      SXBET_WALLET_ADDRESS: ${{ secrets.SXBET_WALLET_ADDRESS }}
+      CLOUDBET_API_KEY: ${{ secrets.CLOUDBET_API_KEY }}
+      POLYMARKET_PRIVATE_KEY: ${{ secrets.POLYMARKET_PRIVATE_KEY }}
+      POLYMARKET_PK: ${{ secrets.POLYMARKET_PK }}
+      POLYMARKET_FUNDER: ${{ secrets.POLYMARKET_FUNDER }}
+      POLYMARKET_API_KEY: ${{ secrets.POLYMARKET_API_KEY }}
+      POLYMARKET_API_SECRET: ${{ secrets.POLYMARKET_API_SECRET }}
+      POLYMARKET_PASSPHRASE: ${{ secrets.POLYMARKET_PASSPHRASE }}
       STRATEGY_NODE_CONTAINER_NAME: ${{ github.event.inputs.container_name }}
       STRATEGY_NODE_IMAGE_TRANSPORT: ${{ github.event.inputs.image_transport }}
     steps:
@@ -636,12 +675,36 @@ jobs:
           scp -i strategy-node.key -o StrictHostKeyChecking=no \
             scripts/ci/runner_health_check.sh \
             "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST:/tmp/runner_health_check.sh"
+          install -m 600 /dev/null strategy-node.env
           if [ -n "$STRATEGY_NODE_ENV_FILE" ]; then
-            printf '%s' "$STRATEGY_NODE_ENV_FILE" | \
-              ssh -i strategy-node.key -o StrictHostKeyChecking=no \
-                "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST" \
-                'cat > /tmp/strategy-node.env'
+            printf '%s\n' "$STRATEGY_NODE_ENV_FILE" >> strategy-node.env
           fi
+
+          append_env_secret() {
+            local name="$1"
+            local value="${!name:-}"
+            if [ -n "$value" ]; then
+              printf '%s=%s\n' "$name" "$value" >> strategy-node.env
+            fi
+          }
+
+          append_env_secret SXBET_API_KEY
+          append_env_secret SXBET_PRIVATE_KEY
+          append_env_secret SXBET_WALLET_ADDRESS
+          append_env_secret CLOUDBET_API_KEY
+          append_env_secret POLYMARKET_PRIVATE_KEY
+          append_env_secret POLYMARKET_PK
+          append_env_secret POLYMARKET_FUNDER
+          append_env_secret POLYMARKET_API_KEY
+          append_env_secret POLYMARKET_API_SECRET
+          append_env_secret POLYMARKET_PASSPHRASE
+
+          scp -i strategy-node.key -o StrictHostKeyChecking=no \
+            strategy-node.env \
+            "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST:/tmp/strategy-node.env"
+          ssh -i strategy-node.key -o StrictHostKeyChecking=no \
+            "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST" \
+            'chmod 600 /tmp/strategy-node.env'
           if [ -n "$STRATEGY_NODE_GHCR_TOKEN" ]; then
             printf '%s' "$STRATEGY_NODE_GHCR_TOKEN" | \
               ssh -i strategy-node.key -o StrictHostKeyChecking=no \
@@ -709,7 +772,7 @@ jobs:
                --manifest /tmp/strategy-node-manifest.json \
                --image '$IMAGE_REF' \
                --name '$STRATEGY_NODE_CONTAINER_NAME' \
-               ${STRATEGY_NODE_ENV_FILE:+--env-file /tmp/strategy-node.env} \
+               --env-file /tmp/strategy-node.env \
                $registry_args && \
              rm -f /tmp/strategy-node-ghcr-token"
 

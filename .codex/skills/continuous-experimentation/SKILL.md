@@ -64,6 +64,20 @@ changing the acceptance criteria of the current task.
 5. Add tests at the boundary the experiment changes.
 6. Before pushing, run the narrow local validation slice.
 
+## While A Monitor Runs
+
+If a CI, release, deploy, or runtime watcher is active for the current task:
+
+1. Treat the watcher result as the highest-priority interrupt.
+2. Work only on independent experimental branches or separate worktrees while
+   waiting.
+3. Keep the side work small enough that it can be paused immediately when the
+   watcher exits.
+4. Record side-task progress in Linear, including the watched run id and the
+   point where original-task work must resume.
+5. Do not merge or make an experimental PR ready while the original task's
+   release/runtime proof is unresolved.
+
 ## Required Validation
 
 - PR branch must pass at least `pr-validation`.
