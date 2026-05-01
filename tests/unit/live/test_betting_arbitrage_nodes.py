@@ -465,6 +465,7 @@ class TestBettingArbitrageNodeBuilder:
         assert data_client.config["instrument_provider"]["load_ids"] == [
             "condition-token.POLYMARKET",
         ]
+        assert data_client.config["instrument_provider"]["use_gamma_markets"] is True
 
     def test_mixed_supported_topology_updates_strategy_enabled_venues(self):
         manifest = BettingArbitrageNodeManifest(
@@ -518,6 +519,12 @@ class TestBettingArbitrageNodeBuilder:
         assert (
             config.data_clients["POLYMARKET_PRIMARY"].config["instrument_provider"]["load_all"]
             is False
+        )
+        assert (
+            config.data_clients["POLYMARKET_PRIMARY"].config["instrument_provider"][
+                "use_gamma_markets"
+            ]
+            is True
         )
 
     def test_custom_credential_prefix_and_secret_pool_are_applied(self, monkeypatch):
