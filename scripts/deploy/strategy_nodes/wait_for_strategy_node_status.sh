@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat << USAGE
-Usage: $0 --status-file <path> [--timeout-seconds <n>] [--success-status <csv>] [--require-semantic-cache-ready] [--require-runtime-probe] [--require-rust-semantic-topology] [--min-connected-nodes <n>] [--min-match-instruments <n>] [--min-quoted-match-instruments <n>] [--min-positive-margin-candidates <n>]
+Usage: $0 --status-file <path> [--timeout-seconds <n>] [--success-status <csv>] [--require-semantic-cache-ready] [--require-runtime-probe] [--require-rust-semantic-topology] [--min-connected-nodes <n>] [--min-match-instruments <n>] [--min-quoted-match-instruments <n>] [--min-positive-margin-candidates <n>] [--min-cross-venue-candidates <n>] [--min-quoted-node-count VENUE:COUNT]
 USAGE
 }
 
@@ -17,6 +17,8 @@ min_connected_nodes=0
 min_match_instruments=0
 min_quoted_match_instruments=0
 min_positive_margin_candidates=0
+min_cross_venue_candidates=0
+declare -a min_quoted_node_counts=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -60,6 +62,14 @@ while [[ $# -gt 0 ]]; do
       min_positive_margin_candidates="$2"
       shift 2
       ;;
+    --min-cross-venue-candidates)
+      min_cross_venue_candidates="$2"
+      shift 2
+      ;;
+    --min-quoted-node-count)
+      min_quoted_node_counts+=("$2")
+      shift 2
+      ;;
     -h | --help)
       usage
       exit 0
@@ -92,7 +102,9 @@ python3 - \
   "$min_connected_nodes" \
   "$min_match_instruments" \
   "$min_quoted_match_instruments" \
-  "$min_positive_margin_candidates" << 'PY'
+  "$min_positive_margin_candidates" \
+  "$min_cross_venue_candidates" \
+  "${min_quoted_node_counts[@]}" << 'PY'
 import json
 import pathlib
 import sys
@@ -108,6 +120,31 @@ min_connected_nodes = int(sys.argv[7])
 min_match_instruments = int(sys.argv[8])
 min_quoted_match_instruments = int(sys.argv[9])
 min_positive_margin_candidates = int(sys.argv[10])
+min_cross_venue_candidates = int(sys.argv[11])
+
+min_quoted_node_counts: dict[str, int] = {}
+for raw_requirement in sys.argv[12:]:
+    if ':' not in raw_requirement:
+        raise SystemExit(
+            f"--min-quoted-node-count must use VENUE:COUNT, got {raw_requirement!r}",
+        )
+    raw_venue, raw_count = raw_requirement.split(':', 1)
+    venue = raw_venue.strip().upper()
+    if not venue:
+        raise SystemExit(
+            f"--min-quoted-node-count has empty venue: {raw_requirement!r}",
+        )
+    try:
+        count = int(raw_count)
+    except ValueError as exc:
+        raise SystemExit(
+            f"--min-quoted-node-count has invalid count: {raw_requirement!r}",
+        ) from exc
+    if count < 0:
+        raise SystemExit(
+            f"--min-quoted-node-count must be non-negative: {raw_requirement!r}",
+        )
+    min_quoted_node_counts[venue] = count
 
 deadline = time.time() + timeout_seconds
 last_observation = None
@@ -123,12 +160,19 @@ while time.time() < deadline:
         semantic_cache = payload.get('semanticCache') or {}
         semantic_cache_ready = bool(semantic_cache.get('ready'))
         runtime_probe = payload.get('runtimeProbe') or {}
+        venue_coverage = runtime_probe.get('venueCoverage') or {}
+        quoted_node_counts = venue_coverage.get('quotedNodeCounts') or {}
         positive_margin_candidates = runtime_probe.get('positiveMarginCandidates') or {}
         runtime_probe_ready = bool(runtime_probe) and (
             int(runtime_probe.get('connectedNodes') or 0) >= min_connected_nodes
             and int(runtime_probe.get('semanticMatchInstruments') or 0) >= min_match_instruments
             and int(runtime_probe.get('quotedSemanticMatchInstruments') or 0) >= min_quoted_match_instruments
             and int(positive_margin_candidates.get('total') or 0) >= min_positive_margin_candidates
+            and int(venue_coverage.get('crossVenueCandidateCount') or 0) >= min_cross_venue_candidates
+            and all(
+                int(quoted_node_counts.get(venue, 0) or 0) >= count
+                for venue, count in min_quoted_node_counts.items()
+            )
         )
         rust_semantic_topology_ready = (
             runtime_probe.get('graphEngine') == 'rust'

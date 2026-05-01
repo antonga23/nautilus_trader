@@ -26,6 +26,14 @@ on:
         description: Number of heartbeat timestamp changes required after verification starts
         required: false
         default: '2'
+      min_cross_venue_candidates:
+        description: Minimum cross-venue quoted semantic candidates required in runtimeProbe
+        required: false
+        default: '0'
+      min_quoted_node_counts:
+        description: Comma-separated VENUE:COUNT requirements for runtimeProbe.venueCoverage.quotedNodeCounts
+        required: false
+        default: ''
 
 jobs:
   verify-runtime:
@@ -92,6 +100,8 @@ jobs:
           INPUT_EXPECTED_SESSION_ID: ${{ github.event.inputs.expected_session_id }}
           INPUT_TIMEOUT_SECONDS: ${{ github.event.inputs.timeout_seconds }}
           INPUT_HEARTBEAT_UPDATES_REQUIRED: ${{ github.event.inputs.heartbeat_updates_required }}
+          INPUT_MIN_CROSS_VENUE_CANDIDATES: ${{ github.event.inputs.min_cross_venue_candidates }}
+          INPUT_MIN_QUOTED_NODE_COUNTS: ${{ github.event.inputs.min_quoted_node_counts }}
         run: |
           set -euo pipefail
 
@@ -100,6 +110,8 @@ jobs:
           expected_session_id="${INPUT_EXPECTED_SESSION_ID:-}"
           timeout_seconds="${INPUT_TIMEOUT_SECONDS:-180}"
           heartbeat_updates_required="${INPUT_HEARTBEAT_UPDATES_REQUIRED:-2}"
+          min_cross_venue_candidates="${INPUT_MIN_CROSS_VENUE_CANDIDATES:-0}"
+          min_quoted_node_counts="${INPUT_MIN_QUOTED_NODE_COUNTS:-}"
 
           node_dir="$root_dir/$container_name"
           status_file="$node_dir/status.json"
@@ -181,6 +193,17 @@ jobs:
 
           test -d "$node_dir"
 
+          quoted_node_args=()
+          if [ -n "$min_quoted_node_counts" ]; then
+            IFS=',' read -r -a raw_requirements <<< "$min_quoted_node_counts"
+            for raw_requirement in "${raw_requirements[@]}"; do
+              requirement="$(printf '%s' "$raw_requirement" | xargs)"
+              if [ -n "$requirement" ]; then
+                quoted_node_args+=(--min-quoted-node-count "$requirement")
+              fi
+            done
+          fi
+
           bash scripts/deploy/strategy_nodes/wait_for_strategy_node_status.sh \
             --status-file "$status_file" \
             --timeout-seconds "$timeout_seconds" \
@@ -191,7 +214,9 @@ jobs:
             --min-connected-nodes 2 \
             --min-match-instruments 2 \
             --min-quoted-match-instruments 2 \
-            --min-positive-margin-candidates 0
+            --min-positive-margin-candidates 0 \
+            --min-cross-venue-candidates "$min_cross_venue_candidates" \
+            "${quoted_node_args[@]}"
 
           docker_state="$(docker inspect --format '{{.State.Status}}' "$container_name")"
           docker_running="$(docker inspect --format '{{.State.Running}}' "$container_name")"
@@ -307,6 +332,59 @@ jobs:
               "logLineCount": len(log_text.splitlines()),
           }
           print(json.dumps(summary, indent=2))
+          PY
+
+          python3 - "$status_file" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          payload = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          runtime_probe = payload.get("runtimeProbe") or {}
+          semantic_cache = payload.get("semanticCache") or {}
+          candidate_quality = runtime_probe.get("candidateQuality") or {}
+          summary = {
+              "nodeId": payload.get("nodeId"),
+              "status": payload.get("status"),
+              "semanticCache": {
+                  "ready": semantic_cache.get("ready"),
+                  "source": semantic_cache.get("source"),
+                  "manifestCount": semantic_cache.get("manifestCount"),
+                  "promotedTemplateCount": semantic_cache.get("promotedTemplateCount"),
+                  "executionSafeTemplateCount": semantic_cache.get("executionSafeTemplateCount"),
+                  "sameVenueExecutionEligibleTemplateCount": semantic_cache.get(
+                      "sameVenueExecutionEligibleTemplateCount",
+                  ),
+              },
+              "runtimeProbe": {
+                  "elapsedSeconds": runtime_probe.get("elapsedSeconds"),
+                  "graphEngine": runtime_probe.get("graphEngine"),
+                  "topologySource": runtime_probe.get("topologySource"),
+                  "semanticTemplateCount": runtime_probe.get("semanticTemplateCount"),
+                  "graphNodes": runtime_probe.get("graphNodes"),
+                  "graphEdges": runtime_probe.get("graphEdges"),
+                  "graphQuoteStates": runtime_probe.get("graphQuoteStates"),
+                  "connectedNodes": runtime_probe.get("connectedNodes"),
+                  "semanticMatchInstruments": runtime_probe.get("semanticMatchInstruments"),
+                  "quotedSemanticMatchInstruments": runtime_probe.get(
+                      "quotedSemanticMatchInstruments",
+                  ),
+                  "quotedEdges": runtime_probe.get("quotedEdges"),
+                  "positiveMarginCandidates": runtime_probe.get("positiveMarginCandidates"),
+                  "thresholdMarginCandidates": runtime_probe.get("thresholdMarginCandidates"),
+                  "venueCoverage": runtime_probe.get("venueCoverage"),
+                  "candidateQuality": {
+                      "quotedEdges": candidate_quality.get("quotedEdges"),
+                      "marginBands": candidate_quality.get("marginBands"),
+                      "rejectionBuckets": candidate_quality.get("rejectionBuckets"),
+                      "venuePairs": candidate_quality.get("venuePairs"),
+                      "marketFamilies": candidate_quality.get("marketFamilies"),
+                  },
+              },
+          }
+          print("runtime_probe_summary<<EOF")
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          print("EOF")
           PY
 
           current_log_path="$(python3 - "$current_session_file" <<'PY'

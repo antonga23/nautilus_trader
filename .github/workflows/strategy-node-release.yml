@@ -302,6 +302,36 @@ jobs:
             validate-manifest \
             --manifest "$GITHUB_WORKSPACE/$manifest_path"
 
+      - name: Probe selected multi-venue runtime semantic coverage
+        if: >-
+          github.event_name == 'workflow_dispatch' &&
+          github.event.inputs.manifest_path ==
+          'deploy/strategy_nodes/betting_arbitrage/multi-venue-validation.json'
+        env:
+          SXBET_API_KEY: ${{ secrets.SXBET_API_KEY }}
+          CLOUDBET_API_KEY: ${{ secrets.CLOUDBET_API_KEY }}
+          POLYMARKET_PRIVATE_KEY: ${{ secrets.POLYMARKET_PRIVATE_KEY }}
+          POLYMARKET_PK: ${{ secrets.POLYMARKET_PK }}
+          POLYMARKET_FUNDER: ${{ secrets.POLYMARKET_FUNDER }}
+          POLYMARKET_API_KEY: ${{ secrets.POLYMARKET_API_KEY }}
+          POLYMARKET_API_SECRET: ${{ secrets.POLYMARKET_API_SECRET }}
+          POLYMARKET_PASSPHRASE: ${{ secrets.POLYMARKET_PASSPHRASE }}
+        run: |
+          cd /tmp
+          "$GITHUB_WORKSPACE/.venv/bin/python" -m nautilus_trader.live.strategy_nodes.betting_arbitrage \
+            probe-runtime \
+            --manifest "$GITHUB_WORKSPACE/deploy/strategy_nodes/betting_arbitrage/multi-venue-validation.json" \
+            --timeout-seconds 600 \
+            --poll-interval-secs 5 \
+            --min-connected-nodes 2 \
+            --min-match-instruments 2 \
+            --min-quoted-match-instruments 2 \
+            --min-quoted-node-count SXBET:2 \
+            --min-quoted-node-count CLOUDBET:2 \
+            --min-cross-venue-candidates 1 \
+            --min-positive-margin-candidates 1 \
+            --require-rust-semantic-topology
+
       - name: Upload rendered strategy-node artifacts to transient CI storage
         if: failure()
         continue-on-error: true
@@ -813,10 +843,16 @@ jobs:
             manifest_path="deploy/strategy_nodes/betting_arbitrage/sxbet-single-venue.json"
           fi
           min_positive_margin_candidates=0
+          min_cross_venue_candidates=0
+          quoted_node_args=()
           if [ "$manifest_path" = "deploy/strategy_nodes/betting_arbitrage/multi-venue-validation.json" ]; then
             min_positive_margin_candidates=1
+            min_cross_venue_candidates=1
+            quoted_node_args+=(--min-quoted-node-count SXBET:2)
+            quoted_node_args+=(--min-quoted-node-count CLOUDBET:2)
           fi
           echo "min_positive_margin_candidates=$min_positive_margin_candidates"
+          echo "min_cross_venue_candidates=$min_cross_venue_candidates"
           ssh -i strategy-node.key -o StrictHostKeyChecking=no "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST" \
             "chmod +x /tmp/wait_for_strategy_node_status.sh && \
              /tmp/wait_for_strategy_node_status.sh \
@@ -829,7 +865,9 @@ jobs:
                --min-connected-nodes 2 \
                --min-match-instruments 2 \
                --min-quoted-match-instruments 2 \
-               --min-positive-margin-candidates $min_positive_margin_candidates"
+               --min-positive-margin-candidates $min_positive_margin_candidates \
+               --min-cross-venue-candidates $min_cross_venue_candidates \
+               ${quoted_node_args[*]}"
 
       - name: Inspect deployed semantic cache directory
         run: |
