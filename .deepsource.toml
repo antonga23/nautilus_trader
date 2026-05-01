@@ -34,6 +34,7 @@ exclude_patterns = [
   "nautilus_trader/adapters/interactive_brokers/**",
   "nautilus_trader/adapters/kraken/**",
   "nautilus_trader/adapters/okx/**",
+  "nautilus_trader/adapters/polymarket/**",
   "nautilus_trader/adapters/sandbox/**",
   "nautilus_trader/adapters/tardis/**",
 ]
