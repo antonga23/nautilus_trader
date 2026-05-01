@@ -27,6 +27,7 @@ from nautilus_trader.adapters.betting.semantics import RuleStore
 from nautilus_trader.adapters.betting.semantics import SafetyTier
 from nautilus_trader.adapters.betting.semantics import SemanticRuleTemplate
 from nautilus_trader.adapters.betting.semantics import TemplateSupportStats
+from nautilus_trader.adapters.betting.semantics import PolymarketSportsTransformer
 from nautilus_trader.config import LoggingConfig
 from nautilus_trader.config import TradingNodeConfig
 from nautilus_trader.examples.strategies.betting_arbitrage import BettingArbitrageConfig
@@ -41,7 +42,12 @@ from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import Symbol
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.identifiers import Venue
+from nautilus_trader.model.enums import AssetClass
+from nautilus_trader.model.instruments import BinaryOption
 from nautilus_trader.model.objects import Currency
+from nautilus_trader.model.objects import Price
+from nautilus_trader.model.objects import Quantity
+from nautilus_trader.model.objects import USDC_POS
 from nautilus_trader.test_kit.functions import ensure_all_tasks_completed
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
 from nautilus_trader.test_kit.stubs.data import TestDataStubs
@@ -348,6 +354,85 @@ class TestBettingArbitrageIntegration:  # skipcq
         finally:
             node.dispose()
 
+    def test_cloudbet_polymarket_sports_binary_builds_dry_run_semantic_edge(self, tmp_path):
+        cache_dir = tmp_path / "semantic-cache"
+        cloudbet_home = self._instrument(
+            venue="CLOUDBET",
+            market_type="basketball.moneyline",
+            outcome="home",
+            sport_name="basketball",
+            competition_name="NBA",
+        )
+        polymarket_away_binary = self._polymarket_sports_binary_option(selection_role="away")
+        polymarket_away = PolymarketSportsTransformer.to_crypto_betting_instrument(
+            polymarket_away_binary,
+        )
+        assert polymarket_away is not None
+        self._seed_promoted_template(
+            cache_dir=cache_dir,
+            instrument_a=cloudbet_home,
+            instrument_b=polymarket_away,
+            support=TemplateSupportStats(
+                template_id="cloudbet-polymarket-support",
+                observed_count=10,
+                event_count=10,
+                provider_count=2,
+                providers=("CLOUDBET", "POLYMARKET"),
+                sports=("basketball",),
+                confidence=1.0,
+            ),
+        )
+
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                min_profit_margin=Decimal("0.02"),
+                enabled_venues=frozenset(["CLOUDBET", "POLYMARKET"]),
+                auto_execute=False,
+                semantic_rule_cache_dir=str(cache_dir),
+                opportunity_graph_engine="python",
+            ),
+        )
+        cache = TestComponentStubs.cache()
+        cache.add_instrument(cloudbet_home)
+        cache.add_instrument(polymarket_away_binary)
+        strategy.register(
+            trader_id=TraderId("TESTER-POLY-001"),
+            portfolio=TestComponentStubs.portfolio(),
+            msgbus=TestComponentStubs.msgbus(),
+            cache=cache,
+            clock=TestComponentStubs.clock(),
+        )
+        strategy.subscribe_quote_ticks = Mock()
+        strategy._handle_arbitrage_opportunity = Mock()
+
+        strategy.on_start()
+
+        stats = strategy.get_stats()
+        assert stats["subscribed_instruments"] == 2
+        assert stats["opportunity_graph_edges"] >= 1
+        assert stats["opportunity_graph_connected_nodes"] == 2
+        subscribed_ids = {call.args[0] for call in strategy.subscribe_quote_ticks.call_args_list}
+        assert polymarket_away_binary.id in subscribed_ids
+        assert polymarket_away.id not in subscribed_ids
+
+        strategy.on_quote_tick(
+            TestDataStubs.quote_tick(
+                instrument=cloudbet_home,
+                bid_price=0.0,
+                ask_price=2.40,
+            ),
+        )
+        strategy.on_quote_tick(
+            TestDataStubs.quote_tick(
+                instrument=polymarket_away_binary,
+                bid_price=0.0,
+                ask_price=2.45,
+            ),
+        )
+
+        assert strategy._handle_arbitrage_opportunity.call_count == 0
+        assert strategy._opportunities_executed == 0
+
     @staticmethod
     def _seed_promoted_template(
         *,
@@ -357,19 +442,20 @@ class TestBettingArbitrageIntegration:  # skipcq
         support: TemplateSupportStats,
     ) -> None:
         store = RuleStore(FileRuleCache(cache_dir))
-        store.save_manifest(
-            RuleCorpusManifest(
-                manifest_id="manifest-sxbet",
-                provider="SXBET",
-                fetched_at="2026-04-27T00:00:00Z",
-                endpoint_version="test",
-                sport_count=1,
-                event_count=support.event_count,
-                selection_count=support.observed_count * 2,
-                market_taxonomy_hash="test",
-                source_refs=(),
-            ),
-        )
+        for provider in support.providers:
+            store.save_manifest(
+                RuleCorpusManifest(
+                    manifest_id=f"manifest-{provider.lower()}",
+                    provider=provider,
+                    fetched_at="2026-04-27T00:00:00Z",
+                    endpoint_version="test",
+                    sport_count=1,
+                    event_count=support.event_count,
+                    selection_count=support.observed_count * 2,
+                    market_taxonomy_hash="test",
+                    source_refs=(),
+                ),
+            )
         rule = RuleClassifier().classify(instrument_a, instrument_b)
         assert rule is not None
         template = SemanticRuleTemplate.from_rule(rule, support=support)
@@ -412,6 +498,8 @@ class TestBettingArbitrageIntegration:  # skipcq
         market_name: str | None = None,
         params: str = "",
         handicap: float | None = None,
+        sport_name: str = "soccer",
+        competition_name: str = "Test League",
     ) -> CryptoBettingInstrument:
         return CryptoBettingInstrument(
             venue=Venue(venue),
@@ -419,8 +507,8 @@ class TestBettingArbitrageIntegration:  # skipcq
             event_name="Team A vs Team B",
             home_name="Team A",
             away_name="Team B",
-            sport_name="soccer",
-            competition_name="Test League",
+            sport_name=sport_name,
+            competition_name=competition_name,
             market_name=market_name or market_type,
             market_type=market_type,
             outcome=outcome,
@@ -430,6 +518,45 @@ class TestBettingArbitrageIntegration:  # skipcq
             params=params,
             handicap=handicap,
             start_time="2026-03-13T18:00:00Z",
+        )
+
+    @staticmethod
+    def _polymarket_sports_binary_option(*, selection_role: str) -> BinaryOption:
+        symbol = f"0xpm-{selection_role}"
+        return BinaryOption(
+            instrument_id=InstrumentId(Symbol(symbol), Venue("POLYMARKET")),
+            raw_symbol=Symbol(symbol),
+            outcome="Yes",
+            description="Will Team A beat Team B?",
+            asset_class=AssetClass.ALTERNATIVE,
+            currency=USDC_POS,
+            price_increment=Price.from_str("0.001"),
+            price_precision=3,
+            size_increment=Quantity.from_str("0.000001"),
+            size_precision=6,
+            activation_ns=0,
+            expiration_ns=1,
+            max_quantity=None,
+            min_quantity=Quantity.from_int(5),
+            maker_fee=Decimal(0),
+            taker_fee=Decimal(0),
+            ts_event=0,
+            ts_init=0,
+            info={
+                "condition_id": "0xpm-test",
+                "sports_market": {
+                    "sport": "basketball",
+                    "market_name": "basketball.moneyline",
+                    "market_type": "basketball.moneyline",
+                    "selection_role": selection_role,
+                    "event_name": "Team A vs Team B",
+                    "home_name": "Team A",
+                    "away_name": "Team B",
+                    "competition_name": "NBA",
+                    "price": 0.43,
+                    "resolution_policy": {"tie_or_unknown": "50_50"},
+                },
+            },
         )
 
     def test_trading_node_processes_betting_arbitrage_graph_quotes(
