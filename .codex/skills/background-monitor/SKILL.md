@@ -60,6 +60,24 @@ without obscuring the watched task:
    inspect the watcher result, and resume the original task before continuing
    experimentation.
 
+## Productive Wait Contract
+
+Every watcher longer than roughly one release/deploy cycle must have an
+explicit productive-wait handoff:
+
+1. Record the watcher run id, branch, terminal condition, log path, and the
+   exact task that must resume when it fires.
+2. Pick one independent work item from Linear or the current PR backlog that
+   can be paused without corrupting the watched branch, preferably in a
+   separate worktree.
+3. Post a Linear comment before switching contexts that names the watched run
+   and the side work being attempted.
+4. Keep side work bounded to tests, docs, diagnostics, or a small stacked PR.
+   Do not dispatch another workflow against the same release surface until the
+   watcher exits.
+5. When the watcher exits, stop side work at the next clean boundary, update
+   Linear with the watcher result, and return to the original task first.
+
 ## Runner Boundary
 
 - Use GCP self-hosted runners for pre-commit, tests, Rust policy checks, wheel

@@ -834,19 +834,74 @@ jobs:
         run: |
           mkdir -p artifacts/strategy-node-deploy
           remote="$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST"
+          remote_bundle="/tmp/strategy-node-deploy-artifacts-$STRATEGY_NODE_CONTAINER_NAME"
+          ssh -i strategy-node.key -o StrictHostKeyChecking=no "$remote" \
+            "STRATEGY_NODE_CONTAINER_NAME='$STRATEGY_NODE_CONTAINER_NAME' bash -s" <<'REMOTE'
+          set -euo pipefail
+
           node_dir="/opt/cloudbet/strategy-nodes/$STRATEGY_NODE_CONTAINER_NAME"
-          scp -i strategy-node.key -o StrictHostKeyChecking=no \
-            "$remote:$node_dir/status.json" \
-            "artifacts/strategy-node-deploy/status.json" || true
-          scp -i strategy-node.key -o StrictHostKeyChecking=no \
-            "$remote:$node_dir/heartbeat.json" \
-            "artifacts/strategy-node-deploy/heartbeat.json" || true
-          scp -i strategy-node.key -o StrictHostKeyChecking=no \
-            "$remote:$node_dir/manifest.runtime.json" \
-            "artifacts/strategy-node-deploy/manifest.runtime.json" || true
-          scp -i strategy-node.key -o StrictHostKeyChecking=no \
-            "$remote:$node_dir/release.json" \
-            "artifacts/strategy-node-deploy/release.json" || true
+          remote_bundle="/tmp/strategy-node-deploy-artifacts-$STRATEGY_NODE_CONTAINER_NAME"
+          rm -rf "$remote_bundle"
+          mkdir -p "$remote_bundle"
+
+          for name in status heartbeat manifest.runtime release current-session; do
+            if [ -f "$node_dir/$name.json" ]; then
+              cp "$node_dir/$name.json" "$remote_bundle/$name.json"
+            fi
+          done
+
+          if [ -f "$node_dir/current-session.json" ]; then
+            python3 - "$node_dir/current-session.json" "$remote_bundle" <<'PY'
+          import json
+          import pathlib
+          import shutil
+          import sys
+
+          session_path = pathlib.Path(sys.argv[1])
+          bundle_dir = pathlib.Path(sys.argv[2])
+          payload = json.loads(session_path.read_text())
+          for key, filename in (
+              ("logPath", "node.log"),
+              ("eventLogPath", "events.jsonl"),
+          ):
+              raw_path = payload.get(key)
+              if not raw_path:
+                  continue
+              source = pathlib.Path(raw_path)
+              if source.exists():
+                  shutil.copy2(source, bundle_dir / filename)
+          PY
+          fi
+          REMOTE
+          scp -i strategy-node.key -o StrictHostKeyChecking=no -r \
+            "$remote:$remote_bundle/." \
+            "artifacts/strategy-node-deploy/" || true
+
+          if [ -f artifacts/strategy-node-deploy/status.json ]; then
+            echo "status_json<<EOF"
+            cat artifacts/strategy-node-deploy/status.json
+            echo "EOF"
+          fi
+          if [ -f artifacts/strategy-node-deploy/node.log ]; then
+            echo "node_log_tail<<EOF"
+            tail -n 120 artifacts/strategy-node-deploy/node.log
+            echo "EOF"
+          fi
+          if [ -f artifacts/strategy-node-deploy/events.jsonl ]; then
+            echo "events_tail<<EOF"
+            tail -n 80 artifacts/strategy-node-deploy/events.jsonl
+            echo "EOF"
+          fi
+
+      - name: Upload deployed node status artifacts to transient CI storage
+        if: always()
+        continue-on-error: true
+        run: |
+          if [ -d artifacts/strategy-node-deploy ]; then
+            bash scripts/ci/ci_transient_artifacts.sh \
+              put artifacts/strategy-node-deploy \
+              "diagnostics/strategy-node-deploy/$STRATEGY_NODE_CONTAINER_NAME"
+          fi
 
       - name: Cleanup remote helper files
         if: always()

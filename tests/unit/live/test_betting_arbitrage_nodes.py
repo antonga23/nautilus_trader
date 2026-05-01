@@ -1664,6 +1664,17 @@ class TestBettingArbitrageNodeRunner:
         assert "INPUT_MANIFEST_PATH: ${{ github.event.inputs.manifest_path }}" in workflow
         assert "append_env_secret CLOUDBET_API_KEY" in workflow
         assert "--env-file /tmp/strategy-node.env" in workflow
+        assert "current-session.json" in workflow
+        assert "node.log" in workflow
+        assert "events.jsonl" in workflow
+        assert "Upload deployed node status artifacts to transient CI storage" in workflow
+
+    def test_runtime_verify_workflow_dumps_logs_on_failure(self):
+        workflow = Path(".github/workflows/strategy-node-runtime-verify.yml").read_text()
+        assert "dump_node_runtime_artifacts" in workflow
+        assert "trap 'status=$?;" in workflow
+        assert "node_log_tail" in workflow
+        assert "events_tail" in workflow
 
     def test_wait_for_strategy_node_status_can_require_ready_semantic_cache(self, tmp_path):
         status_path = tmp_path / "status.json"
