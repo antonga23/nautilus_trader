@@ -1705,6 +1705,13 @@ class TestBettingArbitrageNodeRunner:
         assert "probe-runtime" in workflow
         assert "--min-quoted-match-instruments 2" in workflow
         assert "--min-positive-margin-candidates 0" in workflow
+        assert "min_positive_margin_candidates=0" in workflow
+        assert (
+            '[ "$manifest_path" = "deploy/strategy_nodes/betting_arbitrage/multi-venue-validation.json" ]'
+            in workflow
+        )
+        assert "min_positive_margin_candidates=1" in workflow
+        assert "--min-positive-margin-candidates $min_positive_margin_candidates" in workflow
         assert "--require-rust-semantic-topology" in workflow
         assert "Wait for deployed node status and semantic cache" in workflow
         assert "--require-runtime-probe" in workflow
