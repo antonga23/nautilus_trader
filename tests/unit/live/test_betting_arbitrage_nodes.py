@@ -1602,6 +1602,61 @@ class TestBettingArbitrageNodeRunner:
         assert diagnostics["commonPatternKeyCount"] == 1
         assert diagnostics["nodeSports"] == [{"key": "soccer", "count": 1}]
 
+    def test_runtime_probe_venue_coverage_explains_zero_cross_venue_pairs(self):
+        strategy = SimpleNamespace(
+            _config=SimpleNamespace(
+                enabled_venues=frozenset({"CLOUDBET", "POLYMARKET", "SXBET"}),
+            ),
+        )
+        nodes = {
+            "sxbet-node": SimpleNamespace(
+                instrument=_instrument(
+                    venue="SXBET",
+                    market_type="match_odds",
+                    outcome="home",
+                ),
+            ),
+            "cloudbet-node": SimpleNamespace(
+                instrument=_instrument(
+                    venue="CLOUDBET",
+                    market_type="match_odds",
+                    outcome="away",
+                ),
+            ),
+        }
+        edges = [
+            SimpleNamespace(
+                source_node_id="sxbet-node",
+                target_node_id="cloudbet-node",
+            ),
+        ]
+
+        coverage = node_runner._venue_pair_coverage(
+            strategy,
+            edges=edges,
+            nodes=nodes,
+            quotes={"sxbet-node": object()},
+            matched_node_ids={"sxbet-node", "cloudbet-node"},
+            candidate_venue_pairs={"SXBET->SXBET": {"positive": 1}},
+        )
+
+        assert coverage["enabledVenues"] == ["CLOUDBET", "POLYMARKET", "SXBET"]
+        assert coverage["nodeCounts"] == {"CLOUDBET": 1, "POLYMARKET": 0, "SXBET": 1}
+        assert coverage["quotedNodeCounts"] == {
+            "CLOUDBET": 0,
+            "POLYMARKET": 0,
+            "SXBET": 1,
+        }
+        assert coverage["edgeCounts"]["SXBET->CLOUDBET"] == 1
+        assert coverage["quotedEdgeCounts"]["SXBET->CLOUDBET"] == 0
+        assert coverage["candidateCounts"]["SXBET->SXBET"] == 1
+        assert coverage["crossVenueCandidateCount"] == 0
+        zero_reasons = {
+            item["venuePair"]: item["reason"] for item in coverage["zeroCandidateVenuePairs"]
+        }
+        assert zero_reasons["SXBET->CLOUDBET"] == "no_quoted_semantic_edge"
+        assert zero_reasons["CLOUDBET->POLYMARKET"] == "missing_instruments"
+
     def test_runtime_probe_candidate_samples_include_dry_run_provenance(self):
         instrument_a = _instrument(
             venue="CLOUDBET",
