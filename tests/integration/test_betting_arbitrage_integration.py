@@ -38,16 +38,16 @@ from nautilus_trader.live.strategy_nodes.betting_arbitrage.config import (
     BettingArbitrageNodeManifest,
 )
 from nautilus_trader.live.strategy_nodes.betting_arbitrage.config import BettingVenueManifest
+from nautilus_trader.model.currencies import USDC_POS
+from nautilus_trader.model.enums import AssetClass
+from nautilus_trader.model.instruments import BinaryOption
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import Symbol
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.identifiers import Venue
-from nautilus_trader.model.enums import AssetClass
-from nautilus_trader.model.instruments import BinaryOption
 from nautilus_trader.model.objects import Currency
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
-from nautilus_trader.model.objects import USDC_POS
 from nautilus_trader.test_kit.functions import ensure_all_tasks_completed
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
 from nautilus_trader.test_kit.stubs.data import TestDataStubs
