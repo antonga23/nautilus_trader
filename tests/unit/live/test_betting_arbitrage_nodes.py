@@ -1538,6 +1538,54 @@ class TestBettingArbitrageNodeRunner:
         assert diagnostics["commonPatternKeyCount"] == 1
         assert diagnostics["nodeSports"] == [{"key": "soccer", "count": 1}]
 
+    def test_runtime_probe_candidate_samples_include_dry_run_provenance(self):
+        instrument_a = _instrument(
+            venue="CLOUDBET",
+            market_type="match_odds",
+            outcome="home",
+        )
+        instrument_b = _instrument(
+            venue="POLYMARKET",
+            market_type="match_odds",
+            outcome="away",
+        )
+        counters = node_runner.ProbeProfitabilityCounters()
+
+        node_runner._record_probe_opportunity(
+            counters,
+            opportunity=SimpleNamespace(profit_margin=Decimal("0.05")),
+            edge=SimpleNamespace(
+                rule_id="rule-1",
+                template_id="template-1",
+                relationship_type="COMPLEMENTARY_COVERAGE",
+                safety_tier="EXECUTION_SAFE",
+                execution_safe=True,
+                same_venue_execution_eligible=False,
+            ),
+            source_node=SimpleNamespace(
+                instrument=instrument_a,
+                market_name="match_odds",
+                outcome="home",
+            ),
+            target_node=SimpleNamespace(
+                instrument=instrument_b,
+                market_name="match_odds",
+                outcome="away",
+            ),
+            allow_same_venue=False,
+            min_profit_margin=Decimal("0.02"),
+        )
+
+        payload = counters.to_payload()
+        sample = payload["sample_candidates"][0]
+        assert sample["venueA"] == "CLOUDBET"
+        assert sample["venueB"] == "POLYMARKET"
+        assert sample["ruleId"] == "rule-1"
+        assert sample["templateId"] == "template-1"
+        assert sample["relationshipType"] == "COMPLEMENTARY_COVERAGE"
+        assert sample["dryRunEligible"] is True
+        assert sample["dryRunEligibilityReason"] == "strict_execution_safe"
+
     def test_run_success_and_failure_paths_record_status_transitions(self, tmp_path, monkeypatch):
         def semantic_status(_manifest):
             return SemanticCacheStatus(
