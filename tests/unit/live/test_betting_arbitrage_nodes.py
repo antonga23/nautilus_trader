@@ -1603,25 +1603,31 @@ class TestBettingArbitrageNodeRunner:
         assert diagnostics["nodeSports"] == [{"key": "soccer", "count": 1}]
 
     def test_runtime_probe_venue_coverage_explains_zero_cross_venue_pairs(self):
+        sxbet_instrument = _instrument(
+            venue="SXBET",
+            market_type="match_odds",
+            outcome="home",
+        )
+        cloudbet_instrument = _instrument(
+            venue="CLOUDBET",
+            market_type="match_odds",
+            outcome="away",
+        )
         strategy = SimpleNamespace(
             _config=SimpleNamespace(
                 enabled_venues=frozenset({"CLOUDBET", "POLYMARKET", "SXBET"}),
             ),
+            _quote_subscribed_instrument_ids={
+                sxbet_instrument.id,
+                cloudbet_instrument.id,
+            },
         )
         nodes = {
             "sxbet-node": SimpleNamespace(
-                instrument=_instrument(
-                    venue="SXBET",
-                    market_type="match_odds",
-                    outcome="home",
-                ),
+                instrument=sxbet_instrument,
             ),
             "cloudbet-node": SimpleNamespace(
-                instrument=_instrument(
-                    venue="CLOUDBET",
-                    market_type="match_odds",
-                    outcome="away",
-                ),
+                instrument=cloudbet_instrument,
             ),
         }
         edges = [
@@ -1642,6 +1648,11 @@ class TestBettingArbitrageNodeRunner:
 
         assert coverage["enabledVenues"] == ["CLOUDBET", "POLYMARKET", "SXBET"]
         assert coverage["nodeCounts"] == {"CLOUDBET": 1, "POLYMARKET": 0, "SXBET": 1}
+        assert coverage["quoteSubscriptionCounts"] == {
+            "CLOUDBET": 1,
+            "POLYMARKET": 0,
+            "SXBET": 1,
+        }
         assert coverage["quotedNodeCounts"] == {
             "CLOUDBET": 0,
             "POLYMARKET": 0,

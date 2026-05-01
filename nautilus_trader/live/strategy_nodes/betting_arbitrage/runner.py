@@ -819,6 +819,7 @@ def _venue_pair_coverage(
     quoted_node_counts: Counter[str] = Counter()
     matched_node_counts: Counter[str] = Counter()
     quoted_matched_node_counts: Counter[str] = Counter()
+    quote_subscription_counts = _quote_subscription_counts_by_venue(strategy)
     edge_counts: Counter[str] = Counter()
     quoted_edge_counts: Counter[str] = Counter()
 
@@ -868,6 +869,9 @@ def _venue_pair_coverage(
     return {
         "enabledVenues": venues,
         "nodeCounts": {venue: node_counts.get(venue, 0) for venue in venues},
+        "quoteSubscriptionCounts": {
+            venue: quote_subscription_counts.get(venue, 0) for venue in venues
+        },
         "quotedNodeCounts": {venue: quoted_node_counts.get(venue, 0) for venue in venues},
         "semanticMatchedNodeCounts": {venue: matched_node_counts.get(venue, 0) for venue in venues},
         "quotedSemanticMatchedNodeCounts": {
@@ -884,6 +888,19 @@ def _venue_pair_coverage(
         ],
         "zeroCandidateVenuePairs": zero_pairs,
     }
+
+
+def _quote_subscription_counts_by_venue(strategy) -> Counter[str]:
+    counts: Counter[str] = Counter()
+    subscribed_ids = getattr(strategy, "_quote_subscribed_instrument_ids", ()) or ()
+    for instrument_id in subscribed_ids:
+        venue = getattr(instrument_id, "venue", None)
+        if venue is None:
+            text = str(instrument_id)
+            venue = text.rsplit(".", maxsplit=1)[-1] if "." in text else ""
+        if venue:
+            counts[str(venue).upper()] += 1
+    return counts
 
 
 def _venue_pair_candidate_counts(candidate_venue_pairs: Any) -> dict[str, int]:
