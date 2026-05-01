@@ -1046,16 +1046,16 @@ def _probe_candidate_quality(
     total_probability = probability_a + probability_b
     profit_margin = (Decimal(1) / total_probability) - Decimal(1)
     observed_ns = max(int(quote_a.received_ns), int(quote_b.received_ns))
-    quote_age_a_secs = strategy._quote_age_secs(observed_ns, quote_a.quote)
-    quote_age_b_secs = strategy._quote_age_secs(observed_ns, quote_b.quote)
+    quote_age_a_secs = strategy.quote_age_secs(observed_ns, quote_a.quote)
+    quote_age_b_secs = strategy.quote_age_secs(observed_ns, quote_b.quote)
     quote_delta_secs = abs(int(quote_a.quote.ts_event) - int(quote_b.quote.ts_event)) / (
         1_000_000_000
     )
-    fetch_latency_a_secs = strategy._quote_fetch_latency_secs(quote_a.quote)
-    fetch_latency_b_secs = strategy._quote_fetch_latency_secs(quote_b.quote)
-    available_size_a = strategy._quote_available_size(quote_a.quote)
-    available_size_b = strategy._quote_available_size(quote_b.quote)
-    freshness = strategy._quote_freshness_thresholds(source_node.instrument, target_node.instrument)
+    fetch_latency_a_secs = strategy.quote_fetch_latency_secs(quote_a.quote)
+    fetch_latency_b_secs = strategy.quote_fetch_latency_secs(quote_b.quote)
+    available_size_a = strategy.quote_available_size(quote_a.quote)
+    available_size_b = strategy.quote_available_size(quote_b.quote)
+    freshness = strategy.quote_freshness_thresholds(source_node.instrument, target_node.instrument)
     rejection_bucket = _probe_rejection_bucket(
         edge=edge,
         allow_same_venue=allow_same_venue,
@@ -1073,7 +1073,7 @@ def _probe_candidate_quality(
         max_fetch_latency_secs=freshness.max_fetch_latency_secs,
     )
     same_venue = source_node.instrument.venue_name == target_node.instrument.venue_name
-    matcher_suspect, suspect_reason = strategy._matcher_suspect_reason(
+    matcher_suspect, suspect_reason = strategy.matcher_suspect_reason(
         source_node.instrument,
         target_node.instrument,
     )

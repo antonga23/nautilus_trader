@@ -652,6 +652,10 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             return bid_size
         return Decimal(0)
 
+    @staticmethod
+    def quote_available_size(quote: QuoteTick | None) -> Decimal:
+        return BettingArbitrageStrategy._quote_available_size(quote)
+
     def on_quote_tick(self, tick: QuoteTick) -> None:
         """
         Handle quote tick updates.
@@ -1953,10 +1957,18 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         return max(0.0, (now_ns - int(quote.ts_event)) / NANOSECONDS_PER_SECOND)
 
     @staticmethod
+    def quote_age_secs(now_ns: int, quote: QuoteTick) -> float:
+        return BettingArbitrageStrategy._quote_age_secs(now_ns, quote)
+
+    @staticmethod
     def _quote_fetch_latency_secs(quote: QuoteTick | None) -> float:
         if quote is None or quote.ts_event <= 0 or quote.ts_init <= 0:
             return 0.0
         return max(0.0, (int(quote.ts_init) - int(quote.ts_event)) / NANOSECONDS_PER_SECOND)
+
+    @staticmethod
+    def quote_fetch_latency_secs(quote: QuoteTick | None) -> float:
+        return BettingArbitrageStrategy._quote_fetch_latency_secs(quote)
 
     @staticmethod
     def _quote_cycle_id(quote: QuoteTick) -> str:
@@ -2026,6 +2038,13 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             max_fetch_latency_secs=3.0,
         )
 
+    def quote_freshness_thresholds(
+        self,
+        instrument_a: CryptoBettingInstrument,
+        instrument_b: CryptoBettingInstrument,
+    ) -> QuoteFreshnessThresholds:
+        return self._quote_freshness_thresholds(instrument_a, instrument_b)
+
     @staticmethod
     def _is_trusted_same_venue_match_odds_pair(
         instrument_a: CryptoBettingInstrument,
@@ -2057,6 +2076,13 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 return False, "none"
             return True, "same_venue_event_id_mismatch"
         return False, "none"
+
+    @staticmethod
+    def matcher_suspect_reason(
+        instrument_a: CryptoBettingInstrument,
+        instrument_b: CryptoBettingInstrument,
+    ) -> tuple[bool, str]:
+        return BettingArbitrageStrategy._matcher_suspect_reason(instrument_a, instrument_b)
 
     @staticmethod
     # skipcq: PYL-R0911, PYL-R0913
