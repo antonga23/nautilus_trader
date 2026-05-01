@@ -430,7 +430,8 @@ class TestBettingArbitrageIntegration:  # skipcq
             ),
         )
 
-        assert strategy._handle_arbitrage_opportunity.call_count == 0
+        assert strategy._handle_arbitrage_opportunity.call_count == 1
+        assert strategy._opportunities_found == 1
         assert strategy._opportunities_executed == 0
 
     @staticmethod
