@@ -113,8 +113,11 @@ jobs:
             echo "container=$container_name"
             echo "node_dir=$node_dir"
             if docker inspect "$container_name" > /dev/null 2>&1; then
+              docker_format='docker_state={{.State.Status}}'
+              docker_format+=' docker_running={{.State.Running}}'
+              docker_format+=' docker_image={{.Config.Image}}'
               docker inspect \
-                --format 'docker_state={{.State.Status}} docker_running={{.State.Running}} docker_image={{.Config.Image}}' \
+                --format "$docker_format" \
                 "$container_name"
             else
               echo "docker_container_missing=true"
