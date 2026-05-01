@@ -123,6 +123,47 @@ def _market_matches_sports_filter(market: dict[str, Any], sports: set[str]) -> b
     return bool(_market_sport_candidates(market) & sports)
 
 
+def _selected_sports_tag_ids(sport_metadata: dict[str, Any]) -> list[str]:
+    tags = [tag.strip() for tag in str(sport_metadata.get("tags") or "").split(",") if tag.strip()]
+    return [tag for tag in tags if tag not in {"1", "100639"}] or tags[:1]
+
+
+def _collect_sports_event_markets(
+    *,
+    canonical_sport: str,
+    sport_code: str,
+    selected_tags: list[str],
+    events: list[dict[str, Any]],
+    discovered_markets: dict[str, dict[str, Any]],
+) -> None:
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        for market in event.get("markets", []):
+            if not isinstance(market, dict):
+                continue
+            market_id = str(
+                market.get("id") or market.get("conditionId") or market.get("slug") or ""
+            )
+            if not market_id:
+                continue
+            enriched_market = dict(market)
+            enriched_market["sport"] = canonical_sport
+            enriched_market["sportsTag"] = sport_code
+            enriched_market["sportsTagIds"] = tuple(selected_tags)
+            enriched_market["events"] = [
+                {
+                    "id": event.get("id"),
+                    "title": event.get("title"),
+                    "slug": event.get("slug"),
+                    "startDate": event.get("startDate"),
+                    "startDateIso": event.get("startDate"),
+                    "sport": canonical_sport,
+                },
+            ]
+            discovered_markets[market_id] = enriched_market
+
+
 def _check_clob_response(response: dict[str, Any] | str) -> dict[str, Any]:
     """
     Check CLOB API response and raise exception if error string returned.
@@ -263,23 +304,107 @@ class PolymarketInstrumentProvider(InstrumentProvider):
         self._log.info(f"Loaded {len(markets)} candidate Polymarket markets using Gamma API")
         loaded_markets = 0
         for market in markets:
-            condition_id = market.get("conditionId")
-            if not condition_id:
-                continue
             if not _market_matches_sports_filter(market, sports_filter):
                 continue
-
-            normalized_market = normalize_gamma_market_to_clob_format(market)
-            for token_info in normalized_market.get("tokens", []):
-                token_id = token_info.get("token_id")
-                if not token_id:
-                    self._log.warning(f"Market {condition_id} had an empty token")
-                    continue
-
-                outcome = token_info["outcome"]
-                self._load_instrument(normalized_market, token_id, outcome)
-            loaded_markets += 1
+            loaded_markets += self._load_gamma_market_instruments(market)
+        if loaded_markets == 0 and sports_filter:
+            event_markets = await self._load_sports_event_markets_using_gamma(
+                sports_filter=sports_filter,
+                max_results=max_results,
+            )
+            self._log.info(
+                "Loaded "
+                f"{len(event_markets)} candidate Polymarket sports event markets using Gamma API",
+            )
+            for market in event_markets:
+                loaded_markets += self._load_gamma_market_instruments(market)
         self._log.info(f"Loaded Polymarket sports markets using Gamma API: {loaded_markets}")
+
+    def _load_gamma_market_instruments(self, market: dict[str, Any]) -> int:
+        condition_id = market.get("conditionId")
+        if not condition_id:
+            return 0
+
+        normalized_market = normalize_gamma_market_to_clob_format(market)
+        loaded_tokens = 0
+        for token_info in normalized_market.get("tokens", []):
+            token_id = token_info.get("token_id")
+            if not token_id:
+                self._log.warning(f"Market {condition_id} had an empty token")
+                continue
+
+            outcome = token_info["outcome"]
+            self._load_instrument(normalized_market, token_id, outcome)
+            loaded_tokens += 1
+        return int(loaded_tokens > 0)
+
+    async def _load_sports_event_markets_using_gamma(
+        self,
+        *,
+        sports_filter: set[str],
+        max_results: int | None,
+    ) -> list[dict[str, Any]]:
+        sports_metadata = await self._gamma_get_json("/sports")
+        if not isinstance(sports_metadata, list):
+            return []
+
+        discovered_markets: dict[str, dict[str, Any]] = {}
+        for sport_metadata in sports_metadata:
+            if not isinstance(sport_metadata, dict):
+                continue
+            sport_code = str(sport_metadata.get("sport") or "")
+            canonical_sport = _canonical_polymarket_sport(sport_code)
+            if canonical_sport not in sports_filter:
+                continue
+            for tag_id in _selected_sports_tag_ids(sport_metadata):
+                events = await self._gamma_get_json(
+                    "/events",
+                    params={
+                        "tag_id": tag_id,
+                        "related_tags": "true",
+                        "active": "true",
+                        "closed": "false",
+                        "archived": "false",
+                        "limit": max_results or 100,
+                        "order": "volume",
+                        "ascending": "false",
+                    },
+                )
+                if not isinstance(events, list):
+                    continue
+                _collect_sports_event_markets(
+                    canonical_sport=canonical_sport,
+                    sport_code=sport_code,
+                    selected_tags=_selected_sports_tag_ids(sport_metadata),
+                    events=events,
+                    discovered_markets=discovered_markets,
+                )
+                if max_results is not None and len(discovered_markets) >= max_results:
+                    return list(discovered_markets.values())[:max_results]
+        return list(discovered_markets.values())[:max_results]
+
+    async def _gamma_get_json(
+        self,
+        endpoint: str,
+        params: dict[str, Any] | None = None,
+    ) -> Any:
+        if not endpoint.startswith("/") or endpoint.startswith("//"):
+            raise ValueError(f"Invalid Polymarket Gamma endpoint: {endpoint}")
+        response = await self._http_client.get(
+            f"https://gamma-api.polymarket.com{endpoint}",
+            params=params,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "cloudbet-market-maker/polymarket-gamma",
+            },
+            timeout_secs=30,
+        )
+        if response.status != 200:
+            body = response.body.decode("utf-8", errors="replace")
+            raise RuntimeError(
+                f"Gamma API request failed: {response.status} for endpoint {endpoint} body={body}",
+            )
+        return self._decoder.decode(response.body)
 
     async def _load_ids_using_clob_api(
         self,
