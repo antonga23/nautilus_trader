@@ -1595,6 +1595,7 @@ class TestBettingArbitrageNodeRunner:
             'data["semantic_rule_cache_dir"] = "/var/lib/nautilus-node/semantic-rule-cache"'
             in deploy_script
         )
+        assert 'rm -f "$node_dir/status.json" "$node_dir/heartbeat.json"' in deploy_script
 
     def test_release_workflow_validates_sxbet_manifest_with_semantic_env(self):
         workflow = Path(".github/workflows/strategy-node-release.yml").read_text()
@@ -1613,6 +1614,8 @@ class TestBettingArbitrageNodeRunner:
         assert "Build validated wheel from checked-out source" in workflow
         assert "SXBET_API_KEY: ${{ secrets.SXBET_API_KEY }}" in workflow
         assert "CLOUDBET_API_KEY: ${{ secrets.CLOUDBET_API_KEY }}" in workflow
+        assert "append_env_secret CLOUDBET_API_KEY" in workflow
+        assert "--env-file /tmp/strategy-node.env" in workflow
 
     def test_wait_for_strategy_node_status_can_require_ready_semantic_cache(self, tmp_path):
         status_path = tmp_path / "status.json"
