@@ -27,6 +27,11 @@ from nautilus_trader.test_kit.mocks.actors import MockActor
         None,
         {},
         {"A": 1, "B": 2, "C": 3},
+        {"sports": ["soccer", "basketball"], "is_active": True},
+        {
+            "sports": {"soccer", "basketball"},
+            "limits": {"max_results": 80, "markets": ["match_odds", "totals"]},
+        },
     ],
 )
 def test_instrument_provider_config_hash(filters: dict | None) -> None:

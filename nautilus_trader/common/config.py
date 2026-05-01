@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 from collections.abc import Callable
+from collections.abc import Mapping
 from decimal import Decimal
 from io import StringIO
 from typing import Annotated
@@ -85,6 +86,19 @@ def resolve_config_path(path: str) -> type[NautilusConfig]:
     if not issubclass(config, NautilusConfig):
         raise TypeError(f"expected a subclass of `NautilusConfig`, was `{type(config)}`")
     return config
+
+
+def _hashable_config_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return frozenset(
+            (_hashable_config_value(key), _hashable_config_value(item))
+            for key, item in value.items()
+        )
+    if isinstance(value, list | tuple):
+        return tuple(_hashable_config_value(item) for item in value)
+    if isinstance(value, set | frozenset):
+        return frozenset(_hashable_config_value(item) for item in value)
+    return value
 
 
 def nautilus_schema_hook(type_: type[Any]) -> dict[str, Any]:
@@ -446,7 +460,7 @@ class InstrumentProviderConfig(NautilusConfig, frozen=True):
         )
 
     def __hash__(self):
-        filters = frozenset(self.filters.items()) if self.filters else None
+        filters = _hashable_config_value(self.filters) if self.filters else None
         return hash((self.load_all, self.load_ids, filters))
 
     load_all: bool = False
