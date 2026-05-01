@@ -805,7 +805,18 @@ jobs:
              rm -f /tmp/strategy-node-ghcr-token"
 
       - name: Wait for deployed node status and semantic cache
+        env:
+          INPUT_MANIFEST_PATH: ${{ github.event.inputs.manifest_path }}
         run: |
+          manifest_path="$INPUT_MANIFEST_PATH"
+          if [ -z "$manifest_path" ]; then
+            manifest_path="deploy/strategy_nodes/betting_arbitrage/sxbet-single-venue.json"
+          fi
+          min_positive_margin_candidates=0
+          if [ "$manifest_path" = "deploy/strategy_nodes/betting_arbitrage/multi-venue-validation.json" ]; then
+            min_positive_margin_candidates=1
+          fi
+          echo "min_positive_margin_candidates=$min_positive_margin_candidates"
           ssh -i strategy-node.key -o StrictHostKeyChecking=no "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST" \
             "chmod +x /tmp/wait_for_strategy_node_status.sh && \
              /tmp/wait_for_strategy_node_status.sh \
@@ -818,7 +829,7 @@ jobs:
                --min-connected-nodes 2 \
                --min-match-instruments 2 \
                --min-quoted-match-instruments 2 \
-               --min-positive-margin-candidates 0"
+               --min-positive-margin-candidates $min_positive_margin_candidates"
 
       - name: Inspect deployed semantic cache directory
         run: |
