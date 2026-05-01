@@ -1010,14 +1010,25 @@ def _record_probe_opportunity(
             {
                 "instrumentIdA": str(source_node.instrument.id),
                 "instrumentIdB": str(target_node.instrument.id),
+                "venueA": str(source_node.instrument.id.venue),
+                "venueB": str(target_node.instrument.id.venue),
                 "marketA": source_node.market_name,
                 "marketB": target_node.market_name,
                 "outcomeA": source_node.outcome,
                 "outcomeB": target_node.outcome,
                 "profitMargin": str(opportunity.profit_margin),
+                "ruleId": edge.rule_id,
+                "templateId": edge.template_id,
+                "relationshipType": edge.relationship_type,
                 "safetyTier": edge.safety_tier,
                 "executionSafe": edge.execution_safe,
                 "sameVenueExecutionEligible": edge.same_venue_execution_eligible,
+                "dryRunEligible": edge.execution_safe or edge.same_venue_execution_eligible,
+                "dryRunEligibilityReason": (
+                    "strict_execution_safe"
+                    if edge.execution_safe
+                    else "same_venue_risk_engine_required"
+                ),
             },
         ),
     )
