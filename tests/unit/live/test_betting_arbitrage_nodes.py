@@ -593,6 +593,8 @@ class TestBettingArbitrageNodeBuilder:
             "max_results": 80,
             "sports": ["american_football", "baseball", "basketball", "soccer", "tennis"],
         }
+        created = config.data_clients["POLYMARKET_PRIMARY"].create()
+        assert isinstance(hash(created.instrument_provider), int)
 
     def test_custom_credential_prefix_and_secret_pool_are_applied(self, monkeypatch):
         monkeypatch.setenv("CUSTOMSXBET_API_KEY", "explicit-api-key")
