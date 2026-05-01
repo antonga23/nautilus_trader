@@ -135,7 +135,7 @@ Example:
 
 ```text
 exec_command(
-  cmd="mkdir -p artifacts/monitors && log_path=artifacts/monitors/gcp-ci-preflight.log && set +e; /Users/alatha.ntonga/google-cloud-sdk/bin/gcloud compute ssh instance-20260415-214825 --project=shining-sol-493421-h6 --zone=europe-west4-c --command 'set -euo pipefail; cd /opt/actions-runner/_work/cloudbet-market-maker/cloudbet-market-maker; bash scripts/ci/run_ci_preflight.sh' > \"$log_path\" 2>&1; status=$?; set -e; if [ \"$status\" -ne 0 ]; then tail -n 200 \"$log_path\" >&2 || true; fi; exit \"$status\"",
+  cmd="mkdir -p artifacts/monitors && log_path=artifacts/monitors/gcp-ci-preflight.log && set +e; /Users/alatha.ntonga/google-cloud-sdk/bin/gcloud compute ssh instance-20260415-214825 --project=shining-sol-493421-h6 --zone=europe-west4-c --command 'set -euo pipefail; cd /opt/actions-runner/_work/cloudbet-market-maker/cloudbet-market-maker; bash scripts/ci/run_ci_preflight.sh' > \"$log_path\" 2>&1; rc=$?; set -e; if [ \"$rc\" -ne 0 ]; then tail -n 200 \"$log_path\" >&2 || true; fi; exit \"$rc\"",
   yield_time_ms=1000,
   max_output_tokens=12000
 )
