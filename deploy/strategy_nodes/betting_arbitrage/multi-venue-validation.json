@@ -2,7 +2,7 @@
   "node_id": "multi-venue-validation",
   "trader_id": "BETARB-MULTI-001",
   "validation_mode": true,
-  "allow_dummy_credentials": false,
+  "allow_dummy_credentials": true,
   "log_level": "INFO",
   "rendered_config_path": "artifacts/strategy-nodes/multi-venue-validation/trading-node-config.json",
   "status_path": "artifacts/strategy-nodes/multi-venue-validation/status.json",

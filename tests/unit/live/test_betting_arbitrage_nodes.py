@@ -498,6 +498,7 @@ class TestBettingArbitrageNodeBuilder:
         )
         config = build_trading_node_config(manifest)
 
+        assert manifest.allow_dummy_credentials is True
         assert sorted(config.data_clients) == [
             "CLOUDBET_PRIMARY",
             "POLYMARKET_PRIMARY",
