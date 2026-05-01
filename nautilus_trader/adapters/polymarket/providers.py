@@ -37,6 +37,92 @@ from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.instruments import BinaryOption
 
 
+POLYMARKET_SPORT_KEYWORDS = {
+    "american_football": ("nfl", "cfb", "american football", "super bowl"),
+    "baseball": ("mlb", "baseball", "world series"),
+    "basketball": ("nba", "wnba", "ncaab", "basketball"),
+    "cricket": ("cricket",),
+    "golf": ("golf", "pga"),
+    "ice_hockey": ("nhl", "hockey", "stanley cup"),
+    "mma": ("ufc", "mma"),
+    "rugby": ("rugby",),
+    "soccer": (
+        "soccer",
+        "premier league",
+        "champions league",
+        "la liga",
+        "serie a",
+        "bundesliga",
+        "epl",
+        "ucl",
+        "football",
+    ),
+    "tennis": ("tennis", "wimbledon", "us open", "australian open", "french open", "atp", "wta"),
+}
+
+
+def _canonical_polymarket_sport(raw: str) -> str:
+    normalized = raw.strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "nfl": "american_football",
+        "cfb": "american_football",
+        "mlb": "baseball",
+        "nba": "basketball",
+        "ncaab": "basketball",
+        "wnba": "basketball",
+        "nhl": "ice_hockey",
+        "epl": "soccer",
+        "ucl": "soccer",
+        "atp": "tennis",
+        "wta": "tennis",
+        "ufc": "mma",
+    }
+    return aliases.get(normalized, normalized)
+
+
+def _market_sport_candidates(market: dict[str, Any]) -> set[str]:
+    original_event = {}
+    events = market.get("events")
+    if isinstance(events, list) and events and isinstance(events[0], dict):
+        original_event = events[0]
+
+    explicit_sports = [
+        market.get("sport"),
+        market.get("sportsTag"),
+        market.get("sportsMarketType"),
+        original_event.get("sport"),
+    ]
+    candidates = {
+        _canonical_polymarket_sport(str(value))
+        for value in explicit_sports
+        if value not in (None, "")
+    }
+
+    haystack = " ".join(
+        str(value)
+        for value in (
+            market.get("question"),
+            market.get("slug"),
+            market.get("description"),
+            market.get("category"),
+            original_event.get("title"),
+            original_event.get("slug"),
+        )
+        if value
+    ).lower()
+    for sport, keywords in POLYMARKET_SPORT_KEYWORDS.items():
+        if any(keyword in haystack for keyword in keywords):
+            candidates.add(sport)
+
+    return candidates
+
+
+def _market_matches_sports_filter(market: dict[str, Any], sports: set[str]) -> bool:
+    if not sports:
+        return True
+    return bool(_market_sport_candidates(market) & sports)
+
+
 def _check_clob_response(response: dict[str, Any] | str) -> dict[str, Any]:
     """
     Check CLOB API response and raise exception if error string returned.
@@ -96,6 +182,9 @@ class PolymarketInstrumentProvider(InstrumentProvider):
         self._encoder = msgspec.json.Encoder()
 
     async def load_all_async(self, filters: dict | None = None) -> None:
+        if self._config.use_gamma_markets:
+            await self._load_markets_using_gamma(filters=filters)
+            return
         await self._load_markets([], filters)
 
     async def _load_ids_using_gamma_markets(
@@ -115,9 +204,9 @@ class PolymarketInstrumentProvider(InstrumentProvider):
         # Create a copy to avoid mutating the caller's filters
         filters = filters.copy() if filters is not None else {}
 
-        if (
+        if condition_ids and (
             len(condition_ids) <= 100
-        ):  # We can filter directly by condition_id, but there is an API limit of max 100 condition_ids in the query string
+        ):  # There is an API limit of max 100 condition_ids in the query string.
             self._log.info(
                 f"Loading {len(instrument_ids)} instruments from {len(condition_ids)} markets, using direct condition_id filtering",
             )
@@ -148,6 +237,49 @@ class PolymarketInstrumentProvider(InstrumentProvider):
 
                 outcome = token_info["outcome"]
                 self._load_instrument(normalized_market, token_id, outcome)
+
+    async def _load_markets_using_gamma(self, filters: dict | None = None) -> None:
+        """
+        Load a bounded active-market sports corpus using Gamma API discovery.
+        """
+        filters = filters.copy() if filters is not None else {}
+        sports_filter = {
+            _canonical_polymarket_sport(str(value))
+            for value in filters.pop("sports", ()) or ()
+            if value
+        }
+        max_results = filters.pop("max_results", None)
+        max_results = int(max_results) if max_results is not None else None
+
+        self._log.info(
+            "Loading Polymarket instruments using Gamma discovery "
+            f"filters={filters} sports={sorted(sports_filter)} max_results={max_results}",
+        )
+        markets = await list_markets(
+            http_client=self._http_client,
+            filters=filters,
+            max_results=max_results,
+        )
+        self._log.info(f"Loaded {len(markets)} candidate Polymarket markets using Gamma API")
+        loaded_markets = 0
+        for market in markets:
+            condition_id = market.get("conditionId")
+            if not condition_id:
+                continue
+            if not _market_matches_sports_filter(market, sports_filter):
+                continue
+
+            normalized_market = normalize_gamma_market_to_clob_format(market)
+            for token_info in normalized_market.get("tokens", []):
+                token_id = token_info.get("token_id")
+                if not token_id:
+                    self._log.warning(f"Market {condition_id} had an empty token")
+                    continue
+
+                outcome = token_info["outcome"]
+                self._load_instrument(normalized_market, token_id, outcome)
+            loaded_markets += 1
+        self._log.info(f"Loaded Polymarket sports markets using Gamma API: {loaded_markets}")
 
     async def _load_ids_using_clob_api(
         self,

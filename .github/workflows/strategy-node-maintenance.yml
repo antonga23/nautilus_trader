@@ -1,0 +1,105 @@
+name: strategy-node-maintenance
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      containers:
+        description: Comma-separated strategy-node containers to archive
+        required: true
+      stop:
+        description: Stop containers after archiving
+        required: false
+        default: 'false'
+      root_dir:
+        description: Host strategy-node root
+        required: false
+        default: /opt/cloudbet/strategy-nodes
+      archive_root:
+        description: Host archive root
+        required: false
+        default: /opt/cloudbet/strategy-nodes/archives
+
+jobs:
+  archive-strategy-nodes:
+    name: archive-strategy-nodes
+    timeout-minutes: 15
+    runs-on: [self-hosted, linux, x64, ec2, deploy, trading]
+    steps:
+      - name: Repair self-hosted workspace
+        shell: bash
+        env:
+          ACTIONS_RUNNER_ROOT: /home/ubuntu/actions-runner
+        run: |
+          workspace_parent="$(dirname "$GITHUB_WORKSPACE")"
+          run_maybe_sudo() {
+            if [[ "${EUID}" -eq 0 ]]; then
+              "$@"
+              return
+            fi
+
+            if "$@"; then
+              return
+            fi
+
+            local command_status=$?
+            if command -v sudo > /dev/null 2>&1; then
+              sudo -n "$@" && return
+            fi
+
+            return "$command_status"
+          }
+
+          if [[ -x /usr/local/bin/repair-github-runner-workspace ]]; then
+            run_maybe_sudo \
+              /usr/local/bin/repair-github-runner-workspace \
+              "$GITHUB_WORKSPACE" \
+              "$workspace_parent/.ci-cache" \
+              "$(id -u)" \
+              "$(id -g)"
+          else
+            run_maybe_sudo mkdir -p "$GITHUB_WORKSPACE" "$workspace_parent/.ci-cache"
+            run_maybe_sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" "$workspace_parent/.ci-cache"
+          fi
+
+          if [[ ! -e "$GITHUB_WORKSPACE/.git" ]]; then
+            find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+
+      - name: Archive selected containers
+        shell: bash
+        env:
+          INPUT_CONTAINERS: ${{ github.event.inputs.containers }}
+          INPUT_STOP: ${{ github.event.inputs.stop }}
+          INPUT_ROOT_DIR: ${{ github.event.inputs.root_dir }}
+          INPUT_ARCHIVE_ROOT: ${{ github.event.inputs.archive_root }}
+        run: |
+          set -euo pipefail
+
+          IFS=',' read -r -a raw_containers <<< "$INPUT_CONTAINERS"
+          args=(
+            --root "${INPUT_ROOT_DIR:-/opt/cloudbet/strategy-nodes}"
+            --archive-root "${INPUT_ARCHIVE_ROOT:-/opt/cloudbet/strategy-nodes/archives}"
+          )
+          for raw in "${raw_containers[@]}"; do
+            container="$(printf '%s' "$raw" | xargs)"
+            if [[ -n "$container" ]]; then
+              args+=(--container "$container")
+            fi
+          done
+          if [[ "${INPUT_STOP:-false}" == "true" ]]; then
+            args+=(--stop)
+          fi
+
+          bash scripts/deploy/strategy_nodes/archive_strategy_nodes.sh "${args[@]}"
+
+      - name: Print resulting container state
+        shell: bash
+        run: docker ps -a --format 'table {{.ID}}\t{{.Status}}\t{{.Names}}'

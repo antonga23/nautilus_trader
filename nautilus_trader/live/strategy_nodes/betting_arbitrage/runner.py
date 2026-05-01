@@ -43,17 +43,34 @@ class ProbeProfitabilityCounters:
     positive_same_venue: int = 0
     threshold_execution: int = 0
     threshold_same_venue: int = 0
+    margin_bands: Counter[str] = field(default_factory=Counter)
+    rejection_buckets: Counter[str] = field(default_factory=Counter)
+    venue_pairs: dict[str, Counter[str]] = field(default_factory=dict)
+    market_families: dict[str, Counter[str]] = field(default_factory=dict)
     samples: list[tuple[Decimal, dict[str, object]]] = field(default_factory=list)
+    negative_samples: list[tuple[Decimal, dict[str, object]]] = field(default_factory=list)
 
     def to_payload(self) -> dict[str, object]:
         self.samples.sort(key=lambda item: item[0], reverse=True)
+        self.negative_samples.sort(key=lambda item: item[0], reverse=True)
         return {
             "quoted_edges": self.quoted_edges,
             "positive_execution": self.positive_execution,
             "positive_same_venue": self.positive_same_venue,
             "threshold_execution": self.threshold_execution,
             "threshold_same_venue": self.threshold_same_venue,
+            "margin_bands": dict(self.margin_bands),
+            "rejection_buckets": dict(self.rejection_buckets),
+            "venue_pairs": {
+                key: dict(counter)
+                for key, counter in sorted(self.venue_pairs.items(), key=lambda item: item[0])
+            },
+            "market_families": {
+                key: dict(counter)
+                for key, counter in sorted(self.market_families.items(), key=lambda item: item[0])
+            },
             "sample_candidates": [payload for _, payload in self.samples[:10]],
+            "negative_near_misses": [payload for _, payload in self.negative_samples[:10]],
         }
 
 
@@ -582,8 +599,15 @@ def _probe_runtime(
         raise run_error[0]
 
     semantic_diagnostics = latest_payload.get("semanticDiagnostics", {})
+    candidate_quality = latest_payload.get("candidateQuality", {})
     diagnostics_json = json.dumps(
         semantic_diagnostics,
+        sort_keys=True,
+        default=str,
+        separators=(",", ":"),
+    )[:4000]
+    candidate_quality_json = json.dumps(
+        candidate_quality,
         sort_keys=True,
         default=str,
         separators=(",", ":"),
@@ -598,7 +622,8 @@ def _probe_runtime(
         f"graph_engine={latest_payload.get('graphEngine')}, "
         f"topology_source={latest_payload.get('topologySource')}, "
         f"semantic_template_count={latest_payload.get('semanticTemplateCount')}, "
-        f"semantic_diagnostics={diagnostics_json})",
+        f"semantic_diagnostics={diagnostics_json}, "
+        f"candidate_quality={candidate_quality_json})",
         latest_payload,
     )
 
@@ -649,9 +674,11 @@ def _collect_runtime_probe_payload(
                 "sameVenueExecutionEligible": 0,
                 "total": 0,
             },
+            "candidateQuality": _empty_candidate_quality_payload(),
             "strategyStats": stats,
             "semanticDiagnostics": semantic_diagnostics,
             "sampleCandidates": [],
+            "negativeNearMisses": [],
         }
     execution_safe_edges = sum(1 for edge in snapshot["edges"] if edge.execution_safe)
     same_venue_eligible_edges = sum(
@@ -693,9 +720,19 @@ def _collect_runtime_probe_payload(
             "sameVenueExecutionEligible": profitability["threshold_same_venue"],
             "total": profitability["threshold_execution"] + profitability["threshold_same_venue"],
         },
+        "candidateQuality": {
+            "quotedEdges": profitability["quoted_edges"],
+            "marginBands": profitability["margin_bands"],
+            "rejectionBuckets": profitability["rejection_buckets"],
+            "venuePairs": profitability["venue_pairs"],
+            "marketFamilies": profitability["market_families"],
+            "topPositiveCandidates": profitability["sample_candidates"],
+            "topNegativeNearMisses": profitability["negative_near_misses"],
+        },
         "strategyStats": stats,
         "semanticDiagnostics": semantic_diagnostics,
         "sampleCandidates": profitability["sample_candidates"],
+        "negativeNearMisses": profitability["negative_near_misses"],
     }
 
 
@@ -723,6 +760,18 @@ def _runtime_probe_satisfied(
         and positive_candidates >= min_positive_margin_candidates
         and (rust_semantic_topology_ok or not require_rust_semantic_topology)
     )
+
+
+def _empty_candidate_quality_payload() -> dict[str, object]:
+    return {
+        "quotedEdges": 0,
+        "marginBands": {},
+        "rejectionBuckets": {},
+        "venuePairs": {},
+        "marketFamilies": {},
+        "topPositiveCandidates": [],
+        "topNegativeNearMisses": [],
+    }
 
 
 def _snapshot_probe_graph_state(graph) -> dict[str, object] | None:
@@ -942,6 +991,17 @@ def _probe_edge_profitability(
 
         counters.quoted_edges += 1
         allow_same_venue = edge.same_venue_execution_eligible and not edge.execution_safe
+        quality = _probe_candidate_quality(
+            strategy,
+            edge=edge,
+            source_node=source_node,
+            target_node=target_node,
+            quote_a=quote_a,
+            quote_b=quote_b,
+            min_profit_margin=min_profit_margin,
+            allow_same_venue=allow_same_venue,
+        )
+        _record_probe_quality(counters, quality)
         if not edge.execution_safe and not allow_same_venue:
             continue
 
@@ -966,6 +1026,209 @@ def _probe_edge_profitability(
         )
 
     return counters.to_payload()
+
+
+def _probe_candidate_quality(
+    strategy,
+    *,
+    edge,
+    source_node,
+    target_node,
+    quote_a,
+    quote_b,
+    min_profit_margin: Decimal,
+    allow_same_venue: bool,
+) -> dict[str, object]:
+    odds_a = Decimal(str(quote_a.odds))
+    odds_b = Decimal(str(quote_b.odds))
+    probability_a = Decimal(1) / odds_a
+    probability_b = Decimal(1) / odds_b
+    total_probability = probability_a + probability_b
+    profit_margin = (Decimal(1) / total_probability) - Decimal(1)
+    observed_ns = max(int(quote_a.received_ns), int(quote_b.received_ns))
+    quote_age_a_secs = strategy.quote_age_secs(observed_ns, quote_a.quote)
+    quote_age_b_secs = strategy.quote_age_secs(observed_ns, quote_b.quote)
+    quote_delta_secs = abs(int(quote_a.quote.ts_event) - int(quote_b.quote.ts_event)) / (
+        1_000_000_000
+    )
+    fetch_latency_a_secs = strategy.quote_fetch_latency_secs(quote_a.quote)
+    fetch_latency_b_secs = strategy.quote_fetch_latency_secs(quote_b.quote)
+    available_size_a = strategy.quote_available_size(quote_a.quote)
+    available_size_b = strategy.quote_available_size(quote_b.quote)
+    freshness = strategy.quote_freshness_thresholds(source_node.instrument, target_node.instrument)
+    rejection_bucket = _probe_rejection_bucket(
+        edge=edge,
+        allow_same_venue=allow_same_venue,
+        profit_margin=profit_margin,
+        min_profit_margin=min_profit_margin,
+        quote_age_a_secs=quote_age_a_secs,
+        quote_age_b_secs=quote_age_b_secs,
+        quote_delta_secs=quote_delta_secs,
+        fetch_latency_a_secs=fetch_latency_a_secs,
+        fetch_latency_b_secs=fetch_latency_b_secs,
+        available_size_a=available_size_a,
+        available_size_b=available_size_b,
+        max_quote_age_secs=freshness.max_quote_age_secs,
+        max_pair_skew_secs=freshness.max_pair_skew_secs,
+        max_fetch_latency_secs=freshness.max_fetch_latency_secs,
+    )
+    same_venue = source_node.instrument.venue_name == target_node.instrument.venue_name
+    matcher_suspect, suspect_reason = strategy.matcher_suspect_reason(
+        source_node.instrument,
+        target_node.instrument,
+    )
+    fresh_quotes = (
+        quote_age_a_secs <= freshness.max_quote_age_secs
+        and quote_age_b_secs <= freshness.max_quote_age_secs
+        and fetch_latency_a_secs <= freshness.max_fetch_latency_secs
+        and fetch_latency_b_secs <= freshness.max_fetch_latency_secs
+        and quote_delta_secs <= freshness.max_pair_skew_secs
+    )
+    liquidity_ok = available_size_a > 0 and available_size_b > 0
+    threshold_ok = profit_margin >= min_profit_margin
+    same_venue_policy = {
+        "sameVenue": same_venue,
+        "sameFixture": not matcher_suspect,
+        "compatibleMarketFamily": bool(edge.same_venue_execution_eligible),
+        "freshQuotes": fresh_quotes,
+        "sufficientLiquidity": liquidity_ok,
+        "thresholdProfit": threshold_ok,
+        "executionDisabledUntilRiskEngineApproval": True,
+        "suspectReason": suspect_reason,
+    }
+    would_execute_same_venue = (
+        edge.same_venue_execution_eligible
+        and not edge.execution_safe
+        and same_venue
+        and not matcher_suspect
+        and fresh_quotes
+        and liquidity_ok
+        and threshold_ok
+    )
+    return {
+        "instrumentIdA": str(source_node.instrument.id),
+        "instrumentIdB": str(target_node.instrument.id),
+        "venueA": str(source_node.instrument.id.venue),
+        "venueB": str(target_node.instrument.id.venue),
+        "venuePair": f"{source_node.instrument.id.venue}->{target_node.instrument.id.venue}",
+        "marketA": source_node.market_name,
+        "marketB": target_node.market_name,
+        "marketFamily": _probe_market_family(source_node, target_node),
+        "outcomeA": source_node.outcome,
+        "outcomeB": target_node.outcome,
+        "profitMargin": str(profit_margin),
+        "totalProbability": str(total_probability),
+        "gapToZero": str(max(Decimal(0), -profit_margin)),
+        "gapToMinProfitThreshold": str(max(Decimal(0), min_profit_margin - profit_margin)),
+        "marginBand": _probe_margin_band(profit_margin),
+        "quoteAgeASeconds": round(quote_age_a_secs, 6),
+        "quoteAgeBSeconds": round(quote_age_b_secs, 6),
+        "quoteDeltaSeconds": round(quote_delta_secs, 6),
+        "fetchLatencyASeconds": round(fetch_latency_a_secs, 6),
+        "fetchLatencyBSeconds": round(fetch_latency_b_secs, 6),
+        "availableSizeA": str(available_size_a),
+        "availableSizeB": str(available_size_b),
+        "maxQuoteAgeSeconds": freshness.max_quote_age_secs,
+        "maxPairSkewSeconds": freshness.max_pair_skew_secs,
+        "maxFetchLatencySeconds": freshness.max_fetch_latency_secs,
+        "freshnessProfile": freshness.profile,
+        "rejectionBucket": rejection_bucket,
+        "ruleId": edge.rule_id,
+        "templateId": edge.template_id,
+        "relationshipType": edge.relationship_type,
+        "safetyTier": edge.safety_tier,
+        "executionSafe": edge.execution_safe,
+        "sameVenueExecutionEligible": edge.same_venue_execution_eligible,
+        "dryRunEligible": edge.execution_safe or edge.same_venue_execution_eligible,
+        "dryRunEligibilityReason": (
+            "strict_execution_safe"
+            if edge.execution_safe
+            else "same_venue_risk_engine_required"
+            if edge.same_venue_execution_eligible
+            else "semantic_topology_only"
+        ),
+        "sameVenueRiskPolicy": same_venue_policy,
+        "wouldExecuteSameVenueDryRun": would_execute_same_venue,
+    }
+
+
+def _probe_rejection_bucket(
+    *,
+    edge,
+    allow_same_venue: bool,
+    profit_margin: Decimal,
+    min_profit_margin: Decimal,
+    quote_age_a_secs: float,
+    quote_age_b_secs: float,
+    quote_delta_secs: float,
+    fetch_latency_a_secs: float,
+    fetch_latency_b_secs: float,
+    available_size_a: Decimal,
+    available_size_b: Decimal,
+    max_quote_age_secs: float,
+    max_pair_skew_secs: float,
+    max_fetch_latency_secs: float,
+) -> str:
+    if not edge.execution_safe and not allow_same_venue:
+        return "semantic_blocked"
+    if (
+        fetch_latency_a_secs > max_fetch_latency_secs
+        or fetch_latency_b_secs > max_fetch_latency_secs
+    ):
+        return "fetch_latency"
+    if quote_age_a_secs > max_quote_age_secs or quote_age_b_secs > max_quote_age_secs:
+        return "stale"
+    if quote_delta_secs > max_pair_skew_secs:
+        return "cross_cycle"
+    if available_size_a <= 0 or available_size_b <= 0:
+        return "liquidity"
+    if profit_margin <= 0:
+        return "negative_margin"
+    if profit_margin < min_profit_margin:
+        return "below_threshold"
+    return "positive"
+
+
+def _record_probe_quality(
+    counters: ProbeProfitabilityCounters,
+    quality: dict[str, object],
+) -> None:
+    margin = Decimal(str(quality["profitMargin"]))
+    margin_band = str(quality["marginBand"])
+    rejection_bucket = str(quality["rejectionBucket"])
+    venue_pair = str(quality["venuePair"])
+    market_family = str(quality["marketFamily"])
+    counters.margin_bands[margin_band] += 1
+    counters.rejection_buckets[rejection_bucket] += 1
+    counters.venue_pairs.setdefault(venue_pair, Counter())[rejection_bucket] += 1
+    counters.market_families.setdefault(market_family, Counter())[rejection_bucket] += 1
+    if margin > 0:
+        counters.samples.append((margin, quality))
+    elif margin > Decimal("-0.05"):
+        counters.negative_samples.append((margin, quality))
+
+
+def _probe_margin_band(profit_margin: Decimal) -> str:
+    if profit_margin > 0:
+        return "positive"
+    if profit_margin >= Decimal("-0.01"):
+        return "0% to -1%"
+    if profit_margin >= Decimal("-0.02"):
+        return "-1% to -2%"
+    if profit_margin >= Decimal("-0.05"):
+        return "-2% to -5%"
+    return "< -5%"
+
+
+def _probe_market_family(source_node, target_node) -> str:
+    families: list[str] = []
+    for node in (source_node, target_node):
+        try:
+            normalized = MarketNormalizer.normalize(node.instrument)
+            families.append(normalized.market_family or normalized.market_type)
+        except (AttributeError, TypeError, ValueError):
+            families.append(str(getattr(node, "market_type", "") or node.market_name))
+    return " + ".join(families)
 
 
 def _quoted_probe_edge(edge, nodes, quotes) -> tuple[object, object, object, object] | None:
@@ -1001,37 +1264,7 @@ def _record_probe_opportunity(
         counters.positive_execution += int(is_positive)
         counters.threshold_execution += int(meets_threshold)
 
-    if not is_positive:
-        return
-
-    counters.samples.append(
-        (
-            opportunity.profit_margin,
-            {
-                "instrumentIdA": str(source_node.instrument.id),
-                "instrumentIdB": str(target_node.instrument.id),
-                "venueA": str(source_node.instrument.id.venue),
-                "venueB": str(target_node.instrument.id.venue),
-                "marketA": source_node.market_name,
-                "marketB": target_node.market_name,
-                "outcomeA": source_node.outcome,
-                "outcomeB": target_node.outcome,
-                "profitMargin": str(opportunity.profit_margin),
-                "ruleId": edge.rule_id,
-                "templateId": edge.template_id,
-                "relationshipType": edge.relationship_type,
-                "safetyTier": edge.safety_tier,
-                "executionSafe": edge.execution_safe,
-                "sameVenueExecutionEligible": edge.same_venue_execution_eligible,
-                "dryRunEligible": edge.execution_safe or edge.same_venue_execution_eligible,
-                "dryRunEligibilityReason": (
-                    "strict_execution_safe"
-                    if edge.execution_safe
-                    else "same_venue_risk_engine_required"
-                ),
-            },
-        ),
-    )
+    _ = opportunity, edge, source_node, target_node
 
 
 if __name__ == "__main__":

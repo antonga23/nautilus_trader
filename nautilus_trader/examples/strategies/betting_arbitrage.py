@@ -49,10 +49,19 @@ from nautilus_trader.trading.strategy import Strategy
 
 
 VALID_MARKET_TIMINGS = frozenset({"all", "pre_market", "live"})
+VALID_QUOTE_FRESHNESS_PROFILES = frozenset({"pre_match", "live", "custom"})
 DEFAULT_ENABLED_VENUES = frozenset({"CLOUDBET", "SXBET", "10BET"})
 NANOSECONDS_PER_SECOND = 1_000_000_000
 BettingInstrument = CryptoBettingInstrument | LegacyCryptoBettingInstrument
 BETTING_INSTRUMENT_TYPES = (CryptoBettingInstrument, LegacyCryptoBettingInstrument)
+
+
+@dataclass(frozen=True)
+class QuoteFreshnessThresholds:
+    profile: str
+    max_quote_age_secs: float
+    max_pair_skew_secs: float
+    max_fetch_latency_secs: float
 
 
 @dataclass(frozen=True)
@@ -94,8 +103,15 @@ class ArbitrageDiagnostics:  # skipcq
     quote_age_a_secs: float
     quote_age_b_secs: float
     quote_delta_secs: float
+    fetch_latency_a_secs: float
+    fetch_latency_b_secs: float
+    freshness_profile: str
+    max_quote_age_secs: float
+    max_pair_skew_secs: float
+    max_fetch_latency_secs: float
     same_quote_cycle: bool
     stale: bool
+    fetch_latency_stale: bool
     matcher_suspect: bool
     suspect_reason: str
     suggested_stake_a: Decimal
@@ -158,6 +174,12 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         Opportunity graph engine: "auto", "python", "rust", or "semantic_rust".
     semantic_rule_cache_dir : str | None, default None
         Optional file-backed semantic rule cache directory for trading-node runtime.
+    quote_freshness_profile : str, default "pre_match"
+        Quote timing policy: "pre_match", "live", or "custom".
+    quote_max_pair_skew_secs : float | None, default None
+        Custom maximum timestamp skew between two quotes.
+    quote_max_fetch_latency_secs : float | None, default None
+        Custom maximum REST fetch latency encoded as ``QuoteTick.ts_init - ts_event``.
 
     """
 
@@ -177,6 +199,9 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
     graph_rebuild_on_new_instrument: bool = True
     opportunity_graph_engine: str = "auto"
     semantic_rule_cache_dir: str | None = None
+    quote_freshness_profile: str = "pre_match"
+    quote_max_pair_skew_secs: float | None = None
+    quote_max_fetch_latency_secs: float | None = None
 
     def __post_init__(self) -> None:
         """
@@ -189,11 +214,18 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
             self.semantic_rule_cache_dir.strip() if self.semantic_rule_cache_dir else None
         )
         opportunity_graph_engine = self.opportunity_graph_engine.strip().lower()
+        quote_freshness_profile = self.quote_freshness_profile.strip().lower()
 
         if market_timing_filter not in VALID_MARKET_TIMINGS:
             msg = (
                 f"Invalid market_timing_filter: {market_timing_filter}. "
                 f"Must be one of {VALID_MARKET_TIMINGS}"
+            )
+            raise ValueError(msg)
+        if quote_freshness_profile not in VALID_QUOTE_FRESHNESS_PROFILES:
+            msg = (
+                f"Invalid quote_freshness_profile: {quote_freshness_profile}. "
+                f"Must be one of {VALID_QUOTE_FRESHNESS_PROFILES}"
             )
             raise ValueError(msg)
         if opportunity_graph_engine not in {"auto", "python", "rust", "semantic_rust"}:
@@ -211,6 +243,7 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         msgspec.structs.force_setattr(self, "market_timing_filter", market_timing_filter)
         msgspec.structs.force_setattr(self, "opportunity_graph_engine", opportunity_graph_engine)
         msgspec.structs.force_setattr(self, "semantic_rule_cache_dir", semantic_rule_cache_dir)
+        msgspec.structs.force_setattr(self, "quote_freshness_profile", quote_freshness_profile)
 
 
 # skipcq: PYL-R0902
@@ -305,6 +338,9 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         msg = (
             "Arbitrage diagnostics: "
             f"quote_stale_threshold_secs={self._config.arbitrage_quote_stale_threshold_secs} "
+            f"quote_freshness_profile={self._config.quote_freshness_profile} "
+            f"quote_max_pair_skew_secs={self._config.quote_max_pair_skew_secs} "
+            f"quote_max_fetch_latency_secs={self._config.quote_max_fetch_latency_secs} "
             f"summary_interval_secs={self._config.arbitrage_summary_interval_secs} "
             f"opportunity_graph_enabled={self._config.opportunity_graph_enabled} "
             f"opportunity_graph_engine={self._config.opportunity_graph_engine} "
@@ -600,6 +636,10 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
 
     @staticmethod
     def _quote_available_size(quote: QuoteTick | None) -> Decimal:
+        return BettingArbitrageStrategy.quote_available_size(quote)
+
+    @staticmethod
+    def quote_available_size(quote: QuoteTick | None) -> Decimal:
         if quote is None:
             return Decimal(0)
 
@@ -947,6 +987,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             inst_b=inst_b,
             hedge_type=hedge_type,
             hedge_confidence=hedge_confidence,
+            quote_a=quote_a,
+            quote_b=quote_b,
             odds_a_raw=odds_a_raw,
             odds_b_raw=odds_b_raw,
             canonical_pair_id=canonical_pair_id,
@@ -1042,13 +1084,15 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         )
 
     # skipcq: PYL-R0913, PYL-R0914
-    def _suppress_fast_candidate(
+    def _suppress_fast_candidate(  # noqa: C901
         self,
         *,
         inst_a: CryptoBettingInstrument,
         inst_b: CryptoBettingInstrument,
         hedge_type: str,
         hedge_confidence: float,
+        quote_a: QuoteTick,
+        quote_b: QuoteTick,
         odds_a_raw: float,
         odds_b_raw: float,
         canonical_pair_id: str,
@@ -1083,9 +1127,30 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 self._log_arbitrage_summary()
             return True
 
+        freshness = self._quote_freshness_thresholds(inst_a, inst_b)
+        fetch_latency_a_secs = self._quote_fetch_latency_secs(quote_a)
+        fetch_latency_b_secs = self._quote_fetch_latency_secs(quote_b)
         if (
-            quote_age_a_secs > self._config.arbitrage_quote_stale_threshold_secs
-            or quote_age_b_secs > self._config.arbitrage_quote_stale_threshold_secs
+            fetch_latency_a_secs > freshness.max_fetch_latency_secs
+            or fetch_latency_b_secs > freshness.max_fetch_latency_secs
+        ):
+            self._stale_quote_suppressions += 1
+            if emit_suppression_log:
+                self.log.info(
+                    "Arbitrage candidate suppressed: "
+                    f"reason=fetch_latency max_fetch_latency_secs="
+                    f"{freshness.max_fetch_latency_secs:.2f} "
+                    f"fetch_latency_a_secs={fetch_latency_a_secs:.2f} "
+                    f"fetch_latency_b_secs={fetch_latency_b_secs:.2f} "
+                    f"canonical_pair_id={canonical_pair_id}",
+                )
+            if emit_summary:
+                self._log_arbitrage_summary()
+            return True
+
+        if (
+            quote_age_a_secs > freshness.max_quote_age_secs
+            or quote_age_b_secs > freshness.max_quote_age_secs
         ):
             self._stale_quote_suppressions += 1
             if emit_suppression_log:
@@ -1099,6 +1164,19 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                     quote_age_a_secs,
                     quote_age_b_secs,
                     quote_delta_secs,
+                )
+            if emit_summary:
+                self._log_arbitrage_summary()
+            return True
+
+        if quote_delta_secs > freshness.max_pair_skew_secs:
+            self._manual_review_suppressions += 1
+            if emit_suppression_log:
+                self.log.info(
+                    "Arbitrage candidate suppressed: "
+                    f"reason=cross_cycle max_pair_skew_secs={freshness.max_pair_skew_secs:.2f} "
+                    f"quote_delta_secs={quote_delta_secs:.2f} "
+                    f"canonical_pair_id={canonical_pair_id}",
                 )
             if emit_summary:
                 self._log_arbitrage_summary()
@@ -1385,9 +1463,16 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         quote_age_a_secs = self._fast_snapshot_quote_age_secs(now_ns, quote_ts_a)
         quote_age_b_secs = self._fast_snapshot_quote_age_secs(now_ns, quote_ts_b)
         quote_delta_secs = abs(int(quote_ts_a) - int(quote_ts_b)) / NANOSECONDS_PER_SECOND
+        fetch_latency_a_secs = self._quote_fetch_latency_secs(quote_a)
+        fetch_latency_b_secs = self._quote_fetch_latency_secs(quote_b)
+        freshness = self._quote_freshness_thresholds(inst_a, inst_b)
         stale = (
-            quote_age_a_secs > self._config.arbitrage_quote_stale_threshold_secs
-            or quote_age_b_secs > self._config.arbitrage_quote_stale_threshold_secs
+            quote_age_a_secs > freshness.max_quote_age_secs
+            or quote_age_b_secs > freshness.max_quote_age_secs
+        )
+        fetch_latency_stale = (
+            fetch_latency_a_secs > freshness.max_fetch_latency_secs
+            or fetch_latency_b_secs > freshness.max_fetch_latency_secs
         )
         suggested_stake_a, suggested_stake_b, expected_profit = calculate_arbitrage_stakes(
             odds_a=opportunity.odds_a,
@@ -1398,9 +1483,10 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         available_size_b = self._quote_available_size(quote_b)
         classification, classification_reason = self._classify_arbitrage_candidate(
             stale=stale,
+            fetch_latency_stale=fetch_latency_stale,
             matcher_suspect=False,
             suspect_reason="",
-            same_quote_cycle=quote_delta_secs <= 2.0,
+            same_quote_cycle=quote_delta_secs <= freshness.max_pair_skew_secs,
             suggested_stake_a=suggested_stake_a,
             suggested_stake_b=suggested_stake_b,
             available_size_a=available_size_a,
@@ -1450,8 +1536,15 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             quote_age_a_secs=quote_age_a_secs,
             quote_age_b_secs=quote_age_b_secs,
             quote_delta_secs=quote_delta_secs,
-            same_quote_cycle=quote_delta_secs <= 2.0,
+            fetch_latency_a_secs=fetch_latency_a_secs,
+            fetch_latency_b_secs=fetch_latency_b_secs,
+            freshness_profile=freshness.profile,
+            max_quote_age_secs=freshness.max_quote_age_secs,
+            max_pair_skew_secs=freshness.max_pair_skew_secs,
+            max_fetch_latency_secs=freshness.max_fetch_latency_secs,
+            same_quote_cycle=quote_delta_secs <= freshness.max_pair_skew_secs,
             stale=stale,
+            fetch_latency_stale=fetch_latency_stale,
             matcher_suspect=False,
             suspect_reason="",
             suggested_stake_a=suggested_stake_a,
@@ -1565,6 +1658,20 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             )
             return True
 
+        if diagnostics.fetch_latency_stale:
+            self._stale_quote_suppressions += 1
+            self.log.info(
+                "Arbitrage candidate suppressed: "
+                f"reason=fetch_latency classification={diagnostics.classification} "
+                f"classification_reason={diagnostics.classification_reason} "
+                f"opportunity_id={diagnostics.opportunity_id} "
+                f"fetch_latency_a_secs={diagnostics.fetch_latency_a_secs:.2f} "
+                f"fetch_latency_b_secs={diagnostics.fetch_latency_b_secs:.2f} "
+                f"max_fetch_latency_secs={diagnostics.max_fetch_latency_secs:.2f}"
+                f"{self._diagnostics_instrument_fields(diagnostics)}",
+            )
+            return True
+
         if diagnostics.stale:
             self._stale_quote_suppressions += 1
             self.log.info(
@@ -1575,6 +1682,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 f"quote_age_a_secs={diagnostics.quote_age_a_secs:.2f} "
                 f"quote_age_b_secs={diagnostics.quote_age_b_secs:.2f} "
                 f"quote_delta_secs={diagnostics.quote_delta_secs:.2f}"
+                f" fetch_latency_a_secs={diagnostics.fetch_latency_a_secs:.2f}"
+                f" fetch_latency_b_secs={diagnostics.fetch_latency_b_secs:.2f}"
                 f"{self._diagnostics_instrument_fields(diagnostics)}",
             )
             return True
@@ -1620,6 +1729,12 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 f"opportunity_id={diagnostics.opportunity_id} "
                 f"same_quote_cycle={diagnostics.same_quote_cycle} "
                 f"quote_delta_secs={diagnostics.quote_delta_secs:.2f}"
+                f" freshness_profile={diagnostics.freshness_profile} "
+                f"max_quote_age_secs={diagnostics.max_quote_age_secs:.2f} "
+                f"max_pair_skew_secs={diagnostics.max_pair_skew_secs:.2f} "
+                f"max_fetch_latency_secs={diagnostics.max_fetch_latency_secs:.2f} "
+                f"fetch_latency_a_secs={diagnostics.fetch_latency_a_secs:.2f} "
+                f"fetch_latency_b_secs={diagnostics.fetch_latency_b_secs:.2f}"
                 f"{self._diagnostics_instrument_fields(diagnostics)}",
             )
             return True
@@ -1652,7 +1767,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             f"market_id={diagnostics.market_id_a} "
             f"available_size={diagnostics.available_size_a} "
             f"quote_cycle_id={diagnostics.quote_cycle_id_a} "
-            f"quote_age_secs={diagnostics.quote_age_a_secs:.2f}; "
+            f"quote_age_secs={diagnostics.quote_age_a_secs:.2f} "
+            f"fetch_latency_secs={diagnostics.fetch_latency_a_secs:.2f}; "
             "Instrument B: "
             f"instrument_id={diagnostics.instrument_id_b} "
             f"venue={diagnostics.venue_b} "
@@ -1664,7 +1780,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             f"market_id={diagnostics.market_id_b} "
             f"available_size={diagnostics.available_size_b} "
             f"quote_cycle_id={diagnostics.quote_cycle_id_b} "
-            f"quote_age_secs={diagnostics.quote_age_b_secs:.2f}"
+            f"quote_age_secs={diagnostics.quote_age_b_secs:.2f} "
+            f"fetch_latency_secs={diagnostics.fetch_latency_b_secs:.2f}"
         )
 
     def _manual_execution_plan(self, *args: object) -> str:
@@ -1700,7 +1817,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             f"market_id={diagnostics.market_id_a} "
             f"available_size={diagnostics.available_size_a} "
             f"quote_cycle_id={diagnostics.quote_cycle_id_a} "
-            f"quote_age_secs={diagnostics.quote_age_a_secs:.2f}; "
+            f"quote_age_secs={diagnostics.quote_age_a_secs:.2f} "
+            f"fetch_latency_secs={diagnostics.fetch_latency_a_secs:.2f}; "
             "Instrument B: "
             f"bet={stake_b} "
             f"instrument_id={diagnostics.instrument_id_b} "
@@ -1713,7 +1831,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             f"market_id={diagnostics.market_id_b} "
             f"available_size={diagnostics.available_size_b} "
             f"quote_cycle_id={diagnostics.quote_cycle_id_b} "
-            f"quote_age_secs={diagnostics.quote_age_b_secs:.2f}; "
+            f"quote_age_secs={diagnostics.quote_age_b_secs:.2f} "
+            f"fetch_latency_secs={diagnostics.fetch_latency_b_secs:.2f}; "
             f"expected_profit={expected_profit} "
             f"max_total_stake={self._config.max_total_stake}"
         )
@@ -1741,9 +1860,16 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         quote_delta_secs = abs(int(quote_a.ts_event) - int(quote_b.ts_event)) / (
             NANOSECONDS_PER_SECOND
         )
+        fetch_latency_a_secs = self._quote_fetch_latency_secs(quote_a)
+        fetch_latency_b_secs = self._quote_fetch_latency_secs(quote_b)
+        freshness = self._quote_freshness_thresholds(inst_a, inst_b)
         stale = (
-            quote_age_a_secs > self._config.arbitrage_quote_stale_threshold_secs
-            or quote_age_b_secs > self._config.arbitrage_quote_stale_threshold_secs
+            quote_age_a_secs > freshness.max_quote_age_secs
+            or quote_age_b_secs > freshness.max_quote_age_secs
+        )
+        fetch_latency_stale = (
+            fetch_latency_a_secs > freshness.max_fetch_latency_secs
+            or fetch_latency_b_secs > freshness.max_fetch_latency_secs
         )
         matcher_suspect, suspect_reason = self._matcher_suspect_reason(inst_a, inst_b)
         suggested_stake_a, suggested_stake_b, expected_profit = calculate_arbitrage_stakes(
@@ -1755,9 +1881,10 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         available_size_b = self._quote_available_size(quote_b)
         classification, classification_reason = self._classify_arbitrage_candidate(
             stale=stale,
+            fetch_latency_stale=fetch_latency_stale,
             matcher_suspect=matcher_suspect,
             suspect_reason=suspect_reason,
-            same_quote_cycle=quote_delta_secs <= 2.0,
+            same_quote_cycle=quote_delta_secs <= freshness.max_pair_skew_secs,
             suggested_stake_a=suggested_stake_a,
             suggested_stake_b=suggested_stake_b,
             available_size_a=available_size_a,
@@ -1796,8 +1923,15 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             quote_age_a_secs=quote_age_a_secs,
             quote_age_b_secs=quote_age_b_secs,
             quote_delta_secs=quote_delta_secs,
-            same_quote_cycle=quote_delta_secs <= 2.0,
+            fetch_latency_a_secs=fetch_latency_a_secs,
+            fetch_latency_b_secs=fetch_latency_b_secs,
+            freshness_profile=freshness.profile,
+            max_quote_age_secs=freshness.max_quote_age_secs,
+            max_pair_skew_secs=freshness.max_pair_skew_secs,
+            max_fetch_latency_secs=freshness.max_fetch_latency_secs,
+            same_quote_cycle=quote_delta_secs <= freshness.max_pair_skew_secs,
             stale=stale,
+            fetch_latency_stale=fetch_latency_stale,
             matcher_suspect=matcher_suspect,
             suspect_reason=suspect_reason,
             suggested_stake_a=suggested_stake_a,
@@ -1818,15 +1952,98 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
 
     @staticmethod
     def _quote_age_secs(now_ns: int, quote: QuoteTick) -> float:
+        return BettingArbitrageStrategy.quote_age_secs(now_ns, quote)
+
+    @staticmethod
+    def quote_age_secs(now_ns: int, quote: QuoteTick) -> float:
         if quote.ts_event <= 0:
             return 0.0
         return max(0.0, (now_ns - int(quote.ts_event)) / NANOSECONDS_PER_SECOND)
+
+    @staticmethod
+    def _quote_fetch_latency_secs(quote: QuoteTick | None) -> float:
+        return BettingArbitrageStrategy.quote_fetch_latency_secs(quote)
+
+    @staticmethod
+    def quote_fetch_latency_secs(quote: QuoteTick | None) -> float:
+        if quote is None or quote.ts_event <= 0 or quote.ts_init <= 0:
+            return 0.0
+        return max(0.0, (int(quote.ts_init) - int(quote.ts_event)) / NANOSECONDS_PER_SECOND)
 
     @staticmethod
     def _quote_cycle_id(quote: QuoteTick) -> str:
         if quote.ts_event <= 0:
             return "unknown"
         return str(int(quote.ts_event) // NANOSECONDS_PER_SECOND)
+
+    def _quote_freshness_thresholds(
+        self,
+        instrument_a: CryptoBettingInstrument,
+        instrument_b: CryptoBettingInstrument,
+    ) -> QuoteFreshnessThresholds:
+        return self.quote_freshness_thresholds(instrument_a, instrument_b)
+
+    def quote_freshness_thresholds(
+        self,
+        instrument_a: CryptoBettingInstrument,
+        instrument_b: CryptoBettingInstrument,
+    ) -> QuoteFreshnessThresholds:
+        profile = self._config.quote_freshness_profile
+        if profile == "custom":
+            return QuoteFreshnessThresholds(
+                profile="custom",
+                max_quote_age_secs=float(self._config.arbitrage_quote_stale_threshold_secs),
+                max_pair_skew_secs=float(self._config.quote_max_pair_skew_secs or 5.0),
+                max_fetch_latency_secs=float(self._config.quote_max_fetch_latency_secs or 10.0),
+            )
+
+        if profile == "pre_match" and not (
+            self._is_live_market(instrument_a) or self._is_live_market(instrument_b)
+        ):
+            return QuoteFreshnessThresholds(
+                profile="pre_match",
+                max_quote_age_secs=30.0,
+                max_pair_skew_secs=5.0,
+                max_fetch_latency_secs=10.0,
+            )
+
+        live_a = self._live_venue_freshness_thresholds(instrument_a)
+        live_b = self._live_venue_freshness_thresholds(instrument_b)
+        return QuoteFreshnessThresholds(
+            profile="live",
+            max_quote_age_secs=min(live_a.max_quote_age_secs, live_b.max_quote_age_secs),
+            max_pair_skew_secs=min(live_a.max_pair_skew_secs, live_b.max_pair_skew_secs),
+            max_fetch_latency_secs=min(
+                live_a.max_fetch_latency_secs,
+                live_b.max_fetch_latency_secs,
+            ),
+        )
+
+    @staticmethod
+    def _live_venue_freshness_thresholds(
+        instrument: CryptoBettingInstrument,
+    ) -> QuoteFreshnessThresholds:
+        venue = str(instrument.id.venue).upper()
+        if venue == "CLOUDBET":
+            return QuoteFreshnessThresholds(
+                profile="live",
+                max_quote_age_secs=3.0,
+                max_pair_skew_secs=1.0,
+                max_fetch_latency_secs=2.0,
+            )
+        if venue == "SXBET":
+            return QuoteFreshnessThresholds(
+                profile="live",
+                max_quote_age_secs=5.0,
+                max_pair_skew_secs=1.0,
+                max_fetch_latency_secs=3.0,
+            )
+        return QuoteFreshnessThresholds(
+            profile="live",
+            max_quote_age_secs=5.0,
+            max_pair_skew_secs=1.0,
+            max_fetch_latency_secs=3.0,
+        )
 
     @staticmethod
     def _is_trusted_same_venue_match_odds_pair(
@@ -1839,6 +2056,13 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
 
     @staticmethod
     def _matcher_suspect_reason(
+        instrument_a: CryptoBettingInstrument,
+        instrument_b: CryptoBettingInstrument,
+    ) -> tuple[bool, str]:
+        return BettingArbitrageStrategy.matcher_suspect_reason(instrument_a, instrument_b)
+
+    @staticmethod
+    def matcher_suspect_reason(
         instrument_a: CryptoBettingInstrument,
         instrument_b: CryptoBettingInstrument,
     ) -> tuple[bool, str]:
@@ -1865,6 +2089,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
     def _classify_arbitrage_candidate(
         *,
         stale: bool,
+        fetch_latency_stale: bool,
         matcher_suspect: bool,
         suspect_reason: str,
         same_quote_cycle: bool,
@@ -1873,6 +2098,9 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         available_size_a: Decimal,
         available_size_b: Decimal,
     ) -> tuple[str, str]:
+        if fetch_latency_stale:
+            return "fetch_latency", "rest_fetch_latency"
+
         if stale:
             return "stale", "stale_quote"
 
@@ -1957,6 +2185,9 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 f"quote_age_a_secs={diagnostics.quote_age_a_secs:.2f} "
                 f"quote_age_b_secs={diagnostics.quote_age_b_secs:.2f} "
                 f"quote_delta_secs={diagnostics.quote_delta_secs:.2f} "
+                f"fetch_latency_a_secs={diagnostics.fetch_latency_a_secs:.2f} "
+                f"fetch_latency_b_secs={diagnostics.fetch_latency_b_secs:.2f} "
+                f"freshness_profile={diagnostics.freshness_profile} "
                 f"same_quote_cycle={diagnostics.same_quote_cycle}"
                 f"{self._manual_execution_plan(diagnostics)}"
             )

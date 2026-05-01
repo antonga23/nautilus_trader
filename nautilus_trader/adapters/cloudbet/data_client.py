@@ -494,10 +494,12 @@ class CloudbetDataClient(LiveMarketDataClient):
             if instrument.params is not None
             else instrument.market_name + "/" + instrument.outcome
         )
+        request_started_ns = self._clock.timestamp_ns()
         odds = await self._client.get_latest_odds(
             event_id=instrument.event_id,
             market_url=market_url,
         )
+        response_received_ns = self._clock.timestamp_ns()
         price = float(odds.price)
         if price <= 0:
             return None
@@ -511,8 +513,8 @@ class CloudbetDataClient(LiveMarketDataClient):
             ask_size=Quantity(max_stake, precision=2)
             if max_stake > 0
             else Quantity(0, precision=2),
-            ts_event=self._clock.timestamp_ns(),
-            ts_init=self._clock.timestamp_ns(),
+            ts_event=request_started_ns,
+            ts_init=response_received_ns,
         )
 
     def _log_quote_poll_summary(

@@ -14,6 +14,7 @@
     "max_total_stake": "250",
     "sport_filter": null,
     "market_timing_filter": "all",
+    "quote_freshness_profile": "pre_match",
     "rollover_aware": true,
     "opportunity_graph_engine": "auto",
     "auto_execute": false
@@ -62,10 +63,9 @@
       "data_enabled": true,
       "execution_enabled": false,
       "credential_prefix": "POLYMARKET",
-      "load_all_instruments": false,
-      "instrument_ids": [
-        "0x4319532e181605cb15b1bd677759a3bc7f7394b2fdf145195b700eeaedfd5221-60487116984468020978247225474488676749601001829886755968952521846780452448915.POLYMARKET"
-      ]
+      "load_all_instruments": true,
+      "sport_keys": ["soccer", "basketball", "american_football", "baseball", "tennis"],
+      "instrument_load_limit": 80
     }
   ],
   "metadata": {

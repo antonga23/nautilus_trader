@@ -28,6 +28,7 @@ from nautilus_trader.adapters.betting.semantics import RulePromotionPolicy
 from nautilus_trader.adapters.betting.semantics import RuleStore
 from nautilus_trader.adapters.betting.semantics import SemanticRuleTemplate
 from nautilus_trader.adapters.betting.semantics import TemplateSupportStats
+from nautilus_trader.adapters.polymarket import providers as polymarket_providers
 from nautilus_trader.config import ImportableConfig
 from nautilus_trader.config import InstrumentProviderConfig
 from nautilus_trader.examples.strategies.betting_arbitrage import BettingArbitrageConfig
@@ -467,9 +468,61 @@ class TestBettingArbitrageNodeBuilder:
             "condition-token.POLYMARKET",
         ]
         assert data_client.config["instrument_provider"]["use_gamma_markets"] is True
+        assert "filters" not in data_client.config["instrument_provider"]
         created = data_client.create()
         assert created.instrument_provider.load_ids == frozenset(
             {InstrumentId.from_str("condition-token.POLYMARKET")},
+        )
+
+    def test_polymarket_load_all_uses_gamma_sports_filters(self):
+        manifest = BettingArbitrageNodeManifest(
+            node_id="polymarket-sports-discovery",
+            trader_id="BETARB-TEST-003",
+            validation_mode=True,
+            allow_dummy_credentials=True,
+            venues=[
+                BettingVenueManifest(
+                    venue="POLYMARKET",
+                    client_key="POLYMARKET_PRIMARY",
+                    load_all_instruments=True,
+                    sport_keys=frozenset({"basketball", "soccer"}),
+                    instrument_load_limit=25,
+                ),
+            ],
+        )
+
+        config = build_trading_node_config(manifest)
+        provider = config.data_clients["POLYMARKET_PRIMARY"].config["instrument_provider"]
+
+        assert provider == {
+            "load_all": True,
+            "filters": {
+                "is_active": True,
+                "limit": 25,
+                "max_results": 25,
+                "sports": ["basketball", "soccer"],
+            },
+            "use_gamma_markets": True,
+        }
+
+    def test_polymarket_sports_filter_matches_gamma_market_text(self):
+        basketball_market = {
+            "question": "Will the Los Angeles Lakers win their NBA game?",
+            "slug": "lakers-nba-game",
+            "events": [{"title": "Los Angeles Lakers vs Denver Nuggets"}],
+        }
+        politics_market = {
+            "question": "Will the mayor win re-election?",
+            "slug": "mayor-election",
+        }
+
+        assert polymarket_providers._market_matches_sports_filter(
+            basketball_market,
+            {"basketball"},
+        )
+        assert not polymarket_providers._market_matches_sports_filter(
+            politics_market,
+            {"basketball"},
         )
 
     def test_mixed_supported_topology_updates_strategy_enabled_venues(self):
@@ -517,13 +570,14 @@ class TestBettingArbitrageNodeBuilder:
             "POLYMARKET",
             "SXBET",
         ]
+        assert config.strategies[0].config["quote_freshness_profile"] == "pre_match"
         assert (
             config.strategies[0].config["semantic_rule_cache_dir"]
             == "artifacts/semantic-rule-cache/multi-venue-validation"
         )
         assert (
             config.data_clients["POLYMARKET_PRIMARY"].config["instrument_provider"]["load_all"]
-            is False
+            is True
         )
         assert (
             config.data_clients["POLYMARKET_PRIMARY"].config["instrument_provider"][
@@ -531,6 +585,14 @@ class TestBettingArbitrageNodeBuilder:
             ]
             is True
         )
+        assert config.data_clients["POLYMARKET_PRIMARY"].config["instrument_provider"][
+            "filters"
+        ] == {
+            "is_active": True,
+            "limit": 80,
+            "max_results": 80,
+            "sports": ["american_football", "baseball", "basketball", "soccer", "tennis"],
+        }
 
     def test_custom_credential_prefix_and_secret_pool_are_applied(self, monkeypatch):
         monkeypatch.setenv("CUSTOMSXBET_API_KEY", "explicit-api-key")
@@ -1549,31 +1611,29 @@ class TestBettingArbitrageNodeRunner:
             market_type="match_odds",
             outcome="away",
         )
+        quality = {
+            "profitMargin": "0.05",
+            "marginBand": "positive",
+            "rejectionBucket": "positive",
+            "venuePair": "CLOUDBET->POLYMARKET",
+            "marketFamily": "MATCH_ODDS",
+            "venueA": str(instrument_a.id.venue),
+            "venueB": str(instrument_b.id.venue),
+            "ruleId": "rule-1",
+            "templateId": "template-1",
+            "relationshipType": "COMPLEMENTARY_COVERAGE",
+            "dryRunEligible": True,
+            "dryRunEligibilityReason": "strict_execution_safe",
+            "sameVenueRiskPolicy": {
+                "executionDisabledUntilRiskEngineApproval": True,
+            },
+            "wouldExecuteSameVenueDryRun": False,
+        }
         counters = node_runner.ProbeProfitabilityCounters()
 
-        node_runner._record_probe_opportunity(
+        node_runner._record_probe_quality(
             counters,
-            opportunity=SimpleNamespace(profit_margin=Decimal("0.05")),
-            edge=SimpleNamespace(
-                rule_id="rule-1",
-                template_id="template-1",
-                relationship_type="COMPLEMENTARY_COVERAGE",
-                safety_tier="EXECUTION_SAFE",
-                execution_safe=True,
-                same_venue_execution_eligible=False,
-            ),
-            source_node=SimpleNamespace(
-                instrument=instrument_a,
-                market_name="match_odds",
-                outcome="home",
-            ),
-            target_node=SimpleNamespace(
-                instrument=instrument_b,
-                market_name="match_odds",
-                outcome="away",
-            ),
-            allow_same_venue=False,
-            min_profit_margin=Decimal("0.02"),
+            quality,
         )
 
         payload = counters.to_payload()
@@ -1585,6 +1645,8 @@ class TestBettingArbitrageNodeRunner:
         assert sample["relationshipType"] == "COMPLEMENTARY_COVERAGE"
         assert sample["dryRunEligible"] is True
         assert sample["dryRunEligibilityReason"] == "strict_execution_safe"
+        assert sample["sameVenueRiskPolicy"]["executionDisabledUntilRiskEngineApproval"] is True
+        assert sample["wouldExecuteSameVenueDryRun"] is False
 
     def test_run_success_and_failure_paths_record_status_transitions(self, tmp_path, monkeypatch):
         def semantic_status(_manifest):
@@ -1685,6 +1747,52 @@ class TestBettingArbitrageNodeRunner:
         }
         assert node_runner._semantic_cache_payload(None) is None
 
+    def test_runtime_probe_candidate_quality_bucket_helpers(self):
+        edge = SimpleNamespace(execution_safe=True)
+
+        assert node_runner._probe_margin_band(Decimal("0.01")) == "positive"
+        assert node_runner._probe_margin_band(Decimal("-0.005")) == "0% to -1%"
+        assert node_runner._probe_margin_band(Decimal("-0.015")) == "-1% to -2%"
+        assert node_runner._probe_margin_band(Decimal("-0.03")) == "-2% to -5%"
+        assert node_runner._probe_margin_band(Decimal("-0.07")) == "< -5%"
+
+        base_kwargs = {
+            "edge": edge,
+            "allow_same_venue": False,
+            "profit_margin": Decimal("0.03"),
+            "min_profit_margin": Decimal("0.02"),
+            "quote_age_a_secs": 0.1,
+            "quote_age_b_secs": 0.1,
+            "quote_delta_secs": 0.1,
+            "fetch_latency_a_secs": 0.1,
+            "fetch_latency_b_secs": 0.1,
+            "available_size_a": Decimal(100),
+            "available_size_b": Decimal(100),
+            "max_quote_age_secs": 30.0,
+            "max_pair_skew_secs": 5.0,
+            "max_fetch_latency_secs": 10.0,
+        }
+
+        assert node_runner._probe_rejection_bucket(**base_kwargs) == "positive"
+        assert (
+            node_runner._probe_rejection_bucket(
+                **{**base_kwargs, "fetch_latency_a_secs": 11.0},
+            )
+            == "fetch_latency"
+        )
+        assert (
+            node_runner._probe_rejection_bucket(
+                **{**base_kwargs, "available_size_a": Decimal(0)},
+            )
+            == "liquidity"
+        )
+        assert (
+            node_runner._probe_rejection_bucket(
+                **{**base_kwargs, "profit_margin": Decimal("-0.01")},
+            )
+            == "negative_margin"
+        )
+
     def test_runtime_manifest_rewrite_includes_semantic_cache_dir(self):
         deploy_script = Path(
             "scripts/deploy/strategy_nodes/deploy_betting_strategy_node.sh",
@@ -1735,6 +1843,19 @@ class TestBettingArbitrageNodeRunner:
         assert "trap 'status=$?;" in workflow
         assert "node_log_tail" in workflow
         assert "events_tail" in workflow
+
+    def test_strategy_node_maintenance_workflow_archives_before_stop(self):
+        workflow = Path(".github/workflows/strategy-node-maintenance.yml").read_text()
+        script = Path("scripts/deploy/strategy_nodes/archive_strategy_nodes.sh").read_text()
+
+        assert "workflow_dispatch" in workflow
+        assert "archive_strategy_nodes.sh" in workflow
+        assert "self-hosted" in workflow
+        assert "trading" in workflow
+        assert "docker container inspect" in script
+        assert "docker logs" in script
+        assert "docker stats" in script
+        assert "docker stop" in script
 
     def test_wait_for_strategy_node_status_can_require_ready_semantic_cache(self, tmp_path):
         status_path = tmp_path / "status.json"

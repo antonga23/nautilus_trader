@@ -399,13 +399,26 @@ def _build_polymarket_exec_importable(
 
 
 def _polymarket_instrument_provider_dict(venue: BettingVenueManifest) -> dict[str, Any]:
+    filters: dict[str, Any] = {}
+    if venue.sport_keys:
+        filters["sports"] = sorted(venue.sport_keys)
+    if venue.instrument_load_limit is not None:
+        filters["limit"] = min(int(venue.instrument_load_limit), 500)
+        filters["max_results"] = int(venue.instrument_load_limit)
     if venue.load_all_instruments:
-        return {"load_all": True}
-    return {
+        return {
+            "load_all": True,
+            "filters": {"is_active": True, **filters},
+            "use_gamma_markets": True,
+        }
+    provider_config: dict[str, Any] = {
         "load_all": False,
         "load_ids": sorted(venue.instrument_ids or []),
         "use_gamma_markets": True,
     }
+    if filters:
+        provider_config["filters"] = filters
+    return provider_config
 
 
 def _credential_prefix(venue: BettingVenueManifest) -> str:
