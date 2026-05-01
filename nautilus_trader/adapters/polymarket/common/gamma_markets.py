@@ -124,6 +124,10 @@ async def _request_markets_page(
     resp: HttpResponse = await http_client.get(
         base_endpoint,
         params=effective_params,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "cloudbet-market-maker/polymarket-gamma",
+        },
         timeout_secs=max(1, ceil(timeout)),
     )
     if resp.status != 200:
