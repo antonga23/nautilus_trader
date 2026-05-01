@@ -46,6 +46,7 @@ from nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache import
 from nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache import (
     ensure_semantic_cache_ready,
 )
+from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.objects import Currency
 
@@ -466,6 +467,10 @@ class TestBettingArbitrageNodeBuilder:
             "condition-token.POLYMARKET",
         ]
         assert data_client.config["instrument_provider"]["use_gamma_markets"] is True
+        created = data_client.create()
+        assert created.instrument_provider.load_ids == frozenset(
+            {InstrumentId.from_str("condition-token.POLYMARKET")},
+        )
 
     def test_mixed_supported_topology_updates_strategy_enabled_venues(self):
         manifest = BettingArbitrageNodeManifest(

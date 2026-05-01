@@ -640,4 +640,4 @@ class ImportableConfig(NautilusConfig, frozen=True):
         assert ":" in self.path, "`path` variable should be of the form `path.to.module:class`"
         cls = resolve_path(self.path)
         cfg = msgspec.json.encode(self.config, enc_hook=msgspec_encoding_hook)
-        return msgspec.json.decode(cfg, type=cls)
+        return msgspec.json.decode(cfg, type=cls, dec_hook=msgspec_decoding_hook)
