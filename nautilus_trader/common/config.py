@@ -13,8 +13,6 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
-# skipcq: BAN-B101
-
 from __future__ import annotations
 
 import hashlib
