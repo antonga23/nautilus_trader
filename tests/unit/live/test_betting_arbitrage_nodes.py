@@ -1766,8 +1766,8 @@ class TestBettingArbitrageNodeRunner:
             "quote_delta_secs": 0.1,
             "fetch_latency_a_secs": 0.1,
             "fetch_latency_b_secs": 0.1,
-            "available_size_a": Decimal("100"),
-            "available_size_b": Decimal("100"),
+            "available_size_a": Decimal(100),
+            "available_size_b": Decimal(100),
             "max_quote_age_secs": 30.0,
             "max_pair_skew_secs": 5.0,
             "max_fetch_latency_secs": 10.0,
@@ -1782,7 +1782,7 @@ class TestBettingArbitrageNodeRunner:
         )
         assert (
             node_runner._probe_rejection_bucket(
-                **{**base_kwargs, "available_size_a": Decimal("0")},
+                **{**base_kwargs, "available_size_a": Decimal(0)},
             )
             == "liquidity"
         )
