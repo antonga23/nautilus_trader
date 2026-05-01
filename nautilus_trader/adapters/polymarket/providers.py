@@ -143,7 +143,7 @@ def _collect_sports_event_markets(
             if not isinstance(market, dict):
                 continue
             market_id = str(
-                market.get("id") or market.get("conditionId") or market.get("slug") or ""
+                market.get("id") or market.get("conditionId") or market.get("slug") or "",
             )
             if not market_id:
                 continue
