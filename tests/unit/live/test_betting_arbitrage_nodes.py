@@ -1651,6 +1651,9 @@ class TestBettingArbitrageNodeRunner:
         assert "Build validated wheel from checked-out source" in workflow
         assert "SXBET_API_KEY: ${{ secrets.SXBET_API_KEY }}" in workflow
         assert "CLOUDBET_API_KEY: ${{ secrets.CLOUDBET_API_KEY }}" in workflow
+        assert "POLYMARKET_API_SECRET: ${{ secrets.POLYMARKET_API_SECRET }}" in workflow
+        assert "Validate selected dispatch manifest" in workflow
+        assert "INPUT_MANIFEST_PATH: ${{ github.event.inputs.manifest_path }}" in workflow
         assert "append_env_secret CLOUDBET_API_KEY" in workflow
         assert "--env-file /tmp/strategy-node.env" in workflow
 
