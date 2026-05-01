@@ -617,7 +617,7 @@ class ImportableFactoryConfig(NautilusConfig, frozen=True):
 
     path: str
 
-    def create(self):
+    def create(self) -> Any:
         cls = resolve_path(self.path)
         return cls()
 
@@ -636,7 +636,7 @@ class ImportableConfig(NautilusConfig, frozen=True):
     def is_importable(data: dict) -> bool:
         return set(data) == {"path", "config"}
 
-    def create(self):
+    def create(self) -> Any:
         if ":" not in self.path:
             raise ValueError("`path` variable should be of the form `path.to.module:class`")
         cls = resolve_path(self.path)
