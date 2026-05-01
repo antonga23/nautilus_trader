@@ -79,6 +79,9 @@ class TestBettingArbitrageConfig:  # skipcq
         ensure(config.opportunity_log_manual_instructions is True)
         ensure(config.graph_rebuild_on_new_instrument is True)
         ensure(config.opportunity_graph_engine == "auto")
+        ensure(config.quote_freshness_profile == "pre_match")
+        ensure(config.quote_max_pair_skew_secs is None)
+        ensure(config.quote_max_fetch_latency_secs is None)
 
     def test_custom_venues(self):  # skipcq
         """
@@ -119,6 +122,14 @@ class TestBettingArbitrageConfig:  # skipcq
 
         with pytest.raises(ValueError, match="Invalid opportunity_graph_engine"):
             BettingArbitrageConfig(opportunity_graph_engine="invalid")
+
+    def test_quote_freshness_profile_validation(self):  # skipcq
+        for profile in ["pre_match", "live", "custom"]:
+            config = BettingArbitrageConfig(quote_freshness_profile=profile.upper())
+            ensure(config.quote_freshness_profile == profile)
+
+        with pytest.raises(ValueError, match="Invalid quote_freshness_profile"):
+            BettingArbitrageConfig(quote_freshness_profile="invalid")
 
     def test_exclude_live_flag(self):  # skipcq
         """
@@ -1049,6 +1060,97 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(diagnostics.stale is True)
         ensure(diagnostics.matcher_suspect is False)
 
+    def test_quote_freshness_threshold_profiles(self):  # skipcq
+        pre_match_strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["SXBET", "CLOUDBET"]),
+                quote_freshness_profile="pre_match",
+            ),
+        )
+        sxbet = self._sxbet_instrument(event_id="event-1", outcome="home")
+        cloudbet = self._sxbet_instrument(
+            event_id="event-1",
+            outcome="away",
+            venue="CLOUDBET",
+        )
+
+        pre_match = pre_match_strategy._quote_freshness_thresholds(sxbet, cloudbet)
+
+        ensure(pre_match.profile == "pre_match")
+        ensure(pre_match.max_quote_age_secs == 30.0)
+        ensure(pre_match.max_pair_skew_secs == 5.0)
+        ensure(pre_match.max_fetch_latency_secs == 10.0)
+
+        live_strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["SXBET", "CLOUDBET"]),
+                quote_freshness_profile="live",
+            ),
+        )
+
+        live = live_strategy._quote_freshness_thresholds(sxbet, cloudbet)
+
+        ensure(live.profile == "live")
+        ensure(live.max_quote_age_secs == 3.0)
+        ensure(live.max_pair_skew_secs == 1.0)
+        ensure(live.max_fetch_latency_secs == 2.0)
+
+    def test_arbitrage_diagnostics_flags_fetch_latency(self):  # skipcq
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["SXBET"]),
+                quote_freshness_profile="custom",
+                arbitrage_quote_stale_threshold_secs=10.0,
+                quote_max_pair_skew_secs=5.0,
+                quote_max_fetch_latency_secs=2.0,
+            ),
+        )
+        instrument_a = self._sxbet_instrument(
+            event_id="market-1",
+            outcome="over",
+            params="line=2.5",
+        )
+        instrument_b = self._sxbet_instrument(
+            event_id="market-1",
+            outcome="under",
+            params="line=2.5",
+        )
+        opportunity = strategy._matcher.check_arbitrage(
+            instrument_a,
+            instrument_b,
+            odds_a=Decimal("2.30"),
+            odds_b=Decimal("2.45"),
+        )
+        ensure(opportunity is not None)
+
+        diagnostics = strategy._build_arbitrage_diagnostics(
+            opportunity=opportunity,
+            hedge_match_type="same_market",
+            hedge_confidence=1.0,
+            quote_a=TestDataStubs.quote_tick(
+                instrument=instrument_a,
+                bid_price=2.30,
+                ask_price=0.0,
+                ts_event=1_000_000_000,
+                ts_init=4_500_000_000,
+            ),
+            quote_b=TestDataStubs.quote_tick(
+                instrument=instrument_b,
+                bid_price=2.45,
+                ask_price=0.0,
+                ts_event=1_500_000_000,
+                ts_init=2_000_000_000,
+            ),
+            now_ns=5_000_000_000,
+        )
+
+        ensure(diagnostics.stale is False)
+        ensure(diagnostics.fetch_latency_stale is True)
+        ensure(diagnostics.classification == "fetch_latency")
+        ensure(diagnostics.classification_reason == "rest_fetch_latency")
+        ensure(strategy._suppress_arbitrage_candidate(diagnostics) is True)
+        ensure(strategy.get_stats()["stale_quote_suppressions"] == 1)
+
     def test_strategy_lifecycle_and_filter_edge_cases(self):  # skipcq
         strategy = BettingArbitrageStrategy(
             config=BettingArbitrageConfig(
@@ -1444,6 +1546,7 @@ class TestBettingArbitrageStrategy:  # skipcq
             config=BettingArbitrageConfig(
                 min_profit_margin=Decimal("0.02"),
                 enabled_venues=frozenset(["SXBET"]),
+                quote_freshness_profile="custom",
                 arbitrage_quote_stale_threshold_secs=1.0,
             ),
         )
@@ -1516,6 +1619,7 @@ class TestBettingArbitrageStrategy:  # skipcq
             config=BettingArbitrageConfig(
                 min_profit_margin=Decimal("0.02"),
                 enabled_venues=frozenset(["SXBET"]),
+                quote_freshness_profile="custom",
                 arbitrage_quote_stale_threshold_secs=1.0,
             ),
         )
@@ -1860,9 +1964,9 @@ class TestBettingArbitrageStrategy:  # skipcq
                 ask_price=0.0,
                 bid_size=500,
                 ask_size=0,
-                ts_event=13_500_000_000,
+                ts_event=16_000_000_000,
             ),
-            now_ns=14_000_000_000,
+            now_ns=17_000_000_000,
         )
 
         ensure(diagnostics.same_quote_cycle is False)

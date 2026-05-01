@@ -228,6 +228,7 @@ class TestCloudbetDataClient:
         assert quote.instrument_id == instrument.id
         assert quote.ask_price.as_decimal() > 0
         assert quote.bid_price.as_decimal() == 0
+        assert quote.ts_init >= quote.ts_event
         mock_get_latest_odds.assert_called_once()
 
     @pytest.mark.asyncio

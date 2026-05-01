@@ -303,11 +303,13 @@ class SXBetDataClient(LiveMarketDataClient):
 
     async def _fetch_and_publish_best_odds(self, market_hashes: set[str]) -> None:
         try:
+            request_started_ns = self._clock.timestamp_ns()
             payload = await self._http_client.get_best_odds(
                 market_hashes=sorted(market_hashes),
                 base_token=SXBET_TOKENS["USDC"],
                 log_api_error=False,
             )
+            response_received_ns = self._clock.timestamp_ns()
             best_odds = payload.get("data", {}).get("bestOdds", [])
             best_odds_by_hash = {
                 entry["marketHash"]: entry
@@ -325,7 +327,12 @@ class SXBetDataClient(LiveMarketDataClient):
                     if instrument.id not in self._subscribed_instruments:
                         continue
 
-                    quote = self._build_best_odds_quote(instrument, best_odds_entry)
+                    quote = self._build_best_odds_quote(
+                        instrument,
+                        best_odds_entry,
+                        request_started_ns=request_started_ns,
+                        response_received_ns=response_received_ns,
+                    )
                     if quote is not None:
                         self._handle_data(quote)
         except (ValueError, TypeError, KeyError, SXBetHttpClientError) as e:
@@ -335,6 +342,9 @@ class SXBetDataClient(LiveMarketDataClient):
         self,
         instrument: CryptoBettingInstrument,
         best_odds_entry: dict[str, object],
+        *,
+        request_started_ns: int | None = None,
+        response_received_ns: int | None = None,
     ) -> QuoteTick | None:
         key = "outcomeOne" if self._instrument_is_outcome_one(instrument) else "outcomeTwo"
         outcome_payload = best_odds_entry.get(key)
@@ -355,8 +365,8 @@ class SXBetDataClient(LiveMarketDataClient):
             ask_price=Price(0, precision=2),
             bid_size=Quantity.from_int(100),
             ask_size=Quantity.zero(),
-            ts_event=self._clock.timestamp_ns(),
-            ts_init=self._clock.timestamp_ns(),
+            ts_event=request_started_ns or self._clock.timestamp_ns(),
+            ts_init=response_received_ns or self._clock.timestamp_ns(),
         )
 
     async def _fetch_and_publish_quotes(self, market_hash: str) -> tuple[int, int]:
@@ -380,8 +390,10 @@ class SXBetDataClient(LiveMarketDataClient):
         Fetch and publish quotes for a market with liquidity statistics.
         """
         started_at = time.perf_counter()
+        request_started_ns = self._clock.timestamp_ns()
         try:
             order_book = await self._http_client.get_order_book(market_hash)
+            response_received_ns = self._clock.timestamp_ns()
             orders = order_book.get("data", {}).get("orders", [])
             has_outcome_one, has_outcome_two = self._market_order_sides(orders)
 
@@ -412,8 +424,8 @@ class SXBetDataClient(LiveMarketDataClient):
                     ask_price=Price(best_ask, precision=2),
                     bid_size=Quantity.from_int(100) if best_bid > 0 else Quantity.zero(),
                     ask_size=Quantity.from_int(100) if best_ask > 0 else Quantity.zero(),
-                    ts_event=self._clock.timestamp_ns(),
-                    ts_init=self._clock.timestamp_ns(),
+                    ts_event=request_started_ns,
+                    ts_init=response_received_ns,
                 )
                 self._handle_data(quote)
                 published += 1

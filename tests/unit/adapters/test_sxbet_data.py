@@ -230,6 +230,10 @@ async def test_fetch_and_publish_quote_stats_reports_two_sided_liquidity():
     assert has_outcome_one is True
     assert has_outcome_two is True
     assert elapsed >= 0
+    for call in client._handle_data.call_args_list:
+        quote = call.args[0]
+        assert quote.ts_event > 0
+        assert quote.ts_init >= quote.ts_event
 
 
 @pytest.mark.asyncio

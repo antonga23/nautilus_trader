@@ -14,6 +14,7 @@
     "max_total_stake": "150",
     "sport_filter": null,
     "market_timing_filter": "all",
+    "quote_freshness_profile": "pre_match",
     "rollover_aware": true,
     "auto_execute": false
   },
