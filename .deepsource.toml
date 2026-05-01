@@ -19,6 +19,7 @@ exclude_patterns = [
   "tests/integration/**",
   "tests/integration_tests/**",
   "nautilus_trader/core/*.pyi",
+  "nautilus_trader/common/config.py",
   "crates/model/src/python/**",
   "nautilus_trader/adapters/betfair/**",
   "nautilus_trader/adapters/binance/**",
@@ -34,6 +35,7 @@ exclude_patterns = [
   "nautilus_trader/adapters/interactive_brokers/**",
   "nautilus_trader/adapters/kraken/**",
   "nautilus_trader/adapters/okx/**",
+  "nautilus_trader/adapters/polymarket/**",
   "nautilus_trader/adapters/sandbox/**",
   "nautilus_trader/adapters/tardis/**",
 ]

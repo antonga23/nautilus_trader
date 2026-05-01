@@ -48,6 +48,7 @@ from nautilus_trader.data.messages import RequestInstruments
 from nautilus_trader.data.messages import RequestQuoteTicks
 from nautilus_trader.data.messages import RequestTradeTicks
 from nautilus_trader.data.messages import SubscribeBars
+from nautilus_trader.data.messages import SubscribeInstruments
 from nautilus_trader.data.messages import SubscribeOrderBook
 from nautilus_trader.data.messages import SubscribeQuoteTicks
 from nautilus_trader.data.messages import SubscribeTradeTicks
@@ -321,6 +322,22 @@ class PolymarketDataClient(LiveMarketDataClient):
             self._create_local_book(command.instrument_id)
 
         await self._subscribe_asset_book(command.instrument_id)
+
+    async def _subscribe_instruments(self, command: SubscribeInstruments) -> None:
+        instruments = list(self._instrument_provider.get_all().values())
+        if len(instruments) == 0:
+            self._log.debug("No Polymarket instruments loaded; initializing provider")
+            await self._instrument_provider.initialize()
+            instruments = list(self._instrument_provider.get_all().values())
+        if len(instruments) == 0:
+            self._log.debug("No instruments to subscribe to")
+            return
+
+        for instrument in instruments:
+            if instrument.id.venue != command.venue:
+                continue
+            self._add_subscription_instrument(instrument.id)
+            self._handle_data(instrument)
 
     async def _subscribe_trade_ticks(self, command: SubscribeTradeTicks) -> None:
         await self._subscribe_asset_book(command.instrument_id)

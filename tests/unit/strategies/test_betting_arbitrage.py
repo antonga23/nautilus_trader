@@ -31,11 +31,18 @@ from nautilus_trader.examples.strategies.betting_arbitrage import BettingArbitra
 from nautilus_trader.examples.strategies.betting_arbitrage import BettingArbitrageStrategy
 from nautilus_trader.examples.strategies.opportunity_graph import OpportunityGraph
 from nautilus_trader.model.identifiers import TraderId
+from nautilus_trader.model.identifiers import InstrumentId
+from nautilus_trader.model.identifiers import Symbol
 from nautilus_trader.model.identifiers import Venue
+from nautilus_trader.model.currencies import USDC_POS
+from nautilus_trader.model.enums import AssetClass
+from nautilus_trader.model.instruments import BinaryOption
 from nautilus_trader.model.instruments.crypto_betting import (
     CryptoBettingInstrument as LegacyCryptoBettingInstrument,
 )
 from nautilus_trader.model.objects import Currency
+from nautilus_trader.model.objects import Price
+from nautilus_trader.model.objects import Quantity
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
 from nautilus_trader.test_kit.stubs.data import TestDataStubs
 
@@ -194,6 +201,49 @@ class TestBettingArbitrageStrategy:  # skipcq
         return BettingArbitrageConfig(
             market_timing_filter="pre_market",
             enabled_venues=frozenset(["BLACKBET", "EASYBET"]),
+        )
+
+    @staticmethod
+    def _polymarket_sports_binary_option(
+        *,
+        symbol_value: str = "cond-home",
+        outcome: str = "Yes",
+        selection_role: str = "home",
+    ) -> BinaryOption:
+        return BinaryOption(
+            instrument_id=InstrumentId(Symbol(symbol_value), Venue("POLYMARKET")),
+            raw_symbol=Symbol(symbol_value),
+            outcome=outcome,
+            description="Will Team A beat Team B?",
+            asset_class=AssetClass.ALTERNATIVE,
+            currency=USDC_POS,
+            price_increment=Price.from_str("0.001"),
+            price_precision=3,
+            size_increment=Quantity.from_str("0.000001"),
+            size_precision=6,
+            activation_ns=0,
+            expiration_ns=1,
+            max_quantity=None,
+            min_quantity=Quantity.from_int(5),
+            maker_fee=Decimal(0),
+            taker_fee=Decimal(0),
+            ts_event=0,
+            ts_init=0,
+            info={
+                "condition_id": "0xpm-test",
+                "sports_market": {
+                    "sport": "basketball",
+                    "market_name": "basketball.moneyline",
+                    "market_type": "basketball.moneyline",
+                    "selection_role": selection_role,
+                    "event_name": "Team A vs Team B",
+                    "home_name": "Team A",
+                    "away_name": "Team B",
+                    "competition_name": "NBA",
+                    "price": 0.43,
+                    "resolution_policy": {"tie_or_unknown": "50_50"},
+                },
+            },
         )
 
     def test_strategy_initialization(self, default_config):  # skipcq
@@ -667,6 +717,83 @@ class TestBettingArbitrageStrategy:  # skipcq
         strategy.on_instrument(instrument)
 
         strategy.subscribe_quote_ticks.assert_called_once_with(instrument.id)
+
+    def test_on_instrument_transforms_polymarket_sports_binary_option(self):  # skipcq
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(enabled_venues=frozenset(["POLYMARKET"])),
+        )
+        strategy.subscribe_quote_ticks = Mock()
+        binary_option = self._polymarket_sports_binary_option()
+
+        strategy.on_instrument(binary_option)
+
+        subscribed = tuple(strategy._subscribed_instruments)
+        ensure(len(subscribed) == 1)
+        transformed = subscribed[0]
+        ensure(transformed.id.venue == Venue("POLYMARKET"))
+        ensure(transformed.market_type == "basketball.moneyline")
+        ensure(transformed.outcome == "home")
+        strategy.subscribe_quote_ticks.assert_called_once_with(binary_option.id)
+
+    def test_semantic_batch_transforms_polymarket_sports_binary_options(
+        self,
+        tmp_path: Path,
+    ):  # skipcq
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["POLYMARKET"]),
+                opportunity_graph_engine="python",
+            ),
+        )
+        strategy._matcher.set_rule_store(RuleStore(FileRuleCache(tmp_path / "rules")))
+        strategy.subscribe_quote_ticks = Mock()
+        home = self._polymarket_sports_binary_option(
+            symbol_value="cond-home",
+            selection_role="home",
+        )
+        away = self._polymarket_sports_binary_option(
+            symbol_value="cond-away",
+            selection_role="away",
+        )
+
+        strategy.subscribe_instruments([home, away])
+
+        subscribed = tuple(strategy._subscribed_instruments)
+        ensure(len(subscribed) == 2)
+        ensure({instrument.outcome for instrument in subscribed} == {"home", "away"})
+        quoted_ids = {call.args[0] for call in strategy.subscribe_quote_ticks.call_args_list}
+        ensure(quoted_ids == {home.id, away.id})
+        ensure(all(str(instrument.id) != str(home.id) for instrument in subscribed))
+        ensure(all(str(instrument.id) != str(away.id) for instrument in subscribed))
+
+    def test_on_quote_tick_remaps_polymarket_binary_option_to_betting_instrument(self):
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(enabled_venues=frozenset(["POLYMARKET"])),
+        )
+        cache = TestComponentStubs.cache()
+        strategy.register(
+            trader_id=TraderId("TESTER-003"),
+            portfolio=TestComponentStubs.portfolio(),
+            msgbus=TestComponentStubs.msgbus(),
+            cache=cache,
+            clock=TestComponentStubs.clock(),
+        )
+        strategy._handle_graph_quote_tick = Mock()
+        binary_option = self._polymarket_sports_binary_option()
+        cache.add_instrument(binary_option)
+        source_tick = TestDataStubs.quote_tick(
+            instrument=binary_option,
+            bid_price=0.42,
+            ask_price=0.43,
+        )
+
+        strategy.on_quote_tick(source_tick)
+
+        strategy._handle_graph_quote_tick.assert_called_once()
+        remapped_tick, transformed = strategy._handle_graph_quote_tick.call_args.args
+        ensure(transformed.id.venue == Venue("POLYMARKET"))
+        ensure(str(remapped_tick.instrument_id) == str(transformed.id))
+        ensure(str(remapped_tick.instrument_id) != str(binary_option.id))
 
     def test_on_instrument_subscribes_legacy_cloudbet_instrument(self):  # skipcq
         strategy = BettingArbitrageStrategy(

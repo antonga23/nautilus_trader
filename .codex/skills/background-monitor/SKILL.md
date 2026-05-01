@@ -60,6 +60,24 @@ without obscuring the watched task:
    inspect the watcher result, and resume the original task before continuing
    experimentation.
 
+## Productive Wait Contract
+
+Every watcher longer than roughly one release/deploy cycle must have an
+explicit productive-wait handoff:
+
+1. Record the watcher run id, branch, terminal condition, log path, and the
+   exact task that must resume when it fires.
+2. Pick one independent work item from Linear or the current PR backlog that
+   can be paused without corrupting the watched branch, preferably in a
+   separate worktree.
+3. Post a Linear comment before switching contexts that names the watched run
+   and the side work being attempted.
+4. Keep side work bounded to tests, docs, diagnostics, or a small stacked PR.
+   Do not dispatch another workflow against the same release surface until the
+   watcher exits.
+5. When the watcher exits, stop side work at the next clean boundary, update
+   Linear with the watcher result, and return to the original task first.
+
 ## Runner Boundary
 
 - Use GCP self-hosted runners for pre-commit, tests, Rust policy checks, wheel
@@ -117,7 +135,7 @@ Example:
 
 ```text
 exec_command(
-  cmd="mkdir -p artifacts/monitors && log_path=artifacts/monitors/gcp-ci-preflight.log && set +e; /Users/alatha.ntonga/google-cloud-sdk/bin/gcloud compute ssh instance-20260415-214825 --project=shining-sol-493421-h6 --zone=europe-west4-c --command 'set -euo pipefail; cd /opt/actions-runner/_work/cloudbet-market-maker/cloudbet-market-maker; bash scripts/ci/run_ci_preflight.sh' > \"$log_path\" 2>&1; status=$?; set -e; if [ \"$status\" -ne 0 ]; then tail -n 200 \"$log_path\" >&2 || true; fi; exit \"$status\"",
+  cmd="mkdir -p artifacts/monitors && log_path=artifacts/monitors/gcp-ci-preflight.log && set +e; /Users/alatha.ntonga/google-cloud-sdk/bin/gcloud compute ssh instance-20260415-214825 --project=shining-sol-493421-h6 --zone=europe-west4-c --command 'set -euo pipefail; cd /opt/actions-runner/_work/cloudbet-market-maker/cloudbet-market-maker; bash scripts/ci/run_ci_preflight.sh' > \"$log_path\" 2>&1; rc=$?; set -e; if [ \"$rc\" -ne 0 ]; then tail -n 200 \"$log_path\" >&2 || true; fi; exit \"$rc\"",
   yield_time_ms=1000,
   max_output_tokens=12000
 )

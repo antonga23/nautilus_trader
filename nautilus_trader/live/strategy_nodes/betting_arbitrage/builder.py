@@ -404,6 +404,7 @@ def _polymarket_instrument_provider_dict(venue: BettingVenueManifest) -> dict[st
     return {
         "load_all": False,
         "load_ids": sorted(venue.instrument_ids or []),
+        "use_gamma_markets": True,
     }
 
 

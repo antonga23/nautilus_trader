@@ -106,6 +106,79 @@ jobs:
           heartbeat_file="$node_dir/heartbeat.json"
           current_session_file="$node_dir/current-session.json"
 
+          dump_node_runtime_artifacts() {
+            set +e
+            echo
+            echo "runtime_diagnostics<<EOF"
+            echo "container=$container_name"
+            echo "node_dir=$node_dir"
+            if docker inspect "$container_name" > /dev/null 2>&1; then
+              docker_format='docker_state={{.State.Status}}'
+              docker_format+=' docker_running={{.State.Running}}'
+              docker_format+=' docker_image={{.Config.Image}}'
+              docker inspect \
+                --format "$docker_format" \
+                "$container_name"
+            else
+              echo "docker_container_missing=true"
+            fi
+            for path in "$status_file" "$heartbeat_file" "$current_session_file"; do
+              if [ -f "$path" ]; then
+                echo
+                echo "file=$path"
+                cat "$path"
+              else
+                echo
+                echo "missing=$path"
+              fi
+            done
+            if [ -f "$current_session_file" ]; then
+              python3 - "$current_session_file" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          payload = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          for key in ("logPath", "eventLogPath"):
+              raw_path = payload.get(key)
+              if raw_path:
+                  print(f"{key}={raw_path}")
+          PY
+              current_log_path="$(python3 - "$current_session_file" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          payload = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          print(payload.get("logPath") or "")
+          PY
+              )"
+              current_event_log_path="$(python3 - "$current_session_file" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          payload = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          print(payload.get("eventLogPath") or "")
+          PY
+              )"
+              if [ -n "$current_log_path" ] && [ -f "$current_log_path" ]; then
+                echo
+                echo "node_log_tail"
+                tail -n 120 "$current_log_path"
+              fi
+              if [ -n "$current_event_log_path" ] && [ -f "$current_event_log_path" ]; then
+                echo
+                echo "events_tail"
+                tail -n 80 "$current_event_log_path"
+              fi
+            fi
+            echo "EOF"
+            set -e
+          }
+
+          trap 'status=$?; if [ "$status" -ne 0 ]; then dump_node_runtime_artifacts; fi' EXIT
+
           test -d "$node_dir"
 
           bash scripts/deploy/strategy_nodes/wait_for_strategy_node_status.sh \

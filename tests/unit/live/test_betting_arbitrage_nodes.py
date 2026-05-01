@@ -46,6 +46,7 @@ from nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache import
 from nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache import (
     ensure_semantic_cache_ready,
 )
+from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.objects import Currency
 
@@ -465,6 +466,11 @@ class TestBettingArbitrageNodeBuilder:
         assert data_client.config["instrument_provider"]["load_ids"] == [
             "condition-token.POLYMARKET",
         ]
+        assert data_client.config["instrument_provider"]["use_gamma_markets"] is True
+        created = data_client.create()
+        assert created.instrument_provider.load_ids == frozenset(
+            {InstrumentId.from_str("condition-token.POLYMARKET")},
+        )
 
     def test_mixed_supported_topology_updates_strategy_enabled_venues(self):
         manifest = BettingArbitrageNodeManifest(
@@ -481,6 +487,50 @@ class TestBettingArbitrageNodeBuilder:
         config = build_trading_node_config(manifest)
 
         assert config.strategies[0].config["enabled_venues"] == ["POLYMARKET", "SXBET"]
+
+    def test_multi_venue_validation_manifest_builds_without_exec_clients(self, monkeypatch):
+        monkeypatch.setenv("SXBET_API_KEY", "sxbet-api-key")
+        monkeypatch.setenv("SXBET_PRIVATE_KEY", "0x" + "1" * 64)
+        monkeypatch.setenv("SXBET_WALLET_ADDRESS", "0x" + "2" * 40)
+        monkeypatch.setenv("CLOUDBET_API_KEY", "cloudbet-api-key")
+        monkeypatch.setenv("POLYMARKET_PRIVATE_KEY", "0x" + "3" * 64)
+        monkeypatch.setenv("POLYMARKET_FUNDER", "0x" + "4" * 40)
+        monkeypatch.setenv("POLYMARKET_API_KEY", "polymarket-api-key")
+        monkeypatch.setenv("POLYMARKET_API_SECRET", "polymarket-api-secret")
+        monkeypatch.setenv("POLYMARKET_PASSPHRASE", "polymarket-passphrase")
+
+        manifest = node_builder.load_manifest(
+            Path("deploy/strategy_nodes/betting_arbitrage/multi-venue-validation.json"),
+        )
+        config = build_trading_node_config(manifest)
+
+        assert manifest.allow_dummy_credentials is True
+        assert sorted(config.data_clients) == [
+            "CLOUDBET_PRIMARY",
+            "POLYMARKET_PRIMARY",
+            "SXBET_PRIMARY",
+        ]
+        assert config.exec_clients == {}
+        assert config.strategies[0].config["auto_execute"] is False
+        assert config.strategies[0].config["enabled_venues"] == [
+            "CLOUDBET",
+            "POLYMARKET",
+            "SXBET",
+        ]
+        assert (
+            config.strategies[0].config["semantic_rule_cache_dir"]
+            == "artifacts/semantic-rule-cache/multi-venue-validation"
+        )
+        assert (
+            config.data_clients["POLYMARKET_PRIMARY"].config["instrument_provider"]["load_all"]
+            is False
+        )
+        assert (
+            config.data_clients["POLYMARKET_PRIMARY"].config["instrument_provider"][
+                "use_gamma_markets"
+            ]
+            is True
+        )
 
     def test_custom_credential_prefix_and_secret_pool_are_applied(self, monkeypatch):
         monkeypatch.setenv("CUSTOMSXBET_API_KEY", "explicit-api-key")
@@ -1614,8 +1664,22 @@ class TestBettingArbitrageNodeRunner:
         assert "Build validated wheel from checked-out source" in workflow
         assert "SXBET_API_KEY: ${{ secrets.SXBET_API_KEY }}" in workflow
         assert "CLOUDBET_API_KEY: ${{ secrets.CLOUDBET_API_KEY }}" in workflow
+        assert "POLYMARKET_API_SECRET: ${{ secrets.POLYMARKET_API_SECRET }}" in workflow
+        assert "Validate selected dispatch manifest" in workflow
+        assert "INPUT_MANIFEST_PATH: ${{ github.event.inputs.manifest_path }}" in workflow
         assert "append_env_secret CLOUDBET_API_KEY" in workflow
         assert "--env-file /tmp/strategy-node.env" in workflow
+        assert "current-session.json" in workflow
+        assert "node.log" in workflow
+        assert "events.jsonl" in workflow
+        assert "Upload deployed node status artifacts to transient CI storage" in workflow
+
+    def test_runtime_verify_workflow_dumps_logs_on_failure(self):
+        workflow = Path(".github/workflows/strategy-node-runtime-verify.yml").read_text()
+        assert "dump_node_runtime_artifacts" in workflow
+        assert "trap 'status=$?;" in workflow
+        assert "node_log_tail" in workflow
+        assert "events_tail" in workflow
 
     def test_wait_for_strategy_node_status_can_require_ready_semantic_cache(self, tmp_path):
         status_path = tmp_path / "status.json"

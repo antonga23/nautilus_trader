@@ -15,8 +15,14 @@
 
 from decimal import Decimal
 from typing import Any
+from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 
+import pytest
+
+pytest.importorskip("py_clob_client")
+
+from nautilus_trader.adapters.polymarket.common.constants import POLYMARKET_VENUE
 from nautilus_trader.adapters.polymarket.config import PolymarketDataClientConfig
 from nautilus_trader.adapters.polymarket.data import PolymarketDataClient
 from nautilus_trader.adapters.polymarket.providers import PolymarketInstrumentProvider
@@ -26,11 +32,14 @@ from nautilus_trader.adapters.polymarket.schemas.book import PolymarketTickSizeC
 from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.component import MessageBus
+from nautilus_trader.core.uuid import UUID4
+from nautilus_trader.data.messages import SubscribeInstruments
 from nautilus_trader.model.book import OrderBook
 from nautilus_trader.model.currencies import USDC
 from nautilus_trader.model.data import QuoteTick
 from nautilus_trader.model.enums import AssetClass
 from nautilus_trader.model.enums import BookType
+from nautilus_trader.model.identifiers import ClientId
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.instruments import BinaryOption
@@ -163,3 +172,40 @@ def test_tick_size_change_rebuilds_local_book_precision(event_loop) -> None:
         and item.bid_price.precision == item.ask_price.precision == 3
         for item in client.emitted
     )
+
+
+@pytest.mark.asyncio
+async def test_subscribe_instruments_republishes_loaded_instruments(event_loop) -> None:
+    loop = event_loop
+    clock = LiveClock()
+    msgbus = MessageBus(trader_id=TraderId("TEST-002"), clock=clock)
+    cache = Cache()
+    provider = MagicMock(spec=PolymarketInstrumentProvider)
+    provider.initialize = AsyncMock()
+    instrument = _make_binary_option("0.01")
+    provider.get_all.side_effect = [{instrument.id: instrument}, {instrument.id: instrument}]
+    http_client = MagicMock()
+
+    client = _RecordingPolymarketDataClient(
+        loop=loop,
+        http_client=http_client,
+        msgbus=msgbus,
+        cache=cache,
+        clock=clock,
+        instrument_provider=provider,
+        config=PolymarketDataClientConfig(),
+        name="TEST-POLYMARKET",
+    )
+    command = SubscribeInstruments(
+        client_id=ClientId(POLYMARKET_VENUE.value),
+        venue=POLYMARKET_VENUE,
+        command_id=UUID4(),
+        ts_init=clock.timestamp_ns(),
+        params=None,
+    )
+
+    await client._subscribe_instruments(command)
+
+    provider.initialize.assert_not_called()
+    assert any(item.id == instrument.id for item in client.emitted)
+    assert instrument.id in client.subscribed_instruments()

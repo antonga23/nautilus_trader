@@ -77,6 +77,10 @@ If a CI, release, deploy, or runtime watcher is active for the current task:
    point where original-task work must resume.
 5. Do not merge or make an experimental PR ready while the original task's
    release/runtime proof is unresolved.
+6. If the watcher is expected to run for a full release/deploy cycle, create a
+   short productive-wait note before switching contexts: watched run, durable
+   log path, selected side task, files/worktree involved, and the condition
+   that interrupts side work.
 
 ## Required Validation
 
