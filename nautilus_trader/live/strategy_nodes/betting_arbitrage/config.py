@@ -8,8 +8,11 @@ from nautilus_trader.common.config import PositiveFloat
 from nautilus_trader.common.config import PositiveInt
 from nautilus_trader.examples.strategies.betting_arbitrage import BettingArbitrageConfig
 
-SUPPORTED_BETTING_NODE_VENUES = frozenset({"CLOUDBET", "SXBET", "POLYMARKET"})
+SUPPORTED_BETTING_NODE_VENUES = frozenset({"BETDEX", "CLOUDBET", "SXBET", "POLYMARKET"})
 BLOCKED_SPORTSBOOK_VENUES = frozenset({"10BET", "BLACKBET", "WSB", "EASYBET"})
+AGGREGATOR_CONSTITUENT_VENUES = {
+    "BETDEX": frozenset({"SXBET", "POLYMARKET"}),
+}
 
 
 class BettingVenueManifest(NautilusConfig, frozen=True):
@@ -50,7 +53,8 @@ class BettingVenueManifest(NautilusConfig, frozen=True):
         if normalized_venue in BLOCKED_SPORTSBOOK_VENUES:
             raise ValueError(
                 f"Venue {normalized_venue} is not deployment-ready. "
-                "Only CLOUDBET, SXBET, and POLYMARKET are currently supported in the live node builder.",
+                "Only BETDEX, CLOUDBET, SXBET, and POLYMARKET are currently supported "
+                "in the live node builder.",
             )
         if normalized_venue not in SUPPORTED_BETTING_NODE_VENUES:
             raise ValueError(
@@ -114,6 +118,15 @@ class BettingArbitrageNodeManifest(NautilusConfig, frozen=True):
         enabled_venues = [venue for venue in self.venues if venue.enabled]
         if not enabled_venues:
             raise ValueError("At least one enabled venue is required")
+        enabled_venue_names = frozenset(venue.venue.strip().upper() for venue in enabled_venues)
+        for aggregator, constituents in AGGREGATOR_CONSTITUENT_VENUES.items():
+            if aggregator in enabled_venue_names:
+                overlap = enabled_venue_names & constituents
+                if overlap:
+                    raise ValueError(
+                        f"Venue {aggregator} aggregates constituent venues {sorted(constituents)} "
+                        f"and cannot be deployed with {sorted(overlap)} in the same node",
+                    )
 
         msgspec.structs.force_setattr(self, "node_id", node_id)
         msgspec.structs.force_setattr(self, "trader_id", trader_id)
@@ -127,6 +140,7 @@ class BettingArbitrageNodeManifest(NautilusConfig, frozen=True):
 
 
 __all__ = [
+    "AGGREGATOR_CONSTITUENT_VENUES",
     "BLOCKED_SPORTSBOOK_VENUES",
     "SUPPORTED_BETTING_NODE_VENUES",
     "BettingArbitrageNodeManifest",

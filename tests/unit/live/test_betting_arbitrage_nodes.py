@@ -169,6 +169,16 @@ class TestBettingArbitrageNodeManifest:
                 venues=[BettingVenueManifest(venue="SXBET", enabled=False)],
             )
 
+    def test_rejects_aggregator_with_constituent_venue(self):
+        with pytest.raises(ValueError, match="BETDEX aggregates constituent venues"):
+            BettingArbitrageNodeManifest(
+                node_id="bad-betdex-topology",
+                venues=[
+                    BettingVenueManifest(venue="BETDEX"),
+                    BettingVenueManifest(venue="SXBET"),
+                ],
+            )
+
 
 class TestBettingArbitrageNodeBuilder:
     def test_manifest_json_helpers_round_trip(self, tmp_path):
@@ -345,6 +355,90 @@ class TestBettingArbitrageNodeBuilder:
 
         assert data_client.config["auto_subscribe_quote_ticks"] is True
         assert data_client.config["quote_subscription_limit"] == 60
+
+    def test_betdex_data_client_receives_runtime_settings(self):
+        manifest = BettingArbitrageNodeManifest(
+            node_id="betdex-validation",
+            trader_id="BETARB-TEST-BD",
+            validation_mode=True,
+            allow_dummy_credentials=True,
+            semantic_rule_cache_dir="artifacts/semantic-rule-cache/betdex-validation",
+            venues=[
+                BettingVenueManifest(
+                    venue="BETDEX",
+                    client_key="BETDEX_PRIMARY",
+                    sport_keys=frozenset({"soccer", "basketball"}),
+                    instrument_load_limit=120,
+                    market_discovery_limit=80,
+                    auto_subscribe_quote_ticks=True,
+                    quote_subscription_limit=60,
+                    order_book_poll_interval_secs=7.0,
+                    order_book_poll_summary_interval_secs=31.0,
+                    order_book_concurrency=12,
+                    metadata={
+                        "category_ids": "cat-soccer,cat-basketball",
+                        "event_discovery_limit": "75",
+                    },
+                ),
+            ],
+        )
+
+        config = build_trading_node_config(manifest)
+        data_client = config.data_clients["BETDEX_PRIMARY"]
+
+        assert config.exec_clients == {}
+        assert config.strategies[0].config["enabled_venues"] == ["BETDEX"]
+        assert data_client.path == "nautilus_trader.adapters.betdex.config:BetDexDataClientConfig"
+        assert data_client.config["app_id"] == "dummy-betdex-app-id"
+        assert data_client.config["api_key"] == "dummy-betdex-api-key"
+        assert data_client.config["instrument_provider"]["load_all"] is True
+        assert data_client.config["instrument_provider"]["sport_keys"] == [
+            "basketball",
+            "soccer",
+        ]
+        assert data_client.config["instrument_provider"]["category_ids"] == [
+            "cat-basketball",
+            "cat-soccer",
+        ]
+        assert data_client.config["instrument_provider"]["event_discovery_limit"] == 75
+        assert data_client.config["instrument_provider"]["instrument_load_limit"] == 120
+        assert data_client.config["instrument_provider"]["market_discovery_limit"] == 80
+        assert data_client.config["auto_subscribe_quote_ticks"] is False
+        assert data_client.config["quote_subscription_limit"] == 60
+        assert data_client.config["quote_poll_interval_secs"] == 7.0
+        assert data_client.config["quote_poll_summary_interval_secs"] == 31.0
+        assert data_client.config["quote_poll_concurrency"] == 12
+        created = data_client.create()
+        assert created.instrument_provider.event_discovery_limit == 75
+
+    def test_betdex_exec_client_uses_sandbox_credentials(self, monkeypatch):
+        monkeypatch.setenv("CUSTOMBETDEX_APP_ID", "app-id")
+        monkeypatch.setenv("CUSTOMBETDEX_API_KEY", "api-key")
+        monkeypatch.setenv("CUSTOMBETDEX_WALLET_ID", "wallet-id")
+        manifest = BettingArbitrageNodeManifest(
+            node_id="betdex-live",
+            trader_id="BETARB-TEST-BD-EXEC",
+            validation_mode=False,
+            allow_dummy_credentials=False,
+            venues=[
+                BettingVenueManifest(
+                    venue="BETDEX",
+                    client_key="BETDEX_PRIMARY",
+                    credential_prefix="CUSTOMBETDEX",
+                    execution_enabled=True,
+                    api_url="https://sandbox.api.monacoprotocol.xyz",
+                ),
+            ],
+        )
+
+        config = build_trading_node_config(manifest)
+        exec_client = config.exec_clients["BETDEX_PRIMARY"]
+
+        assert isinstance(exec_client, ImportableConfig)
+        assert exec_client.config["app_id"] == "app-id"
+        assert exec_client.config["api_key"] == "api-key"
+        assert exec_client.config["wallet_id"] == "wallet-id"
+        assert exec_client.config["allow_production_execution"] is False
 
     def test_cloudbet_factories_match_live_node_builder_signature(self, monkeypatch):
         from nautilus_trader.adapters.cloudbet import factories as cloudbet_factories
@@ -626,6 +720,25 @@ class TestBettingArbitrageNodeBuilder:
         }
         created = config.data_clients["POLYMARKET_PRIMARY"].create()
         assert isinstance(hash(created.instrument_provider), int)
+
+    def test_betdex_single_venue_manifest_builds_with_credentials(self, monkeypatch):
+        monkeypatch.setenv("BETDEX_APP_ID", "betdex-app-id")
+        monkeypatch.setenv("BETDEX_API_KEY", "betdex-api-key")
+        monkeypatch.setenv("BETDEX_WALLET_ID", "betdex-wallet-id")
+
+        manifest = node_builder.load_manifest(
+            Path("deploy/strategy_nodes/betting_arbitrage/betdex-single-venue.json"),
+        )
+        config = build_trading_node_config(manifest)
+
+        assert manifest.validation_mode is True
+        assert sorted(config.data_clients) == ["BETDEX_PRIMARY"]
+        assert config.exec_clients == {}
+        assert config.strategies[0].config["enabled_venues"] == ["BETDEX"]
+        assert config.data_clients["BETDEX_PRIMARY"].config["app_id"] == "betdex-app-id"
+        assert config.data_clients["BETDEX_PRIMARY"].config["api_key"] == "betdex-api-key"
+        created = config.data_clients["BETDEX_PRIMARY"].create()
+        assert created.instrument_provider.load_all is True
 
     def test_custom_credential_prefix_and_secret_pool_are_applied(self, monkeypatch):
         monkeypatch.setenv("CUSTOMSXBET_API_KEY", "explicit-api-key")
