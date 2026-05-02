@@ -4,6 +4,7 @@
 #  Unit tests for SX.bet market data quoting.
 # -------------------------------------------------------------------------------------------------
 
+import asyncio
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 
@@ -306,12 +307,15 @@ async def test_connect_sends_loaded_instruments_to_data_engine():
 
     provider.load_all_async.assert_awaited_once_with({})
     assert client._handle_data.call_count == 2
+    assert client._update_instruments_task is not None
+    client._update_instruments_task.cancel()
+    await asyncio.gather(client._update_instruments_task, return_exceptions=True)
 
 
 def test_auto_subscribe_loaded_instruments_respects_limit(monkeypatch):
     task = Mock()
     task.done.return_value = False
-    create_task = Mock(return_value=task)
+    create_task = Mock(side_effect=lambda coro: (coro.close(), task)[1])
     monkeypatch.setattr("nautilus_trader.adapters.sxbet.data.asyncio.create_task", create_task)
     instruments = {
         "inst-1": _make_instrument(market_hash="market-1", outcome="home", outcome_one=True),
@@ -339,10 +343,45 @@ def test_auto_subscribe_loaded_instruments_respects_limit(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_refresh_instrument_catalog_prunes_stale_subscriptions():
+    old_instrument = _make_instrument(market_hash="market-1", outcome="home", outcome_one=True)
+    new_instrument = _make_instrument(market_hash="market-2", outcome="away", outcome_one=False)
+
+    provider = _make_provider()
+    provider.load_all_async = AsyncMock()
+    provider.get_all = Mock(
+        side_effect=[
+            {old_instrument.id: old_instrument},
+            {new_instrument.id: new_instrument},
+            {new_instrument.id: new_instrument},
+        ],
+    )
+
+    client = _make_client(
+        instrument_provider=provider,
+        config=SXBetDataClientConfig(
+            auto_subscribe_quote_ticks=False,
+            update_instruments_interval_secs=60.0,
+        ),
+    )
+    client._subscribed_instruments = {old_instrument.id}
+    client._remove_subscription_instrument = Mock()
+    client._handle_data = Mock()
+
+    refreshed = await client._refresh_instrument_catalog()
+
+    assert refreshed == 1
+    assert old_instrument.id not in client._subscribed_instruments
+    client._remove_subscription_instrument.assert_called_once_with(old_instrument.id)
+    provider.load_all_async.assert_awaited_once_with({})
+    assert client._handle_data.call_count == 1
+
+
+@pytest.mark.asyncio
 async def test_subscribe_quote_ticks_accepts_nautilus_command(monkeypatch):
     task = Mock()
     task.done.return_value = False
-    create_task = Mock(return_value=task)
+    create_task = Mock(side_effect=lambda coro: (coro.close(), task)[1])
     monkeypatch.setattr("nautilus_trader.adapters.sxbet.data.asyncio.create_task", create_task)
     instrument = _make_instrument()
     client = _make_client()
@@ -381,7 +420,7 @@ async def test_unsubscribe_quote_ticks_accepts_nautilus_command():
 def test_data_engine_subscribe_quote_ticks_routes_to_sxbet_client(monkeypatch):
     task = Mock()
     task.done.return_value = False
-    create_task = Mock(return_value=task)
+    create_task = Mock(side_effect=lambda coro: (coro.close(), task)[1])
     monkeypatch.setattr("nautilus_trader.adapters.sxbet.data.asyncio.create_task", create_task)
     clock = TestComponentStubs.clock()
     msgbus = TestComponentStubs.msgbus()
@@ -405,7 +444,7 @@ def test_data_engine_subscribe_quote_ticks_routes_to_sxbet_client(monkeypatch):
         logger=Logger(name="test-sxbet-data"),
         config=SXBetDataClientConfig(),
     )
-    client.create_task = Mock()
+    client.create_task = Mock(side_effect=lambda coro, **_: (coro.close(), task)[1])
     data_engine.register_client(client)
     data_engine.process(instrument)
     command = SubscribeQuoteTicks(

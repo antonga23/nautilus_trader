@@ -7,6 +7,7 @@
   "rendered_config_path": "artifacts/strategy-nodes/polymarket-single-venue/trading-node-config.json",
   "status_path": "artifacts/strategy-nodes/polymarket-single-venue/status.json",
   "heartbeat_path": "artifacts/strategy-nodes/polymarket-single-venue/heartbeat.json",
+  "semantic_rule_cache_dir": "artifacts/semantic-rule-cache/polymarket-single-venue",
   "strategy": {
     "min_profit_margin": "0.015",
     "max_total_stake": "150",
@@ -21,10 +22,10 @@
       "data_enabled": true,
       "execution_enabled": false,
       "credential_prefix": "POLYMARKET",
-      "load_all_instruments": false,
-      "instrument_ids": [
-        "0x4319532e181605cb15b1bd677759a3bc7f7394b2fdf145195b700eeaedfd5221-60487116984468020978247225474488676749601001829886755968952521846780452448915.POLYMARKET"
-      ]
+      "load_all_instruments": true,
+      "sport_keys": ["soccer", "basketball", "american_football", "baseball", "tennis"],
+      "instrument_load_limit": 80,
+      "instrument_refresh_interval_secs": 300.0
     }
   ],
   "metadata": {

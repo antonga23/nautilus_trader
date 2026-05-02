@@ -1,21 +1,22 @@
 {
-  "node_id": "cloudbet-single-venue",
-  "trader_id": "BETARB-CLOUDBET-001",
-  "validation_mode": true,
+  "node_id": "cloudbet-execution-readiness",
+  "trader_id": "BETARB-CLOUDBET-EXEC-001",
+  "validation_mode": false,
   "allow_dummy_credentials": false,
   "log_level": "INFO",
-  "rendered_config_path": "artifacts/strategy-nodes/cloudbet-single-venue/trading-node-config.json",
-  "status_path": "artifacts/strategy-nodes/cloudbet-single-venue/status.json",
-  "heartbeat_path": "artifacts/strategy-nodes/cloudbet-single-venue/heartbeat.json",
-  "semantic_rule_cache_dir": "artifacts/semantic-rule-cache/cloudbet-single-venue",
+  "rendered_config_path": "artifacts/strategy-nodes/cloudbet-execution-readiness/trading-node-config.json",
+  "status_path": "artifacts/strategy-nodes/cloudbet-execution-readiness/status.json",
+  "heartbeat_path": "artifacts/strategy-nodes/cloudbet-execution-readiness/heartbeat.json",
+  "semantic_rule_cache_dir": "artifacts/semantic-rule-cache/cloudbet-execution-readiness",
   "timeout_connection": 240.0,
   "strategy": {
     "min_profit_margin": "0.02",
-    "max_total_stake": "150",
+    "max_total_stake": "100",
     "sport_filter": null,
     "market_timing_filter": "all",
     "quote_freshness_profile": "pre_match",
     "rollover_aware": true,
+    "opportunity_graph_engine": "auto",
     "auto_execute": false
   },
   "venues": [
@@ -23,7 +24,7 @@
       "venue": "CLOUDBET",
       "client_key": "CLOUDBET_PRIMARY",
       "data_enabled": true,
-      "execution_enabled": false,
+      "execution_enabled": true,
       "credential_prefix": "CLOUDBET",
       "load_all_instruments": true,
       "sport_keys": ["soccer", "tennis", "basketball", "american_football"],
@@ -39,7 +40,8 @@
     }
   ],
   "metadata": {
-    "phase": "cloudbet-single-venue-validation",
-    "track": "sportsbook"
+    "phase": "execution-readiness",
+    "track": "cloudbet-play-funds",
+    "note": "Execution client enabled with Cloudbet Trading API; intended for play funds / low-fund readiness only, auto_execute remains false."
   }
 }

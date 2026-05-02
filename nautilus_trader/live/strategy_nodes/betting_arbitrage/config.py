@@ -36,6 +36,7 @@ class BettingVenueManifest(NautilusConfig, frozen=True):
     min_two_sided_markets: PositiveInt = 1
     auto_subscribe_quote_ticks: bool = False
     quote_subscription_limit: PositiveInt | None = None
+    instrument_refresh_interval_secs: PositiveFloat | None = 300.0
     order_book_poll_interval_secs: PositiveFloat = 3.0
     order_book_poll_summary_interval_secs: PositiveFloat = 30.0
     order_book_concurrency: PositiveInt = 4

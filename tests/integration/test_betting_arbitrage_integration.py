@@ -646,6 +646,7 @@ class TestBettingArbitrageIntegration:  # skipcq
                 enabled_venues=frozenset(["SXBET", "BLACKBET"]),
                 auto_execute=False,
                 arbitrage_quote_stale_threshold_secs=0.25,
+                quote_freshness_profile="custom",
             ),
         )
         strategy._handle_arbitrage_opportunity = Mock()
