@@ -1,0 +1,16 @@
+run_id=25231945283
+workflow=develop-branch-guard
+title=Broaden Polymarket sports event discovery
+status=in_progress
+conclusion=
+head_sha=9f5c457d9b3037447c0337475952b45197da8c66
+url=https://github.com/antonga23/cloudbet-market-maker/actions/runs/25231945283
+- enforce: status=in_progress, conclusion=
+run_id=25231945283
+workflow=develop-branch-guard
+title=Broaden Polymarket sports event discovery
+status=completed
+conclusion=success
+head_sha=9f5c457d9b3037447c0337475952b45197da8c66
+url=https://github.com/antonga23/cloudbet-market-maker/actions/runs/25231945283
+- enforce: status=completed, conclusion=success

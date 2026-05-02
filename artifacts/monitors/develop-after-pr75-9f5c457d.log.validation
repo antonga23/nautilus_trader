@@ -1,0 +1,55 @@
+run_id=25231945301
+workflow=develop-validation
+title=Broaden Polymarket sports event discovery
+status=queued
+conclusion=
+head_sha=9f5c457d9b3037447c0337475952b45197da8c66
+url=https://github.com/antonga23/cloudbet-market-maker/actions/runs/25231945301
+- pre-commit-full: status=in_progress, conclusion=
+- cargo-deny: status=completed, conclusion=success
+- cargo-vet: status=queued, conclusion=
+run_id=25231945301
+workflow=develop-validation
+title=Broaden Polymarket sports event discovery
+status=in_progress
+conclusion=
+head_sha=9f5c457d9b3037447c0337475952b45197da8c66
+url=https://github.com/antonga23/cloudbet-market-maker/actions/runs/25231945301
+- pre-commit-full: status=in_progress, conclusion=
+- cargo-deny: status=completed, conclusion=success
+- cargo-vet: status=completed, conclusion=success
+run_id=25231945301
+workflow=develop-validation
+title=Broaden Polymarket sports event discovery
+status=in_progress
+conclusion=
+head_sha=9f5c457d9b3037447c0337475952b45197da8c66
+url=https://github.com/antonga23/cloudbet-market-maker/actions/runs/25231945301
+- pre-commit-full: status=completed, conclusion=success
+- cargo-deny: status=completed, conclusion=success
+- cargo-vet: status=completed, conclusion=success
+- build-linux-x86-py312: status=in_progress, conclusion=
+run_id=25231945301
+workflow=develop-validation
+title=Broaden Polymarket sports event discovery
+status=in_progress
+conclusion=
+head_sha=9f5c457d9b3037447c0337475952b45197da8c66
+url=https://github.com/antonga23/cloudbet-market-maker/actions/runs/25231945301
+- pre-commit-full: status=completed, conclusion=success
+- cargo-deny: status=completed, conclusion=success
+- cargo-vet: status=completed, conclusion=success
+- build-linux-x86-py312: status=completed, conclusion=success
+- python-tests: status=in_progress, conclusion=
+run_id=25231945301
+workflow=develop-validation
+title=Broaden Polymarket sports event discovery
+status=completed
+conclusion=success
+head_sha=9f5c457d9b3037447c0337475952b45197da8c66
+url=https://github.com/antonga23/cloudbet-market-maker/actions/runs/25231945301
+- pre-commit-full: status=completed, conclusion=success
+- cargo-deny: status=completed, conclusion=success
+- cargo-vet: status=completed, conclusion=success
+- build-linux-x86-py312: status=completed, conclusion=success
+- python-tests: status=completed, conclusion=success
