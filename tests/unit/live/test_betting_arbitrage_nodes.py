@@ -525,6 +525,37 @@ class TestBettingArbitrageNodeBuilder:
             {"basketball"},
         )
 
+    def test_polymarket_provider_preserves_selected_token_metadata(self):
+        class Clock:
+            @staticmethod
+            def timestamp_ns() -> int:
+                return 123
+
+        provider = polymarket_providers.PolymarketInstrumentProvider(
+            client=Mock(),
+            clock=Clock(),
+            config=InstrumentProviderConfig(),
+        )
+        market_info = {
+            "condition_id": "0xabc",
+            "question": "Will Team A win?",
+            "minimum_tick_size": "0.001",
+            "minimum_order_size": "5",
+            "end_date_iso": "2026-05-10T00:00:00Z",
+            "maker_base_fee": "0",
+            "taker_base_fee": "0",
+            "tokens": [
+                {"token_id": "tokenyes", "outcome": "Yes", "price": 0.44},
+                {"token_id": "tokenno", "outcome": "No", "price": 0.56},
+            ],
+        }
+
+        instrument = provider._load_instrument(market_info, "tokenno", "No")
+
+        assert instrument.info["selected_token_id"] == "tokenno"
+        assert instrument.info["selected_outcome"] == "No"
+        assert instrument.info["selected_token_price"] == 0.56
+
     def test_mixed_supported_topology_updates_strategy_enabled_venues(self):
         manifest = BettingArbitrageNodeManifest(
             node_id="mixed-validation",
@@ -1319,6 +1350,58 @@ class TestSemanticCacheBootstrap:
         assert call["include_recent_past_on_sparse"] is True
         assert call["include_bets"] is False
 
+    def test_refresh_polymarket_corpus_derives_manifest_scope(self):
+        refresh_calls: list[dict[str, object]] = []
+
+        class FakeIngestor:
+            async def refresh_polymarket(self, *, sports, limit, http_client=None):
+                refresh_calls.append(
+                    {
+                        "sports": sports,
+                        "limit": limit,
+                        "http_client": http_client,
+                    },
+                )
+
+        venues = [
+            BettingVenueManifest(
+                venue="POLYMARKET",
+                sport_keys=frozenset({"basketball", "soccer"}),
+                instrument_load_limit=45,
+                market_discovery_limit=120,
+            ),
+            BettingVenueManifest(venue="SXBET"),
+        ]
+
+        asyncio.run(
+            node_cache._refresh_polymarket_corpus(
+                venues=venues,
+                ingestor=FakeIngestor(),
+                logger=None,
+            ),
+        )
+
+        assert refresh_calls == [
+            {
+                "sports": ["basketball", "soccer"],
+                "limit": 120,
+                "http_client": None,
+            },
+        ]
+
+    def test_refresh_polymarket_corpus_skips_when_no_polymarket_venues(self):
+        ingestor = Mock()
+
+        asyncio.run(
+            node_cache._refresh_polymarket_corpus(
+                venues=[BettingVenueManifest(venue="SXBET")],
+                ingestor=ingestor,
+                logger=None,
+            ),
+        )
+
+        assert not ingestor.mock_calls
+
 
 class TestBettingArbitrageNodeRunner:
     def test_heartbeat_writer_emits_alive_payload(self, tmp_path, monkeypatch):
@@ -1591,8 +1674,15 @@ class TestBettingArbitrageNodeRunner:
                 params_key = json.dumps([["line", "2.5"]], separators=(",", ":"))
                 return [
                     {
+                        "template_id": "template-total-25",
+                        "relationship_type": "COMPLEMENTARY_COVERAGE",
                         "provider_scope": ["SXBET"],
+                        "venue_agnostic": False,
+                        "confidence": 0.99,
+                        "caveats": [],
                         "safety_tier": "EXECUTION_SAFE_SAME_VENUE_ELIGIBLE",
+                        "execution_safe": False,
+                        "same_venue_execution_eligible": True,
                         "pattern_a": {
                             "sport": "soccer",
                             "scope": "full_time",
@@ -1619,6 +1709,17 @@ class TestBettingArbitrageNodeRunner:
         assert diagnostics["supportedProviderNodeCount"] == 1
         assert diagnostics["commonPatternKeyCount"] == 1
         assert diagnostics["nodeSports"] == [{"key": "soccer", "count": 1}]
+        assert diagnostics["templateTierRelationships"] == [
+            {
+                "key": [
+                    "EXECUTION_SAFE_SAME_VENUE_ELIGIBLE",
+                    "COMPLEMENTARY_COVERAGE",
+                ],
+                "count": 1,
+            },
+        ]
+        assert diagnostics["sameVenueEligibleTemplates"][0]["templateId"] == "template-total-25"
+        assert diagnostics["sameVenueEligibleTemplates"][0]["patternA"]["selection"] == "OVER"
 
     def test_runtime_probe_venue_coverage_explains_zero_cross_venue_pairs(self):
         sxbet_instrument = _instrument(
@@ -1708,6 +1809,12 @@ class TestBettingArbitrageNodeRunner:
             "ruleId": "rule-1",
             "templateId": "template-1",
             "relationshipType": "COMPLEMENTARY_COVERAGE",
+            "freshnessProfile": "pre_match",
+            "timingFlags": ["fresh"],
+            "quoteAgeASeconds": 0.25,
+            "quoteAgeBSeconds": 0.5,
+            "fetchLatencyASeconds": 0.05,
+            "fetchLatencyBSeconds": 0.1,
             "dryRunEligible": True,
             "dryRunEligibilityReason": "strict_execution_safe",
             "sameVenueRiskPolicy": {
@@ -1733,6 +1840,10 @@ class TestBettingArbitrageNodeRunner:
         assert sample["dryRunEligibilityReason"] == "strict_execution_safe"
         assert sample["sameVenueRiskPolicy"]["executionDisabledUntilRiskEngineApproval"] is True
         assert sample["wouldExecuteSameVenueDryRun"] is False
+        assert payload["timing_flags"] == {"fresh": 1}
+        assert payload["freshness_profiles"] == {"pre_match": 1}
+        assert payload["venue_quote_health"]["CLOUDBET"]["max_quote_age_secs"] == 0.25
+        assert payload["venue_quote_health"]["POLYMARKET"]["max_fetch_latency_secs"] == 0.1
 
     def test_run_success_and_failure_paths_record_status_transitions(self, tmp_path, monkeypatch):
         def semantic_status(_manifest):
@@ -1878,6 +1989,27 @@ class TestBettingArbitrageNodeRunner:
             )
             == "negative_margin"
         )
+        timing_kwargs = {
+            key: base_kwargs[key]
+            for key in (
+                "quote_age_a_secs",
+                "quote_age_b_secs",
+                "quote_delta_secs",
+                "fetch_latency_a_secs",
+                "fetch_latency_b_secs",
+                "max_quote_age_secs",
+                "max_pair_skew_secs",
+                "max_fetch_latency_secs",
+            )
+        }
+        assert node_runner._probe_timing_flags(**timing_kwargs) == ["fresh"]
+        assert node_runner._probe_timing_flags(
+            **{
+                **timing_kwargs,
+                "quote_age_a_secs": 31.0,
+                "quote_delta_secs": 6.0,
+            },
+        ) == ["quote_age", "pair_skew"]
 
     def test_runtime_manifest_rewrite_includes_semantic_cache_dir(self):
         deploy_script = Path(
@@ -1910,6 +2042,8 @@ class TestBettingArbitrageNodeRunner:
         )
         assert "min_positive_margin_candidates=1" in workflow
         assert "min_cross_venue_candidates=1" in workflow
+        assert "wait_timeout_seconds=1200" in workflow
+        assert "--timeout-seconds $wait_timeout_seconds" in workflow
         assert "--min-positive-margin-candidates $min_positive_margin_candidates" in workflow
         assert "--min-cross-venue-candidates $min_cross_venue_candidates" in workflow
         assert "--require-rust-semantic-topology" in workflow

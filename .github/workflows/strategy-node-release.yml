@@ -844,20 +844,23 @@ jobs:
           fi
           min_positive_margin_candidates=0
           min_cross_venue_candidates=0
+          wait_timeout_seconds=900
           quoted_node_args=()
           if [ "$manifest_path" = "deploy/strategy_nodes/betting_arbitrage/multi-venue-validation.json" ]; then
             min_positive_margin_candidates=1
             min_cross_venue_candidates=1
+            wait_timeout_seconds=1200
             quoted_node_args+=(--min-quoted-node-count SXBET:2)
             quoted_node_args+=(--min-quoted-node-count CLOUDBET:2)
           fi
           echo "min_positive_margin_candidates=$min_positive_margin_candidates"
           echo "min_cross_venue_candidates=$min_cross_venue_candidates"
+          echo "wait_timeout_seconds=$wait_timeout_seconds"
           ssh -i strategy-node.key -o StrictHostKeyChecking=no "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST" \
             "chmod +x /tmp/wait_for_strategy_node_status.sh && \
              /tmp/wait_for_strategy_node_status.sh \
                --status-file /opt/cloudbet/strategy-nodes/$STRATEGY_NODE_CONTAINER_NAME/status.json \
-               --timeout-seconds 900 \
+               --timeout-seconds $wait_timeout_seconds \
                --success-status running,completed \
                --require-semantic-cache-ready \
                --require-runtime-probe \

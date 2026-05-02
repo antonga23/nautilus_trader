@@ -29,7 +29,14 @@ from nautilus_trader.live.strategy_nodes.betting_arbitrage.config import Betting
 
 
 DEFAULT_CLOUDBET_SPORTS = ("soccer", "tennis", "basketball", "american_football")
-SEMANTIC_CACHE_COMPATIBILITY_VERSION = "semantic-rule-cache:20260430:venue-scoped-current-sports-v1"
+DEFAULT_POLYMARKET_SPORTS = (
+    "soccer",
+    "tennis",
+    "basketball",
+    "american_football",
+    "baseball",
+)
+SEMANTIC_CACHE_COMPATIBILITY_VERSION = "semantic-rule-cache:20260502:polymarket-sports-v1"
 SEMANTIC_CACHE_COMPATIBILITY_FILE = ".semantic-cache-version"
 
 
@@ -267,6 +274,11 @@ async def _bootstrap_semantic_cache(
         ingestor=ingestor,
         logger=logger,
     )
+    await _refresh_polymarket_corpus(
+        venues=venues,
+        ingestor=ingestor,
+        logger=logger,
+    )
 
     miner.mine_store(persist=True)
     templates = miner.mine_templates_from_store(persist=True, persist_event_candidates=False)
@@ -392,6 +404,29 @@ async def _refresh_optional_cloudbet_corpus(
     )
 
 
+async def _refresh_polymarket_corpus(
+    *,
+    venues: Iterable[BettingVenueManifest],
+    ingestor: SnapshotIngestor,
+    logger: Logger | None,
+) -> None:
+    active_venues = list(venues)
+    polymarket_venues = [venue for venue in active_venues if venue.venue == "POLYMARKET"]
+    if not polymarket_venues:
+        return
+
+    sports = _polymarket_sports_for_venues(polymarket_venues)
+    limit = _polymarket_limit_for_venues(polymarket_venues)
+    if logger is not None:
+        logger.info(
+            f"Refreshing Polymarket sports semantic corpus sports={sports} limit={limit}",
+        )
+    await ingestor.refresh_polymarket(
+        sports=sports,
+        limit=limit,
+    )
+
+
 def _cloudbet_sports_for_venues(venues: Iterable[BettingVenueManifest]) -> list[str]:
     sports: set[str] = set()
     for venue in venues:
@@ -400,8 +435,26 @@ def _cloudbet_sports_for_venues(venues: Iterable[BettingVenueManifest]) -> list[
     return sorted(sports) or list(DEFAULT_CLOUDBET_SPORTS)
 
 
+def _polymarket_sports_for_venues(venues: Iterable[BettingVenueManifest]) -> list[str]:
+    sports: set[str] = set()
+    for venue in venues:
+        if venue.sport_keys:
+            sports.update(key.strip().lower() for key in venue.sport_keys if key.strip())
+    return sorted(sports) or list(DEFAULT_POLYMARKET_SPORTS)
+
+
 def _cloudbet_event_limit_for_venues(venues: Iterable[BettingVenueManifest]) -> int:
     limit = 20
+    for venue in venues:
+        if venue.instrument_load_limit is not None:
+            limit = max(limit, int(venue.instrument_load_limit))
+        if venue.market_discovery_limit is not None:
+            limit = max(limit, int(venue.market_discovery_limit))
+    return limit
+
+
+def _polymarket_limit_for_venues(venues: Iterable[BettingVenueManifest]) -> int:
+    limit = 80
     for venue in venues:
         if venue.instrument_load_limit is not None:
             limit = max(limit, int(venue.instrument_load_limit))

@@ -45,8 +45,13 @@ class ProbeProfitabilityCounters:
     threshold_same_venue: int = 0
     margin_bands: Counter[str] = field(default_factory=Counter)
     rejection_buckets: Counter[str] = field(default_factory=Counter)
+    timing_flags: Counter[str] = field(default_factory=Counter)
+    freshness_profiles: Counter[str] = field(default_factory=Counter)
     venue_pairs: dict[str, Counter[str]] = field(default_factory=dict)
     market_families: dict[str, Counter[str]] = field(default_factory=dict)
+    venue_quote_counts: Counter[str] = field(default_factory=Counter)
+    venue_max_quote_age_secs: dict[str, float] = field(default_factory=dict)
+    venue_max_fetch_latency_secs: dict[str, float] = field(default_factory=dict)
     samples: list[tuple[Decimal, dict[str, object]]] = field(default_factory=list)
     negative_samples: list[tuple[Decimal, dict[str, object]]] = field(default_factory=list)
 
@@ -61,6 +66,22 @@ class ProbeProfitabilityCounters:
             "threshold_same_venue": self.threshold_same_venue,
             "margin_bands": dict(self.margin_bands),
             "rejection_buckets": dict(self.rejection_buckets),
+            "timing_flags": dict(self.timing_flags),
+            "freshness_profiles": dict(self.freshness_profiles),
+            "venue_quote_health": {
+                venue: {
+                    "quoted_observations": self.venue_quote_counts.get(venue, 0),
+                    "max_quote_age_secs": round(
+                        self.venue_max_quote_age_secs.get(venue, 0.0),
+                        6,
+                    ),
+                    "max_fetch_latency_secs": round(
+                        self.venue_max_fetch_latency_secs.get(venue, 0.0),
+                        6,
+                    ),
+                }
+                for venue in sorted(self.venue_quote_counts)
+            },
             "venue_pairs": {
                 key: dict(counter)
                 for key, counter in sorted(self.venue_pairs.items(), key=lambda item: item[0])
@@ -752,6 +773,9 @@ def _collect_runtime_probe_payload(
             "quotedEdges": profitability["quoted_edges"],
             "marginBands": profitability["margin_bands"],
             "rejectionBuckets": profitability["rejection_buckets"],
+            "timingFlags": profitability["timing_flags"],
+            "freshnessProfiles": profitability["freshness_profiles"],
+            "venueQuoteHealth": profitability["venue_quote_health"],
             "venuePairs": profitability["venue_pairs"],
             "marketFamilies": profitability["market_families"],
             "topPositiveCandidates": profitability["sample_candidates"],
@@ -845,6 +869,9 @@ def _empty_candidate_quality_payload() -> dict[str, object]:
         "quotedEdges": 0,
         "marginBands": {},
         "rejectionBuckets": {},
+        "timingFlags": {},
+        "freshnessProfiles": {},
+        "venueQuoteHealth": {},
         "venuePairs": {},
         "marketFamilies": {},
         "topPositiveCandidates": [],
@@ -1045,6 +1072,16 @@ def _semantic_probe_diagnostics(graph) -> dict[str, object]:
         "templateSports": _top_counter(template_diagnostics["sport_counts"]),
         "templateSafetyTiers": _top_counter(template_diagnostics["tier_counts"]),
         "templateProviderScopes": _top_counter(template_diagnostics["provider_scope_counts"]),
+        "templateTierRelationships": _top_counter(
+            template_diagnostics["tier_relationship_counts"],
+            limit=50,
+        ),
+        "templateTierCaveats": _top_counter(
+            template_diagnostics["tier_caveat_counts"],
+            limit=50,
+        ),
+        "executionSafeTemplates": template_diagnostics["execution_safe_templates"],
+        "sameVenueEligibleTemplates": template_diagnostics["same_venue_eligible_templates"],
         "nodePatternKeys": _top_counter(node_diagnostics["pattern_counts"]),
         "templatePatternKeys": _top_counter(template_diagnostics["pattern_counts"]),
         "normalizationErrors": _top_counter(node_diagnostics["normalization_errors"]),
@@ -1124,12 +1161,29 @@ def _semantic_template_diagnostics(graph) -> dict[str, object]:
     sport_counts: Counter[str] = Counter()
     tier_counts: Counter[str] = Counter()
     provider_scope_counts: Counter[str] = Counter()
+    tier_relationship_counts: Counter[tuple[str, str]] = Counter()
+    tier_caveat_counts: Counter[tuple[str, str]] = Counter()
+    execution_safe_templates: list[dict[str, object]] = []
+    same_venue_eligible_templates: list[dict[str, object]] = []
     templates = _semantic_template_payloads_for_diagnostics(graph)
     for template in templates:
         provider_scope = tuple(str(item) for item in template.get("provider_scope", ()))
         provider_scope_key = ",".join(provider_scope) or "venue_agnostic"
+        safety_tier = str(template.get("safety_tier") or "unknown")
         provider_scope_counts[provider_scope_key] += 1
-        tier_counts[str(template.get("safety_tier") or "unknown")] += 1
+        tier_counts[safety_tier] += 1
+        tier_relationship_counts[
+            (safety_tier, str(template.get("relationship_type") or "unknown"))
+        ] += 1
+        caveats = template.get("caveats")
+        if isinstance(caveats, list):
+            for caveat in caveats:
+                tier_caveat_counts[(safety_tier, str(caveat))] += 1
+        detail = _semantic_template_detail(template)
+        if bool(template.get("execution_safe")):
+            execution_safe_templates.append(detail)
+        if bool(template.get("same_venue_execution_eligible")):
+            same_venue_eligible_templates.append(detail)
         for side in ("pattern_a", "pattern_b"):
             pattern = template.get(side)
             if not isinstance(pattern, dict):
@@ -1146,7 +1200,33 @@ def _semantic_template_diagnostics(graph) -> dict[str, object]:
         "sport_counts": sport_counts,
         "tier_counts": tier_counts,
         "provider_scope_counts": provider_scope_counts,
+        "tier_relationship_counts": tier_relationship_counts,
+        "tier_caveat_counts": tier_caveat_counts,
         "template_count": len(templates),
+        "execution_safe_templates": sorted(
+            execution_safe_templates,
+            key=lambda item: str(item["templateId"]),
+        ),
+        "same_venue_eligible_templates": sorted(
+            same_venue_eligible_templates,
+            key=lambda item: str(item["templateId"]),
+        ),
+    }
+
+
+def _semantic_template_detail(template: dict[str, object]) -> dict[str, object]:
+    pattern_a = template.get("pattern_a") if isinstance(template.get("pattern_a"), dict) else {}
+    pattern_b = template.get("pattern_b") if isinstance(template.get("pattern_b"), dict) else {}
+    return {
+        "templateId": str(template.get("template_id") or ""),
+        "relationshipType": str(template.get("relationship_type") or ""),
+        "safetyTier": str(template.get("safety_tier") or ""),
+        "providerScope": list(template.get("provider_scope") or []),
+        "venueAgnostic": bool(template.get("venue_agnostic")),
+        "confidence": template.get("confidence"),
+        "caveats": list(template.get("caveats") or []),
+        "patternA": pattern_a,
+        "patternB": pattern_b,
     }
 
 
@@ -1361,6 +1441,16 @@ def _probe_candidate_quality(
         "maxPairSkewSeconds": freshness.max_pair_skew_secs,
         "maxFetchLatencySeconds": freshness.max_fetch_latency_secs,
         "freshnessProfile": freshness.profile,
+        "timingFlags": _probe_timing_flags(
+            quote_age_a_secs=quote_age_a_secs,
+            quote_age_b_secs=quote_age_b_secs,
+            quote_delta_secs=quote_delta_secs,
+            fetch_latency_a_secs=fetch_latency_a_secs,
+            fetch_latency_b_secs=fetch_latency_b_secs,
+            max_quote_age_secs=freshness.max_quote_age_secs,
+            max_pair_skew_secs=freshness.max_pair_skew_secs,
+            max_fetch_latency_secs=freshness.max_fetch_latency_secs,
+        ),
         "rejectionBucket": rejection_bucket,
         "ruleId": edge.rule_id,
         "templateId": edge.template_id,
@@ -1418,6 +1508,30 @@ def _probe_rejection_bucket(
     return "positive"
 
 
+def _probe_timing_flags(
+    *,
+    quote_age_a_secs: float,
+    quote_age_b_secs: float,
+    quote_delta_secs: float,
+    fetch_latency_a_secs: float,
+    fetch_latency_b_secs: float,
+    max_quote_age_secs: float,
+    max_pair_skew_secs: float,
+    max_fetch_latency_secs: float,
+) -> list[str]:
+    flags: list[str] = []
+    if (
+        fetch_latency_a_secs > max_fetch_latency_secs
+        or fetch_latency_b_secs > max_fetch_latency_secs
+    ):
+        flags.append("fetch_latency")
+    if quote_age_a_secs > max_quote_age_secs or quote_age_b_secs > max_quote_age_secs:
+        flags.append("quote_age")
+    if quote_delta_secs > max_pair_skew_secs:
+        flags.append("pair_skew")
+    return flags or ["fresh"]
+
+
 def _record_probe_quality(
     counters: ProbeProfitabilityCounters,
     quality: dict[str, object],
@@ -1429,12 +1543,49 @@ def _record_probe_quality(
     market_family = str(quality["marketFamily"])
     counters.margin_bands[margin_band] += 1
     counters.rejection_buckets[rejection_bucket] += 1
+    counters.freshness_profiles[str(quality.get("freshnessProfile") or "unknown")] += 1
+    timing_flags = quality.get("timingFlags")
+    if isinstance(timing_flags, list):
+        for flag in timing_flags:
+            counters.timing_flags[str(flag)] += 1
     counters.venue_pairs.setdefault(venue_pair, Counter())[rejection_bucket] += 1
     counters.market_families.setdefault(market_family, Counter())[rejection_bucket] += 1
+    _record_venue_quote_health(
+        counters,
+        venue=str(quality.get("venueA") or ""),
+        quote_age_secs=float(quality.get("quoteAgeASeconds") or 0.0),
+        fetch_latency_secs=float(quality.get("fetchLatencyASeconds") or 0.0),
+    )
+    _record_venue_quote_health(
+        counters,
+        venue=str(quality.get("venueB") or ""),
+        quote_age_secs=float(quality.get("quoteAgeBSeconds") or 0.0),
+        fetch_latency_secs=float(quality.get("fetchLatencyBSeconds") or 0.0),
+    )
     if margin > 0:
         counters.samples.append((margin, quality))
     elif margin > Decimal("-0.05"):
         counters.negative_samples.append((margin, quality))
+
+
+def _record_venue_quote_health(
+    counters: ProbeProfitabilityCounters,
+    *,
+    venue: str,
+    quote_age_secs: float,
+    fetch_latency_secs: float,
+) -> None:
+    if not venue:
+        return
+    counters.venue_quote_counts[venue] += 1
+    counters.venue_max_quote_age_secs[venue] = max(
+        counters.venue_max_quote_age_secs.get(venue, 0.0),
+        quote_age_secs,
+    )
+    counters.venue_max_fetch_latency_secs[venue] = max(
+        counters.venue_max_fetch_latency_secs.get(venue, 0.0),
+        fetch_latency_secs,
+    )
 
 
 def _probe_margin_band(profit_margin: Decimal) -> str:
