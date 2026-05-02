@@ -2141,7 +2141,9 @@ class TestBettingArbitrageNodeRunner:
         assert "Validate Cloudbet manifest" in workflow
         assert "Probe Cloudbet runtime semantic coverage" in workflow
         assert "Probe selected multi-venue runtime semantic coverage" in workflow
+        assert "Probe selected BetDex runtime semantic coverage" in workflow
         assert "cloudbet-single-venue.json" in workflow
+        assert "betdex-single-venue.json" in workflow
         assert "probe-runtime" in workflow
         assert "--min-quoted-match-instruments 2" in workflow
         assert "--min-positive-margin-candidates 0" in workflow
@@ -2167,9 +2169,15 @@ class TestBettingArbitrageNodeRunner:
         assert "SXBET_API_KEY: ${{ secrets.SXBET_API_KEY }}" in workflow
         assert "CLOUDBET_API_KEY: ${{ secrets.CLOUDBET_API_KEY }}" in workflow
         assert "POLYMARKET_API_SECRET: ${{ secrets.POLYMARKET_API_SECRET }}" in workflow
+        assert "BETDEX_APP_ID: ${{ secrets.BETDEX_APP_ID }}" in workflow
+        assert "BETDEX_API_KEY: ${{ secrets.BETDEX_API_KEY }}" in workflow
+        assert "BETDEX_WALLET_ID: ${{ secrets.BETDEX_WALLET_ID }}" in workflow
         assert "Validate selected dispatch manifest" in workflow
         assert "INPUT_MANIFEST_PATH: ${{ github.event.inputs.manifest_path }}" in workflow
         assert "append_env_secret CLOUDBET_API_KEY" in workflow
+        assert "append_env_secret BETDEX_APP_ID" in workflow
+        assert "append_env_secret BETDEX_API_KEY" in workflow
+        assert "append_env_secret BETDEX_WALLET_ID" in workflow
         assert "--env-file /tmp/strategy-node.env" in workflow
         assert "current-session.json" in workflow
         assert "node.log" in workflow

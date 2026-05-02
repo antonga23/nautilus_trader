@@ -65,6 +65,9 @@ jobs:
       POLYMARKET_API_KEY: ${{ secrets.POLYMARKET_API_KEY }}
       POLYMARKET_API_SECRET: ${{ secrets.POLYMARKET_API_SECRET }}
       POLYMARKET_PASSPHRASE: ${{ secrets.POLYMARKET_PASSPHRASE }}
+      BETDEX_APP_ID: ${{ secrets.BETDEX_APP_ID }}
+      BETDEX_API_KEY: ${{ secrets.BETDEX_API_KEY }}
+      BETDEX_WALLET_ID: ${{ secrets.BETDEX_WALLET_ID }}
     steps:
       - uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
         with:
@@ -332,6 +335,30 @@ jobs:
             --min-positive-margin-candidates 1 \
             --require-rust-semantic-topology
 
+      - name: Probe selected BetDex runtime semantic coverage
+        if: >-
+          github.event_name == 'workflow_dispatch' &&
+          github.event.inputs.manifest_path ==
+          'deploy/strategy_nodes/betting_arbitrage/betdex-single-venue.json'
+        env:
+          BETDEX_APP_ID: ${{ secrets.BETDEX_APP_ID }}
+          BETDEX_API_KEY: ${{ secrets.BETDEX_API_KEY }}
+          BETDEX_WALLET_ID: ${{ secrets.BETDEX_WALLET_ID }}
+          SXBET_API_KEY: ${{ secrets.SXBET_API_KEY }}
+          CLOUDBET_API_KEY: ${{ secrets.CLOUDBET_API_KEY }}
+        run: |
+          cd /tmp
+          "$GITHUB_WORKSPACE/.venv/bin/python" -m nautilus_trader.live.strategy_nodes.betting_arbitrage \
+            probe-runtime \
+            --manifest "$GITHUB_WORKSPACE/deploy/strategy_nodes/betting_arbitrage/betdex-single-venue.json" \
+            --timeout-seconds 600 \
+            --poll-interval-secs 5 \
+            --min-connected-nodes 2 \
+            --min-match-instruments 2 \
+            --min-quoted-match-instruments 2 \
+            --min-positive-margin-candidates 0 \
+            --require-rust-semantic-topology
+
       - name: Upload rendered strategy-node artifacts to transient CI storage
         if: failure()
         continue-on-error: true
@@ -558,6 +585,9 @@ jobs:
       POLYMARKET_API_KEY: ${{ secrets.POLYMARKET_API_KEY }}
       POLYMARKET_API_SECRET: ${{ secrets.POLYMARKET_API_SECRET }}
       POLYMARKET_PASSPHRASE: ${{ secrets.POLYMARKET_PASSPHRASE }}
+      BETDEX_APP_ID: ${{ secrets.BETDEX_APP_ID }}
+      BETDEX_API_KEY: ${{ secrets.BETDEX_API_KEY }}
+      BETDEX_WALLET_ID: ${{ secrets.BETDEX_WALLET_ID }}
       STRATEGY_NODE_CONTAINER_NAME: ${{ github.event.inputs.container_name }}
       STRATEGY_NODE_IMAGE_TRANSPORT: ${{ github.event.inputs.image_transport }}
     steps:
@@ -756,6 +786,9 @@ jobs:
           append_env_secret POLYMARKET_API_KEY
           append_env_secret POLYMARKET_API_SECRET
           append_env_secret POLYMARKET_PASSPHRASE
+          append_env_secret BETDEX_APP_ID
+          append_env_secret BETDEX_API_KEY
+          append_env_secret BETDEX_WALLET_ID
 
           scp -i strategy-node.key -o StrictHostKeyChecking=no \
             strategy-node.env \
@@ -852,6 +885,9 @@ jobs:
             wait_timeout_seconds=1200
             quoted_node_args+=(--min-quoted-node-count SXBET:2)
             quoted_node_args+=(--min-quoted-node-count CLOUDBET:2)
+          fi
+          if [ "$manifest_path" = "deploy/strategy_nodes/betting_arbitrage/betdex-single-venue.json" ]; then
+            wait_timeout_seconds=1200
           fi
           echo "min_positive_margin_candidates=$min_positive_margin_candidates"
           echo "min_cross_venue_candidates=$min_cross_venue_candidates"
