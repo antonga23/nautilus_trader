@@ -565,8 +565,20 @@ class PolymarketInstrumentProvider(InstrumentProvider):
         token_id: str,
         outcome: str,
     ) -> BinaryOption:
+        token_market_info = dict(market_info)
+        token_market_info["selected_token_id"] = token_id
+        token_market_info["selected_outcome"] = outcome
+        for token in market_info.get("tokens", []):
+            if not isinstance(token, dict):
+                continue
+            if str(token.get("token_id") or "") != str(token_id):
+                continue
+            if token.get("price") is not None:
+                token_market_info["selected_token_price"] = token.get("price")
+            break
+
         instrument = parse_polymarket_instrument(
-            market_info=market_info,
+            market_info=token_market_info,
             token_id=token_id,
             outcome=outcome,
             ts_init=self._clock.timestamp_ns(),

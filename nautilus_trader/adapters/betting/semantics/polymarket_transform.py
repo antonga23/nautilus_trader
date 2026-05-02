@@ -19,7 +19,9 @@ is sufficient.
 
 from __future__ import annotations
 
+import json
 import re
+from typing import Any
 
 from nautilus_trader.adapters.betting.common.enums import SelectionSide
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
@@ -83,6 +85,13 @@ class PolymarketSportsTransformer:
         "rug": "rugby",
         "pga": "golf",
     }
+    NO_DRAW_SPORTS = {
+        "american_football",
+        "baseball",
+        "basketball",
+        "ice_hockey",
+        "tennis",
+    }
 
     @classmethod
     def canonical_sport(cls, raw_sport: str | None) -> str | None:
@@ -100,10 +109,11 @@ class PolymarketSportsTransformer:
         question = str(info.get("question") or getattr(instrument, "description", "")).strip()
         original = info.get("_gamma_original", {})
         event = original.get("events", [{}])[0] if isinstance(original.get("events"), list) else {}
+        event_title = str(event.get("title") or "")
         haystacks = [
             question,
             str(info.get("market_slug") or ""),
-            str(event.get("title") or ""),
+            event_title,
             str(event.get("slug") or ""),
         ]
 
@@ -129,31 +139,110 @@ class PolymarketSportsTransformer:
                 selection_target = match.group(1).strip()
                 break
 
+        home_name, away_name = cls._parse_event_participants(event_title)
+        target_role = cls._participant_role(selection_target, home_name, away_name)
+        outcome = str(getattr(instrument, "outcome", "") or "").strip().lower()
+
         sports_market_type = str(original.get("sportsMarketType") or "").strip().lower()
-        market_family = "winner_binary"
-        market_type = f"{sport}.winner"
+        market_family, market_name, market_type, selection_role = cls._winner_market_semantics(
+            sport=sport,
+            target_role=target_role,
+            outcome=outcome,
+        )
         params: dict[str, str] = {}
         if original.get("line") is not None:
             params["line"] = str(original.get("line"))
         if "spread" in sports_market_type or "handicap" in sports_market_type:
             market_family = "spread_binary"
             market_type = f"{sport}.spread"
+            market_name = f"{sport}.{market_family}"
         elif "total" in sports_market_type:
             market_family = "totals_binary"
             market_type = f"{sport}.totals"
+            market_name = f"{sport}.{market_family}"
 
         return {
             "sport": sport,
-            "market_name": f"{sport}.{market_family}",
+            "market_name": market_name,
             "market_type": market_type,
-            "selection_role": getattr(instrument, "outcome", ""),
+            "selection_role": selection_role,
             "selection_target": selection_target,
-            "event_name": str(event.get("title") or question),
-            "competition_name": str(event.get("title") or "Polymarket Sports"),
+            "home_name": home_name,
+            "away_name": away_name,
+            "event_name": event_title or question,
+            "competition_name": event_title or "Polymarket Sports",
             "event_id": str(info.get("condition_id") or instrument.id.symbol.value),
+            "start_time": str(event.get("startDateIso") or event.get("startDate") or ""),
             "params": params,
             "resolution_policy": cls._resolution_policy(question, original),
         }
+
+    @classmethod
+    def _winner_market_semantics(
+        cls,
+        *,
+        sport: str,
+        target_role: str,
+        outcome: str,
+    ) -> tuple[str, str, str, str]:
+        market_family = "winner_binary"
+        market_name = f"{sport}.{market_family}"
+        market_type = f"{sport}.winner"
+        selection_role = outcome
+        if target_role not in {"home", "away"}:
+            return market_family, market_name, market_type, selection_role
+
+        if outcome == "yes":
+            selection_role = target_role
+            if sport == "soccer":
+                return market_family, f"{sport}.match_odds", f"{sport}.1x2", selection_role
+            return market_family, f"{sport}.winner", f"{sport}.winner", selection_role
+
+        if outcome != "no":
+            return market_family, market_name, market_type, selection_role
+        if sport == "soccer":
+            selection_role = "away_draw" if target_role == "home" else "home_draw"
+            return (
+                "double_chance_binary",
+                f"{sport}.double_chance",
+                f"{sport}.double_chance",
+                selection_role,
+            )
+        if sport in cls.NO_DRAW_SPORTS:
+            selection_role = "away" if target_role == "home" else "home"
+            return market_family, f"{sport}.winner", f"{sport}.winner", selection_role
+        return market_family, market_name, market_type, selection_role
+
+    @staticmethod
+    def _parse_event_participants(event_title: str) -> tuple[str, str]:
+        title = event_title.strip()
+        if not title:
+            return "", ""
+        for separator in (" vs. ", " vs ", " v. ", " v "):
+            if separator in title.lower():
+                parts = re.split(re.escape(separator), title, maxsplit=1, flags=re.IGNORECASE)
+                return parts[0].strip(), parts[1].strip()
+        for separator in (" @ ", " at "):
+            if separator in title.lower():
+                parts = re.split(re.escape(separator), title, maxsplit=1, flags=re.IGNORECASE)
+                away, home = parts[0].strip(), parts[1].strip()
+                return home, away
+        return "", ""
+
+    @staticmethod
+    def _participant_role(target: str, home_name: str, away_name: str) -> str:
+        normalized_target = PolymarketSportsTransformer._normalize_participant(target)
+        if not normalized_target:
+            return ""
+        if normalized_target == PolymarketSportsTransformer._normalize_participant(home_name):
+            return "home"
+        if normalized_target == PolymarketSportsTransformer._normalize_participant(away_name):
+            return "away"
+        return ""
+
+    @staticmethod
+    def _normalize_participant(value: str) -> str:
+        return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
 
     @staticmethod
     def _resolution_policy(question: str, original: dict) -> dict:
@@ -185,12 +274,19 @@ class PolymarketSportsTransformer:
         if not sport:
             return None
 
-        price = sports_market.get("price")
+        price = PolymarketSportsTransformer._token_price(
+            info=info,
+            sports_market=sports_market,
+            outcome=str(getattr(instrument, "outcome", "")),
+            token_id=str(getattr(instrument, "raw_symbol", "") or ""),
+        )
         if price is None:
-            token_prices = info.get("_gamma_original", {}).get("outcomePrices")
-            if isinstance(token_prices, list) and token_prices:
-                price = token_prices[0]
-        if price is None:
+            return None
+        try:
+            numeric_price = float(price)
+        except (TypeError, ValueError):
+            return None
+        if numeric_price <= 0:
             return None
 
         market_name = str(sports_market.get("market_name") or "polymarket.sports_winner")
@@ -227,7 +323,7 @@ class PolymarketSportsTransformer:
             market_type=market_type,
             outcome=selection_role,
             side=SelectionSide.BACK,
-            price=float(price),
+            price=numeric_price,
             currency=Currency.from_str("USDC"),
             params=serialized_params,
             start_time=str(sports_market.get("start_time") or ""),
@@ -237,3 +333,74 @@ class PolymarketSportsTransformer:
                 "resolution_policy": sports_market.get("resolution_policy", {}),
             },
         )
+
+    @staticmethod
+    def _token_price(
+        *,
+        info: dict[str, Any],
+        sports_market: dict[str, Any],
+        outcome: str,
+        token_id: str,
+    ) -> Any:
+        if sports_market.get("price") is not None:
+            return sports_market.get("price")
+        if info.get("selected_token_price") is not None:
+            return info.get("selected_token_price")
+
+        token_price, token_index = PolymarketSportsTransformer._selected_token_price(
+            info=info,
+            outcome=outcome,
+            token_id=token_id,
+        )
+        if token_price is not None:
+            return token_price
+        prices = PolymarketSportsTransformer._decode_sequence(
+            info.get("_gamma_original", {}).get("outcomePrices") or info.get("outcomePrices"),
+        )
+        if not prices:
+            return None
+        if token_index is not None and token_index < len(prices):
+            return prices[token_index]
+        return prices[0]
+
+    @staticmethod
+    def _selected_token_price(
+        *,
+        info: dict[str, Any],
+        outcome: str,
+        token_id: str,
+    ) -> tuple[Any, int | None]:
+        tokens = info.get("tokens")
+        selected_token_id = str(info.get("selected_token_id") or token_id or "")
+        selected_outcome = str(info.get("selected_outcome") or outcome or "").lower()
+        token_index: int | None = None
+        if isinstance(tokens, list):
+            for index, token in enumerate(tokens):
+                if not isinstance(token, dict):
+                    continue
+                if selected_token_id and str(token.get("token_id") or "") == selected_token_id:
+                    token_index = index
+                    if token.get("price") is not None:
+                        return token.get("price"), token_index
+                    break
+                if selected_outcome and str(token.get("outcome") or "").lower() == selected_outcome:
+                    token_index = index
+                    if token.get("price") is not None:
+                        return token.get("price"), token_index
+        return None, token_index
+
+    @staticmethod
+    def _decode_sequence(value: Any) -> list[Any]:
+        if value in (None, ""):
+            return []
+        if isinstance(value, list):
+            return value
+        if isinstance(value, tuple):
+            return list(value)
+        if isinstance(value, str):
+            try:
+                decoded = json.loads(value)
+            except json.JSONDecodeError:
+                return []
+            return decoded if isinstance(decoded, list) else []
+        return []

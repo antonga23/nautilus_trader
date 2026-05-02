@@ -569,21 +569,27 @@ class SnapshotIngestor:
             ),
         ]
 
-        market_names: set[str] = set()
-        event_keys: set[str] = set()
-        discovered_sports: set[str] = set()
-        normalized_records: list[NormalizedSelectionRecord] = []
         coverage_report: dict[str, Any] = {
             "provider": "POLYMARKET",
             "sports": {},
         }
 
         discovered_markets: dict[str, dict[str, Any]] = {}
+        canonical_market_counts: dict[str, int] = {}
         for sport_metadata in sports_metadata:
+            refresh_target = self._polymarket_refresh_target(
+                sport_metadata=sport_metadata,
+                target_sports=target_sports,
+                canonical_market_counts=canonical_market_counts,
+                limit=limit,
+            )
+            if refresh_target is None:
+                continue
+            canonical_sport, remaining_limit = refresh_target
             sport_result = self._refresh_polymarket_sport(
                 sport_metadata=sport_metadata,
                 target_sports=target_sports,
-                limit=limit,
+                limit=remaining_limit,
                 request=request,
                 parse=parse,
                 context=context,
@@ -592,37 +598,31 @@ class SnapshotIngestor:
             if sport_result is None:
                 continue
             canonical_sport, sport_markets, sport_coverage, sport_source_refs = sport_result
-            coverage_report["sports"][canonical_sport] = sport_coverage
+            new_markets = {
+                market_id: market
+                for market_id, market in sport_markets.items()
+                if market_id not in discovered_markets
+            }
+            canonical_market_counts[canonical_sport] = canonical_market_counts.get(
+                canonical_sport, 0
+            ) + len(new_markets)
+            self._merge_polymarket_coverage(
+                coverage_report=coverage_report,
+                canonical_sport=canonical_sport,
+                sport_coverage=sport_coverage,
+                market_count=canonical_market_counts[canonical_sport],
+            )
             source_refs.extend(sport_source_refs)
-            discovered_markets.update(sport_markets)
+            discovered_markets.update(new_markets)
 
-        for market in discovered_markets.values():
-            normalized_market = normalize_gamma_market_to_clob_format(market)
-            for token in normalized_market.get("tokens", []):
-                token_id = token.get("token_id")
-                outcome = token.get("outcome")
-                if not token_id or not outcome:
-                    continue
-                instrument = parse_polymarket_instrument(
-                    market_info=normalized_market,
-                    token_id=str(token_id),
-                    outcome=str(outcome),
-                )
-                transformed = PolymarketSportsTransformer.to_crypto_betting_instrument(instrument)
-                if transformed is None:
-                    continue
-                selection = self._normalizer.normalize(transformed)
-                discovered_sports.add(selection.sport)
-                event_keys.add(selection.event_key)
-                market_names.add(selection.raw_market_name or selection.market_type)
-                normalized_records.append(
-                    NormalizedSelectionRecord(
-                        record_id=self._normalized_record_id("POLYMARKET", selection),
-                        provider="POLYMARKET",
-                        selection=selection,
-                        manifest_id=None,
-                    ),
-                )
+        normalized_records, discovered_sports, event_keys, market_names = (
+            self._polymarket_normalized_records(
+                discovered_markets=discovered_markets,
+                normalize_gamma_market_to_clob_format=normalize_gamma_market_to_clob_format,
+                parse_polymarket_instrument=parse_polymarket_instrument,
+                transformer=PolymarketSportsTransformer,
+            )
+        )
 
         source_refs.append(
             self._save_snapshot(
@@ -657,6 +657,106 @@ class SnapshotIngestor:
         self._persist_normalized_records(normalized_records, manifest.manifest_id)
         self._store.save_manifest(manifest)
         return manifest
+
+    def _polymarket_normalized_records(
+        self,
+        *,
+        discovered_markets: dict[str, dict[str, Any]],
+        normalize_gamma_market_to_clob_format: Any,
+        parse_polymarket_instrument: Any,
+        transformer: Any,
+    ) -> tuple[list[NormalizedSelectionRecord], set[str], set[str], set[str]]:
+        market_names: set[str] = set()
+        event_keys: set[str] = set()
+        discovered_sports: set[str] = set()
+        normalized_records: list[NormalizedSelectionRecord] = []
+        for market in discovered_markets.values():
+            normalized_market = normalize_gamma_market_to_clob_format(market)
+            for token in normalized_market.get("tokens", []):
+                token_id = token.get("token_id")
+                outcome = token.get("outcome")
+                if not token_id or not outcome:
+                    continue
+                instrument = parse_polymarket_instrument(
+                    market_info=normalized_market,
+                    token_id=str(token_id),
+                    outcome=str(outcome),
+                )
+                transformed = transformer.to_crypto_betting_instrument(instrument)
+                if transformed is None:
+                    continue
+                if not self._polymarket_has_event_participants(transformed):
+                    continue
+                selection = self._normalizer.normalize(transformed)
+                discovered_sports.add(selection.sport)
+                event_keys.add(selection.event_key)
+                market_names.add(selection.raw_market_name or selection.market_type)
+                normalized_records.append(
+                    NormalizedSelectionRecord(
+                        record_id=self._normalized_record_id("POLYMARKET", selection),
+                        provider="POLYMARKET",
+                        selection=selection,
+                        manifest_id=None,
+                    ),
+                )
+        return normalized_records, discovered_sports, event_keys, market_names
+
+    @staticmethod
+    def _polymarket_has_event_participants(instrument: Any) -> bool:
+        info = getattr(instrument, "info", {})
+        sports_market = info.get("sports_market") if isinstance(info, dict) else {}
+        if not isinstance(sports_market, dict):
+            return False
+        return bool(sports_market.get("home_name") and sports_market.get("away_name"))
+
+    @staticmethod
+    def _polymarket_refresh_target(
+        *,
+        sport_metadata: Any,
+        target_sports: set[str],
+        canonical_market_counts: dict[str, int],
+        limit: int,
+    ) -> tuple[str, int] | None:
+        from nautilus_trader.adapters.betting.semantics.polymarket_transform import (
+            PolymarketSportsTransformer,
+        )
+
+        if not isinstance(sport_metadata, dict):
+            return None
+        sport_code = str(sport_metadata.get("sport") or "").strip()
+        canonical_sport = PolymarketSportsTransformer.canonical_sport(sport_code)
+        if canonical_sport is None:
+            return None
+        if target_sports and canonical_sport not in target_sports:
+            return None
+        remaining_limit = max(limit - canonical_market_counts.get(canonical_sport, 0), 0)
+        if remaining_limit <= 0:
+            return None
+        return canonical_sport, remaining_limit
+
+    @staticmethod
+    def _merge_polymarket_coverage(
+        *,
+        coverage_report: dict[str, Any],
+        canonical_sport: str,
+        sport_coverage: dict[str, Any],
+        market_count: int,
+    ) -> None:
+        coverage = coverage_report["sports"].setdefault(
+            canonical_sport,
+            {
+                "sport_codes": [],
+                "tag_ids": [],
+                "event_count": 0,
+                "market_count": 0,
+                "attempts": [],
+            },
+        )
+        coverage["sport_codes"].append(sport_coverage.get("sport_code"))
+        coverage["tag_ids"].extend(sport_coverage.get("tag_ids", []))
+        coverage["event_count"] += int(sport_coverage.get("event_count") or 0)
+        coverage["market_count"] = market_count
+        coverage["attempts"].extend(sport_coverage.get("attempts", []))
 
     @staticmethod
     def _polymarket_get_json(*, request: Any, context: Any, endpoint: str) -> Any:
@@ -703,6 +803,8 @@ class SnapshotIngestor:
         attempts: list[dict[str, Any]] = []
         source_refs: list[str] = []
         for tag in selected_tags:
+            if len(discovered_markets) >= limit:
+                break
             events, snapshot_id, attempt = self._polymarket_events_for_tag(
                 canonical_sport=canonical_sport,
                 sport_code=sport_code,
@@ -727,6 +829,8 @@ class SnapshotIngestor:
                 sport_events=sport_events,
                 discovered_markets=discovered_markets,
             )
+            if len(discovered_markets) >= limit:
+                break
 
         return (
             canonical_sport,

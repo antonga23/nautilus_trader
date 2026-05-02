@@ -91,6 +91,7 @@ class MarketNormalizer:
             sport=sport,
             info=info,
         )
+        resolution_policy = cls._normal_resolution_policy(info)
 
         event_key = cls._event_key_from_fields(
             event_id=str(getattr(instrument, "event_id", instrument.id)),
@@ -124,7 +125,7 @@ class MarketNormalizer:
             raw_outcome=str(getattr(instrument, "outcome", "")),
             outcome_key=str(outcome_key),
             rules_flags=rules_flags,
-            resolution_policy=(),
+            resolution_policy=resolution_policy,
             source_ref=str(instrument.id),
         )
 
@@ -318,6 +319,15 @@ class MarketNormalizer:
     def _info_dict(item: Mapping[str, Any] | Any) -> dict[str, Any]:
         info = MarketNormalizer._value(item, "info")
         return info if isinstance(info, dict) else {}
+
+    @staticmethod
+    def _normal_resolution_policy(info: dict[str, Any]) -> tuple[tuple[str, str], ...]:
+        raw_sports_meta = info.get("sports_market")
+        sports_meta: dict[str, Any] = raw_sports_meta if isinstance(raw_sports_meta, dict) else {}
+        raw_policy = info.get("resolution_policy") or sports_meta.get("resolution_policy") or {}
+        if isinstance(raw_policy, Mapping):
+            return tuple(sorted((str(key), str(value)) for key, value in raw_policy.items()))
+        return ()
 
     @staticmethod
     def _event_key_from_fields(

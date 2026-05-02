@@ -335,7 +335,7 @@ class RuleStore:
         return json.loads(raw.decode("utf-8"))
 
     def _write_bytes(self, key: str, raw: bytes) -> None:
-        self._cache.add(key, gzip.compress(raw))
+        self._cache.add(key, gzip.compress(raw, compresslevel=1))
 
     def _read_bytes(self, key: str) -> bytes | None:
         raw = self._cache.get(key)
