@@ -41,6 +41,10 @@ POLYMARKET_DATA_FACTORY_PATH = (
 POLYMARKET_EXEC_FACTORY_PATH = (
     "nautilus_trader.adapters.polymarket.factories:PolymarketLiveExecClientFactory"
 )
+BETDEX_DATA_CONFIG_PATH = "nautilus_trader.adapters.betdex.config:BetDexDataClientConfig"
+BETDEX_EXEC_CONFIG_PATH = "nautilus_trader.adapters.betdex.config:BetDexExecClientConfig"
+BETDEX_DATA_FACTORY_PATH = "nautilus_trader.adapters.betdex.factories:BetDexLiveDataClientFactory"
+BETDEX_EXEC_FACTORY_PATH = "nautilus_trader.adapters.betdex.factories:BetDexLiveExecClientFactory"
 STRATEGY_PATH = "nautilus_trader.examples.strategies.betting_arbitrage:BettingArbitrageStrategy"
 STRATEGY_CONFIG_PATH = (
     "nautilus_trader.examples.strategies.betting_arbitrage:BettingArbitrageConfig"
@@ -58,6 +62,9 @@ DUMMY_SECRETS = {
     "POLYMARKET_PASSPHRASE": "dummy-polymarket-passphrase",
     "POLYMARKET_PRIVATE_KEY": "0x" + "3" * 64,
     "POLYMARKET_FUNDER": "0x" + "4" * 40,
+    "BETDEX_APP_ID": "dummy-betdex-app-id",
+    "BETDEX_API_KEY": "dummy-betdex-api-key",
+    "BETDEX_WALLET_ID": "dummy-betdex-wallet-id",
 }
 
 
@@ -155,6 +162,9 @@ def _add_venue_clients(
     elif venue.venue == "POLYMARKET":
         data_builder = _build_polymarket_data_importable
         exec_builder = _build_polymarket_exec_importable
+    elif venue.venue == "BETDEX":
+        data_builder = _build_betdex_data_importable
+        exec_builder = _build_betdex_exec_importable
     else:
         raise ValueError(f"Unsupported venue {venue.venue}")
 
@@ -396,6 +406,87 @@ def _build_polymarket_exec_importable(
         config=_drop_none(config),
         factory=ImportableFactoryConfig(path=POLYMARKET_EXEC_FACTORY_PATH),
     )
+
+
+def _build_betdex_data_importable(
+    venue: BettingVenueManifest,
+    manifest: BettingArbitrageNodeManifest,
+) -> ImportableConfig:
+    prefix = _credential_prefix(venue)
+    provider_config = _betdex_instrument_provider_dict(venue, manifest, prefix)
+    config = {
+        "app_id": _resolve_secret(prefix, "APP_ID", manifest.allow_dummy_credentials),
+        "api_key": _resolve_secret(prefix, "API_KEY", manifest.allow_dummy_credentials),
+        "api_url": venue.api_url,
+        "stream_url": venue.ws_url,
+        "instrument_provider": provider_config,
+        "auto_subscribe_quote_ticks": _provider_auto_subscribe_quote_ticks(venue, manifest),
+        "quote_subscription_limit": venue.quote_subscription_limit,
+        "quote_poll_interval_secs": venue.order_book_poll_interval_secs,
+        "quote_poll_summary_interval_secs": venue.order_book_poll_summary_interval_secs,
+        "quote_poll_concurrency": venue.order_book_concurrency,
+        "routing": {"venues": [venue.venue]},
+    }
+    return ImportableConfig(
+        path=BETDEX_DATA_CONFIG_PATH,
+        config=_drop_none(config),
+        factory=ImportableFactoryConfig(path=BETDEX_DATA_FACTORY_PATH),
+    )
+
+
+def _build_betdex_exec_importable(
+    venue: BettingVenueManifest,
+    manifest: BettingArbitrageNodeManifest,
+) -> ImportableConfig:
+    prefix = _credential_prefix(venue)
+    provider_config = _betdex_instrument_provider_dict(venue, manifest, prefix)
+    config = {
+        "app_id": _resolve_secret(prefix, "APP_ID", manifest.allow_dummy_credentials),
+        "api_key": _resolve_secret(prefix, "API_KEY", manifest.allow_dummy_credentials),
+        "wallet_id": _resolve_secret(prefix, "WALLET_ID", manifest.allow_dummy_credentials),
+        "api_url": venue.api_url,
+        "instrument_provider": provider_config,
+        "base_currency": "USDC",
+        "allow_production_execution": False,
+        "routing": {"venues": [venue.venue]},
+    }
+    return ImportableConfig(
+        path=BETDEX_EXEC_CONFIG_PATH,
+        config=_drop_none(config),
+        factory=ImportableFactoryConfig(path=BETDEX_EXEC_FACTORY_PATH),
+    )
+
+
+def _betdex_instrument_provider_dict(
+    venue: BettingVenueManifest,
+    manifest: BettingArbitrageNodeManifest,
+    prefix: str,
+) -> dict[str, Any]:
+    metadata = venue.metadata or {}
+    event_discovery_limit = metadata.get("event_discovery_limit")
+    config = {
+        "app_id": _resolve_secret(prefix, "APP_ID", manifest.allow_dummy_credentials),
+        "api_key": _resolve_secret(prefix, "API_KEY", manifest.allow_dummy_credentials),
+        "api_url": venue.api_url,
+        "load_all": venue.load_all_instruments,
+        "event_ids": sorted(venue.instrument_ids or []) if not venue.load_all_instruments else None,
+        "sport_keys": sorted(venue.sport_keys) if venue.sport_keys else None,
+        "category_ids": _split_metadata_ids(metadata.get("category_ids")),
+        "subcategory_ids": _split_metadata_ids(metadata.get("subcategory_ids")),
+        "event_group_ids": _split_metadata_ids(metadata.get("event_group_ids")),
+        "live_only": venue.live_only,
+        "instrument_load_limit": venue.instrument_load_limit,
+        "market_discovery_limit": venue.market_discovery_limit,
+        "event_discovery_limit": int(event_discovery_limit) if event_discovery_limit else None,
+    }
+    return _drop_none(config)
+
+
+def _split_metadata_ids(value: str | None) -> list[str] | None:
+    if not value:
+        return None
+    ids = [item.strip() for item in value.split(",") if item.strip()]
+    return sorted(ids) or None
 
 
 def _polymarket_instrument_provider_dict(venue: BettingVenueManifest) -> dict[str, Any]:

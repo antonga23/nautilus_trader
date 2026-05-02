@@ -1,0 +1,46 @@
+{
+  "node_id": "betdex-single-venue",
+  "trader_id": "BETARB-BETDEX-001",
+  "validation_mode": true,
+  "allow_dummy_credentials": false,
+  "log_level": "INFO",
+  "rendered_config_path": "artifacts/strategy-nodes/betdex-single-venue/trading-node-config.json",
+  "status_path": "artifacts/strategy-nodes/betdex-single-venue/status.json",
+  "heartbeat_path": "artifacts/strategy-nodes/betdex-single-venue/heartbeat.json",
+  "semantic_rule_cache_dir": "artifacts/semantic-rule-cache/betdex-single-venue",
+  "timeout_connection": 240.0,
+  "strategy": {
+    "min_profit_margin": "0.02",
+    "max_total_stake": "150",
+    "sport_filter": null,
+    "market_timing_filter": "all",
+    "quote_freshness_profile": "pre_match",
+    "rollover_aware": true,
+    "opportunity_graph_engine": "auto",
+    "auto_execute": false
+  },
+  "venues": [
+    {
+      "venue": "BETDEX",
+      "client_key": "BETDEX_PRIMARY",
+      "data_enabled": true,
+      "execution_enabled": false,
+      "credential_prefix": "BETDEX",
+      "load_all_instruments": true,
+      "sport_keys": ["soccer", "tennis", "basketball", "american_football"],
+      "instrument_load_limit": 120,
+      "market_discovery_limit": 120,
+      "auto_subscribe_quote_ticks": true,
+      "quote_subscription_limit": 80,
+      "order_book_poll_interval_secs": 10.0,
+      "order_book_poll_summary_interval_secs": 30.0,
+      "order_book_concurrency": 20,
+      "live_only": false
+    }
+  ],
+  "metadata": {
+    "phase": "betdex-single-venue-validation",
+    "track": "betdex-monaco",
+    "note": "Validation-mode only. BetDex is modeled as an aggregator venue; do not deploy it with SXBET or POLYMARKET in the same node."
+  }
+}
