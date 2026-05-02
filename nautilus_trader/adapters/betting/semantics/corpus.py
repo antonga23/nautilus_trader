@@ -604,7 +604,8 @@ class SnapshotIngestor:
                 if market_id not in discovered_markets
             }
             canonical_market_counts[canonical_sport] = canonical_market_counts.get(
-                canonical_sport, 0
+                canonical_sport,
+                0,
             ) + len(new_markets)
             self._merge_polymarket_coverage(
                 coverage_report=coverage_report,
