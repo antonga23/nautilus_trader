@@ -2042,6 +2042,8 @@ class TestBettingArbitrageNodeRunner:
         )
         assert "min_positive_margin_candidates=1" in workflow
         assert "min_cross_venue_candidates=1" in workflow
+        assert "wait_timeout_seconds=1200" in workflow
+        assert "--timeout-seconds $wait_timeout_seconds" in workflow
         assert "--min-positive-margin-candidates $min_positive_margin_candidates" in workflow
         assert "--min-cross-venue-candidates $min_cross_venue_candidates" in workflow
         assert "--require-rust-semantic-topology" in workflow
