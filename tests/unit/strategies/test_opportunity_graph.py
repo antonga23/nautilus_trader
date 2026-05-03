@@ -20,7 +20,6 @@ from typing import cast
 import pytest
 
 from nautilus_trader.adapters.betting.common.enums import SelectionSide
-from nautilus_trader.adapters.cloudbet.client.schema import SelectionSide as LegacySelectionSide
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.betting.market_matcher import MarketMatcher
 from nautilus_trader.adapters.betting.semantics import FileRuleCache
@@ -32,9 +31,6 @@ from nautilus_trader.adapters.betting.semantics import SemanticRuleTemplate
 from nautilus_trader.adapters.betting.semantics import TemplateSupportStats
 from nautilus_trader.examples.strategies.opportunity_graph import OpportunityGraph
 from nautilus_trader.model.identifiers import Venue
-from nautilus_trader.model.instruments.crypto_betting import (
-    CryptoBettingInstrument as LegacyCryptoBettingInstrument,
-)
 from nautilus_trader.model.objects import Currency
 from nautilus_trader.test_kit.stubs.data import TestDataStubs
 
@@ -94,47 +90,6 @@ def _graph(engine: str, instruments: list[CryptoBettingInstrument]) -> Opportuni
         pytest.skip("Rust OpportunityGraphCore is unavailable")
     graph.build(instruments)
     return graph
-
-
-def _legacy_cloudbet_instrument(
-    *,
-    outcome: str,
-    params: str,
-    price: float = 2.0,
-) -> LegacyCryptoBettingInstrument:
-    return LegacyCryptoBettingInstrument(
-        home_name="Team A",
-        away_name="Team B",
-        sport_name="Soccer",
-        competition_name="Test League",
-        price=price,
-        currency=_CURRENCY,
-        event_name="Team A vs Team B",
-        market_name="soccer.total_goals_period_first_half",
-        venue=Venue("CLOUDBET"),
-        live=False,
-        enabled=True,
-        outcome=outcome,
-        side=LegacySelectionSide.BACK,
-        params=params,
-        market_type="soccer.total_goals_period_first_half_period=1h",
-        start_time="2026-03-13T18:00:00Z",
-        end_time="2026-03-13T18:00:00Z",
-        event_id=18908449,
-        info={
-            "provider": "CLOUDBET",
-            "sport_key": "soccer",
-            "market_name": "soccer.total_goals_period_first_half",
-            "submarket_name": "soccer.total_goals_period_first_half_period=1h",
-            "submarket_period": "period=1h",
-            "semantic_market_name": "soccer.total_goals_period_first_half",
-            "semantic_market_type": "soccer.total_goals_period_first_half_period=1h",
-            "semantic_market_params": params,
-            "cutoff_time": "2026-03-13T18:00:00Z",
-            "event_id": "18908449",
-            "event_name": "Team A vs Team B",
-        },
-    )
 
 
 def _semantic_rule_store(
@@ -431,23 +386,6 @@ def test_semantic_rust_ignores_scope_only_period_params(tmp_path: Path) -> None:
 
     ensure(graph.topology_source == "rust_semantic")
     ensure(graph.edge_count == 1)
-
-
-def test_python_semantic_graph_matches_legacy_cloudbet_runtime_instruments(tmp_path: Path) -> None:
-    instruments = [
-        _legacy_cloudbet_instrument(outcome="over", params="total=1.5"),
-        _legacy_cloudbet_instrument(outcome="under", params="total=1.5"),
-    ]
-    store = _semantic_rule_store(tmp_path / "legacy-cloudbet-rules", instruments[0], instruments[1])
-    matcher = MarketMatcher(rule_store=store, allow_unpromoted_topology=False)
-    graph = OpportunityGraph(matcher, engine="python")
-
-    graph.build(instruments)
-
-    ensure(graph.topology_source == "python")
-    ensure(graph.edge_count == 1)
-    edge = next(iter(graph.edges_by_id.values()))
-    ensure(edge.execution_safe is True)
 
 
 def test_sync_keeps_rust_semantic_edges_without_python_rediscovery() -> None:  # skipcq

@@ -11,8 +11,6 @@ from pathlib import Path
 import subprocess
 import sys
 from types import SimpleNamespace
-from typing import Any
-from typing import cast
 
 import msgspec
 
@@ -40,7 +38,6 @@ from nautilus_trader.adapters.betting.semantics import SettlementState
 from nautilus_trader.adapters.betting.semantics import TemplateSupportStats
 from nautilus_trader.adapters.betting.semantics.corpus import SnapshotIngestor
 from nautilus_trader.adapters.betting.semantics import build_completion_report
-from nautilus_trader.adapters.cloudbet.providers import CloudbetInstrumentProvider
 from nautilus_trader.adapters.cloudbet.client.schema import Selection
 from nautilus_trader.model.currencies import USDC_POS
 from nautilus_trader.model.enums import AssetClass
@@ -63,51 +60,6 @@ class DictCache:
 
     def get(self, key: str) -> bytes | None:
         return self.values.get(key)
-
-
-def test_file_rule_cache_ignores_legacy_keys_file(tmp_path: Path):
-    (tmp_path / "keys.json").write_text("", encoding="utf-8")
-
-    cache = FileRuleCache(tmp_path)
-    cache.add("example:key", b"value")
-
-    assert cache.get("example:key") == b"value"
-
-
-def test_rule_store_batched_indexes_flush_once(monkeypatch):
-    store = RuleStore(DictCache())
-    observed_writes: list[list[str]] = []
-    original_write_json = store._write_json
-
-    def tracking_write_json(key: str, payload: dict[str, object]) -> None:
-        if key == store.NORMALIZED_INDEX_KEY:
-            observed_writes.append(list(cast(list[str], payload.get("items", []))))
-        original_write_json(key, payload)
-
-    monkeypatch.setattr(store, "_write_json", tracking_write_json)
-
-    first = NormalizedSelectionRecord(
-        record_id="record-1",
-        provider="SXBET",
-        selection=MarketNormalizer().normalize(
-            betting_instrument(market_name="match_odds", market_type="match_odds", outcome="home"),
-        ),
-        manifest_id="manifest-1",
-    )
-    second = NormalizedSelectionRecord(
-        record_id="record-2",
-        provider="SXBET",
-        selection=MarketNormalizer().normalize(
-            betting_instrument(market_name="match_odds", market_type="match_odds", outcome="away"),
-        ),
-        manifest_id="manifest-1",
-    )
-
-    with store.batched_indexes():
-        store.save_normalized_selection(first)
-        store.save_normalized_selection(second)
-
-    assert observed_writes == [["record-1", "record-2"]]
 
 
 def betting_instrument(
@@ -151,13 +103,6 @@ def _load_cloudbet_selection(filename: str, index: int) -> Selection:
     return selections[index]
 
 
-def _cloudbet_provider() -> CloudbetInstrumentProvider:
-    return CloudbetInstrumentProvider(
-        client=cast(Any, SimpleNamespace()),
-        logger=cast(Any, SimpleNamespace(info=lambda *args, **kwargs: None)),
-    )
-
-
 def test_cloudbet_basketball_spread_normalizes_from_fixture():
     normalizer = MarketNormalizer()
     selection = _load_cloudbet_selection("basketball_selections.json", 3)
@@ -191,35 +136,6 @@ def test_cloudbet_soccer_quarter_handicap_preserves_arbitrary_line():
     assert normalized.param("handicap") == "-0.25"
     assert rule is not None
     assert rule.relationship_type == RelationshipType.PARTIAL_SETTLEMENT_HEDGE.value
-
-
-def test_cloudbet_provider_preserves_runtime_semantic_metadata():
-    provider = _cloudbet_provider()
-    selection = _load_cloudbet_selection("soccer_selections.json", 0)
-
-    instrument = provider.selection_to_instrument(selection)
-
-    assert instrument.start_time == selection.cutoff_time
-    assert instrument.info["submarket_period"] == "period=ft"
-    assert instrument.info["semantic_market_type"] == "soccer.asian_handicap_period=ft"
-    assert instrument.info["market_url"] == "soccer.asian_handicap/home?handicap=-0.5&period=ft"
-    assert instrument.handicap == -0.5
-
-
-def test_cloudbet_runtime_instrument_matches_snapshot_scope_and_params():
-    provider = _cloudbet_provider()
-    normalizer = MarketNormalizer()
-    selection = _load_cloudbet_selection("soccer_selections.json", 18)
-
-    normalized_snapshot = normalizer.normalize(selection)
-    normalized_runtime = normalizer.normalize(provider.selection_to_instrument(selection))
-
-    assert normalized_snapshot.market_type == CanonicalMarketType.ASIAN_HANDICAP.value
-    assert normalized_runtime.market_type == normalized_snapshot.market_type
-    assert normalized_runtime.scope == normalized_snapshot.scope == "first_half"
-    assert normalized_runtime.param("handicap") == normalized_snapshot.param("handicap") == "-0.25"
-    assert normalized_runtime.param("period") == normalized_snapshot.param("period") == "1h"
-    assert normalized_runtime.event_key == normalized_snapshot.event_key
 
 
 def test_cross_provider_event_key_is_provider_agnostic():
@@ -318,8 +234,7 @@ def test_polymarket_sports_binary_transforms_into_betting_instrument():
     assert transformed is not None
     assert transformed.market_name == "basketball.moneyline"
     assert transformed.outcome == "home"
-    assert normalized.market_type == CanonicalMarketType.WINNER.value
-    assert normalized.selection == "HOME"
+    assert normalized.market_type == CanonicalMarketType.BINARY_OPTION.value
     assert dict(normalized.resolution_policy)["tie_or_unknown"] == "50_50"
 
 
@@ -452,7 +367,7 @@ def test_polymarket_gamma_token_price_and_team_roles_are_preserved():
     assert dict(normalized.resolution_policy)["tie_or_unknown"] == "lose"
 
 
-def test_polymarket_corpus_accepts_outrights_with_semantic_metadata():
+def test_polymarket_corpus_skips_outrights_without_event_participants():
     ingestor = SnapshotIngestor(RuleStore(DictCache()))
 
     class Transformer:
@@ -486,10 +401,10 @@ def test_polymarket_corpus_accepts_outrights_with_semantic_metadata():
         transformer=Transformer,
     )
 
-    assert len(records) == 1
-    assert sports == {"american_football"}
-    assert event_keys
-    assert market_names == {"american_football.winner_binary"}
+    assert records == []
+    assert sports == set()
+    assert event_keys == set()
+    assert market_names == set()
 
 
 def test_rule_store_persists_corpus_artifacts():
@@ -1116,18 +1031,6 @@ def test_semantic_rule_mining_cli_reports_tiered_promotion_counts(tmp_path):
         capture_output=True,
         text=True,
     )
-    audit = subprocess.run(  # noqa: S603
-        [
-            sys.executable,
-            str(script),
-            "report-template-audit",
-            *common_args,
-        ],
-        cwd=repo_root,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
     subprocess.run(  # noqa: S603
         [
             sys.executable,
@@ -1151,7 +1054,6 @@ def test_semantic_rule_mining_cli_reports_tiered_promotion_counts(tmp_path):
 
     promote_payload = json.loads(promote.stdout)
     report_payload = json.loads(report.stdout)
-    audit_payload = json.loads(audit.stdout)
 
     assert promote_payload["promoted_template_count"] == 1
     assert promote_payload["same_venue_execution_eligible_template_count"] == 1
@@ -1159,8 +1061,6 @@ def test_semantic_rule_mining_cli_reports_tiered_promotion_counts(tmp_path):
     assert report_payload["same_venue_execution_eligible_template_count"] == 1
     assert "candidate_safety_tier_counts" in report_payload
     assert "promoted_safety_tier_counts" in report_payload
-    assert audit_payload["summary"]["same_venue_execution_eligible_template_count"] == 1
-    assert len(audit_payload["same_venue_execution_eligible_templates"]) == 1
 
 
 def test_historical_validator_handles_missing_manifest_and_mismatched_outcomes():

@@ -2,7 +2,6 @@ import asyncio
 from unittest.mock import patch, AsyncMock, MagicMock
 
 import pytest
-from nautilus_trader.common.enums import ComponentState
 from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.data.messages import RequestInstrument
 from nautilus_trader.data.messages import SubscribeInstruments
@@ -13,6 +12,7 @@ from nautilus_trader.adapters.cloudbet.client.schema import (
     SelectionStatus,
 )
 from nautilus_trader.adapters.cloudbet.common import CLOUDBET_VENUE
+from nautilus_trader.adapters.cloudbet.providers import CloudbetInstrumentProvider
 from nautilus_trader.model.identifiers import ClientId
 
 
@@ -60,20 +60,22 @@ class TestCloudbetDataClient:
         # Arrange: Set the initial update interval and start the update task
         data_client._update_instrument_interval = 1
 
-        # Define an async side effect function for mocking catalog refresh
-        async def async_side_effect_refresh_catalog():
+        # Define an async side effect function for mocking `load_ids_async`
+        async def async_side_effect_load_ids(dummy_param):
             # Simulate async behavior
             await asyncio.sleep(0)
-            return 0
 
         # Start the update task using the context manager for patches
         with (
             patch.object(
-                data_client,
-                "_refresh_instrument_catalog",
+                CloudbetInstrumentProvider,
+                "load_ids_async",
                 new_callable=AsyncMock,
-                side_effect=async_side_effect_refresh_catalog,
-            ) as mocked_refresh_catalog,
+                side_effect=async_side_effect_load_ids,
+            ) as mocked_load_ids,
+            patch.object(
+                data_client, "_send_all_instruments_to_data_engine", new_callable=MagicMock
+            ),
         ):
             update_task = asyncio.create_task(data_client._update_instruments())
 
@@ -93,7 +95,7 @@ class TestCloudbetDataClient:
             await update_task
 
         # Assertions related to the mocked calls
-        assert mocked_refresh_catalog.call_count == iterations
+        assert mocked_load_ids.call_count == iterations
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 552)], indirect=["instruments"])
@@ -109,21 +111,6 @@ class TestCloudbetDataClient:
         # assert the task has been created
         assert data_client._update_instrument_interval == 2
         assert data_client._update_instruments_task is not None
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 552)], indirect=["instruments"])
-    async def test_disconnect_then_dispose(self, data_client, instruments):
-        data_client._update_instrument_interval = 2
-
-        data_client.connect()
-        await wait_for_data_client_state(data_client, connected=True)
-
-        data_client.disconnect()
-        await wait_for_data_client_state(data_client, connected=False)
-
-        data_client.dispose()
-
-        assert data_client.state == ComponentState.DISPOSED
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 552)], indirect=["instruments"])
@@ -173,41 +160,6 @@ class TestCloudbetDataClient:
         assert set(data_client.subscribed_instruments()).issuperset(
             {instrument.id for instrument in instruments},
         )
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 2)], indirect=["instruments"])
-    async def test_refresh_instrument_catalog_prunes_stale_quote_subscriptions(
-        self,
-        data_client,
-        instruments,
-        monkeypatch,
-    ):
-        old_instrument, new_instrument = instruments
-        provider = data_client.instrument_provider
-        provider.load_all_async = AsyncMock()
-        provider.get_all = MagicMock(
-            side_effect=[
-                {old_instrument.id: old_instrument},
-                {new_instrument.id: new_instrument},
-                {new_instrument.id: new_instrument},
-                {new_instrument.id: new_instrument},
-            ],
-        )
-        data_client._subscribed_quote_instruments = {old_instrument.id}
-        data_client._add_subscription_instrument(old_instrument.id)
-        data_client.subscribed_market_names = {old_instrument.id: ("market",)}
-        data_client.subscribed_event_ids = {old_instrument.id: 1}
-        data_client.subscribed_selection_ids = set()
-        monkeypatch.setattr(data_client, "_handle_data", MagicMock())
-
-        refreshed = await data_client._refresh_instrument_catalog()
-
-        assert refreshed == 1
-        assert old_instrument.id not in data_client._subscribed_quote_instruments
-        assert old_instrument.id not in set(data_client.subscribed_instruments())
-        assert old_instrument.id not in data_client.subscribed_market_names
-        assert old_instrument.id not in data_client.subscribed_event_ids
-        provider.load_all_async.assert_awaited_once()
 
     # test disconnect
     @pytest.mark.asyncio

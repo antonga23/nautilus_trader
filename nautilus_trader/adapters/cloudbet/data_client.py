@@ -110,11 +110,8 @@ class CloudbetDataClient(LiveMarketDataClient):
             client=client, logger=logger, message_handler=self.on_market_update
         )
 
-        self._update_instrument_interval: float | None = (
-            float(self._config.update_instruments_interval_secs)
-            if getattr(self._config, "update_instruments_interval_secs", None) is not None
-            else None
-        )
+        # TODO: pass from config and and function to update interval
+        self._update_instrument_interval: int = 60 * 5  # Once per hour (hardcode)
         self._update_instruments_task: asyncio.Task | None = None
         self._interval_update_requested: bool = False
         self._updates_received: int = 0  # Counter to track the number of updates
@@ -171,8 +168,7 @@ class CloudbetDataClient(LiveMarketDataClient):
             LogColor.GREEN,
         )
         self._auto_subscribe_loaded_instruments()
-        if self._update_instrument_interval is not None:
-            self._update_instruments_task = self.create_task(self._update_instruments())
+        self._update_instruments_task = self.create_task(self._update_instruments())
 
     async def _disconnect(self) -> None:
         if not self.is_connected:
@@ -203,7 +199,7 @@ class CloudbetDataClient(LiveMarketDataClient):
         # TODO: create and then remove data_client specific cache
         # await self._remove_all_instruments_from_data_engine()
 
-    def _dispose(self) -> None:
+    async def _dispose(self) -> None:
         if self.is_connected:
             self._log.error("Cannot dispose a connected data client.")
             return
@@ -448,47 +444,6 @@ class CloudbetDataClient(LiveMarketDataClient):
         if self._quote_polling_task is None or self._quote_polling_task.done():
             self._quote_polling_task = asyncio.create_task(self._poll_quote_ticks())
 
-    async def _refresh_instrument_catalog(self) -> int:
-        previous_ids = set(self._instrument_provider.get_all().keys())
-        await self._instrument_provider.load_all_async(self._market_filter)
-        current_ids = set(self._instrument_provider.get_all().keys())
-        self._prune_stale_subscriptions(current_ids)
-        self._send_all_instruments_to_data_engine()
-        if self._quote_polling_enabled:
-            self._auto_subscribe_loaded_instruments()
-        return len(current_ids - previous_ids)
-
-    def _prune_stale_subscriptions(self, current_ids: set[InstrumentId]) -> None:
-        stale_quote_ids = self._subscribed_quote_instruments - current_ids
-        for instrument_id in stale_quote_ids:
-            self._subscribed_quote_instruments.discard(instrument_id)
-
-        stale_ids = set(self.subscribed_instruments()) - current_ids
-        for instrument_id in stale_ids:
-            self._remove_subscription_instrument(instrument_id)
-            self.subscribed_market_names.pop(instrument_id, None)
-            self.subscribed_event_ids.pop(instrument_id, None)
-
-        if stale_ids:
-            current_selection_ids = set()
-            for instrument_id in self.subscribed_instruments():
-                instrument = self._instrument_provider.find(instrument_id)
-                if not isinstance(instrument, CryptoBettingInstrument):
-                    continue
-                instrument_event_id = int(instrument_id.symbol.value.split("|")[0])
-                instrument_market_name = (instrument_id.symbol.value.split("|")[1],)
-                instrument_outcome = (instrument_id.symbol.value.split("|")[2],)
-                instrument_params = instrument_id.symbol.value.split("|")[3]
-                current_selection_ids.add(
-                    SelectionId(
-                        event_id=instrument_event_id,
-                        market_name=instrument_market_name,
-                        outcome=instrument_outcome,
-                        params=instrument_params,
-                    ),
-                )
-            self.subscribed_selection_ids = current_selection_ids
-
     async def _poll_quote_ticks(self) -> None:
         self._log.info("Starting Cloudbet quote polling loop")
         while self._quote_polling_running:
@@ -594,24 +549,18 @@ class CloudbetDataClient(LiveMarketDataClient):
             while True:
                 # Reset the event at the start of each cycle
                 self._update_event.clear()
-                if self._update_instrument_interval is None:
-                    return
                 self._log.debug(
                     f"Scheduled `update_instruments` to run in "
                     f"{self._update_instrument_interval}s.",
                 )
                 await asyncio.sleep(self._update_instrument_interval)
-                refreshed_count = await self._refresh_instrument_catalog()
+                await self._instrument_provider.load_ids_async(self.subscribed_instruments)
                 # send to Data Engine for processing => add to cache and propagate to subscriptions
+                self._send_all_instruments_to_data_engine()
                 # Signal completion of the update cycle
                 self._update_event.set()
                 # Mark the update cycle as completed and increment the update counter
                 self._updates_received += 1
-                self._log.debug(
-                    "Cloudbet instrument catalog refreshed: "
-                    f"loaded={self._instrument_provider.count} new={refreshed_count} "
-                    f"quote_subscriptions={len(self._subscribed_quote_instruments)}",
-                )
                 # Check if an interval update was requested
                 if self._interval_update_requested:
                     self._interval_update_requested = False  # Reset the flag
@@ -634,7 +583,7 @@ class CloudbetDataClient(LiveMarketDataClient):
                 "Update interval must be greater than 0 seconds and less than 3600 seconds."
             )
             raise ValueError("Update interval must be greater than 0 seconds.")
-        self._update_instrument_interval = float(new_interval)
+        self._update_instrument_interval = new_interval
         self._interval_update_requested = True  # Signal that an interval update has been requested
         # self._log.debug("Update interval set to {x}. It will be applied after the current interval update".format(x=new_interval))
 

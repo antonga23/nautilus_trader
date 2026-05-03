@@ -93,8 +93,6 @@ class SXBetDataClientConfig(LiveDataClientConfig, frozen=True):
         If WebSocket should reconnect on disconnect.
     max_reconnect_attempts : int, default 5
         Maximum WebSocket reconnection attempts.
-    update_instruments_interval_secs : PositiveFloat, optional
-        Interval for refreshing the discovered market catalog in seconds.
     auto_subscribe_quote_ticks : bool, default False
         If loaded instruments should be subscribed for quote polling after connect.
     quote_subscription_limit : PositiveInt, optional
@@ -117,7 +115,6 @@ class SXBetDataClientConfig(LiveDataClientConfig, frozen=True):
     sport_ids: frozenset[int] | None = None
     reconnect_on_disconnect: bool = True
     max_reconnect_attempts: int = 5
-    update_instruments_interval_secs: PositiveFloat | None = 300.0
     auto_subscribe_quote_ticks: bool = False
     quote_subscription_limit: PositiveInt | None = None
     order_book_poll_interval_secs: PositiveFloat = 3.0

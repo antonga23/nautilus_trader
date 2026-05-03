@@ -25,7 +25,6 @@ from decimal import Decimal
 from decimal import InvalidOperation
 import re
 from typing import Any
-from typing import cast
 from urllib import parse
 
 from nautilus_trader.adapters.betting.common.enums import Outcome
@@ -37,7 +36,6 @@ from nautilus_trader.model.instruments import BinaryOption
 
 LINE_PATTERN = re.compile(r"(?<![a-zA-Z0-9])([+-]?\d+(?:\.\d+)?)(?![a-zA-Z0-9])")
 NON_WORD_PATTERN = re.compile(r"[^a-z0-9]+")
-SECOND_HALF_ALIAS_PATTERN = re.compile(r"(?:^|_)2(?:n[d])?_half(?:$|_)")
 
 
 class MarketNormalizer:
@@ -50,8 +48,8 @@ class MarketNormalizer:
         cls,
         item: CryptoBettingInstrument | BinaryOption | Mapping[str, Any] | Any,
     ) -> NormalizedSelection:
-        if isinstance(item, CryptoBettingInstrument) or cls._looks_like_betting_instrument(item):
-            return cls._normalize_betting_instrument(cast(CryptoBettingInstrument, item))
+        if isinstance(item, CryptoBettingInstrument):
+            return cls._normalize_betting_instrument(item)
         if isinstance(item, BinaryOption):
             return cls._normalize_binary_option(item)
         return cls._normalize_snapshot(item)
@@ -62,74 +60,36 @@ class MarketNormalizer:
         instrument: CryptoBettingInstrument,
     ) -> NormalizedSelection:
         info = instrument.info if isinstance(instrument.info, dict) else {}
-        raw_sports_meta = info.get("sports_market")
-        sports_meta: dict[str, Any] = raw_sports_meta if isinstance(raw_sports_meta, dict) else {}
-        market_info: dict[str, Any] = sports_meta or info
-
-        raw_market_name = str(
-            market_info.get("semantic_market_name")
-            or market_info.get("market_name")
-            or getattr(instrument, "market_name", ""),
-        )
-        raw_market_type = str(
-            market_info.get("semantic_market_type")
-            or market_info.get("submarket_name")
-            or market_info.get("market_type")
-            or getattr(instrument, "market_type", ""),
-        )
-        normalized_market_type, market_type_params = cls._split_market_type_params(raw_market_type)
-        normalized_market_name, market_name_params = cls._split_market_type_params(raw_market_name)
-        raw_params_parts = [
-            str(getattr(instrument, "params", "") or ""),
-            str(market_info.get("semantic_market_params") or ""),
-            str(market_info.get("submarket_period") or ""),
-            market_type_params,
-            market_name_params,
-        ]
-        params = cls._parse_params("&".join(part for part in raw_params_parts if part))
+        params = cls._parse_params(getattr(instrument, "params", ""))
         line = cls._extract_line(
-            label=market_info.get("outcome_label"),
+            label=info.get("outcome_label"),
             params=params,
             handicap=getattr(instrument, "handicap", None),
         )
         if line is not None:
             params.setdefault("line", cls._format_decimal(line))
 
-        sport = cls._canonical_sport(
-            str(
-                market_info.get("sport")
-                or market_info.get("sport_key")
-                or getattr(instrument, "sport_name", ""),
-            ),
-        )
+        sport = cls._canonical_sport(str(getattr(instrument, "sport_name", "")))
         scope = cls._scope_from_parts(
-            raw_market_name=normalized_market_name or raw_market_name,
-            raw_market_type=normalized_market_type or raw_market_type,
+            raw_market_name=str(getattr(instrument, "market_name", "")),
+            raw_market_type=str(getattr(instrument, "market_type", "")),
             params=params,
         )
         rules_flags = cls._rules_flags(scope=scope, raw_text=" ".join([str(info), str(params)]))
         market_type = cls._canonical_market_type(
-            raw_market_name=normalized_market_name or raw_market_name,
-            raw_market_type=normalized_market_type or raw_market_type,
-            raw_market_id=market_info.get("raw_market_type"),
-            selection_text=str(
-                market_info.get("selection_role")
-                or market_info.get("team_role")
-                or getattr(instrument, "outcome", ""),
-            ),
+            raw_market_name=str(getattr(instrument, "market_name", "")),
+            raw_market_type=str(getattr(instrument, "market_type", "")),
+            raw_market_id=info.get("raw_market_type"),
+            selection_text=str(getattr(instrument, "outcome", "")),
             params=params,
             sport=sport,
-            info=market_info,
+            info=info,
         )
         selection = cls._canonical_selection(
-            raw_selection=str(
-                market_info.get("selection_role")
-                or market_info.get("team_role")
-                or getattr(instrument, "outcome", ""),
-            ),
+            raw_selection=str(getattr(instrument, "outcome", "")),
             market_type=market_type,
             sport=sport,
-            info=market_info,
+            info=info,
         )
         resolution_policy = cls._normal_resolution_policy(info)
 
@@ -137,13 +97,7 @@ class MarketNormalizer:
             event_id=str(getattr(instrument, "event_id", instrument.id)),
             home_name=str(getattr(instrument, "home_name", "")),
             away_name=str(getattr(instrument, "away_name", "")),
-            cutoff_time=str(
-                getattr(instrument, "start_time", "")
-                or getattr(instrument, "end_time", "")
-                or market_info.get("start_time")
-                or market_info.get("cutoff_time")
-                or "",
-            ),
+            cutoff_time=str(getattr(instrument, "start_time", "")),
             event_name=str(getattr(instrument, "event_name", "")),
             sport=sport,
         )
@@ -164,12 +118,9 @@ class MarketNormalizer:
             market_family=market_type.value,
             selection=selection,
             params=tuple(sorted((str(key), str(value)) for key, value in params.items())),
-            raw_market_name=normalized_market_name or raw_market_name,
+            raw_market_name=str(getattr(instrument, "market_name", "")),
             raw_market_type=str(
-                market_info.get("raw_market_type")
-                or normalized_market_type
-                or raw_market_type
-                or getattr(instrument, "market_type", ""),
+                info.get("raw_market_type", getattr(instrument, "market_type", "")),
             ),
             raw_outcome=str(getattr(instrument, "outcome", "")),
             outcome_key=str(outcome_key),
@@ -314,39 +265,13 @@ class MarketNormalizer:
             scope=scope,
             raw_text=" ".join([str(getattr(instrument, "description", "")), str(info)]),
         )
-        raw_market_name = str(
-            sports_meta.get("market_name") or info.get("market_name") or "binary_option",
-        )
-        raw_market_type = str(
-            sports_meta.get("market_type") or info.get("market_type") or raw_market_name,
-        )
-        market_type = (
-            cls._canonical_market_type(
-                raw_market_name=raw_market_name,
-                raw_market_type=raw_market_type,
-                raw_market_id=info.get("raw_market_type"),
-                selection_text=str(
-                    sports_meta.get("selection_role")
-                    or sports_meta.get("team_role")
-                    or getattr(instrument, "outcome", ""),
-                ),
-                params=params,
-                sport=sport,
-                info={"sports_market": sports_meta} if sports_meta else info,
-            )
-            if sport and sports_meta
-            else CanonicalMarketType.BINARY_OPTION
-        )
         selection = cls._canonical_selection(
-            raw_selection=str(
-                sports_meta.get("selection_role")
-                or sports_meta.get("team_role")
-                or getattr(instrument, "outcome", ""),
-            ),
-            market_type=market_type,
+            raw_selection=str(getattr(instrument, "outcome", "")),
+            market_type=CanonicalMarketType.BINARY_OPTION,
             sport=sport,
             info=sports_meta or info,
         )
+        market_type = CanonicalMarketType.BINARY_OPTION
         condition_id = str(info.get("condition_id") or instrument.id.symbol.value)
         event_key = cls._event_key_from_fields(
             event_id=condition_id,
@@ -371,8 +296,12 @@ class MarketNormalizer:
             market_family=market_type.value,
             selection=selection,
             params=tuple(sorted((str(key), str(value)) for key, value in params.items())),
-            raw_market_name=raw_market_name,
-            raw_market_type=raw_market_type,
+            raw_market_name=str(
+                sports_meta.get("market_name") or info.get("market_name") or "binary_option",
+            ),
+            raw_market_type=str(
+                sports_meta.get("market_type") or info.get("market_type") or "binary_option",
+            ),
             raw_outcome=str(getattr(instrument, "outcome", "")),
             outcome_key=selection.lower(),
             rules_flags=rules_flags,
@@ -385,15 +314,6 @@ class MarketNormalizer:
         if isinstance(item, Mapping):
             return item.get(key)
         return getattr(item, key, None)
-
-    @staticmethod
-    def _looks_like_betting_instrument(item: Any) -> bool:
-        if isinstance(item, (BinaryOption, Mapping)):
-            return False
-        return all(
-            hasattr(item, attr)
-            for attr in ("event_id", "market_name", "market_type", "outcome", "sport_name")
-        )
 
     @staticmethod
     def _info_dict(item: Mapping[str, Any] | Any) -> dict[str, Any]:
@@ -473,19 +393,6 @@ class MarketNormalizer:
             else:
                 params[key] = value
         return params
-
-    @staticmethod
-    def _split_market_type_params(raw_value: str) -> tuple[str, str]:
-        value = raw_value.strip()
-        if not value:
-            return "", ""
-        if "_period=" in value:
-            base, query = value.rsplit("_period=", 1)
-            return base, f"period={query}"
-        if "?period=" in value:
-            base, query = value.split("?", 1)
-            return base, query
-        return value, ""
 
     @classmethod
     def _extract_line(
@@ -660,18 +567,9 @@ class MarketNormalizer:
             return "overtime"
         if "ft" in normalized_periods or "period_ft" in text:
             return "full_time"
-        if (
-            "1h" in normalized_periods
-            or "first_half" in text
-            or "1st_half" in text
-            or "period_1st_half" in text
-        ):
+        if "1h" in normalized_periods or "first_half" in text:
             return "first_half"
-        if (
-            "2h" in normalized_periods
-            or "second_half" in text
-            or bool(SECOND_HALF_ALIAS_PATTERN.search(text))
-        ):
+        if "2h" in normalized_periods or "second_half" in text:
             return "second_half"
         quarter = next((item for item in normalized_periods if item.startswith("q")), None)
         if quarter:

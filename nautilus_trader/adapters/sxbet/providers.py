@@ -91,8 +91,6 @@ class SXBetInstrumentProvider(InstrumentProvider):
         Load all instruments from the venue.
         """
         started_at = time.perf_counter()
-        self._instruments.clear()
-        self._market_cache.clear()
 
         filters = filters or {}
         sport_ids = filters.get("sport_ids") or self._sxbet_config.sport_ids

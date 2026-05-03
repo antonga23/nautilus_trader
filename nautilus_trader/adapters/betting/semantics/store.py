@@ -19,14 +19,11 @@ Cache-backed storage for semantic betting corpus artifacts and rules.
 from __future__ import annotations
 
 import base64
-from contextlib import contextmanager
 from dataclasses import asdict
 import gzip
 import hashlib
 import json
-import os
 from pathlib import Path
-import tempfile
 from typing import Any
 
 from nautilus_trader.adapters.betting.semantics.types import CorpusSnapshot
@@ -48,10 +45,20 @@ class FileRuleCache:
     def __init__(self, path: str | Path) -> None:
         self._path = Path(path)
         self._path.mkdir(parents=True, exist_ok=True)
+        self._key_index_path = self._path / "keys.json"
+        if self._key_index_path.exists():
+            self._key_index = json.loads(self._key_index_path.read_text(encoding="utf-8"))
+        else:
+            self._key_index = {}
 
     def add(self, key: str, value: bytes) -> None:
         cache_path = self._cache_path(key)
-        self._write_bytes_atomic(cache_path, value)
+        cache_path.write_bytes(value)
+        self._key_index[key] = cache_path.name
+        self._key_index_path.write_text(
+            json.dumps(self._key_index, sort_keys=True, indent=2),
+            encoding="utf-8",
+        )
 
     def get(self, key: str) -> bytes | None:
         cache_path = self._cache_path(key)
@@ -60,21 +67,6 @@ class FileRuleCache:
     def _cache_path(self, key: str) -> Path:
         digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
         return self._path / f"{digest}.bin"
-
-    @staticmethod
-    def _write_bytes_atomic(path: Path, payload: bytes) -> None:
-        fd, temp_name = tempfile.mkstemp(
-            dir=path.parent,
-            prefix=f"{path.name}.",
-            suffix=".tmp",
-        )
-        try:
-            with os.fdopen(fd, "wb") as handle:
-                handle.write(payload)
-            os.replace(temp_name, path)
-        finally:
-            if os.path.exists(temp_name):
-                os.unlink(temp_name)
 
 
 class RuleStore:
@@ -105,25 +97,6 @@ class RuleStore:
 
     def __init__(self, cache) -> None:
         self._cache = cache
-        self._index_cache: dict[str, list[str]] = {}
-        self._dirty_index_keys: set[str] = set()
-        self._defer_index_writes = 0
-
-    @contextmanager
-    def batched_indexes(self):
-        self.begin_batched_indexes()
-        try:
-            yield self
-        finally:
-            self.end_batched_indexes()
-
-    def begin_batched_indexes(self) -> None:
-        self._defer_index_writes += 1
-
-    def end_batched_indexes(self) -> None:
-        self._defer_index_writes -= 1
-        if self._defer_index_writes == 0:
-            self._flush_dirty_indexes()
 
     def save_candidate(self, rule: MinedRule) -> None:
         self._write_bytes(self.candidate_key(rule.rule_id), rule.to_json_bytes())
@@ -371,34 +344,14 @@ class RuleStore:
         return gzip.decompress(raw) if raw[:2] == b"\x1f\x8b" else raw
 
     def _append_index(self, key: str, value: str) -> None:
-        items = self._index_items(key)
+        items = self._read_index(key)
         if value not in items:
             items.append(value)
-            self._dirty_index_keys.add(key)
-            if self._defer_index_writes == 0:
-                self._write_index(key, items)
-                self._dirty_index_keys.discard(key)
+        self._write_json(key, {"items": items})
 
     def _read_index(self, key: str) -> list[str]:
-        return list(self._index_items(key))
-
-    def _index_items(self, key: str) -> list[str]:
-        cached = self._index_cache.get(key)
-        if cached is not None:
-            return cached
         payload = self._read_json(key)
         if payload is None:
-            items: list[str] = []
-        else:
-            items = [str(item) for item in payload.get("items", [])]
-        self._index_cache[key] = items
-        return items
-
-    def _write_index(self, key: str, items: list[str]) -> None:
-        self._write_json(key, {"items": list(items)})
-        self._index_cache[key] = list(items)
-
-    def _flush_dirty_indexes(self) -> None:
-        for key in sorted(self._dirty_index_keys):
-            self._write_index(key, self._index_items(key))
-        self._dirty_index_keys.clear()
+            return []
+        items = payload.get("items", [])
+        return [str(item) for item in items]

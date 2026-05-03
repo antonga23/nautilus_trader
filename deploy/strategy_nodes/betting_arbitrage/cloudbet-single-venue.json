@@ -29,7 +29,6 @@
       "sport_keys": ["soccer", "tennis", "basketball", "american_football"],
       "instrument_load_limit": 40,
       "market_discovery_limit": 40,
-      "instrument_refresh_interval_secs": 180.0,
       "auto_subscribe_quote_ticks": true,
       "quote_subscription_limit": 80,
       "order_book_poll_interval_secs": 10.0,

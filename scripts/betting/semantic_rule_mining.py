@@ -16,7 +16,6 @@ import re
 import sys
 import time
 from typing import Any
-from typing import cast
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -107,59 +106,60 @@ async def _refresh_corpus(args: argparse.Namespace) -> None:
     logger = Logger(clock=clock, bypass=True)
     manifests: list[RuleCorpusManifest] = []
 
-    with store.batched_indexes():
-        if args.provider in {"cloudbet", "all"}:
-            client = CloudbetClient(asyncio.get_running_loop(), logger)
-            await client.connect()
-            try:
-                from_timestamp = args.from_timestamp or int(time.time())
-                to_timestamp = args.to_timestamp or from_timestamp + args.initial_window_seconds
-                manifests.append(
-                    await ingestor.refresh_cloudbet(
-                        client,
-                        sports=args.sports or None,
-                        from_timestamp=from_timestamp,
-                        to_timestamp=to_timestamp,
-                        limit=args.limit,
-                        adaptive_window=not args.no_adaptive_cloudbet_window,
-                        max_window_seconds=args.max_window_days * 24 * 60 * 60,
-                        min_events_per_sport=args.min_events_per_sport,
-                        include_recent_past_on_sparse=args.include_past_on_sparse,
-                        include_bets=args.include_bets and not args.skip_bets,
-                        bet_page_size=args.bet_page_size,
-                        bet_max_pages=args.bet_max_pages,
-                        bet_from_date=args.bet_from_date,
-                        bet_to_date=args.bet_to_date,
-                        settled_bets_only=args.settled_bets,
-                    ),
-                )
-            finally:
-                await client.disconnect()
-
-        if args.provider in {"sxbet", "all"}:
-            sxbet_client = SXBetHttpClient(api_key=os.getenv("SXBET_API_KEY"))
-            await sxbet_client.connect()
-            try:
-                manifests.append(
-                    await ingestor.refresh_sxbet(
-                        sxbet_client,
-                        sport_ids=args.sport_ids or None,
-                        from_time=args.from_timestamp,
-                        to_time=args.to_timestamp,
-                        instrument_limit=args.instrument_limit,
-                        market_discovery_limit=args.market_discovery_limit,
-                    ),
-                )
-            finally:
-                await sxbet_client.disconnect()
-
-        if args.provider in {"polymarket", "all"}:
+    if args.provider in {"cloudbet", "all"}:
+        client = CloudbetClient(asyncio.get_running_loop(), logger)
+        await client.connect()
+        try:
+            from_timestamp = args.from_timestamp or int(time.time())
+            to_timestamp = args.to_timestamp or from_timestamp + args.initial_window_seconds
             manifests.append(
-                await ingestor.refresh_polymarket(
+                await ingestor.refresh_cloudbet(
+                    client,
                     sports=args.sports or None,
+                    from_timestamp=from_timestamp,
+                    to_timestamp=to_timestamp,
                     limit=args.limit,
+                    adaptive_window=not args.no_adaptive_cloudbet_window,
+                    max_window_seconds=args.max_window_days * 24 * 60 * 60,
+                    min_events_per_sport=args.min_events_per_sport,
+                    include_recent_past_on_sparse=args.include_past_on_sparse,
+                    include_bets=args.include_bets and not args.skip_bets,
+                    bet_page_size=args.bet_page_size,
+                    bet_max_pages=args.bet_max_pages,
+                    bet_from_date=args.bet_from_date,
+                    bet_to_date=args.bet_to_date,
+                    settled_bets_only=args.settled_bets,
                 ),
             )
+        finally:
+            await client.disconnect()
+
+    if args.provider in {"sxbet", "all"}:
+        from_timestamp = args.from_timestamp
+        to_timestamp = args.to_timestamp
+        sxbet_client = SXBetHttpClient(api_key=os.getenv("SXBET_API_KEY"))
+        await sxbet_client.connect()
+        try:
+            manifests.append(
+                await ingestor.refresh_sxbet(
+                    sxbet_client,
+                    sport_ids=args.sport_ids or None,
+                    from_time=args.from_timestamp,
+                    to_time=args.to_timestamp,
+                    instrument_limit=args.instrument_limit,
+                    market_discovery_limit=args.market_discovery_limit,
+                ),
+            )
+        finally:
+            await sxbet_client.disconnect()
+
+    if args.provider in {"polymarket", "all"}:
+        manifests.append(
+            await ingestor.refresh_polymarket(
+                sports=args.sports or None,
+                limit=args.limit,
+            ),
+        )
 
     if fixture_dir is not None:
         for manifest in manifests:
@@ -180,12 +180,11 @@ def _mine_candidates(args: argparse.Namespace) -> None:
     store = RuleStore(cache)
     miner = RuleMiner(store)
     provider = args.provider.upper() if args.provider else None
-    with store.batched_indexes():
-        rules = miner.mine_store(
-            provider=provider,
-            manifest_id=args.manifest_id,
-            persist=True,
-        )
+    rules = miner.mine_store(
+        provider=provider,
+        manifest_id=args.manifest_id,
+        persist=True,
+    )
     print(
         json.dumps(
             {
@@ -209,23 +208,22 @@ def _generalize_templates(args: argparse.Namespace) -> None:
     store = RuleStore(cache)
     miner = RuleMiner(store)
     provider = args.provider.upper() if args.provider else None
-    with store.batched_indexes():
-        if args.skip_event_candidates:
-            existing_rules = [
-                rule
-                for rule_id in store.list_candidate_ids()
-                if (rule := store.load_candidate(rule_id)) is not None
-                and args.manifest_id is None
-                and (provider is None or provider in rule.venue_scope)
-            ]
-            templates = miner.generalize(existing_rules, persist=True)
-        else:
-            templates = miner.mine_templates_from_store(
-                provider=provider,
-                manifest_id=args.manifest_id,
-                persist=True,
-                persist_event_candidates=True,
-            )
+    if args.skip_event_candidates:
+        existing_rules = [
+            rule
+            for rule_id in store.list_candidate_ids()
+            if (rule := store.load_candidate(rule_id)) is not None
+            and args.manifest_id is None
+            and (provider is None or provider in rule.venue_scope)
+        ]
+        templates = miner.generalize(existing_rules, persist=True)
+    else:
+        templates = miner.mine_templates_from_store(
+            provider=provider,
+            manifest_id=args.manifest_id,
+            persist=True,
+            persist_event_candidates=True,
+        )
     promotable = sum(1 for template in templates if template.support.catalog_promotable)
     execution_safe = sum(1 for template in templates if template.execution_safe)
     print(
@@ -315,28 +313,27 @@ def _promote_templates(args: argparse.Namespace) -> None:
     execution_safe = 0
     same_venue_execution_eligible = 0
     tier_counts: Counter[str] = Counter()
-    with store.batched_indexes():
-        for template_id in store.list_template_candidate_ids():
-            template = store.load_template_candidate(template_id)
-            if template is None:
-                continue
-            considered += 1
-            provider_scope = tuple(sorted(template.support.providers))
-            allowlisted = provider_scope in allowlisted_scopes or args.allowlisted
-            promoted_template = policy.promote_template(
-                store,
-                template,
-                allowlisted=allowlisted,
-                venue_agnostic=args.venue_agnostic,
-            )
-            if promoted_template is None:
-                continue
-            promoted += 1
-            tier_counts[promoted_template.safety_tier] += 1
-            if promoted_template.execution_safe:
-                execution_safe += 1
-            if promoted_template.same_venue_execution_eligible:
-                same_venue_execution_eligible += 1
+    for template_id in store.list_template_candidate_ids():
+        template = store.load_template_candidate(template_id)
+        if template is None:
+            continue
+        considered += 1
+        provider_scope = tuple(sorted(template.support.providers))
+        allowlisted = provider_scope in allowlisted_scopes or args.allowlisted
+        promoted_template = policy.promote_template(
+            store,
+            template,
+            allowlisted=allowlisted,
+            venue_agnostic=args.venue_agnostic,
+        )
+        if promoted_template is None:
+            continue
+        promoted += 1
+        tier_counts[promoted_template.safety_tier] += 1
+        if promoted_template.execution_safe:
+            execution_safe += 1
+        if promoted_template.same_venue_execution_eligible:
+            same_venue_execution_eligible += 1
 
     print(
         json.dumps(
@@ -436,137 +433,6 @@ def _report_coverage(args: argparse.Namespace) -> None:
         f"- execution-safe templates: `{report['execution_safe_template_count']}`\n"
         f"- same-venue eligible templates: `{report['same_venue_execution_eligible_template_count']}`\n"
         f"- sparse sports sampled: `{len(sparse_sports)}`",
-    )
-
-
-def _pattern_payload(pattern) -> dict[str, object]:
-    return {
-        "sport": pattern.sport,
-        "scope": pattern.scope,
-        "market_type": pattern.market_type,
-        "market_family": pattern.market_family,
-        "selection": pattern.selection,
-        "params": list(pattern.params),
-        "pattern_id": pattern.pattern_id,
-    }
-
-
-def _template_detail(template, *, promotion_policy: RulePromotionPolicy) -> dict[str, object]:
-    tier, reasons = promotion_policy.classify_template_tier(template)
-    effective_reasons = list(template.eligibility_reasons or reasons)
-    return {
-        "template_id": template.template_id,
-        "promotion_status": template.promotion_status,
-        "safety_tier": template.safety_tier,
-        "expected_safety_tier": tier.value,
-        "eligibility_reasons": effective_reasons,
-        "relationship_type": template.relationship_type,
-        "sport": template.sport,
-        "scope": template.scope,
-        "confidence": template.confidence,
-        "provider_scope": list(template.provider_scope),
-        "providers": list(template.support.providers),
-        "venue_agnostic": template.venue_agnostic,
-        "execution_safe": template.execution_safe,
-        "same_venue_execution_eligible": template.same_venue_execution_eligible,
-        "has_void": template.has_void,
-        "has_partial": template.has_partial,
-        "has_unknown": template.has_unknown,
-        "caveats": list(template.caveats),
-        "pattern_a": _pattern_payload(template.pattern_a),
-        "pattern_b": _pattern_payload(template.pattern_b),
-        "support": {
-            "observed_count": template.support.observed_count,
-            "event_count": template.support.event_count,
-            "provider_count": template.support.provider_count,
-            "providers": list(template.support.providers),
-            "sports": list(template.support.sports),
-            "confidence": template.support.confidence,
-            "deterministic": template.support.deterministic,
-            "unknown_settlement_count": template.support.unknown_settlement_count,
-            "catalog_promotable": template.support.catalog_promotable,
-            "venue_safe": template.support.venue_safe,
-        },
-    }
-
-
-def _report_template_audit(args: argparse.Namespace) -> None:
-    cache = _build_cache(args.persist_cache, args.cache_dir)
-    store = RuleStore(cache)
-    promotion_policy = RulePromotionPolicy()
-    candidate_map = {
-        template.template_id: template
-        for template_id in store.list_template_candidate_ids()
-        if (template := store.load_template_candidate(template_id)) is not None
-    }
-    promoted_map = {
-        template.template_id: template
-        for template_id in store.list_promoted_template_ids()
-        if (template := store.load_promoted_template(template_id)) is not None
-    }
-    template_ids = sorted(set(candidate_map) | set(promoted_map))
-    details: list[dict[str, object]] = []
-    by_provider: Counter[str] = Counter()
-    by_sport: Counter[str] = Counter()
-    by_relationship: Counter[str] = Counter()
-    by_market_family_pair: Counter[str] = Counter()
-    by_tier: Counter[str] = Counter()
-    blocker_counts: Counter[str] = Counter()
-
-    for template_id in template_ids:
-        template = promoted_map.get(template_id) or candidate_map[template_id]
-        detail = _template_detail(template, promotion_policy=promotion_policy)
-        details.append(detail)
-        by_tier[str(detail["safety_tier"])] += 1
-        by_sport[str(detail["sport"])] += 1
-        by_relationship[str(detail["relationship_type"])] += 1
-        pattern_a = cast(dict[str, Any], detail["pattern_a"])
-        pattern_b = cast(dict[str, Any], detail["pattern_b"])
-        pair_key = f"{pattern_a['market_family']} + {pattern_b['market_family']}"
-        by_market_family_pair[pair_key] += 1
-        for provider in cast(list[str], detail["providers"]):
-            by_provider[str(provider)] += 1
-        for reason in cast(list[str], detail["eligibility_reasons"]):
-            blocker_counts[str(reason)] += 1
-
-    payload: dict[str, Any] = {
-        "summary": {
-            "candidate_template_count": len(candidate_map),
-            "promoted_template_count": len(promoted_map),
-            "execution_safe_template_count": sum(
-                1 for detail in details if bool(detail["execution_safe"])
-            ),
-            "same_venue_execution_eligible_template_count": sum(
-                1 for detail in details if bool(detail["same_venue_execution_eligible"])
-            ),
-            "safety_tier_counts": dict(sorted(by_tier.items())),
-            "provider_counts": dict(sorted(by_provider.items())),
-            "sport_counts": dict(sorted(by_sport.items())),
-            "relationship_counts": dict(sorted(by_relationship.items())),
-            "market_family_pair_counts": dict(sorted(by_market_family_pair.items())),
-            "eligibility_reason_counts": dict(sorted(blocker_counts.items())),
-        },
-        "execution_safe_templates": [
-            detail for detail in details if bool(detail["execution_safe"])
-        ],
-        "same_venue_execution_eligible_templates": [
-            detail for detail in details if bool(detail["same_venue_execution_eligible"])
-        ],
-        "topology_safe_templates": [
-            detail for detail in details if detail["safety_tier"] == "TOPOLOGY_SAFE"
-        ],
-        "audit_only_templates": [
-            detail for detail in details if detail["safety_tier"] == "AUDIT_ONLY"
-        ],
-    }
-    summary = cast(dict[str, Any], payload["summary"])
-    print(json.dumps(payload, indent=2, sort_keys=True))
-    _maybe_linear_comment(
-        "Semantic template audit report:\n\n"
-        f"- candidates: `{summary['candidate_template_count']}`\n"
-        f"- promoted: `{summary['promoted_template_count']}`\n"
-        f"- execution-safe: `{summary['execution_safe_template_count']}`\n"
-        f"- same-venue eligible: `{summary['same_venue_execution_eligible_template_count']}`",
     )
 
 
@@ -711,13 +577,6 @@ def _parse_args() -> argparse.Namespace:
     report.add_argument("--min-candidates", type=int, default=10)
     report.add_argument("--target-candidates", type=int, default=20)
 
-    audit = subparsers.add_parser(
-        "report-template-audit",
-        help="Report detailed semantic template tiers, blockers, and family coverage",
-    )
-    audit.add_argument("--persist-cache", action="store_true")
-    audit.add_argument("--cache-dir", default=os.getenv("SEMANTIC_RULE_CACHE_DIR"))
-
     verify = subparsers.add_parser(
         "verify-completion",
         help="Fail unless semantic mining coverage gates pass",
@@ -773,7 +632,6 @@ def main() -> None:
         "promote": _promote_rules,
         "promote-templates": _promote_templates,
         "report-coverage": _report_coverage,
-        "report-template-audit": _report_template_audit,
         "verify-completion": _verify_completion,
         "sync-linear": _sync_linear,
         "restore-gcp-auth": _restore_gcp_auth,

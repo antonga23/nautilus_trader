@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterable
-from contextlib import nullcontext
 from dataclasses import asdict
 from dataclasses import dataclass
 import hashlib
@@ -263,30 +262,28 @@ async def _bootstrap_semantic_cache(
     promotion_policy = RulePromotionPolicy()
     venues = [venue for venue in manifest.venues if venue.enabled]
 
-    batch_context = store.batched_indexes() if hasattr(store, "batched_indexes") else nullcontext()
-    with batch_context:
-        await _refresh_required_sxbet_corpus(
-            manifest=manifest,
-            venues=venues,
-            ingestor=ingestor,
-            logger=logger,
-        )
-        await _refresh_cloudbet_corpus(
-            manifest=manifest,
-            venues=venues,
-            ingestor=ingestor,
-            logger=logger,
-        )
-        await _refresh_polymarket_corpus(
-            venues=venues,
-            ingestor=ingestor,
-            logger=logger,
-        )
+    await _refresh_required_sxbet_corpus(
+        manifest=manifest,
+        venues=venues,
+        ingestor=ingestor,
+        logger=logger,
+    )
+    await _refresh_cloudbet_corpus(
+        manifest=manifest,
+        venues=venues,
+        ingestor=ingestor,
+        logger=logger,
+    )
+    await _refresh_polymarket_corpus(
+        venues=venues,
+        ingestor=ingestor,
+        logger=logger,
+    )
 
-        miner.mine_store(persist=True)
-        templates = miner.mine_templates_from_store(persist=True, persist_event_candidates=False)
-        for template in templates:
-            promotion_policy.promote_template(store, template)
+    miner.mine_store(persist=True)
+    templates = miner.mine_templates_from_store(persist=True, persist_event_candidates=False)
+    for template in templates:
+        promotion_policy.promote_template(store, template)
 
 
 async def _refresh_required_sxbet_corpus(

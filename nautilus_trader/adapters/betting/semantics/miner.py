@@ -111,17 +111,15 @@ class RuleMiner:
             grouped[(selection.sport, selection.event_key, selection.scope)].append(record)
 
         discovered: list[MinedRule] = []
-        context = self._store.batched_indexes() if persist else None
-        with context or _nullcontext():
-            for bucket in grouped.values():
-                for left, right in combinations(bucket, 2):
-                    rule = self._classifier.classify(left.selection, right.selection)
-                    if rule is None:
-                        continue
-                    rule = self._with_evidence(rule, left, right)
-                    discovered.append(rule)
-                    if persist:
-                        self._store.save_candidate(rule)
+        for bucket in grouped.values():
+            for left, right in combinations(bucket, 2):
+                rule = self._classifier.classify(left.selection, right.selection)
+                if rule is None:
+                    continue
+                rule = self._with_evidence(rule, left, right)
+                discovered.append(rule)
+                if persist:
+                    self._store.save_candidate(rule)
 
         return discovered
 
@@ -201,40 +199,38 @@ class RuleMiner:
             item.confidence = min(item.confidence, rule.confidence)
 
         templates: list[SemanticRuleTemplate] = []
-        context = self._store.batched_indexes() if persist else None
-        with context or _nullcontext():
-            for template_id, item in accumulators.items():
-                support = TemplateSupportStats(
-                    template_id=template_id,
-                    observed_count=item.observed_count,
-                    event_count=len(item.event_keys),
-                    provider_count=len(item.providers),
-                    providers=tuple(sorted(item.providers)),
-                    sports=tuple(sorted(item.sports)),
-                    example_rule_ids=tuple(item.example_rule_ids),
-                    first_seen_at=now,
-                    last_seen_at=now,
-                    deterministic=item.unknown_settlement_count == 0,
-                    unknown_settlement_count=item.unknown_settlement_count,
-                    mismatch_count=0,
-                    confidence=item.confidence,
-                )
-                template = SemanticRuleTemplate.from_rule(
-                    item.rule,
-                    support=support,
-                    provider_scope=support.providers,
-                )
-                safety_tier, reasons = self._promotion_policy.classify_template_tier(template)
-                template = replace(
-                    template,
-                    caveats=tuple(sorted(item.caveats)),
-                    confidence=support.confidence,
-                    safety_tier=safety_tier.value,
-                    eligibility_reasons=reasons,
-                )
-                templates.append(template)
-                if persist:
-                    self._store.save_template_candidate(template)
+        for template_id, item in accumulators.items():
+            support = TemplateSupportStats(
+                template_id=template_id,
+                observed_count=item.observed_count,
+                event_count=len(item.event_keys),
+                provider_count=len(item.providers),
+                providers=tuple(sorted(item.providers)),
+                sports=tuple(sorted(item.sports)),
+                example_rule_ids=tuple(item.example_rule_ids),
+                first_seen_at=now,
+                last_seen_at=now,
+                deterministic=item.unknown_settlement_count == 0,
+                unknown_settlement_count=item.unknown_settlement_count,
+                mismatch_count=0,
+                confidence=item.confidence,
+            )
+            template = SemanticRuleTemplate.from_rule(
+                item.rule,
+                support=support,
+                provider_scope=support.providers,
+            )
+            safety_tier, reasons = self._promotion_policy.classify_template_tier(template)
+            template = replace(
+                template,
+                caveats=tuple(sorted(item.caveats)),
+                confidence=support.confidence,
+                safety_tier=safety_tier.value,
+                eligibility_reasons=reasons,
+            )
+            templates.append(template)
+            if persist:
+                self._store.save_template_candidate(template)
 
         return templates
 
@@ -253,11 +249,3 @@ class RuleMiner:
             else None,
             evidence_record_ids=(left.record_id, right.record_id),
         )
-
-
-class _nullcontext:
-    def __enter__(self):
-        return None
-
-    def __exit__(self, exc_type, exc, tb):
-        return False

@@ -13,7 +13,13 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
+import time
 from functools import lru_cache
+from typing import Optional, Union, List
+
+import msgspec.json
+import pandas as pd
+
 from nautilus_trader.adapters.cloudbet.client.core import CloudbetClient
 from nautilus_trader.adapters.cloudbet.client.schema import (
     Selection,
@@ -24,6 +30,7 @@ from nautilus_trader.adapters.cloudbet.client.schema import (
     GetEventResponse,
 )
 from nautilus_trader.adapters.cloudbet.common import VENUE
+from nautilus_trader.common.clock import LiveClock
 from nautilus_trader.common.logging import Logger
 from nautilus_trader.common.providers import InstrumentProvider
 from nautilus_trader.config import InstrumentProviderConfig
@@ -32,6 +39,7 @@ from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.core.correctness import PyCondition
 from nautilus_trader.model.currencies import EUR
 from nautilus_trader.model.instruments import BettingInstrument
+from nautilus_trader.model.instruments import Instrument
 from nautilus_trader.model.instruments.crypto_betting import CryptoBettingInstrument
 
 
@@ -43,20 +51,6 @@ def parse_handicap(handicap: str | None) -> float | None:
         return float(handicap)
     except (TypeError, ValueError):
         return None
-
-
-def parse_line_from_params(params: str | None) -> float | None:
-    if params in (None, "", "None"):
-        return None
-
-    for part in str(params).split("&"):
-        if "=" not in part:
-            continue
-        key, value = part.split("=", 1)
-        if key.strip().lower() not in {"handicap", "line"}:
-            continue
-        return parse_handicap(value.strip())
-    return None
 
 
 class CloudbetInstrumentProvider(InstrumentProvider):
@@ -77,7 +71,7 @@ class CloudbetInstrumentProvider(InstrumentProvider):
         self,
         client: CloudbetClient,
         logger: Logger,
-        config: InstrumentProviderConfig | None = None,
+        config: Optional[InstrumentProviderConfig] = None,
     ):
         super().__init__(config=config)
 
@@ -89,10 +83,10 @@ class CloudbetInstrumentProvider(InstrumentProvider):
         self._account_currency = EUR
         self._missing_instruments: set[CryptoBettingInstrument] = set()
 
-    async def load_ids_async(  # noqa: C901
+    async def load_ids_async(
         self,
         instrument_ids: list[InstrumentId],
-        filters: dict | None = None,
+        filters: Optional[dict] = None,
     ) -> None:
         """
         Load the instruments for the given IDs into the provider, optionally
@@ -163,8 +157,8 @@ class CloudbetInstrumentProvider(InstrumentProvider):
                 )
                 for instrument_id in instrument_ids
             ]
-            event_ids = list({selection_id.event_id for selection_id in selection_ids})
-            market_names = list({selection_id.market_name for selection_id in selection_ids})
+            event_ids = list(set([selection_id.event_id for selection_id in selection_ids]))
+            market_names = list(set([selection_id.market_name for selection_id in selection_ids]))
 
             for event_id in event_ids:
                 # TODO: only load events that are not already in cache
@@ -172,7 +166,7 @@ class CloudbetInstrumentProvider(InstrumentProvider):
                 event: GetEventResponse = await self._client.get_event(event_id)
                 for market_name, market_value in event.markets.items():
                     if market_name in market_names:
-                        for submarket_value in market_value.submarkets.values():
+                        for submarket_period, submarket_value in market_value.submarkets.items():
                             # Iterate over all the selections in the current submarket
                             for selection in submarket_value.selections:
                                 selection_id = SelectionId(
@@ -199,14 +193,19 @@ class CloudbetInstrumentProvider(InstrumentProvider):
                                     instruments.append(self.selection_to_instrument(selection))
         else:
             if filters and filters.get("selection_id") is not None:
-                selection_ids: list[SelectionId] = filters.get("selection_id")
-                event_ids = list({selection_id.event_id for selection_id in selection_ids})
-                market_names = list({selection_id.market_name for selection_id in selection_ids})
+                selection_ids: List[SelectionId] = filters.get("selection_id")
+                event_ids = list(set([selection_id.event_id for selection_id in selection_ids]))
+                market_names = list(
+                    set([selection_id.market_name for selection_id in selection_ids])
+                )
                 for event_id in event_ids:
                     event: GetEventResponse = await self._client.get_event(event_id)
                     for market_name, market_value in event.markets.items():
                         if market_name in market_names:
-                            for submarket_value in market_value.submarkets.values():
+                            for (
+                                submarket_period,
+                                submarket_value,
+                            ) in market_value.submarkets.items():
                                 # Iterate over all the selections in the current submarket
                                 for selection in submarket_value.selections:
                                     selection_id = SelectionId(
@@ -236,7 +235,7 @@ class CloudbetInstrumentProvider(InstrumentProvider):
     async def load_async(
         self,
         instrument_id: InstrumentId,
-        filters: dict | None = None,
+        filters: Optional[dict] = None,
     ) -> None:
         """
         Load the instrument for the given ID into the provider asynchronously, optionally
@@ -291,7 +290,7 @@ class CloudbetInstrumentProvider(InstrumentProvider):
         self.add(instrument=instrument)
         self._log.debug(f"Loaded instrument {instrument.id}")
 
-    async def load_all_async(self, filters: dict | None = None) -> int:
+    async def load_all_async(self, filters: Optional[dict] = None) -> int:
         """
         Load the latest instruments into the provider asynchronously, optionally
         applying the given filters.
@@ -308,7 +307,6 @@ class CloudbetInstrumentProvider(InstrumentProvider):
                 'live': 'false',
                 'limit': 100,
             }
-
         Returns
         -------
         int
@@ -316,9 +314,6 @@ class CloudbetInstrumentProvider(InstrumentProvider):
         """
         selection_filter = filters or self._filters
         self._log.info(f"Loading selections with selection_filter={selection_filter}")
-        self._instruments.clear()
-        self._cache.clear()
-        self._missing_instruments.clear()
         selections: list[list[Selection]] = await self._client.load_selection(selection_filter)
         self._log.info("Creating instruments..")
         instrument_count = 0
@@ -354,15 +349,6 @@ class CloudbetInstrumentProvider(InstrumentProvider):
         # except ValueError as e:
         #     if self._log_warnings:
         #         self._log.warning(f"Unable to parse instrument {symbol_info.symbol}, {e}.")
-        market_name = str(selection.market_name or "")
-        raw_market_type = str(selection.submarket_name or market_name)
-        raw_params = str(selection.params or "")
-        submarket_period = str(selection.submarket_period or "")
-        serialized_market_url = f"{market_name}/{selection.outcome}"
-        query_parts = [part for part in (raw_params, submarket_period) if part]
-        if query_parts:
-            serialized_market_url = f"{serialized_market_url}?{'&'.join(query_parts)}"
-
         instrument = CryptoBettingInstrument(
             home_name=selection.home_name,
             away_name=selection.away_name,
@@ -371,10 +357,10 @@ class CloudbetInstrumentProvider(InstrumentProvider):
             price=selection.price,
             currency=selection.currency,
             event_name=selection.event_name,
-            market_name=market_name,
+            market_name=selection.market_name,
             venue=self.venue,
-            live=selection.status == "TRADING_LIVE",
-            enabled=selection.selection_status != SelectionStatus.DISABLED,
+            live=False if selection.status != "TRADING_LIVE" else True,
+            enabled=True if selection.selection_status != SelectionStatus.DISABLED else False,
             side=SelectionSide.BACK
             if selection.side == "BACK"
             else SelectionSide.LAY
@@ -382,59 +368,39 @@ class CloudbetInstrumentProvider(InstrumentProvider):
             else SelectionSide.UNKNOWN,
             outcome=selection.outcome,
             # ToDo: set at Selection level with Enums + caching for performance
-            market_type=raw_market_type,
+            market_type=selection.submarket_name,
             trading_status=selection.status,
             event_id=selection.event_id,
-            params=raw_params,
+            params=selection.params,
             max_size=int(selection.max_stake),
             min_size=selection.min_stake,
-            start_time=selection.cutoff_time,
             end_time=selection.cutoff_time,
-            handicap=parse_line_from_params(raw_params),
-            info={
-                "provider": str(self.venue),
-                "sport_key": selection.sport_key,
-                "competition_key": selection.competition_key,
-                "home_key": selection.home_key,
-                "away_key": selection.away_key,
-                "market_name": market_name,
-                "submarket_name": raw_market_type,
-                "submarket_period": submarket_period,
-                "semantic_market_name": market_name,
-                "semantic_market_type": raw_market_type,
-                "semantic_market_params": raw_params,
-                "market_url": serialized_market_url,
-                "sequence": selection.sequence,
-                "selection_status": str(selection.selection_status),
-                "cutoff_time": selection.cutoff_time,
-                "event_id": str(selection.event_id),
-                "event_name": selection.event_name,
-            },
+            # handicap=
         )
         return instrument
 
     async def get_instruments_update_async(
-        self, instrument_ids: list[InstrumentId]
+        self, instrument_ids: List[InstrumentId]
     ) -> CryptoBettingInstrument:
         """
         Get the latest instruments update for the given instrument IDs.
 
         Parameters
         ----------
-        instrument_ids : list[InstrumentId]
+        instrument_ids : List[InstrumentId]
             The instrument IDs to get the latest updates for.
 
         Returns
         -------
-        list[BettingInstrument]
+        List[BettingInstrument]
             The latest instrument updates for the given instrument IDs.
 
         """
         raise NotImplementedError("get_instruments_update_async is not supported for Cloudbet")
 
     def search_instruments(
-        self, instrument_filter: dict | None = None
-    ) -> list[CryptoBettingInstrument] | None:
+        self, instrument_filter: Optional[dict] = None
+    ) -> Optional[List[CryptoBettingInstrument]]:
         """Search for instruments within the cache. Useful for debugging / interactive use"""
         instruments = self.list_all()
         if instrument_filter:
