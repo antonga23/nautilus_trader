@@ -234,8 +234,27 @@ def test_polymarket_sports_binary_transforms_into_betting_instrument():
     assert transformed is not None
     assert transformed.market_name == "basketball.moneyline"
     assert transformed.outcome == "home"
-    assert normalized.market_type == CanonicalMarketType.BINARY_OPTION.value
+    assert normalized.market_type == CanonicalMarketType.WINNER.value
+    assert normalized.selection == "HOME"
     assert dict(normalized.resolution_policy)["tie_or_unknown"] == "50_50"
+
+
+def test_market_normalizer_canonicalizes_multi_period_params():
+    normalized = MarketNormalizer().normalize(
+        {
+            "provider": "CLOUDBET",
+            "event_id": "evt-1",
+            "event_name": "Team A vs Team B",
+            "sport_name": "soccer",
+            "market_name": "soccer.match_odds",
+            "market_type": "soccer.1x2",
+            "outcome": "home",
+            "submarket_period": "2h",
+            "market_url": "soccer.match_odds/home?period=ft&period=1h&period=2h",
+        },
+    )
+
+    assert normalized.param("period") == "ft|1h|2h"
 
 
 def test_polymarket_inferred_sports_market_preserves_yes_no_semantics():

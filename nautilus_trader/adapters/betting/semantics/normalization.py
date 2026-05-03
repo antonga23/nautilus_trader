@@ -246,6 +246,15 @@ class MarketNormalizer:
         info = instrument.info if isinstance(instrument.info, dict) else {}
         raw_sports_meta = info.get("sports_market")
         sports_meta: dict[str, Any] = raw_sports_meta if isinstance(raw_sports_meta, dict) else {}
+        if sports_meta or info.get("_gamma_original") or info.get("question"):
+            from nautilus_trader.adapters.betting.semantics.polymarket_transform import (
+                PolymarketSportsTransformer,
+            )
+
+            transformed = PolymarketSportsTransformer.to_crypto_betting_instrument(instrument)
+            if transformed is not None:
+                return cls._normalize_betting_instrument(transformed)
+
         params = cls._parse_params(sports_meta.get("params") or "")
         sport = cls._canonical_sport(str(sports_meta.get("sport") or info.get("sport") or ""))
         scope = cls._scope_from_parts(
@@ -375,11 +384,11 @@ class MarketNormalizer:
             "params": params,
         }
 
-    @staticmethod
-    def _parse_params(raw_params: Any) -> dict[str, str]:
+    @classmethod
+    def _parse_params(cls, raw_params: Any) -> dict[str, str]:
         if raw_params in (None, ""):
             return {}
-        params: dict[str, str] = {}
+        values_by_key: dict[str, list[str]] = {}
         for part in re.split(r"[,&]", str(raw_params)):
             if "=" not in part:
                 continue
@@ -388,11 +397,38 @@ class MarketNormalizer:
             value = value.strip()
             if not key or not value:
                 continue
-            if key in params and value not in params[key].split("|"):
-                params[key] = f"{params[key]}|{value}"
-            else:
-                params[key] = value
+            bucket = values_by_key.setdefault(key, [])
+            if value not in bucket:
+                bucket.append(value)
+
+        params: dict[str, str] = {}
+        for key, values in values_by_key.items():
+            params[key] = "|".join(cls._canonical_param_values(key, values))
         return params
+
+    @staticmethod
+    def _canonical_param_values(key: str, values: list[str]) -> list[str]:
+        if len(values) <= 1:
+            return values
+        if key == "period":
+            period_order = {
+                "ft": 0,
+                "ot": 1,
+                "1h": 2,
+                "2h": 3,
+                "q1": 4,
+                "q2": 5,
+                "q3": 6,
+                "q4": 7,
+            }
+            return sorted(
+                values,
+                key=lambda value: (
+                    period_order.get(value.strip().lower(), 99),
+                    value.strip().lower(),
+                ),
+            )
+        return sorted(values, key=lambda value: value.strip().lower())
 
     @classmethod
     def _extract_line(
