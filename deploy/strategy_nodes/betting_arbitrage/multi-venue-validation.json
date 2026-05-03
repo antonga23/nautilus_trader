@@ -17,6 +17,8 @@
     "quote_freshness_profile": "pre_match",
     "rollover_aware": true,
     "opportunity_graph_engine": "auto",
+    "semantic_unmatched_quote_probe_venues": ["POLYMARKET"],
+    "semantic_unmatched_quote_probe_limit_per_venue": 20,
     "auto_execute": false
   },
   "venues": [
