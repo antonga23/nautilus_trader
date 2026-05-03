@@ -18,6 +18,7 @@
 Cross-venue arbitrage strategy for sports betting.
 """
 
+from collections import Counter
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -174,6 +175,11 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         Opportunity graph engine: "auto", "python", "rust", or "semantic_rust".
     semantic_rule_cache_dir : str | None, default None
         Optional file-backed semantic rule cache directory for trading-node runtime.
+    semantic_unmatched_quote_probe_venues : frozenset[str], default {"POLYMARKET"}
+        Venues whose unmatched instruments should still receive bounded quote
+        subscriptions in semantic mode for audit/runtime diagnostics.
+    semantic_unmatched_quote_probe_limit_per_venue : int, default 20
+        Maximum unmatched quote probes per venue when semantic quote priority is active.
     quote_freshness_profile : str, default "pre_match"
         Quote timing policy: "pre_match", "live", or "custom".
     quote_max_pair_skew_secs : float | None, default None
@@ -199,6 +205,8 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
     graph_rebuild_on_new_instrument: bool = True
     opportunity_graph_engine: str = "auto"
     semantic_rule_cache_dir: str | None = None
+    semantic_unmatched_quote_probe_venues: frozenset[str] = frozenset({"POLYMARKET"})
+    semantic_unmatched_quote_probe_limit_per_venue: int = 20
     quote_freshness_profile: str = "pre_match"
     quote_max_pair_skew_secs: float | None = None
     quote_max_fetch_latency_secs: float | None = None
@@ -212,6 +220,11 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         market_timing_filter = self.market_timing_filter if not self.exclude_live else "pre_market"
         semantic_rule_cache_dir = (
             self.semantic_rule_cache_dir.strip() if self.semantic_rule_cache_dir else None
+        )
+        semantic_unmatched_quote_probe_venues = frozenset(
+            str(venue).strip().upper()
+            for venue in self.semantic_unmatched_quote_probe_venues
+            if str(venue).strip()
         )
         opportunity_graph_engine = self.opportunity_graph_engine.strip().lower()
         quote_freshness_profile = self.quote_freshness_profile.strip().lower()
@@ -237,12 +250,20 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         if self.duplicate_suppression_cooldown_secs < 0:
             msg = "duplicate_suppression_cooldown_secs must be non-negative"
             raise ValueError(msg)
+        if self.semantic_unmatched_quote_probe_limit_per_venue < 0:
+            msg = "semantic_unmatched_quote_probe_limit_per_venue must be non-negative"
+            raise ValueError(msg)
 
         msgspec.structs.force_setattr(self, "enabled_venues", enabled_venues)
         msgspec.structs.force_setattr(self, "sport_filter", normalized_sport_filter)
         msgspec.structs.force_setattr(self, "market_timing_filter", market_timing_filter)
         msgspec.structs.force_setattr(self, "opportunity_graph_engine", opportunity_graph_engine)
         msgspec.structs.force_setattr(self, "semantic_rule_cache_dir", semantic_rule_cache_dir)
+        msgspec.structs.force_setattr(
+            self,
+            "semantic_unmatched_quote_probe_venues",
+            semantic_unmatched_quote_probe_venues,
+        )
         msgspec.structs.force_setattr(self, "quote_freshness_profile", quote_freshness_profile)
 
 
@@ -344,6 +365,10 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             f"summary_interval_secs={self._config.arbitrage_summary_interval_secs} "
             f"opportunity_graph_enabled={self._config.opportunity_graph_enabled} "
             f"opportunity_graph_engine={self._config.opportunity_graph_engine} "
+            "semantic_unmatched_quote_probe_venues="
+            f"{sorted(self._config.semantic_unmatched_quote_probe_venues)} "
+            "semantic_unmatched_quote_probe_limit_per_venue="
+            f"{self._config.semantic_unmatched_quote_probe_limit_per_venue} "
             f"manual_instructions={self._config.opportunity_log_manual_instructions}"
         )
         self.log.info(msg)
@@ -446,6 +471,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             self._opportunity_graph.add_instrument(betting_instrument)
         if self._semantic_quote_priority_enabled():
             self._subscribe_semantic_connected_quote_ticks()
+            self._subscribe_semantic_unmatched_quote_probe_ticks()
         else:
             self._subscribe_quote_ticks_for_instrument(betting_instrument)
         return True
@@ -501,6 +527,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
 
         self._opportunity_graph.build(list(self._subscribed_instruments))
         self._subscribe_semantic_connected_quote_ticks()
+        self._subscribe_semantic_unmatched_quote_probe_ticks()
         self._log_graph_topology_summary()
 
     def _subscribe_quote_ticks_for_instrument(self, instrument: BettingInstrument) -> bool:
@@ -530,6 +557,69 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 f"total={len(self._quote_subscribed_instrument_ids)}",
             )
         return subscribed_count
+
+    def _subscribe_semantic_unmatched_quote_probe_ticks(self) -> int:
+        """
+        Subscribe bounded unmatched quote streams for semantic audit venues.
+
+        Semantic mode deliberately prioritizes graph-connected instruments so execution
+        diagnostics only reflect promoted-rule topology. Polymarket sports markets can
+        be discovered before they have promoted semantic edges, so this probe keeps
+        their quote health visible without granting execution authority or creating
+        graph edges.
+
+        """
+        probe_venues = self._config.semantic_unmatched_quote_probe_venues
+        per_venue_limit = self._config.semantic_unmatched_quote_probe_limit_per_venue
+        if not probe_venues or per_venue_limit <= 0:
+            return 0
+
+        connected_instrument_ids = self._semantic_connected_instrument_ids()
+        subscribed_by_venue = self._quote_subscription_counts_by_venue()
+        subscribed_count = 0
+
+        for instrument in sorted(self._subscribed_instruments, key=lambda item: str(item.id)):
+            venue = instrument.id.venue.value.upper()
+            if venue not in probe_venues:
+                continue
+            if str(instrument.id) in connected_instrument_ids:
+                continue
+            if subscribed_by_venue[venue] >= per_venue_limit:
+                continue
+            if self._subscribe_quote_ticks_for_instrument(instrument):
+                subscribed_by_venue[venue] += 1
+                subscribed_count += 1
+
+        if subscribed_count:
+            self.log.info(
+                "Subscribed semantic-unmatched quote probe streams: "
+                f"venues={sorted(probe_venues)} "
+                f"new={subscribed_count} "
+                f"total={len(self._quote_subscribed_instrument_ids)}",
+            )
+        return subscribed_count
+
+    def _semantic_connected_instrument_ids(self) -> set[str]:
+        connected: set[str] = set()
+        for node_id, edge_ids in self._opportunity_graph.edge_ids_by_node_id.items():
+            if not edge_ids:
+                continue
+            node = self._opportunity_graph.nodes_by_id.get(node_id)
+            if node is not None:
+                connected.add(str(node.instrument.id))
+        return connected
+
+    def _quote_subscription_counts_by_venue(self) -> Counter[str]:
+        counts: Counter[str] = Counter()
+        for instrument_id in self._quote_subscribed_instrument_ids:
+            venue = self._venue_from_instrument_id_text(str(instrument_id))
+            if venue:
+                counts[venue] += 1
+        return counts
+
+    @staticmethod
+    def _venue_from_instrument_id_text(instrument_id: str) -> str:
+        return instrument_id.rsplit(".", maxsplit=1)[-1].upper() if "." in instrument_id else ""
 
     def _quote_subscription_instrument_id(
         self,

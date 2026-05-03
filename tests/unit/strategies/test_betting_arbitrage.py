@@ -79,6 +79,8 @@ class TestBettingArbitrageConfig:  # skipcq
         ensure(config.opportunity_log_manual_instructions is True)
         ensure(config.graph_rebuild_on_new_instrument is True)
         ensure(config.opportunity_graph_engine == "auto")
+        ensure(config.semantic_unmatched_quote_probe_venues == frozenset({"POLYMARKET"}))
+        ensure(config.semantic_unmatched_quote_probe_limit_per_venue == 20)
         ensure(config.quote_freshness_profile == "pre_match")
         ensure(config.quote_max_pair_skew_secs is None)
         ensure(config.quote_max_fetch_latency_secs is None)
@@ -122,6 +124,18 @@ class TestBettingArbitrageConfig:  # skipcq
 
         with pytest.raises(ValueError, match="Invalid opportunity_graph_engine"):
             BettingArbitrageConfig(opportunity_graph_engine="invalid")
+
+    def test_semantic_unmatched_quote_probe_validation(self):  # skipcq
+        config = BettingArbitrageConfig(
+            semantic_unmatched_quote_probe_venues=frozenset({" polymarket ", "sxbet"}),
+            semantic_unmatched_quote_probe_limit_per_venue=3,
+        )
+
+        ensure(config.semantic_unmatched_quote_probe_venues == frozenset({"POLYMARKET", "SXBET"}))
+        ensure(config.semantic_unmatched_quote_probe_limit_per_venue == 3)
+
+        with pytest.raises(ValueError, match="semantic_unmatched_quote_probe_limit"):
+            BettingArbitrageConfig(semantic_unmatched_quote_probe_limit_per_venue=-1)
 
     def test_quote_freshness_profile_validation(self):  # skipcq
         for profile in ["pre_match", "live", "custom"]:
@@ -776,6 +790,46 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(quoted_ids == {home.id, away.id})
         ensure(all(str(instrument.id) != str(home.id) for instrument in subscribed))
         ensure(all(str(instrument.id) != str(away.id) for instrument in subscribed))
+
+    def test_semantic_mode_probes_unmatched_polymarket_quotes(
+        self,
+        tmp_path: Path,
+    ):  # skipcq
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["POLYMARKET"]),
+                opportunity_graph_engine="python",
+                semantic_unmatched_quote_probe_limit_per_venue=1,
+            ),
+        )
+        strategy._matcher.set_rule_store(RuleStore(FileRuleCache(tmp_path / "rules")))
+        strategy.subscribe_quote_ticks = Mock()
+        home = self._polymarket_sports_binary_option(
+            symbol_value="cond-home",
+            selection_role="home",
+        )
+        away = self._polymarket_sports_binary_option(
+            symbol_value="cond-away",
+            selection_role="away",
+        )
+        transformed_home = strategy._coerce_betting_instrument(home)
+        transformed_away = strategy._coerce_betting_instrument(away)
+        assert transformed_home is not None
+        assert transformed_away is not None
+
+        strategy._subscribed_instruments.update({transformed_home, transformed_away})
+        strategy._opportunity_graph.build([transformed_home, transformed_away])
+        strategy._opportunity_graph.edge_ids_by_node_id = {
+            node_id: set() for node_id in strategy._opportunity_graph.nodes_by_id
+        }
+
+        subscribed_count = strategy._subscribe_semantic_unmatched_quote_probe_ticks()
+
+        quoted_ids = {call.args[0] for call in strategy.subscribe_quote_ticks.call_args_list}
+        ensure(subscribed_count == 1)
+        ensure(len(quoted_ids) == 1)
+        ensure(quoted_ids <= {home.id, away.id})
+        ensure(strategy.get_stats()["quote_subscribed_instruments"] == 1)
 
     def test_on_quote_tick_remaps_polymarket_binary_option_to_betting_instrument(self):
         strategy = BettingArbitrageStrategy(

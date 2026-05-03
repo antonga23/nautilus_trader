@@ -641,6 +641,10 @@ class TestBettingArbitrageNodeBuilder:
             "SXBET",
         ]
         assert config.strategies[0].config["quote_freshness_profile"] == "pre_match"
+        assert config.strategies[0].config["semantic_unmatched_quote_probe_venues"] == [
+            "POLYMARKET",
+        ]
+        assert config.strategies[0].config["semantic_unmatched_quote_probe_limit_per_venue"] == 20
         assert (
             config.strategies[0].config["semantic_rule_cache_dir"]
             == "artifacts/semantic-rule-cache/multi-venue-validation"
@@ -1021,7 +1025,7 @@ class TestSemanticCacheBootstrap:
         monkeypatch.setattr(node_cache, "RuleMiner", FakeMiner)
         monkeypatch.setattr(node_cache, "RulePromotionPolicy", FakePromotionPolicy)
 
-        async def fake_required(*, manifest, venues, ingestor, logger):
+        async def fake_required(*, venues, ingestor, logger):
             assert ingestor is store_marker
             refresh_calls.append("sxbet")
 
@@ -1051,7 +1055,6 @@ class TestSemanticCacheBootstrap:
 
         asyncio.run(
             node_cache._refresh_required_sxbet_corpus(
-                manifest=None,
                 venues=[BettingVenueManifest(venue="POLYMARKET")],
                 ingestor=ingestor,
                 logger=None,
@@ -1066,7 +1069,6 @@ class TestSemanticCacheBootstrap:
         with pytest.raises(RuntimeError, match="SXBET_API_KEY"):
             asyncio.run(
                 node_cache._refresh_required_sxbet_corpus(
-                    manifest=None,
                     venues=[BettingVenueManifest(venue="SXBET")],
                     ingestor=Mock(),
                     logger=None,
@@ -1144,7 +1146,6 @@ class TestSemanticCacheBootstrap:
 
         asyncio.run(
             node_cache._refresh_required_sxbet_corpus(
-                manifest=None,
                 venues=venues,
                 ingestor=FakeIngestor(),
                 logger=None,
@@ -1188,7 +1189,6 @@ class TestSemanticCacheBootstrap:
         with pytest.raises(RuntimeError, match="refresh-failed"):
             asyncio.run(
                 node_cache._refresh_required_sxbet_corpus(
-                    manifest=None,
                     venues=[BettingVenueManifest(venue="SXBET")],
                     ingestor=FailingIngestor(),
                     logger=None,

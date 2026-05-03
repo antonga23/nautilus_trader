@@ -36,7 +36,7 @@ DEFAULT_POLYMARKET_SPORTS = (
     "american_football",
     "baseball",
 )
-SEMANTIC_CACHE_COMPATIBILITY_VERSION = "semantic-rule-cache:20260502:polymarket-sports-v1"
+SEMANTIC_CACHE_COMPATIBILITY_VERSION = "semantic-rule-cache:20260503:polymarket-sports-v2"
 SEMANTIC_CACHE_COMPATIBILITY_FILE = ".semantic-cache-version"
 
 
@@ -60,6 +60,24 @@ class SemanticCacheStatus:
         payload = asdict(self)
         payload["ready"] = self.ready
         return payload
+
+
+@dataclass(frozen=True)
+class _SemanticTemplateCounts:
+    promoted: int
+    execution_safe: int
+    same_venue_eligible: int
+
+
+@dataclass(frozen=True)
+class _SxbetCorpusScope:
+    sport_ids: list[int] | None
+    instrument_limit: int
+    market_discovery_limit: int
+    prefer_liquid_markets: bool
+    liquidity_probe_limit: int
+    min_two_sided_markets: int
+    live_only: bool
 
 
 def ensure_semantic_cache_ready(
@@ -107,8 +125,6 @@ def semantic_cache_status(
 ) -> SemanticCacheStatus:
     path = Path(cache_dir)
     store = RuleStore(FileRuleCache(path))
-    manifests = store.list_manifest_ids()
-    promoted_template_ids = store.list_promoted_template_ids()
     compatibility = _read_semantic_cache_compatibility(path)
     compatibility_version = compatibility.get("version")
     compatibility_scope = compatibility.get("scope")
@@ -117,6 +133,23 @@ def semantic_cache_status(
         expected_scope is None or compatibility_scope == expected_scope
     )
 
+    template_counts = _semantic_template_counts(store)
+
+    return SemanticCacheStatus(
+        path=str(path),
+        source=source,
+        manifest_count=len(store.list_manifest_ids()),
+        promoted_template_count=template_counts.promoted,
+        execution_safe_template_count=template_counts.execution_safe,
+        same_venue_execution_eligible_template_count=template_counts.same_venue_eligible,
+        compatibility_version=compatibility_version,
+        compatibility_scope=compatibility_scope,
+        compatible=compatible,
+    )
+
+
+def _semantic_template_counts(store: RuleStore) -> _SemanticTemplateCounts:
+    promoted_template_ids = store.list_promoted_template_ids()
     execution_safe = 0
     same_venue_eligible = 0
     for template_id in promoted_template_ids:
@@ -127,17 +160,10 @@ def semantic_cache_status(
             execution_safe += 1
         if template.safety_tier == SafetyTier.EXECUTION_SAFE_SAME_VENUE_ELIGIBLE.value:
             same_venue_eligible += 1
-
-    return SemanticCacheStatus(
-        path=str(path),
-        source=source,
-        manifest_count=len(manifests),
-        promoted_template_count=len(promoted_template_ids),
-        execution_safe_template_count=execution_safe,
-        same_venue_execution_eligible_template_count=same_venue_eligible,
-        compatibility_version=compatibility_version,
-        compatibility_scope=compatibility_scope,
-        compatible=compatible,
+    return _SemanticTemplateCounts(
+        promoted=len(promoted_template_ids),
+        execution_safe=execution_safe,
+        same_venue_eligible=same_venue_eligible,
     )
 
 
@@ -262,12 +288,7 @@ async def _bootstrap_semantic_cache(
     promotion_policy = RulePromotionPolicy()
     venues = [venue for venue in manifest.venues if venue.enabled]
 
-    await _refresh_required_sxbet_corpus(
-        manifest=manifest,
-        venues=venues,
-        ingestor=ingestor,
-        logger=logger,
-    )
+    await _refresh_required_sxbet_corpus(venues=venues, ingestor=ingestor, logger=logger)
     await _refresh_cloudbet_corpus(
         manifest=manifest,
         venues=venues,
@@ -288,7 +309,6 @@ async def _bootstrap_semantic_cache(
 
 async def _refresh_required_sxbet_corpus(
     *,
-    manifest: BettingArbitrageNodeManifest,
     venues: Iterable[BettingVenueManifest],
     ingestor: SnapshotIngestor,
     logger: Logger | None,
@@ -301,6 +321,27 @@ async def _refresh_required_sxbet_corpus(
     if not api_key:
         raise RuntimeError("SXBET_API_KEY is required for semantic cache bootstrap")
 
+    scope = _sxbet_corpus_scope(sxbet_venues)
+    from_time, to_time = _sxbet_time_window(scope.live_only)
+    client = SXBetHttpClient(api_key=api_key, logger=logger)
+    await client.connect()
+    try:
+        await ingestor.refresh_sxbet(
+            client,
+            sport_ids=scope.sport_ids,
+            from_time=from_time,
+            to_time=to_time,
+            instrument_limit=scope.instrument_limit,
+            market_discovery_limit=scope.market_discovery_limit,
+            prefer_liquid_markets=scope.prefer_liquid_markets,
+            liquidity_probe_limit=scope.liquidity_probe_limit,
+            min_two_sided_markets=scope.min_two_sided_markets,
+        )
+    finally:
+        await client.disconnect()
+
+
+def _sxbet_corpus_scope(sxbet_venues: Iterable[BettingVenueManifest]) -> _SxbetCorpusScope:
     sport_ids: set[int] = set()
     instrument_limit = 250
     market_discovery_limit = 250
@@ -320,25 +361,22 @@ async def _refresh_required_sxbet_corpus(
         min_two_sided_markets = max(min_two_sided_markets, int(venue.min_two_sided_markets))
         live_only = live_only or venue.live_only
 
+    return _SxbetCorpusScope(
+        sport_ids=sorted(sport_ids) or None,
+        instrument_limit=instrument_limit,
+        market_discovery_limit=market_discovery_limit,
+        prefer_liquid_markets=prefer_liquid_markets,
+        liquidity_probe_limit=liquidity_probe_limit,
+        min_two_sided_markets=min_two_sided_markets,
+        live_only=live_only,
+    )
+
+
+def _sxbet_time_window(live_only: bool) -> tuple[int, int]:
     now = int(time.time())
     from_time = now - 6 * 60 * 60 if live_only else now
     to_time = now + 6 * 60 * 60 if live_only else now + 7 * 24 * 60 * 60
-    client = SXBetHttpClient(api_key=api_key, logger=logger)
-    await client.connect()
-    try:
-        await ingestor.refresh_sxbet(
-            client,
-            sport_ids=sorted(sport_ids) or None,
-            from_time=from_time,
-            to_time=to_time,
-            instrument_limit=instrument_limit,
-            market_discovery_limit=market_discovery_limit,
-            prefer_liquid_markets=prefer_liquid_markets,
-            liquidity_probe_limit=liquidity_probe_limit,
-            min_two_sided_markets=min_two_sided_markets,
-        )
-    finally:
-        await client.disconnect()
+    return from_time, to_time
 
 
 async def _refresh_cloudbet_corpus(
