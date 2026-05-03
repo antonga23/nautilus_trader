@@ -46,6 +46,10 @@ STRATEGY_CONFIG_PATH = (
     "nautilus_trader.examples.strategies.betting_arbitrage:BettingArbitrageConfig"
 )
 DEFAULT_RENDER_ROOT = Path("artifacts/strategy-nodes")
+SXBET_TESTNET_API_URL = "https://api.toronto.sx.bet"
+SXBET_TESTNET_WS_URL = "wss://api.toronto.sx.bet"
+SXBET_DEFAULT_BASE_CURRENCY = "USDC"
+CLOUDBET_PAPER_BASE_CURRENCY = "PLAY_EUR"
 
 DUMMY_SECRETS = {
     "SXBET_API_KEY": "dummy-sxbet-api-key",
@@ -186,12 +190,13 @@ def _build_sxbet_data_importable(
     manifest: BettingArbitrageNodeManifest,
 ) -> ImportableConfig:
     prefix = _credential_prefix(venue)
+    api_url, ws_url = _resolve_venue_endpoints(venue)
     api_key = _resolve_secret(prefix, "API_KEY", manifest.allow_dummy_credentials)
     api_key_pool = _resolve_secret_pool(prefix, "API_KEYS", manifest.allow_dummy_credentials)
     provider_config = {
         "api_key": api_key,
         "api_key_pool": api_key_pool,
-        "api_url": venue.api_url,
+        "api_url": api_url,
         "load_all": venue.load_all_instruments,
         "sport_ids": sorted(venue.sport_ids) if venue.sport_ids else None,
         "league_ids": sorted(venue.league_ids) if venue.league_ids else None,
@@ -205,8 +210,8 @@ def _build_sxbet_data_importable(
     config = {
         "api_key": api_key,
         "api_key_pool": api_key_pool,
-        "api_url": venue.api_url,
-        "ws_url": venue.ws_url,
+        "api_url": api_url,
+        "ws_url": ws_url,
         "instrument_provider": provider_config,
         "sport_ids": sorted(venue.sport_ids) if venue.sport_ids else None,
         "reconnect_on_disconnect": True,
@@ -233,12 +238,13 @@ def _build_sxbet_exec_importable(
     manifest: BettingArbitrageNodeManifest,
 ) -> ImportableConfig:
     prefix = _credential_prefix(venue)
+    api_url, ws_url = _resolve_venue_endpoints(venue)
     api_key = _resolve_secret(prefix, "API_KEY", manifest.allow_dummy_credentials)
     api_key_pool = _resolve_secret_pool(prefix, "API_KEYS", manifest.allow_dummy_credentials)
     provider_config = {
         "api_key": api_key,
         "api_key_pool": api_key_pool,
-        "api_url": venue.api_url,
+        "api_url": api_url,
         "load_all": venue.load_all_instruments,
         "sport_ids": sorted(venue.sport_ids) if venue.sport_ids else None,
         "league_ids": sorted(venue.league_ids) if venue.league_ids else None,
@@ -258,11 +264,11 @@ def _build_sxbet_exec_importable(
             "WALLET_ADDRESS",
             manifest.allow_dummy_credentials,
         ),
-        "api_url": venue.api_url,
-        "ws_url": venue.ws_url,
+        "api_url": api_url,
+        "ws_url": ws_url,
         "instrument_provider": provider_config,
         "max_retry_attempts": 3,
-        "base_currency": "USDC",
+        "base_currency": _resolve_base_currency(venue),
         "routing": {"venues": [venue.venue]},
     }
     return ImportableConfig(
@@ -277,6 +283,7 @@ def _build_cloudbet_data_importable(
     manifest: BettingArbitrageNodeManifest,
 ) -> ImportableConfig:
     prefix = _credential_prefix(venue)
+    api_url, _ = _resolve_venue_endpoints(venue)
     filters = _cloudbet_selection_filters(venue)
     provider_config = {
         "load_all": venue.load_all_instruments,
@@ -285,7 +292,7 @@ def _build_cloudbet_data_importable(
     }
     config = {
         "api_key": _resolve_secret(prefix, "API_KEY", manifest.allow_dummy_credentials),
-        "api_url": venue.api_url,
+        "api_url": api_url,
         "instrument_provider": provider_config,
         "market_filter": tuple(sorted(filters.items())) if filters else None,
         "auto_subscribe_quote_ticks": _provider_auto_subscribe_quote_ticks(
@@ -310,10 +317,12 @@ def _build_cloudbet_exec_importable(
     manifest: BettingArbitrageNodeManifest,
 ) -> ImportableConfig:
     prefix = _credential_prefix(venue)
+    api_url, _ = _resolve_venue_endpoints(venue)
     filters = _cloudbet_selection_filters(venue)
     config = {
         "api_key": _resolve_secret(prefix, "API_KEY", manifest.allow_dummy_credentials),
-        "api_url": venue.api_url,
+        "api_url": api_url,
+        "base_currency": _resolve_base_currency(venue),
         "market_filter": dict(filters) if filters else None,
         "routing": {"venues": [venue.venue]},
     }
@@ -331,6 +340,25 @@ def _provider_auto_subscribe_quote_ticks(
     if manifest.semantic_rule_cache_dir:
         return False
     return venue.auto_subscribe_quote_ticks
+
+
+def _resolve_venue_endpoints(venue: BettingVenueManifest) -> tuple[str | None, str | None]:
+    api_url = venue.api_url
+    ws_url = venue.ws_url
+    if venue.venue == "SXBET" and venue.environment == "testnet":
+        api_url = api_url or SXBET_TESTNET_API_URL
+        ws_url = ws_url or SXBET_TESTNET_WS_URL
+    return api_url, ws_url
+
+
+def _resolve_base_currency(venue: BettingVenueManifest) -> str | None:
+    if venue.base_currency:
+        return venue.base_currency
+    if venue.venue == "SXBET":
+        return SXBET_DEFAULT_BASE_CURRENCY
+    if venue.venue == "CLOUDBET" and venue.environment == "paper":
+        return CLOUDBET_PAPER_BASE_CURRENCY
+    return None
 
 
 def _cloudbet_selection_filters(venue: BettingVenueManifest) -> dict[str, Any]:
