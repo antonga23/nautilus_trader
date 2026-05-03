@@ -1,0 +1,143 @@
+name: strategy-node-host-inspect
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      root_dir:
+        description: Host strategy-node root
+        required: false
+        default: /opt/cloudbet/strategy-nodes
+
+jobs:
+  inspect-host:
+    name: inspect-host
+    timeout-minutes: 10
+    runs-on: [self-hosted, linux, x64, ec2, deploy, trading]
+    steps:
+      - name: Repair self-hosted workspace
+        shell: bash
+        env:
+          ACTIONS_RUNNER_ROOT: /home/ubuntu/actions-runner
+        run: |
+          workspace_parent="$(dirname "$GITHUB_WORKSPACE")"
+          run_maybe_sudo() {
+            if [[ "${EUID}" -eq 0 ]]; then
+              "$@"
+              return
+            fi
+            if "$@"; then
+              return
+            fi
+            local status=$?
+            if command -v sudo > /dev/null 2>&1; then
+              sudo -n "$@" && return
+            fi
+            return "$status"
+          }
+
+          if [[ -x /usr/local/bin/repair-github-runner-workspace ]]; then
+            run_maybe_sudo \
+              /usr/local/bin/repair-github-runner-workspace \
+              "$GITHUB_WORKSPACE" \
+              "$workspace_parent/.ci-cache" \
+              "$(id -u)" \
+              "$(id -g)"
+          else
+            run_maybe_sudo mkdir -p "$GITHUB_WORKSPACE" "$workspace_parent/.ci-cache"
+            run_maybe_sudo chown -R "$(id -u):$(id -g)" "$GITHUB_WORKSPACE" "$workspace_parent/.ci-cache"
+          fi
+
+          if [[ ! -e "$GITHUB_WORKSPACE/.git" ]]; then
+            find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+
+      - name: Collect host runtime state
+        shell: bash
+        env:
+          INPUT_ROOT_DIR: ${{ github.event.inputs.root_dir }}
+        run: |
+          set -euo pipefail
+
+          root_dir="${INPUT_ROOT_DIR:-/opt/cloudbet/strategy-nodes}"
+          artifact_dir="$GITHUB_WORKSPACE/artifacts/strategy-node-host-inspect"
+          mkdir -p "$artifact_dir"
+
+          hostname > "$artifact_dir/hostname.txt"
+          uptime > "$artifact_dir/uptime.txt"
+          free -m > "$artifact_dir/free-m.txt"
+          df -h > "$artifact_dir/df-h.txt"
+          docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}' \
+            > "$artifact_dir/docker-ps.txt"
+
+          python3 - "$root_dir" "$artifact_dir/summary.json" <<'PY'
+          import json
+          import pathlib
+          import subprocess
+          import sys
+
+          root = pathlib.Path(sys.argv[1])
+          output = pathlib.Path(sys.argv[2])
+
+          def read_json(path: pathlib.Path):
+              if not path.exists():
+                  return None
+              try:
+                  return json.loads(path.read_text())
+              except Exception:
+                  return {"_invalid_json": str(path)}
+
+          containers = {}
+          result = subprocess.run(
+              [
+                  "docker",
+                  "ps",
+                  "-a",
+                  "--format",
+                  "{{json .}}",
+              ],
+              check=True,
+              capture_output=True,
+              text=True,
+          )
+          for line in result.stdout.splitlines():
+              payload = json.loads(line)
+              containers[payload["Names"]] = payload
+
+          nodes = []
+          if root.exists():
+              for node_dir in sorted(path for path in root.iterdir() if path.is_dir()):
+                  name = node_dir.name
+                  nodes.append(
+                      {
+                          "name": name,
+                          "path": str(node_dir),
+                          "status": read_json(node_dir / "status.json"),
+                          "heartbeat": read_json(node_dir / "heartbeat.json"),
+                          "currentSession": read_json(node_dir / "current-session.json"),
+                          "container": containers.get(name),
+                      },
+                  )
+
+          summary = {
+              "rootDir": str(root),
+              "rootExists": root.exists(),
+              "nodeCount": len(nodes),
+              "nodes": nodes,
+              "containers": list(containers.values()),
+          }
+          output.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+          PY
+
+      - name: Upload host inspection artifact
+        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4.3.3
+        with:
+          name: strategy-node-host-inspect
+          path: artifacts/strategy-node-host-inspect
