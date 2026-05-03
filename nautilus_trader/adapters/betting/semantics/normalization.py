@@ -1,4 +1,9 @@
 # -------------------------------------------------------------------------------------------------
+# skipcq: MC0001, PYL-E0611, PYL-R0903, PYL-R0911, PYL-R0912, PYL-R0913, PYL-R0914
+# skipcq: PYL-W0613
+# pylint: disable=no-name-in-module,too-few-public-methods,too-many-return-statements
+# pylint: disable=too-many-branches,too-many-arguments,too-many-locals,unused-argument
+# -------------------------------------------------------------------------------------------------
 #  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
@@ -29,6 +34,9 @@ from urllib import parse
 
 from nautilus_trader.adapters.betting.common.enums import Outcome
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
+from nautilus_trader.adapters.betting.semantics.polymarket_transform import (
+    PolymarketSportsTransformer,
+)
 from nautilus_trader.adapters.betting.semantics.types import CanonicalMarketType
 from nautilus_trader.adapters.betting.semantics.types import NormalizedSelection
 from nautilus_trader.model.instruments import BinaryOption
@@ -36,6 +44,20 @@ from nautilus_trader.model.instruments import BinaryOption
 
 LINE_PATTERN = re.compile(r"(?<![a-zA-Z0-9])([+-]?\d+(?:\.\d+)?)(?![a-zA-Z0-9])")
 NON_WORD_PATTERN = re.compile(r"[^a-z0-9]+")
+TEXT_MARKET_TYPE_RULES: tuple[tuple[CanonicalMarketType, tuple[str, ...]], ...] = (
+    (CanonicalMarketType.BINARY_OPTION, ("binary_option",)),
+    (CanonicalMarketType.DRAW_NO_BET, ("draw_no_bet", "tie_no_bet")),
+    (CanonicalMarketType.DOUBLE_CHANCE, ("double_chance",)),
+    (CanonicalMarketType.ASIAN_HANDICAP, ("asian_handicap", "levelball", "pick_em")),
+    (CanonicalMarketType.EUROPEAN_HANDICAP, ("european_handicap", "three_way_handicap")),
+    (CanonicalMarketType.TEAM_TOTALS, ("team_total",)),
+    (CanonicalMarketType.BOTH_TEAMS_TO_SCORE, ("both_teams_to_score", "btts")),
+    (CanonicalMarketType.ODD_EVEN, ("odd_even",)),
+    (CanonicalMarketType.CORRECT_SCORE, ("correct_score", "exact_sets")),
+    (CanonicalMarketType.OUTRIGHT, ("outright",)),
+)
+WINNER_TEXT_TOKENS = ("moneyline", "winner")
+SPREAD_TEXT_TOKENS = ("handicap", "spread", "run_line")
 
 
 class MarketNormalizer:
@@ -246,6 +268,11 @@ class MarketNormalizer:
         info = instrument.info if isinstance(instrument.info, dict) else {}
         raw_sports_meta = info.get("sports_market")
         sports_meta: dict[str, Any] = raw_sports_meta if isinstance(raw_sports_meta, dict) else {}
+        if sports_meta or info.get("_gamma_original") or info.get("question"):
+            transformed = PolymarketSportsTransformer.to_crypto_betting_instrument(instrument)
+            if transformed is not None:
+                return cls._normalize_betting_instrument(transformed)
+
         params = cls._parse_params(sports_meta.get("params") or "")
         sport = cls._canonical_sport(str(sports_meta.get("sport") or info.get("sport") or ""))
         scope = cls._scope_from_parts(
@@ -375,11 +402,11 @@ class MarketNormalizer:
             "params": params,
         }
 
-    @staticmethod
-    def _parse_params(raw_params: Any) -> dict[str, str]:
+    @classmethod
+    def _parse_params(cls, raw_params: Any) -> dict[str, str]:
         if raw_params in (None, ""):
             return {}
-        params: dict[str, str] = {}
+        values_by_key: dict[str, list[str]] = {}
         for part in re.split(r"[,&]", str(raw_params)):
             if "=" not in part:
                 continue
@@ -388,11 +415,38 @@ class MarketNormalizer:
             value = value.strip()
             if not key or not value:
                 continue
-            if key in params and value not in params[key].split("|"):
-                params[key] = f"{params[key]}|{value}"
-            else:
-                params[key] = value
+            bucket = values_by_key.setdefault(key, [])
+            if value not in bucket:
+                bucket.append(value)
+
+        params: dict[str, str] = {}
+        for key, values in values_by_key.items():
+            params[key] = "|".join(cls._canonical_param_values(key, values))
         return params
+
+    @staticmethod
+    def _canonical_param_values(key: str, values: list[str]) -> list[str]:
+        if len(values) <= 1:
+            return values
+        if key == "period":
+            period_order = {
+                "ft": 0,
+                "ot": 1,
+                "1h": 2,
+                "2h": 3,
+                "q1": 4,
+                "q2": 5,
+                "q3": 6,
+                "q4": 7,
+            }
+            return sorted(
+                values,
+                key=lambda value: (
+                    period_order.get(value.strip().lower(), 99),
+                    value.strip().lower(),
+                ),
+            )
+        return sorted(values, key=lambda value: value.strip().lower())
 
     @classmethod
     def _extract_line(
@@ -422,7 +476,7 @@ class MarketNormalizer:
         return None
 
     @classmethod
-    def _canonical_market_type(  # noqa: C901
+    def _canonical_market_type(
         cls,
         *,
         raw_market_name: str,
@@ -440,6 +494,28 @@ class MarketNormalizer:
             numeric_market_id = int(raw_market_id)
         except (TypeError, ValueError):
             numeric_market_id = raw_market_id
+        from_numeric_id = cls._canonical_market_type_from_numeric_id(
+            numeric_market_id,
+            params=params,
+            info=info,
+        )
+        if from_numeric_id is not None:
+            return from_numeric_id
+
+        return cls._canonical_market_type_from_text(
+            normalized,
+            raw_market_name=raw_market_name,
+            info=info,
+        )
+
+    @classmethod
+    def _canonical_market_type_from_numeric_id(
+        cls,
+        numeric_market_id: Any,
+        *,
+        params: dict[str, str],
+        info: dict[str, Any],
+    ) -> CanonicalMarketType | None:
         if numeric_market_id in {0, 52, 226}:
             return (
                 CanonicalMarketType.WINNER
@@ -459,44 +535,75 @@ class MarketNormalizer:
             return CanonicalMarketType.BOTH_TEAMS_TO_SCORE
         if numeric_market_id == 88:
             return CanonicalMarketType.WINNER
+        return None
 
-        if "binary_option" in normalized:
-            return CanonicalMarketType.BINARY_OPTION
-        if "draw_no_bet" in normalized or "tie_no_bet" in normalized:
-            return CanonicalMarketType.DRAW_NO_BET
-        if "double_chance" in normalized:
-            return CanonicalMarketType.DOUBLE_CHANCE
-        if "asian_handicap" in normalized or "levelball" in normalized or "pick_em" in normalized:
-            return CanonicalMarketType.ASIAN_HANDICAP
-        if "european_handicap" in normalized or "three_way_handicap" in normalized:
-            return CanonicalMarketType.EUROPEAN_HANDICAP
-        if "team_total" in normalized:
-            return CanonicalMarketType.TEAM_TOTALS
-        if "both_teams_to_score" in normalized or "btts" in normalized:
-            return CanonicalMarketType.BOTH_TEAMS_TO_SCORE
-        if "odd_even" in normalized:
-            return CanonicalMarketType.ODD_EVEN
-        if "correct_score" in normalized or "exact_sets" in normalized:
-            return CanonicalMarketType.CORRECT_SCORE
-        if "outright" in normalized:
-            return CanonicalMarketType.OUTRIGHT
-        if any(token in normalized for token in ("moneyline", "winner")):
+    @classmethod
+    def _canonical_market_type_from_text(
+        cls,
+        normalized: str,
+        *,
+        raw_market_name: str,
+        info: dict[str, Any],
+    ) -> CanonicalMarketType:
+        candidates = (
+            cls._market_type_from_text_rules(normalized),
+            cls._winner_market_type_from_text(normalized),
+            cls._match_odds_market_type_from_text(
+                normalized,
+                raw_market_name=raw_market_name,
+                info=info,
+            ),
+            cls._totals_market_type_from_text(normalized),
+            cls._spread_market_type_from_text(normalized),
+        )
+        return next(
+            (market_type for market_type in candidates if market_type is not None),
+            CanonicalMarketType.OTHER,
+        )
+
+    @staticmethod
+    def _market_type_from_text_rules(normalized: str) -> CanonicalMarketType | None:
+        for market_type, tokens in TEXT_MARKET_TYPE_RULES:
+            if any(token in normalized for token in tokens):
+                return market_type
+        return None
+
+    @staticmethod
+    def _winner_market_type_from_text(normalized: str) -> CanonicalMarketType | None:
+        if any(token in normalized for token in WINNER_TEXT_TOKENS):
             return CanonicalMarketType.WINNER
+        return None
+
+    @staticmethod
+    def _match_odds_market_type_from_text(
+        normalized: str,
+        *,
+        raw_market_name: str,
+        info: dict[str, Any],
+    ) -> CanonicalMarketType | None:
         if normalized.endswith("1x2") or ".1x2" in raw_market_name or "_1x2" in normalized:
             return CanonicalMarketType.MATCH_ODDS
-        if "match_odds" in normalized:
-            if info.get("is_two_way_market") is True:
-                return CanonicalMarketType.WINNER
-            return CanonicalMarketType.MATCH_ODDS
-        if (
-            "total_goals" in normalized
-            or "totals" in normalized
-            or normalized.endswith(("_total", "_totals"))
-        ):
+        if "match_odds" not in normalized:
+            return None
+        return (
+            CanonicalMarketType.WINNER
+            if info.get("is_two_way_market") is True
+            else CanonicalMarketType.MATCH_ODDS
+        )
+
+    @staticmethod
+    def _totals_market_type_from_text(normalized: str) -> CanonicalMarketType | None:
+        if "total_goals" in normalized or "totals" in normalized:
             return CanonicalMarketType.TOTALS
-        if "handicap" in normalized or "spread" in normalized or "run_line" in normalized:
+        if normalized.endswith(("_total", "_totals")):
+            return CanonicalMarketType.TOTALS
+        return None
+
+    @staticmethod
+    def _spread_market_type_from_text(normalized: str) -> CanonicalMarketType | None:
+        if any(token in normalized for token in SPREAD_TEXT_TOKENS):
             return CanonicalMarketType.POINT_SPREAD
-        return CanonicalMarketType.OTHER
+        return None
 
     @staticmethod
     def _canonical_sport(raw_sport: str) -> str:
