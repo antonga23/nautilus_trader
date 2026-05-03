@@ -18,6 +18,9 @@ from unittest.mock import patch
 
 import pytest
 
+from nautilus_trader.adapters.betting.semantics.polymarket_transform import (
+    PolymarketSportsTransformer,
+)
 from nautilus_trader.adapters.polymarket.providers import PolymarketInstrumentProvider
 from nautilus_trader.common.component import LiveClock
 from nautilus_trader.config import InstrumentProviderConfig
@@ -480,3 +483,185 @@ async def test_gamma_load_all_falls_back_to_sports_event_discovery(mock_clob_cli
     assert len(instruments) == 2
     assert {instrument.outcome for instrument in instruments} == {"Yes", "No"}
     assert {instrument.info["_gamma_original"]["sport"] for instrument in instruments} == {"soccer"}
+
+
+@pytest.mark.asyncio
+async def test_gamma_load_all_prefers_event_enriched_markets_for_sports_filters(
+    mock_clob_client,
+    live_clock,
+):
+    config = InstrumentProviderConfig(
+        load_all=True,
+        filters={"sports": ["soccer"], "max_results": 10},
+        use_gamma_markets=True,
+    )
+    provider = PolymarketInstrumentProvider(
+        client=mock_clob_client,
+        clock=live_clock,
+        config=config,
+    )
+    generic_market = {
+        "conditionId": ACTIVE_OPEN_MARKET["condition_id"],
+        "clobTokenIds": (
+            f'["{ACTIVE_OPEN_MARKET["tokens"][0]["token_id"]}", '
+            f'"{ACTIVE_OPEN_MARKET["tokens"][1]["token_id"]}"]'
+        ),
+        "outcomes": '["Yes", "No"]',
+        "outcomePrices": '["0.5", "0.5"]',
+        "question": "Will Arsenal beat Chelsea?",
+        "endDateIso": "2026-12-31",
+        "orderPriceMinTickSize": 0.001,
+        "orderMinSize": 5,
+        "active": True,
+        "closed": False,
+        "enableOrderBook": True,
+    }
+    enriched_market = {
+        **generic_market,
+        "sport": "soccer",
+        "events": [
+            {
+                "id": "event-1",
+                "title": "Arsenal vs Chelsea",
+                "slug": "arsenal-chelsea",
+                "startDate": "2026-12-31T20:00:00Z",
+            },
+        ],
+    }
+
+    with patch("nautilus_trader.adapters.polymarket.providers.list_markets") as mock_list_markets:
+
+        async def generic_market_page(*args, **kwargs):
+            return [generic_market]
+
+        async def sports_events(endpoint, params=None):
+            if endpoint == "/sports":
+                return [{"sport": "soccer", "tags": "1,100639,12345"}]
+            if endpoint == "/events":
+                return [
+                    {
+                        "id": "event-1",
+                        "title": "Arsenal vs Chelsea",
+                        "slug": "arsenal-chelsea",
+                        "startDate": "2026-12-31T20:00:00Z",
+                        "markets": [enriched_market],
+                    },
+                ]
+            raise AssertionError(endpoint)
+
+        mock_list_markets.side_effect = generic_market_page
+        provider._gamma_get_json = sports_events
+
+        await provider.load_all_async(filters=config.filters)
+
+    instruments = provider.list_all()
+    transformed = [
+        PolymarketSportsTransformer.to_crypto_betting_instrument(instrument)
+        for instrument in instruments
+    ]
+    transformed = [instrument for instrument in transformed if instrument is not None]
+    assert len(transformed) == 2
+    assert {instrument.sport_name for instrument in transformed} == {"soccer"}
+    assert {instrument.info["sports_market"]["event_name"] for instrument in transformed} == {
+        "Arsenal vs Chelsea",
+    }
+
+
+@pytest.mark.asyncio
+async def test_gamma_load_all_spreads_event_discovery_across_requested_sports(
+    mock_clob_client,
+    live_clock,
+):
+    config = InstrumentProviderConfig(
+        load_all=True,
+        filters={"sports": ["basketball", "soccer"], "max_results": 4},
+        use_gamma_markets=True,
+    )
+    provider = PolymarketInstrumentProvider(
+        client=mock_clob_client,
+        clock=live_clock,
+        config=config,
+    )
+
+    def market(condition_id: str, *, question: str) -> dict:
+        return {
+            "conditionId": condition_id,
+            "clobTokenIds": '["11111111111111111111111111111111111111111111111111111111111111111","22222222222222222222222222222222222222222222222222222222222222222"]',
+            "outcomes": '["Yes", "No"]',
+            "outcomePrices": '["0.5", "0.5"]',
+            "question": question,
+            "endDateIso": "2026-12-31",
+            "orderPriceMinTickSize": 0.001,
+            "orderMinSize": 5,
+            "active": True,
+            "closed": False,
+            "enableOrderBook": True,
+        }
+
+    with patch("nautilus_trader.adapters.polymarket.providers.list_markets") as mock_list_markets:
+
+        async def empty_market_page(*args, **kwargs):
+            return []
+
+        async def sports_events(endpoint, params=None):
+            if endpoint == "/sports":
+                return [
+                    {"sport": "basketball", "tags": "1,100639,20001"},
+                    {"sport": "soccer", "tags": "1,100639,20002"},
+                ]
+            if endpoint == "/events":
+                if params["tag_id"] == "20001":
+                    return [
+                        {
+                            "id": "basketball-event-1",
+                            "title": "Bucks vs Celtics",
+                            "slug": "bucks-celtics",
+                            "startDate": "2026-12-31T20:00:00Z",
+                            "markets": [
+                                market(
+                                    "0x1111111111111111111111111111111111111111111111111111111111111111",
+                                    question="Will Bucks beat Celtics in the NBA game?",
+                                ),
+                                market(
+                                    "0x1111111111111111111111111111111111111111111111111111111111111112",
+                                    question="Will Celtics beat Bucks in the NBA game?",
+                                ),
+                            ],
+                        },
+                    ]
+                if params["tag_id"] == "20002":
+                    return [
+                        {
+                            "id": "soccer-event-1",
+                            "title": "Arsenal vs Chelsea",
+                            "slug": "arsenal-chelsea",
+                            "startDate": "2026-12-31T20:00:00Z",
+                            "markets": [
+                                market(
+                                    "0x2222222222222222222222222222222222222222222222222222222222222221",
+                                    question="Will Arsenal beat Chelsea in the soccer game?",
+                                ),
+                                market(
+                                    "0x2222222222222222222222222222222222222222222222222222222222222222",
+                                    question="Will Chelsea beat Arsenal in the soccer game?",
+                                ),
+                            ],
+                        },
+                    ]
+                raise AssertionError(params)
+            raise AssertionError(endpoint)
+
+        mock_list_markets.side_effect = empty_market_page
+        provider._gamma_get_json = sports_events
+
+        await provider.load_all_async(filters=config.filters)
+
+    instruments = provider.list_all()
+    transformed = [
+        PolymarketSportsTransformer.to_crypto_betting_instrument(instrument)
+        for instrument in instruments
+    ]
+    transformed = [instrument for instrument in transformed if instrument is not None]
+    sports = {instrument.sport_name for instrument in transformed}
+    assert len(transformed) == 8
+    assert sports == {"basketball", "soccer"}

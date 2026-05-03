@@ -136,6 +136,7 @@ class CryptoBettingInstrument(Instrument):
         trading_status: str | None = None,
         # NB: event_id should be a unique per event but the same across all venues
         event_id: str | int | None = None,
+        info: dict | None = None,
     ):
         # Event level data
         self.home_name = home_name
@@ -215,6 +216,7 @@ class CryptoBettingInstrument(Instrument):
             taker_fee=Decimal(0),
             ts_event=time.time_ns(),
             ts_init=time.time_ns(),
+            info=info or {},
         )
 
     @staticmethod

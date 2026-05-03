@@ -182,6 +182,32 @@ class TestBettingArbitrageNodeBuilder:
         assert loaded.node_id == manifest.node_id
         assert node_builder.render_trading_node_config_json(config) == config.json()
 
+    def test_execution_readiness_manifests_build_exec_clients_without_auto_execute(
+        self,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("SXBET_API_KEY", "dummy-sxbet-api-key")
+        monkeypatch.setenv("SXBET_PRIVATE_KEY", "0x" + "1" * 64)
+        monkeypatch.setenv("SXBET_WALLET_ADDRESS", "0x" + "2" * 40)
+        monkeypatch.setenv("CLOUDBET_API_KEY", "dummy-cloudbet-api-key")
+
+        for manifest_path, expected_client_key in (
+            (
+                "deploy/strategy_nodes/betting_arbitrage/sxbet-testnet-execution-readiness.json",
+                "SXBET_PRIMARY",
+            ),
+            (
+                "deploy/strategy_nodes/betting_arbitrage/cloudbet-execution-readiness.json",
+                "CLOUDBET_PRIMARY",
+            ),
+        ):
+            manifest = node_builder.load_manifest(Path(manifest_path))
+            config = build_trading_node_config(manifest)
+
+            assert manifest.validation_mode is False
+            assert config.strategies[0].config["auto_execute"] is False
+            assert expected_client_key in config.exec_clients
+
     def test_validation_mode_forces_safe_strategy_and_no_exec_clients(self):
         manifest = BettingArbitrageNodeManifest(
             node_id="sxbet-validation",
@@ -251,6 +277,7 @@ class TestBettingArbitrageNodeBuilder:
                     client_key="SXBET_PRIMARY",
                     instrument_load_limit=50,
                     market_discovery_limit=None,
+                    instrument_refresh_interval_secs=123.0,
                     prefer_liquid_markets=True,
                     liquidity_probe_limit=250,
                     min_two_sided_markets=2,
@@ -273,6 +300,7 @@ class TestBettingArbitrageNodeBuilder:
         assert data_client.config["instrument_provider"]["liquidity_probe_limit"] == 250
         assert data_client.config["instrument_provider"]["min_two_sided_markets"] == 2
         assert data_client.config["instrument_provider"]["api_key_pool"] == ("dummy-sxbet-api-key",)
+        assert data_client.config["update_instruments_interval_secs"] == 123.0
         assert data_client.config["auto_subscribe_quote_ticks"] is True
         assert data_client.config["quote_subscription_limit"] == 40
         assert data_client.config["order_book_poll_interval_secs"] == 5.0
@@ -293,6 +321,7 @@ class TestBettingArbitrageNodeBuilder:
                     client_key="CLOUDBET_PRIMARY",
                     sport_keys=frozenset({"soccer", "basketball"}),
                     instrument_load_limit=40,
+                    instrument_refresh_interval_secs=95.0,
                     auto_subscribe_quote_ticks=True,
                     quote_subscription_limit=60,
                     order_book_poll_interval_secs=7.0,
@@ -317,6 +346,7 @@ class TestBettingArbitrageNodeBuilder:
             "soccer",
         ]
         assert data_client.config["instrument_provider"]["filters"]["limit"] == 40
+        assert data_client.config["update_instruments_interval_secs"] == 95.0
         assert data_client.config["auto_subscribe_quote_ticks"] is False
         assert data_client.config["quote_subscription_limit"] == 60
         assert data_client.config["quote_poll_interval_secs"] == 7.0
@@ -450,6 +480,7 @@ class TestBettingArbitrageNodeBuilder:
                     venue="POLYMARKET",
                     client_key="POLYMARKET_PRIMARY",
                     load_all_instruments=False,
+                    instrument_refresh_interval_secs=180.0,
                     instrument_ids=frozenset(
                         {
                             "condition-token.POLYMARKET",
@@ -468,6 +499,7 @@ class TestBettingArbitrageNodeBuilder:
             "condition-token.POLYMARKET",
         ]
         assert data_client.config["instrument_provider"]["use_gamma_markets"] is True
+        assert data_client.config["update_instruments_interval_mins"] == 3
         assert "filters" not in data_client.config["instrument_provider"]
         created = data_client.create()
         assert created.instrument_provider.load_ids == frozenset(
@@ -485,6 +517,7 @@ class TestBettingArbitrageNodeBuilder:
                     venue="POLYMARKET",
                     client_key="POLYMARKET_PRIMARY",
                     load_all_instruments=True,
+                    instrument_refresh_interval_secs=240.0,
                     sport_keys=frozenset({"basketball", "soccer"}),
                     instrument_load_limit=25,
                 ),
@@ -504,6 +537,10 @@ class TestBettingArbitrageNodeBuilder:
             },
             "use_gamma_markets": True,
         }
+        assert (
+            config.data_clients["POLYMARKET_PRIMARY"].config["update_instruments_interval_mins"]
+            == 4
+        )
 
     def test_polymarket_sports_filter_matches_gamma_market_text(self):
         basketball_market = {
@@ -624,6 +661,10 @@ class TestBettingArbitrageNodeBuilder:
             "max_results": 80,
             "sports": ["american_football", "baseball", "basketball", "soccer", "tennis"],
         }
+        assert (
+            config.data_clients["POLYMARKET_PRIMARY"].config["update_instruments_interval_mins"]
+            == 5
+        )
         created = config.data_clients["POLYMARKET_PRIMARY"].create()
         assert isinstance(hash(created.instrument_provider), int)
 
@@ -2034,6 +2075,7 @@ class TestBettingArbitrageNodeRunner:
         assert "--min-positive-margin-candidates 0" in workflow
         assert "--min-cross-venue-candidates 1" in workflow
         assert "--min-quoted-node-count CLOUDBET:2" in workflow
+        assert "--min-quoted-node-count POLYMARKET:1" in workflow
         assert "--min-quoted-node-count SXBET:2" in workflow
         assert "min_positive_margin_candidates=0" in workflow
         assert (
@@ -2110,6 +2152,7 @@ class TestBettingArbitrageNodeRunner:
                             "crossVenueCandidateCount": 1,
                             "quotedNodeCounts": {
                                 "CLOUDBET": 2,
+                                "POLYMARKET": 1,
                                 "SXBET": 2,
                             },
                         },
@@ -2142,6 +2185,8 @@ class TestBettingArbitrageNodeRunner:
                 "1",
                 "--min-quoted-node-count",
                 "CLOUDBET:2",
+                "--min-quoted-node-count",
+                "POLYMARKET:1",
                 "--min-quoted-node-count",
                 "SXBET:2",
             ],

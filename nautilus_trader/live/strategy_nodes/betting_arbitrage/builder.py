@@ -211,6 +211,7 @@ def _build_sxbet_data_importable(
         "sport_ids": sorted(venue.sport_ids) if venue.sport_ids else None,
         "reconnect_on_disconnect": True,
         "max_reconnect_attempts": 5,
+        "update_instruments_interval_secs": venue.instrument_refresh_interval_secs,
         "auto_subscribe_quote_ticks": _provider_auto_subscribe_quote_ticks(
             venue,
             manifest,
@@ -288,6 +289,7 @@ def _build_cloudbet_data_importable(
         "api_url": venue.api_url,
         "instrument_provider": provider_config,
         "market_filter": tuple(sorted(filters.items())) if filters else None,
+        "update_instruments_interval_secs": venue.instrument_refresh_interval_secs,
         "auto_subscribe_quote_ticks": _provider_auto_subscribe_quote_ticks(
             venue,
             manifest,
@@ -361,6 +363,11 @@ def _build_polymarket_data_importable(
         "base_url_http": venue.api_url,
         "base_url_ws": venue.ws_url,
         "instrument_provider": _polymarket_instrument_provider_dict(venue),
+        "update_instruments_interval_mins": (
+            max(1, round(float(venue.instrument_refresh_interval_secs) / 60.0))
+            if venue.instrument_refresh_interval_secs is not None
+            else None
+        ),
         "compute_effective_deltas": False,
         "drop_quotes_missing_side": True,
         "routing": {"venues": [venue.venue]},

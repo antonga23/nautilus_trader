@@ -296,18 +296,25 @@ class PolymarketInstrumentProvider(InstrumentProvider):
             "Loading Polymarket instruments using Gamma discovery "
             f"filters={filters} sports={sorted(sports_filter)} max_results={max_results}",
         )
-        markets = await list_markets(
+        markets_by_id: dict[str, dict[str, Any]] = {}
+        generic_markets = await list_markets(
             http_client=self._http_client,
             filters=filters,
             max_results=max_results,
         )
-        self._log.info(f"Loaded {len(markets)} candidate Polymarket markets using Gamma API")
-        loaded_markets = 0
-        for market in markets:
+        self._log.info(
+            f"Loaded {len(generic_markets)} candidate Polymarket markets using Gamma API",
+        )
+        for market in generic_markets:
             if not _market_matches_sports_filter(market, sports_filter):
                 continue
-            loaded_markets += self._load_gamma_market_instruments(market)
-        if loaded_markets == 0 and sports_filter:
+            market_id = str(
+                market.get("conditionId") or market.get("id") or market.get("slug") or "",
+            )
+            if not market_id:
+                continue
+            markets_by_id[market_id] = market
+        if sports_filter:
             event_markets = await self._load_sports_event_markets_using_gamma(
                 sports_filter=sports_filter,
                 max_results=max_results,
@@ -317,7 +324,17 @@ class PolymarketInstrumentProvider(InstrumentProvider):
                 f"{len(event_markets)} candidate Polymarket sports event markets using Gamma API",
             )
             for market in event_markets:
-                loaded_markets += self._load_gamma_market_instruments(market)
+                market_id = str(
+                    market.get("conditionId") or market.get("id") or market.get("slug") or "",
+                )
+                if not market_id:
+                    continue
+                # Event-market discovery includes fixture metadata which the semantic
+                # transform needs at runtime. Prefer those richer payloads.
+                markets_by_id[market_id] = market
+        loaded_markets = 0
+        for market in markets_by_id.values():
+            loaded_markets += self._load_gamma_market_instruments(market)
         self._log.info(f"Loaded Polymarket sports markets using Gamma API: {loaded_markets}")
 
     def _load_gamma_market_instruments(self, market: dict[str, Any]) -> int:
@@ -348,40 +365,110 @@ class PolymarketInstrumentProvider(InstrumentProvider):
         if not isinstance(sports_metadata, list):
             return []
 
+        target_sports = [
+            sport_metadata
+            for sport_metadata in sports_metadata
+            if isinstance(sport_metadata, dict)
+            and _canonical_polymarket_sport(str(sport_metadata.get("sport") or "")) in sports_filter
+        ]
         discovered_markets: dict[str, dict[str, Any]] = {}
-        for sport_metadata in sports_metadata:
-            if not isinstance(sport_metadata, dict):
-                continue
-            sport_code = str(sport_metadata.get("sport") or "")
-            canonical_sport = _canonical_polymarket_sport(sport_code)
-            if canonical_sport not in sports_filter:
-                continue
-            for tag_id in _selected_sports_tag_ids(sport_metadata):
-                events = await self._gamma_get_json(
-                    "/events",
-                    params={
-                        "tag_id": tag_id,
-                        "related_tags": "true",
-                        "active": "true",
-                        "closed": "false",
-                        "archived": "false",
-                        "limit": max_results or 100,
-                        "order": "volume",
-                        "ascending": "false",
-                    },
-                )
-                if not isinstance(events, list):
-                    continue
-                _collect_sports_event_markets(
-                    canonical_sport=canonical_sport,
-                    sport_code=sport_code,
-                    selected_tags=_selected_sports_tag_ids(sport_metadata),
-                    events=events,
-                    discovered_markets=discovered_markets,
-                )
-                if max_results is not None and len(discovered_markets) >= max_results:
-                    return list(discovered_markets.values())[:max_results]
+        for index, sport_metadata in enumerate(target_sports):
+            sport_budget = self._sport_event_budget(
+                max_results=max_results,
+                discovered_count=len(discovered_markets),
+                remaining_sports=len(target_sports) - index,
+            )
+            if sport_budget is not None and sport_budget <= 0:
+                break
+            discovered_markets.update(
+                await self._load_event_markets_for_sport(
+                    sport_metadata=sport_metadata,
+                    sport_budget=sport_budget or None,
+                    max_results=max_results,
+                ),
+            )
+            if max_results is not None and len(discovered_markets) >= max_results:
+                break
         return list(discovered_markets.values())[:max_results]
+
+    @staticmethod
+    def _sport_event_budget(
+        *,
+        max_results: int | None,
+        discovered_count: int,
+        remaining_sports: int,
+    ) -> int | None:
+        if max_results is None:
+            return None
+        remaining_total = max(max_results - discovered_count, 0)
+        if remaining_total <= 0:
+            return 0
+        divisor = max(remaining_sports, 1)
+        budget = max(1, remaining_total // divisor)
+        if remaining_total % divisor:
+            budget += 1
+        return budget
+
+    async def _load_event_markets_for_sport(
+        self,
+        *,
+        sport_metadata: dict[str, Any],
+        sport_budget: int | None,
+        max_results: int | None,
+    ) -> dict[str, dict[str, Any]]:
+        sport_code = str(sport_metadata.get("sport") or "")
+        canonical_sport = _canonical_polymarket_sport(sport_code)
+        if canonical_sport is None:
+            return {}
+
+        selected_tags = _selected_sports_tag_ids(sport_metadata)
+        discovered_markets: dict[str, dict[str, Any]] = {}
+        sport_market_ids: set[str] = set()
+        for tag_id in selected_tags:
+            events = await self._gamma_get_json(
+                "/events",
+                params={
+                    "tag_id": tag_id,
+                    "related_tags": "true",
+                    "active": "true",
+                    "closed": "false",
+                    "archived": "false",
+                    "limit": sport_budget or max_results or 100,
+                    "order": "volume",
+                    "ascending": "false",
+                },
+            )
+            if not isinstance(events, list):
+                continue
+            _collect_sports_event_markets(
+                canonical_sport=canonical_sport,
+                sport_code=sport_code,
+                selected_tags=selected_tags,
+                events=events,
+                discovered_markets=discovered_markets,
+            )
+            sport_market_ids.update(self._event_market_ids(events))
+            if sport_budget is not None and len(sport_market_ids) >= sport_budget:
+                break
+            if max_results is not None and len(discovered_markets) >= max_results:
+                break
+        return discovered_markets
+
+    @staticmethod
+    def _event_market_ids(events: list[dict[str, Any]]) -> set[str]:
+        market_ids: set[str] = set()
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            for market in event.get("markets", []):
+                if not isinstance(market, dict):
+                    continue
+                market_id = str(
+                    market.get("id") or market.get("conditionId") or market.get("slug") or "",
+                )
+                if market_id:
+                    market_ids.add(market_id)
+        return market_ids
 
     async def _gamma_get_json(
         self,

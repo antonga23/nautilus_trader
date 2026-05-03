@@ -78,6 +78,14 @@ class SXBetDataClient(LiveMarketDataClient):
         self._instrument_provider: SXBetInstrumentProvider = instrument_provider
         self._subscribed_instruments: set[InstrumentId] = set()
         self._polling_task: asyncio.Task | None = None
+        self._update_instruments_task: asyncio.Task | None = None
+        self._update_instrument_interval = (
+            float(config.update_instruments_interval_secs)
+            if config.update_instruments_interval_secs is not None
+            else None
+        )
+        self._updates_received = 0
+        self._update_event = asyncio.Event()
         self._polling_interval = float(config.order_book_poll_interval_secs)
         self._poll_summary_interval = float(config.order_book_poll_summary_interval_secs)
         self._order_book_concurrency = int(config.order_book_concurrency)
@@ -116,6 +124,8 @@ class SXBetDataClient(LiveMarketDataClient):
         )
         subscribe_started_at = time.perf_counter()
         self._auto_subscribe_loaded_instruments()
+        if self._update_instrument_interval is not None:
+            self._update_instruments_task = asyncio.create_task(self._update_instruments())
         self._log.info(
             f"SX.bet auto-subscription completed in {time.perf_counter() - subscribe_started_at:.2f}s",
         )
@@ -134,6 +144,10 @@ class SXBetDataClient(LiveMarketDataClient):
             self._polling_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._polling_task
+        if self._update_instruments_task and not self._update_instruments_task.done():
+            self._update_instruments_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._update_instruments_task
 
         await self._http_client.disconnect()
         self._log.info("SXBetDataClient disconnected")
@@ -300,6 +314,43 @@ class SXBetDataClient(LiveMarketDataClient):
             f"concurrency={self._order_book_concurrency} "
             f"max_latency={max_latency:.2f}s cycle_elapsed={cycle_elapsed:.2f}s",
         )
+
+    async def _refresh_instrument_catalog(self) -> int:
+        previous_ids = set(self._instrument_provider.get_all().keys())
+        filters = {}
+        if self._config.sport_ids:
+            filters["sport_ids"] = self._config.sport_ids
+        await self._instrument_provider.load_all_async(filters)
+        current_ids = set(self._instrument_provider.get_all().keys())
+        stale_ids = self._subscribed_instruments - current_ids
+        for instrument_id in stale_ids:
+            self._subscribed_instruments.discard(instrument_id)
+            self._remove_subscription_instrument(instrument_id)
+        self._send_all_instruments_to_data_engine()
+        if self._config.auto_subscribe_quote_ticks:
+            self._auto_subscribe_loaded_instruments()
+        return len(current_ids - previous_ids)
+
+    async def _update_instruments(self) -> None:
+        try:
+            while True:
+                self._update_event.clear()
+                if self._update_instrument_interval is None:
+                    return
+                self._log.debug(
+                    f"Scheduled `update_instruments` to run in {self._update_instrument_interval}s.",
+                )
+                await asyncio.sleep(self._update_instrument_interval)
+                refreshed_count = await self._refresh_instrument_catalog()
+                self._update_event.set()
+                self._updates_received += 1
+                self._log.debug(
+                    "SX.bet instrument catalog refreshed: "
+                    f"loaded={len(self._instrument_provider.get_all())} new={refreshed_count} "
+                    f"quote_subscriptions={len(self._subscribed_instruments)}",
+                )
+        except asyncio.CancelledError:
+            self._log.debug("Canceled task 'update_instruments'")
 
     async def _fetch_and_publish_best_odds(self, market_hashes: set[str]) -> None:
         try:

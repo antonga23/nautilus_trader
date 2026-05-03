@@ -13,8 +13,6 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
-from typing import Optional
-
 from nautilus_trader.model.objects import Currency
 
 from nautilus_trader.config import InstrumentProviderConfig
@@ -40,12 +38,13 @@ class CloudbetDataClientConfig(LiveDataClientConfig, frozen=True):
 
     instrument_provider: InstrumentProviderConfig = InstrumentProviderConfig(load_all=True)
     routing: RoutingConfig = RoutingConfig()
-    api_key: Optional[str] = None
-    api_url: Optional[str] = None
-    market_filter: Optional[tuple] = None
+    api_key: str | None = None
+    api_url: str | None = None
+    market_filter: tuple | None = None
     handle_revised_bars: bool = False
     auto_subscribe_quote_ticks: bool = False
     quote_subscription_limit: PositiveInt | None = None
+    update_instruments_interval_secs: PositiveFloat | None = 300.0
     quote_poll_interval_secs: PositiveFloat = 10.0
     quote_poll_summary_interval_secs: PositiveFloat = 30.0
     quote_poll_concurrency: PositiveInt = 4
@@ -74,8 +73,8 @@ class CloudbetInstrumentProviderConfig(InstrumentProviderConfig, frozen=True):
         If parser warnings should be logged.
     """
 
-    api_key: Optional[str] = None
-    api_url: Optional[str] = None
+    api_key: str | None = None
+    api_url: str | None = None
     load_all = False
     load_ids = None
     filters = None
@@ -101,6 +100,6 @@ class CloudbetExecClientConfig(LiveExecClientConfig, kw_only=True, frozen=True):
     """
 
     base_currency: Currency = None
-    market_filter: Optional[dict] = None
-    api_key: Optional[str] = None
-    api_url: Optional[str] = None
+    market_filter: dict | None = None
+    api_key: str | None = None
+    api_url: str | None = None

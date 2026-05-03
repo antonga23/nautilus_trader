@@ -686,7 +686,7 @@ class SnapshotIngestor:
                 transformed = transformer.to_crypto_betting_instrument(instrument)
                 if transformed is None:
                     continue
-                if not self._polymarket_has_event_participants(transformed):
+                if not self._polymarket_has_semantic_metadata(transformed):
                     continue
                 selection = self._normalizer.normalize(transformed)
                 discovered_sports.add(selection.sport)
@@ -703,12 +703,18 @@ class SnapshotIngestor:
         return normalized_records, discovered_sports, event_keys, market_names
 
     @staticmethod
-    def _polymarket_has_event_participants(instrument: Any) -> bool:
+    def _polymarket_has_semantic_metadata(instrument: Any) -> bool:
         info = getattr(instrument, "info", {})
         sports_market = info.get("sports_market") if isinstance(info, dict) else {}
         if not isinstance(sports_market, dict):
             return False
-        return bool(sports_market.get("home_name") and sports_market.get("away_name"))
+        required_fields = (
+            sports_market.get("sport"),
+            sports_market.get("market_type"),
+            sports_market.get("selection_role"),
+            sports_market.get("event_name"),
+        )
+        return all(str(value or "").strip() for value in required_fields)
 
     @staticmethod
     def _polymarket_refresh_target(

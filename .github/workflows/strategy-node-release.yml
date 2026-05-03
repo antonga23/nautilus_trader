@@ -328,6 +328,7 @@ jobs:
             --min-quoted-match-instruments 2 \
             --min-quoted-node-count SXBET:2 \
             --min-quoted-node-count CLOUDBET:2 \
+            --min-quoted-node-count POLYMARKET:1 \
             --min-cross-venue-candidates 1 \
             --min-positive-margin-candidates 1 \
             --require-rust-semantic-topology
@@ -852,6 +853,7 @@ jobs:
             wait_timeout_seconds=1200
             quoted_node_args+=(--min-quoted-node-count SXBET:2)
             quoted_node_args+=(--min-quoted-node-count CLOUDBET:2)
+            quoted_node_args+=(--min-quoted-node-count POLYMARKET:1)
           fi
           echo "min_positive_margin_candidates=$min_positive_margin_candidates"
           echo "min_cross_venue_candidates=$min_cross_venue_candidates"

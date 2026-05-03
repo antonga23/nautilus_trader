@@ -30,6 +30,7 @@
       "sport_ids": [5],
       "instrument_load_limit": 250,
       "market_discovery_limit": 250,
+      "instrument_refresh_interval_secs": 300.0,
       "prefer_liquid_markets": true,
       "liquidity_probe_limit": 250,
       "min_two_sided_markets": 1,
@@ -50,6 +51,7 @@
       "sport_keys": ["soccer", "tennis", "basketball", "american_football"],
       "instrument_load_limit": 40,
       "market_discovery_limit": 40,
+      "instrument_refresh_interval_secs": 180.0,
       "auto_subscribe_quote_ticks": true,
       "quote_subscription_limit": 80,
       "order_book_poll_interval_secs": 10.0,
@@ -65,7 +67,8 @@
       "credential_prefix": "POLYMARKET",
       "load_all_instruments": true,
       "sport_keys": ["soccer", "basketball", "american_football", "baseball", "tennis"],
-      "instrument_load_limit": 80
+      "instrument_load_limit": 80,
+      "instrument_refresh_interval_secs": 300.0
     }
   ],
   "metadata": {
