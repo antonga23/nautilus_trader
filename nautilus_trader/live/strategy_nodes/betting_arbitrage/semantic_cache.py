@@ -329,6 +329,7 @@ def _is_portable_polymarket_template(template: SemanticRuleTemplate) -> bool:
     This does not weaken settlement safety: only deterministic, full-time,
     no-void/no-partial/no-unknown complementary coverage across canonical sports
     families is allowed to become venue-agnostic.
+
     """
     if not isinstance(template, SemanticRuleTemplate):
         return False

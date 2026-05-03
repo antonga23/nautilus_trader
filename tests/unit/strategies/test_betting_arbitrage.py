@@ -355,7 +355,7 @@ class TestBettingArbitrageStrategy:  # skipcq
             == [
                 ("CLOUDBET", {"semantic_refresh": True, "only_last": True}),
                 ("SXBET", {"semantic_refresh": True, "only_last": True}),
-            ]
+            ],
         )
         ensure(strategy.get_stats()["instrument_refresh_requests"] == 2)
         ensure(strategy.get_stats()["instrument_refresh_failures"] == 0)
