@@ -32,6 +32,7 @@ from nautilus_trader.adapters.polymarket import providers as polymarket_provider
 from nautilus_trader.config import ImportableConfig
 from nautilus_trader.config import InstrumentProviderConfig
 from nautilus_trader.examples.strategies.betting_arbitrage import BettingArbitrageConfig
+from nautilus_trader.examples.strategies.betting_arbitrage import BettingArbitrageStrategy
 from nautilus_trader.live.strategy_nodes.betting_arbitrage import builder as node_builder
 from nautilus_trader.live.strategy_nodes.betting_arbitrage import runner as node_runner
 from nautilus_trader.live.strategy_nodes.betting_arbitrage import semantic_cache as node_cache
@@ -2010,6 +2011,83 @@ class TestBettingArbitrageNodeRunner:
                 "quote_delta_secs": 6.0,
             },
         ) == ["quote_age", "pair_skew"]
+
+    def test_runtime_probe_same_venue_policy_uses_fixture_identity(self):
+        instrument_a = _instrument(
+            venue="SXBET",
+            market_type="asian_handicap",
+            market_name="asian_handicap",
+            outcome="home",
+            params="line=0.0",
+            handicap=0.0,
+        )
+        instrument_b = _instrument(
+            venue="SXBET",
+            market_type="asian_handicap",
+            market_name="asian_handicap",
+            outcome="away",
+            params="line=0.5",
+            handicap=0.5,
+        )
+        strategy = SimpleNamespace(
+            matcher_suspect_reason=BettingArbitrageStrategy.matcher_suspect_reason,
+            semantic_fixture_suspect_reason=(
+                BettingArbitrageStrategy.semantic_fixture_suspect_reason
+            ),
+            quote_age_secs=lambda _observed_ns, _quote: 0.1,
+            quote_fetch_latency_secs=lambda _quote: 0.1,
+            quote_available_size=lambda _quote: Decimal(100),
+            quote_freshness_thresholds=lambda _instrument_a, _instrument_b: SimpleNamespace(
+                profile="pre_match",
+                max_quote_age_secs=30.0,
+                max_pair_skew_secs=5.0,
+                max_fetch_latency_secs=10.0,
+            ),
+        )
+        edge = SimpleNamespace(
+            rule_id="rule-1",
+            template_id="template-1",
+            relationship_type="VOID_COMPATIBLE_HEDGE",
+            safety_tier="EXECUTION_SAFE_SAME_VENUE_ELIGIBLE",
+            execution_safe=False,
+            same_venue_execution_eligible=True,
+        )
+        quote_a = SimpleNamespace(
+            odds=Decimal("2.20"),
+            received_ns=10_000_000_000,
+            quote=SimpleNamespace(ts_event=9_900_000_000),
+        )
+        quote_b = SimpleNamespace(
+            odds=Decimal("2.20"),
+            received_ns=10_000_000_000,
+            quote=SimpleNamespace(ts_event=9_900_000_000),
+        )
+
+        quality = node_runner._probe_candidate_quality(
+            strategy,
+            edge=edge,
+            source_node=SimpleNamespace(
+                instrument=instrument_a,
+                market_name="asian_handicap",
+                outcome="home",
+            ),
+            target_node=SimpleNamespace(
+                instrument=instrument_b,
+                market_name="asian_handicap",
+                outcome="away",
+            ),
+            quote_a=quote_a,
+            quote_b=quote_b,
+            min_profit_margin=Decimal("0.02"),
+            allow_same_venue=True,
+        )
+
+        policy = quality["sameVenueRiskPolicy"]
+        assert policy["sameFixture"] is True
+        assert policy["suspectReason"] == "same_market_params_mismatch"
+        assert policy["fixtureSuspectReason"] == "none"
+        assert policy["diagnosticSuspect"] is True
+        assert quality["wouldExecuteSameVenueDryRun"] is True
 
     def test_runtime_manifest_rewrite_includes_semantic_cache_dir(self):
         deploy_script = Path(

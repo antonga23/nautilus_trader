@@ -2062,6 +2062,16 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         return BettingArbitrageStrategy.matcher_suspect_reason(instrument_a, instrument_b)
 
     @staticmethod
+    def _semantic_fixture_suspect_reason(
+        instrument_a: CryptoBettingInstrument,
+        instrument_b: CryptoBettingInstrument,
+    ) -> tuple[bool, str]:
+        return BettingArbitrageStrategy.semantic_fixture_suspect_reason(
+            instrument_a,
+            instrument_b,
+        )
+
+    @staticmethod
     def matcher_suspect_reason(
         instrument_a: CryptoBettingInstrument,
         instrument_b: CryptoBettingInstrument,
@@ -2073,6 +2083,24 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             and instrument_a.params != instrument_b.params
         ):
             return True, "same_market_params_mismatch"
+        if instrument_a.venue_name == instrument_b.venue_name and (
+            instrument_a.event_id != instrument_b.event_id
+        ):
+            if BettingArbitrageStrategy._is_trusted_same_venue_match_odds_pair(
+                instrument_a,
+                instrument_b,
+            ):
+                return False, "none"
+            return True, "same_venue_event_id_mismatch"
+        return False, "none"
+
+    @staticmethod
+    def semantic_fixture_suspect_reason(
+        instrument_a: CryptoBettingInstrument,
+        instrument_b: CryptoBettingInstrument,
+    ) -> tuple[bool, str]:
+        if not instrument_a.matches_event(instrument_b):
+            return True, "event_mismatch"
         if instrument_a.venue_name == instrument_b.venue_name and (
             instrument_a.event_id != instrument_b.event_id
         ):
