@@ -263,7 +263,9 @@ def test_polymarket_inferred_sports_market_preserves_yes_no_semantics():
         "question": "Will the Minnesota Vikings win the 2027 NFL league championship?",
         "_gamma_original": {
             "sport": "nfl",
-            "description": "This market resolves to Yes if the named team wins the 2027 NFL championship.",
+            "description": (
+                "This market resolves to Yes if the named team wins the 2027 NFL championship."
+            ),
             "outcomePrices": ["0.14", "0.86"],
             "events": [{"title": "NFL Champion 2027", "sport": "american_football"}],
         },
@@ -506,7 +508,9 @@ def test_cloudbet_competition_outright_totals_are_rewritten_to_totals():
                                     {
                                         "outcome": "s-under-4-dot-5",
                                         "params": "",
-                                        "marketUrl": "american_football.outright.v3/s-under-4-dot-5",
+                                        "marketUrl": (
+                                            "american_football.outright.v3/s-under-4-dot-5"
+                                        ),
                                         "price": 1.91,
                                         "minStake": 0.1,
                                         "maxStake": 10,
