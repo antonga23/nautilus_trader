@@ -29,6 +29,9 @@ from urllib import parse
 
 from nautilus_trader.adapters.betting.common.enums import Outcome
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
+from nautilus_trader.adapters.betting.semantics.polymarket_transform import (
+    PolymarketSportsTransformer,
+)
 from nautilus_trader.adapters.betting.semantics.types import CanonicalMarketType
 from nautilus_trader.adapters.betting.semantics.types import NormalizedSelection
 from nautilus_trader.model.instruments import BinaryOption
@@ -247,10 +250,6 @@ class MarketNormalizer:
         raw_sports_meta = info.get("sports_market")
         sports_meta: dict[str, Any] = raw_sports_meta if isinstance(raw_sports_meta, dict) else {}
         if sports_meta or info.get("_gamma_original") or info.get("question"):
-            from nautilus_trader.adapters.betting.semantics.polymarket_transform import (
-                PolymarketSportsTransformer,
-            )
-
             transformed = PolymarketSportsTransformer.to_crypto_betting_instrument(instrument)
             if transformed is not None:
                 return cls._normalize_betting_instrument(transformed)
