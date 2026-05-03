@@ -555,7 +555,7 @@ class TestBettingArbitrageIntegration:  # skipcq
                     "away_name": "Team B",
                     "competition_name": "NBA",
                     "price": 0.43,
-                    "resolution_policy": {"tie_or_unknown": "50_50"},
+                    "resolution_policy": {"tie_or_unknown": "lose"},
                 },
             },
         )
