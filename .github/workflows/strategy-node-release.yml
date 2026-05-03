@@ -224,6 +224,16 @@ jobs:
             validate-manifest \
             --manifest "$GITHUB_WORKSPACE/deploy/strategy_nodes/betting_arbitrage/sxbet-single-venue.json"
 
+      - name: Validate SX.bet testnet execution-readiness manifest
+        env:
+          SXBET_API_KEY: ${{ secrets.SXBET_API_KEY }}
+          CLOUDBET_API_KEY: ${{ secrets.CLOUDBET_API_KEY }}
+        run: |
+          cd /tmp
+          "$GITHUB_WORKSPACE/.venv/bin/python" -m nautilus_trader.live.strategy_nodes.betting_arbitrage \
+            validate-manifest \
+            --manifest "$GITHUB_WORKSPACE/deploy/strategy_nodes/betting_arbitrage/sxbet-testnet-execution-readiness.json"
+
       - name: Probe SX.bet runtime semantic coverage
         env:
           SXBET_API_KEY: ${{ secrets.SXBET_API_KEY }}
@@ -249,6 +259,15 @@ jobs:
           "$GITHUB_WORKSPACE/.venv/bin/python" -m nautilus_trader.live.strategy_nodes.betting_arbitrage \
             validate-manifest \
             --manifest "$GITHUB_WORKSPACE/deploy/strategy_nodes/betting_arbitrage/cloudbet-single-venue.json"
+
+      - name: Validate Cloudbet execution-readiness manifest
+        env:
+          CLOUDBET_API_KEY: ${{ secrets.CLOUDBET_API_KEY }}
+        run: |
+          cd /tmp
+          "$GITHUB_WORKSPACE/.venv/bin/python" -m nautilus_trader.live.strategy_nodes.betting_arbitrage \
+            validate-manifest \
+            --manifest "$GITHUB_WORKSPACE/deploy/strategy_nodes/betting_arbitrage/cloudbet-execution-readiness.json"
 
       - name: Probe Cloudbet runtime semantic coverage
         if: >-

@@ -238,6 +238,26 @@ class TestBettingArbitrageNodeBuilder:
         assert exec_client.config["private_key"].startswith("0x")
         assert exec_client.config["wallet_address"].startswith("0x")
 
+    def test_sxbet_testnet_execution_readiness_manifest_builds_exec_client(self, monkeypatch):
+        monkeypatch.setenv("SXBET_API_KEY", "testnet-sxbet-api-key")
+        monkeypatch.setenv("SXBET_PRIVATE_KEY", "0x" + "1" * 64)
+        monkeypatch.setenv("SXBET_WALLET_ADDRESS", "0x" + "2" * 40)
+        manifest = node_builder.load_manifest(
+            Path("deploy/strategy_nodes/betting_arbitrage/sxbet-testnet-execution-readiness.json"),
+        )
+
+        config = build_trading_node_config(manifest)
+        exec_client = config.exec_clients["SXBET_PRIMARY"]
+        data_client = config.data_clients["SXBET_PRIMARY"]
+
+        assert manifest.validation_mode is False
+        assert config.strategies[0].config["auto_execute"] is False
+        assert data_client.config["api_url"] == "https://api.toronto.sx.bet"
+        assert data_client.config["ws_url"] == "wss://api.toronto.sx.bet"
+        assert exec_client.config["api_url"] == "https://api.toronto.sx.bet"
+        assert exec_client.config["ws_url"] == "wss://api.toronto.sx.bet"
+        assert exec_client.config["base_currency"] == "USDC"
+
     def test_sxbet_data_client_receives_order_book_runtime_settings(self):
         manifest = BettingArbitrageNodeManifest(
             node_id="sxbet-runtime",
@@ -345,6 +365,24 @@ class TestBettingArbitrageNodeBuilder:
 
         assert data_client.config["auto_subscribe_quote_ticks"] is True
         assert data_client.config["quote_subscription_limit"] == 60
+
+    def test_cloudbet_execution_readiness_manifest_builds_play_money_exec_client(
+        self,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("CLOUDBET_API_KEY", "cloudbet-live-api-key")
+        manifest = node_builder.load_manifest(
+            Path("deploy/strategy_nodes/betting_arbitrage/cloudbet-execution-readiness.json"),
+        )
+
+        config = build_trading_node_config(manifest)
+        exec_client = config.exec_clients["CLOUDBET_PRIMARY"]
+
+        assert manifest.validation_mode is False
+        assert config.strategies[0].config["auto_execute"] is False
+        assert exec_client.config["base_currency"] == "PLAY_EUR"
+        assert exec_client.config["api_key"] == "cloudbet-live-api-key"
+        assert exec_client.config.get("api_url") is None
 
     def test_cloudbet_factories_match_live_node_builder_signature(self, monkeypatch):
         from nautilus_trader.adapters.cloudbet import factories as cloudbet_factories
