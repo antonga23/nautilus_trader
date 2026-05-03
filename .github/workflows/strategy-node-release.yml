@@ -228,11 +228,13 @@ jobs:
         env:
           SXBET_API_KEY: ${{ secrets.SXBET_API_KEY }}
           CLOUDBET_API_KEY: ${{ secrets.CLOUDBET_API_KEY }}
+          SXBET_TESTNET_MANIFEST: >-
+            ${{ github.workspace }}/deploy/strategy_nodes/betting_arbitrage/sxbet-testnet-execution-readiness.json
         run: |
           cd /tmp
           "$GITHUB_WORKSPACE/.venv/bin/python" -m nautilus_trader.live.strategy_nodes.betting_arbitrage \
             validate-manifest \
-            --manifest "$GITHUB_WORKSPACE/deploy/strategy_nodes/betting_arbitrage/sxbet-testnet-execution-readiness.json"
+            --manifest "$SXBET_TESTNET_MANIFEST"
 
       - name: Probe SX.bet runtime semantic coverage
         env:
