@@ -3,7 +3,6 @@
 #
 #  Unit tests for the Cloudbet-backed semantic mining refresh.
 # -------------------------------------------------------------------------------------------------
-
 from dataclasses import replace
 from decimal import Decimal
 import json
