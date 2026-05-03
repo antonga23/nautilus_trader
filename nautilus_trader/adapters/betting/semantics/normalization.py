@@ -462,7 +462,7 @@ class MarketNormalizer:
         return None
 
     @classmethod
-    def _canonical_market_type(  # noqa: C901
+    def _canonical_market_type(
         cls,
         *,
         raw_market_name: str,
@@ -480,6 +480,28 @@ class MarketNormalizer:
             numeric_market_id = int(raw_market_id)
         except (TypeError, ValueError):
             numeric_market_id = raw_market_id
+        from_numeric_id = cls._canonical_market_type_from_numeric_id(
+            numeric_market_id,
+            params=params,
+            info=info,
+        )
+        if from_numeric_id is not None:
+            return from_numeric_id
+
+        return cls._canonical_market_type_from_text(
+            normalized,
+            raw_market_name=raw_market_name,
+            info=info,
+        )
+
+    @classmethod
+    def _canonical_market_type_from_numeric_id(
+        cls,
+        numeric_market_id: Any,
+        *,
+        params: dict[str, str],
+        info: dict[str, Any],
+    ) -> CanonicalMarketType | None:
         if numeric_market_id in {0, 52, 226}:
             return (
                 CanonicalMarketType.WINNER
@@ -499,27 +521,33 @@ class MarketNormalizer:
             return CanonicalMarketType.BOTH_TEAMS_TO_SCORE
         if numeric_market_id == 88:
             return CanonicalMarketType.WINNER
+        return None
 
-        if "binary_option" in normalized:
-            return CanonicalMarketType.BINARY_OPTION
-        if "draw_no_bet" in normalized or "tie_no_bet" in normalized:
-            return CanonicalMarketType.DRAW_NO_BET
-        if "double_chance" in normalized:
-            return CanonicalMarketType.DOUBLE_CHANCE
-        if "asian_handicap" in normalized or "levelball" in normalized or "pick_em" in normalized:
-            return CanonicalMarketType.ASIAN_HANDICAP
-        if "european_handicap" in normalized or "three_way_handicap" in normalized:
-            return CanonicalMarketType.EUROPEAN_HANDICAP
-        if "team_total" in normalized:
-            return CanonicalMarketType.TEAM_TOTALS
-        if "both_teams_to_score" in normalized or "btts" in normalized:
-            return CanonicalMarketType.BOTH_TEAMS_TO_SCORE
-        if "odd_even" in normalized:
-            return CanonicalMarketType.ODD_EVEN
-        if "correct_score" in normalized or "exact_sets" in normalized:
-            return CanonicalMarketType.CORRECT_SCORE
-        if "outright" in normalized:
-            return CanonicalMarketType.OUTRIGHT
+    @staticmethod
+    def _canonical_market_type_from_text(
+        normalized: str,
+        *,
+        raw_market_name: str,
+        info: dict[str, Any],
+    ) -> CanonicalMarketType:
+        text_rules = (
+            (CanonicalMarketType.BINARY_OPTION, ("binary_option",)),
+            (CanonicalMarketType.DRAW_NO_BET, ("draw_no_bet", "tie_no_bet")),
+            (CanonicalMarketType.DOUBLE_CHANCE, ("double_chance",)),
+            (CanonicalMarketType.ASIAN_HANDICAP, ("asian_handicap", "levelball", "pick_em")),
+            (
+                CanonicalMarketType.EUROPEAN_HANDICAP,
+                ("european_handicap", "three_way_handicap"),
+            ),
+            (CanonicalMarketType.TEAM_TOTALS, ("team_total",)),
+            (CanonicalMarketType.BOTH_TEAMS_TO_SCORE, ("both_teams_to_score", "btts")),
+            (CanonicalMarketType.ODD_EVEN, ("odd_even",)),
+            (CanonicalMarketType.CORRECT_SCORE, ("correct_score", "exact_sets")),
+            (CanonicalMarketType.OUTRIGHT, ("outright",)),
+        )
+        for market_type, tokens in text_rules:
+            if any(token in normalized for token in tokens):
+                return market_type
         if any(token in normalized for token in ("moneyline", "winner")):
             return CanonicalMarketType.WINNER
         if normalized.endswith("1x2") or ".1x2" in raw_market_name or "_1x2" in normalized:
