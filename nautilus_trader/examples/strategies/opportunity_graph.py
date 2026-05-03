@@ -266,6 +266,8 @@ class OpportunityGraph:
             return
 
         self._topology_source = "python"
+        self._rust_semantic_templates_loaded = False
+        self._semantic_template_count = len(semantic_templates)
         for instrument in instruments:
             self._add_edges_for_instrument(instrument, instruments)
 
@@ -302,6 +304,9 @@ class OpportunityGraph:
             return added
 
         candidates = [*existing, instrument]
+        semantic_templates = self._semantic_template_payloads()
+        self._rust_semantic_templates_loaded = False
+        self._semantic_template_count = len(semantic_templates)
         self._add_edges_for_instrument(instrument, candidates)
         for existing_instrument in existing:
             self._add_edges_for_instrument(existing_instrument, candidates)

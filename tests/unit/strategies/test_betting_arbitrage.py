@@ -1804,6 +1804,10 @@ class TestBettingArbitrageStrategy:  # skipcq
             strategy._matcher_suspect_reason(instrument_a, param_mismatch)[1]
             == "same_market_params_mismatch",
         )
+        ensure(
+            strategy._semantic_fixture_suspect_reason(instrument_a, param_mismatch)
+            == (False, "none"),
+        )
 
     def test_fast_graph_batch_preserves_auto_execute_behavior(self):  # skipcq
         strategy = BettingArbitrageStrategy(

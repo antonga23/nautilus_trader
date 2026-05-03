@@ -1386,6 +1386,11 @@ def _probe_candidate_quality(
         source_node.instrument,
         target_node.instrument,
     )
+    fixture_suspect, fixture_suspect_reason = _semantic_fixture_suspect_reason(
+        strategy,
+        source_node.instrument,
+        target_node.instrument,
+    )
     fresh_quotes = (
         quote_age_a_secs <= freshness.max_quote_age_secs
         and quote_age_b_secs <= freshness.max_quote_age_secs
@@ -1397,19 +1402,21 @@ def _probe_candidate_quality(
     threshold_ok = profit_margin >= min_profit_margin
     same_venue_policy = {
         "sameVenue": same_venue,
-        "sameFixture": not matcher_suspect,
+        "sameFixture": not fixture_suspect,
         "compatibleMarketFamily": bool(edge.same_venue_execution_eligible),
         "freshQuotes": fresh_quotes,
         "sufficientLiquidity": liquidity_ok,
         "thresholdProfit": threshold_ok,
         "executionDisabledUntilRiskEngineApproval": True,
         "suspectReason": suspect_reason,
+        "diagnosticSuspect": matcher_suspect,
+        "fixtureSuspectReason": fixture_suspect_reason,
     }
     would_execute_same_venue = (
         edge.same_venue_execution_eligible
         and not edge.execution_safe
         and same_venue
-        and not matcher_suspect
+        and not fixture_suspect
         and fresh_quotes
         and liquidity_ok
         and threshold_ok
@@ -1469,6 +1476,17 @@ def _probe_candidate_quality(
         "sameVenueRiskPolicy": same_venue_policy,
         "wouldExecuteSameVenueDryRun": would_execute_same_venue,
     }
+
+
+def _semantic_fixture_suspect_reason(
+    strategy,
+    instrument_a,
+    instrument_b,
+) -> tuple[bool, str]:
+    checker = getattr(strategy, "semantic_fixture_suspect_reason", None)
+    if checker is None:
+        checker = strategy.matcher_suspect_reason
+    return checker(instrument_a, instrument_b)
 
 
 def _probe_rejection_bucket(

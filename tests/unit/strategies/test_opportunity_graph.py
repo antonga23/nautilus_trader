@@ -340,6 +340,19 @@ def test_python_engine_can_still_be_forced_when_matcher_has_rule_store() -> None
     ensure(graph._rust_core is None)
 
 
+def test_python_semantic_topology_reports_template_count(tmp_path: Path) -> None:  # skipcq
+    instruments = [_instrument(outcome="over"), _instrument(outcome="under")]
+    store = _semantic_rule_store(tmp_path / "python-rules", instruments[0], instruments[1])
+    matcher = MarketMatcher(rule_store=store, allow_unpromoted_topology=False)
+    graph = OpportunityGraph(matcher, engine="python")
+
+    graph.build(instruments)
+
+    ensure(graph.topology_source == "python")
+    ensure(graph.semantic_template_count == 1)
+    ensure(graph.edge_count == 1)
+
+
 def test_semantic_rust_builds_topology_from_promoted_templates(tmp_path: Path) -> None:  # skipcq
     instruments = [_instrument(outcome="over"), _instrument(outcome="under")]
     store = _semantic_rule_store(tmp_path / "rules", instruments[0], instruments[1])
