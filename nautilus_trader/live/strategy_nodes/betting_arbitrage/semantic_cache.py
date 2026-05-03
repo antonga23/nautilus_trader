@@ -17,6 +17,7 @@ from nautilus_trader.adapters.betting.semantics import RuleMiner
 from nautilus_trader.adapters.betting.semantics import RulePromotionPolicy
 from nautilus_trader.adapters.betting.semantics import RuleStore
 from nautilus_trader.adapters.betting.semantics import SafetyTier
+from nautilus_trader.adapters.betting.semantics import SemanticRuleTemplate
 from nautilus_trader.adapters.betting.semantics import SnapshotIngestor
 from nautilus_trader.adapters.cloudbet.client.core import CloudbetClient
 from nautilus_trader.adapters.sxbet.http_client import SXBetHttpClient
@@ -36,8 +37,16 @@ DEFAULT_POLYMARKET_SPORTS = (
     "american_football",
     "baseball",
 )
-SEMANTIC_CACHE_COMPATIBILITY_VERSION = "semantic-rule-cache:20260503:polymarket-sports-v2"
+SEMANTIC_CACHE_COMPATIBILITY_VERSION = "semantic-rule-cache:20260503:polymarket-portable-v3"
 SEMANTIC_CACHE_COMPATIBILITY_FILE = ".semantic-cache-version"
+PORTABLE_POLYMARKET_MARKET_FAMILIES = frozenset(
+    {
+        "MATCH_ODDS",
+        "DOUBLE_CHANCE",
+        "WINNER",
+        "TOTALS",
+    },
+)
 
 
 @dataclass(frozen=True)
@@ -304,7 +313,46 @@ async def _bootstrap_semantic_cache(
     miner.mine_store(persist=True)
     templates = miner.mine_templates_from_store(persist=True, persist_event_candidates=False)
     for template in templates:
-        promotion_policy.promote_template(store, template)
+        portable_polymarket = _is_portable_polymarket_template(template)
+        promotion_policy.promote_template(
+            store,
+            template,
+            allowlisted=portable_polymarket,
+            venue_agnostic=portable_polymarket,
+        )
+
+
+def _is_portable_polymarket_template(template: SemanticRuleTemplate) -> bool:
+    """
+    Return whether a Polymarket sports template is safe to apply cross-venue.
+
+    This does not weaken settlement safety: only deterministic, full-time,
+    no-void/no-partial/no-unknown complementary coverage across canonical sports
+    families is allowed to become venue-agnostic.
+    """
+    if not isinstance(template, SemanticRuleTemplate):
+        return False
+    providers = {provider.upper() for provider in template.support.providers}
+    if "POLYMARKET" not in providers:
+        return False
+    if template.relationship_type != "COMPLEMENTARY_COVERAGE":
+        return False
+    if template.has_void or template.has_partial or template.has_unknown:
+        return False
+    if not template.support.catalog_promotable:
+        return False
+    if template.pattern_a.scope != "full_time" or template.pattern_b.scope != "full_time":
+        return False
+    if template.pattern_a.sport != template.pattern_b.sport:
+        return False
+    if template.pattern_a.market_family not in PORTABLE_POLYMARKET_MARKET_FAMILIES:
+        return False
+    if template.pattern_b.market_family not in PORTABLE_POLYMARKET_MARKET_FAMILIES:
+        return False
+    resolution_items = tuple(template.pattern_a.resolution_policy) + tuple(
+        template.pattern_b.resolution_policy,
+    )
+    return not any(value in {"50_50", "unknown"} for _, value in resolution_items)
 
 
 async def _refresh_required_sxbet_corpus(

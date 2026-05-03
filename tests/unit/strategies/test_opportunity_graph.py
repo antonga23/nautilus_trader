@@ -53,6 +53,7 @@ def _instrument(
     event_name: str = "Team A vs Team B",
     home_name: str = "Team A",
     away_name: str = "Team B",
+    sport_name: str = "Soccer",
     market_name: str = "Total Goals",
     market_type: str = "total_goals",
     outcome: str = "over",
@@ -68,7 +69,7 @@ def _instrument(
         event_name=event_name,
         home_name=home_name,
         away_name=away_name,
-        sport_name="Soccer",
+        sport_name=sport_name,
         competition_name="Test League",
         market_name=market_name,
         market_type=market_type,
@@ -399,6 +400,67 @@ def test_semantic_rust_ignores_scope_only_period_params(tmp_path: Path) -> None:
 
     ensure(graph.topology_source == "rust_semantic")
     ensure(graph.edge_count == 1)
+
+
+def test_venue_agnostic_polymarket_template_builds_cross_venue_edge(
+    tmp_path: Path,
+) -> None:  # skipcq
+    polymarket_home = _instrument(
+        venue="POLYMARKET",
+        sport_name="Basketball",
+        market_name="Basketball Winner",
+        market_type="basketball.winner",
+        outcome="home",
+        params="",
+        info={"resolution_policy": {"tie_or_unknown": "lose"}},
+    )
+    polymarket_away = _instrument(
+        venue="POLYMARKET",
+        sport_name="Basketball",
+        market_name="Basketball Winner",
+        market_type="basketball.winner",
+        outcome="away",
+        params="",
+        info={"resolution_policy": {"tie_or_unknown": "lose"}},
+    )
+    cloudbet_away = _instrument(
+        venue="CLOUDBET",
+        sport_name="Basketball",
+        market_name="Moneyline",
+        market_type="basketball.moneyline",
+        outcome="away",
+        params="",
+    )
+    store = RuleStore(FileRuleCache(tmp_path / "polymarket-rules"))
+    rule = RuleClassifier().classify(polymarket_home, polymarket_away)
+    if rule is None:
+        raise AssertionError("Expected portable Polymarket winner rule")
+    template = SemanticRuleTemplate.from_rule(
+        rule,
+        support=TemplateSupportStats(
+            template_id=SemanticRuleTemplate.from_rule(rule).template_id,
+            observed_count=10,
+            event_count=10,
+            provider_count=1,
+            providers=("POLYMARKET",),
+            sports=("basketball",),
+            confidence=1.0,
+        ),
+        provider_scope=("POLYMARKET",),
+        venue_agnostic=True,
+        promotion_status=PromotionStatus.PROMOTED.value,
+        safety_tier=SafetyTier.EXECUTION_SAFE.value,
+    )
+    store.save_promoted_template(template)
+    matcher = MarketMatcher(rule_store=store, allow_unpromoted_topology=False)
+    graph = OpportunityGraph(matcher, engine="python")
+
+    graph.build([polymarket_home, cloudbet_away])
+
+    ensure(graph.edge_count == 1)
+    edge = next(iter(graph.edges_by_id.values()))
+    ensure(edge.template_id == template.template_id)
+    ensure(edge.execution_safe is True)
 
 
 def test_sync_keeps_rust_semantic_edges_without_python_rediscovery() -> None:  # skipcq

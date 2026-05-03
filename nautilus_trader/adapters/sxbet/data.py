@@ -34,6 +34,7 @@ from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.component import Logger
 from nautilus_trader.common.component import MessageBus
 from nautilus_trader.data.messages import SubscribeQuoteTicks
+from nautilus_trader.data.messages import RequestInstruments
 from nautilus_trader.data.messages import UnsubscribeQuoteTicks
 from nautilus_trader.live.data_client import LiveMarketDataClient
 from nautilus_trader.model.data import DataType
@@ -511,6 +512,30 @@ class SXBetDataClient(LiveMarketDataClient):
         Subscribe to all instruments.
         """
         self._log.debug(f"Ignoring bulk instrument subscription request: {command!r}")
+
+    async def _request_instruments(self, request: RequestInstruments) -> None:
+        """
+        Refresh and return the current SX.bet instrument catalog.
+        """
+        if bool((request.params or {}).get("semantic_refresh")):
+            filters = {}
+            if self._config.sport_ids:
+                filters["sport_ids"] = self._config.sport_ids
+            before_count = len(self._instrument_provider.get_all())
+            await self._instrument_provider.load_all_async(filters)
+            self._log.info(
+                "Refreshed SX.bet instrument catalog: "
+                f"before={before_count} after={len(self._instrument_provider.get_all())}",
+            )
+
+        self._handle_instruments(
+            request.venue,
+            list(self._instrument_provider.get_all().values()),
+            request.id,
+            request.start,
+            request.end,
+            request.params,
+        )
 
     async def _request_data(self, data_type: DataType) -> None:
         """

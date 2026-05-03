@@ -401,6 +401,14 @@ class PolymarketDataClient(LiveMarketDataClient):
                 f"Requesting instruments for {request.venue} with specified `end` which has no effect",
             )
 
+        if bool((request.params or {}).get("semantic_refresh")):
+            before_count = len(self._instrument_provider.get_all())
+            await self._instrument_provider.initialize(reload=True)
+            self._log.info(
+                "Refreshed Polymarket instrument catalog: "
+                f"before={before_count} after={len(self._instrument_provider.get_all())}",
+            )
+
         all_instruments = self._instrument_provider.get_all()
         target_instruments = []
         for instrument in all_instruments.values():

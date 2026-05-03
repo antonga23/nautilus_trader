@@ -128,18 +128,11 @@ class PolymarketSportsTransformer:
         if sport is None:
             return None
 
-        selection_target = ""
-        for regex in (
-            re.compile(r"^Will (.+?) win\b", re.IGNORECASE),
-            re.compile(r"^Will (.+?) be\b", re.IGNORECASE),
-            re.compile(r"^Will (.+?) make\b", re.IGNORECASE),
-        ):
-            match = regex.search(question)
-            if match is not None:
-                selection_target = match.group(1).strip()
-                break
+        selection_target = cls._selection_target(question)
 
         home_name, away_name = cls._parse_event_participants(event_title)
+        if not home_name or not away_name:
+            home_name, away_name = cls._parse_event_participants(question)
         target_role = cls._participant_role(selection_target, home_name, away_name)
         outcome = str(getattr(instrument, "outcome", "") or "").strip().lower()
 
@@ -214,10 +207,31 @@ class PolymarketSportsTransformer:
         return market_family, market_name, market_type, selection_role
 
     @staticmethod
+    def _selection_target(question: str) -> str:
+        for regex in (
+            re.compile(r"^Will (.+?) win\b", re.IGNORECASE),
+            re.compile(r"^Will (.+?) beat\b", re.IGNORECASE),
+            re.compile(r"^Will (.+?) defeat\b", re.IGNORECASE),
+            re.compile(r"^Will (.+?) be\b", re.IGNORECASE),
+            re.compile(r"^Will (.+?) make\b", re.IGNORECASE),
+        ):
+            match = regex.search(question)
+            if match is not None:
+                return match.group(1).strip()
+        return ""
+
+    @staticmethod
     def _parse_event_participants(event_title: str) -> tuple[str, str]:
         title = event_title.strip()
         if not title:
             return "", ""
+        for regex in (
+            re.compile(r"^Will (.+?) beat (.+?)\??$", re.IGNORECASE),
+            re.compile(r"^Will (.+?) defeat (.+?)\??$", re.IGNORECASE),
+        ):
+            match = regex.search(title)
+            if match is not None:
+                return match.group(1).strip(), match.group(2).strip()
         for separator in (" vs. ", " vs ", " v. ", " v "):
             if separator in title.lower():
                 parts = re.split(re.escape(separator), title, maxsplit=1, flags=re.IGNORECASE)
@@ -234,15 +248,39 @@ class PolymarketSportsTransformer:
         normalized_target = PolymarketSportsTransformer._normalize_participant(target)
         if not normalized_target:
             return ""
-        if normalized_target == PolymarketSportsTransformer._normalize_participant(home_name):
+        if PolymarketSportsTransformer._participant_matches(normalized_target, home_name):
+            if PolymarketSportsTransformer._participant_matches(normalized_target, away_name):
+                return ""
             return "home"
-        if normalized_target == PolymarketSportsTransformer._normalize_participant(away_name):
+        if PolymarketSportsTransformer._participant_matches(normalized_target, away_name):
             return "away"
         return ""
 
     @staticmethod
     def _normalize_participant(value: str) -> str:
-        return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
+        normalized = re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
+        tokens = [
+            token
+            for token in normalized.split()
+            if token not in {"the", "fc", "afc", "sc", "cf", "club"}
+        ]
+        return " ".join(tokens)
+
+    @classmethod
+    def _participant_matches(cls, normalized_target: str, participant: str) -> bool:
+        normalized_participant = cls._normalize_participant(participant)
+        if not normalized_participant:
+            return False
+        if normalized_target == normalized_participant:
+            return True
+        if f" {normalized_target} " in f" {normalized_participant} ":
+            return True
+
+        target_tokens = set(normalized_target.split())
+        participant_tokens = set(normalized_participant.split())
+        if not target_tokens or not participant_tokens:
+            return False
+        return target_tokens <= participant_tokens or bool(target_tokens & participant_tokens)
 
     @staticmethod
     def _resolution_policy(question: str, original: dict) -> dict:

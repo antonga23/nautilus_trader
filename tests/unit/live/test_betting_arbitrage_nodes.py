@@ -8,6 +8,8 @@
 # pylint: disable=import-error,wrong-import-order
 
 import asyncio
+from collections import Counter
+from dataclasses import replace
 import json
 from decimal import Decimal
 from pathlib import Path
@@ -79,6 +81,26 @@ def _instrument(
         params=params,
         handicap=handicap,
         start_time="2026-03-13T18:00:00Z",
+    )
+
+
+def _polymarket_winner_instrument(*, outcome: str, resolution_policy: str = "lose"):
+    return CryptoBettingInstrument(
+        venue=Venue("POLYMARKET"),
+        event_id="pm-event-1",
+        event_name="Team A vs Team B",
+        home_name="Team A",
+        away_name="Team B",
+        sport_name="basketball",
+        competition_name="NBA",
+        market_name="basketball.winner",
+        market_type="basketball.winner",
+        outcome=outcome,
+        side=SelectionSide.BACK,
+        price=2.1,
+        currency=Currency.from_str("USDC"),
+        start_time="2026-03-13T18:00:00Z",
+        info={"resolution_policy": {"tie_or_unknown": resolution_policy}},
     )
 
 
@@ -1015,8 +1037,8 @@ class TestSemanticCacheBootstrap:
                 return ["template-a", "template-b"]
 
         class FakePromotionPolicy:
-            def promote_template(self, store, template):
-                promoted.append((store, template))
+            def promote_template(self, store, template, *, allowlisted=False, venue_agnostic=False):
+                promoted.append((store, template, allowlisted, venue_agnostic))
                 return template
 
         monkeypatch.setattr(node_cache, "FileRuleCache", lambda path: path)
@@ -1048,7 +1070,38 @@ class TestSemanticCacheBootstrap:
         assert refresh_calls == ["sxbet", "cloudbet"]
         assert mine_store_calls == [True]
         assert mine_templates_calls == [(True, False)]
-        assert [template for _, template in promoted] == ["template-a", "template-b"]
+        assert [template for _, template, _, _ in promoted] == ["template-a", "template-b"]
+
+    def test_portable_polymarket_templates_are_promoted_venue_agnostic(self):
+        home = _polymarket_winner_instrument(outcome="home")
+        away = _polymarket_winner_instrument(outcome="away")
+        rule = RuleClassifier().classify(home, away)
+        assert rule is not None
+        template = SemanticRuleTemplate.from_rule(
+            rule,
+            support=TemplateSupportStats(
+                template_id="pm-portable",
+                observed_count=10,
+                event_count=10,
+                provider_count=1,
+                providers=("POLYMARKET",),
+                sports=("basketball",),
+                confidence=1.0,
+            ),
+        )
+
+        assert node_cache._is_portable_polymarket_template(template)
+
+        ambiguous = _polymarket_winner_instrument(outcome="home", resolution_policy="50_50")
+        assert RuleClassifier().classify(ambiguous, away) is None
+        ambiguous_template = replace(
+            template,
+            pattern_a=replace(
+                template.pattern_a,
+                resolution_policy=(("tie_or_unknown", "50_50"),),
+            ),
+        )
+        assert not node_cache._is_portable_polymarket_template(ambiguous_template)
 
     def test_refresh_required_sxbet_corpus_skips_when_no_sxbet_venues(self):
         ingestor = Mock()
@@ -1825,6 +1878,14 @@ class TestBettingArbitrageNodeRunner:
         }
         assert zero_reasons["SXBET->CLOUDBET"] == "no_quoted_semantic_edge"
         assert zero_reasons["CLOUDBET->POLYMARKET"] == "missing_instruments"
+        zero_reports = {item["venuePair"]: item for item in coverage["zeroCandidateVenuePairs"]}
+        assert zero_reports["SXBET->CLOUDBET"]["blockerReason"] == (
+            "quotes_missing_for_semantic_edges"
+        )
+        assert zero_reports["SXBET->CLOUDBET"]["commonEventKeyCount"] == 1
+        assert zero_reports["SXBET->CLOUDBET"]["samples"][0]["marketFamily"] == (
+            "MATCH_ODDS + MATCH_ODDS"
+        )
 
     def test_runtime_probe_candidate_samples_include_dry_run_provenance(self):
         instrument_a = _instrument(
@@ -1879,6 +1940,7 @@ class TestBettingArbitrageNodeRunner:
         assert sample["dryRunEligibilityReason"] == "strict_execution_safe"
         assert sample["sameVenueRiskPolicy"]["executionDisabledUntilRiskEngineApproval"] is True
         assert sample["wouldExecuteSameVenueDryRun"] is False
+        assert counters.semantic_blocked_reasons == Counter()
         assert payload["timing_flags"] == {"fresh": 1}
         assert payload["freshness_profiles"] == {"pre_match": 1}
         assert payload["venue_quote_health"]["CLOUDBET"]["max_quote_age_secs"] == 0.25
