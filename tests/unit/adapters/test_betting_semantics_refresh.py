@@ -3,7 +3,6 @@
 #
 #  Unit tests for the Cloudbet-backed semantic mining refresh.
 # -------------------------------------------------------------------------------------------------
-
 from dataclasses import replace
 from decimal import Decimal
 import json
@@ -234,8 +233,27 @@ def test_polymarket_sports_binary_transforms_into_betting_instrument():
     assert transformed is not None
     assert transformed.market_name == "basketball.moneyline"
     assert transformed.outcome == "home"
-    assert normalized.market_type == CanonicalMarketType.BINARY_OPTION.value
+    assert normalized.market_type == CanonicalMarketType.WINNER.value
+    assert normalized.selection == "HOME"
     assert dict(normalized.resolution_policy)["tie_or_unknown"] == "50_50"
+
+
+def test_market_normalizer_canonicalizes_multi_period_params():
+    normalized = MarketNormalizer().normalize(
+        {
+            "provider": "CLOUDBET",
+            "event_id": "evt-1",
+            "event_name": "Team A vs Team B",
+            "sport_name": "soccer",
+            "market_name": "soccer.match_odds",
+            "market_type": "soccer.1x2",
+            "outcome": "home",
+            "submarket_period": "2h",
+            "market_url": "soccer.match_odds/home?period=ft&period=1h&period=2h",
+        },
+    )
+
+    assert normalized.param("period") == "ft|1h|2h"
 
 
 def test_polymarket_inferred_sports_market_preserves_yes_no_semantics():
@@ -244,7 +262,9 @@ def test_polymarket_inferred_sports_market_preserves_yes_no_semantics():
         "question": "Will the Minnesota Vikings win the 2027 NFL league championship?",
         "_gamma_original": {
             "sport": "nfl",
-            "description": "This market resolves to Yes if the named team wins the 2027 NFL championship.",
+            "description": (
+                "This market resolves to Yes if the named team wins the 2027 NFL championship."
+            ),
             "outcomePrices": ["0.14", "0.86"],
             "events": [{"title": "NFL Champion 2027", "sport": "american_football"}],
         },
@@ -487,7 +507,9 @@ def test_cloudbet_competition_outright_totals_are_rewritten_to_totals():
                                     {
                                         "outcome": "s-under-4-dot-5",
                                         "params": "",
-                                        "marketUrl": "american_football.outright.v3/s-under-4-dot-5",
+                                        "marketUrl": (
+                                            "american_football.outright.v3/s-under-4-dot-5"
+                                        ),
                                         "price": 1.91,
                                         "minStake": 0.1,
                                         "maxStake": 10,
