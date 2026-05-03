@@ -192,11 +192,11 @@ jobs:
         with:
           python-version: "3.12"
           build-type: "test"
+          skip-rust: "true"
           skip-uv: "true"
           skip-capnp: "true"
           skip-install-deps: "true"
           skip-setup-python: "true"
-          force-rustup-update: "true"
           use-github-actions-cache: "false"
 
       - name: Ensure CI container build dependencies
@@ -207,8 +207,6 @@ jobs:
           python3 --version
           uv --version
           git --version
-          rustc --version
-          cargo --version
 
       - name: Compute wheel cache key
         id: wheel-key
