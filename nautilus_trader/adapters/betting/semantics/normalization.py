@@ -545,17 +545,20 @@ class MarketNormalizer:
         raw_market_name: str,
         info: dict[str, Any],
     ) -> CanonicalMarketType:
-        return (
-            cls._market_type_from_text_rules(normalized)
-            or cls._winner_market_type_from_text(normalized)
-            or cls._match_odds_market_type_from_text(
+        candidates = (
+            cls._market_type_from_text_rules(normalized),
+            cls._winner_market_type_from_text(normalized),
+            cls._match_odds_market_type_from_text(
                 normalized,
                 raw_market_name=raw_market_name,
                 info=info,
-            )
-            or cls._totals_market_type_from_text(normalized)
-            or cls._spread_market_type_from_text(normalized)
-            or CanonicalMarketType.OTHER
+            ),
+            cls._totals_market_type_from_text(normalized),
+            cls._spread_market_type_from_text(normalized),
+        )
+        return next(
+            (market_type for market_type in candidates if market_type is not None),
+            CanonicalMarketType.OTHER,
         )
 
     @staticmethod
