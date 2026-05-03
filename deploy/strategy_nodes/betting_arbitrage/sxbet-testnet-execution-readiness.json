@@ -1,0 +1,50 @@
+{
+  "node_id": "sxbet-testnet-execution-readiness",
+  "trader_id": "BETARB-SXBET-EXEC-001",
+  "validation_mode": false,
+  "allow_dummy_credentials": false,
+  "log_level": "INFO",
+  "rendered_config_path": "artifacts/strategy-nodes/sxbet-testnet-execution-readiness/trading-node-config.json",
+  "status_path": "artifacts/strategy-nodes/sxbet-testnet-execution-readiness/status.json",
+  "heartbeat_path": "artifacts/strategy-nodes/sxbet-testnet-execution-readiness/heartbeat.json",
+  "semantic_rule_cache_dir": "artifacts/semantic-rule-cache/sxbet-single-venue",
+  "timeout_connection": 240.0,
+  "strategy": {
+    "min_profit_margin": "0.02",
+    "max_total_stake": "50",
+    "sport_filter": null,
+    "market_timing_filter": "all",
+    "quote_freshness_profile": "pre_match",
+    "rollover_aware": true,
+    "opportunity_graph_engine": "auto",
+    "auto_execute": false
+  },
+  "venues": [
+    {
+      "venue": "SXBET",
+      "client_key": "SXBET_PRIMARY",
+      "data_enabled": true,
+      "execution_enabled": true,
+      "credential_prefix": "SXBET",
+      "environment": "testnet",
+      "base_currency": "USDC",
+      "load_all_instruments": true,
+      "sport_ids": [5],
+      "instrument_load_limit": 250,
+      "market_discovery_limit": 250,
+      "prefer_liquid_markets": true,
+      "liquidity_probe_limit": 250,
+      "min_two_sided_markets": 1,
+      "auto_subscribe_quote_ticks": true,
+      "quote_subscription_limit": 120,
+      "order_book_poll_interval_secs": 10.0,
+      "order_book_poll_summary_interval_secs": 30.0,
+      "order_book_concurrency": 4,
+      "live_only": false
+    }
+  ],
+  "metadata": {
+    "phase": "sxbet-testnet-execution-readiness",
+    "track": "sportsbook"
+  }
+}

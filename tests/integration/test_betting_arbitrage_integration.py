@@ -645,6 +645,7 @@ class TestBettingArbitrageIntegration:  # skipcq
                 min_profit_margin=Decimal("0.02"),
                 enabled_venues=frozenset(["SXBET", "BLACKBET"]),
                 auto_execute=False,
+                quote_freshness_profile="custom",
                 arbitrage_quote_stale_threshold_secs=0.25,
             ),
         )

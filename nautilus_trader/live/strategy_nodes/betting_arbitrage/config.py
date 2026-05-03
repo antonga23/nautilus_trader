@@ -10,6 +10,17 @@ from nautilus_trader.examples.strategies.betting_arbitrage import BettingArbitra
 
 SUPPORTED_BETTING_NODE_VENUES = frozenset({"CLOUDBET", "SXBET", "POLYMARKET"})
 BLOCKED_SPORTSBOOK_VENUES = frozenset({"10BET", "BLACKBET", "WSB", "EASYBET"})
+SUPPORTED_VENUE_ENVIRONMENTS = {
+    "CLOUDBET": frozenset({"prod", "paper"}),
+    "SXBET": frozenset({"prod", "testnet"}),
+    "POLYMARKET": frozenset({"prod"}),
+}
+VENUE_ENVIRONMENT_ALIASES = {
+    "mainnet": "prod",
+    "production": "prod",
+    "toronto": "testnet",
+    "play": "paper",
+}
 
 
 class BettingVenueManifest(NautilusConfig, frozen=True):
@@ -41,6 +52,8 @@ class BettingVenueManifest(NautilusConfig, frozen=True):
     order_book_concurrency: PositiveInt = 4
     api_url: str | None = None
     ws_url: str | None = None
+    environment: str | None = None
+    base_currency: str | None = None
     signature_type: int = 0
     use_data_api: bool = False
     metadata: dict[str, str] | None = None
@@ -71,6 +84,25 @@ class BettingVenueManifest(NautilusConfig, frozen=True):
                 self,
                 "credential_prefix",
                 self.credential_prefix.strip().upper(),
+            )
+        if self.environment is not None:
+            normalized_environment = VENUE_ENVIRONMENT_ALIASES.get(
+                self.environment.strip().lower(),
+                self.environment.strip().lower(),
+            )
+            supported_environments = SUPPORTED_VENUE_ENVIRONMENTS.get(normalized_venue, frozenset())
+            if normalized_environment not in supported_environments:
+                raise ValueError(
+                    f"Unsupported environment {normalized_environment!r} for venue "
+                    f"{normalized_venue}. Supported environments: "
+                    f"{sorted(supported_environments)}",
+                )
+            msgspec.structs.force_setattr(self, "environment", normalized_environment)
+        if self.base_currency is not None:
+            msgspec.structs.force_setattr(
+                self,
+                "base_currency",
+                self.base_currency.strip().upper(),
             )
 
 
@@ -130,6 +162,8 @@ class BettingArbitrageNodeManifest(NautilusConfig, frozen=True):
 __all__ = [
     "BLOCKED_SPORTSBOOK_VENUES",
     "SUPPORTED_BETTING_NODE_VENUES",
+    "SUPPORTED_VENUE_ENVIRONMENTS",
+    "VENUE_ENVIRONMENT_ALIASES",
     "BettingArbitrageNodeManifest",
     "BettingVenueManifest",
 ]
