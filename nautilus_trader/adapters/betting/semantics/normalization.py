@@ -1,4 +1,9 @@
 # -------------------------------------------------------------------------------------------------
+# skipcq: MC0001, PYL-E0611, PYL-R0903, PYL-R0911, PYL-R0912, PYL-R0913, PYL-R0914
+# skipcq: PYL-W0613
+# pylint: disable=no-name-in-module,too-few-public-methods,too-many-return-statements
+# pylint: disable=too-many-branches,too-many-arguments,too-many-locals,unused-argument
+# -------------------------------------------------------------------------------------------------
 #  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #  https://nautechsystems.io
 #
