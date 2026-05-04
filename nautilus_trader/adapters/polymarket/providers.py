@@ -296,29 +296,84 @@ class PolymarketInstrumentProvider(InstrumentProvider):
             "Loading Polymarket instruments using Gamma discovery "
             f"filters={filters} sports={sorted(sports_filter)} max_results={max_results}",
         )
-        markets = await list_markets(
-            http_client=self._http_client,
+        loaded_condition_ids: set[str] = set()
+        loaded_markets = await self._load_filtered_sports_event_markets(
+            sports_filter=sports_filter,
+            max_results=max_results,
+            loaded_condition_ids=loaded_condition_ids,
+        )
+
+        remaining_results = None
+        if max_results is not None:
+            remaining_results = max(max_results - loaded_markets, 0)
+        loaded_markets += await self._load_filtered_gamma_markets(
             filters=filters,
+            sports_filter=sports_filter,
+            max_results=remaining_results if remaining_results is not None else max_results,
+            loaded_condition_ids=loaded_condition_ids,
+        )
+        self._log.info(f"Loaded Polymarket sports markets using Gamma API: {loaded_markets}")
+
+    async def _load_filtered_sports_event_markets(
+        self,
+        *,
+        sports_filter: set[str],
+        max_results: int | None,
+        loaded_condition_ids: set[str],
+    ) -> int:
+        if not sports_filter:
+            return 0
+        event_markets = await self._load_sports_event_markets_using_gamma(
+            sports_filter=sports_filter,
             max_results=max_results,
         )
+        self._log.info(
+            "Loaded "
+            f"{len(event_markets)} candidate Polymarket sports event markets using Gamma API",
+        )
+        loaded_markets = 0
+        for market in event_markets:
+            condition_id = str(market.get("conditionId") or "")
+            if not condition_id or condition_id in loaded_condition_ids:
+                continue
+            loaded = self._load_gamma_market_instruments(market)
+            if loaded:
+                loaded_markets += loaded
+                loaded_condition_ids.add(condition_id)
+            if max_results is not None and loaded_markets >= max_results:
+                break
+        return loaded_markets
+
+    async def _load_filtered_gamma_markets(
+        self,
+        *,
+        filters: dict[str, Any],
+        sports_filter: set[str],
+        max_results: int | None,
+        loaded_condition_ids: set[str],
+    ) -> int:
+        if max_results == 0:
+            markets: list[dict[str, Any]] = []
+        else:
+            markets = await list_markets(
+                http_client=self._http_client,
+                filters=filters,
+                max_results=max_results,
+            )
         self._log.info(f"Loaded {len(markets)} candidate Polymarket markets using Gamma API")
         loaded_markets = 0
         for market in markets:
+            condition_id = str(market.get("conditionId") or "")
+            if condition_id and condition_id in loaded_condition_ids:
+                continue
             if not _market_matches_sports_filter(market, sports_filter):
                 continue
-            loaded_markets += self._load_gamma_market_instruments(market)
-        if loaded_markets == 0 and sports_filter:
-            event_markets = await self._load_sports_event_markets_using_gamma(
-                sports_filter=sports_filter,
-                max_results=max_results,
-            )
-            self._log.info(
-                "Loaded "
-                f"{len(event_markets)} candidate Polymarket sports event markets using Gamma API",
-            )
-            for market in event_markets:
-                loaded_markets += self._load_gamma_market_instruments(market)
-        self._log.info(f"Loaded Polymarket sports markets using Gamma API: {loaded_markets}")
+            loaded = self._load_gamma_market_instruments(market)
+            if loaded:
+                loaded_markets += loaded
+                if condition_id:
+                    loaded_condition_ids.add(condition_id)
+        return loaded_markets
 
     def _load_gamma_market_instruments(self, market: dict[str, Any]) -> int:
         condition_id = market.get("conditionId")
