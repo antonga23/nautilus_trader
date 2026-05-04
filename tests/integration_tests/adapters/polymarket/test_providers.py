@@ -480,3 +480,73 @@ async def test_gamma_load_all_falls_back_to_sports_event_discovery(mock_clob_cli
     assert len(instruments) == 2
     assert {instrument.outcome for instrument in instruments} == {"Yes", "No"}
     assert {instrument.info["_gamma_original"]["sport"] for instrument in instruments} == {"soccer"}
+
+
+@pytest.mark.asyncio
+async def test_gamma_load_all_prefers_sports_event_markets(mock_clob_client, live_clock):
+    config = InstrumentProviderConfig(
+        load_all=True,
+        filters={"sports": ["soccer"], "max_results": 1},
+        use_gamma_markets=True,
+    )
+    provider = PolymarketInstrumentProvider(
+        client=mock_clob_client,
+        clock=live_clock,
+        config=config,
+    )
+    event_market = {
+        "conditionId": ACTIVE_OPEN_MARKET["condition_id"],
+        "clobTokenIds": (
+            f'["{ACTIVE_OPEN_MARKET["tokens"][0]["token_id"]}", '
+            f'"{ACTIVE_OPEN_MARKET["tokens"][1]["token_id"]}"]'
+        ),
+        "outcomes": '["Yes", "No"]',
+        "outcomePrices": '["0.5", "0.5"]',
+        "question": "Will Arsenal beat Chelsea?",
+        "slug": "arsenal-chelsea",
+        "endDateIso": "2026-12-31",
+        "orderPriceMinTickSize": 0.001,
+        "orderMinSize": 5,
+        "active": True,
+        "closed": False,
+        "enableOrderBook": True,
+    }
+    outright_market = {
+        **event_market,
+        "conditionId": "0xbb22472e552920b8438158ea7238bfadfa4f736aa4cee91a6b86c39ead110917",
+        "question": "Will Arsenal win the Premier League?",
+        "slug": "arsenal-premier-league-winner",
+    }
+
+    with patch("nautilus_trader.adapters.polymarket.providers.list_markets") as mock_list_markets:
+
+        async def general_market_page(*args, **kwargs):
+            return [outright_market]
+
+        async def sports_events(endpoint, params=None):
+            if endpoint == "/sports":
+                return [{"sport": "soccer", "tags": "1,100639,12345"}]
+            if endpoint == "/events":
+                return [
+                    {
+                        "id": "event-1",
+                        "title": "Arsenal vs Chelsea",
+                        "slug": "arsenal-chelsea",
+                        "startDate": "2026-12-31T20:00:00Z",
+                        "markets": [event_market],
+                    },
+                ]
+            raise AssertionError(endpoint)
+
+        mock_list_markets.side_effect = general_market_page
+        provider._gamma_get_json = sports_events
+
+        await provider.load_all_async(filters=config.filters)
+
+    instruments = provider.list_all()
+    assert len(instruments) == 2
+    assert all(
+        instrument.info["_gamma_original"]["events"][0]["title"] == "Arsenal vs Chelsea"
+        for instrument in instruments
+    )
+    mock_list_markets.assert_not_called()
