@@ -121,7 +121,8 @@ def ensure_semantic_cache_ready(
     if not status.ready:
         raise RuntimeError(
             "Semantic cache bootstrap completed without a usable cache "
-            f"(manifests={status.manifest_count}, promoted_templates={status.promoted_template_count})",
+            f"(manifests={status.manifest_count}, "
+            f"promoted_templates={status.promoted_template_count})",
         )
     return status
 
@@ -322,7 +323,7 @@ async def _bootstrap_semantic_cache(
         )
 
 
-def _is_portable_polymarket_template(template: SemanticRuleTemplate) -> bool:
+def _is_portable_polymarket_template(template: object) -> bool:
     """
     Return whether a Polymarket sports template is safe to apply cross-venue.
 
@@ -334,26 +335,27 @@ def _is_portable_polymarket_template(template: SemanticRuleTemplate) -> bool:
     if not isinstance(template, SemanticRuleTemplate):
         return False
     providers = {provider.upper() for provider in template.support.providers}
-    if "POLYMARKET" not in providers:
-        return False
-    if template.relationship_type != "COMPLEMENTARY_COVERAGE":
-        return False
-    if template.has_void or template.has_partial or template.has_unknown:
-        return False
-    if not template.support.catalog_promotable:
-        return False
-    if template.pattern_a.scope != "full_time" or template.pattern_b.scope != "full_time":
-        return False
-    if template.pattern_a.sport != template.pattern_b.sport:
-        return False
-    if template.pattern_a.market_family not in PORTABLE_POLYMARKET_MARKET_FAMILIES:
-        return False
-    if template.pattern_b.market_family not in PORTABLE_POLYMARKET_MARKET_FAMILIES:
-        return False
-    resolution_items = tuple(template.pattern_a.resolution_policy) + tuple(
-        template.pattern_b.resolution_policy,
+    resolution_values = {
+        value
+        for _, value in tuple(template.pattern_a.resolution_policy)
+        + tuple(
+            template.pattern_b.resolution_policy,
+        )
+    }
+    return (
+        "POLYMARKET" in providers
+        and template.relationship_type == "COMPLEMENTARY_COVERAGE"
+        and not template.has_void
+        and not template.has_partial
+        and not template.has_unknown
+        and template.support.catalog_promotable
+        and template.pattern_a.scope == "full_time"
+        and template.pattern_b.scope == "full_time"
+        and template.pattern_a.sport == template.pattern_b.sport
+        and template.pattern_a.market_family in PORTABLE_POLYMARKET_MARKET_FAMILIES
+        and template.pattern_b.market_family in PORTABLE_POLYMARKET_MARKET_FAMILIES
+        and not (resolution_values & {"50_50", "unknown"})
     )
-    return not any(value in {"50_50", "unknown"} for _, value in resolution_items)
 
 
 async def _refresh_required_sxbet_corpus(
