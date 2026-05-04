@@ -2473,6 +2473,10 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             "opportunity_graph_semantic_template_count": (
                 self._opportunity_graph.semantic_template_count
             ),
+            "opportunity_graph_coverage_proof_count": self._opportunity_graph.coverage_proof_count,
+            "opportunity_graph_coverage_hyperedge_count": (
+                self._opportunity_graph.coverage_hyperedge_count
+            ),
             "opportunities_found": self._opportunities_found,
             "opportunities_executed": self._opportunities_executed,
             "raw_arbitrage_detections": self._raw_arbitrage_detections,

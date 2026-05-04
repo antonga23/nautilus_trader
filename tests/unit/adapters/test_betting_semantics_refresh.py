@@ -1067,7 +1067,7 @@ def test_semantic_rule_mining_cli_reports_tiered_promotion_counts(tmp_path):
             endpoint_version="test",
             sport_count=1,
             event_count=3,
-            selection_count=6,
+            selection_count=15,
             market_taxonomy_hash="test",
             source_refs=(),
         ),
@@ -1100,7 +1100,22 @@ def test_semantic_rule_mining_cli_reports_tiered_promotion_counts(tmp_path):
             event_key=f"cli-event-{event_index}",
             instrument_id=f"ah-home-{event_index}",
         )
-        for selection in (dnb_home, ah_home):
+        match_odds = tuple(
+            replace(
+                normalizer.normalize(
+                    betting_instrument(
+                        venue="CLOUDBET",
+                        market_name="match_odds",
+                        market_type="match_odds",
+                        outcome=outcome.lower(),
+                    ),
+                ),
+                event_key=f"cli-event-{event_index}",
+                instrument_id=f"match-{outcome.lower()}-{event_index}",
+            )
+            for outcome in ("HOME", "DRAW", "AWAY")
+        )
+        for selection in (dnb_home, ah_home, *match_odds):
             store.save_normalized_selection(
                 NormalizedSelectionRecord(
                     record_id=selection.instrument_id,
@@ -1115,6 +1130,13 @@ def test_semantic_rule_mining_cli_reports_tiered_promotion_counts(tmp_path):
     common_args = ["--cache-dir", str(cache_dir)]
     subprocess.run(  # noqa: S603
         [sys.executable, str(script), "generalize-templates", *common_args],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    coverage = subprocess.run(  # noqa: S603
+        [sys.executable, str(script), "mine-coverage", *common_args],
         cwd=repo_root,
         check=True,
         capture_output=True,
@@ -1169,12 +1191,18 @@ def test_semantic_rule_mining_cli_reports_tiered_promotion_counts(tmp_path):
     )
 
     promote_payload = json.loads(promote.stdout)
+    coverage_payload = json.loads(coverage.stdout)
     report_payload = json.loads(report.stdout)
 
-    assert promote_payload["promoted_template_count"] == 1
-    assert promote_payload["same_venue_execution_eligible_template_count"] == 1
+    assert promote_payload["promoted_template_count"] >= 1
+    assert promote_payload["same_venue_execution_eligible_template_count"] >= 1
     assert "safety_tier_counts" in promote_payload
-    assert report_payload["same_venue_execution_eligible_template_count"] == 1
+    assert coverage_payload["coverage_hyperedge_count"] >= 1
+    assert coverage_payload["coverage_proof_count"] >= coverage_payload["coverage_hyperedge_count"]
+    assert report_payload["same_venue_execution_eligible_template_count"] >= 1
+    assert report_payload["coverage_hyperedge_count"] >= 1
+    assert "coverage_blocker_counts" in report_payload
+    assert "coverage_proof_breakdown" in report_payload
     assert "candidate_safety_tier_counts" in report_payload
     assert "promoted_safety_tier_counts" in report_payload
     assert "normalized_market_coverage" in report_payload

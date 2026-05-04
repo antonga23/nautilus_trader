@@ -29,6 +29,10 @@ from nautilus_trader.adapters.betting.semantics.completion import ProviderComple
 from nautilus_trader.adapters.betting.semantics.completion import SemanticMiningCompletionReport
 from nautilus_trader.adapters.betting.semantics.completion import SEMANTIC_TARGET_SPORTS
 from nautilus_trader.adapters.betting.semantics.completion import SportCompletion
+from nautilus_trader.adapters.betting.semantics.coverage import CoverageEngine
+from nautilus_trader.adapters.betting.semantics.coverage import CoverageMiningReport
+from nautilus_trader.adapters.betting.semantics.coverage import OutcomeUniverseBuilder
+from nautilus_trader.adapters.betting.semantics.coverage import SelectionPredicateBuilder
 from nautilus_trader.adapters.betting.semantics.miner import RuleMiner
 from nautilus_trader.adapters.betting.semantics.normalization import MarketNormalizer
 from nautilus_trader.adapters.betting.semantics.payoffs import PayoffVectorBuilder
@@ -44,9 +48,17 @@ from nautilus_trader.adapters.betting.semantics.store import FileRuleCache
 from nautilus_trader.adapters.betting.semantics.store import RuleStore
 from nautilus_trader.adapters.betting.semantics.types import CanonicalMarketType
 from nautilus_trader.adapters.betting.semantics.types import CorpusSnapshot
+from nautilus_trader.adapters.betting.semantics.types import CoverageBlockerReason
+from nautilus_trader.adapters.betting.semantics.types import CoverageGap
+from nautilus_trader.adapters.betting.semantics.types import CoverageHyperedge
+from nautilus_trader.adapters.betting.semantics.types import CoverageProof
+from nautilus_trader.adapters.betting.semantics.types import CoverageRisk
+from nautilus_trader.adapters.betting.semantics.types import CoverageSet
 from nautilus_trader.adapters.betting.semantics.types import MinedRule
 from nautilus_trader.adapters.betting.semantics.types import NormalizedSelection
 from nautilus_trader.adapters.betting.semantics.types import NormalizedSelectionRecord
+from nautilus_trader.adapters.betting.semantics.types import OutcomeState
+from nautilus_trader.adapters.betting.semantics.types import OutcomeUniverse
 from nautilus_trader.adapters.betting.semantics.types import PayoffVector
 from nautilus_trader.adapters.betting.semantics.types import PromotionStatus
 from nautilus_trader.adapters.betting.semantics.types import RelationshipType
@@ -55,6 +67,7 @@ from nautilus_trader.adapters.betting.semantics.types import RuleValidationStats
 from nautilus_trader.adapters.betting.semantics.types import SafetyTier
 from nautilus_trader.adapters.betting.semantics.types import SettlementState
 from nautilus_trader.adapters.betting.semantics.types import SelectionPattern
+from nautilus_trader.adapters.betting.semantics.types import SelectionPredicate
 from nautilus_trader.adapters.betting.semantics.types import SemanticRuleTemplate
 from nautilus_trader.adapters.betting.semantics.types import TemplateSupportStats
 from nautilus_trader.adapters.betting.semantics.validation import HistoricalRuleValidator
@@ -68,6 +81,14 @@ __all__ = [
     "SEMANTIC_TARGET_SPORTS",
     "CanonicalMarketType",
     "CorpusSnapshot",
+    "CoverageBlockerReason",
+    "CoverageEngine",
+    "CoverageGap",
+    "CoverageHyperedge",
+    "CoverageMiningReport",
+    "CoverageProof",
+    "CoverageRisk",
+    "CoverageSet",
     "FileRuleCache",
     "HistoricalRuleValidator",
     "LinearIssueSync",
@@ -76,6 +97,9 @@ __all__ = [
     "MinedRule",
     "NormalizedSelection",
     "NormalizedSelectionRecord",
+    "OutcomeState",
+    "OutcomeUniverse",
+    "OutcomeUniverseBuilder",
     "PayoffVector",
     "PayoffVectorBuilder",
     "PolymarketSportsTransformer",
@@ -91,6 +115,8 @@ __all__ = [
     "SafetyTier",
     "SecretManagerError",
     "SelectionPattern",
+    "SelectionPredicate",
+    "SelectionPredicateBuilder",
     "SemanticMiningCompletionReport",
     "SemanticRuleTemplate",
     "SettlementPluginRegistry",

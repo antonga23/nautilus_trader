@@ -195,6 +195,8 @@ class OpportunityGraph:
             raise ImportError(msg)
         self._topology_source = "python"
         self._semantic_template_count = 0
+        self._coverage_proof_count = 0
+        self._coverage_hyperedge_count = 0
         self._rust_semantic_templates_loaded = False
         self.nodes_by_id: dict[str, OpportunityNode] = {}
         self.edges_by_id: dict[str, OpportunityEdge] = {}
@@ -249,8 +251,10 @@ class OpportunityGraph:
             rust_nodes.append(self._node_payload_from_node(node, instrument))
 
         semantic_templates = self._semantic_template_payloads()
+        coverage_proofs, coverage_hyperedges = self._semantic_coverage_payloads()
         if self._rust_core is not None and self._should_use_semantic_rust(semantic_templates):
             self._rust_core.build_semantic(rust_nodes, semantic_templates)
+            self._load_rust_semantic_coverage(coverage_proofs, coverage_hyperedges)
             self._rust_semantic_templates_loaded = True
             self._semantic_template_count = len(semantic_templates)
             self._topology_source = "rust_semantic"
@@ -289,8 +293,10 @@ class OpportunityGraph:
         ):
             payload = self._node_payload_from_node(node, instrument)
             semantic_templates = self._semantic_template_payloads()
+            coverage_proofs, coverage_hyperedges = self._semantic_coverage_payloads()
             if self._should_use_semantic_rust(semantic_templates):
                 self._ensure_rust_semantic_templates_loaded(semantic_templates)
+                self._load_rust_semantic_coverage(coverage_proofs, coverage_hyperedges)
                 added = self._rust_core.add_instrument_semantic(payload)
                 self._topology_source = "rust_semantic"
             else:
@@ -527,6 +533,8 @@ class OpportunityGraph:
             "connected_nodes": self.connected_node_count,
             "rust_enabled": int(self._rust_core is not None),
             "semantic_template_count": self._semantic_template_count,
+            "coverage_proof_count": self._coverage_proof_count,
+            "coverage_hyperedge_count": self._coverage_hyperedge_count,
         }
 
     @property
@@ -540,6 +548,14 @@ class OpportunityGraph:
     @property
     def semantic_template_count(self) -> int:
         return self._semantic_template_count
+
+    @property
+    def coverage_proof_count(self) -> int:
+        return self._coverage_proof_count
+
+    @property
+    def coverage_hyperedge_count(self) -> int:
+        return self._coverage_hyperedge_count
 
     def _sync_edges_from_rust(self) -> None:
         if self._rust_core is None:
@@ -1040,7 +1056,19 @@ class OpportunityGraph:
     def _semantic_template_payloads(self) -> list[dict[str, object]]:
         rule_store = self._semantic_rule_store()
         if rule_store is None or not hasattr(rule_store, "list_promoted_template_ids"):
+            self._coverage_proof_count = 0
+            self._coverage_hyperedge_count = 0
             return []
+        self._coverage_proof_count = (
+            len(rule_store.list_coverage_proof_ids())
+            if hasattr(rule_store, "list_coverage_proof_ids")
+            else 0
+        )
+        self._coverage_hyperedge_count = (
+            len(rule_store.list_coverage_hyperedge_ids())
+            if hasattr(rule_store, "list_coverage_hyperedge_ids")
+            else 0
+        )
 
         payloads: list[dict[str, object]] = []
         for template_id in rule_store.list_promoted_template_ids():
@@ -1066,6 +1094,63 @@ class OpportunityGraph:
                 },
             )
         return payloads
+
+    def _semantic_coverage_payloads(
+        self,
+    ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+        rule_store = self._semantic_rule_store()
+        if rule_store is None:
+            self._coverage_proof_count = 0
+            self._coverage_hyperedge_count = 0
+            return [], []
+
+        proof_payloads: list[dict[str, object]] = []
+        if hasattr(rule_store, "list_coverage_proof_ids"):
+            for proof_id in rule_store.list_coverage_proof_ids():
+                proof = rule_store.load_coverage_proof(proof_id)
+                if proof is None:
+                    continue
+                proof_payloads.append(
+                    {
+                        "proof_id": proof.proof_id,
+                        "safety_tier": proof.safety_tier,
+                        "execution_safe": proof.execution_safe,
+                        "relationship_type": proof.relationship_type,
+                        "blocker_reasons": list(proof.blocker_reasons),
+                    },
+                )
+
+        hyperedge_payloads: list[dict[str, object]] = []
+        if hasattr(rule_store, "list_coverage_hyperedge_ids"):
+            for hyperedge_id in rule_store.list_coverage_hyperedge_ids():
+                hyperedge = rule_store.load_coverage_hyperedge(hyperedge_id)
+                if hyperedge is None:
+                    continue
+                hyperedge_payloads.append(
+                    {
+                        "hyperedge_id": hyperedge.hyperedge_id,
+                        "coverage_proof_id": hyperedge.coverage_proof_id,
+                        "instrument_ids": list(hyperedge.instrument_ids),
+                        "safety_tier": hyperedge.safety_tier,
+                        "execution_safe": hyperedge.execution_safe,
+                    },
+                )
+
+        self._coverage_proof_count = len(proof_payloads)
+        self._coverage_hyperedge_count = len(hyperedge_payloads)
+        return proof_payloads, hyperedge_payloads
+
+    def _load_rust_semantic_coverage(
+        self,
+        coverage_proofs: list[dict[str, object]],
+        coverage_hyperedges: list[dict[str, object]],
+    ) -> None:
+        if self._rust_core is None:
+            return
+        loader = getattr(self._rust_core, "load_semantic_coverage", None)
+        if not callable(loader):
+            return
+        loader(coverage_proofs, coverage_hyperedges)
 
     @classmethod
     def _semantic_pattern_payload(cls, pattern: SelectionPattern) -> dict[str, object]:

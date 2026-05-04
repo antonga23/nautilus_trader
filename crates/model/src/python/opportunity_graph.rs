@@ -201,6 +201,46 @@ struct SemanticTemplateMatch {
     caveats: Vec<String>,
 }
 
+#[derive(Clone, Debug)]
+struct CoverageProofSnapshot {
+    proof_id: String,
+    safety_tier: String,
+    execution_safe: bool,
+}
+
+impl CoverageProofSnapshot {
+    fn from_py(value: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let dict = value.cast::<PyDict>()?;
+        Ok(Self {
+            proof_id: get_string(dict, "proof_id")?,
+            safety_tier: get_optional_string(dict, "safety_tier")?.unwrap_or_default(),
+            execution_safe: get_optional_bool(dict, "execution_safe")?.unwrap_or(false),
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+struct CoverageHyperedgeSnapshot {
+    hyperedge_id: String,
+    coverage_proof_id: String,
+    instrument_ids: Vec<String>,
+    safety_tier: String,
+    execution_safe: bool,
+}
+
+impl CoverageHyperedgeSnapshot {
+    fn from_py(value: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let dict = value.cast::<PyDict>()?;
+        Ok(Self {
+            hyperedge_id: get_string(dict, "hyperedge_id")?,
+            coverage_proof_id: get_string(dict, "coverage_proof_id")?,
+            instrument_ids: get_string_vec(dict, "instrument_ids")?,
+            safety_tier: get_optional_string(dict, "safety_tier")?.unwrap_or_default(),
+            execution_safe: get_optional_bool(dict, "execution_safe")?.unwrap_or(false),
+        })
+    }
+}
+
 impl SemanticTemplateSnapshot {
     fn from_py(value: &Bound<'_, PyAny>) -> PyResult<Self> {
         let dict = value.cast::<PyDict>()?;
@@ -326,6 +366,8 @@ pub struct OpportunityGraphCore {
     event_buckets: HashMap<String, Vec<String>>,
     venue_event_buckets: HashMap<String, Vec<String>>,
     semantic_templates: Vec<SemanticTemplateSnapshot>,
+    coverage_proofs: Vec<CoverageProofSnapshot>,
+    coverage_hyperedges: Vec<CoverageHyperedgeSnapshot>,
 }
 
 #[pymethods]
@@ -343,6 +385,8 @@ impl OpportunityGraphCore {
             event_buckets: HashMap::default(),
             venue_event_buckets: HashMap::default(),
             semantic_templates: Vec::default(),
+            coverage_proofs: Vec::default(),
+            coverage_hyperedges: Vec::default(),
         }
     }
 
@@ -354,6 +398,8 @@ impl OpportunityGraphCore {
         self.event_buckets.clear();
         self.venue_event_buckets.clear();
         self.semantic_templates.clear();
+        self.coverage_proofs.clear();
+        self.coverage_hyperedges.clear();
     }
 
     fn build(&mut self, nodes: &Bound<'_, PyAny>) -> PyResult<()> {
@@ -388,6 +434,24 @@ impl OpportunityGraphCore {
                 .push(SemanticTemplateSnapshot::from_py(&item?)?);
         }
         Ok(self.semantic_templates.len())
+    }
+
+    fn load_semantic_coverage(
+        &mut self,
+        proofs: &Bound<'_, PyAny>,
+        hyperedges: &Bound<'_, PyAny>,
+    ) -> PyResult<(usize, usize)> {
+        self.coverage_proofs.clear();
+        self.coverage_hyperedges.clear();
+        for item in proofs.try_iter()? {
+            self.coverage_proofs
+                .push(CoverageProofSnapshot::from_py(&item?)?);
+        }
+        for item in hyperedges.try_iter()? {
+            self.coverage_hyperedges
+                .push(CoverageHyperedgeSnapshot::from_py(&item?)?);
+        }
+        Ok((self.coverage_proofs.len(), self.coverage_hyperedges.len()))
     }
 
     fn build_semantic(
@@ -512,6 +576,44 @@ impl OpportunityGraphCore {
 
     fn semantic_template_count(&self) -> usize {
         self.semantic_templates.len()
+    }
+
+    fn coverage_proof_count(&self) -> usize {
+        self.coverage_proofs.len()
+    }
+
+    fn coverage_hyperedge_count(&self) -> usize {
+        self.coverage_hyperedges.len()
+    }
+
+    fn semantic_coverage_summary_json(&self) -> String {
+        let mut proof_tiers: HashMap<String, usize> = HashMap::default();
+        let mut hyperedge_tiers: HashMap<String, usize> = HashMap::default();
+        for proof in &self.coverage_proofs {
+            *proof_tiers.entry(proof.safety_tier.clone()).or_default() += 1;
+        }
+        for hyperedge in &self.coverage_hyperedges {
+            *hyperedge_tiers
+                .entry(hyperedge.safety_tier.clone())
+                .or_default() += 1;
+        }
+        json!({
+            "coverageProofCount": self.coverage_proofs.len(),
+            "coverageHyperedgeCount": self.coverage_hyperedges.len(),
+            "executionSafeCoverageProofCount": self.coverage_proofs.iter().filter(|proof| proof.execution_safe).count(),
+            "executionSafeCoverageHyperedgeCount": self.coverage_hyperedges.iter().filter(|hyperedge| hyperedge.execution_safe).count(),
+            "proofSafetyTierCounts": proof_tiers,
+            "hyperedgeSafetyTierCounts": hyperedge_tiers,
+            "sampleProofIds": self.coverage_proofs.iter().take(5).map(|proof| proof.proof_id.as_str()).collect::<Vec<_>>(),
+            "sampleHyperedges": self.coverage_hyperedges.iter().take(5).map(|hyperedge| {
+                json!({
+                    "hyperedgeId": hyperedge.hyperedge_id.as_str(),
+                    "coverageProofId": hyperedge.coverage_proof_id.as_str(),
+                    "instrumentIds": &hyperedge.instrument_ids,
+                })
+            }).collect::<Vec<_>>(),
+        })
+        .to_string()
     }
 
     fn edge_snapshots(&self) -> Vec<EdgeExportSnapshot> {
