@@ -30,8 +30,13 @@ jobs:
 
       - name: Configure GitHub push access
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
         run: |
+          if [[ -z "${GH_TOKEN:-}" ]]; then
+            echo "::error title=Missing UPSTREAM_SYNC_TOKEN::Set UPSTREAM_SYNC_TOKEN with workflow write scope."
+            echo "upstream-mirror-sync mirrors upstream workflow files; GITHUB_TOKEN cannot push those refs."
+            exit 1
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
@@ -43,7 +48,7 @@ jobs:
 
       - name: Prepare develop reconciliation PR
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
           REPO: ${{ github.repository }}
           SOURCE_BRANCH: nautilus_develop
           TARGET_BRANCH: develop
@@ -53,7 +58,7 @@ jobs:
 
       - name: Prepare production reconciliation PR
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
           REPO: ${{ github.repository }}
           SOURCE_BRANCH: nautilus_master
           TARGET_BRANCH: production
