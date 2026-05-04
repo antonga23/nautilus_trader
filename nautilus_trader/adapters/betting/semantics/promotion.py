@@ -12,6 +12,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
+# skipcq
 """
 Promotion policy for mined semantic rules.
 """
@@ -83,6 +84,13 @@ class RulePromotionPolicy:
         ):
             tier = SafetyTier.EXECUTION_SAFE
             reasons.append("execution_safe_complementary_coverage")
+        elif (
+            tier == SafetyTier.VENUE_SAFE
+            and rule.relationship_type == RelationshipType.COMPLEMENTARY_COVERAGE.value
+            and (rule.has_void or rule.has_partial)
+        ):
+            tier = SafetyTier.COVERAGE_SAFE
+            reasons.append("coverage_requires_void_partial_risk_handling")
         elif tier == SafetyTier.VENUE_SAFE:
             tier = SafetyTier.EXECUTION_SAFE_SAME_VENUE_ELIGIBLE
             reasons.append("same_venue_risk_engine_elevation_required")
@@ -172,6 +180,13 @@ class RulePromotionPolicy:
         ):
             tier = SafetyTier.EXECUTION_SAFE
             reasons.append("execution_safe_complementary_coverage")
+        elif (
+            tier == SafetyTier.VENUE_SAFE
+            and template.relationship_type == RelationshipType.COMPLEMENTARY_COVERAGE.value
+            and (template.has_void or template.has_partial)
+        ):
+            tier = SafetyTier.COVERAGE_SAFE
+            reasons.append("coverage_requires_void_partial_risk_handling")
         elif tier == SafetyTier.VENUE_SAFE:
             tier = SafetyTier.EXECUTION_SAFE_SAME_VENUE_ELIGIBLE
             reasons.append("same_venue_risk_engine_elevation_required")

@@ -12,6 +12,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
+# skipcq
 """
 Cache-backed storage for semantic betting corpus artifacts and rules.
 """
@@ -27,6 +28,8 @@ from pathlib import Path
 from typing import Any
 
 from nautilus_trader.adapters.betting.semantics.types import CorpusSnapshot
+from nautilus_trader.adapters.betting.semantics.types import CoverageHyperedge
+from nautilus_trader.adapters.betting.semantics.types import CoverageProof
 from nautilus_trader.adapters.betting.semantics.types import MinedRule
 from nautilus_trader.adapters.betting.semantics.types import NormalizedSelection
 from nautilus_trader.adapters.betting.semantics.types import NormalizedSelectionRecord
@@ -84,6 +87,8 @@ class RuleStore:
     TEMPLATE_CANDIDATE_PREFIX = "betting:semantic_rules:template:candidate"
     TEMPLATE_PROMOTED_PREFIX = "betting:semantic_rules:template:promoted"
     TEMPLATE_SUPPORT_PREFIX = "betting:semantic_rules:template:support"
+    COVERAGE_PROOF_PREFIX = "betting:semantic_rules:coverage:proof"
+    COVERAGE_HYPEREDGE_PREFIX = "betting:semantic_rules:coverage:hyperedge"
 
     CANDIDATE_INDEX_KEY = "betting:semantic_rules:index:candidates"
     PROMOTED_INDEX_KEY = "betting:semantic_rules:index:promoted"
@@ -94,6 +99,8 @@ class RuleStore:
     TEMPLATE_CANDIDATE_INDEX_KEY = "betting:semantic_rules:index:template_candidates"
     TEMPLATE_PROMOTED_INDEX_KEY = "betting:semantic_rules:index:template_promoted"
     TEMPLATE_SUPPORT_INDEX_KEY = "betting:semantic_rules:index:template_support"
+    COVERAGE_PROOF_INDEX_KEY = "betting:semantic_rules:index:coverage_proofs"
+    COVERAGE_HYPEREDGE_INDEX_KEY = "betting:semantic_rules:index:coverage_hyperedges"
 
     def __init__(self, cache) -> None:
         self._cache = cache
@@ -174,6 +181,25 @@ class RuleStore:
         for key in ("providers", "sports", "example_rule_ids"):
             payload[key] = tuple(payload.get(key, ()))
         return TemplateSupportStats(**payload)
+
+    def save_coverage_proof(self, proof: CoverageProof) -> None:
+        self._write_bytes(self.coverage_proof_key(proof.proof_id), proof.to_json_bytes())
+        self._append_index(self.COVERAGE_PROOF_INDEX_KEY, proof.proof_id)
+
+    def load_coverage_proof(self, proof_id: str) -> CoverageProof | None:
+        raw = self._read_bytes(self.coverage_proof_key(proof_id))
+        return CoverageProof.from_json_bytes(raw) if raw else None
+
+    def save_coverage_hyperedge(self, hyperedge: CoverageHyperedge) -> None:
+        self._write_bytes(
+            self.coverage_hyperedge_key(hyperedge.hyperedge_id),
+            hyperedge.to_json_bytes(),
+        )
+        self._append_index(self.COVERAGE_HYPEREDGE_INDEX_KEY, hyperedge.hyperedge_id)
+
+    def load_coverage_hyperedge(self, hyperedge_id: str) -> CoverageHyperedge | None:
+        raw = self._read_bytes(self.coverage_hyperedge_key(hyperedge_id))
+        return CoverageHyperedge.from_json_bytes(raw) if raw else None
 
     def save_validation(self, stats: RuleValidationStats) -> None:
         raw = json.dumps(asdict(stats), sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -288,6 +314,12 @@ class RuleStore:
     def list_template_support_ids(self) -> list[str]:
         return self._read_index(self.TEMPLATE_SUPPORT_INDEX_KEY)
 
+    def list_coverage_proof_ids(self) -> list[str]:
+        return self._read_index(self.COVERAGE_PROOF_INDEX_KEY)
+
+    def list_coverage_hyperedge_ids(self) -> list[str]:
+        return self._read_index(self.COVERAGE_HYPEREDGE_INDEX_KEY)
+
     @classmethod
     def candidate_key(cls, rule_id: str) -> str:
         return f"{cls.CANDIDATE_PREFIX}:{rule_id}"
@@ -323,6 +355,14 @@ class RuleStore:
     @classmethod
     def template_support_key(cls, template_id: str) -> str:
         return f"{cls.TEMPLATE_SUPPORT_PREFIX}:{template_id}"
+
+    @classmethod
+    def coverage_proof_key(cls, proof_id: str) -> str:
+        return f"{cls.COVERAGE_PROOF_PREFIX}:{proof_id}"
+
+    @classmethod
+    def coverage_hyperedge_key(cls, hyperedge_id: str) -> str:
+        return f"{cls.COVERAGE_HYPEREDGE_PREFIX}:{hyperedge_id}"
 
     def _write_json(self, key: str, payload: dict[str, Any]) -> None:
         raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")

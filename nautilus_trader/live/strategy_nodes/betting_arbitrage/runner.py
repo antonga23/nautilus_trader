@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from nautilus_trader.adapters.betting.semantics import CoverageBlockerReason
 from nautilus_trader.adapters.betting.semantics import MarketNormalizer
 from nautilus_trader.live.strategy_nodes.betting_arbitrage.builder import build_trading_node_config
 from nautilus_trader.live.strategy_nodes.betting_arbitrage.builder import default_render_paths
@@ -50,6 +51,7 @@ class ProbeProfitabilityCounters:
     semantic_blocked_reasons: Counter[str] = field(default_factory=Counter)
     venue_pairs: dict[str, Counter[str]] = field(default_factory=dict)
     market_families: dict[str, Counter[str]] = field(default_factory=dict)
+    blocker_samples: dict[str, list[dict[str, object]]] = field(default_factory=dict)
     venue_quote_counts: Counter[str] = field(default_factory=Counter)
     venue_max_quote_age_secs: dict[str, float] = field(default_factory=dict)
     venue_max_fetch_latency_secs: dict[str, float] = field(default_factory=dict)
@@ -91,6 +93,10 @@ class ProbeProfitabilityCounters:
             "market_families": {
                 key: dict(counter)
                 for key, counter in sorted(self.market_families.items(), key=lambda item: item[0])
+            },
+            "blocker_samples": {
+                key: samples[:5]
+                for key, samples in sorted(self.blocker_samples.items(), key=lambda item: item[0])
             },
             "sample_candidates": [payload for _, payload in self.samples[:10]],
             "negative_near_misses": [payload for _, payload in self.negative_samples[:10]],
@@ -709,6 +715,11 @@ def _collect_runtime_probe_payload(
             "graphEngine": "rust" if stats.get("opportunity_graph_rust_enabled") else "python",
             "topologySource": stats.get("opportunity_graph_topology_source", "unknown"),
             "semanticTemplateCount": stats.get("opportunity_graph_semantic_template_count", 0),
+            "coverageProofCount": stats.get("opportunity_graph_coverage_proof_count", 0),
+            "coverageHyperedgeCount": stats.get(
+                "opportunity_graph_coverage_hyperedge_count",
+                0,
+            ),
             "semanticMatchInstruments": 0,
             "quotedSemanticMatchInstruments": 0,
             "executionSafeEdges": 0,
@@ -754,6 +765,8 @@ def _collect_runtime_probe_payload(
         "graphEngine": "rust" if stats.get("opportunity_graph_rust_enabled") else "python",
         "topologySource": stats.get("opportunity_graph_topology_source", "unknown"),
         "semanticTemplateCount": stats.get("opportunity_graph_semantic_template_count", 0),
+        "coverageProofCount": stats.get("opportunity_graph_coverage_proof_count", 0),
+        "coverageHyperedgeCount": stats.get("opportunity_graph_coverage_hyperedge_count", 0),
         "semanticMatchInstruments": len(snapshot["matched_node_ids"]),
         "quotedSemanticMatchInstruments": sum(
             1 for node_id in snapshot["matched_node_ids"] if node_id in snapshot["quotes"]
@@ -778,6 +791,7 @@ def _collect_runtime_probe_payload(
             "timingFlags": profitability["timing_flags"],
             "freshnessProfiles": profitability["freshness_profiles"],
             "semanticBlockedReasons": profitability["semantic_blocked_reasons"],
+            "blockerSamples": profitability["blocker_samples"],
             "venueQuoteHealth": profitability["venue_quote_health"],
             "venuePairs": profitability["venue_pairs"],
             "marketFamilies": profitability["market_families"],
@@ -875,6 +889,7 @@ def _empty_candidate_quality_payload() -> dict[str, object]:
         "timingFlags": {},
         "freshnessProfiles": {},
         "semanticBlockedReasons": {},
+        "blockerSamples": {},
         "venueQuoteHealth": {},
         "venuePairs": {},
         "marketFamilies": {},
@@ -1067,7 +1082,9 @@ def _zero_venue_pair_report(
     common_event_keys = sorted((source_event_keys & target_event_keys) - {""})
     if reason == "no_semantic_edge":
         report["blockerReason"] = (
-            "event_key_mismatch" if not common_event_keys else "semantic_template_or_scope_mismatch"
+            CoverageBlockerReason.FIXTURE_IDENTITY_MISMATCH.value
+            if not common_event_keys
+            else CoverageBlockerReason.NO_SEMANTIC_EDGE.value
         )
     elif reason == "no_quoted_semantic_edge":
         report["blockerReason"] = "quotes_missing_for_semantic_edges"
@@ -1100,7 +1117,27 @@ def _zero_venue_pair_report(
             )
     report["marketFamilyPairs"] = dict(market_family_pairs)
     report["samples"] = samples
+    if reason == "no_semantic_edge" and samples:
+        report["blockerReason"] = _zero_pair_sample_blocker(samples, report["blockerReason"])
     return report
+
+
+def _zero_pair_sample_blocker(samples: list[dict[str, object]], fallback: object) -> str:
+    fallback_reason = str(fallback or CoverageBlockerReason.NO_SEMANTIC_EDGE.value)
+    if fallback_reason == CoverageBlockerReason.FIXTURE_IDENTITY_MISMATCH.value:
+        return fallback_reason
+    for sample in samples:
+        pattern_a = sample.get("patternA")
+        pattern_b = sample.get("patternB")
+        if not isinstance(pattern_a, dict) or not isinstance(pattern_b, dict):
+            continue
+        if pattern_a.get("scope") != pattern_b.get("scope"):
+            return CoverageBlockerReason.SCOPE_MISMATCH.value
+        if pattern_a.get("marketFamily") == pattern_b.get("marketFamily") and pattern_a.get(
+            "paramsKey",
+        ) != pattern_b.get("paramsKey"):
+            return CoverageBlockerReason.SAME_MARKET_PARAMS_MISMATCH.value
+    return fallback_reason
 
 
 def _sample_probe_nodes_for_venue(nodes: dict[Any, object], venue: str, limit: int = 40) -> list:
@@ -1557,6 +1594,8 @@ def _probe_candidate_quality(
         and liquidity_ok
         and threshold_ok
     )
+    normalized_a = _normalized_probe_payload(source_node)
+    normalized_b = _normalized_probe_payload(target_node)
     return {
         "instrumentIdA": str(source_node.instrument.id),
         "instrumentIdB": str(target_node.instrument.id),
@@ -1566,6 +1605,10 @@ def _probe_candidate_quality(
         "marketA": source_node.market_name,
         "marketB": target_node.market_name,
         "marketFamily": _probe_market_family(source_node, target_node),
+        "normalizedA": normalized_a,
+        "normalizedB": normalized_b,
+        "normalizedSport": normalized_a.get("sport") or normalized_b.get("sport"),
+        "normalizedScope": normalized_a.get("scope") or normalized_b.get("scope"),
         "outcomeA": source_node.outcome,
         "outcomeB": target_node.outcome,
         "profitMargin": str(profit_margin),
@@ -1595,6 +1638,7 @@ def _probe_candidate_quality(
             max_fetch_latency_secs=freshness.max_fetch_latency_secs,
         ),
         "rejectionBucket": rejection_bucket,
+        "blockerReason": rejection_bucket,
         "ruleId": edge.rule_id,
         "templateId": edge.template_id,
         "relationshipType": edge.relationship_type,
@@ -1700,6 +1744,21 @@ def _record_probe_quality(
     counters.freshness_profiles[str(quality.get("freshnessProfile") or "unknown")] += 1
     if rejection_bucket in _SEMANTIC_NON_EXECUTION_BUCKETS:
         counters.semantic_blocked_reasons[_semantic_blocked_reason(quality)] += 1
+        samples = counters.blocker_samples.setdefault(rejection_bucket, [])
+        if len(samples) < 5:
+            samples.append(
+                {
+                    "blockerReason": rejection_bucket,
+                    "instrumentIdA": quality.get("instrumentIdA"),
+                    "instrumentIdB": quality.get("instrumentIdB"),
+                    "venuePair": quality.get("venuePair"),
+                    "marketFamily": quality.get("marketFamily"),
+                    "relationshipType": quality.get("relationshipType"),
+                    "safetyTier": quality.get("safetyTier"),
+                    "normalizedA": quality.get("normalizedA"),
+                    "normalizedB": quality.get("normalizedB"),
+                },
+            )
     timing_flags = quality.get("timingFlags")
     if isinstance(timing_flags, list):
         for flag in timing_flags:
@@ -1732,12 +1791,19 @@ def _semantic_blocked_reason(quality: dict[str, object]) -> str:
 
 _SEMANTIC_NON_EXECUTION_BUCKETS = frozenset(
     {
-        "semantic_blocked",
-        "topology_only",
-        "same_venue_policy_blocked",
-        "equivalent_selection",
-        "void_settlement",
-        "partial_settlement",
+        CoverageBlockerReason.AMBIGUOUS_RESOLUTION.value,
+        CoverageBlockerReason.EQUIVALENT_SELECTION.value,
+        CoverageBlockerReason.FIXTURE_IDENTITY_MISMATCH.value,
+        CoverageBlockerReason.NO_SEMANTIC_EDGE.value,
+        CoverageBlockerReason.PARTIAL_SETTLEMENT.value,
+        CoverageBlockerReason.PROVIDER_SCOPE_MISMATCH.value,
+        CoverageBlockerReason.SAME_MARKET_PARAMS_MISMATCH.value,
+        CoverageBlockerReason.SAME_VENUE_POLICY.value,
+        CoverageBlockerReason.SCOPE_MISMATCH.value,
+        CoverageBlockerReason.TOPOLOGY_ONLY.value,
+        CoverageBlockerReason.UNKNOWN_SETTLEMENT.value,
+        CoverageBlockerReason.UNSUPPORTED_MARKET_FAMILY.value,
+        CoverageBlockerReason.VOID_SETTLEMENT.value,
     },
 )
 
@@ -1745,17 +1811,30 @@ _SEMANTIC_NON_EXECUTION_BUCKETS = frozenset(
 def _semantic_non_execution_bucket(edge: object) -> str:
     relationship_type = str(getattr(edge, "relationship_type", "") or "")
     safety_tier = str(getattr(edge, "safety_tier", "") or "")
+    caveats = {str(caveat) for caveat in tuple(getattr(edge, "caveats", ()) or ()) if str(caveat)}
     if bool(getattr(edge, "same_venue_execution_eligible", False)):
-        return "same_venue_policy_blocked"
-    if relationship_type == "EQUIVALENT_SELECTION":
-        return "equivalent_selection"
-    if relationship_type == "VOID_COMPATIBLE_HEDGE":
-        return "void_settlement"
-    if relationship_type == "PARTIAL_SETTLEMENT_HEDGE":
-        return "partial_settlement"
+        return CoverageBlockerReason.SAME_VENUE_POLICY.value
+    relationship_bucket = {
+        "EQUIVALENT_SELECTION": CoverageBlockerReason.EQUIVALENT_SELECTION.value,
+        "VOID_COMPATIBLE_HEDGE": CoverageBlockerReason.VOID_SETTLEMENT.value,
+        "PARTIAL_SETTLEMENT_HEDGE": CoverageBlockerReason.PARTIAL_SETTLEMENT.value,
+    }.get(relationship_type)
+    if relationship_bucket:
+        return relationship_bucket
+    normalized_caveats = " ".join(caveat.lower() for caveat in caveats)
+    for needle, bucket in (
+        ("unknown", CoverageBlockerReason.UNKNOWN_SETTLEMENT.value),
+        ("ambiguous", CoverageBlockerReason.AMBIGUOUS_RESOLUTION.value),
+        ("50_50", CoverageBlockerReason.AMBIGUOUS_RESOLUTION.value),
+        ("provider_scope", CoverageBlockerReason.PROVIDER_SCOPE_MISMATCH.value),
+        ("params_mismatch", CoverageBlockerReason.SAME_MARKET_PARAMS_MISMATCH.value),
+        ("scope", CoverageBlockerReason.SCOPE_MISMATCH.value),
+    ):
+        if needle in normalized_caveats:
+            return bucket
     if safety_tier == "TOPOLOGY_SAFE":
-        return "topology_only"
-    return "semantic_blocked"
+        return CoverageBlockerReason.TOPOLOGY_ONLY.value
+    return CoverageBlockerReason.UNSUPPORTED_MARKET_FAMILY.value
 
 
 def _record_venue_quote_health(
@@ -1799,6 +1878,34 @@ def _probe_market_family(source_node, target_node) -> str:
         except (AttributeError, TypeError, ValueError):
             families.append(str(getattr(node, "market_type", "") or node.market_name))
     return " + ".join(families)
+
+
+def _normalized_probe_payload(node) -> dict[str, object]:
+    try:
+        normalized = MarketNormalizer.normalize(node.instrument)
+    except (AttributeError, TypeError, ValueError):
+        return {
+            "sport": "",
+            "scope": "",
+            "marketFamily": str(getattr(node, "market_type", "") or node.market_name),
+            "marketType": str(getattr(node, "market_type", "") or node.market_name),
+            "selectionRole": str(getattr(node, "outcome", "") or ""),
+            "params": {},
+            "line": None,
+            "providerRuleFlags": [],
+        }
+    params = dict(normalized.params)
+    return {
+        "sport": normalized.sport,
+        "scope": normalized.scope,
+        "marketFamily": normalized.market_family,
+        "marketType": normalized.market_type,
+        "selectionRole": normalized.selection,
+        "params": params,
+        "line": params.get("line") or params.get("handicap") or params.get("total"),
+        "providerRuleFlags": list(normalized.rules_flags),
+        "resolutionPolicy": dict(normalized.resolution_policy),
+    }
 
 
 def _quoted_probe_edge(edge, nodes, quotes) -> tuple[object, object, object, object] | None:

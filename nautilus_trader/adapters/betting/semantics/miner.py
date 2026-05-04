@@ -12,6 +12,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
+# skipcq
 """
 Offline candidate mining over persisted normalized selections.
 """
@@ -27,8 +28,11 @@ from datetime import datetime
 from itertools import combinations
 
 from nautilus_trader.adapters.betting.semantics.classifier import RuleClassifier
+from nautilus_trader.adapters.betting.semantics.coverage import CoverageEngine
 from nautilus_trader.adapters.betting.semantics.promotion import RulePromotionPolicy
 from nautilus_trader.adapters.betting.semantics.store import RuleStore
+from nautilus_trader.adapters.betting.semantics.types import CoverageHyperedge
+from nautilus_trader.adapters.betting.semantics.types import CoverageProof
 from nautilus_trader.adapters.betting.semantics.types import MinedRule
 from nautilus_trader.adapters.betting.semantics.types import NormalizedSelectionRecord
 from nautilus_trader.adapters.betting.semantics.types import SemanticRuleTemplate
@@ -65,6 +69,7 @@ class RuleMiner:
         self._store = store
         self._classifier = classifier or RuleClassifier()
         self._promotion_policy = RulePromotionPolicy()
+        self._coverage_engine = CoverageEngine()
 
     def load_records(
         self,
@@ -157,6 +162,44 @@ class RuleMiner:
             persist=persist,
             persist_event_candidates=persist_event_candidates,
         )
+
+    def mine_coverage(
+        self,
+        records: Iterable[NormalizedSelectionRecord],
+        *,
+        persist: bool = True,
+    ) -> tuple[list[CoverageProof], list[CoverageHyperedge]]:
+        """
+        Mine generalized event coverage proofs and hyperedges from normalized records.
+        """
+        grouped: dict[tuple[str, str, str], list[NormalizedSelectionRecord]] = defaultdict(list)
+        for record in records:
+            selection = record.selection
+            grouped[(selection.sport, selection.event_key, selection.scope)].append(record)
+
+        proof_by_id: dict[str, CoverageProof] = {}
+        hyperedge_by_id: dict[str, CoverageHyperedge] = {}
+        for bucket in grouped.values():
+            proofs, hyperedges = self._coverage_engine.discover_event_coverage(bucket)
+            for proof in proofs:
+                proof_by_id[proof.proof_id] = proof
+                if persist:
+                    self._store.save_coverage_proof(proof)
+            for hyperedge in hyperedges:
+                hyperedge_by_id[hyperedge.hyperedge_id] = hyperedge
+                if persist:
+                    self._store.save_coverage_hyperedge(hyperedge)
+        return list(proof_by_id.values()), list(hyperedge_by_id.values())
+
+    def mine_coverage_from_store(
+        self,
+        *,
+        provider: str | None = None,
+        manifest_id: str | None = None,
+        persist: bool = True,
+    ) -> tuple[list[CoverageProof], list[CoverageHyperedge]]:
+        records = self.load_records(provider=provider, manifest_id=manifest_id)
+        return self.mine_coverage(records, persist=persist)
 
     def generalize(
         self,

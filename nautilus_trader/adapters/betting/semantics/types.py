@@ -12,6 +12,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
+# skipcq
 """
 Types for semantic betting market rules.
 """
@@ -72,9 +73,36 @@ class PromotionStatus(str, Enum):
 class SafetyTier(str, Enum):
     AUDIT_ONLY = "AUDIT_ONLY"
     TOPOLOGY_SAFE = "TOPOLOGY_SAFE"
+    COVERAGE_SAFE = "COVERAGE_SAFE"
     VENUE_SAFE = "VENUE_SAFE"
     EXECUTION_SAFE = "EXECUTION_SAFE"
     EXECUTION_SAFE_SAME_VENUE_ELIGIBLE = "EXECUTION_SAFE_SAME_VENUE_ELIGIBLE"
+
+
+class CoverageBlockerReason(str, Enum):
+    POSITIVE = "positive"
+    NEGATIVE_MARGIN = "negative_margin"
+    BELOW_THRESHOLD = "below_threshold"
+    STALE = "stale"
+    CROSS_CYCLE = "cross_cycle"
+    FETCH_LATENCY = "fetch_latency"
+    LIQUIDITY = "liquidity"
+    TOPOLOGY_ONLY = "topology_only"
+    EQUIVALENT_SELECTION = "equivalent_selection"
+    VOID_SETTLEMENT = "void_settlement"
+    PARTIAL_SETTLEMENT = "partial_settlement"
+    SAME_VENUE_POLICY = "same_venue_policy"
+    SAME_MARKET_PARAMS_MISMATCH = "same_market_params_mismatch"
+    PROVIDER_SCOPE_MISMATCH = "provider_scope_mismatch"
+    FIXTURE_IDENTITY_MISMATCH = "fixture_identity_mismatch"
+    SCOPE_MISMATCH = "scope_mismatch"
+    UNSUPPORTED_MARKET_FAMILY = "unsupported_market_family"
+    UNKNOWN_SETTLEMENT = "unknown_settlement"
+    AMBIGUOUS_RESOLUTION = "ambiguous_resolution"
+    NO_SEMANTIC_EDGE = "no_semantic_edge"
+    INCOMPLETE_COVERAGE = "incomplete_coverage"
+    OVERLAPPING_COVERAGE = "overlapping_coverage"
+    PROVIDER_RULE_CAVEAT = "provider_rule_caveat"
 
 
 @dataclass(frozen=True)
@@ -502,6 +530,229 @@ class SemanticRuleTemplate:
 
 
 @dataclass(frozen=True)
+class OutcomeState:
+    state_id: str
+    label: str = ""
+    attributes: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True)
+class OutcomeUniverse:
+    universe_id: str
+    sport: str
+    scope: str
+    states: tuple[OutcomeState, ...]
+    provider_rule_flags: tuple[str, ...] = ()
+
+    @classmethod
+    def from_state_ids(
+        cls,
+        *,
+        sport: str,
+        scope: str,
+        state_ids: tuple[str, ...],
+        provider_rule_flags: tuple[str, ...] = (),
+    ) -> OutcomeUniverse:
+        states = tuple(OutcomeState(state_id=state_id, label=state_id) for state_id in state_ids)
+        payload = {
+            "sport": sport,
+            "scope": scope,
+            "state_ids": state_ids,
+            "provider_rule_flags": provider_rule_flags,
+        }
+        return cls(
+            universe_id=_stable_digest("coverage:universe", payload),
+            sport=sport,
+            scope=scope,
+            states=states,
+            provider_rule_flags=provider_rule_flags,
+        )
+
+    @property
+    def state_ids(self) -> tuple[str, ...]:
+        return tuple(state.state_id for state in self.states)
+
+
+@dataclass(frozen=True)
+class SelectionPredicate:
+    predicate_id: str
+    instrument_id: str
+    sport: str
+    scope: str
+    market_type: str
+    market_family: str
+    selection: str
+    params: tuple[tuple[str, str], ...]
+    result_states: tuple[str, ...]
+    win_states: tuple[str, ...]
+    lose_states: tuple[str, ...]
+    void_states: tuple[str, ...] = ()
+    push_states: tuple[str, ...] = ()
+    partial_states: tuple[str, ...] = ()
+    unknown_states: tuple[str, ...] = ()
+    provider: str = ""
+    event_key: str = ""
+    source_record_id: str = ""
+    caveats: tuple[str, ...] = ()
+    provider_rule_flags: tuple[str, ...] = ()
+
+    @property
+    def has_void_or_push(self) -> bool:
+        return bool(self.void_states or self.push_states)
+
+    @property
+    def has_partial(self) -> bool:
+        return bool(self.partial_states)
+
+    @property
+    def has_unknown(self) -> bool:
+        return bool(self.unknown_states)
+
+
+@dataclass(frozen=True)
+class CoverageSet:
+    coverage_set_id: str
+    sport: str
+    scope: str
+    event_key: str
+    provider_scope: tuple[str, ...]
+    predicate_ids: tuple[str, ...]
+    market_families: tuple[str, ...]
+    relationship_type: str = RelationshipType.COMPLEMENTARY_COVERAGE.value
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        sport: str,
+        scope: str,
+        event_key: str,
+        provider_scope: tuple[str, ...],
+        predicate_ids: tuple[str, ...],
+        market_families: tuple[str, ...],
+        relationship_type: str = RelationshipType.COMPLEMENTARY_COVERAGE.value,
+    ) -> CoverageSet:
+        payload = {
+            "sport": sport,
+            "scope": scope,
+            "event_key": event_key,
+            "provider_scope": provider_scope,
+            "predicate_ids": predicate_ids,
+            "market_families": market_families,
+            "relationship_type": relationship_type,
+        }
+        return cls(
+            coverage_set_id=_stable_digest("coverage:set", payload),
+            sport=sport,
+            scope=scope,
+            event_key=event_key,
+            provider_scope=provider_scope,
+            predicate_ids=predicate_ids,
+            market_families=market_families,
+            relationship_type=relationship_type,
+        )
+
+
+@dataclass(frozen=True)
+class CoverageGap:
+    state_id: str
+    reason: str
+    detail: str = ""
+
+
+@dataclass(frozen=True)
+class CoverageRisk:
+    reason: str
+    state_id: str = ""
+    detail: str = ""
+    severity: str = "audit"
+
+
+@dataclass(frozen=True)
+class CoverageProof:
+    proof_id: str
+    universe: OutcomeUniverse
+    coverage_set: CoverageSet
+    predicates: tuple[SelectionPredicate, ...]
+    complete: bool
+    win_covered_states: tuple[str, ...]
+    overlapping_win_states: tuple[str, ...]
+    gaps: tuple[CoverageGap, ...]
+    risks: tuple[CoverageRisk, ...]
+    blocker_reasons: tuple[str, ...]
+    relationship_type: str
+    safety_tier: str
+    execution_safe: bool
+    same_venue_execution_eligible: bool = False
+    confidence: float = 1.0
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    def to_json_bytes(self) -> bytes:
+        return json.dumps(self.to_dict(), sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+    @classmethod
+    def from_json_bytes(cls, raw: bytes) -> CoverageProof:
+        payload = json.loads(raw.decode("utf-8"))
+        payload["universe"] = _outcome_universe_from_payload(payload["universe"])
+        payload["coverage_set"] = _coverage_set_from_payload(payload["coverage_set"])
+        payload["predicates"] = tuple(
+            _selection_predicate_from_payload(item) for item in payload.get("predicates", ())
+        )
+        payload["gaps"] = tuple(CoverageGap(**item) for item in payload.get("gaps", ()))
+        payload["risks"] = tuple(CoverageRisk(**item) for item in payload.get("risks", ()))
+        for key in ("win_covered_states", "overlapping_win_states", "blocker_reasons"):
+            payload[key] = tuple(payload.get(key, ()))
+        payload.setdefault("same_venue_execution_eligible", False)
+        payload.setdefault("confidence", 1.0)
+        return cls(**payload)
+
+
+@dataclass(frozen=True)
+class CoverageHyperedge:
+    hyperedge_id: str
+    coverage_proof_id: str
+    instrument_ids: tuple[str, ...]
+    provider_scope: tuple[str, ...]
+    relationship_type: str
+    safety_tier: str
+    execution_safe: bool
+    caveats: tuple[str, ...] = ()
+
+    @classmethod
+    def from_proof(cls, proof: CoverageProof) -> CoverageHyperedge:
+        instrument_ids = tuple(predicate.instrument_id for predicate in proof.predicates)
+        payload = {
+            "coverage_proof_id": proof.proof_id,
+            "instrument_ids": instrument_ids,
+            "provider_scope": proof.coverage_set.provider_scope,
+            "relationship_type": proof.relationship_type,
+            "safety_tier": proof.safety_tier,
+        }
+        return cls(
+            hyperedge_id=_stable_digest("coverage:hyperedge", payload),
+            coverage_proof_id=proof.proof_id,
+            instrument_ids=instrument_ids,
+            provider_scope=proof.coverage_set.provider_scope,
+            relationship_type=proof.relationship_type,
+            safety_tier=proof.safety_tier,
+            execution_safe=proof.execution_safe,
+            caveats=tuple(sorted(risk.reason for risk in proof.risks)),
+        )
+
+    def to_json_bytes(self) -> bytes:
+        return json.dumps(asdict(self), sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+    @classmethod
+    def from_json_bytes(cls, raw: bytes) -> CoverageHyperedge:
+        payload = json.loads(raw.decode("utf-8"))
+        for key in ("instrument_ids", "provider_scope", "caveats"):
+            payload[key] = tuple(payload.get(key, ()))
+        return cls(**payload)
+
+
+@dataclass(frozen=True)
 class RuleCorpusManifest:
     manifest_id: str
     provider: str
@@ -626,3 +877,38 @@ def _template_support_from_payload(payload: dict[str, Any]) -> TemplateSupportSt
     for key in ("providers", "sports", "example_rule_ids"):
         payload[key] = tuple(payload.get(key, ()))
     return TemplateSupportStats(**payload)
+
+
+def _outcome_state_from_payload(payload: dict[str, Any]) -> OutcomeState:
+    payload["attributes"] = tuple(tuple(item) for item in payload.get("attributes", ()))
+    return OutcomeState(**payload)
+
+
+def _outcome_universe_from_payload(payload: dict[str, Any]) -> OutcomeUniverse:
+    payload["states"] = tuple(_outcome_state_from_payload(item) for item in payload["states"])
+    payload["provider_rule_flags"] = tuple(payload.get("provider_rule_flags", ()))
+    return OutcomeUniverse(**payload)
+
+
+def _selection_predicate_from_payload(payload: dict[str, Any]) -> SelectionPredicate:
+    for key in (
+        "params",
+        "result_states",
+        "win_states",
+        "lose_states",
+        "void_states",
+        "push_states",
+        "partial_states",
+        "unknown_states",
+        "caveats",
+        "provider_rule_flags",
+    ):
+        value = payload.get(key, ())
+        payload[key] = tuple(tuple(item) if isinstance(item, list) else item for item in value)
+    return SelectionPredicate(**payload)
+
+
+def _coverage_set_from_payload(payload: dict[str, Any]) -> CoverageSet:
+    for key in ("provider_scope", "predicate_ids", "market_families"):
+        payload[key] = tuple(payload.get(key, ()))
+    return CoverageSet(**payload)

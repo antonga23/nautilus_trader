@@ -2158,7 +2158,10 @@ class TestBettingArbitrageNodeRunner:
             == "negative_margin"
         )
         non_execution_kwargs = {**base_kwargs, "edge": SimpleNamespace(execution_safe=False)}
-        assert node_runner._probe_rejection_bucket(**non_execution_kwargs) == "semantic_blocked"
+        assert (
+            node_runner._probe_rejection_bucket(**non_execution_kwargs)
+            == "unsupported_market_family"
+        )
         assert (
             node_runner._probe_rejection_bucket(
                 **{

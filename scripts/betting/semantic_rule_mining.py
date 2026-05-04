@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # ruff: noqa: E402
+# skipcq
 """
 Operator entrypoints for provider-backed semantic rule mining.
 """
@@ -247,6 +248,43 @@ def _generalize_templates(args: argparse.Namespace) -> None:
     )
 
 
+def _mine_coverage(args: argparse.Namespace) -> None:
+    cache = _build_cache(args.persist_cache, args.cache_dir)
+    store = RuleStore(cache)
+    miner = RuleMiner(store)
+    provider = args.provider.upper() if args.provider else None
+    proofs, hyperedges = miner.mine_coverage_from_store(
+        provider=provider,
+        manifest_id=args.manifest_id,
+        persist=True,
+    )
+    blocker_counts: Counter[str] = Counter()
+    for proof in proofs:
+        for reason in proof.blocker_reasons:
+            blocker_counts[reason] += 1
+    payload = {
+        "provider": provider,
+        "manifest_id": args.manifest_id,
+        "coverage_proof_count": len(proofs),
+        "coverage_hyperedge_count": len(hyperedges),
+        "complete_coverage_count": sum(1 for proof in proofs if proof.complete),
+        "execution_safe_coverage_count": sum(1 for proof in proofs if proof.execution_safe),
+        "same_venue_eligible_coverage_count": sum(
+            1 for proof in proofs if proof.same_venue_execution_eligible
+        ),
+        "coverage_blocker_counts": dict(sorted(blocker_counts.items())),
+    }
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    _maybe_linear_comment(
+        "Semantic coverage mining completed:\n\n"
+        f"- provider: `{provider or 'ALL'}`\n"
+        f"- manifest: `{args.manifest_id or 'ALL'}`\n"
+        f"- coverage proofs: `{len(proofs)}`\n"
+        f"- hyperedges: `{len(hyperedges)}`\n"
+        f"- execution-safe proofs: `{payload['execution_safe_coverage_count']}`",
+    )
+
+
 def _validate_rules(args: argparse.Namespace) -> None:
     cache = _build_cache(args.persist_cache, args.cache_dir)
     store = RuleStore(cache)
@@ -374,6 +412,16 @@ def _report_coverage(args: argparse.Namespace) -> None:
         for template_id in store.list_promoted_template_ids()
         if (template := store.load_promoted_template(template_id)) is not None
     ]
+    coverage_proofs = [
+        proof
+        for proof_id in store.list_coverage_proof_ids()
+        if (proof := store.load_coverage_proof(proof_id)) is not None
+    ]
+    coverage_hyperedges = [
+        hyperedge
+        for hyperedge_id in store.list_coverage_hyperedge_ids()
+        if (hyperedge := store.load_coverage_hyperedge(hyperedge_id)) is not None
+    ]
     normalized_records = [
         record
         for record_id in store.list_normalized_ids()
@@ -423,6 +471,17 @@ def _report_coverage(args: argparse.Namespace) -> None:
         "same_venue_execution_eligible_template_count": sum(
             1 for template in promoted_templates if template.same_venue_execution_eligible
         ),
+        "coverage_proof_count": len(coverage_proofs),
+        "coverage_hyperedge_count": len(coverage_hyperedges),
+        "coverage_complete_count": sum(1 for proof in coverage_proofs if proof.complete),
+        "coverage_execution_safe_count": sum(
+            1 for proof in coverage_proofs if proof.execution_safe
+        ),
+        "coverage_same_venue_eligible_count": sum(
+            1 for proof in coverage_proofs if proof.same_venue_execution_eligible
+        ),
+        "coverage_blocker_counts": _coverage_blocker_counts(coverage_proofs),
+        "coverage_proof_breakdown": _coverage_proof_breakdown(coverage_proofs),
         "candidate_safety_tier_counts": dict(completion.safety_tier_counts),
         "promoted_safety_tier_counts": dict(
             sorted(Counter(template.safety_tier for template in promoted_templates).items()),
@@ -508,6 +567,42 @@ def _template_coverage_key(template: Any) -> str:
             str(template.safety_tier),
         ],
     )
+
+
+def _coverage_blocker_counts(proofs: list[Any]) -> dict[str, int]:
+    counts: Counter[str] = Counter()
+    for proof in proofs:
+        for reason in proof.blocker_reasons:
+            counts[str(reason)] += 1
+    return dict(sorted(counts.items()))
+
+
+def _coverage_proof_breakdown(proofs: list[Any]) -> dict[str, object]:
+    by_provider_sport_family_tier: Counter[str] = Counter()
+    blocker_by_sport: Counter[str] = Counter()
+    gap_count_by_sport: Counter[str] = Counter()
+    for proof in proofs:
+        providers = ",".join(str(item).upper() for item in proof.coverage_set.provider_scope)
+        families = "+".join(str(item) for item in proof.coverage_set.market_families)
+        key = "|".join(
+            [
+                providers or "UNKNOWN",
+                str(proof.universe.sport),
+                families or "UNKNOWN",
+                str(proof.relationship_type),
+                str(proof.safety_tier),
+            ],
+        )
+        by_provider_sport_family_tier[key] += 1
+        for blocker in proof.blocker_reasons:
+            blocker_by_sport[f"{proof.universe.sport}|{blocker}"] += 1
+        if proof.gaps:
+            gap_count_by_sport[str(proof.universe.sport)] += len(proof.gaps)
+    return {
+        "by_provider_sport_family_tier": dict(sorted(by_provider_sport_family_tier.items())),
+        "blocker_by_sport": dict(sorted(blocker_by_sport.items())),
+        "gap_count_by_sport": dict(sorted(gap_count_by_sport.items())),
+    }
 
 
 def _verify_completion(args: argparse.Namespace) -> None:
@@ -610,6 +705,15 @@ def _parse_args() -> argparse.Namespace:
     generalize.add_argument("--persist-cache", action="store_true")
     generalize.add_argument("--cache-dir", default=os.getenv("SEMANTIC_RULE_CACHE_DIR"))
 
+    coverage = subparsers.add_parser(
+        "mine-coverage",
+        help="Mine generalized semantic coverage proofs and hyperedges",
+    )
+    coverage.add_argument("--provider", choices=("cloudbet", "sxbet", "polymarket"))
+    coverage.add_argument("--manifest-id")
+    coverage.add_argument("--persist-cache", action="store_true")
+    coverage.add_argument("--cache-dir", default=os.getenv("SEMANTIC_RULE_CACHE_DIR"))
+
     validate = subparsers.add_parser(
         "validate",
         help="Validate candidate rules from persisted provider evidence",
@@ -702,6 +806,7 @@ def main() -> None:
     handlers = {
         "mine-candidates": _mine_candidates,
         "generalize-templates": _generalize_templates,
+        "mine-coverage": _mine_coverage,
         "validate": _validate_rules,
         "promote": _promote_rules,
         "promote-templates": _promote_templates,

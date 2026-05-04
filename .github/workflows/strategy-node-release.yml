@@ -945,6 +945,57 @@ jobs:
                   shutil.copy2(source, bundle_dir / filename)
           PY
           fi
+          if [ -f "$node_dir/status.json" ]; then
+            python3 - "$node_dir/status.json" "$remote_bundle/runtime-summary.json" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          status_path = pathlib.Path(sys.argv[1])
+          output_path = pathlib.Path(sys.argv[2])
+          status = json.loads(status_path.read_text())
+          runtime = status.get("runtimeProbe") or {}
+          candidate_quality = runtime.get("candidateQuality") or {}
+          summary = {
+              "status": status.get("status"),
+              "nodeId": status.get("nodeId"),
+              "updatedAt": status.get("updatedAt"),
+              "semanticCache": status.get("semanticCache"),
+              "runtimeProbe": {
+                  "graphEngine": runtime.get("graphEngine"),
+                  "topologySource": runtime.get("topologySource"),
+                  "semanticTemplateCount": runtime.get("semanticTemplateCount"),
+                  "coverageProofCount": runtime.get("coverageProofCount"),
+                  "coverageHyperedgeCount": runtime.get("coverageHyperedgeCount"),
+                  "graphNodes": runtime.get("graphNodes"),
+                  "graphEdges": runtime.get("graphEdges"),
+                  "quotedSemanticMatchInstruments": runtime.get(
+                      "quotedSemanticMatchInstruments",
+                  ),
+                  "quotedEdges": runtime.get("quotedEdges"),
+                  "positiveMarginCandidates": runtime.get("positiveMarginCandidates"),
+                  "thresholdMarginCandidates": runtime.get("thresholdMarginCandidates"),
+                  "venueCoverage": runtime.get("venueCoverage"),
+                  "candidateQuality": {
+                      "rejectionBuckets": candidate_quality.get("rejectionBuckets"),
+                      "semanticBlockedReasons": candidate_quality.get(
+                          "semanticBlockedReasons",
+                      ),
+                      "blockerSamples": candidate_quality.get("blockerSamples"),
+                      "venuePairs": candidate_quality.get("venuePairs"),
+                      "marketFamilies": candidate_quality.get("marketFamilies"),
+                      "topPositiveCandidates": candidate_quality.get(
+                          "topPositiveCandidates",
+                      ),
+                      "topNegativeNearMisses": candidate_quality.get(
+                          "topNegativeNearMisses",
+                      ),
+                  },
+              },
+          }
+          output_path.write_text(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+          fi
           REMOTE
           scp -i strategy-node.key -o StrictHostKeyChecking=no -r \
             "$remote:$remote_bundle/." \
@@ -965,6 +1016,20 @@ jobs:
             tail -n 80 artifacts/strategy-node-deploy/events.jsonl
             echo "EOF"
           fi
+          if [ -f artifacts/strategy-node-deploy/runtime-summary.json ]; then
+            echo "runtime_summary_json<<EOF"
+            cat artifacts/strategy-node-deploy/runtime-summary.json
+            echo "EOF"
+          fi
+
+      - name: Upload deployed node status artifacts to GitHub
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4.3.3
+        with:
+          name: strategy-node-deploy-${{ env.STRATEGY_NODE_CONTAINER_NAME }}
+          path: artifacts/strategy-node-deploy
+          if-no-files-found: ignore
 
       - name: Upload deployed node status artifacts to transient CI storage
         if: always()
