@@ -1,0 +1,246 @@
+from __future__ import annotations
+
+import importlib.util
+import json
+from pathlib import Path
+import sys
+
+
+SCRIPT_PATH = Path("scripts/betting/runtime_probe_report.py")
+
+
+def _load_module():
+    spec = importlib.util.spec_from_file_location("runtime_probe_report", SCRIPT_PATH)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _runtime_status_payload() -> dict[str, object]:
+    return {
+        "nodeId": "cloudbet-single",
+        "status": "probed",
+        "semanticCache": {
+            "ready": True,
+            "source": "existing",
+            "manifestCount": 3,
+            "promotedTemplateCount": 1248,
+            "executionSafeTemplateCount": 65,
+            "sameVenueExecutionEligibleTemplateCount": 237,
+        },
+        "runtimeProbe": {
+            "graphEngine": "rust",
+            "topologySource": "rust_semantic",
+            "semanticTemplateCount": 1248,
+            "coverageProofCount": 5367,
+            "coverageHyperedgeCount": 482,
+            "graphNodes": 40,
+            "graphEdges": 22,
+            "graphQuoteStates": 15,
+            "connectedNodes": 18,
+            "semanticMatchInstruments": 20,
+            "quotedSemanticMatchInstruments": 14,
+            "executionSafeEdges": 9,
+            "sameVenueExecutionEligibleEdges": 3,
+            "quotedEdges": 8,
+            "positiveMarginCandidates": {
+                "executionSafe": 2,
+                "sameVenueExecutionEligible": 1,
+                "total": 3,
+            },
+            "thresholdMarginCandidates": {
+                "executionSafe": 1,
+                "sameVenueExecutionEligible": 1,
+                "total": 2,
+            },
+            "venueCoverage": {
+                "enabledVenues": ["CLOUDBET", "SXBET"],
+                "crossVenueCandidateCount": 2,
+                "quotedNodeCounts": {"CLOUDBET": 5, "SXBET": 9},
+            },
+            "candidateQuality": {
+                "marginBands": {"positive": 3, "< -5%": 5},
+                "rejectionBuckets": {
+                    "positive": 3,
+                    "stale": 5,
+                    "void_settlement": 2,
+                },
+                "semanticBlockedReasons": {
+                    "TOPOLOGY_SAFE:EQUIVALENT_SELECTION": 4,
+                    "COVERAGE_SAFE:COMPLEMENTARY_COVERAGE": 2,
+                },
+                "venuePairs": {
+                    "CLOUDBET->SXBET": {"positive": 2, "stale": 1},
+                    "SXBET->SXBET": {"void_settlement": 2},
+                },
+                "marketFamilies": {
+                    "TOTALS + TOTALS": {"positive": 2},
+                    "MATCH_ODDS + MATCH_ODDS": {"stale": 5},
+                },
+                "blockerSamples": {
+                    "void_settlement": [
+                        {"instrumentIdA": "a", "instrumentIdB": "b"},
+                        {"instrumentIdA": "c", "instrumentIdB": "d"},
+                    ],
+                },
+                "topPositiveCandidates": [{"instrumentIdA": "a"}],
+                "topNegativeNearMisses": [{"instrumentIdA": "x"}],
+            },
+        },
+    }
+
+
+def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
+    module = _load_module()
+
+    summary = module.summarize_payload(_runtime_status_payload(), top_limit=1)
+
+    assert summary["semanticCache"]["promotedTemplateCount"] == 1248
+    assert summary["graph"]["engine"] == "rust"
+    assert summary["graph"]["topologySource"] == "rust_semantic"
+    assert summary["graph"]["coverageHyperedgeCount"] == 482
+    assert summary["graph"]["quotedSemanticMatchInstruments"] == 14
+    assert summary["graph"]["executionSafeEdges"] == 9
+    assert summary["candidates"]["positiveTotal"] == 3
+    assert summary["candidates"]["thresholdTotal"] == 2
+    assert summary["candidates"]["crossVenueCandidateCount"] == 2
+    assert summary["candidateQuality"]["topRejectionBuckets"] == [
+        {"key": "stale", "value": 5},
+    ]
+    assert summary["candidateQuality"]["topSemanticBlockedReasons"] == [
+        {"key": "TOPOLOGY_SAFE:EQUIVALENT_SELECTION", "value": 4},
+    ]
+    assert summary["candidateQuality"]["blockerSamples"]["void_settlement"] == [
+        {"instrumentIdA": "a", "instrumentIdB": "b"},
+    ]
+    assert summary["candidateQuality"]["diagnosticWarnings"] == []
+
+
+def test_runtime_probe_report_flags_legacy_semantic_blocked_artifacts():
+    module = _load_module()
+
+    summary = module.summarize_payload(
+        {
+            "runtimeProbe": {
+                "candidateQuality": {
+                    "rejectionBuckets": {"semantic_blocked": 12},
+                },
+            },
+        },
+    )
+
+    assert summary["candidateQuality"]["diagnosticWarnings"] == [
+        "semantic_blocked_without_reason_breakdown",
+        "semantic_blocked_without_blocker_samples",
+        "missing_top_positive_candidates",
+        "missing_top_negative_near_misses",
+    ]
+
+
+def test_runtime_probe_report_aggregates_multiple_artifacts():
+    module = _load_module()
+    first = module.summarize_payload(_runtime_status_payload())
+    second = module.summarize_payload(
+        {
+            "status": "probed",
+            "runtimeProbe": {
+                "graphEngine": "rust",
+                "topologySource": "rust_semantic",
+                "graphEdges": 10,
+                "quotedEdges": 4,
+                "semanticMatchInstruments": 8,
+                "quotedSemanticMatchInstruments": 5,
+                "positiveMarginCandidates": {"total": 2},
+                "thresholdMarginCandidates": {"total": 1},
+                "venueCoverage": {"crossVenueCandidateCount": 1},
+                "candidateQuality": {
+                    "rejectionBuckets": {"semantic_blocked": 1},
+                },
+            },
+        },
+    )
+
+    aggregate = module.aggregate_summaries([first, second])
+
+    assert aggregate["artifactCount"] == 2
+    assert aggregate["statusCounts"] == {"probed": 2}
+    assert aggregate["graphEngineCounts"] == {"rust": 2}
+    assert aggregate["topologySourceCounts"] == {"rust_semantic": 2}
+    assert aggregate["semanticMatchInstruments"] == 28
+    assert aggregate["quotedSemanticMatchInstruments"] == 19
+    assert aggregate["graphEdges"] == 32
+    assert aggregate["quotedEdges"] == 12
+    assert aggregate["positiveCandidates"] == 5
+    assert aggregate["thresholdCandidates"] == 3
+    assert aggregate["crossVenueCandidates"] == 3
+    assert aggregate["diagnosticWarningCounts"] == {
+        "missing_top_negative_near_misses": 1,
+        "missing_top_positive_candidates": 1,
+        "semantic_blocked_without_blocker_samples": 1,
+        "semantic_blocked_without_reason_breakdown": 1,
+    }
+
+
+def test_runtime_probe_report_cli_outputs_json_and_text(tmp_path, monkeypatch, capsys):
+    module = _load_module()
+    status_path = tmp_path / "status.json"
+    status_path.write_text(json.dumps(_runtime_status_payload()), encoding="utf-8")
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [str(SCRIPT_PATH), str(status_path), "--top-limit", "1", "--aggregate"],
+    )
+    assert module.main() == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["artifacts"][0]["path"] == str(status_path)
+    assert payload["artifacts"][0]["candidates"]["positiveTotal"] == 3
+    assert payload["aggregate"]["positiveCandidates"] == 3
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [str(SCRIPT_PATH), str(status_path), "--format", "text", "--aggregate"],
+    )
+    assert module.main() == 0
+    text_output = capsys.readouterr().out
+    assert "graph=rust/rust_semantic" in text_output
+    assert "candidates positive=3 threshold=2 cross_venue=2" in text_output
+    assert "aggregate: artifacts=1 positive=3 threshold=2 cross_venue=2" in text_output
+    assert "top_semantic_blockers" in text_output
+
+
+def test_runtime_probe_report_cli_can_fail_on_incomplete_diagnostics(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    module = _load_module()
+    status_path = tmp_path / "legacy-status.json"
+    status_path.write_text(
+        json.dumps(
+            {
+                "runtimeProbe": {
+                    "candidateQuality": {
+                        "rejectionBuckets": {"semantic_blocked": 12},
+                    },
+                },
+            },
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [str(SCRIPT_PATH), str(status_path), "--fail-on-warning"],
+    )
+
+    assert module.main() == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert (
+        "semantic_blocked_without_reason_breakdown"
+        in (payload[0]["candidateQuality"]["diagnosticWarnings"])
+    )
