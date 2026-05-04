@@ -108,7 +108,11 @@ async def _refresh_corpus(args: argparse.Namespace) -> None:
     manifests: list[RuleCorpusManifest] = []
 
     if args.provider in {"cloudbet", "all"}:
-        client = CloudbetClient(asyncio.get_running_loop(), logger)
+        client = CloudbetClient(
+            asyncio.get_running_loop(),
+            logger,
+            api_key=os.getenv("CLOUDBET_API_KEY") or "",
+        )
         await client.connect()
         try:
             from_timestamp = args.from_timestamp or int(time.time())
@@ -209,12 +213,15 @@ def _generalize_templates(args: argparse.Namespace) -> None:
     store = RuleStore(cache)
     miner = RuleMiner(store)
     provider = args.provider.upper() if args.provider else None
-    if args.skip_event_candidates:
+    candidate_ids = store.list_candidate_ids()
+    use_existing_candidates = args.skip_event_candidates or (
+        bool(candidate_ids) and args.manifest_id is None
+    )
+    if use_existing_candidates:
         existing_rules = [
             rule
-            for rule_id in store.list_candidate_ids()
+            for rule_id in candidate_ids
             if (rule := store.load_candidate(rule_id)) is not None
-            and args.manifest_id is None
             and (provider is None or provider in rule.venue_scope)
         ]
         templates = miner.generalize(existing_rules, persist=True)

@@ -114,6 +114,13 @@ class MarketNormalizer:
             info=info,
         )
         resolution_policy = cls._normal_resolution_policy(info)
+        venue = str(instrument.id.venue)
+        params = cls._venue_selection_relative_params(
+            params=params,
+            venue=venue,
+            market_type=market_type,
+            selection=selection,
+        )
 
         event_key = cls._event_key_from_fields(
             event_id=str(getattr(instrument, "event_id", instrument.id)),
@@ -130,7 +137,7 @@ class MarketNormalizer:
         )
 
         return NormalizedSelection(
-            venue=str(instrument.id.venue),
+            venue=venue,
             instrument_id=str(instrument.id),
             sport=sport,
             event_key=str(event_key),
@@ -217,6 +224,13 @@ class MarketNormalizer:
             sport=sport,
             info=info,
         )
+        venue = str(cls._value(item, "provider") or cls._value(item, "venue") or "CLOUDBET").upper()
+        params = cls._venue_selection_relative_params(
+            params=params,
+            venue=venue,
+            market_type=market_type,
+            selection=selection,
+        )
 
         event_id = (
             cls._value(item, "event_id") or cls._value(item, "eventId") or cls._value(item, "id")
@@ -239,7 +253,6 @@ class MarketNormalizer:
             ),
             sport=sport,
         )
-        venue = str(cls._value(item, "provider") or cls._value(item, "venue") or "CLOUDBET").upper()
 
         return NormalizedSelection(
             venue=venue,
@@ -474,6 +487,29 @@ class MarketNormalizer:
             if parsed is not None:
                 return parsed
         return None
+
+    @classmethod
+    def _venue_selection_relative_params(
+        cls,
+        *,
+        params: dict[str, str],
+        venue: str,
+        market_type: CanonicalMarketType,
+        selection: str,
+    ) -> dict[str, str]:
+        if (
+            venue.upper() != "CLOUDBET"
+            or market_type != CanonicalMarketType.POINT_SPREAD
+            or selection != "AWAY"
+        ):
+            return params
+
+        adjusted = dict(params)
+        for key in ("handicap", "line"):
+            parsed = cls._to_decimal(adjusted.get(key, ""))
+            if parsed is not None:
+                adjusted[key] = cls._format_decimal(-parsed)
+        return adjusted
 
     @classmethod
     def _canonical_market_type(

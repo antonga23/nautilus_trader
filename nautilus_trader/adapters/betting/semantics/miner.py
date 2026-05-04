@@ -25,7 +25,9 @@ from dataclasses import dataclass
 from dataclasses import replace
 from datetime import UTC
 from datetime import datetime
+import hashlib
 from itertools import combinations
+import json
 
 from nautilus_trader.adapters.betting.semantics.classifier import RuleClassifier
 from nautilus_trader.adapters.betting.semantics.coverage import CoverageEngine
@@ -123,8 +125,9 @@ class RuleMiner:
                     continue
                 rule = self._with_evidence(rule, left, right)
                 discovered.append(rule)
-                if persist:
-                    self._store.save_candidate(rule)
+
+        if persist:
+            self._store.save_candidates(discovered)
 
         return discovered
 
@@ -284,11 +287,40 @@ class RuleMiner:
         right: NormalizedSelectionRecord,
     ) -> MinedRule:
         template_id = SemanticRuleTemplate.from_rule(rule).template_id
+        evidence_event_key = (
+            left.selection.event_key
+            if left.selection.event_key == right.selection.event_key
+            else None
+        )
         return replace(
             rule,
+            rule_id=RuleMiner._event_candidate_rule_id(rule, evidence_event_key, left, right),
             template_id=template_id,
-            evidence_event_key=left.selection.event_key
-            if left.selection.event_key == right.selection.event_key
-            else None,
+            evidence_event_key=evidence_event_key,
             evidence_record_ids=(left.record_id, right.record_id),
         )
+
+    @staticmethod
+    def _event_candidate_rule_id(
+        rule: MinedRule,
+        evidence_event_key: str | None,
+        left: NormalizedSelectionRecord,
+        right: NormalizedSelectionRecord,
+    ) -> str:
+        """
+        Derive an event-observation ID without changing reusable template identity.
+
+        The classifier's base rule ID intentionally describes the semantic relationship
+        shape. Event candidates are evidence observations and must not overwrite each
+        other when two fixtures expose the same reusable relationship.
+
+        """
+        payload = {
+            "base_rule_id": rule.rule_id,
+            "event_key": evidence_event_key,
+            "record_ids": sorted((left.record_id, right.record_id)),
+            "instrument_ids": sorted((left.selection.instrument_id, right.selection.instrument_id)),
+        }
+        raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        digest = hashlib.sha256(raw).hexdigest()[:24]
+        return f"{rule.rule_id}:event:{digest}"
