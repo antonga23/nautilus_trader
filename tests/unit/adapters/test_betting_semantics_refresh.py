@@ -1422,6 +1422,7 @@ def test_semantic_rule_mining_cli_reports_tiered_promotion_counts(tmp_path):
     assert "promoted_safety_tier_counts" in report_payload
     assert "normalized_market_coverage" in report_payload
     assert "template_coverage" in report_payload
+    assert "blocker_samples" in report_payload["template_coverage"]
     assert "provider_coverage" in report_payload
 
 
