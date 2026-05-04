@@ -539,20 +539,16 @@ def _template_coverage(
     candidate_counts: Counter[str] = Counter()
     promoted_counts: Counter[str] = Counter()
     blockers: Counter[str] = Counter()
+    blocker_samples: dict[str, list[dict[str, object]]] = {}
 
     for template in candidate_templates:
         key = _template_coverage_key(template)
         candidate_counts[key] += 1
-        if template.safety_tier == "AUDIT_ONLY":
-            blockers["audit_only"] += 1
-        if template.has_unknown:
-            blockers["unknown_settlement"] += 1
-        if template.has_void:
-            blockers["void_settlement"] += 1
-        if template.has_partial:
-            blockers["partial_settlement"] += 1
-        if not template.support.catalog_promotable:
-            blockers["catalog_support_below_gate"] += 1
+        for blocker in _template_blocker_reasons(template):
+            blockers[blocker] += 1
+            samples = blocker_samples.setdefault(blocker, [])
+            if len(samples) < 3:
+                samples.append(_template_blocker_sample(template))
 
     for template in promoted_templates:
         promoted_counts[_template_coverage_key(template)] += 1
@@ -561,6 +557,50 @@ def _template_coverage(
         "candidate_counts": dict(sorted(candidate_counts.items())),
         "promoted_counts": dict(sorted(promoted_counts.items())),
         "blocker_counts": dict(sorted(blockers.items())),
+        "blocker_samples": dict(sorted(blocker_samples.items())),
+    }
+
+
+def _template_blocker_reasons(template: Any) -> tuple[str, ...]:
+    blockers: list[str] = []
+    if template.relationship_type == "DANGEROUS_NON_EQUIVALENT":
+        blockers.append("dangerous_non_equivalent")
+    if template.safety_tier == "AUDIT_ONLY":
+        blockers.append("audit_only")
+    if template.has_unknown:
+        blockers.append("unknown_settlement")
+    if template.has_void:
+        blockers.append("void_settlement")
+    if template.has_partial:
+        blockers.append("partial_settlement")
+    if not template.support.catalog_promotable:
+        blockers.append("catalog_support_below_gate")
+    return tuple(blockers)
+
+
+def _template_blocker_sample(template: Any) -> dict[str, object]:
+    return {
+        "template_id": str(template.template_id),
+        "providers": [str(provider).upper() for provider in template.support.providers],
+        "sport": str(template.sport),
+        "market_family_pair": [
+            str(template.pattern_a.market_family),
+            str(template.pattern_b.market_family),
+        ],
+        "selection_pair": [
+            str(template.pattern_a.selection),
+            str(template.pattern_b.selection),
+        ],
+        "params_a": [[str(key), str(value)] for key, value in template.pattern_a.params],
+        "params_b": [[str(key), str(value)] for key, value in template.pattern_b.params],
+        "relationship_type": str(template.relationship_type),
+        "safety_tier": str(template.safety_tier),
+        "caveats": [str(caveat) for caveat in template.caveats],
+        "observed_count": int(template.support.observed_count),
+        "event_count": int(template.support.event_count),
+        "catalog_promotable": bool(template.support.catalog_promotable),
+        "execution_safe": bool(template.execution_safe),
+        "same_venue_execution_eligible": bool(template.same_venue_execution_eligible),
     }
 
 
