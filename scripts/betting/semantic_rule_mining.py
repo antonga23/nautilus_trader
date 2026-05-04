@@ -280,6 +280,7 @@ def _mine_coverage(args: argparse.Namespace) -> None:
             1 for proof in proofs if proof.same_venue_execution_eligible
         ),
         "coverage_blocker_counts": dict(sorted(blocker_counts.items())),
+        "coverage_blocker_samples": _coverage_blocker_samples(proofs),
     }
     print(json.dumps(payload, indent=2, sort_keys=True))
     _maybe_linear_comment(
@@ -488,6 +489,7 @@ def _report_coverage(args: argparse.Namespace) -> None:
             1 for proof in coverage_proofs if proof.same_venue_execution_eligible
         ),
         "coverage_blocker_counts": _coverage_blocker_counts(coverage_proofs),
+        "coverage_blocker_samples": _coverage_blocker_samples(coverage_proofs),
         "coverage_proof_breakdown": _coverage_proof_breakdown(coverage_proofs),
         "candidate_safety_tier_counts": dict(completion.safety_tier_counts),
         "promoted_safety_tier_counts": dict(
@@ -582,6 +584,54 @@ def _coverage_blocker_counts(proofs: list[Any]) -> dict[str, int]:
         for reason in proof.blocker_reasons:
             counts[str(reason)] += 1
     return dict(sorted(counts.items()))
+
+
+def _coverage_blocker_samples(
+    proofs: list[Any],
+    *,
+    limit_per_reason: int = 3,
+) -> dict[str, list[dict[str, object]]]:
+    samples: dict[str, list[dict[str, object]]] = {}
+    for proof in proofs:
+        sample = _coverage_proof_sample(proof)
+        for reason in proof.blocker_reasons:
+            bucket = samples.setdefault(str(reason), [])
+            if len(bucket) < limit_per_reason:
+                bucket.append(sample)
+    return dict(sorted(samples.items()))
+
+
+def _coverage_proof_sample(proof: Any) -> dict[str, object]:
+    return {
+        "proof_id": str(proof.proof_id),
+        "sport": str(proof.universe.sport),
+        "scope": str(proof.universe.scope),
+        "provider_scope": [str(item) for item in proof.coverage_set.provider_scope],
+        "market_families": [str(item) for item in proof.coverage_set.market_families],
+        "relationship_type": str(proof.relationship_type),
+        "safety_tier": str(proof.safety_tier),
+        "complete": bool(proof.complete),
+        "execution_safe": bool(proof.execution_safe),
+        "same_venue_execution_eligible": bool(proof.same_venue_execution_eligible),
+        "instrument_ids": [str(predicate.instrument_id) for predicate in proof.predicates],
+        "gap_states": [
+            {
+                "state_id": str(gap.state_id),
+                "reason": str(gap.reason),
+                "detail": str(gap.detail),
+            }
+            for gap in proof.gaps[:5]
+        ],
+        "risk_states": [
+            {
+                "state_id": str(risk.state_id),
+                "reason": str(risk.reason),
+                "detail": str(risk.detail),
+                "severity": str(risk.severity),
+            }
+            for risk in proof.risks[:5]
+        ],
+    }
 
 
 def _coverage_proof_breakdown(proofs: list[Any]) -> dict[str, object]:

@@ -1399,9 +1399,24 @@ def test_semantic_rule_mining_cli_reports_tiered_promotion_counts(tmp_path):
     assert "safety_tier_counts" in promote_payload
     assert coverage_payload["coverage_hyperedge_count"] >= 1
     assert coverage_payload["coverage_proof_count"] >= coverage_payload["coverage_hyperedge_count"]
+    assert "coverage_blocker_samples" in coverage_payload
+    assert coverage_payload["coverage_blocker_samples"]
+    first_coverage_sample = next(iter(coverage_payload["coverage_blocker_samples"].values()))[0]
+    assert {
+        "proof_id",
+        "sport",
+        "scope",
+        "provider_scope",
+        "market_families",
+        "instrument_ids",
+        "gap_states",
+        "risk_states",
+    } <= set(first_coverage_sample)
     assert report_payload["same_venue_execution_eligible_template_count"] >= 1
     assert report_payload["coverage_hyperedge_count"] >= 1
     assert "coverage_blocker_counts" in report_payload
+    assert "coverage_blocker_samples" in report_payload
+    assert report_payload["coverage_blocker_samples"]
     assert "coverage_proof_breakdown" in report_payload
     assert "candidate_safety_tier_counts" in report_payload
     assert "promoted_safety_tier_counts" in report_payload
