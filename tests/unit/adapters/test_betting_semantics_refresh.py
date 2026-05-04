@@ -97,6 +97,36 @@ def betting_instrument(
     )
 
 
+def polymarket_binary_option(
+    *,
+    symbol: str,
+    outcome: str,
+    question: str,
+    info: dict,
+) -> BinaryOption:
+    return BinaryOption(
+        instrument_id=InstrumentId(Symbol(symbol), Venue("POLYMARKET")),
+        raw_symbol=Symbol(symbol),
+        outcome=outcome,
+        description=question,
+        asset_class=AssetClass.ALTERNATIVE,
+        currency=USDC_POS,
+        price_increment=Price.from_str("0.001"),
+        price_precision=3,
+        size_increment=Quantity.from_str("0.000001"),
+        size_precision=6,
+        activation_ns=0,
+        expiration_ns=1,
+        max_quantity=None,
+        min_quantity=Quantity.from_int(5),
+        maker_fee=Decimal(0),
+        taker_fee=Decimal(0),
+        ts_event=0,
+        ts_init=0,
+        info=info,
+    )
+
+
 def _load_cloudbet_selection(filename: str, index: int) -> Selection:
     path = (
         TESTS_PACKAGE_ROOT / "integration_tests" / "adapters" / "cloudbet" / "resources" / filename
@@ -356,6 +386,7 @@ def test_polymarket_inferred_sports_market_preserves_yes_no_semantics():
     assert transformed_no is not None
     assert transformed_yes.market_type == "american_football.winner"
     assert transformed_yes.outcome == "yes"
+    assert "line=" not in transformed_yes.params
     assert transformed_no.outcome == "no"
 
     rule = RuleClassifier().classify(transformed_yes, transformed_no)
@@ -422,6 +453,93 @@ def test_polymarket_gamma_token_price_and_team_roles_are_preserved():
     assert normalized.market_type == CanonicalMarketType.WINNER.value
     assert normalized.selection == "AWAY"
     assert dict(normalized.resolution_policy)["tie_or_unknown"] == "lose"
+
+
+def test_polymarket_spread_binary_maps_yes_no_to_team_line_semantics():
+    question = "Will the Lakers cover the spread against the Nuggets?"
+    info = {
+        "condition_id": "0xnba-spread",
+        "question": question,
+        "tokens": [
+            {"token_id": "spread-yes", "outcome": "Yes", "price": 0.49},
+            {"token_id": "spread-no", "outcome": "No", "price": 0.51},
+        ],
+        "selected_token_id": "spread-no",
+        "selected_outcome": "No",
+        "_gamma_original": {
+            "sport": "nba",
+            "sportsMarketType": "spread",
+            "line": "-4.5",
+            "description": "This resolves to Yes if the Lakers cover the spread.",
+            "events": [
+                {
+                    "title": "Los Angeles Lakers vs Denver Nuggets",
+                    "sport": "basketball",
+                    "startDateIso": "2026-05-10T01:00:00Z",
+                },
+            ],
+        },
+    }
+
+    transformed = PolymarketSportsTransformer.to_crypto_betting_instrument(
+        polymarket_binary_option(
+            symbol="spread-no",
+            outcome="No",
+            question=question,
+            info=info,
+        ),
+    )
+
+    assert transformed is not None
+    assert transformed.market_type == "basketball.spread"
+    assert transformed.outcome == "away"
+    normalized = MarketNormalizer().normalize(transformed)
+    assert normalized.venue == "POLYMARKET"
+    assert normalized.market_type == CanonicalMarketType.POINT_SPREAD.value
+    assert normalized.selection == "AWAY"
+    assert normalized.param("line") == "-4.5"
+
+
+def test_polymarket_totals_binary_maps_over_under_and_extracts_line():
+    question = "Will the Lakers vs Nuggets game go over 224.5 total points?"
+    info = {
+        "condition_id": "0xnba-total",
+        "question": question,
+        "tokens": [
+            {"token_id": "total-yes", "outcome": "Yes", "price": 0.47},
+            {"token_id": "total-no", "outcome": "No", "price": 0.53},
+        ],
+        "selected_token_id": "total-no",
+        "selected_outcome": "No",
+        "_gamma_original": {
+            "sport": "nba",
+            "description": "This resolves to Yes if the game total goes over 224.5 points.",
+            "events": [
+                {
+                    "title": "Los Angeles Lakers vs Denver Nuggets",
+                    "sport": "basketball",
+                    "startDateIso": "2026-05-10T01:00:00Z",
+                },
+            ],
+        },
+    }
+
+    transformed = PolymarketSportsTransformer.to_crypto_betting_instrument(
+        polymarket_binary_option(
+            symbol="total-no",
+            outcome="No",
+            question=question,
+            info=info,
+        ),
+    )
+
+    assert transformed is not None
+    assert transformed.market_type == "basketball.totals"
+    assert transformed.outcome == "under"
+    normalized = MarketNormalizer().normalize(transformed)
+    assert normalized.market_type == CanonicalMarketType.TOTALS.value
+    assert normalized.selection == "UNDER"
+    assert normalized.param("line") == "224.5"
 
 
 def test_polymarket_infers_team_role_from_nickname_and_beat_question():
