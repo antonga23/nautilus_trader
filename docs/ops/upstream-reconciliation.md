@@ -19,23 +19,16 @@ Cloudbet-specific product work on separate branches.
   - receives controlled promotion from `develop`
 - `nautilus_develop`
   - strict mirror of `upstream/develop`
-  - updated only by the upstream sync automation
+  - updated manually by an operator when upstream reconciliation is needed
 - `nautilus_master`
   - strict mirror of `upstream/master`
-  - updated only by the upstream sync automation
+  - updated manually by an operator when upstream reconciliation is needed
 
 ## Automation
 
-The nightly workflow is defined in `.github/workflows/upstream-mirror-sync.yml`.
-
-It performs two phases:
-
-1. Mirror update
-   - fast-forward `nautilus_develop` to `upstream/develop`
-   - fast-forward `nautilus_master` to `upstream/master`
-2. Reconciliation
-   - prepare or update one rolling PR from `nautilus_develop` into `develop`
-   - prepare or update one rolling PR from `nautilus_master` into `production`
+Scheduled upstream mirror and nightly merge workflows are currently disabled.
+Operators should update mirror branches and prepare reconciliation PRs manually
+until a replacement automation path is explicitly approved.
 
 ## Reconciliation PR Rules
 
@@ -53,9 +46,9 @@ It performs two phases:
 
 When a clean merge is not possible:
 
-- no conflicted branch is pushed
-- the automation opens or updates a GitHub issue instead
-- the issue records:
+- do not push a conflicted sync branch
+- open or update a GitHub issue instead
+- record:
   - source branch
   - target branch
   - source SHA
