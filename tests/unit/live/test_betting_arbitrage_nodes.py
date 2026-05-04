@@ -104,6 +104,28 @@ def _polymarket_winner_instrument(*, outcome: str, resolution_policy: str = "los
     )
 
 
+def _polymarket_spread_instrument(*, outcome: str, line: str):
+    return CryptoBettingInstrument(
+        venue=Venue("POLYMARKET"),
+        event_id="pm-event-1",
+        event_name="Team A vs Team B",
+        home_name="Team A",
+        away_name="Team B",
+        sport_name="basketball",
+        competition_name="NBA",
+        market_name="basketball.spread",
+        market_type="basketball.spread",
+        outcome=outcome,
+        side=SelectionSide.BACK,
+        price=2.1,
+        currency=Currency.from_str("USDC"),
+        params=f"line={line}",
+        handicap=float(line),
+        start_time="2026-03-13T18:00:00Z",
+        info={"resolution_policy": {"tie_or_unknown": "lose"}},
+    )
+
+
 def _seed_promoted_template(
     cache_dir: Path,
     *,
@@ -687,7 +709,14 @@ class TestBettingArbitrageNodeBuilder:
             "is_active": True,
             "limit": 80,
             "max_results": 80,
-            "sports": ["american_football", "baseball", "basketball", "soccer", "tennis"],
+            "sports": [
+                "american_football",
+                "baseball",
+                "basketball",
+                "ice_hockey",
+                "soccer",
+                "tennis",
+            ],
         }
         created = config.data_clients["POLYMARKET_PRIMARY"].create()
         assert isinstance(hash(created.instrument_provider), int)
@@ -1102,6 +1131,44 @@ class TestSemanticCacheBootstrap:
             ),
         )
         assert not node_cache._is_portable_polymarket_template(ambiguous_template)
+
+    def test_portable_polymarket_templates_include_deterministic_spreads(self):
+        home = _polymarket_spread_instrument(outcome="home", line="1.5")
+        away = _polymarket_spread_instrument(outcome="away", line="-1.5")
+        rule = RuleClassifier().classify(home, away)
+        assert rule is not None
+        template = SemanticRuleTemplate.from_rule(
+            rule,
+            support=TemplateSupportStats(
+                template_id="pm-portable-spread",
+                observed_count=10,
+                event_count=10,
+                provider_count=1,
+                providers=("POLYMARKET",),
+                sports=("basketball",),
+                confidence=1.0,
+            ),
+        )
+
+        assert node_cache._is_portable_polymarket_template(template)
+
+        whole_line = _polymarket_spread_instrument(outcome="home", line="1")
+        whole_opposite = _polymarket_spread_instrument(outcome="away", line="-1")
+        whole_rule = RuleClassifier().classify(whole_line, whole_opposite)
+        assert whole_rule is not None
+        whole_template = SemanticRuleTemplate.from_rule(
+            whole_rule,
+            support=TemplateSupportStats(
+                template_id="pm-portable-spread-void",
+                observed_count=10,
+                event_count=10,
+                provider_count=1,
+                providers=("POLYMARKET",),
+                sports=("basketball",),
+                confidence=1.0,
+            ),
+        )
+        assert not node_cache._is_portable_polymarket_template(whole_template)
 
     def test_refresh_required_sxbet_corpus_skips_when_no_sxbet_venues(self):
         ingestor = Mock()
@@ -2089,6 +2156,33 @@ class TestBettingArbitrageNodeRunner:
                 **{**base_kwargs, "profit_margin": Decimal("-0.01")},
             )
             == "negative_margin"
+        )
+        non_execution_kwargs = {**base_kwargs, "edge": SimpleNamespace(execution_safe=False)}
+        assert node_runner._probe_rejection_bucket(**non_execution_kwargs) == "semantic_blocked"
+        assert (
+            node_runner._probe_rejection_bucket(
+                **{
+                    **non_execution_kwargs,
+                    "edge": SimpleNamespace(
+                        execution_safe=False,
+                        safety_tier="TOPOLOGY_SAFE",
+                        relationship_type="COMPLEMENTARY_COVERAGE",
+                    ),
+                },
+            )
+            == "topology_only"
+        )
+        assert (
+            node_runner._probe_rejection_bucket(
+                **{
+                    **non_execution_kwargs,
+                    "edge": SimpleNamespace(
+                        execution_safe=False,
+                        relationship_type="VOID_COMPATIBLE_HEDGE",
+                    ),
+                },
+            )
+            == "void_settlement"
         )
         timing_kwargs = {
             key: base_kwargs[key]

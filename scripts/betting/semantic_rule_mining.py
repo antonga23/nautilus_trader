@@ -374,12 +374,21 @@ def _report_coverage(args: argparse.Namespace) -> None:
         for template_id in store.list_promoted_template_ids()
         if (template := store.load_promoted_template(template_id)) is not None
     ]
+    normalized_records = [
+        record
+        for record_id in store.list_normalized_ids()
+        if (record := store.load_normalized_selection(record_id)) is not None
+    ]
     sparse_sports: list[dict[str, object]] = []
+    provider_coverage: dict[str, object] = {}
     for snapshot_id in store.list_snapshot_ids():
         snapshot = store.load_snapshot(snapshot_id)
-        if snapshot is None or snapshot.endpoint != "/semantic/coverage/cloudbet":
+        if snapshot is None or not snapshot.endpoint.startswith("/semantic/coverage/"):
             continue
         payload = json.loads(snapshot.payload.decode("utf-8"))
+        provider_coverage[snapshot.endpoint] = payload
+        if snapshot.endpoint != "/semantic/coverage/cloudbet":
+            continue
         for sport, report in payload.get("sports", {}).items():
             if report.get("sparse"):
                 sparse_sports.append(
@@ -418,6 +427,9 @@ def _report_coverage(args: argparse.Namespace) -> None:
         "promoted_safety_tier_counts": dict(
             sorted(Counter(template.safety_tier for template in promoted_templates).items()),
         ),
+        "normalized_market_coverage": _normalized_market_coverage(normalized_records),
+        "template_coverage": _template_coverage(candidate_templates, promoted_templates),
+        "provider_coverage": provider_coverage,
         "providers": [provider.__dict__ for provider in completion.providers],
         "sports": [sport.__dict__ for sport in completion.sports],
         "promotion_blockers": dict(completion.promotion_blockers),
@@ -433,6 +445,68 @@ def _report_coverage(args: argparse.Namespace) -> None:
         f"- execution-safe templates: `{report['execution_safe_template_count']}`\n"
         f"- same-venue eligible templates: `{report['same_venue_execution_eligible_template_count']}`\n"
         f"- sparse sports sampled: `{len(sparse_sports)}`",
+    )
+
+
+def _normalized_market_coverage(records: list[Any]) -> dict[str, int]:
+    counts: Counter[str] = Counter()
+    for record in records:
+        selection = record.selection
+        key = "|".join(
+            [
+                str(record.provider).upper(),
+                str(selection.sport),
+                str(selection.market_family),
+                str(selection.selection),
+            ],
+        )
+        counts[key] += 1
+    return dict(sorted(counts.items()))
+
+
+def _template_coverage(
+    candidate_templates: list[Any],
+    promoted_templates: list[Any],
+) -> dict[str, object]:
+    candidate_counts: Counter[str] = Counter()
+    promoted_counts: Counter[str] = Counter()
+    blockers: Counter[str] = Counter()
+
+    for template in candidate_templates:
+        key = _template_coverage_key(template)
+        candidate_counts[key] += 1
+        if template.safety_tier == "AUDIT_ONLY":
+            blockers["audit_only"] += 1
+        if template.has_unknown:
+            blockers["unknown_settlement"] += 1
+        if template.has_void:
+            blockers["void_settlement"] += 1
+        if template.has_partial:
+            blockers["partial_settlement"] += 1
+        if not template.support.catalog_promotable:
+            blockers["catalog_support_below_gate"] += 1
+
+    for template in promoted_templates:
+        promoted_counts[_template_coverage_key(template)] += 1
+
+    return {
+        "candidate_counts": dict(sorted(candidate_counts.items())),
+        "promoted_counts": dict(sorted(promoted_counts.items())),
+        "blocker_counts": dict(sorted(blockers.items())),
+    }
+
+
+def _template_coverage_key(template: Any) -> str:
+    providers = ",".join(str(provider).upper() for provider in template.support.providers)
+    return "|".join(
+        [
+            providers or "UNKNOWN",
+            str(template.sport),
+            f"{template.pattern_a.market_family}+{template.pattern_b.market_family}",
+            f"{template.pattern_a.selection}+{template.pattern_b.selection}",
+            str(template.relationship_type),
+            str(template.safety_tier),
+        ],
     )
 
 

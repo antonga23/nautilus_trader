@@ -21,8 +21,11 @@ FOUR_INSTRUMENTS = 4
 
 
 def test_sxbet_static_sport_ids_match_current_active_taxonomy():
+    assert SXBET_SPORT_IDS[2] == "ice_hockey"
+    assert SXBET_SPORT_IDS[3] == "baseball"
     assert SXBET_SPORT_IDS[1] == "basketball"
     assert SXBET_SPORT_IDS[5] == "soccer"
+    assert SXBET_SPORT_IDS[6] == "tennis"
     assert SXBET_SPORT_IDS[20] == "rugby_league"
     assert SXBET_SPORT_IDS[26] == "australian_rules"
 

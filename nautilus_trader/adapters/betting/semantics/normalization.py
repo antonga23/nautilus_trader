@@ -609,9 +609,12 @@ class MarketNormalizer:
     def _canonical_sport(raw_sport: str) -> str:
         normalized = raw_sport.strip().lower().replace("-", "_").replace(" ", "_")
         aliases = {
+            "soccer/football": "soccer",
+            "soccer_football": "soccer",
             "football": "soccer",
             "futsal": "soccer",
             "american_football": "american_football",
+            "hockey": "ice_hockey",
         }
         return aliases.get(normalized, normalized or "unknown")
 

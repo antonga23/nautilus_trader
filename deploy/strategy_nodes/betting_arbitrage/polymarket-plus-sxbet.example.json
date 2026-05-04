@@ -33,7 +33,7 @@
       "execution_enabled": false,
       "credential_prefix": "SXBET",
       "load_all_instruments": true,
-      "sport_ids": [29],
+      "sport_ids": [1, 2, 3, 5, 6],
       "live_only": false
     }
   ],

@@ -35,7 +35,7 @@ the default required-provider list.
 ```sh
 .venv/bin/python scripts/betting/semantic_rule_mining.py refresh-corpus \
   --provider all \
-  --sports soccer tennis basketball american_football \
+  --sports soccer basketball tennis american_football ice_hockey baseball \
   --initial-window-seconds 86400 \
   --max-window-days 7 \
   --min-events-per-sport 1 \
@@ -75,7 +75,7 @@ The task is not complete unless `verify-completion` exits `0` and reports:
   provider then that provider must be omitted from the command line and from the
   pass criteria for this run.
 - Each required provider has a manifest, normalized selections, and event candidates.
-- Target sports `soccer`, `tennis`, `basketball`, and `american_football` have at least 10 event candidates each.
+- Target sports `soccer`, `basketball`, `tennis`, `american_football`, `ice_hockey`, and `baseball` have at least 10 event candidates each.
 - The report shows progress toward 20 event candidates per target sport.
 - Promotion blockers are listed separately from candidate counts.
 

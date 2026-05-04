@@ -17,6 +17,7 @@ from nautilus_trader.adapters.betting.semantics import RuleMiner
 from nautilus_trader.adapters.betting.semantics import RulePromotionPolicy
 from nautilus_trader.adapters.betting.semantics import RuleStore
 from nautilus_trader.adapters.betting.semantics import SafetyTier
+from nautilus_trader.adapters.betting.semantics import SEMANTIC_TARGET_SPORTS
 from nautilus_trader.adapters.betting.semantics import SemanticRuleTemplate
 from nautilus_trader.adapters.betting.semantics import SnapshotIngestor
 from nautilus_trader.adapters.cloudbet.client.core import CloudbetClient
@@ -29,15 +30,9 @@ from nautilus_trader.live.strategy_nodes.betting_arbitrage.config import (
 from nautilus_trader.live.strategy_nodes.betting_arbitrage.config import BettingVenueManifest
 
 
-DEFAULT_CLOUDBET_SPORTS = ("soccer", "tennis", "basketball", "american_football")
-DEFAULT_POLYMARKET_SPORTS = (
-    "soccer",
-    "tennis",
-    "basketball",
-    "american_football",
-    "baseball",
-)
-SEMANTIC_CACHE_COMPATIBILITY_VERSION = "semantic-rule-cache:20260503:polymarket-portable-v3"
+DEFAULT_CLOUDBET_SPORTS = SEMANTIC_TARGET_SPORTS
+DEFAULT_POLYMARKET_SPORTS = SEMANTIC_TARGET_SPORTS
+SEMANTIC_CACHE_COMPATIBILITY_VERSION = "semantic-rule-cache:20260504:six-sport-v1"
 SEMANTIC_CACHE_COMPATIBILITY_FILE = ".semantic-cache-version"
 PORTABLE_POLYMARKET_MARKET_FAMILIES = frozenset(
     {
@@ -45,6 +40,9 @@ PORTABLE_POLYMARKET_MARKET_FAMILIES = frozenset(
         "DOUBLE_CHANCE",
         "WINNER",
         "TOTALS",
+        "TEAM_TOTALS",
+        "POINT_SPREAD",
+        "ASIAN_HANDICAP",
     },
 )
 

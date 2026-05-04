@@ -30,7 +30,7 @@
       "execution_enabled": false,
       "credential_prefix": "SXBET",
       "load_all_instruments": true,
-      "sport_ids": [5],
+      "sport_ids": [1, 2, 3, 5, 6],
       "instrument_load_limit": 250,
       "market_discovery_limit": 250,
       "prefer_liquid_markets": true,
@@ -50,7 +50,14 @@
       "execution_enabled": false,
       "credential_prefix": "CLOUDBET",
       "load_all_instruments": true,
-      "sport_keys": ["soccer", "tennis", "basketball", "american_football"],
+      "sport_keys": [
+        "soccer",
+        "basketball",
+        "tennis",
+        "american_football",
+        "ice_hockey",
+        "baseball"
+      ],
       "instrument_load_limit": 40,
       "market_discovery_limit": 40,
       "auto_subscribe_quote_ticks": true,
@@ -67,7 +74,14 @@
       "execution_enabled": false,
       "credential_prefix": "POLYMARKET",
       "load_all_instruments": true,
-      "sport_keys": ["soccer", "basketball", "american_football", "baseball", "tennis"],
+      "sport_keys": [
+        "soccer",
+        "basketball",
+        "tennis",
+        "american_football",
+        "ice_hockey",
+        "baseball"
+      ],
       "instrument_load_limit": 80
     }
   ],
