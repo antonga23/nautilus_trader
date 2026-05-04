@@ -387,6 +387,63 @@ def test_polymarket_gamma_token_price_and_team_roles_are_preserved():
     assert dict(normalized.resolution_policy)["tie_or_unknown"] == "lose"
 
 
+def test_polymarket_infers_team_role_from_nickname_and_beat_question():
+    info = {
+        "condition_id": "0xnba-beat",
+        "question": "Will the Lakers beat the Nuggets?",
+        "tokens": [
+            {"token_id": "token-yes", "outcome": "Yes", "price": 0.47},
+            {"token_id": "token-no", "outcome": "No", "price": 0.53},
+        ],
+        "selected_token_id": "token-yes",
+        "selected_outcome": "Yes",
+        "_gamma_original": {
+            "sport": "nba",
+            "description": "Resolves to Yes if the Lakers beat the Nuggets.",
+            "outcomePrices": '["0.47","0.53"]',
+            "events": [
+                {
+                    "title": "Los Angeles Lakers vs Denver Nuggets",
+                    "sport": "basketball",
+                    "startDateIso": "2026-05-10T01:00:00Z",
+                },
+            ],
+        },
+    }
+    yes_instrument = BinaryOption(
+        instrument_id=InstrumentId(Symbol("token-yes"), Venue("POLYMARKET")),
+        raw_symbol=Symbol("token-yes"),
+        outcome="Yes",
+        description=info["question"],
+        asset_class=AssetClass.ALTERNATIVE,
+        currency=USDC_POS,
+        price_increment=Price.from_str("0.001"),
+        price_precision=3,
+        size_increment=Quantity.from_str("0.000001"),
+        size_precision=6,
+        activation_ns=0,
+        expiration_ns=1,
+        max_quantity=None,
+        min_quantity=Quantity.from_int(5),
+        maker_fee=Decimal(0),
+        taker_fee=Decimal(0),
+        ts_event=0,
+        ts_init=0,
+        info=info,
+    )
+
+    transformed = PolymarketSportsTransformer.to_crypto_betting_instrument(yes_instrument)
+    assert transformed is not None
+    assert transformed.market_type == "basketball.winner"
+    assert transformed.outcome == "home"
+    assert transformed.home_name == "Los Angeles Lakers"
+    assert transformed.away_name == "Denver Nuggets"
+
+    normalized = MarketNormalizer().normalize(transformed)
+    assert normalized.market_type == CanonicalMarketType.WINNER.value
+    assert normalized.selection == "HOME"
+
+
 def test_polymarket_corpus_skips_outrights_without_event_participants():
     ingestor = SnapshotIngestor(RuleStore(DictCache()))
 

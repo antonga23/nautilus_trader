@@ -15,6 +15,7 @@
     "sport_filter": null,
     "market_timing_filter": "all",
     "quote_freshness_profile": "pre_match",
+    "instrument_refresh_interval_secs": 300.0,
     "rollover_aware": true,
     "opportunity_graph_engine": "auto",
     "semantic_unmatched_quote_probe_venues": ["POLYMARKET"],

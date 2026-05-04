@@ -20,6 +20,7 @@ Cross-venue arbitrage strategy for sports betting.
 
 from collections import Counter
 from dataclasses import dataclass
+from datetime import timedelta
 from decimal import Decimal
 
 import msgspec
@@ -33,6 +34,7 @@ from nautilus_trader.adapters.betting.semantics import PolymarketSportsTransform
 from nautilus_trader.adapters.betting.semantics import RuleStore
 from nautilus_trader.config import StrategyConfig
 from nautilus_trader.core.message import Event
+from nautilus_trader.common.events import TimeEvent
 from nautilus_trader.examples.strategies.opportunity_graph import FastCandidateSnapshot
 from nautilus_trader.examples.strategies.opportunity_graph import OpportunityCandidate
 from nautilus_trader.examples.strategies.opportunity_graph import OpportunityGraph
@@ -53,6 +55,7 @@ VALID_MARKET_TIMINGS = frozenset({"all", "pre_market", "live"})
 VALID_QUOTE_FRESHNESS_PROFILES = frozenset({"pre_match", "live", "custom"})
 DEFAULT_ENABLED_VENUES = frozenset({"CLOUDBET", "SXBET", "10BET"})
 NANOSECONDS_PER_SECOND = 1_000_000_000
+INSTRUMENT_REFRESH_TIMER_NAME = "betting-arbitrage-instrument-refresh"
 BettingInstrument = CryptoBettingInstrument | LegacyCryptoBettingInstrument
 BETTING_INSTRUMENT_TYPES = (CryptoBettingInstrument, LegacyCryptoBettingInstrument)
 
@@ -186,6 +189,8 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         Custom maximum timestamp skew between two quotes.
     quote_max_fetch_latency_secs : float | None, default None
         Custom maximum REST fetch latency encoded as ``QuoteTick.ts_init - ts_event``.
+    instrument_refresh_interval_secs : float | None, default None
+        Optional timer interval for requesting refreshed venue instrument catalogs.
 
     """
 
@@ -210,6 +215,7 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
     quote_freshness_profile: str = "pre_match"
     quote_max_pair_skew_secs: float | None = None
     quote_max_fetch_latency_secs: float | None = None
+    instrument_refresh_interval_secs: float | None = None
 
     def __post_init__(self) -> None:
         """
@@ -252,6 +258,12 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
             raise ValueError(msg)
         if self.semantic_unmatched_quote_probe_limit_per_venue < 0:
             msg = "semantic_unmatched_quote_probe_limit_per_venue must be non-negative"
+            raise ValueError(msg)
+        if (
+            self.instrument_refresh_interval_secs is not None
+            and self.instrument_refresh_interval_secs <= 0
+        ):
+            msg = "instrument_refresh_interval_secs must be positive when set"
             raise ValueError(msg)
 
         msgspec.structs.force_setattr(self, "enabled_venues", enabled_venues)
@@ -318,6 +330,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._liquidity_suppressions = 0
         self._manual_review_suppressions = 0
         self._executable_candidates = 0
+        self._instrument_refresh_requests = 0
+        self._instrument_refresh_failures = 0
         self._seen_opportunity_pairs: set[str] = set()
         self._active_opportunity_pairs: dict[str, OpportunityPairState] = {}
         self._last_arbitrage_summary_at_ns = 0
@@ -369,11 +383,13 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             f"{sorted(self._config.semantic_unmatched_quote_probe_venues)} "
             "semantic_unmatched_quote_probe_limit_per_venue="
             f"{self._config.semantic_unmatched_quote_probe_limit_per_venue} "
+            f"instrument_refresh_interval_secs={self._config.instrument_refresh_interval_secs} "
             f"manual_instructions={self._config.opportunity_log_manual_instructions}"
         )
         self.log.info(msg)
         self._subscribe_enabled_venue_instrument_updates()
         self._subscribe_cached_instruments()
+        self._start_instrument_refresh_timer()
 
     def _semantic_rule_store(self) -> RuleStore | None:
         if self._config.semantic_rule_cache_dir:
@@ -392,11 +408,20 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         Run strategy shutdown logging and final summary emission.
         """
         self.log.info("BettingArbitrageStrategy stopping...")
+        self._stop_instrument_refresh_timer()
         msg = f"Opportunities found: {self._opportunities_found}"
         self.log.info(msg)
         msg = f"Opportunities executed: {self._opportunities_executed}"
         self.log.info(msg)
         self._log_arbitrage_summary(force=True)
+
+    def on_time_event(self, event: TimeEvent) -> None:
+        """
+        Refresh venue instrument catalogs on the configured runtime timer.
+        """
+        if event.name != INSTRUMENT_REFRESH_TIMER_NAME:
+            return
+        self._refresh_enabled_venue_instruments()
 
     def subscribe_instruments(self, instruments: list[Instrument]) -> None:
         """
@@ -447,6 +472,42 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             except Exception as exc:
                 self.log.warning(
                     "Unable to subscribe to venue instrument updates: "
+                    f"venue={venue_value} error={exc}",
+                )
+
+    def _start_instrument_refresh_timer(self) -> None:
+        interval_secs = self._config.instrument_refresh_interval_secs
+        if interval_secs is None:
+            return
+        self.clock.set_timer(
+            name=INSTRUMENT_REFRESH_TIMER_NAME,
+            interval=timedelta(seconds=float(interval_secs)),
+            callback=self.on_time_event,
+        )
+        self.log.info(
+            f"Started betting instrument refresh timer: interval_secs={float(interval_secs):.3f}",
+        )
+
+    def _stop_instrument_refresh_timer(self) -> None:
+        if self._config.instrument_refresh_interval_secs is None:
+            return
+        try:
+            self.clock.cancel_timer(INSTRUMENT_REFRESH_TIMER_NAME)
+        except Exception as exc:
+            self.log.warning(f"Unable to cancel instrument refresh timer: error={exc}")
+
+    def _refresh_enabled_venue_instruments(self) -> None:
+        for venue_value in sorted(self._config.enabled_venues):
+            try:
+                self.request_instruments(
+                    venue=Venue(venue_value),
+                    params={"semantic_refresh": True, "only_last": True},
+                )
+                self._instrument_refresh_requests += 1
+            except Exception as exc:
+                self._instrument_refresh_failures += 1
+                self.log.warning(
+                    "Unable to request refreshed betting instruments: "
                     f"venue={venue_value} error={exc}",
                 )
 
@@ -2421,6 +2482,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             "liquidity_suppressions": self._liquidity_suppressions,
             "manual_review_suppressions": self._manual_review_suppressions,
             "executable_candidates": self._executable_candidates,
+            "instrument_refresh_requests": self._instrument_refresh_requests,
+            "instrument_refresh_failures": self._instrument_refresh_failures,
             "success_rate": (
                 self._opportunities_executed / self._opportunities_found
                 if self._opportunities_found > 0

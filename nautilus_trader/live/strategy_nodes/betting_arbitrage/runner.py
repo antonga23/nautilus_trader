@@ -47,6 +47,7 @@ class ProbeProfitabilityCounters:
     rejection_buckets: Counter[str] = field(default_factory=Counter)
     timing_flags: Counter[str] = field(default_factory=Counter)
     freshness_profiles: Counter[str] = field(default_factory=Counter)
+    semantic_blocked_reasons: Counter[str] = field(default_factory=Counter)
     venue_pairs: dict[str, Counter[str]] = field(default_factory=dict)
     market_families: dict[str, Counter[str]] = field(default_factory=dict)
     venue_quote_counts: Counter[str] = field(default_factory=Counter)
@@ -68,6 +69,7 @@ class ProbeProfitabilityCounters:
             "rejection_buckets": dict(self.rejection_buckets),
             "timing_flags": dict(self.timing_flags),
             "freshness_profiles": dict(self.freshness_profiles),
+            "semantic_blocked_reasons": dict(self.semantic_blocked_reasons),
             "venue_quote_health": {
                 venue: {
                     "quoted_observations": self.venue_quote_counts.get(venue, 0),
@@ -775,6 +777,7 @@ def _collect_runtime_probe_payload(
             "rejectionBuckets": profitability["rejection_buckets"],
             "timingFlags": profitability["timing_flags"],
             "freshnessProfiles": profitability["freshness_profiles"],
+            "semanticBlockedReasons": profitability["semantic_blocked_reasons"],
             "venueQuoteHealth": profitability["venue_quote_health"],
             "venuePairs": profitability["venue_pairs"],
             "marketFamilies": profitability["market_families"],
@@ -871,6 +874,7 @@ def _empty_candidate_quality_payload() -> dict[str, object]:
         "rejectionBuckets": {},
         "timingFlags": {},
         "freshnessProfiles": {},
+        "semanticBlockedReasons": {},
         "venueQuoteHealth": {},
         "venuePairs": {},
         "marketFamilies": {},
@@ -938,15 +942,13 @@ def _venue_pair_coverage(
     all_pairs = [f"{source}->{target}" for source in venues for target in venues]
     candidate_counts = _venue_pair_candidate_counts(candidate_venue_pairs)
     zero_pairs = [
-        {
-            "venuePair": pair,
-            "reason": _zero_venue_pair_reason(
-                pair,
-                node_counts=node_counts,
-                edge_counts=edge_counts,
-                quoted_edge_counts=quoted_edge_counts,
-            ),
-        }
+        _zero_venue_pair_report(
+            pair,
+            nodes=nodes,
+            node_counts=node_counts,
+            edge_counts=edge_counts,
+            quoted_edge_counts=quoted_edge_counts,
+        )
         for pair in all_pairs
         if candidate_counts.get(pair, 0) == 0
     ]
@@ -1037,6 +1039,140 @@ def _zero_venue_pair_reason(
     if quoted_edge_counts.get(pair, 0) == 0:
         return "no_quoted_semantic_edge"
     return "no_positive_or_threshold_candidate"
+
+
+def _zero_venue_pair_report(
+    pair: str,
+    *,
+    nodes: dict[Any, object],
+    node_counts: Counter[str],
+    edge_counts: Counter[str],
+    quoted_edge_counts: Counter[str],
+) -> dict[str, object]:
+    reason = _zero_venue_pair_reason(
+        pair,
+        node_counts=node_counts,
+        edge_counts=edge_counts,
+        quoted_edge_counts=quoted_edge_counts,
+    )
+    report: dict[str, object] = {"venuePair": pair, "reason": reason}
+    if reason == "missing_instruments":
+        return report
+
+    source, target = pair.split("->", maxsplit=1)
+    source_nodes = _sample_probe_nodes_for_venue(nodes, source)
+    target_nodes = _sample_probe_nodes_for_venue(nodes, target)
+    source_event_keys = {_probe_event_key_no_time(node) for node in source_nodes}
+    target_event_keys = {_probe_event_key_no_time(node) for node in target_nodes}
+    common_event_keys = sorted((source_event_keys & target_event_keys) - {""})
+    if reason == "no_semantic_edge":
+        report["blockerReason"] = (
+            "event_key_mismatch" if not common_event_keys else "semantic_template_or_scope_mismatch"
+        )
+    elif reason == "no_quoted_semantic_edge":
+        report["blockerReason"] = "quotes_missing_for_semantic_edges"
+    else:
+        report["blockerReason"] = "pricing_or_threshold"
+    report["commonEventKeyCount"] = len(common_event_keys)
+    report["sourceEventKeySamples"] = sorted(source_event_keys - {""})[:5]
+    report["targetEventKeySamples"] = sorted(target_event_keys - {""})[:5]
+
+    market_family_pairs: Counter[str] = Counter()
+    samples: list[dict[str, object]] = []
+    for source_node, target_node in _sample_zero_pair_nodes(
+        source_nodes=source_nodes,
+        target_nodes=target_nodes,
+        common_event_keys=set(common_event_keys),
+    ):
+        family = _probe_market_family(source_node, target_node)
+        market_family_pairs[family] += 1
+        if len(samples) < 5:
+            samples.append(
+                {
+                    "instrumentIdA": str(getattr(source_node.instrument, "id", "")),
+                    "instrumentIdB": str(getattr(target_node.instrument, "id", "")),
+                    "eventKeyA": _probe_event_key_no_time(source_node),
+                    "eventKeyB": _probe_event_key_no_time(target_node),
+                    "marketFamily": family,
+                    "patternA": _probe_pattern_payload(source_node),
+                    "patternB": _probe_pattern_payload(target_node),
+                },
+            )
+    report["marketFamilyPairs"] = dict(market_family_pairs)
+    report["samples"] = samples
+    return report
+
+
+def _sample_probe_nodes_for_venue(nodes: dict[Any, object], venue: str, limit: int = 40) -> list:
+    sampled: list[object] = []
+    for node in nodes.values():
+        if _probe_node_venue(node) != venue:
+            continue
+        sampled.append(node)
+        if len(sampled) >= limit:
+            break
+    return sampled
+
+
+def _sample_zero_pair_nodes(
+    *,
+    source_nodes: list,
+    target_nodes: list,
+    common_event_keys: set[str],
+    limit: int = 12,
+) -> list[tuple[object, object]]:
+    pairs: list[tuple[object, object]] = []
+    if common_event_keys:
+        for source_node in source_nodes:
+            source_key = _probe_event_key_no_time(source_node)
+            if source_key not in common_event_keys:
+                continue
+            for target_node in target_nodes:
+                if _probe_event_key_no_time(target_node) != source_key:
+                    continue
+                pairs.append((source_node, target_node))
+                if len(pairs) >= limit:
+                    return pairs
+    for source_node in source_nodes[:4]:
+        for target_node in target_nodes[:4]:
+            pairs.append((source_node, target_node))
+            if len(pairs) >= limit:
+                return pairs
+    return pairs
+
+
+def _probe_event_key_no_time(node) -> str:
+    instrument = getattr(node, "instrument", None)
+    event_key = getattr(instrument, "event_key", None)
+    if callable(event_key):
+        try:
+            return str(event_key(include_start_time=False))
+        except (AttributeError, TypeError, ValueError):
+            pass
+    return str(getattr(node, "canonical_event_key", ""))
+
+
+def _probe_pattern_payload(node) -> dict[str, str]:
+    instrument = getattr(node, "instrument", None)
+    try:
+        normalized = MarketNormalizer.normalize(instrument)
+    except (AttributeError, TypeError, ValueError):
+        return {
+            "sport": "",
+            "scope": "",
+            "marketType": str(getattr(node, "market_type", "") or ""),
+            "marketFamily": str(getattr(node, "market_type", "") or ""),
+            "selection": str(getattr(node, "outcome", "") or ""),
+            "paramsKey": str(getattr(node, "params", "") or ""),
+        }
+    return {
+        "sport": normalized.sport,
+        "scope": normalized.scope,
+        "marketType": normalized.market_type,
+        "marketFamily": normalized.market_family,
+        "selection": normalized.selection,
+        "paramsKey": _semantic_params_key(normalized.params),
+    }
 
 
 def _is_cross_venue_pair(pair: str) -> bool:
@@ -1562,6 +1698,8 @@ def _record_probe_quality(
     counters.margin_bands[margin_band] += 1
     counters.rejection_buckets[rejection_bucket] += 1
     counters.freshness_profiles[str(quality.get("freshnessProfile") or "unknown")] += 1
+    if rejection_bucket == "semantic_blocked":
+        counters.semantic_blocked_reasons[_semantic_blocked_reason(quality)] += 1
     timing_flags = quality.get("timingFlags")
     if isinstance(timing_flags, list):
         for flag in timing_flags:
@@ -1584,6 +1722,12 @@ def _record_probe_quality(
         counters.samples.append((margin, quality))
     elif margin > Decimal("-0.05"):
         counters.negative_samples.append((margin, quality))
+
+
+def _semantic_blocked_reason(quality: dict[str, object]) -> str:
+    safety_tier = str(quality.get("safetyTier") or "unknown")
+    relationship_type = str(quality.get("relationshipType") or "unknown")
+    return f"{safety_tier}:{relationship_type}"
 
 
 def _record_venue_quote_health(

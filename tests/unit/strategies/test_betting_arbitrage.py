@@ -84,6 +84,7 @@ class TestBettingArbitrageConfig:  # skipcq
         ensure(config.quote_freshness_profile == "pre_match")
         ensure(config.quote_max_pair_skew_secs is None)
         ensure(config.quote_max_fetch_latency_secs is None)
+        ensure(config.instrument_refresh_interval_secs is None)
 
     def test_custom_venues(self):  # skipcq
         """
@@ -136,6 +137,13 @@ class TestBettingArbitrageConfig:  # skipcq
 
         with pytest.raises(ValueError, match="semantic_unmatched_quote_probe_limit"):
             BettingArbitrageConfig(semantic_unmatched_quote_probe_limit_per_venue=-1)
+
+    def test_instrument_refresh_interval_validation(self):  # skipcq
+        config = BettingArbitrageConfig(instrument_refresh_interval_secs=300.0)
+        ensure(config.instrument_refresh_interval_secs == 300.0)
+
+        with pytest.raises(ValueError, match="instrument_refresh_interval_secs"):
+            BettingArbitrageConfig(instrument_refresh_interval_secs=0.0)
 
     def test_quote_freshness_profile_validation(self):  # skipcq
         for profile in ["pre_match", "live", "custom"]:
@@ -309,6 +317,8 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure("liquidity_suppressions" in stats)
         ensure("manual_review_suppressions" in stats)
         ensure("executable_candidates" in stats)
+        ensure("instrument_refresh_requests" in stats)
+        ensure("instrument_refresh_failures" in stats)
         ensure("success_rate" in stats)
         ensure(stats["subscribed_instruments"] == 0)
         ensure(stats["opportunity_graph_nodes"] == 0)
@@ -316,7 +326,39 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(stats["opportunity_graph_quote_states"] == 0)
         ensure(stats["liquidity_suppressions"] == 0)
         ensure(stats["manual_review_suppressions"] == 0)
+        ensure(stats["instrument_refresh_requests"] == 0)
+        ensure(stats["instrument_refresh_failures"] == 0)
         ensure(stats["success_rate"] == 0)
+
+    def test_instrument_refresh_requests_all_enabled_venues(self, monkeypatch):  # skipcq
+        requested: list[tuple[str, dict[str, bool]]] = []
+
+        def fake_request_instruments(self, *, venue, params=None, client_id=None) -> None:
+            requested.append((venue.value, dict(params or {})))
+
+        monkeypatch.setattr(
+            BettingArbitrageStrategy,
+            "request_instruments",
+            fake_request_instruments,
+        )
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset({"SXBET", "CLOUDBET"}),
+                instrument_refresh_interval_secs=300.0,
+            ),
+        )
+
+        strategy._refresh_enabled_venue_instruments()
+
+        ensure(
+            requested
+            == [
+                ("CLOUDBET", {"semantic_refresh": True, "only_last": True}),
+                ("SXBET", {"semantic_refresh": True, "only_last": True}),
+            ],
+        )
+        ensure(strategy.get_stats()["instrument_refresh_requests"] == 2)
+        ensure(strategy.get_stats()["instrument_refresh_failures"] == 0)
 
     def test_stats_success_rate_calculation(self, default_config):  # skipcq
         """

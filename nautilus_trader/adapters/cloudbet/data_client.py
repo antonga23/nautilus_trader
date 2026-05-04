@@ -638,14 +638,23 @@ class CloudbetDataClient(LiveMarketDataClient):
 
     async def _request_instruments(self, request: RequestInstruments) -> None:
         """Request all instrument data for the given venue."""
-        instruments: list[Instrument | CryptoBettingInstrument] = (
-            self._instrument_provider.list_all()
-        )
-        for instrument in instruments:
-            self._log.debug(f"Fetching latest data for {instrument.id}...")
-        await self._instrument_provider.load_ids_async(
-            [instrument.id for instrument in instruments]
-        )
+        refresh_all = bool((request.params or {}).get("semantic_refresh"))
+        if refresh_all:
+            before_count = self._instrument_provider.count
+            await self._instrument_provider.load_all_async()
+            self._log.info(
+                "Refreshed Cloudbet instrument catalog: "
+                f"before={before_count} after={self._instrument_provider.count}",
+            )
+        else:
+            instruments: list[Instrument | CryptoBettingInstrument] = (
+                self._instrument_provider.list_all()
+            )
+            for instrument in instruments:
+                self._log.debug(f"Fetching latest data for {instrument.id}...")
+            await self._instrument_provider.load_ids_async(
+                [instrument.id for instrument in instruments],
+            )
         updated_instruments: list[Instrument] = self._instrument_provider.list_all()
         self._handle_instruments(
             request.venue,

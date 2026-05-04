@@ -15,6 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      actions: read
     outputs:
       develop_sha: ${{ steps.check-workflow.outputs.sha }}
       has_changes: ${{ steps.check-workflow.outputs.has_changes }}
@@ -29,7 +30,6 @@ jobs:
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           persist-credentials: false
-          token: ${{ secrets.NIGHTLY_TOKEN }}
           fetch-depth: 0  # Fetch all history for all tags and branches
 
       - name: Fetch develop branch workflows
@@ -39,7 +39,7 @@ jobs:
           url="https://api.github.com/repos/nautechsystems/nautilus_trader/actions/runs?branch=develop&per_page=50"
           echo "Fetching workflows from: $url"
           if ! curl -sS --retry 5 --retry-delay 2 --retry-all-errors --connect-timeout 5 --max-time 60 \
-               -H "Authorization: token ${{ secrets.NIGHTLY_TOKEN }}" "$url" > workflow_runs.json; then
+               -H "Authorization: Bearer ${{ github.token }}" "$url" > workflow_runs.json; then
               echo "Failed to fetch workflows, exiting"
               exit 1
           fi
@@ -115,6 +115,8 @@ jobs:
     needs: check-develop-status
     if: needs.check-develop-status.outputs.has_changes == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       # https://github.com/step-security/harden-runner
       - uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
@@ -126,13 +128,12 @@ jobs:
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           persist-credentials: false
-          token: ${{ secrets.NIGHTLY_TOKEN }}
           fetch-depth: 0  # Fetch all history for all tags and branches
 
       - name: Configure authenticated git remote
         run: |
           git remote set-url origin \
-            "https://x-access-token:${{ secrets.NIGHTLY_TOKEN }}@github.com/${{ github.repository }}"
+            "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}"
 
       - name: Configure Git user
         run: |

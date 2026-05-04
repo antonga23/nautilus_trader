@@ -48,6 +48,10 @@ class SettlementPluginRegistry:
 
     @classmethod
     def build(cls, selection: NormalizedSelection) -> PayoffVector:
+        resolution_policy = dict(selection.resolution_policy)
+        if resolution_policy.get("tie_or_unknown") in {"50_50", "unknown"}:
+            return cls._unknown(selection)
+
         market_type = CanonicalMarketType(selection.market_type)
         builders = {
             CanonicalMarketType.MATCH_ODDS: cls._match_odds,
