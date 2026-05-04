@@ -20,6 +20,7 @@ Cache-backed storage for semantic betting corpus artifacts and rules.
 from __future__ import annotations
 
 import base64
+from collections.abc import Iterable
 from dataclasses import asdict
 import gzip
 import hashlib
@@ -108,6 +109,13 @@ class RuleStore:
     def save_candidate(self, rule: MinedRule) -> None:
         self._write_bytes(self.candidate_key(rule.rule_id), rule.to_json_bytes())
         self._append_index(self.CANDIDATE_INDEX_KEY, rule.rule_id)
+
+    def save_candidates(self, rules: Iterable[MinedRule]) -> None:
+        rule_ids: list[str] = []
+        for rule in rules:
+            self._write_bytes(self.candidate_key(rule.rule_id), rule.to_json_bytes())
+            rule_ids.append(rule.rule_id)
+        self._append_index_many(self.CANDIDATE_INDEX_KEY, rule_ids)
 
     def load_candidate(self, rule_id: str) -> MinedRule | None:
         raw = self._read_bytes(self.candidate_key(rule_id))
@@ -384,9 +392,15 @@ class RuleStore:
         return gzip.decompress(raw) if raw[:2] == b"\x1f\x8b" else raw
 
     def _append_index(self, key: str, value: str) -> None:
+        self._append_index_many(key, (value,))
+
+    def _append_index_many(self, key: str, values: Iterable[str]) -> None:
         items = self._read_index(key)
-        if value not in items:
-            items.append(value)
+        seen = set(items)
+        for value in values:
+            if value not in seen:
+                items.append(value)
+                seen.add(value)
         self._write_json(key, {"items": items})
 
     def _read_index(self, key: str) -> list[str]:

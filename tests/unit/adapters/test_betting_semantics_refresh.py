@@ -147,6 +147,20 @@ def test_cloudbet_basketball_spread_normalizes_from_fixture():
     assert normalized.param("handicap") == "3.5"
 
 
+def test_cloudbet_away_spread_normalizes_home_relative_line_to_selection_line():
+    normalizer = MarketNormalizer()
+    home = normalizer.normalize(_load_cloudbet_selection("basketball_selections.json", 3))
+    away = normalizer.normalize(_load_cloudbet_selection("basketball_selections.json", 4))
+
+    assert away.market_type == CanonicalMarketType.POINT_SPREAD.value
+    assert away.selection == "AWAY"
+    assert away.param("handicap") == "-3.5"
+    assert away.param("line") == "-3.5"
+    rule = RuleClassifier().classify(home, away)
+    assert rule is not None
+    assert rule.relationship_type == RelationshipType.COMPLEMENTARY_COVERAGE.value
+
+
 @pytest.mark.parametrize(
     ("sport", "market_name", "market_type"),
     [
@@ -996,6 +1010,74 @@ def test_catalog_templates_generalize_from_events_without_settled_bets():
     opportunity = matcher.check_arbitrage(unseen_home, unseen_away_draw)
 
     assert opportunity is not None
+
+
+def test_event_candidates_keep_distinct_fixture_observations_for_same_template_shape():
+    cache = DictCache()
+    store = RuleStore(cache)
+    normalizer = MarketNormalizer()
+
+    for event_index in range(2):
+        over = replace(
+            normalizer.normalize(
+                betting_instrument(
+                    venue="CLOUDBET",
+                    sport="american_football",
+                    market_name="totals",
+                    market_type="totals",
+                    outcome="over",
+                    params="line=45.5",
+                ),
+            ),
+            event_key=f"american-football-event-{event_index}",
+            instrument_id=f"over-{event_index}",
+        )
+        under = replace(
+            normalizer.normalize(
+                betting_instrument(
+                    venue="CLOUDBET",
+                    sport="american_football",
+                    market_name="totals",
+                    market_type="totals",
+                    outcome="under",
+                    params="line=45.5",
+                ),
+            ),
+            event_key=f"american-football-event-{event_index}",
+            instrument_id=f"under-{event_index}",
+        )
+        store.save_normalized_selection(
+            NormalizedSelectionRecord(
+                record_id=f"over-{event_index}",
+                provider="CLOUDBET",
+                selection=over,
+                manifest_id="manifest-event-scoped",
+            ),
+        )
+        store.save_normalized_selection(
+            NormalizedSelectionRecord(
+                record_id=f"under-{event_index}",
+                provider="CLOUDBET",
+                selection=under,
+                manifest_id="manifest-event-scoped",
+            ),
+        )
+
+    templates = RuleMiner(store).mine_templates_from_store(manifest_id="manifest-event-scoped")
+    candidate_ids = store.list_candidate_ids()
+    candidates = [store.load_candidate(candidate_id) for candidate_id in candidate_ids]
+
+    assert len(candidate_ids) == 2
+    assert all(candidate is not None for candidate in candidates)
+    assert len({candidate.rule_id for candidate in candidates if candidate is not None}) == 2
+    assert len({candidate.template_id for candidate in candidates if candidate is not None}) == 1
+    assert {candidate.evidence_event_key for candidate in candidates if candidate is not None} == {
+        "american-football-event-0",
+        "american-football-event-1",
+    }
+    assert len(templates) == 1
+    assert templates[0].support.observed_count == 2
+    assert templates[0].support.event_count == 2
 
 
 def test_sparse_catalog_template_does_not_promote_without_settled_bets():
