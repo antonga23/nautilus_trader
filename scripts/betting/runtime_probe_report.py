@@ -233,6 +233,8 @@ def _format_text(path: Path, summary: dict[str, Any]) -> str:
         f"quoted={graph.get('quotedSemanticMatchInstruments')} "
         f"execution_safe_edges={graph.get('executionSafeEdges')} "
         f"same_venue_edges={graph.get('sameVenueExecutionEligibleEdges')}",
+        f"  coverage proofs={graph.get('coverageProofCount')} "
+        f"hyperedges={graph.get('coverageHyperedgeCount')}",
         f"  candidates positive={candidates.get('positiveTotal')} "
         f"threshold={candidates.get('thresholdTotal')} "
         f"cross_venue={candidates.get('crossVenueCandidateCount')}",

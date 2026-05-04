@@ -207,6 +207,7 @@ def test_runtime_probe_report_cli_outputs_json_and_text(tmp_path, monkeypatch, c
     assert module.main() == 0
     text_output = capsys.readouterr().out
     assert "graph=rust/rust_semantic" in text_output
+    assert "coverage proofs=5367 hyperedges=482" in text_output
     assert "candidates positive=3 threshold=2 cross_venue=2" in text_output
     assert "aggregate: artifacts=1 positive=3 threshold=2 cross_venue=2" in text_output
     assert "top_semantic_blockers" in text_output
