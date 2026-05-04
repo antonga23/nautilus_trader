@@ -506,13 +506,14 @@ class SnapshotIngestor:
                 active_sport_names.get(sport_id) or SXBET_SPORT_IDS.get(sport_id, ""),
             )
             selection_count = selections_by_sport.get(sport_name, 0)
-            report = {
+            blocker = None
+            if selection_count == 0:
+                blocker = "no_active_markets_or_provider_data"
+            report: dict[str, object] = {
                 "sport_id": sport_id,
                 "selection_count": selection_count,
-                "blocker": None,
+                "blocker": blocker,
             }
-            if selection_count == 0:
-                report["blocker"] = "no_active_markets_or_provider_data"
             sport_coverage[sport_name or str(sport_id)] = report
         source_refs.append(
             self._save_snapshot(
