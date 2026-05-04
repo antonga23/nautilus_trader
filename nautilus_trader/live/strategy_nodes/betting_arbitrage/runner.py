@@ -1643,7 +1643,7 @@ def _probe_rejection_bucket(
     max_fetch_latency_secs: float,
 ) -> str:
     if not edge.execution_safe and not allow_same_venue:
-        return "semantic_blocked"
+        return _semantic_non_execution_bucket(edge)
     if (
         fetch_latency_a_secs > max_fetch_latency_secs
         or fetch_latency_b_secs > max_fetch_latency_secs
@@ -1698,7 +1698,7 @@ def _record_probe_quality(
     counters.margin_bands[margin_band] += 1
     counters.rejection_buckets[rejection_bucket] += 1
     counters.freshness_profiles[str(quality.get("freshnessProfile") or "unknown")] += 1
-    if rejection_bucket == "semantic_blocked":
+    if rejection_bucket in _SEMANTIC_NON_EXECUTION_BUCKETS:
         counters.semantic_blocked_reasons[_semantic_blocked_reason(quality)] += 1
     timing_flags = quality.get("timingFlags")
     if isinstance(timing_flags, list):
@@ -1728,6 +1728,34 @@ def _semantic_blocked_reason(quality: dict[str, object]) -> str:
     safety_tier = str(quality.get("safetyTier") or "unknown")
     relationship_type = str(quality.get("relationshipType") or "unknown")
     return f"{safety_tier}:{relationship_type}"
+
+
+_SEMANTIC_NON_EXECUTION_BUCKETS = frozenset(
+    {
+        "semantic_blocked",
+        "topology_only",
+        "same_venue_policy_blocked",
+        "equivalent_selection",
+        "void_settlement",
+        "partial_settlement",
+    },
+)
+
+
+def _semantic_non_execution_bucket(edge: object) -> str:
+    relationship_type = str(getattr(edge, "relationship_type", "") or "")
+    safety_tier = str(getattr(edge, "safety_tier", "") or "")
+    if bool(getattr(edge, "same_venue_execution_eligible", False)):
+        return "same_venue_policy_blocked"
+    if relationship_type == "EQUIVALENT_SELECTION":
+        return "equivalent_selection"
+    if relationship_type == "VOID_COMPATIBLE_HEDGE":
+        return "void_settlement"
+    if relationship_type == "PARTIAL_SETTLEMENT_HEDGE":
+        return "partial_settlement"
+    if safety_tier == "TOPOLOGY_SAFE":
+        return "topology_only"
+    return "semantic_blocked"
 
 
 def _record_venue_quote_health(

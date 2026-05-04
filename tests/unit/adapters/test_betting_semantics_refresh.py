@@ -13,6 +13,8 @@ from types import SimpleNamespace
 
 import msgspec
 
+import pytest
+
 from nautilus_trader.adapters.betting.semantics import completion as completion_module
 from nautilus_trader.adapters.betting.common.enums import SelectionSide
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
@@ -23,6 +25,7 @@ from nautilus_trader.adapters.betting.semantics import FileRuleCache
 from nautilus_trader.adapters.betting.semantics import HistoricalRuleValidator
 from nautilus_trader.adapters.betting.semantics import MarketNormalizer
 from nautilus_trader.adapters.betting.semantics import NormalizedSelectionRecord
+from nautilus_trader.adapters.betting.semantics import PayoffVectorBuilder
 from nautilus_trader.adapters.betting.semantics import PolymarketSportsTransformer
 from nautilus_trader.adapters.betting.semantics import RelationshipType
 from nautilus_trader.adapters.betting.semantics import RuleClassifier
@@ -112,6 +115,40 @@ def test_cloudbet_basketball_spread_normalizes_from_fixture():
     assert normalized.selection == "HOME"
     assert normalized.scope == "full_time_including_overtime"
     assert normalized.param("handicap") == "3.5"
+
+
+@pytest.mark.parametrize(
+    ("sport", "market_name", "market_type"),
+    [
+        ("soccer", "soccer.match_odds", "soccer.1x2"),
+        ("basketball", "basketball.winner", "basketball.winner"),
+        ("tennis", "tennis.winner", "tennis.winner"),
+        ("american_football", "american_football.winner", "american_football.winner"),
+        ("ice_hockey", "ice_hockey.winner", "ice_hockey.winner"),
+        ("baseball", "baseball.winner", "baseball.winner"),
+    ],
+)
+def test_payoff_builder_supports_six_target_sport_winner_families(
+    sport,
+    market_name,
+    market_type,
+):
+    normalized = MarketNormalizer().normalize(
+        betting_instrument(
+            sport=sport,
+            market_name=market_name,
+            market_type=market_type,
+            outcome="home",
+            params="period=ft",
+        ),
+    )
+
+    vector = PayoffVectorBuilder().build(normalized)
+
+    assert vector.sport == sport
+    assert SettlementState.UNKNOWN.value not in vector.settlement
+    assert SettlementState.WIN.value in vector.settlement
+    assert SettlementState.LOSE.value in vector.settlement
 
 
 def test_cloudbet_soccer_quarter_handicap_preserves_arbitrary_line():
@@ -1140,6 +1177,9 @@ def test_semantic_rule_mining_cli_reports_tiered_promotion_counts(tmp_path):
     assert report_payload["same_venue_execution_eligible_template_count"] == 1
     assert "candidate_safety_tier_counts" in report_payload
     assert "promoted_safety_tier_counts" in report_payload
+    assert "normalized_market_coverage" in report_payload
+    assert "template_coverage" in report_payload
+    assert "provider_coverage" in report_payload
 
 
 def test_historical_validator_handles_missing_manifest_and_mismatched_outcomes():
@@ -1411,4 +1451,65 @@ def test_completion_helpers_report_blockers_and_normalize_sport_aliases():
     assert blockers["observed_count_below_10"] == 1
     assert blockers["event_count_below_3"] == 1
     assert blockers["single_provider_support"] == 1
+    assert completion_module.DEFAULT_TARGET_SPORTS == (
+        "soccer",
+        "basketball",
+        "tennis",
+        "american_football",
+        "ice_hockey",
+        "baseball",
+    )
+    assert completion_module._normalize_sport("Soccer/Football") == "soccer"
     assert completion_module._normalize_sport("Football") == "american_football"
+    assert completion_module._normalize_sport("Hockey") == "ice_hockey"
+    assert PolymarketSportsTransformer.canonical_sport("Soccer/Football") == "soccer"
+    assert PolymarketSportsTransformer.canonical_sport("Hockey") == "ice_hockey"
+    assert (
+        MarketNormalizer()
+        .normalize(
+            {
+                "provider": "CLOUDBET",
+                "sport_name": "Hockey",
+                "event_name": "Team A vs Team B",
+                "home_name": "Team A",
+                "away_name": "Team B",
+                "market_name": "ice_hockey.winner",
+                "market_type": "ice_hockey.winner",
+                "outcome": "home",
+            },
+        )
+        .sport
+        == "ice_hockey"
+    )
+
+
+def test_cloudbet_six_sport_alias_resolution_includes_hockey_and_baseball():
+    sports = [
+        SimpleNamespace(name="Soccer", key="soccer"),
+        SimpleNamespace(name="Basketball", key="basketball"),
+        SimpleNamespace(name="Tennis", key="tennis"),
+        SimpleNamespace(name="American Football", key="american-football"),
+        SimpleNamespace(name="Ice Hockey", key="ice-hockey"),
+        SimpleNamespace(name="Baseball", key="baseball"),
+    ]
+
+    resolved = SnapshotIngestor._resolve_cloudbet_sports(
+        requested_sports=[
+            "Soccer/Football",
+            "basketball",
+            "tennis",
+            "American Football",
+            "Hockey",
+            "baseball",
+        ],
+        available_sports=sports,
+    )
+
+    assert resolved == [
+        "soccer",
+        "basketball",
+        "tennis",
+        "american-football",
+        "ice-hockey",
+        "baseball",
+    ]

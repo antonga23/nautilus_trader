@@ -59,6 +59,10 @@ class PolymarketSportsTransformer:
     )
 
     SPORT_CODE_MAP = {
+        "soccer/football": "soccer",
+        "football": "soccer",
+        "soccer": "soccer",
+        "basketball": "basketball",
         "nba": "basketball",
         "wnba": "basketball",
         "ncaab": "basketball",
@@ -74,11 +78,16 @@ class PolymarketSportsTransformer:
         "fif": "soccer",
         "nfl": "american_football",
         "cfb": "american_football",
+        "american_football": "american_football",
         "mlb": "baseball",
+        "baseball": "baseball",
         "ten": "tennis",
         "atp": "tennis",
         "wta": "tennis",
+        "tennis": "tennis",
+        "hockey": "ice_hockey",
         "nhl": "ice_hockey",
+        "ice_hockey": "ice_hockey",
         "cri": "cricket",
         "ufc": "mma",
         "mma": "mma",

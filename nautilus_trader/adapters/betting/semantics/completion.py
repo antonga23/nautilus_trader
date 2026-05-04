@@ -31,7 +31,15 @@ from nautilus_trader.adapters.betting.semantics.types import SemanticRuleTemplat
 
 
 DEFAULT_REQUIRED_PROVIDERS = ("CLOUDBET", "SXBET", "POLYMARKET")
-DEFAULT_TARGET_SPORTS = ("soccer", "tennis", "basketball", "american_football")
+SEMANTIC_TARGET_SPORTS = (
+    "soccer",
+    "basketball",
+    "tennis",
+    "american_football",
+    "ice_hockey",
+    "baseball",
+)
+DEFAULT_TARGET_SPORTS = SEMANTIC_TARGET_SPORTS
 DEFAULT_MIN_CANDIDATES = 10
 DEFAULT_TARGET_CANDIDATES = 20
 
@@ -313,6 +321,11 @@ def _promotion_blockers(templates: list[SemanticRuleTemplate]) -> Counter[str]:
 
 def _normalize_sport(sport: str) -> str:
     normalized = sport.strip().lower().replace("-", "_").replace(" ", "_")
-    if normalized == "football":
-        return "american_football"
-    return normalized
+    aliases = {
+        "soccer/football": "soccer",
+        "soccer_football": "soccer",
+        "football": "american_football",
+        "american_football": "american_football",
+        "hockey": "ice_hockey",
+    }
+    return aliases.get(normalized, normalized)

@@ -27,6 +27,7 @@ from nautilus_trader.adapters.betting.semantics.completion import DEFAULT_TARGET
 from nautilus_trader.adapters.betting.semantics.completion import DEFAULT_TARGET_SPORTS
 from nautilus_trader.adapters.betting.semantics.completion import ProviderCompletion
 from nautilus_trader.adapters.betting.semantics.completion import SemanticMiningCompletionReport
+from nautilus_trader.adapters.betting.semantics.completion import SEMANTIC_TARGET_SPORTS
 from nautilus_trader.adapters.betting.semantics.completion import SportCompletion
 from nautilus_trader.adapters.betting.semantics.miner import RuleMiner
 from nautilus_trader.adapters.betting.semantics.normalization import MarketNormalizer
@@ -64,6 +65,7 @@ __all__ = [
     "DEFAULT_REQUIRED_PROVIDERS",
     "DEFAULT_TARGET_CANDIDATES",
     "DEFAULT_TARGET_SPORTS",
+    "SEMANTIC_TARGET_SPORTS",
     "CanonicalMarketType",
     "CorpusSnapshot",
     "FileRuleCache",

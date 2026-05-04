@@ -28,7 +28,14 @@
       "environment": "paper",
       "base_currency": "PLAY_EUR",
       "load_all_instruments": true,
-      "sport_keys": ["soccer", "tennis", "basketball", "american_football"],
+      "sport_keys": [
+        "soccer",
+        "basketball",
+        "tennis",
+        "american_football",
+        "ice_hockey",
+        "baseball"
+      ],
       "instrument_load_limit": 40,
       "market_discovery_limit": 40,
       "auto_subscribe_quote_ticks": true,

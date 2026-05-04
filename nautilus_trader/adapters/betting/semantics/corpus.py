@@ -18,6 +18,7 @@ Provider-backed corpus ingestion for semantic rule mining.
 
 from __future__ import annotations
 
+from collections import Counter
 from contextlib import suppress
 from datetime import UTC
 from datetime import datetime
@@ -33,6 +34,7 @@ from nautilus_trader.adapters.betting.semantics.types import NormalizedSelection
 from nautilus_trader.adapters.betting.semantics.types import RuleCorpusManifest
 from nautilus_trader.adapters.cloudbet.client.core import CloudbetClient
 from nautilus_trader.adapters.sxbet.config import SXBetInstrumentProviderConfig
+from nautilus_trader.adapters.sxbet.constants import SXBET_SPORT_IDS
 from nautilus_trader.adapters.sxbet.http_client import SXBetHttpClient
 from nautilus_trader.adapters.sxbet.providers import SXBetInstrumentProvider
 
@@ -492,6 +494,39 @@ class SnapshotIngestor:
                 ),
             )
 
+        active_sport_names = {
+            int(sport["sportId"]): str(sport.get("name") or sport.get("label") or "")
+            for sport in active_sports.get("data", [])
+            if isinstance(sport, dict) and sport.get("sportId") is not None
+        }
+        selections_by_sport = Counter(record.selection.sport for record in normalized_records)
+        sport_coverage = {}
+        for sport_id in selected_sport_ids:
+            sport_name = self._normalize_sxbet_sport_name(
+                active_sport_names.get(sport_id) or SXBET_SPORT_IDS.get(sport_id, ""),
+            )
+            selection_count = selections_by_sport.get(sport_name, 0)
+            report = {
+                "sport_id": sport_id,
+                "selection_count": selection_count,
+                "blocker": None,
+            }
+            if selection_count == 0:
+                report["blocker"] = "no_active_markets_or_provider_data"
+            sport_coverage[sport_name or str(sport_id)] = report
+        source_refs.append(
+            self._save_snapshot(
+                provider="SXBET",
+                endpoint="/semantic/coverage/sxbet",
+                fetched_at=fetched_at,
+                payload={
+                    "provider": "SXBET",
+                    "sport_ids": selected_sport_ids,
+                    "sports": sport_coverage,
+                },
+            ),
+        )
+
         manifest = RuleCorpusManifest(
             manifest_id=_hash_payload(
                 "manifest",
@@ -516,6 +551,10 @@ class SnapshotIngestor:
         self._persist_normalized_records(normalized_records, manifest.manifest_id)
         self._store.save_manifest(manifest)
         return manifest
+
+    @staticmethod
+    def _normalize_sxbet_sport_name(value: str) -> str:
+        return value.strip().lower().replace("-", "_").replace(" ", "_").replace("__", "_")
 
     async def refresh_polymarket(
         self,
@@ -1035,9 +1074,12 @@ class SnapshotIngestor:
             for sport in available_sports
         }
         aliases = {
+            "soccer/football": "soccer",
+            "soccer_football": "soccer",
             "american_football": "american-football",
             "american-football": "american-football",
             "football": "soccer",
+            "hockey": "ice_hockey",
         }
         if not requested_sports:
             return [sport.key for sport in available_sports]
@@ -1046,7 +1088,14 @@ class SnapshotIngestor:
         for sport in requested_sports:
             normalized = sport.strip().lower().replace("-", "_").replace(" ", "_")
             candidate = aliases.get(normalized, sport)
-            provider_key = available_by_key.get(candidate) or available_by_name.get(normalized)
+            candidate_normalized = (
+                str(candidate).strip().lower().replace("-", "_").replace(" ", "_")
+            )
+            provider_key = (
+                available_by_key.get(candidate)
+                or available_by_name.get(candidate_normalized)
+                or available_by_name.get(normalized)
+            )
             if provider_key and provider_key not in resolved:
                 resolved.append(provider_key)
         return resolved
