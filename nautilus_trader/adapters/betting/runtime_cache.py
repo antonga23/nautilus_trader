@@ -25,7 +25,9 @@ def encode_active_venue_instrument_index(
 ) -> bytes:
     payload = {
         "venue": venue.strip().upper(),
-        "instrument_ids": sorted({str(instrument_id) for instrument_id in instrument_ids if instrument_id}),
+        "instrument_ids": sorted(
+            {str(instrument_id) for instrument_id in instrument_ids if instrument_id}
+        ),
         "updated_at_ns": int(updated_at_ns),
     }
     return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -45,7 +47,9 @@ def decode_active_venue_instrument_index(raw: bytes | None) -> ActiveVenueInstru
     updated_at_ns = int(payload.get("updated_at_ns") or 0)
     if not venue or not isinstance(instrument_ids_raw, list):
         return None
-    instrument_ids = tuple(str(instrument_id) for instrument_id in instrument_ids_raw if instrument_id)
+    instrument_ids = tuple(
+        str(instrument_id) for instrument_id in instrument_ids_raw if instrument_id
+    )
     return ActiveVenueInstrumentIndex(
         venue=venue,
         instrument_ids=instrument_ids,
