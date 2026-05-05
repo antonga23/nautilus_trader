@@ -33,6 +33,13 @@ done
 skip_hooks="cargo-deny,cargo-vet,check-anyhow-usage,check-logging-macro-usage,check-tokio-usage,check-pyo3-conventions,check-testing-conventions,check-nautilus-conventions,fmt,cargo-clippy,check-copyright-year"
 export SKIP="$skip_hooks"
 
+if [[ -n "${RUNNER_CI_HOME:-}" ]]; then
+  runner_tmp_dir="${RUNNER_CI_TMPDIR:-$RUNNER_CI_HOME/tmp}"
+  mkdir -p "$runner_tmp_dir"
+  export TMPDIR="$runner_tmp_dir"
+  export GOTMPDIR="$runner_tmp_dir"
+fi
+
 pre_commit_cmd=(pre-commit)
 if ! command -v pre-commit > /dev/null 2>&1; then
   pre_commit_cmd=(uv run pre-commit)
