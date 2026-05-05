@@ -521,8 +521,7 @@ jobs:
           if [[ "${semantic_verify_enabled,,}" == "true" ]]; then
             cache_dir="$node_dir/semantic-rule-cache"
             semantic_args=(
-              scripts/betting/semantic_rule_mining.py
-              verify-completion
+              scripts/deploy/strategy_nodes/verify_semantic_cache_completion.py
               --cache-dir "$cache_dir"
               --min-candidates "$semantic_verify_min_candidates"
               --target-candidates "$semantic_verify_target_candidates"
@@ -545,7 +544,7 @@ jobs:
                 fi
               done
             fi
-            .venv/bin/python "${semantic_args[@]}" > "$artifact_dir/semantic-completion.json"
+            python3 "${semantic_args[@]}" > "$artifact_dir/semantic-completion.json"
             echo
             echo "semantic_completion_summary<<EOF"
             cat "$artifact_dir/semantic-completion.json"

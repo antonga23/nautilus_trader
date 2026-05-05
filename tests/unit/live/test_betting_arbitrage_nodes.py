@@ -2403,8 +2403,8 @@ class TestBettingArbitrageNodeRunner:
         assert "semantic_verify_enabled" in workflow
         assert "semantic_verify_required_providers" in workflow
         assert "semantic_verify_target_sports" in workflow
-        assert "semantic_rule_mining.py" in workflow
-        assert "verify-completion" in workflow
+        assert "verify_semantic_cache_completion.py" in workflow
+        assert ".venv/bin/python" not in workflow
         assert "semantic-completion.json" in workflow
 
     def test_strategy_node_maintenance_workflow_archives_before_stop(self):
