@@ -1947,11 +1947,36 @@ class TestBettingArbitrageNodeRunner:
             "POLYMARKET": 0,
             "SXBET": 1,
         }
+        assert coverage["quoteSubscriptionGapCounts"] == {
+            "CLOUDBET": 1,
+            "POLYMARKET": 0,
+            "SXBET": 0,
+        }
+        assert coverage["venuesWithSubscriptionQuoteGap"] == ["CLOUDBET"]
         assert coverage["quotedNodeCounts"] == {
             "CLOUDBET": 0,
             "POLYMARKET": 0,
             "SXBET": 1,
         }
+        assert coverage["unquotedSemanticMatchedNodeCounts"] == {
+            "CLOUDBET": 1,
+            "POLYMARKET": 0,
+            "SXBET": 0,
+        }
+        assert coverage["unquotedSemanticMatchedNodeSamples"]["CLOUDBET"] == [
+            {
+                "instrumentId": str(cloudbet_instrument.id),
+                "eventKey": cloudbet_instrument.event_key(include_start_time=False),
+                "pattern": {
+                    "marketFamily": "MATCH_ODDS",
+                    "marketType": "MATCH_ODDS",
+                    "paramsKey": "[]",
+                    "scope": "full_time",
+                    "selection": "AWAY",
+                    "sport": "soccer",
+                },
+            },
+        ]
         assert coverage["edgeCounts"]["SXBET->CLOUDBET"] == 1
         assert coverage["quotedEdgeCounts"]["SXBET->CLOUDBET"] == 0
         assert coverage["candidateCounts"]["SXBET->SXBET"] == 1
