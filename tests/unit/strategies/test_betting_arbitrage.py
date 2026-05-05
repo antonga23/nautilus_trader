@@ -319,6 +319,11 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure("executable_candidates" in stats)
         ensure("instrument_refresh_requests" in stats)
         ensure("instrument_refresh_failures" in stats)
+        ensure("instrument_refresh_added" in stats)
+        ensure("instrument_refresh_removed" in stats)
+        ensure("instrument_refresh_delisted_removed" in stats)
+        ensure("instrument_refresh_graph_rebuilds" in stats)
+        ensure("quote_unsubscribe_requests" in stats)
         ensure("success_rate" in stats)
         ensure(stats["subscribed_instruments"] == 0)
         ensure(stats["opportunity_graph_nodes"] == 0)
@@ -328,6 +333,11 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(stats["manual_review_suppressions"] == 0)
         ensure(stats["instrument_refresh_requests"] == 0)
         ensure(stats["instrument_refresh_failures"] == 0)
+        ensure(stats["instrument_refresh_added"] == 0)
+        ensure(stats["instrument_refresh_removed"] == 0)
+        ensure(stats["instrument_refresh_delisted_removed"] == 0)
+        ensure(stats["instrument_refresh_graph_rebuilds"] == 0)
+        ensure(stats["quote_unsubscribe_requests"] == 0)
         ensure(stats["success_rate"] == 0)
 
     def test_instrument_refresh_requests_all_enabled_venues(self, monkeypatch):  # skipcq
@@ -359,6 +369,70 @@ class TestBettingArbitrageStrategy:  # skipcq
         )
         ensure(strategy.get_stats()["instrument_refresh_requests"] == 2)
         ensure(strategy.get_stats()["instrument_refresh_failures"] == 0)
+
+    def test_refresh_reconciles_cached_instruments_and_removes_closed_markets(self):  # skipcq
+        cache = TestComponentStubs.cache()
+        active = CryptoBettingInstrument(
+            venue=Venue("CLOUDBET"),
+            event_id="event-1",
+            event_name="Team A vs Team B",
+            home_name="Team A",
+            away_name="Team B",
+            sport_name="Soccer",
+            competition_name="Test League",
+            market_name="Match Odds",
+            market_type="match_odds",
+            outcome="home",
+            side=SelectionSide.BACK,
+            price=2.0,
+            currency=Currency.from_str("USDC"),
+            params="",
+            trading_status="ACTIVE",
+        )
+        closed = CryptoBettingInstrument(
+            venue=Venue("CLOUDBET"),
+            event_id="event-1",
+            event_name="Team A vs Team B",
+            home_name="Team A",
+            away_name="Team B",
+            sport_name="Soccer",
+            competition_name="Test League",
+            market_name="Match Odds",
+            market_type="match_odds",
+            outcome="away",
+            side=SelectionSide.BACK,
+            price=2.0,
+            currency=Currency.from_str("USDC"),
+            params="",
+            trading_status="CLOSED",
+        )
+        cache.add_instrument(active)
+        cache.add_instrument(closed)
+
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(enabled_venues=frozenset({"CLOUDBET"})),
+        )
+        strategy.register(
+            trader_id=TraderId("TESTER-REFRESH"),
+            portfolio=TestComponentStubs.portfolio(),
+            msgbus=TestComponentStubs.msgbus(),
+            cache=cache,
+            clock=TestComponentStubs.clock(),
+        )
+        strategy.unsubscribe_quote_ticks = Mock()
+        strategy._subscribed_instruments.add(closed)
+        strategy._quote_subscribed_instrument_ids.add(str(closed.id))
+
+        strategy._reconcile_cached_venue_instruments("CLOUDBET")
+
+        ensure(active in strategy._subscribed_instruments)
+        ensure(closed not in strategy._subscribed_instruments)
+        strategy.unsubscribe_quote_ticks.assert_called_once_with(closed.id)
+        stats = strategy.get_stats()
+        ensure(stats["instrument_refresh_added"] == 1)
+        ensure(stats["instrument_refresh_removed"] == 1)
+        ensure(stats["instrument_refresh_delisted_removed"] == 1)
+        ensure(stats["quote_unsubscribe_requests"] == 1)
 
     def test_stats_success_rate_calculation(self, default_config):  # skipcq
         """

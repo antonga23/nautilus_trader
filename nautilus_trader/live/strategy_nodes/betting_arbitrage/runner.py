@@ -537,6 +537,8 @@ def _semantic_cache_payload(status: SemanticCacheStatus | None) -> dict[str, obj
         "sameVenueExecutionEligibleTemplateCount": (
             payload["same_venue_execution_eligible_template_count"]
         ),
+        "coverageProofCount": payload["coverage_proof_count"],
+        "coverageHyperedgeCount": payload["coverage_hyperedge_count"],
         "compatibilityVersion": payload.get("compatibility_version"),
         "compatibilityScope": payload.get("compatibility_scope"),
         "compatible": payload.get("compatible", True),
@@ -753,6 +755,14 @@ def _collect_runtime_probe_payload(
         quotes=snapshot["quotes"],
         min_profit_margin=min_profit_margin,
     )
+    venue_coverage = _venue_pair_coverage(
+        strategy,
+        edges=snapshot["edges"],
+        nodes=snapshot["nodes"],
+        quotes=snapshot["quotes"],
+        matched_node_ids=snapshot["matched_node_ids"],
+        candidate_venue_pairs=profitability["venue_pairs"],
+    )
 
     return {
         "elapsedSeconds": round(elapsed_seconds, 2),
@@ -795,19 +805,13 @@ def _collect_runtime_probe_payload(
             "venueQuoteHealth": profitability["venue_quote_health"],
             "venuePairs": profitability["venue_pairs"],
             "marketFamilies": profitability["market_families"],
+            "zeroCandidateVenuePairSamples": venue_coverage["zeroCandidateVenuePairs"],
             "topPositiveCandidates": profitability["sample_candidates"],
             "topNegativeNearMisses": profitability["negative_near_misses"],
         },
         "strategyStats": stats,
         "semanticDiagnostics": semantic_diagnostics,
-        "venueCoverage": _venue_pair_coverage(
-            strategy,
-            edges=snapshot["edges"],
-            nodes=snapshot["nodes"],
-            quotes=snapshot["quotes"],
-            matched_node_ids=snapshot["matched_node_ids"],
-            candidate_venue_pairs=profitability["venue_pairs"],
-        ),
+        "venueCoverage": venue_coverage,
         "sampleCandidates": profitability["sample_candidates"],
         "negativeNearMisses": profitability["negative_near_misses"],
     }
@@ -893,6 +897,7 @@ def _empty_candidate_quality_payload() -> dict[str, object]:
         "venueQuoteHealth": {},
         "venuePairs": {},
         "marketFamilies": {},
+        "zeroCandidateVenuePairSamples": [],
         "topPositiveCandidates": [],
         "topNegativeNearMisses": [],
     }

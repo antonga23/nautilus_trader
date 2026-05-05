@@ -134,7 +134,12 @@ jobs:
             else
               echo "docker_container_missing=true"
             fi
-            for path in "$status_file" "$heartbeat_file" "$current_session_file"; do
+            for path in \
+              "$status_file" \
+              "$heartbeat_file" \
+              "$current_session_file" \
+              "$node_dir/manifest.runtime.json" \
+              "$node_dir/release.json"; do
               if [ -f "$path" ]; then
                 echo
                 echo "file=$path"
@@ -422,6 +427,12 @@ jobs:
           cp "$status_file" "$artifact_dir/status.json"
           cp "$heartbeat_file" "$artifact_dir/heartbeat.json"
           cp "$current_session_file" "$artifact_dir/current-session.json"
+          if [ -f "$node_dir/manifest.runtime.json" ]; then
+            cp "$node_dir/manifest.runtime.json" "$artifact_dir/manifest.runtime.json"
+          fi
+          if [ -f "$node_dir/release.json" ]; then
+            cp "$node_dir/release.json" "$artifact_dir/release.json"
+          fi
           cp "$current_log_path" "$artifact_dir/node.log"
           cp "$current_event_log_path" "$artifact_dir/events.jsonl"
           python3 - "$status_file" "$artifact_dir/runtime-summary.json" <<'PY'
@@ -440,6 +451,8 @@ jobs:
                   "graphEngine": runtime_probe.get("graphEngine"),
                   "topologySource": runtime_probe.get("topologySource"),
                   "semanticTemplateCount": runtime_probe.get("semanticTemplateCount"),
+                  "coverageProofCount": runtime_probe.get("coverageProofCount"),
+                  "coverageHyperedgeCount": runtime_probe.get("coverageHyperedgeCount"),
                   "graphNodes": runtime_probe.get("graphNodes"),
                   "graphEdges": runtime_probe.get("graphEdges"),
                   "quotedSemanticMatchInstruments": runtime_probe.get(
@@ -451,12 +464,18 @@ jobs:
                   "venueCoverage": runtime_probe.get("venueCoverage"),
                   "candidateQuality": {
                       "rejectionBuckets": candidate_quality.get("rejectionBuckets"),
+                      "timingFlags": candidate_quality.get("timingFlags"),
+                      "freshnessProfiles": candidate_quality.get("freshnessProfiles"),
                       "semanticBlockedReasons": candidate_quality.get(
                           "semanticBlockedReasons",
                       ),
                       "blockerSamples": candidate_quality.get("blockerSamples"),
+                      "venueQuoteHealth": candidate_quality.get("venueQuoteHealth"),
                       "venuePairs": candidate_quality.get("venuePairs"),
                       "marketFamilies": candidate_quality.get("marketFamilies"),
+                      "zeroCandidateVenuePairSamples": candidate_quality.get(
+                          "zeroCandidateVenuePairSamples",
+                      ),
                       "topPositiveCandidates": candidate_quality.get(
                           "topPositiveCandidates",
                       ),

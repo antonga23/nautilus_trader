@@ -119,6 +119,9 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
                 key: samples[:top_limit] if isinstance(samples, list) else samples
                 for key, samples in sorted(blocker_samples.items())
             },
+            "zeroCandidateVenuePairSamples": (
+                candidate_quality.get("zeroCandidateVenuePairSamples") or []
+            )[:top_limit],
             "topPositiveCandidates": candidate_quality.get("topPositiveCandidates"),
             "topNegativeNearMisses": candidate_quality.get("topNegativeNearMisses"),
         },

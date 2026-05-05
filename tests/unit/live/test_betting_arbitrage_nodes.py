@@ -956,6 +956,12 @@ class TestSemanticCacheBootstrap:
             def list_promoted_template_ids(self):
                 return ["missing-template", "exec-safe", "same-venue"]
 
+            def list_coverage_proof_ids(self):
+                return ["proof-a", "proof-b"]
+
+            def list_coverage_hyperedge_ids(self):
+                return ["hyperedge-a"]
+
             def load_promoted_template(self, template_id):
                 mapping = {
                     "exec-safe": SimpleNamespace(
@@ -978,6 +984,8 @@ class TestSemanticCacheBootstrap:
         assert status.promoted_template_count == 3
         assert status.execution_safe_template_count == 1
         assert status.same_venue_execution_eligible_template_count == 1
+        assert status.coverage_proof_count == 2
+        assert status.coverage_hyperedge_count == 1
 
     def test_run_bootstrap_without_running_loop_executes_async_path(self, tmp_path, monkeypatch):
         manifest = _manifest(tmp_path, cache_dir=tmp_path / "semantic-cache")
@@ -1049,6 +1057,7 @@ class TestSemanticCacheBootstrap:
         refresh_calls: list[str] = []
         mine_store_calls: list[bool] = []
         mine_templates_calls: list[tuple[bool, bool]] = []
+        mine_coverage_calls: list[bool] = []
 
         class FakeStore:
             def __init__(self, _cache):
@@ -1064,6 +1073,10 @@ class TestSemanticCacheBootstrap:
             def mine_templates_from_store(self, *, persist, persist_event_candidates):
                 mine_templates_calls.append((persist, persist_event_candidates))
                 return ["template-a", "template-b"]
+
+            def mine_coverage_from_store(self, *, persist):
+                mine_coverage_calls.append(persist)
+                return []
 
         class FakePromotionPolicy:
             def promote_template(self, store, template, *, allowlisted=False, venue_agnostic=False):
@@ -1099,6 +1112,7 @@ class TestSemanticCacheBootstrap:
         assert refresh_calls == ["sxbet", "cloudbet"]
         assert mine_store_calls == [True]
         assert mine_templates_calls == [(True, False)]
+        assert mine_coverage_calls == [True]
         assert [template for _, template, _, _ in promoted] == ["template-a", "template-b"]
 
     def test_portable_polymarket_templates_are_promoted_venue_agnostic(self):
@@ -2106,6 +2120,8 @@ class TestBettingArbitrageNodeRunner:
             "promotedTemplateCount": 3,
             "executionSafeTemplateCount": 1,
             "sameVenueExecutionEligibleTemplateCount": 1,
+            "coverageProofCount": 0,
+            "coverageHyperedgeCount": 0,
             "compatibilityVersion": None,
             "compatibilityScope": None,
             "compatible": True,
@@ -2334,8 +2350,12 @@ class TestBettingArbitrageNodeRunner:
         assert "append_env_secret CLOUDBET_API_KEY" in workflow
         assert "--env-file /tmp/strategy-node.env" in workflow
         assert "current-session.json" in workflow
+        assert "manifest.runtime release current-session" in workflow
+        assert "$remote_bundle/$name.json" in workflow
         assert "node.log" in workflow
         assert "events.jsonl" in workflow
+        assert "zeroCandidateVenuePairSamples" in workflow
+        assert "venueQuoteHealth" in workflow
         assert "Upload deployed node status artifacts to transient CI storage" in workflow
 
     def test_runtime_verify_workflow_dumps_logs_on_failure(self):
@@ -2347,6 +2367,11 @@ class TestBettingArbitrageNodeRunner:
         assert "min_cross_venue_candidates" in workflow
         assert "min_quoted_node_counts" in workflow
         assert "runtime_probe_summary<<EOF" in workflow
+        assert "manifest.runtime.json" in workflow
+        assert "release.json" in workflow
+        assert "coverageProofCount" in workflow
+        assert "coverageHyperedgeCount" in workflow
+        assert "zeroCandidateVenuePairSamples" in workflow
 
     def test_strategy_node_maintenance_workflow_archives_before_stop(self):
         workflow = Path(".github/workflows/strategy-node-maintenance.yml").read_text()
