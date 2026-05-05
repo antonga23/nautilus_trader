@@ -34,6 +34,26 @@ on:
         description: Comma-separated VENUE:COUNT requirements for runtimeProbe.venueCoverage.quotedNodeCounts
         required: false
         default: ''
+      semantic_verify_enabled:
+        description: Run semantic completion verification against the deployed file-backed cache
+        required: false
+        default: 'false'
+      semantic_verify_required_providers:
+        description: Comma-separated provider list for semantic completion verification
+        required: false
+        default: ''
+      semantic_verify_target_sports:
+        description: Comma-separated sport list for semantic completion verification
+        required: false
+        default: ''
+      semantic_verify_min_candidates:
+        description: Minimum per-sport event candidate count for semantic completion verification
+        required: false
+        default: '10'
+      semantic_verify_target_candidates:
+        description: Target per-sport event candidate count for semantic completion verification
+        required: false
+        default: '20'
 
 jobs:
   verify-runtime:
@@ -102,6 +122,11 @@ jobs:
           INPUT_HEARTBEAT_UPDATES_REQUIRED: ${{ github.event.inputs.heartbeat_updates_required }}
           INPUT_MIN_CROSS_VENUE_CANDIDATES: ${{ github.event.inputs.min_cross_venue_candidates }}
           INPUT_MIN_QUOTED_NODE_COUNTS: ${{ github.event.inputs.min_quoted_node_counts }}
+          INPUT_SEMANTIC_VERIFY_ENABLED: ${{ github.event.inputs.semantic_verify_enabled }}
+          INPUT_SEMANTIC_VERIFY_REQUIRED_PROVIDERS: ${{ github.event.inputs.semantic_verify_required_providers }}
+          INPUT_SEMANTIC_VERIFY_TARGET_SPORTS: ${{ github.event.inputs.semantic_verify_target_sports }}
+          INPUT_SEMANTIC_VERIFY_MIN_CANDIDATES: ${{ github.event.inputs.semantic_verify_min_candidates }}
+          INPUT_SEMANTIC_VERIFY_TARGET_CANDIDATES: ${{ github.event.inputs.semantic_verify_target_candidates }}
         run: |
           set -euo pipefail
 
@@ -112,6 +137,11 @@ jobs:
           heartbeat_updates_required="${INPUT_HEARTBEAT_UPDATES_REQUIRED:-2}"
           min_cross_venue_candidates="${INPUT_MIN_CROSS_VENUE_CANDIDATES:-0}"
           min_quoted_node_counts="${INPUT_MIN_QUOTED_NODE_COUNTS:-}"
+          semantic_verify_enabled="${INPUT_SEMANTIC_VERIFY_ENABLED:-false}"
+          semantic_verify_required_providers="${INPUT_SEMANTIC_VERIFY_REQUIRED_PROVIDERS:-}"
+          semantic_verify_target_sports="${INPUT_SEMANTIC_VERIFY_TARGET_SPORTS:-}"
+          semantic_verify_min_candidates="${INPUT_SEMANTIC_VERIFY_MIN_CANDIDATES:-10}"
+          semantic_verify_target_candidates="${INPUT_SEMANTIC_VERIFY_TARGET_CANDIDATES:-20}"
 
           node_dir="$root_dir/$container_name"
           status_file="$node_dir/status.json"
@@ -487,6 +517,40 @@ jobs:
           }
           pathlib.Path(sys.argv[2]).write_text(json.dumps(summary, indent=2, sort_keys=True))
           PY
+
+          if [[ "${semantic_verify_enabled,,}" == "true" ]]; then
+            cache_dir="$node_dir/semantic-rule-cache"
+            semantic_args=(
+              scripts/betting/semantic_rule_mining.py
+              verify-completion
+              --cache-dir "$cache_dir"
+              --min-candidates "$semantic_verify_min_candidates"
+              --target-candidates "$semantic_verify_target_candidates"
+            )
+            if [[ -n "$semantic_verify_required_providers" ]]; then
+              IFS=',' read -r -a raw_providers <<< "$semantic_verify_required_providers"
+              for raw_provider in "${raw_providers[@]}"; do
+                provider="$(printf '%s' "$raw_provider" | xargs)"
+                if [[ -n "$provider" ]]; then
+                  semantic_args+=(--required-provider "$provider")
+                fi
+              done
+            fi
+            if [[ -n "$semantic_verify_target_sports" ]]; then
+              IFS=',' read -r -a raw_sports <<< "$semantic_verify_target_sports"
+              for raw_sport in "${raw_sports[@]}"; do
+                sport="$(printf '%s' "$raw_sport" | xargs)"
+                if [[ -n "$sport" ]]; then
+                  semantic_args+=(--target-sport "$sport")
+                fi
+              done
+            fi
+            .venv/bin/python "${semantic_args[@]}" > "$artifact_dir/semantic-completion.json"
+            echo
+            echo "semantic_completion_summary<<EOF"
+            cat "$artifact_dir/semantic-completion.json"
+            echo "EOF"
+          fi
 
       - name: Upload runtime verification artifacts
         if: always()
