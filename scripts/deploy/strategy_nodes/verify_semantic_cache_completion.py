@@ -2,8 +2,9 @@
 """
 Lightweight semantic-cache completion verifier for deployed strategy nodes.
 
-This intentionally avoids importing Nautilus modules so the EC2 runtime verifier
-can inspect the file-backed semantic cache without a repo virtualenv.
+This intentionally avoids importing Nautilus modules so the EC2 runtime verifier can
+inspect the file-backed semantic cache without a repo virtualenv.
+
 """
 
 from __future__ import annotations
