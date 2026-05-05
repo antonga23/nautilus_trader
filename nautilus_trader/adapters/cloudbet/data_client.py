@@ -17,6 +17,8 @@ import asyncio
 import contextlib
 import time
 from typing import Any
+from nautilus_trader.adapters.betting.runtime_cache import active_venue_instrument_index_key
+from nautilus_trader.adapters.betting.runtime_cache import encode_active_venue_instrument_index
 from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.clock import LiveClock
 from nautilus_trader.common.enums import LogColor
@@ -656,6 +658,14 @@ class CloudbetDataClient(LiveMarketDataClient):
                 [instrument.id for instrument in instruments],
             )
         updated_instruments: list[Instrument] = self._instrument_provider.list_all()
+        self._cache.add(
+            active_venue_instrument_index_key(str(request.venue)),
+            encode_active_venue_instrument_index(
+                venue=str(request.venue),
+                instrument_ids=[str(instrument.id) for instrument in updated_instruments],
+                updated_at_ns=self._clock.timestamp_ns(),
+            ),
+        )
         self._handle_instruments(
             request.venue,
             updated_instruments,

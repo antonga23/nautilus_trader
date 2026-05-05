@@ -1947,11 +1947,36 @@ class TestBettingArbitrageNodeRunner:
             "POLYMARKET": 0,
             "SXBET": 1,
         }
+        assert coverage["quoteSubscriptionGapCounts"] == {
+            "CLOUDBET": 1,
+            "POLYMARKET": 0,
+            "SXBET": 0,
+        }
+        assert coverage["venuesWithSubscriptionQuoteGap"] == ["CLOUDBET"]
         assert coverage["quotedNodeCounts"] == {
             "CLOUDBET": 0,
             "POLYMARKET": 0,
             "SXBET": 1,
         }
+        assert coverage["unquotedSemanticMatchedNodeCounts"] == {
+            "CLOUDBET": 1,
+            "POLYMARKET": 0,
+            "SXBET": 0,
+        }
+        assert coverage["unquotedSemanticMatchedNodeSamples"]["CLOUDBET"] == [
+            {
+                "instrumentId": str(cloudbet_instrument.id),
+                "eventKey": cloudbet_instrument.event_key(include_start_time=False),
+                "pattern": {
+                    "marketFamily": "MATCH_ODDS",
+                    "marketType": "MATCH_ODDS",
+                    "paramsKey": "[]",
+                    "scope": "full_time",
+                    "selection": "AWAY",
+                    "sport": "soccer",
+                },
+            },
+        ]
         assert coverage["edgeCounts"]["SXBET->CLOUDBET"] == 1
         assert coverage["quotedEdgeCounts"]["SXBET->CLOUDBET"] == 0
         assert coverage["candidateCounts"]["SXBET->SXBET"] == 1
@@ -2378,8 +2403,8 @@ class TestBettingArbitrageNodeRunner:
         assert "semantic_verify_enabled" in workflow
         assert "semantic_verify_required_providers" in workflow
         assert "semantic_verify_target_sports" in workflow
-        assert "semantic_rule_mining.py" in workflow
-        assert "verify-completion" in workflow
+        assert "verify_semantic_cache_completion.py" in workflow
+        assert ".venv/bin/python" not in workflow
         assert "semantic-completion.json" in workflow
 
     def test_strategy_node_maintenance_workflow_archives_before_stop(self):

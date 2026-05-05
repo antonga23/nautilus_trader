@@ -980,6 +980,7 @@ def _venue_pair_coverage(
     quote_subscription_counts = _quote_subscription_counts_by_venue(strategy)
     edge_counts: Counter[str] = Counter()
     quoted_edge_counts: Counter[str] = Counter()
+    unquoted_semantic_samples: dict[str, list[dict[str, object]]] = {}
 
     for node_id, node in nodes.items():
         venue = _probe_node_venue(node)
@@ -992,6 +993,16 @@ def _venue_pair_coverage(
             matched_node_counts[venue] += 1
             if node_id in quotes:
                 quoted_matched_node_counts[venue] += 1
+            else:
+                samples = unquoted_semantic_samples.setdefault(venue, [])
+                if len(samples) < 5:
+                    samples.append(
+                        {
+                            "instrumentId": str(getattr(node.instrument, "id", "")),
+                            "eventKey": _probe_event_key_no_time(node),
+                            "pattern": _probe_pattern_payload(node),
+                        },
+                    )
 
     for edge in edges:
         source_node = nodes.get(edge.source_node_id)
@@ -1021,6 +1032,22 @@ def _venue_pair_coverage(
     cross_venue_candidate_count = sum(
         count for pair, count in candidate_counts.items() if _is_cross_venue_pair(pair)
     )
+    quote_subscription_gap_counts = {
+        venue: max(
+            int(quote_subscription_counts.get(venue, 0) or 0)
+            - int(quoted_node_counts.get(venue, 0) or 0),
+            0,
+        )
+        for venue in venues
+    }
+    unquoted_semantic_match_counts = {
+        venue: max(
+            int(matched_node_counts.get(venue, 0) or 0)
+            - int(quoted_matched_node_counts.get(venue, 0) or 0),
+            0,
+        )
+        for venue in venues
+    }
 
     return {
         "enabledVenues": venues,
@@ -1028,10 +1055,18 @@ def _venue_pair_coverage(
         "quoteSubscriptionCounts": {
             venue: quote_subscription_counts.get(venue, 0) for venue in venues
         },
+        "quoteSubscriptionGapCounts": quote_subscription_gap_counts,
+        "venuesWithSubscriptionQuoteGap": [
+            venue for venue in venues if quote_subscription_gap_counts.get(venue, 0) > 0
+        ],
         "quotedNodeCounts": {venue: quoted_node_counts.get(venue, 0) for venue in venues},
         "semanticMatchedNodeCounts": {venue: matched_node_counts.get(venue, 0) for venue in venues},
         "quotedSemanticMatchedNodeCounts": {
             venue: quoted_matched_node_counts.get(venue, 0) for venue in venues
+        },
+        "unquotedSemanticMatchedNodeCounts": unquoted_semantic_match_counts,
+        "unquotedSemanticMatchedNodeSamples": {
+            venue: unquoted_semantic_samples.get(venue, []) for venue in venues
         },
         "edgeCounts": {pair: edge_counts.get(pair, 0) for pair in all_pairs},
         "quotedEdgeCounts": {pair: quoted_edge_counts.get(pair, 0) for pair in all_pairs},

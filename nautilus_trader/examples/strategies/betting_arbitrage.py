@@ -29,6 +29,8 @@ from nautilus_trader.adapters.betting.common.odds import calculate_arbitrage_sta
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.betting.market_matcher import ArbitrageOpportunity
 from nautilus_trader.adapters.betting.market_matcher import MarketMatcher
+from nautilus_trader.adapters.betting.runtime_cache import active_venue_instrument_index_key
+from nautilus_trader.adapters.betting.runtime_cache import decode_active_venue_instrument_index
 from nautilus_trader.adapters.betting.semantics import FileRuleCache
 from nautilus_trader.adapters.betting.semantics import PolymarketSportsTransformer
 from nautilus_trader.adapters.betting.semantics import RuleStore
@@ -56,6 +58,8 @@ VALID_QUOTE_FRESHNESS_PROFILES = frozenset({"pre_match", "live", "custom"})
 DEFAULT_ENABLED_VENUES = frozenset({"CLOUDBET", "SXBET", "10BET"})
 NANOSECONDS_PER_SECOND = 1_000_000_000
 INSTRUMENT_REFRESH_TIMER_NAME = "betting-arbitrage-instrument-refresh"
+INSTRUMENT_RECONCILE_TIMER_PREFIX = "betting-arbitrage-instrument-reconcile"
+INSTRUMENT_RECONCILE_DELAY_SECS = 5.0
 BettingInstrument = CryptoBettingInstrument | LegacyCryptoBettingInstrument
 BETTING_INSTRUMENT_TYPES = (CryptoBettingInstrument, LegacyCryptoBettingInstrument)
 
@@ -337,6 +341,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._instrument_refresh_delisted_removed = 0
         self._instrument_refresh_graph_rebuilds = 0
         self._quote_unsubscribe_requests = 0
+        self._pending_refresh_reconcile_venues: set[str] = set()
+        self._last_refresh_request_at_ns: dict[str, int] = {}
         self._seen_opportunity_pairs: set[str] = set()
         self._active_opportunity_pairs: dict[str, OpportunityPairState] = {}
         self._last_arbitrage_summary_at_ns = 0
@@ -414,6 +420,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         """
         self.log.info("BettingArbitrageStrategy stopping...")
         self._stop_instrument_refresh_timer()
+        self._cancel_instrument_reconcile_timers()
         msg = f"Opportunities found: {self._opportunities_found}"
         self.log.info(msg)
         msg = f"Opportunities executed: {self._opportunities_executed}"
@@ -424,9 +431,13 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         """
         Refresh venue instrument catalogs on the configured runtime timer.
         """
-        if event.name != INSTRUMENT_REFRESH_TIMER_NAME:
+        if event.name == INSTRUMENT_REFRESH_TIMER_NAME:
+            self._refresh_enabled_venue_instruments()
             return
-        self._refresh_enabled_venue_instruments()
+        if event.name.startswith(f"{INSTRUMENT_RECONCILE_TIMER_PREFIX}:"):
+            venue_value = event.name.split(":", maxsplit=1)[-1].upper()
+            self._pending_refresh_reconcile_venues.discard(venue_value)
+            self._reconcile_cached_venue_instruments(venue_value)
 
     def subscribe_instruments(self, instruments: list[Instrument]) -> None:
         """
@@ -501,15 +512,40 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         except Exception as exc:
             self.log.warning(f"Unable to cancel instrument refresh timer: error={exc}")
 
+    def _cancel_instrument_reconcile_timers(self) -> None:
+        for venue_value in list(self._pending_refresh_reconcile_venues):
+            try:
+                self.clock.cancel_timer(self._instrument_reconcile_timer_name(venue_value))
+            except Exception as exc:
+                self.log.warning(
+                    f"Unable to cancel instrument reconcile timer: venue={venue_value} error={exc}",
+                )
+        self._pending_refresh_reconcile_venues.clear()
+
+    @staticmethod
+    def _instrument_reconcile_timer_name(venue_value: str) -> str:
+        return f"{INSTRUMENT_RECONCILE_TIMER_PREFIX}:{venue_value.upper()}"
+
+    def _schedule_instrument_reconcile(self, venue_value: str) -> None:
+        self._pending_refresh_reconcile_venues.add(venue_value)
+        self.clock.set_time_alert(
+            self._instrument_reconcile_timer_name(venue_value),
+            self.clock.utc_now() + timedelta(seconds=INSTRUMENT_RECONCILE_DELAY_SECS),
+            self.on_time_event,
+            override=True,
+        )
+
     def _refresh_enabled_venue_instruments(self) -> None:
         for venue_value in sorted(self._config.enabled_venues):
             try:
+                requested_at_ns = self.clock.timestamp_ns()
+                self._last_refresh_request_at_ns[venue_value] = requested_at_ns
                 self.request_instruments(
                     venue=Venue(venue_value),
                     params={"semantic_refresh": True, "only_last": True},
                 )
                 self._instrument_refresh_requests += 1
-                self._reconcile_cached_venue_instruments(venue_value)
+                self._schedule_instrument_reconcile(venue_value)
             except Exception as exc:
                 self._instrument_refresh_failures += 1
                 self.log.warning(
@@ -545,6 +581,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         except Exception:
             return []
 
+        current_active_ids = self._current_active_refresh_ids(venue_value)
         active_cached: list[BettingInstrument] = []
         for instrument in cached_instruments:
             betting_instrument = self._coerce_betting_instrument(instrument)
@@ -552,8 +589,26 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 continue
             if not self._instrument_available_for_refresh(betting_instrument, venue_value):
                 continue
+            if (
+                current_active_ids is not None
+                and str(betting_instrument.id) not in current_active_ids
+            ):
+                continue
             active_cached.append(betting_instrument)
         return active_cached
+
+    def _current_active_refresh_ids(self, venue_value: str) -> set[str] | None:
+        try:
+            raw = self.cache.get(active_venue_instrument_index_key(venue_value))
+        except Exception:
+            return None
+        payload = decode_active_venue_instrument_index(raw)
+        if payload is None or payload.venue != venue_value.upper():
+            return None
+        requested_at_ns = self._last_refresh_request_at_ns.get(venue_value, 0)
+        if requested_at_ns > 0 and payload.updated_at_ns < requested_at_ns:
+            return None
+        return set(payload.instrument_ids)
 
     def _add_refreshed_active_instruments(
         self,
