@@ -789,6 +789,51 @@ async def test_sxbet_provider_prefers_two_sided_liquid_markets():
 
 
 @pytest.mark.asyncio
+async def test_sxbet_provider_tolerates_liquidity_probe_timeout():
+    class RecordingHttpClient:
+        def __init__(self) -> None:
+            self.order_book_calls: list[str] = []
+
+        async def get_order_book(self, market_hash: str) -> dict:
+            self.order_book_calls.append(market_hash)
+            if market_hash == "market-0":
+                raise SXBetHttpClientError(
+                    "Request failed for GET /orders: TimeoutError",
+                )
+            return {
+                "data": {
+                    "orders": [
+                        {
+                            "isMakerBettingOutcomeOne": True,
+                            "percentageOdds": decimal_odds_to_percentage(2.0),
+                        },
+                        {
+                            "isMakerBettingOutcomeOne": False,
+                            "percentageOdds": decimal_odds_to_percentage(2.1),
+                        },
+                    ],
+                },
+            }
+
+    markets = [{"marketHash": f"market-{index}"} for index in range(3)]
+    http_client = RecordingHttpClient()
+    provider = SXBetInstrumentProvider(
+        http_client=http_client,
+        config=SXBetInstrumentProviderConfig(
+            instrument_load_limit=6,
+            prefer_liquid_markets=True,
+            liquidity_probe_limit=3,
+            min_two_sided_markets=1,
+        ),
+    )
+
+    selected = await provider._select_markets_for_processing(markets, target_market_count=2)
+
+    assert [market["marketHash"] for market in selected] == ["market-1", "market-2"]
+    assert http_client.order_book_calls == ["market-0", "market-1", "market-2"]
+
+
+@pytest.mark.asyncio
 async def test_sxbet_provider_hydrates_best_odds_in_batches():
     class RecordingHttpClient:
         def __init__(self) -> None:

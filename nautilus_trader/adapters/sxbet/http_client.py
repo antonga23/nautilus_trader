@@ -366,7 +366,9 @@ class SXBetHttpClient:
                     self._log.error(
                         f"Request failed for {method} {endpoint}: {type(e).__name__}",
                     )
-                raise
+                raise SXBetHttpClientError(
+                    f"Request failed for {method} {endpoint}: {type(e).__name__}",
+                ) from e
 
     async def get_sports(self) -> dict[str, Any]:
         """

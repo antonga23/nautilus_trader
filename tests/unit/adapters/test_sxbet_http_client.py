@@ -187,6 +187,25 @@ async def test_request_uses_configured_timeout():
 
 
 @pytest.mark.asyncio
+async def test_request_wraps_unexpected_transport_failures():
+    class _TimeoutSession:
+        def request(self, **_kwargs):
+            raise TimeoutError
+
+    client = SXBetHttpClient()
+    client._request_timeout = object()
+    client._session = _TimeoutSession()
+
+    with pytest.raises(
+        SXBetHttpClientError,
+        match=r"Request failed for GET /test: TimeoutError",
+    ) as exc_info:
+        await client._request("GET", "/test")
+
+    assert isinstance(exc_info.value.__cause__, TimeoutError)
+
+
+@pytest.mark.asyncio
 async def test_request_rotates_api_key_pool_without_logging_values():
     client = SXBetHttpClient(api_key_pool=("key-a", "key-b"))
     client._request_timeout = object()
