@@ -243,6 +243,14 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     probe_parser.add_argument("--min-positive-margin-candidates", type=int, default=0)
     probe_parser.add_argument("--min-cross-venue-candidates", type=int, default=0)
     probe_parser.add_argument(
+        "--require-cross-venue-candidates-or-blockers",
+        action="store_true",
+        help=(
+            "Accept either cross-venue candidates or explicit cross-venue blocker "
+            "examples in the runtime probe."
+        ),
+    )
+    probe_parser.add_argument(
         "--min-quoted-node-count",
         action="append",
         default=[],
@@ -373,6 +381,9 @@ def _handle_probe_runtime_command(args, node, context: RunnerContext) -> int:
             min_quoted_edges=int(args.min_quoted_edges),
             min_positive_margin_candidates=int(args.min_positive_margin_candidates),
             min_cross_venue_candidates=int(args.min_cross_venue_candidates),
+            require_cross_venue_candidates_or_blockers=bool(
+                args.require_cross_venue_candidates_or_blockers,
+            ),
             min_quoted_node_counts=_parse_venue_count_requirements(
                 args.min_quoted_node_count,
             ),
@@ -562,6 +573,7 @@ def _probe_runtime(
     min_quoted_edges: int,
     min_positive_margin_candidates: int,
     min_cross_venue_candidates: int,
+    require_cross_venue_candidates_or_blockers: bool,
     min_quoted_node_counts: dict[str, int],
     require_rust_semantic_topology: bool,
 ) -> dict[str, object]:
@@ -623,6 +635,9 @@ def _probe_runtime(
                 min_quoted_edges=min_quoted_edges,
                 min_positive_margin_candidates=min_positive_margin_candidates,
                 min_cross_venue_candidates=min_cross_venue_candidates,
+                require_cross_venue_candidates_or_blockers=(
+                    require_cross_venue_candidates_or_blockers
+                ),
                 min_quoted_node_counts=min_quoted_node_counts,
                 require_rust_semantic_topology=require_rust_semantic_topology,
             ):
@@ -826,6 +841,7 @@ def _runtime_probe_satisfied(
     min_quoted_edges: int = 0,
     min_positive_margin_candidates: int = 0,
     min_cross_venue_candidates: int = 0,
+    require_cross_venue_candidates_or_blockers: bool = False,
     min_quoted_node_counts: dict[str, int] | None = None,
     require_rust_semantic_topology: bool = False,
 ) -> bool:
@@ -843,6 +859,12 @@ def _runtime_probe_satisfied(
     cross_venue_candidate_count = int(
         venue_coverage.get("crossVenueCandidateCount") or 0,
     )
+    if require_cross_venue_candidates_or_blockers:
+        cross_venue_ok = cross_venue_candidate_count >= max(
+            1, min_cross_venue_candidates
+        ) or _has_cross_venue_blocker(venue_coverage, payload)
+    else:
+        cross_venue_ok = cross_venue_candidate_count >= min_cross_venue_candidates
     rust_semantic_topology_ok = (
         payload.get("graphEngine") == "rust"
         and payload.get("topologySource") == "rust_semantic"
@@ -854,10 +876,33 @@ def _runtime_probe_satisfied(
         and payload["quotedSemanticMatchInstruments"] >= min_quoted_match_instruments
         and payload["quotedEdges"] >= min_quoted_edges
         and positive_candidates >= min_positive_margin_candidates
-        and cross_venue_candidate_count >= min_cross_venue_candidates
+        and cross_venue_ok
         and venue_quoted_ok
         and (rust_semantic_topology_ok or not require_rust_semantic_topology)
     )
+
+
+def _has_cross_venue_blocker(
+    venue_coverage: dict[str, object],
+    payload: dict[str, object],
+) -> bool:
+    reports = list(venue_coverage.get("zeroCandidateVenuePairs") or [])
+    candidate_quality = payload.get("candidateQuality") or {}
+    if isinstance(candidate_quality, dict):
+        reports.extend(candidate_quality.get("zeroCandidateVenuePairSamples") or [])
+    for report in reports:
+        if not isinstance(report, dict):
+            continue
+        pair = str(report.get("venuePair") or "")
+        if "->" not in pair:
+            continue
+        source, target = pair.split("->", maxsplit=1)
+        if source == target:
+            continue
+        blocker = str(report.get("blockerReason") or report.get("reason") or "")
+        if blocker and blocker != "missing_instruments":
+            return True
+    return False
 
 
 def _parse_venue_count_requirements(values: list[str] | tuple[str, ...]) -> dict[str, int]:

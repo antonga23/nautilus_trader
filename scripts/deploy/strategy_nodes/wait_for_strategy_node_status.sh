@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat << USAGE
-Usage: $0 --status-file <path> [--timeout-seconds <n>] [--success-status <csv>] [--require-semantic-cache-ready] [--require-runtime-probe] [--require-rust-semantic-topology] [--min-connected-nodes <n>] [--min-match-instruments <n>] [--min-quoted-match-instruments <n>] [--min-positive-margin-candidates <n>] [--min-cross-venue-candidates <n>] [--min-quoted-node-count VENUE:COUNT]
+Usage: $0 --status-file <path> [--timeout-seconds <n>] [--success-status <csv>] [--require-semantic-cache-ready] [--require-runtime-probe] [--require-rust-semantic-topology] [--min-connected-nodes <n>] [--min-match-instruments <n>] [--min-quoted-match-instruments <n>] [--min-positive-margin-candidates <n>] [--min-cross-venue-candidates <n>] [--require-cross-venue-candidates-or-blockers] [--min-quoted-node-count VENUE:COUNT]
 USAGE
 }
 
@@ -18,6 +18,7 @@ min_match_instruments=0
 min_quoted_match_instruments=0
 min_positive_margin_candidates=0
 min_cross_venue_candidates=0
+require_cross_venue_candidates_or_blockers="false"
 declare -a min_quoted_node_counts=()
 
 while [[ $# -gt 0 ]]; do
@@ -66,6 +67,10 @@ while [[ $# -gt 0 ]]; do
       min_cross_venue_candidates="$2"
       shift 2
       ;;
+    --require-cross-venue-candidates-or-blockers)
+      require_cross_venue_candidates_or_blockers="true"
+      shift 1
+      ;;
     --min-quoted-node-count)
       min_quoted_node_counts+=("$2")
       shift 2
@@ -104,6 +109,7 @@ python3 - \
   "$min_quoted_match_instruments" \
   "$min_positive_margin_candidates" \
   "$min_cross_venue_candidates" \
+  "$require_cross_venue_candidates_or_blockers" \
   "${min_quoted_node_counts[@]}" << 'PY'
 import json
 import pathlib
@@ -121,9 +127,10 @@ min_match_instruments = int(sys.argv[8])
 min_quoted_match_instruments = int(sys.argv[9])
 min_positive_margin_candidates = int(sys.argv[10])
 min_cross_venue_candidates = int(sys.argv[11])
+require_cross_venue_candidates_or_blockers = sys.argv[12].strip().lower() == 'true'
 
 min_quoted_node_counts: dict[str, int] = {}
-for raw_requirement in sys.argv[12:]:
+for raw_requirement in sys.argv[13:]:
     if ':' not in raw_requirement:
         raise SystemExit(
             f"--min-quoted-node-count must use VENUE:COUNT, got {raw_requirement!r}",
@@ -149,6 +156,25 @@ for raw_requirement in sys.argv[12:]:
 deadline = time.time() + timeout_seconds
 last_observation = None
 
+
+def has_cross_venue_blocker(venue_coverage: dict, runtime_probe: dict) -> bool:
+    reports = list(venue_coverage.get('zeroCandidateVenuePairs') or [])
+    candidate_quality = runtime_probe.get('candidateQuality') or {}
+    reports.extend(candidate_quality.get('zeroCandidateVenuePairSamples') or [])
+    for report in reports:
+        if not isinstance(report, dict):
+            continue
+        pair = str(report.get('venuePair') or '')
+        if '->' not in pair:
+            continue
+        source, target = pair.split('->', 1)
+        if source == target:
+            continue
+        blocker = str(report.get('blockerReason') or report.get('reason') or '')
+        if blocker and blocker != 'missing_instruments':
+            return True
+    return False
+
 while time.time() < deadline:
     if status_path.exists():
         try:
@@ -163,12 +189,22 @@ while time.time() < deadline:
         venue_coverage = runtime_probe.get('venueCoverage') or {}
         quoted_node_counts = venue_coverage.get('quotedNodeCounts') or {}
         positive_margin_candidates = runtime_probe.get('positiveMarginCandidates') or {}
+        cross_venue_candidate_count = int(
+            venue_coverage.get('crossVenueCandidateCount') or 0,
+        )
+        if require_cross_venue_candidates_or_blockers:
+            cross_venue_ready = (
+                cross_venue_candidate_count >= max(1, min_cross_venue_candidates)
+                or has_cross_venue_blocker(venue_coverage, runtime_probe)
+            )
+        else:
+            cross_venue_ready = cross_venue_candidate_count >= min_cross_venue_candidates
         runtime_probe_ready = bool(runtime_probe) and (
             int(runtime_probe.get('connectedNodes') or 0) >= min_connected_nodes
             and int(runtime_probe.get('semanticMatchInstruments') or 0) >= min_match_instruments
             and int(runtime_probe.get('quotedSemanticMatchInstruments') or 0) >= min_quoted_match_instruments
             and int(positive_margin_candidates.get('total') or 0) >= min_positive_margin_candidates
-            and int(venue_coverage.get('crossVenueCandidateCount') or 0) >= min_cross_venue_candidates
+            and cross_venue_ready
             and all(
                 int(quoted_node_counts.get(venue, 0) or 0) >= count
                 for venue, count in min_quoted_node_counts.items()

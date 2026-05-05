@@ -1806,6 +1806,7 @@ class TestBettingArbitrageNodeRunner:
                 "--require-rust-semantic-topology",
                 "--min-cross-venue-candidates",
                 "1",
+                "--require-cross-venue-candidates-or-blockers",
                 "--min-quoted-node-count",
                 "CLOUDBET:2",
                 "--min-quoted-node-count",
@@ -1816,6 +1817,7 @@ class TestBettingArbitrageNodeRunner:
         assert result == 0
         assert observed_probe_kwargs["require_rust_semantic_topology"] is True
         assert observed_probe_kwargs["min_cross_venue_candidates"] == 1
+        assert observed_probe_kwargs["require_cross_venue_candidates_or_blockers"] is True
         assert observed_probe_kwargs["min_quoted_node_counts"] == {
             "CLOUDBET": 2,
             "SXBET": 2,
@@ -2323,8 +2325,8 @@ class TestBettingArbitrageNodeRunner:
         assert "probe-runtime" in workflow
         assert "--min-quoted-match-instruments 2" in workflow
         assert "--min-positive-margin-candidates 0" in workflow
-        assert "--min-cross-venue-candidates 1" in workflow
-        assert "--min-quoted-node-count CLOUDBET:2" in workflow
+        assert "--require-cross-venue-candidates-or-blockers" in workflow
+        assert "--min-quoted-node-count POLYMARKET:2" in workflow
         assert "--min-quoted-node-count SXBET:2" in workflow
         assert "min_positive_margin_candidates=0" in workflow
         assert (
@@ -2332,11 +2334,12 @@ class TestBettingArbitrageNodeRunner:
             in workflow
         )
         assert "min_positive_margin_candidates=1" in workflow
-        assert "min_cross_venue_candidates=1" in workflow
+        assert "require_cross_venue_candidates_or_blockers=true" in workflow
         assert "wait_timeout_seconds=1200" in workflow
         assert "--timeout-seconds $wait_timeout_seconds" in workflow
         assert "--min-positive-margin-candidates $min_positive_margin_candidates" in workflow
         assert "--min-cross-venue-candidates $min_cross_venue_candidates" in workflow
+        assert "${cross_venue_args[*]}" in workflow
         assert "--require-rust-semantic-topology" in workflow
         assert "Wait for deployed node status and semantic cache" in workflow
         assert "--require-runtime-probe" in workflow
@@ -2442,6 +2445,80 @@ class TestBettingArbitrageNodeRunner:
                 "1",
                 "--min-quoted-node-count",
                 "CLOUDBET:2",
+                "--min-quoted-node-count",
+                "SXBET:2",
+            ],
+            cwd=Path.cwd(),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr
+
+    def test_wait_for_strategy_node_status_accepts_cross_venue_blocker_samples(self, tmp_path):
+        status_path = tmp_path / "status.json"
+        script_path = Path(
+            "scripts/deploy/strategy_nodes/wait_for_strategy_node_status.sh",
+        ).resolve()
+        status_path.write_text(
+            json.dumps(
+                {
+                    "status": "running",
+                    "semanticCache": {
+                        "ready": True,
+                    },
+                    "runtimeProbe": {
+                        "graphEngine": "rust",
+                        "topologySource": "rust_semantic",
+                        "semanticTemplateCount": 2,
+                        "connectedNodes": 2,
+                        "semanticMatchInstruments": 2,
+                        "quotedSemanticMatchInstruments": 2,
+                        "positiveMarginCandidates": {"total": 1},
+                        "venueCoverage": {
+                            "crossVenueCandidateCount": 0,
+                            "quotedNodeCounts": {
+                                "POLYMARKET": 2,
+                                "SXBET": 2,
+                            },
+                            "zeroCandidateVenuePairs": [
+                                {
+                                    "venuePair": "POLYMARKET->SXBET",
+                                    "blockerReason": "fixture_identity_mismatch",
+                                },
+                            ],
+                        },
+                    },
+                },
+            ),
+        )
+
+        result = subprocess.run(  # noqa: S603
+            [
+                str(script_path),
+                "--status-file",
+                str(status_path),
+                "--timeout-seconds",
+                "5",
+                "--success-status",
+                "running",
+                "--require-semantic-cache-ready",
+                "--require-runtime-probe",
+                "--require-rust-semantic-topology",
+                "--min-connected-nodes",
+                "2",
+                "--min-match-instruments",
+                "2",
+                "--min-quoted-match-instruments",
+                "2",
+                "--min-positive-margin-candidates",
+                "1",
+                "--min-cross-venue-candidates",
+                "1",
+                "--require-cross-venue-candidates-or-blockers",
+                "--min-quoted-node-count",
+                "POLYMARKET:2",
                 "--min-quoted-node-count",
                 "SXBET:2",
             ],
