@@ -32,7 +32,7 @@ from nautilus_trader.live.strategy_nodes.betting_arbitrage.config import Betting
 
 DEFAULT_CLOUDBET_SPORTS = SEMANTIC_TARGET_SPORTS
 DEFAULT_POLYMARKET_SPORTS = SEMANTIC_TARGET_SPORTS
-SEMANTIC_CACHE_COMPATIBILITY_VERSION = "semantic-rule-cache:20260504:six-sport-v1"
+SEMANTIC_CACHE_COMPATIBILITY_VERSION = "semantic-rule-cache:20260505:coverage-runtime-v1"
 SEMANTIC_CACHE_COMPATIBILITY_FILE = ".semantic-cache-version"
 PORTABLE_POLYMARKET_MARKET_FAMILIES = frozenset(
     {
@@ -55,6 +55,8 @@ class SemanticCacheStatus:
     promoted_template_count: int
     execution_safe_template_count: int
     same_venue_execution_eligible_template_count: int
+    coverage_proof_count: int = 0
+    coverage_hyperedge_count: int = 0
     compatibility_version: str | None = None
     compatibility_scope: str | None = None
     compatible: bool = True
@@ -74,6 +76,12 @@ class _SemanticTemplateCounts:
     promoted: int
     execution_safe: int
     same_venue_eligible: int
+
+
+@dataclass(frozen=True)
+class _SemanticCoverageCounts:
+    proofs: int
+    hyperedges: int
 
 
 @dataclass(frozen=True)
@@ -142,6 +150,7 @@ def semantic_cache_status(
     )
 
     template_counts = _semantic_template_counts(store)
+    coverage_counts = _semantic_coverage_counts(store)
 
     return SemanticCacheStatus(
         path=str(path),
@@ -150,6 +159,8 @@ def semantic_cache_status(
         promoted_template_count=template_counts.promoted,
         execution_safe_template_count=template_counts.execution_safe,
         same_venue_execution_eligible_template_count=template_counts.same_venue_eligible,
+        coverage_proof_count=coverage_counts.proofs,
+        coverage_hyperedge_count=coverage_counts.hyperedges,
         compatibility_version=compatibility_version,
         compatibility_scope=compatibility_scope,
         compatible=compatible,
@@ -173,6 +184,14 @@ def _semantic_template_counts(store: RuleStore) -> _SemanticTemplateCounts:
         execution_safe=execution_safe,
         same_venue_eligible=same_venue_eligible,
     )
+
+
+def _semantic_coverage_counts(store: RuleStore) -> _SemanticCoverageCounts:
+    proof_ids = store.list_coverage_proof_ids() if hasattr(store, "list_coverage_proof_ids") else []
+    hyperedge_ids = (
+        store.list_coverage_hyperedge_ids() if hasattr(store, "list_coverage_hyperedge_ids") else []
+    )
+    return _SemanticCoverageCounts(proofs=len(proof_ids), hyperedges=len(hyperedge_ids))
 
 
 def _read_semantic_cache_compatibility(cache_dir: Path) -> dict[str, str | None]:
@@ -311,6 +330,7 @@ async def _bootstrap_semantic_cache(
 
     miner.mine_store(persist=True)
     templates = miner.mine_templates_from_store(persist=True, persist_event_candidates=False)
+    miner.mine_coverage_from_store(persist=True)
     for template in templates:
         portable_polymarket = _is_portable_polymarket_template(template)
         promotion_policy.promote_template(

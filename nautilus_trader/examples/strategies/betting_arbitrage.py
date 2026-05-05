@@ -332,6 +332,11 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._executable_candidates = 0
         self._instrument_refresh_requests = 0
         self._instrument_refresh_failures = 0
+        self._instrument_refresh_added = 0
+        self._instrument_refresh_removed = 0
+        self._instrument_refresh_delisted_removed = 0
+        self._instrument_refresh_graph_rebuilds = 0
+        self._quote_unsubscribe_requests = 0
         self._seen_opportunity_pairs: set[str] = set()
         self._active_opportunity_pairs: dict[str, OpportunityPairState] = {}
         self._last_arbitrage_summary_at_ns = 0
@@ -504,12 +509,155 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                     params={"semantic_refresh": True, "only_last": True},
                 )
                 self._instrument_refresh_requests += 1
+                self._reconcile_cached_venue_instruments(venue_value)
             except Exception as exc:
                 self._instrument_refresh_failures += 1
                 self.log.warning(
                     "Unable to request refreshed betting instruments: "
                     f"venue={venue_value} error={exc}",
                 )
+
+    def _reconcile_cached_venue_instruments(self, venue_value: str) -> None:
+        active_cached = self._active_cached_venue_instruments(venue_value)
+        active_ids = {str(instrument.id) for instrument in active_cached}
+        added_instruments = self._add_refreshed_active_instruments(active_cached)
+        removed = self._remove_inactive_or_delisted_instruments(
+            venue_value=venue_value,
+            active_instrument_ids=active_ids,
+        )
+        added = len(added_instruments)
+        if added <= 0 and removed <= 0:
+            return
+
+        self._instrument_refresh_added += added
+        self._instrument_refresh_removed += removed
+        self._rebuild_after_instrument_refresh(added_instruments)
+        self._log_graph_topology_summary()
+        self.log.info(
+            "Reconciled refreshed betting instruments: "
+            f"venue={venue_value} added={added} removed={removed} "
+            f"subscribed={len(self._subscribed_instruments)}",
+        )
+
+    def _active_cached_venue_instruments(self, venue_value: str) -> list[BettingInstrument]:
+        try:
+            cached_instruments = list(self.cache.instruments())
+        except Exception:
+            return []
+
+        active_cached: list[BettingInstrument] = []
+        for instrument in cached_instruments:
+            betting_instrument = self._coerce_betting_instrument(instrument)
+            if betting_instrument is None:
+                continue
+            if not self._instrument_available_for_refresh(betting_instrument, venue_value):
+                continue
+            active_cached.append(betting_instrument)
+        return active_cached
+
+    def _add_refreshed_active_instruments(
+        self,
+        instruments: list[BettingInstrument],
+    ) -> list[BettingInstrument]:
+        existing_ids = {str(instrument.id) for instrument in self._subscribed_instruments}
+        added: list[BettingInstrument] = []
+        for instrument in instruments:
+            if str(instrument.id) in existing_ids:
+                continue
+            self._subscribed_instruments.add(instrument)
+            existing_ids.add(str(instrument.id))
+            added.append(instrument)
+        return added
+
+    def _rebuild_after_instrument_refresh(
+        self,
+        added_instruments: list[BettingInstrument],
+    ) -> None:
+        if not (
+            self._config.opportunity_graph_enabled and self._config.graph_rebuild_on_new_instrument
+        ):
+            return
+        self._opportunity_graph.build(list(self._subscribed_instruments))
+        self._instrument_refresh_graph_rebuilds += 1
+        if self._semantic_quote_priority_enabled():
+            self._subscribe_semantic_connected_quote_ticks()
+            self._subscribe_semantic_unmatched_quote_probe_ticks()
+            return
+        for instrument in added_instruments:
+            self._subscribe_quote_ticks_for_instrument(instrument)
+
+    def _instrument_available_for_refresh(
+        self,
+        instrument: BettingInstrument | None,
+        venue_value: str,
+    ) -> bool:
+        return (
+            instrument is not None
+            and instrument.id.venue.value == venue_value
+            and self._should_process_instrument(instrument)
+            and self._instrument_is_active_for_refresh(instrument)
+        )
+
+    def _remove_inactive_or_delisted_instruments(
+        self,
+        *,
+        venue_value: str,
+        active_instrument_ids: set[str],
+    ) -> int:
+        to_remove = [
+            instrument
+            for instrument in self._subscribed_instruments
+            if instrument.id.venue.value == venue_value
+            and (
+                str(instrument.id) not in active_instrument_ids
+                or not self._instrument_is_active_for_refresh(instrument)
+                or not self._should_process_instrument(instrument)
+            )
+        ]
+        for instrument in to_remove:
+            self._remove_subscribed_instrument(instrument)
+        self._instrument_refresh_delisted_removed += len(to_remove)
+        return len(to_remove)
+
+    def _remove_subscribed_instrument(self, instrument: BettingInstrument) -> None:
+        self._subscribed_instruments.discard(instrument)
+        quote_instrument_id = self._quote_subscription_instrument_id(instrument)
+        for instrument_id in (instrument.id, quote_instrument_id):
+            self._latest_quotes.pop(str(instrument_id), None)
+        if str(quote_instrument_id) in self._quote_subscribed_instrument_ids:
+            self._quote_subscribed_instrument_ids.discard(str(quote_instrument_id))
+            self._quote_unsubscribe_requests += 1
+            try:
+                self.unsubscribe_quote_ticks(quote_instrument_id)
+            except Exception as exc:
+                self.log.warning(
+                    "Unable to unsubscribe delisted betting quote stream: "
+                    f"instrument_id={quote_instrument_id} error={exc}",
+                )
+
+    @staticmethod
+    def _instrument_is_active_for_refresh(instrument: BettingInstrument) -> bool:
+        if not bool(getattr(instrument, "enabled", True)):
+            return False
+        status = getattr(instrument, "trading_status", None)
+        if status is None:
+            return True
+        normal_status = str(status).strip().upper()
+        inactive_statuses = {
+            "CANCELED",
+            "CANCELLED",
+            "CLOSED",
+            "ENDED",
+            "EXPIRED",
+            "FINISHED",
+            "HALTED",
+            "INACTIVE",
+            "RESULTED",
+            "SETTLED",
+            "SUSPENDED",
+            "VOID",
+        }
+        return normal_status not in inactive_statuses
 
     def _maybe_subscribe_instrument(self, instrument: Instrument) -> bool:
         betting_instrument = self._coerce_betting_instrument(instrument)
@@ -2488,6 +2636,11 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             "executable_candidates": self._executable_candidates,
             "instrument_refresh_requests": self._instrument_refresh_requests,
             "instrument_refresh_failures": self._instrument_refresh_failures,
+            "instrument_refresh_added": self._instrument_refresh_added,
+            "instrument_refresh_removed": self._instrument_refresh_removed,
+            "instrument_refresh_delisted_removed": self._instrument_refresh_delisted_removed,
+            "instrument_refresh_graph_rebuilds": self._instrument_refresh_graph_rebuilds,
+            "quote_unsubscribe_requests": self._quote_unsubscribe_requests,
             "success_rate": (
                 self._opportunities_executed / self._opportunities_found
                 if self._opportunities_found > 0

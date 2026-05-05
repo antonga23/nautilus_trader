@@ -978,12 +978,18 @@ jobs:
                   "venueCoverage": runtime.get("venueCoverage"),
                   "candidateQuality": {
                       "rejectionBuckets": candidate_quality.get("rejectionBuckets"),
+                      "timingFlags": candidate_quality.get("timingFlags"),
+                      "freshnessProfiles": candidate_quality.get("freshnessProfiles"),
                       "semanticBlockedReasons": candidate_quality.get(
                           "semanticBlockedReasons",
                       ),
                       "blockerSamples": candidate_quality.get("blockerSamples"),
+                      "venueQuoteHealth": candidate_quality.get("venueQuoteHealth"),
                       "venuePairs": candidate_quality.get("venuePairs"),
                       "marketFamilies": candidate_quality.get("marketFamilies"),
+                      "zeroCandidateVenuePairSamples": candidate_quality.get(
+                          "zeroCandidateVenuePairSamples",
+                      ),
                       "topPositiveCandidates": candidate_quality.get(
                           "topPositiveCandidates",
                       ),
