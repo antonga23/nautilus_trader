@@ -2375,6 +2375,12 @@ class TestBettingArbitrageNodeRunner:
         assert "coverageProofCount" in workflow
         assert "coverageHyperedgeCount" in workflow
         assert "zeroCandidateVenuePairSamples" in workflow
+        assert "semantic_verify_enabled" in workflow
+        assert "semantic_verify_required_providers" in workflow
+        assert "semantic_verify_target_sports" in workflow
+        assert "semantic_rule_mining.py" in workflow
+        assert "verify-completion" in workflow
+        assert "semantic-completion.json" in workflow
 
     def test_strategy_node_maintenance_workflow_archives_before_stop(self):
         workflow = Path(".github/workflows/strategy-node-maintenance.yml").read_text()

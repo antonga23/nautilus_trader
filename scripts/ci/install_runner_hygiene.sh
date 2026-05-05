@@ -33,7 +33,7 @@ detect_runner_root() {
 runner_root="$(detect_runner_root)"
 runner_work_root="${RUNNER_WORK_ROOT:-$runner_root/_work}"
 runner_local_cache_root="${RUNNER_LOCAL_CACHE_ROOT:-$runner_work_root/.ci-cache}"
-runner_ci_home="${RUNNER_CI_HOME:-/tmp/cloudbet-market-maker-ci-home}"
+runner_ci_home="${RUNNER_CI_HOME:-$runner_work_root/.ci-home}"
 
 sudo install -d -m 0755 "$install_root" "$(dirname "$cleanup_link")" "$config_dir"
 sudo install -m 0755 "$cleanup_src" "$cleanup_dst"
