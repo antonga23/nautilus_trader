@@ -861,7 +861,8 @@ def _runtime_probe_satisfied(
     )
     if require_cross_venue_candidates_or_blockers:
         cross_venue_ok = cross_venue_candidate_count >= max(
-            1, min_cross_venue_candidates
+            1,
+            min_cross_venue_candidates,
         ) or _has_cross_venue_blocker(venue_coverage, payload)
     else:
         cross_venue_ok = cross_venue_candidate_count >= min_cross_venue_candidates
