@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 from collections import defaultdict
+from dataclasses import dataclass
 import gzip
 import hashlib
 import json
@@ -30,6 +31,39 @@ NORMALIZED_PREFIX = "betting:semantic_rules:normalized"
 CANDIDATE_PREFIX = "betting:semantic_rules:candidate"
 TEMPLATE_CANDIDATE_PREFIX = "betting:semantic_rules:template:candidate"
 TEMPLATE_PROMOTED_PREFIX = "betting:semantic_rules:template:promoted"
+
+
+@dataclass(frozen=True)
+class CacheCollections:
+    manifests: list[dict[str, Any]]
+    normalized_records: list[dict[str, Any]]
+    candidate_rules: list[dict[str, Any]]
+    template_candidates: list[dict[str, Any]]
+    promoted_templates: list[dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class SelectionCounters:
+    manifests_by_provider: Counter[str]
+    selections_by_provider: Counter[str]
+    selections_by_sport: Counter[str]
+    sports_by_provider: dict[str, set[str]]
+
+
+@dataclass(frozen=True)
+class CandidateCounters:
+    event_candidates_by_provider: Counter[str]
+    event_candidates_by_sport: Counter[str]
+    providers_by_sport: dict[str, set[str]]
+    template_candidates_by_provider: Counter[str]
+    template_candidates_by_sport: Counter[str]
+
+
+@dataclass(frozen=True)
+class PromotionCounters:
+    promoted_by_provider: Counter[str]
+    execution_safe_by_provider: Counter[str]
+    safety_tier_counts: Counter[str]
 
 
 def _cache_file(cache_dir: Path, key: str) -> Path:
@@ -165,6 +199,120 @@ def _sport_report(
     }
 
 
+def _load_cache_collections(cache_dir: Path) -> CacheCollections:
+    return CacheCollections(
+        manifests=_load_many(cache_dir, MANIFEST_INDEX_KEY, MANIFEST_PREFIX),
+        normalized_records=_load_many(cache_dir, NORMALIZED_INDEX_KEY, NORMALIZED_PREFIX),
+        candidate_rules=_load_many(cache_dir, CANDIDATE_INDEX_KEY, CANDIDATE_PREFIX),
+        template_candidates=_load_many(
+            cache_dir,
+            TEMPLATE_CANDIDATE_INDEX_KEY,
+            TEMPLATE_CANDIDATE_PREFIX,
+        ),
+        promoted_templates=_load_many(
+            cache_dir,
+            TEMPLATE_PROMOTED_INDEX_KEY,
+            TEMPLATE_PROMOTED_PREFIX,
+        ),
+    )
+
+
+def _selection_counters(collections: CacheCollections) -> SelectionCounters:
+    sports_by_provider: dict[str, set[str]] = defaultdict(set)
+    for record in collections.normalized_records:
+        provider = str(record.get("provider", "")).upper()
+        sport = _normalize_sport((record.get("selection") or {}).get("sport"))
+        sports_by_provider[provider].add(sport)
+
+    return SelectionCounters(
+        manifests_by_provider=Counter(
+            str(item.get("provider", "")).upper() for item in collections.manifests
+        ),
+        selections_by_provider=Counter(
+            str(item.get("provider", "")).upper() for item in collections.normalized_records
+        ),
+        selections_by_sport=Counter(
+            _normalize_sport((item.get("selection") or {}).get("sport"))
+            for item in collections.normalized_records
+        ),
+        sports_by_provider=sports_by_provider,
+    )
+
+
+def _template_candidate_counters(
+    template_candidates: list[dict[str, Any]],
+) -> CandidateCounters:
+    event_candidates_by_provider: Counter[str] = Counter()
+    event_candidates_by_sport: Counter[str] = Counter()
+    providers_by_sport: dict[str, set[str]] = defaultdict(set)
+    template_candidates_by_provider: Counter[str] = Counter()
+    template_candidates_by_sport: Counter[str] = Counter()
+
+    for template in template_candidates:
+        sport = _normalize_sport(template.get("sport"))
+        observed = _observed_count(template)
+        event_candidates_by_sport[sport] += observed
+        template_candidates_by_sport[sport] += 1
+        for provider in _providers_from_support(template):
+            event_candidates_by_provider[provider] += observed
+            template_candidates_by_provider[provider] += 1
+            providers_by_sport[sport].add(provider)
+
+    return CandidateCounters(
+        event_candidates_by_provider=event_candidates_by_provider,
+        event_candidates_by_sport=event_candidates_by_sport,
+        providers_by_sport=providers_by_sport,
+        template_candidates_by_provider=template_candidates_by_provider,
+        template_candidates_by_sport=template_candidates_by_sport,
+    )
+
+
+def _event_candidate_counters(candidate_rules: list[dict[str, Any]]) -> CandidateCounters:
+    event_candidates_by_provider: Counter[str] = Counter()
+    event_candidates_by_sport: Counter[str] = Counter()
+    providers_by_sport: dict[str, set[str]] = defaultdict(set)
+
+    for rule in candidate_rules:
+        sport = _normalize_sport(rule.get("sport"))
+        event_candidates_by_sport[sport] += 1
+        for provider in rule.get("venue_scope", []):
+            normalized_provider = str(provider).upper()
+            event_candidates_by_provider[normalized_provider] += 1
+            providers_by_sport[sport].add(normalized_provider)
+
+    return CandidateCounters(
+        event_candidates_by_provider=event_candidates_by_provider,
+        event_candidates_by_sport=event_candidates_by_sport,
+        providers_by_sport=providers_by_sport,
+        template_candidates_by_provider=Counter(),
+        template_candidates_by_sport=Counter(),
+    )
+
+
+def _candidate_counters(collections: CacheCollections) -> CandidateCounters:
+    if collections.template_candidates:
+        return _template_candidate_counters(collections.template_candidates)
+    return _event_candidate_counters(collections.candidate_rules)
+
+
+def _promotion_counters(collections: CacheCollections) -> PromotionCounters:
+    promoted_by_provider: Counter[str] = Counter()
+    execution_safe_by_provider: Counter[str] = Counter()
+    for template in collections.promoted_templates:
+        for provider in _providers_from_support(template):
+            promoted_by_provider[provider] += 1
+            if bool(template.get("execution_safe")):
+                execution_safe_by_provider[provider] += 1
+
+    return PromotionCounters(
+        promoted_by_provider=promoted_by_provider,
+        execution_safe_by_provider=execution_safe_by_provider,
+        safety_tier_counts=Counter(
+            str(item.get("safety_tier", "")) for item in collections.template_candidates
+        ),
+    )
+
+
 def build_completion_report(
     cache_dir: Path,
     *,
@@ -176,86 +324,30 @@ def build_completion_report(
     required = tuple(provider.upper() for provider in required_providers)
     sports = tuple(_normalize_sport(sport) for sport in target_sports)
 
-    manifests = _load_many(cache_dir, MANIFEST_INDEX_KEY, MANIFEST_PREFIX)
-    normalized_records = _load_many(cache_dir, NORMALIZED_INDEX_KEY, NORMALIZED_PREFIX)
-    candidate_rules = _load_many(cache_dir, CANDIDATE_INDEX_KEY, CANDIDATE_PREFIX)
-    template_candidates = _load_many(
-        cache_dir,
-        TEMPLATE_CANDIDATE_INDEX_KEY,
-        TEMPLATE_CANDIDATE_PREFIX,
-    )
-    promoted_templates = _load_many(
-        cache_dir,
-        TEMPLATE_PROMOTED_INDEX_KEY,
-        TEMPLATE_PROMOTED_PREFIX,
-    )
-
-    manifests_by_provider = Counter(str(item.get("provider", "")).upper() for item in manifests)
-    selections_by_provider = Counter(
-        str(item.get("provider", "")).upper() for item in normalized_records
-    )
-    selections_by_sport = Counter(
-        _normalize_sport((item.get("selection") or {}).get("sport")) for item in normalized_records
-    )
-    sports_by_provider: dict[str, set[str]] = defaultdict(set)
-    for record in normalized_records:
-        sports_by_provider[str(record.get("provider", "")).upper()].add(
-            _normalize_sport((record.get("selection") or {}).get("sport")),
-        )
-
-    event_candidates_by_provider: Counter[str] = Counter()
-    event_candidates_by_sport: Counter[str] = Counter()
-    providers_by_sport: dict[str, set[str]] = defaultdict(set)
-    template_candidates_by_provider: Counter[str] = Counter()
-    template_candidates_by_sport: Counter[str] = Counter()
-    if template_candidates:
-        for template in template_candidates:
-            sport = _normalize_sport(template.get("sport"))
-            observed = _observed_count(template)
-            event_candidates_by_sport[sport] += observed
-            template_candidates_by_sport[sport] += 1
-            for provider in _providers_from_support(template):
-                event_candidates_by_provider[provider] += observed
-                template_candidates_by_provider[provider] += 1
-                providers_by_sport[sport].add(provider)
-    else:
-        for rule in candidate_rules:
-            sport = _normalize_sport(rule.get("sport"))
-            event_candidates_by_sport[sport] += 1
-            for provider in rule.get("venue_scope", []):
-                normalized_provider = str(provider).upper()
-                event_candidates_by_provider[normalized_provider] += 1
-                providers_by_sport[sport].add(normalized_provider)
-
-    promoted_by_provider: Counter[str] = Counter()
-    execution_safe_by_provider: Counter[str] = Counter()
-    for template in promoted_templates:
-        for provider in _providers_from_support(template):
-            promoted_by_provider[provider] += 1
-            if bool(template.get("execution_safe")):
-                execution_safe_by_provider[provider] += 1
-
-    safety_tier_counts = Counter(str(item.get("safety_tier", "")) for item in template_candidates)
+    collections = _load_cache_collections(cache_dir)
+    selection_counts = _selection_counters(collections)
+    candidate_counts = _candidate_counters(collections)
+    promotion_counts = _promotion_counters(collections)
     providers = tuple(
         _provider_report(
             provider=provider,
-            manifest_count=manifests_by_provider[provider],
-            selection_count=selections_by_provider[provider],
-            event_candidate_count=event_candidates_by_provider[provider],
-            template_candidate_count=template_candidates_by_provider[provider],
-            promoted_template_count=promoted_by_provider[provider],
-            execution_safe_template_count=execution_safe_by_provider[provider],
-            sports=tuple(sorted(sports_by_provider[provider])),
+            manifest_count=selection_counts.manifests_by_provider[provider],
+            selection_count=selection_counts.selections_by_provider[provider],
+            event_candidate_count=candidate_counts.event_candidates_by_provider[provider],
+            template_candidate_count=candidate_counts.template_candidates_by_provider[provider],
+            promoted_template_count=promotion_counts.promoted_by_provider[provider],
+            execution_safe_template_count=promotion_counts.execution_safe_by_provider[provider],
+            sports=tuple(sorted(selection_counts.sports_by_provider[provider])),
         )
         for provider in required
     )
     sport_reports = tuple(
         _sport_report(
             sport=sport,
-            selection_count=selections_by_sport[sport],
-            event_candidate_count=event_candidates_by_sport[sport],
-            template_candidate_count=template_candidates_by_sport[sport],
-            providers=tuple(sorted(providers_by_sport[sport])),
+            selection_count=selection_counts.selections_by_sport[sport],
+            event_candidate_count=candidate_counts.event_candidates_by_sport[sport],
+            template_candidate_count=candidate_counts.template_candidates_by_sport[sport],
+            providers=tuple(sorted(candidate_counts.providers_by_sport[sport])),
             min_candidates=min_candidates,
             target_candidates=target_candidates,
         )
@@ -270,16 +362,16 @@ def build_completion_report(
         "target_sports": sports,
         "min_candidates": min_candidates,
         "target_candidates": target_candidates,
-        "total_normalized_selections": len(normalized_records),
-        "total_event_candidates": sum(event_candidates_by_sport.values())
-        if template_candidates
-        else len(candidate_rules),
-        "total_template_candidates": len(template_candidates),
-        "total_promoted_templates": len(promoted_templates),
+        "total_normalized_selections": len(collections.normalized_records),
+        "total_event_candidates": sum(candidate_counts.event_candidates_by_sport.values())
+        if collections.template_candidates
+        else len(collections.candidate_rules),
+        "total_template_candidates": len(collections.template_candidates),
+        "total_promoted_templates": len(collections.promoted_templates),
         "total_execution_safe_templates": sum(
-            1 for template in promoted_templates if bool(template.get("execution_safe"))
+            1 for template in collections.promoted_templates if bool(template.get("execution_safe"))
         ),
-        "safety_tier_counts": tuple(sorted(safety_tier_counts.items())),
+        "safety_tier_counts": tuple(sorted(promotion_counts.safety_tier_counts.items())),
         "providers": providers,
         "sports": sport_reports,
     }
