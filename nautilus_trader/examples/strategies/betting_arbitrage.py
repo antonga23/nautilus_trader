@@ -548,6 +548,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         active_cached: list[BettingInstrument] = []
         for instrument in cached_instruments:
             betting_instrument = self._coerce_betting_instrument(instrument)
+            if betting_instrument is None:
+                continue
             if not self._instrument_available_for_refresh(betting_instrument, venue_value):
                 continue
             active_cached.append(betting_instrument)
