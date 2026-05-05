@@ -214,8 +214,7 @@ status_is_artifact_only() {
     [[ -n "$line" ]] || continue
     path="${line:3}"
     case "$path" in
-      artifacts | artifacts/* | .mypy_cache | .mypy_cache/* | .pytest_cache | .pytest_cache/* | .ruff_cache | .ruff_cache/* | target | target/* | build | build/*)
-        ;;
+      artifacts | artifacts/* | .mypy_cache | .mypy_cache/* | .pytest_cache | .pytest_cache/* | .ruff_cache | .ruff_cache/* | target | target/* | build | build/*) ;;
       *)
         return 1
         ;;
