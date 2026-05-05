@@ -22,6 +22,8 @@ import time
 
 from nautilus_trader.adapters.betting.common.enums import Outcome
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
+from nautilus_trader.adapters.betting.runtime_cache import active_venue_instrument_index_key
+from nautilus_trader.adapters.betting.runtime_cache import encode_active_venue_instrument_index
 from nautilus_trader.adapters.sxbet.config import SXBetDataClientConfig
 from nautilus_trader.adapters.sxbet.constants import SXBET_TOKENS
 from nautilus_trader.adapters.sxbet.constants import SXBET_VENUE
@@ -528,9 +530,19 @@ class SXBetDataClient(LiveMarketDataClient):
                 f"before={before_count} after={len(self._instrument_provider.get_all())}",
             )
 
+        instruments = list(self._instrument_provider.get_all().values())
+        self._cache.add(
+            active_venue_instrument_index_key(str(request.venue)),
+            encode_active_venue_instrument_index(
+                venue=str(request.venue),
+                instrument_ids=[str(instrument.id) for instrument in instruments],
+                updated_at_ns=self._clock.timestamp_ns(),
+            ),
+        )
+
         self._handle_instruments(
             request.venue,
-            list(self._instrument_provider.get_all().values()),
+            instruments,
             request.id,
             request.start,
             request.end,

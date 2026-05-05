@@ -22,6 +22,8 @@ import pytest
 from nautilus_trader.adapters.betting.common.enums import SelectionSide
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.betting.market_matcher import MarketMatcher
+from nautilus_trader.adapters.betting.runtime_cache import active_venue_instrument_index_key
+from nautilus_trader.adapters.betting.runtime_cache import encode_active_venue_instrument_index
 from nautilus_trader.adapters.betting.semantics import FileRuleCache
 from nautilus_trader.adapters.betting.semantics import RuleStore
 from nautilus_trader.adapters.cloudbet.client.schema import (
@@ -357,6 +359,13 @@ class TestBettingArbitrageStrategy:  # skipcq
                 instrument_refresh_interval_secs=300.0,
             ),
         )
+        strategy.register(
+            trader_id=TraderId("TESTER-REFRESH-REQUESTS"),
+            portfolio=TestComponentStubs.portfolio(),
+            msgbus=TestComponentStubs.msgbus(),
+            cache=TestComponentStubs.cache(),
+            clock=TestComponentStubs.clock(),
+        )
 
         strategy._refresh_enabled_venue_instruments()
 
@@ -433,6 +442,166 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(stats["instrument_refresh_removed"] == 1)
         ensure(stats["instrument_refresh_delisted_removed"] == 1)
         ensure(stats["quote_unsubscribe_requests"] == 1)
+
+    def test_refresh_schedules_delayed_reconcile_alerts(self, monkeypatch):  # skipcq
+        requested: list[tuple[str, dict[str, bool]]] = []
+
+        def fake_request_instruments(self, *, venue, params=None, client_id=None) -> None:
+            requested.append((venue.value, dict(params or {})))
+
+        monkeypatch.setattr(
+            BettingArbitrageStrategy,
+            "request_instruments",
+            fake_request_instruments,
+        )
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset({"SXBET", "CLOUDBET"}),
+                instrument_refresh_interval_secs=300.0,
+            ),
+        )
+        strategy.register(
+            trader_id=TraderId("TESTER-REFRESH-TIMERS"),
+            portfolio=TestComponentStubs.portfolio(),
+            msgbus=TestComponentStubs.msgbus(),
+            cache=TestComponentStubs.cache(),
+            clock=TestComponentStubs.clock(),
+        )
+        strategy._schedule_instrument_reconcile = Mock()
+
+        strategy._refresh_enabled_venue_instruments()
+
+        ensure(len(requested) == 2)
+        calls = strategy._schedule_instrument_reconcile.call_args_list
+        ensure(len(calls) == 2)
+        scheduled = {call.args[0] for call in calls}
+        ensure(scheduled == {"CLOUDBET", "SXBET"})
+
+    def test_active_cached_venue_instruments_prefers_current_refresh_index(self):  # skipcq
+        cache = TestComponentStubs.cache()
+        active = CryptoBettingInstrument(
+            venue=Venue("CLOUDBET"),
+            event_id="event-1",
+            event_name="Team A vs Team B",
+            home_name="Team A",
+            away_name="Team B",
+            sport_name="Soccer",
+            competition_name="Test League",
+            market_name="Match Odds",
+            market_type="match_odds",
+            outcome="home",
+            side=SelectionSide.BACK,
+            price=2.0,
+            currency=Currency.from_str("USDC"),
+            params="",
+            trading_status="ACTIVE",
+        )
+        stale = CryptoBettingInstrument(
+            venue=Venue("CLOUDBET"),
+            event_id="event-2",
+            event_name="Team C vs Team D",
+            home_name="Team C",
+            away_name="Team D",
+            sport_name="Soccer",
+            competition_name="Test League",
+            market_name="Match Odds",
+            market_type="match_odds",
+            outcome="away",
+            side=SelectionSide.BACK,
+            price=2.0,
+            currency=Currency.from_str("USDC"),
+            params="",
+            trading_status="ACTIVE",
+        )
+        cache.add_instrument(active)
+        cache.add_instrument(stale)
+        cache.add(
+            active_venue_instrument_index_key("CLOUDBET"),
+            encode_active_venue_instrument_index(
+                venue="CLOUDBET",
+                instrument_ids=[str(active.id)],
+                updated_at_ns=2,
+            ),
+        )
+
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(enabled_venues=frozenset({"CLOUDBET"})),
+        )
+        strategy.register(
+            trader_id=TraderId("TESTER-REFRESH-INDEX"),
+            portfolio=TestComponentStubs.portfolio(),
+            msgbus=TestComponentStubs.msgbus(),
+            cache=cache,
+            clock=TestComponentStubs.clock(),
+        )
+        strategy._last_refresh_request_at_ns["CLOUDBET"] = 1
+
+        active_cached = strategy._active_cached_venue_instruments("CLOUDBET")
+
+        ensure(active_cached == [active])
+
+    def test_active_cached_venue_instruments_ignores_outdated_refresh_index(self):  # skipcq
+        cache = TestComponentStubs.cache()
+        active = CryptoBettingInstrument(
+            venue=Venue("CLOUDBET"),
+            event_id="event-1",
+            event_name="Team A vs Team B",
+            home_name="Team A",
+            away_name="Team B",
+            sport_name="Soccer",
+            competition_name="Test League",
+            market_name="Match Odds",
+            market_type="match_odds",
+            outcome="home",
+            side=SelectionSide.BACK,
+            price=2.0,
+            currency=Currency.from_str("USDC"),
+            params="",
+            trading_status="ACTIVE",
+        )
+        stale = CryptoBettingInstrument(
+            venue=Venue("CLOUDBET"),
+            event_id="event-2",
+            event_name="Team C vs Team D",
+            home_name="Team C",
+            away_name="Team D",
+            sport_name="Soccer",
+            competition_name="Test League",
+            market_name="Match Odds",
+            market_type="match_odds",
+            outcome="away",
+            side=SelectionSide.BACK,
+            price=2.0,
+            currency=Currency.from_str("USDC"),
+            params="",
+            trading_status="ACTIVE",
+        )
+        cache.add_instrument(active)
+        cache.add_instrument(stale)
+        cache.add(
+            active_venue_instrument_index_key("CLOUDBET"),
+            encode_active_venue_instrument_index(
+                venue="CLOUDBET",
+                instrument_ids=[str(active.id)],
+                updated_at_ns=1,
+            ),
+        )
+
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(enabled_venues=frozenset({"CLOUDBET"})),
+        )
+        strategy.register(
+            trader_id=TraderId("TESTER-REFRESH-STALE"),
+            portfolio=TestComponentStubs.portfolio(),
+            msgbus=TestComponentStubs.msgbus(),
+            cache=cache,
+            clock=TestComponentStubs.clock(),
+        )
+        strategy._last_refresh_request_at_ns["CLOUDBET"] = 2
+
+        active_cached = strategy._active_cached_venue_instruments("CLOUDBET")
+
+        ensure(set(active_cached) == {active, stale})
 
     def test_stats_success_rate_calculation(self, default_config):  # skipcq
         """
