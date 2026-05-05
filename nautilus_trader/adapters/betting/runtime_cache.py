@@ -26,7 +26,7 @@ def encode_active_venue_instrument_index(
     payload = {
         "venue": venue.strip().upper(),
         "instrument_ids": sorted(
-            {str(instrument_id) for instrument_id in instrument_ids if instrument_id}
+            {str(instrument_id) for instrument_id in instrument_ids if instrument_id},
         ),
         "updated_at_ns": int(updated_at_ns),
     }

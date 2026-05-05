@@ -518,8 +518,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 self.clock.cancel_timer(self._instrument_reconcile_timer_name(venue_value))
             except Exception as exc:
                 self.log.warning(
-                    "Unable to cancel instrument reconcile timer: "
-                    f"venue={venue_value} error={exc}",
+                    f"Unable to cancel instrument reconcile timer: venue={venue_value} error={exc}",
                 )
         self._pending_refresh_reconcile_venues.clear()
 
@@ -590,7 +589,10 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 continue
             if not self._instrument_available_for_refresh(betting_instrument, venue_value):
                 continue
-            if current_active_ids is not None and str(betting_instrument.id) not in current_active_ids:
+            if (
+                current_active_ids is not None
+                and str(betting_instrument.id) not in current_active_ids
+            ):
                 continue
             active_cached.append(betting_instrument)
         return active_cached
