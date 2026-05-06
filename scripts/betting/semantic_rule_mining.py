@@ -495,6 +495,7 @@ def _report_coverage(args: argparse.Namespace) -> None:
         "promoted_safety_tier_counts": dict(
             sorted(Counter(template.safety_tier for template in promoted_templates).items()),
         ),
+        "promoted_template_strictness": _promoted_template_strictness(promoted_templates),
         "normalized_market_coverage": _normalized_market_coverage(normalized_records),
         "template_coverage": _template_coverage(candidate_templates, promoted_templates),
         "provider_coverage": provider_coverage,
@@ -616,6 +617,61 @@ def _template_coverage_key(template: Any) -> str:
             str(template.safety_tier),
         ],
     )
+
+
+def _promoted_template_strictness(promoted_templates: list[Any]) -> dict[str, object]:
+    by_family_tier: Counter[str] = Counter()
+    strict_blockers: Counter[str] = Counter()
+    blocker_samples: dict[str, list[dict[str, object]]] = {}
+    same_venue_breakdown: Counter[str] = Counter()
+    execution_safe_breakdown: Counter[str] = Counter()
+    caveat_counts: Counter[str] = Counter()
+
+    for template in promoted_templates:
+        breakdown_key = _template_coverage_key(template)
+        by_family_tier[breakdown_key] += 1
+        for caveat in getattr(template, "caveats", ()) or ():
+            caveat_counts[str(caveat)] += 1
+        if template.execution_safe:
+            execution_safe_breakdown[breakdown_key] += 1
+            continue
+        if template.same_venue_execution_eligible:
+            same_venue_breakdown[breakdown_key] += 1
+        for blocker in _strict_execution_blockers(template):
+            strict_blockers[blocker] += 1
+            samples = blocker_samples.setdefault(blocker, [])
+            if len(samples) < 3:
+                samples.append(_template_blocker_sample(template))
+
+    return {
+        "by_family_tier": dict(sorted(by_family_tier.items())),
+        "strict_execution_blocker_counts": dict(sorted(strict_blockers.items())),
+        "strict_execution_blocker_samples": dict(sorted(blocker_samples.items())),
+        "same_venue_eligible_breakdown": dict(sorted(same_venue_breakdown.items())),
+        "execution_safe_breakdown": dict(sorted(execution_safe_breakdown.items())),
+        "caveat_counts": dict(sorted(caveat_counts.items())),
+    }
+
+
+def _strict_execution_blockers(template: Any) -> tuple[str, ...]:
+    blockers: list[str] = []
+    if template.same_venue_execution_eligible:
+        blockers.append("same_venue_risk_engine_elevation_required")
+    if template.relationship_type != "COMPLEMENTARY_COVERAGE":
+        blockers.append("non_complementary_relationship")
+    if template.has_void:
+        blockers.append("void_states_present")
+    if template.has_partial:
+        blockers.append("partial_settlement_present")
+    if template.has_unknown:
+        blockers.append("unknown_settlement_present")
+    if not template.support.catalog_promotable:
+        blockers.append("catalog_support_below_gate")
+    for caveat in template.caveats:
+        blockers.append(f"caveat:{caveat}")
+    if not blockers and not template.execution_safe:
+        blockers.extend(str(reason) for reason in getattr(template, "eligibility_reasons", ()))
+    return tuple(sorted(set(blockers)))
 
 
 def _coverage_blocker_counts(proofs: list[Any]) -> dict[str, int]:

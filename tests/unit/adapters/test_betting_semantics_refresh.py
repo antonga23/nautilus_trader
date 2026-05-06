@@ -1444,6 +1444,10 @@ def test_semantic_rule_mining_cli_reports_tiered_promotion_counts(tmp_path):
     assert "coverage_proof_breakdown" in report_payload
     assert "candidate_safety_tier_counts" in report_payload
     assert "promoted_safety_tier_counts" in report_payload
+    assert "promoted_template_strictness" in report_payload
+    assert "strict_execution_blocker_counts" in report_payload["promoted_template_strictness"]
+    assert report_payload["promoted_template_strictness"]["strict_execution_blocker_counts"]
+    assert "same_venue_eligible_breakdown" in report_payload["promoted_template_strictness"]
     assert "normalized_market_coverage" in report_payload
     assert "template_coverage" in report_payload
     assert "blocker_samples" in report_payload["template_coverage"]
