@@ -13,6 +13,10 @@ on:
         description: Stop containers after archiving
         required: false
         default: 'false'
+      remove:
+        description: Remove containers and node dirs after archiving
+        required: false
+        default: 'false'
       root_dir:
         description: Host strategy-node root
         required: false
@@ -78,6 +82,7 @@ jobs:
         env:
           INPUT_CONTAINERS: ${{ github.event.inputs.containers }}
           INPUT_STOP: ${{ github.event.inputs.stop }}
+          INPUT_REMOVE: ${{ github.event.inputs.remove }}
           INPUT_ROOT_DIR: ${{ github.event.inputs.root_dir }}
           INPUT_ARCHIVE_ROOT: ${{ github.event.inputs.archive_root }}
         run: |
@@ -96,6 +101,9 @@ jobs:
           done
           if [[ "${INPUT_STOP:-false}" == "true" ]]; then
             args+=(--stop)
+          fi
+          if [[ "${INPUT_REMOVE:-false}" == "true" ]]; then
+            args+=(--remove)
           fi
 
           bash scripts/deploy/strategy_nodes/archive_strategy_nodes.sh "${args[@]}"

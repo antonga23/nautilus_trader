@@ -22,6 +22,7 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal
+import time
 
 import msgspec
 
@@ -60,6 +61,7 @@ NANOSECONDS_PER_SECOND = 1_000_000_000
 INSTRUMENT_REFRESH_TIMER_NAME = "betting-arbitrage-instrument-refresh"
 INSTRUMENT_RECONCILE_TIMER_PREFIX = "betting-arbitrage-instrument-reconcile"
 INSTRUMENT_RECONCILE_DELAY_SECS = 5.0
+LATENCY_SAMPLE_LIMIT = 2_000
 BettingInstrument = CryptoBettingInstrument | LegacyCryptoBettingInstrument
 BETTING_INSTRUMENT_TYPES = (CryptoBettingInstrument, LegacyCryptoBettingInstrument)
 
@@ -345,6 +347,10 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._last_refresh_request_at_ns: dict[str, int] = {}
         self._seen_opportunity_pairs: set[str] = set()
         self._active_opportunity_pairs: dict[str, OpportunityPairState] = {}
+        self._graph_scan_latency_ns: list[int] = []
+        self._candidate_decision_latency_ns: list[int] = []
+        self._order_construction_latency_ns: list[int] = []
+        self._order_submit_latency_ns: list[int] = []
         self._last_arbitrage_summary_at_ns = 0
 
     @property
@@ -1076,12 +1082,17 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         if self._handle_graph_quote_tick_fast(tick, current_odds=current_odds, now_ns=now_ns):
             return
 
+        scan_started_ns = time.perf_counter_ns()
         quote_state, candidates = self._opportunity_graph.update_quote_and_evaluate(
             tick,
             odds=current_odds,
             received_ns=now_ns,
             min_profit_margin=self._config.min_profit_margin,
             now_ns=now_ns,
+        )
+        self._record_latency_sample(
+            self._graph_scan_latency_ns,
+            time.perf_counter_ns() - scan_started_ns,
         )
         if quote_state is None:
             return
@@ -1104,12 +1115,17 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         current_odds: Decimal,
         now_ns: int,
     ) -> bool:
+        scan_started_ns = time.perf_counter_ns()
         fast_scan = self._opportunity_graph.update_quote_and_scan_fast(
             tick,
             odds=current_odds,
             received_ns=now_ns,
             min_profit_margin=self._config.min_profit_margin,
             now_ns=now_ns,
+        )
+        self._record_latency_sample(
+            self._graph_scan_latency_ns,
+            time.perf_counter_ns() - scan_started_ns,
         )
         if fast_scan is not None:
             quote_updated, snapshots = fast_scan
@@ -1134,10 +1150,19 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
     ) -> None:
         log_summary = False
         for snapshot in snapshots:
+            decision_started_ns = time.perf_counter_ns()
             if self._suppress_fast_snapshot_before_context(snapshot, now_ns):
+                self._record_latency_sample(
+                    self._candidate_decision_latency_ns,
+                    time.perf_counter_ns() - decision_started_ns,
+                )
                 log_summary = True
                 continue
             log_summary = self._handle_fast_actionable_snapshot(snapshot, now_ns) or log_summary
+            self._record_latency_sample(
+                self._candidate_decision_latency_ns,
+                time.perf_counter_ns() - decision_started_ns,
+            )
         if log_summary:
             self._log_arbitrage_summary()
 
@@ -1738,6 +1763,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         candidate: OpportunityCandidate,
         now_ns: int,
     ) -> None:
+        decision_started_ns = time.perf_counter_ns()
         self._raw_arbitrage_detections += 1
         diagnostics = self._build_arbitrage_diagnostics(
             opportunity=candidate.opportunity,
@@ -1749,6 +1775,10 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         )
         if self._suppress_arbitrage_candidate(diagnostics):
             self._log_arbitrage_summary()
+            self._record_latency_sample(
+                self._candidate_decision_latency_ns,
+                time.perf_counter_ns() - decision_started_ns,
+            )
             return
 
         self._record_opportunity_pair(
@@ -1760,6 +1790,10 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._executable_candidates += 1
         self._handle_arbitrage_opportunity(candidate.opportunity, diagnostics)
         self._log_arbitrage_summary()
+        self._record_latency_sample(
+            self._candidate_decision_latency_ns,
+            time.perf_counter_ns() - decision_started_ns,
+        )
 
     @staticmethod
     def _opportunity_match_type(
@@ -2616,6 +2650,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self.log.info(msg)
 
         # Create limit orders for both sides
+        construction_started_ns = time.perf_counter_ns()
         # Order A (higher odds side)
         instrument_a = opportunity.instrument_a
         instrument_b = opportunity.instrument_b
@@ -2635,12 +2670,21 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             price=instrument_b.make_price(float(opportunity.odds_b)),
             time_in_force=TimeInForce.GTC,
         )
+        self._record_latency_sample(
+            self._order_construction_latency_ns,
+            time.perf_counter_ns() - construction_started_ns,
+        )
 
         # Submit both orders
         # Note: In practice, you'd want to submit these with minimal delay
         # and handle cases where one fills but the other doesn't
+        submit_started_ns = time.perf_counter_ns()
         self.submit_order(order_a)
         self.submit_order(order_b)
+        self._record_latency_sample(
+            self._order_submit_latency_ns,
+            time.perf_counter_ns() - submit_started_ns,
+        )
 
         self._opportunities_executed += 1
 
@@ -2661,6 +2705,39 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         """
         msg = f"Order rejected: {event}"
         self.log.warning(msg)
+
+    @staticmethod
+    def _record_latency_sample(samples: list[int], elapsed_ns: int) -> None:
+        samples.append(max(0, int(elapsed_ns)))
+        if len(samples) > LATENCY_SAMPLE_LIMIT:
+            del samples[: len(samples) - LATENCY_SAMPLE_LIMIT]
+
+    @staticmethod
+    def _latency_summary(samples: list[int]) -> dict[str, float | int]:
+        if not samples:
+            return {"count": 0, "p50_ms": 0.0, "p95_ms": 0.0, "p99_ms": 0.0, "max_ms": 0.0}
+        ordered = sorted(samples)
+        return {
+            "count": len(ordered),
+            "p50_ms": round(
+                BettingArbitrageStrategy._latency_percentile_ms(ordered, 0.50),
+                6,
+            ),
+            "p95_ms": round(
+                BettingArbitrageStrategy._latency_percentile_ms(ordered, 0.95),
+                6,
+            ),
+            "p99_ms": round(
+                BettingArbitrageStrategy._latency_percentile_ms(ordered, 0.99),
+                6,
+            ),
+            "max_ms": round(ordered[-1] / 1_000_000, 6),
+        }
+
+    @staticmethod
+    def _latency_percentile_ms(ordered_samples: list[int], percentile: float) -> float:
+        index = max(0, min(len(ordered_samples) - 1, int((len(ordered_samples) - 1) * percentile)))
+        return ordered_samples[index] / 1_000_000
 
     def get_stats(self) -> dict:
         """
@@ -2698,6 +2775,16 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             "instrument_refresh_delisted_removed": self._instrument_refresh_delisted_removed,
             "instrument_refresh_graph_rebuilds": self._instrument_refresh_graph_rebuilds,
             "quote_unsubscribe_requests": self._quote_unsubscribe_requests,
+            "latency_diagnostics": {
+                "graph_scan": self._latency_summary(self._graph_scan_latency_ns),
+                "candidate_decision": self._latency_summary(
+                    self._candidate_decision_latency_ns,
+                ),
+                "order_construction": self._latency_summary(
+                    self._order_construction_latency_ns,
+                ),
+                "order_submit": self._latency_summary(self._order_submit_latency_ns),
+            },
             "success_rate": (
                 self._opportunities_executed / self._opportunities_found
                 if self._opportunities_found > 0

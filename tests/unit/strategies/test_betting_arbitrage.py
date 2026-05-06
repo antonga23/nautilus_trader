@@ -1455,6 +1455,19 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(live.max_pair_skew_secs == 1.0)
         ensure(live.max_fetch_latency_secs == 2.0)
 
+    def test_latency_summary_reports_percentiles(self):  # skipcq
+        samples: list[int] = []
+        BettingArbitrageStrategy._record_latency_sample(samples, 1_000_000)
+        BettingArbitrageStrategy._record_latency_sample(samples, 2_000_000)
+        BettingArbitrageStrategy._record_latency_sample(samples, 3_000_000)
+
+        summary = BettingArbitrageStrategy._latency_summary(samples)
+
+        ensure(summary["count"] == 3)
+        ensure(summary["p50_ms"] == 2.0)
+        ensure(summary["p95_ms"] == 2.0)
+        ensure(summary["max_ms"] == 3.0)
+
     def test_arbitrage_diagnostics_flags_fetch_latency(self):  # skipcq
         strategy = BettingArbitrageStrategy(
             config=BettingArbitrageConfig(

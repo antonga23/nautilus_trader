@@ -79,6 +79,22 @@ def _runtime_status_payload() -> dict[str, object]:
                     "TOTALS + TOTALS": {"positive": 2},
                     "MATCH_ODDS + MATCH_ODDS": {"stale": 5},
                 },
+                "latencyHistograms": {
+                    "quoteAgeSeconds": {"count": 8, "p50": 0.5, "p95": 1.2, "p99": 1.4, "max": 1.5},
+                    "fetchLatencySeconds": {
+                        "count": 8,
+                        "p50": 0.05,
+                        "p95": 0.2,
+                        "p99": 0.25,
+                        "max": 0.3,
+                    },
+                    "pairSkewSeconds": {"count": 4, "p50": 0.2, "p95": 0.7, "p99": 0.8, "max": 0.9},
+                },
+                "liveQuoteAgeSlo": {
+                    "maxQuoteAgeSeconds": 5.0,
+                    "observations": 8,
+                    "violations": 0,
+                },
                 "blockerSamples": {
                     "void_settlement": [
                         {"instrumentIdA": "a", "instrumentIdB": "b"},
@@ -115,6 +131,8 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
     assert summary["candidateQuality"]["blockerSamples"]["void_settlement"] == [
         {"instrumentIdA": "a", "instrumentIdB": "b"},
     ]
+    assert summary["candidateQuality"]["latencyHistograms"]["quoteAgeSeconds"]["p95"] == 1.2
+    assert summary["candidateQuality"]["liveQuoteAgeSlo"]["violations"] == 0
     assert summary["candidateQuality"]["diagnosticWarnings"] == []
 
 
