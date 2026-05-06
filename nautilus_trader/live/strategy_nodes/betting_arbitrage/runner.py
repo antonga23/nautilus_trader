@@ -1133,10 +1133,12 @@ def _venue_pair_coverage(
     zero_pairs = [
         _zero_venue_pair_report(
             pair,
+            strategy=strategy,
             nodes=nodes,
             node_counts=node_counts,
             edge_counts=edge_counts,
             quoted_edge_counts=quoted_edge_counts,
+            candidate_count=candidate_counts.get(pair, 0),
         )
         for pair in all_pairs
         if candidate_counts.get(pair, 0) == 0
@@ -1263,10 +1265,12 @@ def _zero_venue_pair_reason(
 def _zero_venue_pair_report(
     pair: str,
     *,
+    strategy,
     nodes: dict[Any, object],
     node_counts: Counter[str],
     edge_counts: Counter[str],
     quoted_edge_counts: Counter[str],
+    candidate_count: int,
 ) -> dict[str, object]:
     reason = _zero_venue_pair_reason(
         pair,
@@ -1274,11 +1278,19 @@ def _zero_venue_pair_report(
         edge_counts=edge_counts,
         quoted_edge_counts=quoted_edge_counts,
     )
-    report: dict[str, object] = {"venuePair": pair, "reason": reason}
+    source, target = pair.split("->", maxsplit=1)
+    report: dict[str, object] = {
+        "venuePair": pair,
+        "reason": reason,
+        "sourceNodeCount": node_counts.get(source, 0),
+        "targetNodeCount": node_counts.get(target, 0),
+        "edgeCount": edge_counts.get(pair, 0),
+        "quotedEdgeCount": quoted_edge_counts.get(pair, 0),
+        "candidateCount": int(candidate_count),
+    }
     if reason == "missing_instruments":
         return report
 
-    source, target = pair.split("->", maxsplit=1)
     source_nodes = _sample_probe_nodes_for_venue(nodes, source)
     target_nodes = _sample_probe_nodes_for_venue(nodes, target)
     source_event_keys = {_probe_event_key_no_time(node) for node in source_nodes}
@@ -1299,10 +1311,12 @@ def _zero_venue_pair_report(
     report["targetEventKeySamples"] = sorted(target_event_keys - {""})[:5]
     if reason == "no_semantic_edge" and not common_event_keys:
         report["marketFamilyPairs"] = {}
+        report["sampleBlockerCounts"] = {}
         report["samples"] = []
         return report
 
     market_family_pairs: Counter[str] = Counter()
+    sample_blocker_counts: Counter[str] = Counter()
     samples: list[dict[str, object]] = []
     for source_node, target_node in _sample_zero_pair_nodes(
         source_nodes=source_nodes,
@@ -1311,19 +1325,15 @@ def _zero_venue_pair_report(
     ):
         family = _probe_market_family(source_node, target_node)
         market_family_pairs[family] += 1
+        sample = _zero_pair_sample_payload(strategy, source_node, target_node)
+        blocker_hint = str(sample.get("blockerHint") or "")
+        if blocker_hint:
+            sample_blocker_counts[blocker_hint] += 1
         if len(samples) < 5:
-            samples.append(
-                {
-                    "instrumentIdA": str(getattr(source_node.instrument, "id", "")),
-                    "instrumentIdB": str(getattr(target_node.instrument, "id", "")),
-                    "eventKeyA": _probe_event_key_no_time(source_node),
-                    "eventKeyB": _probe_event_key_no_time(target_node),
-                    "marketFamily": family,
-                    "patternA": _probe_pattern_payload(source_node),
-                    "patternB": _probe_pattern_payload(target_node),
-                },
-            )
+            sample["marketFamily"] = family
+            samples.append(sample)
     report["marketFamilyPairs"] = dict(market_family_pairs)
+    report["sampleBlockerCounts"] = dict(sorted(sample_blocker_counts.items()))
     report["samples"] = samples
     if reason == "no_semantic_edge" and samples:
         report["blockerReason"] = _zero_pair_sample_blocker(samples, report["blockerReason"])
@@ -1334,7 +1344,11 @@ def _zero_pair_sample_blocker(samples: list[dict[str, object]], fallback: object
     fallback_reason = str(fallback or CoverageBlockerReason.NO_SEMANTIC_EDGE.value)
     if fallback_reason == CoverageBlockerReason.FIXTURE_IDENTITY_MISMATCH.value:
         return fallback_reason
+    blocker_hints: Counter[str] = Counter()
     for sample in samples:
+        blocker_hint = str(sample.get("blockerHint") or "")
+        if blocker_hint:
+            blocker_hints[blocker_hint] += 1
         pattern_a = sample.get("patternA")
         pattern_b = sample.get("patternB")
         if not isinstance(pattern_a, dict) or not isinstance(pattern_b, dict):
@@ -1345,7 +1359,83 @@ def _zero_pair_sample_blocker(samples: list[dict[str, object]], fallback: object
             "paramsKey",
         ) != pattern_b.get("paramsKey"):
             return CoverageBlockerReason.SAME_MARKET_PARAMS_MISMATCH.value
+    if blocker_hints:
+        return blocker_hints.most_common(1)[0][0]
     return fallback_reason
+
+
+def _zero_pair_sample_payload(strategy, source_node, target_node) -> dict[str, object]:
+    instrument_a = source_node.instrument
+    instrument_b = target_node.instrument
+    pattern_a = _probe_pattern_payload(source_node)
+    pattern_b = _probe_pattern_payload(target_node)
+    matcher_suspect, suspect_reason = _strategy_matcher_suspect_reason(
+        strategy,
+        instrument_a,
+        instrument_b,
+    )
+    fixture_suspect, fixture_suspect_reason = _semantic_fixture_suspect_reason(
+        strategy,
+        instrument_a,
+        instrument_b,
+    )
+    blocker_hint = _zero_pair_blocker_hint(
+        pattern_a,
+        pattern_b,
+        suspect_reason=suspect_reason,
+        fixture_suspect=fixture_suspect,
+        fixture_suspect_reason=fixture_suspect_reason,
+    )
+    return {
+        "instrumentIdA": str(getattr(instrument_a, "id", "")),
+        "instrumentIdB": str(getattr(instrument_b, "id", "")),
+        "eventKeyA": _probe_event_key_no_time(source_node),
+        "eventKeyB": _probe_event_key_no_time(target_node),
+        "patternA": pattern_a,
+        "patternB": pattern_b,
+        "matcherSuspect": matcher_suspect,
+        "matcherSuspectReason": suspect_reason,
+        "fixtureSuspect": fixture_suspect,
+        "fixtureSuspectReason": fixture_suspect_reason,
+        "blockerHint": blocker_hint,
+    }
+
+
+def _strategy_matcher_suspect_reason(strategy, instrument_a, instrument_b) -> tuple[bool, str]:
+    checker = getattr(strategy, "matcher_suspect_reason", None)
+    if checker is None:
+        checker = getattr(strategy, "_matcher_suspect_reason", None)
+    if checker is None:
+        from nautilus_trader.examples.strategies.betting_arbitrage import (
+            BettingArbitrageStrategy,
+        )
+
+        checker = BettingArbitrageStrategy.matcher_suspect_reason
+    return checker(instrument_a, instrument_b)
+
+
+def _zero_pair_blocker_hint(
+    pattern_a: dict[str, object],
+    pattern_b: dict[str, object],
+    *,
+    suspect_reason: str,
+    fixture_suspect: bool,
+    fixture_suspect_reason: str,
+) -> str:
+    if fixture_suspect and fixture_suspect_reason in {
+        "same_venue_event_id_mismatch",
+        "event_mismatch",
+    }:
+        return CoverageBlockerReason.FIXTURE_IDENTITY_MISMATCH.value
+    if suspect_reason == "same_market_params_mismatch":
+        return CoverageBlockerReason.SAME_MARKET_PARAMS_MISMATCH.value
+    if pattern_a.get("scope") != pattern_b.get("scope"):
+        return CoverageBlockerReason.SCOPE_MISMATCH.value
+    if pattern_a.get("marketFamily") == pattern_b.get("marketFamily") and pattern_a.get(
+        "paramsKey",
+    ) != pattern_b.get("paramsKey"):
+        return CoverageBlockerReason.SAME_MARKET_PARAMS_MISMATCH.value
+    return ""
 
 
 def _sample_probe_nodes_for_venue(nodes: dict[Any, object], venue: str, limit: int = 40) -> list:
@@ -1366,18 +1456,50 @@ def _sample_zero_pair_nodes(
     common_event_keys: set[str],
     limit: int = 12,
 ) -> list[tuple[object, object]]:
-    pairs: list[tuple[object, object]] = []
     if common_event_keys:
-        for source_node in source_nodes:
-            source_key = _probe_event_key_no_time(source_node)
-            if source_key not in common_event_keys:
+        pairs = _sample_zero_pair_nodes_for_common_events(
+            source_nodes,
+            target_nodes,
+            common_event_keys=common_event_keys,
+            limit=limit,
+        )
+        if pairs:
+            return pairs
+    return _sample_zero_pair_nodes_fallback(
+        source_nodes,
+        target_nodes,
+        limit=limit,
+    )
+
+
+def _sample_zero_pair_nodes_for_common_events(
+    source_nodes: list,
+    target_nodes: list,
+    *,
+    common_event_keys: set[str],
+    limit: int,
+) -> list[tuple[object, object]]:
+    pairs: list[tuple[object, object]] = []
+    for source_node in source_nodes:
+        source_key = _probe_event_key_no_time(source_node)
+        if source_key not in common_event_keys:
+            continue
+        for target_node in target_nodes:
+            if _probe_event_key_no_time(target_node) != source_key:
                 continue
-            for target_node in target_nodes:
-                if _probe_event_key_no_time(target_node) != source_key:
-                    continue
-                pairs.append((source_node, target_node))
-                if len(pairs) >= limit:
-                    return pairs
+            pairs.append((source_node, target_node))
+            if len(pairs) >= limit:
+                return pairs
+    return pairs
+
+
+def _sample_zero_pair_nodes_fallback(
+    source_nodes: list,
+    target_nodes: list,
+    *,
+    limit: int,
+) -> list[tuple[object, object]]:
+    pairs: list[tuple[object, object]] = []
     for source_node in source_nodes[:4]:
         for target_node in target_nodes[:4]:
             pairs.append((source_node, target_node))
@@ -1948,7 +2070,15 @@ def _semantic_fixture_suspect_reason(
 ) -> tuple[bool, str]:
     checker = getattr(strategy, "semantic_fixture_suspect_reason", None)
     if checker is None:
-        checker = strategy.matcher_suspect_reason
+        checker = getattr(strategy, "_semantic_fixture_suspect_reason", None)
+    if checker is None:
+        checker = getattr(strategy, "matcher_suspect_reason", None)
+    if checker is None:
+        from nautilus_trader.examples.strategies.betting_arbitrage import (
+            BettingArbitrageStrategy,
+        )
+
+        checker = BettingArbitrageStrategy.semantic_fixture_suspect_reason
     return checker(instrument_a, instrument_b)
 
 

@@ -2075,7 +2075,13 @@ class TestBettingArbitrageNodeRunner:
         assert zero_reports["SXBET->CLOUDBET"]["blockerReason"] == (
             "quotes_missing_for_semantic_edges"
         )
+        assert zero_reports["SXBET->CLOUDBET"]["sourceNodeCount"] == 1
+        assert zero_reports["SXBET->CLOUDBET"]["targetNodeCount"] == 1
+        assert zero_reports["SXBET->CLOUDBET"]["edgeCount"] == 1
+        assert zero_reports["SXBET->CLOUDBET"]["quotedEdgeCount"] == 0
+        assert zero_reports["SXBET->CLOUDBET"]["candidateCount"] == 0
         assert zero_reports["SXBET->CLOUDBET"]["commonEventKeyCount"] == 1
+        assert zero_reports["SXBET->CLOUDBET"]["sampleBlockerCounts"] == {}
         assert zero_reports["SXBET->CLOUDBET"]["samples"][0]["marketFamily"] == (
             "MATCH_ODDS + MATCH_ODDS"
         )
@@ -2122,8 +2128,64 @@ class TestBettingArbitrageNodeRunner:
         report = reports["SXBET->CLOUDBET"]
         assert report["reason"] == "no_semantic_edge"
         assert report["blockerReason"] == "no_common_fixture"
+        assert report["sourceNodeCount"] == 1
+        assert report["targetNodeCount"] == 1
+        assert report["edgeCount"] == 0
+        assert report["quotedEdgeCount"] == 0
+        assert report["candidateCount"] == 0
         assert report["commonEventKeyCount"] == 0
+        assert report["sampleBlockerCounts"] == {}
         assert report["samples"] == []
+
+    def test_venue_pair_coverage_infers_same_market_params_mismatch_from_samples(self):
+        sxbet_instrument = _instrument(
+            venue="SXBET",
+            market_type="totals",
+            market_name="TOTALS",
+            outcome="over",
+            params="line=2.5",
+            event_id="event-1",
+            event_name="Team A vs Team B",
+            home_name="Team A",
+            away_name="Team B",
+            sport_name="soccer",
+        )
+        cloudbet_instrument = _instrument(
+            venue="CLOUDBET",
+            market_type="totals",
+            market_name="TOTALS",
+            outcome="under",
+            params="line=3.5",
+            event_id="event-2",
+            event_name="Team A vs Team B",
+            home_name="Team A",
+            away_name="Team B",
+            sport_name="soccer",
+        )
+        strategy = SimpleNamespace(
+            _config=SimpleNamespace(enabled_venues=frozenset({"CLOUDBET", "SXBET"})),
+            _quote_subscribed_instrument_ids={sxbet_instrument.id, cloudbet_instrument.id},
+        )
+
+        coverage = node_runner._venue_pair_coverage(
+            strategy,
+            edges=[],
+            nodes={
+                "sxbet-node": SimpleNamespace(instrument=sxbet_instrument),
+                "cloudbet-node": SimpleNamespace(instrument=cloudbet_instrument),
+            },
+            quotes={},
+            matched_node_ids=set(),
+            candidate_venue_pairs={},
+        )
+
+        reports = {item["venuePair"]: item for item in coverage["zeroCandidateVenuePairs"]}
+        report = reports["SXBET->CLOUDBET"]
+        assert report["reason"] == "no_semantic_edge"
+        assert report["blockerReason"] == "same_market_params_mismatch"
+        assert report["sampleBlockerCounts"] == {"same_market_params_mismatch": 1}
+        assert report["samples"][0]["blockerHint"] == "same_market_params_mismatch"
+        assert report["samples"][0]["matcherSuspectReason"] == "same_market_params_mismatch"
 
     def test_runtime_probe_candidate_samples_include_dry_run_provenance(self):
         instrument_a = _instrument(
