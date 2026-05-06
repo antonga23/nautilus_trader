@@ -29,6 +29,8 @@ def _runtime_status_payload() -> dict[str, object]:
             "promotedTemplateCount": 1248,
             "executionSafeTemplateCount": 65,
             "sameVenueExecutionEligibleTemplateCount": 237,
+            "promotedSafetyTierCounts": {"EXECUTION_SAFE": 65, "TOPOLOGY_SAFE": 900},
+            "strictExecutionBlockerCounts": {"void_states_present": 40},
         },
         "runtimeProbe": {
             "graphEngine": "rust",
@@ -196,11 +198,18 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
     summary = module.summarize_payload(_runtime_status_payload(), top_limit=1)
 
     assert summary["semanticCache"]["promotedTemplateCount"] == 1248
+    assert summary["semanticCache"]["promotedSafetyTierCounts"]["EXECUTION_SAFE"] == 65
+    assert summary["semanticCache"]["strictExecutionBlockerCounts"] == {"void_states_present": 40}
     assert summary["graph"]["engine"] == "rust"
     assert summary["graph"]["topologySource"] == "rust_semantic"
     assert summary["graph"]["coverageHyperedgeCount"] == 482
     assert summary["graph"]["coverageDiagnostics"]["executionSafeCoverageHyperedgeCount"] == 4
     assert summary["graph"]["coverageDiagnostics"]["sameVenueEligibleCoverageProofCount"] == 2
+    assert summary["graph"]["topCoverageBlockerReasons"] == [
+        {"key": "void_settlement", "value": 3},
+    ]
+    assert summary["graph"]["sampleCoverageProofs"] == []
+    assert summary["graph"]["diagnosticWarnings"] == []
     assert summary["graph"]["quotedSemanticMatchInstruments"] == 14
     assert summary["graph"]["executionSafeEdges"] == 9
     assert summary["candidates"]["positiveTotal"] == 3
@@ -233,6 +242,25 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
     assert summary["semanticDiagnostics"]["unsupportedProviderPatternSamples"][0]["provider"] == (
         "POLYMARKET"
     )
+
+
+def test_runtime_probe_report_flags_missing_coverage_diagnostics():
+    module = _load_module()
+
+    summary = module.summarize_payload(
+        {
+            "runtimeProbe": {
+                "semanticTemplateCount": 5,
+                "coverageProofCount": 0,
+                "coverageHyperedgeCount": 0,
+            },
+        },
+    )
+
+    assert summary["graph"]["diagnosticWarnings"] == [
+        "semantic_templates_without_coverage_proofs",
+        "semantic_templates_without_coverage_hyperedges",
+    ]
 
 
 def test_runtime_probe_report_flags_legacy_semantic_blocked_artifacts():
@@ -298,6 +326,7 @@ def test_runtime_probe_report_aggregates_multiple_artifacts():
         "semantic_blocked_without_blocker_samples": 1,
         "semantic_blocked_without_reason_breakdown": 1,
     }
+    assert aggregate["graphDiagnosticWarningCounts"] == {}
 
 
 def test_runtime_probe_report_cli_outputs_json_and_text(tmp_path, monkeypatch, capsys):
@@ -325,6 +354,7 @@ def test_runtime_probe_report_cli_outputs_json_and_text(tmp_path, monkeypatch, c
     text_output = capsys.readouterr().out
     assert "graph=rust/rust_semantic" in text_output
     assert "coverage proofs=5367 hyperedges=482" in text_output
+    assert "coverage_blockers void_settlement=3" in text_output
     assert "candidates positive=3 threshold=2 cross_venue=2" in text_output
     assert "aggregate: artifacts=1 positive=3 threshold=2 cross_venue=2" in text_output
     assert "top_semantic_blockers" in text_output

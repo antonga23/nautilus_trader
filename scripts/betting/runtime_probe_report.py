@@ -59,6 +59,14 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
     threshold = runtime.get("thresholdMarginCandidates")
     blocker_samples = _as_dict(candidate_quality.get("blockerSamples"))
     diagnostic_warnings = _diagnostic_warnings(candidate_quality)
+    graph_diagnostic_warnings = _graph_diagnostic_warnings(
+        {
+            "semanticTemplateCount": runtime.get("semanticTemplateCount"),
+            "coverageProofCount": runtime.get("coverageProofCount"),
+            "coverageHyperedgeCount": runtime.get("coverageHyperedgeCount"),
+            "coverageDiagnostics": coverage_diagnostics,
+        },
+    )
 
     return {
         "nodeId": payload.get("nodeId"),
@@ -72,6 +80,8 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
             "sameVenueExecutionEligibleTemplateCount": semantic_cache.get(
                 "sameVenueExecutionEligibleTemplateCount",
             ),
+            "promotedSafetyTierCounts": semantic_cache.get("promotedSafetyTierCounts"),
+            "strictExecutionBlockerCounts": semantic_cache.get("strictExecutionBlockerCounts"),
         },
         "graph": {
             "engine": runtime.get("graphEngine"),
@@ -89,6 +99,20 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
             "sameVenueExecutionEligibleEdges": runtime.get("sameVenueExecutionEligibleEdges"),
             "quotedEdges": runtime.get("quotedEdges"),
             "coverageDiagnostics": coverage_diagnostics,
+            "topCoverageBlockerReasons": _top_items(
+                _as_dict(coverage_diagnostics.get("proofBlockerReasonCounts")),
+                limit=top_limit,
+            ),
+            "topCoverageGapReasons": _top_items(
+                _as_dict(coverage_diagnostics.get("proofGapReasonCounts")),
+                limit=top_limit,
+            ),
+            "topCoverageRiskReasons": _top_items(
+                _as_dict(coverage_diagnostics.get("proofRiskReasonCounts")),
+                limit=top_limit,
+            ),
+            "sampleCoverageProofs": (coverage_diagnostics.get("sampleProofs") or [])[:top_limit],
+            "diagnosticWarnings": graph_diagnostic_warnings,
         },
         "candidates": {
             "positiveTotal": _candidate_total(positive),
@@ -173,6 +197,7 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
 
 def aggregate_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
     warning_counts: dict[str, int] = {}
+    graph_warning_counts: dict[str, int] = {}
     engine_counts: dict[str, int] = {}
     topology_counts: dict[str, int] = {}
     for summary in summaries:
@@ -184,6 +209,8 @@ def aggregate_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
         quality = _as_dict(summary.get("candidateQuality"))
         for warning in quality.get("diagnosticWarnings") or []:
             warning_counts[str(warning)] = warning_counts.get(str(warning), 0) + 1
+        for warning in _as_dict(summary.get("graph")).get("diagnosticWarnings") or []:
+            graph_warning_counts[str(warning)] = graph_warning_counts.get(str(warning), 0) + 1
 
     return {
         "artifactCount": len(summaries),
@@ -217,6 +244,7 @@ def aggregate_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
             for summary in summaries
         ),
         "diagnosticWarningCounts": dict(sorted(warning_counts.items())),
+        "graphDiagnosticWarningCounts": dict(sorted(graph_warning_counts.items())),
     }
 
 
@@ -249,6 +277,21 @@ def _diagnostic_warnings(candidate_quality: dict[str, Any]) -> list[str]:
         warnings.append("missing_top_positive_candidates")
     if not candidate_quality.get("topNegativeNearMisses"):
         warnings.append("missing_top_negative_near_misses")
+    return warnings
+
+
+def _graph_diagnostic_warnings(graph: dict[str, Any]) -> list[str]:
+    warnings: list[str] = []
+    semantic_template_count = _int_value(graph.get("semanticTemplateCount"))
+    coverage_proof_count = _int_value(graph.get("coverageProofCount"))
+    coverage_hyperedge_count = _int_value(graph.get("coverageHyperedgeCount"))
+    coverage_diagnostics = _as_dict(graph.get("coverageDiagnostics"))
+    if semantic_template_count > 0 and coverage_proof_count == 0:
+        warnings.append("semantic_templates_without_coverage_proofs")
+    if semantic_template_count > 0 and coverage_hyperedge_count == 0:
+        warnings.append("semantic_templates_without_coverage_hyperedges")
+    if coverage_proof_count > 0 and not coverage_diagnostics:
+        warnings.append("coverage_proofs_without_diagnostics")
     return warnings
 
 
@@ -297,8 +340,11 @@ def _format_text(path: Path, summary: dict[str, Any]) -> str:
             f"failure_reasons={same_venue_dry_run.get('failureReasons', {})}",
         )
     warnings = quality.get("diagnosticWarnings") or []
+    graph_warnings = graph.get("diagnosticWarnings") or []
     if warnings:
         lines.append(f"  warnings {', '.join(warnings)}")
+    if graph_warnings:
+        lines.append(f"  graph_warnings {', '.join(graph_warnings)}")
     return "\n".join(lines)
 
 
@@ -311,6 +357,13 @@ def _format_coverage_lines(graph: dict[str, Any]) -> list[str]:
             f"proofs={coverage_diagnostics.get('executionSafeCoverageProofCount', 0)} "
             f"hyperedges={coverage_diagnostics.get('executionSafeCoverageHyperedgeCount', 0)}",
         )
+        blocker_counts = _as_dict(coverage_diagnostics.get("proofBlockerReasonCounts"))
+        if blocker_counts:
+            rendered = ", ".join(
+                f"{item['key']}={item['value']}"
+                for item in _top_items(blocker_counts, limit=5)
+            )
+            lines.append(f"  coverage_blockers {rendered}")
     return lines
 
 
