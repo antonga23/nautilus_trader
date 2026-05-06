@@ -32,6 +32,8 @@ from nautilus_trader.adapters.betting.market_matcher import ArbitrageOpportunity
 from nautilus_trader.adapters.betting.market_matcher import MarketMatcher
 from nautilus_trader.adapters.betting.runtime_cache import active_venue_instrument_index_key
 from nautilus_trader.adapters.betting.runtime_cache import decode_active_venue_instrument_index
+from nautilus_trader.adapters.betting.runtime_cache import decode_venue_quote_poll_stats
+from nautilus_trader.adapters.betting.runtime_cache import venue_quote_poll_stats_key
 from nautilus_trader.adapters.betting.semantics import FileRuleCache
 from nautilus_trader.adapters.betting.semantics import PolymarketSportsTransformer
 from nautilus_trader.adapters.betting.semantics import RuleStore
@@ -86,6 +88,8 @@ class ArbitrageDiagnostics:  # skipcq
     match_type: str
     hedge_match_type: str
     hedge_confidence: float
+    instrument_a: BettingInstrument
+    instrument_b: BettingInstrument
     event_id_a: str
     event_id_b: str
     instrument_id_a: str
@@ -200,6 +204,8 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         Maximum live quote age at strategy decision time for diagnostics.
     instrument_refresh_interval_secs : float | None, default None
         Optional timer interval for requesting refreshed venue instrument catalogs.
+    stale_quote_refresh_cooldown_secs : float | None, default 60.0
+        Minimum interval between stale-quote-triggered catalog refresh requests per venue.
 
     """
 
@@ -226,6 +232,7 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
     quote_max_fetch_latency_secs: float | None = None
     live_quote_age_slo_secs: float = 5.0
     instrument_refresh_interval_secs: float | None = None
+    stale_quote_refresh_cooldown_secs: float | None = 60.0
 
     def __post_init__(self) -> None:
         """
@@ -278,6 +285,12 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         ):
             msg = "instrument_refresh_interval_secs must be positive when set"
             raise ValueError(msg)
+        if (
+            self.stale_quote_refresh_cooldown_secs is not None
+            and self.stale_quote_refresh_cooldown_secs <= 0
+        ):
+            msg = "stale_quote_refresh_cooldown_secs must be positive when set"
+            raise ValueError(msg)
 
         msgspec.structs.force_setattr(self, "enabled_venues", enabled_venues)
         msgspec.structs.force_setattr(self, "sport_filter", normalized_sport_filter)
@@ -295,6 +308,12 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
             "live_quote_age_slo_secs",
             float(self.live_quote_age_slo_secs),
         )
+        if self.stale_quote_refresh_cooldown_secs is not None:
+            msgspec.structs.force_setattr(
+                self,
+                "stale_quote_refresh_cooldown_secs",
+                float(self.stale_quote_refresh_cooldown_secs),
+            )
 
 
 # skipcq: PYL-R0902
@@ -355,9 +374,11 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._instrument_refresh_delisted_removed = 0
         self._instrument_refresh_reconciles = 0
         self._instrument_refresh_graph_rebuilds = 0
+        self._instrument_refresh_stale_triggers = 0
         self._quote_unsubscribe_requests = 0
         self._pending_refresh_reconcile_venues: set[str] = set()
         self._last_refresh_request_at_ns: dict[str, int] = {}
+        self._last_stale_refresh_trigger_at_ns: dict[str, int] = {}
         self._seen_opportunity_pairs: set[str] = set()
         self._active_opportunity_pairs: dict[str, OpportunityPairState] = {}
         self._graph_scan_latency_ns: list[int] = []
@@ -417,6 +438,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             "semantic_unmatched_quote_probe_limit_per_venue="
             f"{self._config.semantic_unmatched_quote_probe_limit_per_venue} "
             f"instrument_refresh_interval_secs={self._config.instrument_refresh_interval_secs} "
+            "stale_quote_refresh_cooldown_secs="
+            f"{self._config.stale_quote_refresh_cooldown_secs} "
             f"manual_instructions={self._config.opportunity_log_manual_instructions}"
         )
         self.log.info(msg)
@@ -575,6 +598,53 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 self.log.warning(
                     "Unable to request refreshed betting instruments: "
                     f"venue={venue_value} error={exc}",
+                )
+
+    def _maybe_trigger_stale_quote_refresh(
+        self,
+        instrument_a: BettingInstrument,
+        instrument_b: BettingInstrument,
+        *,
+        reason: str,
+        now_ns: int,
+    ) -> None:
+        cooldown_secs = self._config.stale_quote_refresh_cooldown_secs
+        if cooldown_secs is None:
+            return
+        for venue_value in sorted(
+            {
+                str(instrument_a.id.venue).upper(),
+                str(instrument_b.id.venue).upper(),
+            },
+        ):
+            last_triggered_ns = self._last_stale_refresh_trigger_at_ns.get(venue_value, 0)
+            if last_triggered_ns > 0 and (
+                now_ns - last_triggered_ns < int(cooldown_secs * NANOSECONDS_PER_SECOND)
+            ):
+                continue
+            try:
+                self._last_stale_refresh_trigger_at_ns[venue_value] = now_ns
+                self._last_refresh_request_at_ns[venue_value] = now_ns
+                self.request_instruments(
+                    venue=Venue(venue_value),
+                    params={
+                        "semantic_refresh": True,
+                        "only_last": True,
+                        "trigger": reason,
+                    },
+                )
+                self._instrument_refresh_requests += 1
+                self._instrument_refresh_stale_triggers += 1
+                self._schedule_instrument_reconcile(venue_value)
+                self.log.info(
+                    "Requested stale-quote-driven betting instrument refresh: "
+                    f"venue={venue_value} reason={reason} cooldown_secs={cooldown_secs:.3f}",
+                )
+            except Exception as exc:
+                self._instrument_refresh_failures += 1
+                self.log.warning(
+                    "Unable to request stale-quote-driven betting instrument refresh: "
+                    f"venue={venue_value} reason={reason} error={exc}",
                 )
 
     def _reconcile_cached_venue_instruments(self, venue_value: str) -> None:
@@ -1558,6 +1628,12 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             or fetch_latency_b_secs > freshness.max_fetch_latency_secs
         ):
             self._stale_quote_suppressions += 1
+            self._maybe_trigger_stale_quote_refresh(
+                inst_a,
+                inst_b,
+                reason="fetch_latency",
+                now_ns=now_ns,
+            )
             if emit_suppression_log:
                 self.log.info(
                     "Arbitrage candidate suppressed: "
@@ -1576,6 +1652,12 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             or quote_age_b_secs > freshness.max_quote_age_secs
         ):
             self._stale_quote_suppressions += 1
+            self._maybe_trigger_stale_quote_refresh(
+                inst_a,
+                inst_b,
+                reason="stale_quote",
+                now_ns=now_ns,
+            )
             if emit_suppression_log:
                 self._log_fast_stale_suppression(
                     inst_a,
@@ -1933,6 +2015,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             match_type=opportunity.match_type,
             hedge_match_type=hedge_match_type,
             hedge_confidence=hedge_confidence,
+            instrument_a=inst_a,
+            instrument_b=inst_b,
             event_id_a=str(inst_a.event_id),
             event_id_b=str(inst_b.event_id),
             instrument_id_a=str(inst_a.id),
@@ -2092,6 +2176,12 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
 
         if diagnostics.fetch_latency_stale:
             self._stale_quote_suppressions += 1
+            self._maybe_trigger_stale_quote_refresh(
+                diagnostics.instrument_a,
+                diagnostics.instrument_b,
+                reason="fetch_latency",
+                now_ns=now_ns,
+            )
             self.log.info(
                 "Arbitrage candidate suppressed: "
                 f"reason=fetch_latency classification={diagnostics.classification} "
@@ -2106,6 +2196,12 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
 
         if diagnostics.stale:
             self._stale_quote_suppressions += 1
+            self._maybe_trigger_stale_quote_refresh(
+                diagnostics.instrument_a,
+                diagnostics.instrument_b,
+                reason="stale_quote",
+                now_ns=now_ns,
+            )
             self.log.info(
                 "Arbitrage candidate suppressed: "
                 f"reason=stale_quote classification={diagnostics.classification} "
@@ -2328,6 +2424,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             match_type=opportunity.match_type,
             hedge_match_type=hedge_match_type,
             hedge_confidence=hedge_confidence,
+            instrument_a=inst_a,
+            instrument_b=inst_b,
             event_id_a=str(inst_a.event_id),
             event_id_b=str(inst_b.event_id),
             instrument_id_a=str(inst_a.id),
@@ -2808,6 +2906,9 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             "opportunity_graph_coverage_hyperedge_count": (
                 self._opportunity_graph.coverage_hyperedge_count
             ),
+            "opportunity_graph_coverage_summary": (
+                self._opportunity_graph.semantic_coverage_summary()
+            ),
             "opportunities_found": self._opportunities_found,
             "opportunities_executed": self._opportunities_executed,
             "raw_arbitrage_detections": self._raw_arbitrage_detections,
@@ -2829,7 +2930,9 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             "instrument_refresh_delisted_removed": self._instrument_refresh_delisted_removed,
             "instrument_refresh_reconciles": self._instrument_refresh_reconciles,
             "instrument_refresh_graph_rebuilds": self._instrument_refresh_graph_rebuilds,
+            "instrument_refresh_stale_triggers": self._instrument_refresh_stale_triggers,
             "quote_unsubscribe_requests": self._quote_unsubscribe_requests,
+            "provider_quote_poll_stats": self._provider_quote_poll_stats(),
             "latency_diagnostics": {
                 "quote_event_to_strategy": self._latency_summary(
                     self._quote_event_to_strategy_latency_ns,
@@ -2855,3 +2958,36 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 else 0
             ),
         }
+
+    def _provider_quote_poll_stats(self) -> dict[str, dict[str, object]]:
+        stats: dict[str, dict[str, object]] = {}
+        for venue_value in sorted(self._config.enabled_venues):
+            try:
+                raw = self.cache.get(venue_quote_poll_stats_key(venue_value))
+            except Exception as exc:
+                self.log.debug(
+                    "Unable to read provider quote poll stats: "
+                    f"venue={venue_value} error={exc}",
+                )
+                continue
+            payload = decode_venue_quote_poll_stats(raw)
+            if payload is None:
+                continue
+            stats[payload.venue] = {
+                "updated_at_ns": payload.updated_at_ns,
+                "cycle_id": payload.cycle_id,
+                "source": payload.source,
+                "subscribed_instrument_count": payload.subscribed_instrument_count,
+                "market_count": payload.market_count,
+                "quote_count": payload.quote_count,
+                "order_count": payload.order_count,
+                "empty_market_count": payload.empty_market_count,
+                "one_sided_market_count": payload.one_sided_market_count,
+                "two_sided_market_count": payload.two_sided_market_count,
+                "concurrency": payload.concurrency,
+                "backlog_count": payload.backlog_count,
+                "cycle_elapsed_secs": round(payload.cycle_elapsed_secs, 6),
+                "max_fetch_latency_secs": round(payload.max_fetch_latency_secs, 6),
+                "poll_interval_secs": round(payload.poll_interval_secs, 6),
+            }
+        return stats

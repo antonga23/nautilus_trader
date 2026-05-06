@@ -511,7 +511,20 @@ def test_polymarket_spread_binary_maps_yes_no_to_team_line_semantics():
     assert normalized.venue == "POLYMARKET"
     assert normalized.market_type == CanonicalMarketType.POINT_SPREAD.value
     assert normalized.selection == "AWAY"
-    assert normalized.param("line") == "-4.5"
+    assert normalized.param("line") == "4.5"
+
+    sxbet_away_plus = betting_instrument(
+        venue="SXBET",
+        sport="basketball",
+        market_name="spread",
+        market_type="spread",
+        outcome="away",
+        params="line=4.5",
+        handicap=4.5,
+    )
+    rule = RuleClassifier().classify(transformed, sxbet_away_plus)
+    assert rule is not None
+    assert rule.relationship_type == RelationshipType.EQUIVALENT_SELECTION.value
 
 
 def test_polymarket_totals_binary_maps_over_under_and_extracts_line():

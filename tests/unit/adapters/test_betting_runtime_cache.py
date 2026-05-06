@@ -1,7 +1,11 @@
 from nautilus_trader.adapters.betting.runtime_cache import ActiveVenueInstrumentIndex
+from nautilus_trader.adapters.betting.runtime_cache import VenueQuotePollStats
 from nautilus_trader.adapters.betting.runtime_cache import active_venue_instrument_index_key
 from nautilus_trader.adapters.betting.runtime_cache import decode_active_venue_instrument_index
+from nautilus_trader.adapters.betting.runtime_cache import decode_venue_quote_poll_stats
 from nautilus_trader.adapters.betting.runtime_cache import encode_active_venue_instrument_index
+from nautilus_trader.adapters.betting.runtime_cache import encode_venue_quote_poll_stats
+from nautilus_trader.adapters.betting.runtime_cache import venue_quote_poll_stats_key
 
 
 def test_active_venue_instrument_index_key_normalizes_venue() -> None:
@@ -29,3 +33,51 @@ def test_active_venue_instrument_index_round_trip() -> None:
 def test_active_venue_instrument_index_decode_rejects_invalid_payload() -> None:
     assert decode_active_venue_instrument_index(None) is None
     assert decode_active_venue_instrument_index(b"not-json") is None
+
+
+def test_venue_quote_poll_stats_round_trip() -> None:
+    raw = encode_venue_quote_poll_stats(
+        venue="sxbet",
+        updated_at_ns=456,
+        cycle_id=7,
+        source="rest_order_book_poll",
+        subscribed_instrument_count=10,
+        market_count=5,
+        quote_count=8,
+        order_count=12,
+        empty_market_count=1,
+        one_sided_market_count=2,
+        two_sided_market_count=3,
+        concurrency=4,
+        backlog_count=1,
+        cycle_elapsed_secs=0.75,
+        max_fetch_latency_secs=0.25,
+        poll_interval_secs=3.0,
+    )
+
+    payload = decode_venue_quote_poll_stats(raw)
+
+    assert venue_quote_poll_stats_key(" sxbet ") == "betting:venue_quote_poll_stats:SXBET"
+    assert payload == VenueQuotePollStats(
+        venue="SXBET",
+        updated_at_ns=456,
+        cycle_id=7,
+        source="rest_order_book_poll",
+        subscribed_instrument_count=10,
+        market_count=5,
+        quote_count=8,
+        order_count=12,
+        empty_market_count=1,
+        one_sided_market_count=2,
+        two_sided_market_count=3,
+        concurrency=4,
+        backlog_count=1,
+        cycle_elapsed_secs=0.75,
+        max_fetch_latency_secs=0.25,
+        poll_interval_secs=3.0,
+    )
+
+
+def test_venue_quote_poll_stats_decode_rejects_invalid_payload() -> None:
+    assert decode_venue_quote_poll_stats(None) is None
+    assert decode_venue_quote_poll_stats(b"not-json") is None

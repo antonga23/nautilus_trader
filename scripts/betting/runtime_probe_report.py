@@ -51,6 +51,9 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
     semantic_cache = _as_dict(payload.get("semanticCache"))
     candidate_quality = _as_dict(runtime.get("candidateQuality"))
     venue_coverage = _as_dict(runtime.get("venueCoverage"))
+    provider_quote_poll_stats = _as_dict(runtime.get("providerQuotePollStats"))
+    instrument_refresh = _as_dict(runtime.get("instrumentRefresh"))
+    coverage_diagnostics = _as_dict(runtime.get("coverageDiagnostics"))
     positive = runtime.get("positiveMarginCandidates")
     threshold = runtime.get("thresholdMarginCandidates")
     blocker_samples = _as_dict(candidate_quality.get("blockerSamples"))
@@ -84,6 +87,7 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
             "executionSafeEdges": runtime.get("executionSafeEdges"),
             "sameVenueExecutionEligibleEdges": runtime.get("sameVenueExecutionEligibleEdges"),
             "quotedEdges": runtime.get("quotedEdges"),
+            "coverageDiagnostics": coverage_diagnostics,
         },
         "candidates": {
             "positiveTotal": _candidate_total(positive),
@@ -128,6 +132,8 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
             "topPositiveCandidates": candidate_quality.get("topPositiveCandidates"),
             "topNegativeNearMisses": candidate_quality.get("topNegativeNearMisses"),
         },
+        "providerQuotePollStats": provider_quote_poll_stats,
+        "instrumentRefresh": instrument_refresh,
         "venueCoverage": {
             "enabledVenues": venue_coverage.get("enabledVenues"),
             "nodeCounts": venue_coverage.get("nodeCounts"),
@@ -245,6 +251,13 @@ def _format_text(path: Path, summary: dict[str, Any]) -> str:
         f"threshold={candidates.get('thresholdTotal')} "
         f"cross_venue={candidates.get('crossVenueCandidateCount')}",
     ]
+    coverage_diagnostics = graph.get("coverageDiagnostics") or {}
+    if isinstance(coverage_diagnostics, dict) and coverage_diagnostics:
+        lines.append(
+            "  coverage_execution_safe "
+            f"proofs={coverage_diagnostics.get('executionSafeCoverageProofCount', 0)} "
+            f"hyperedges={coverage_diagnostics.get('executionSafeCoverageHyperedgeCount', 0)}",
+        )
     top_rejections = quality.get("topRejectionBuckets") or []
     if top_rejections:
         rendered = ", ".join(f"{item['key']}={item['value']}" for item in top_rejections)
@@ -272,6 +285,19 @@ def _format_text(path: Path, summary: dict[str, Any]) -> str:
             f"violations={live_slo.get('violations')} "
             f"max={live_slo.get('maxQuoteAgeSeconds')}s",
         )
+    provider_poll = _format_provider_poll_stats(summary.get("providerQuotePollStats"))
+    if provider_poll:
+        lines.append(f"  provider_poll {provider_poll}")
+    instrument_refresh = summary.get("instrumentRefresh") or {}
+    if isinstance(instrument_refresh, dict) and instrument_refresh:
+        lines.append(
+            "  instrument_refresh "
+            f"requests={instrument_refresh.get('requests', 0)} "
+            f"failures={instrument_refresh.get('failures', 0)} "
+            f"added={instrument_refresh.get('added', 0)} "
+            f"removed={instrument_refresh.get('removed', 0)} "
+            f"stale_triggers={instrument_refresh.get('staleQuoteTriggers', 0)}",
+        )
     same_venue_dry_run = quality.get("sameVenueDryRun") or {}
     if isinstance(same_venue_dry_run, dict) and (
         same_venue_dry_run.get("passes") or same_venue_dry_run.get("failures")
@@ -286,6 +312,23 @@ def _format_text(path: Path, summary: dict[str, Any]) -> str:
     if warnings:
         lines.append(f"  warnings {', '.join(warnings)}")
     return "\n".join(lines)
+
+
+def _format_provider_poll_stats(value: Any) -> str:
+    provider_poll_stats = value if isinstance(value, dict) else {}
+    rendered = []
+    for venue, stats in sorted(provider_poll_stats.items()):
+        if not isinstance(stats, dict):
+            continue
+        rendered.append(
+            f"{venue}:cycle={stats.get('cycle_id', 0)} "
+            f"quotes={stats.get('quote_count', 0)} "
+            f"markets={stats.get('market_count', 0)} "
+            f"cycle_elapsed={stats.get('cycle_elapsed_secs', 0)}s "
+            f"max_fetch={stats.get('max_fetch_latency_secs', 0)}s "
+            f"backlog={stats.get('backlog_count', 0)}",
+        )
+    return "; ".join(rendered)
 
 
 def _parse_args() -> argparse.Namespace:

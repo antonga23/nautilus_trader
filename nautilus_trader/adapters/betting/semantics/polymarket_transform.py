@@ -166,12 +166,12 @@ class PolymarketSportsTransformer:
         if line is not None:
             params["line"] = str(line)
         if is_spread_market:
-            market_family = "spread_binary"
-            market_type = f"{sport}.spread"
-            market_name = f"{sport}.{market_family}"
-            selection_role = cls._spread_selection_role(
+            market_family, market_name, market_type, selection_role = cls._spread_semantics(
+                sport=sport,
                 target_role=target_role,
                 outcome=outcome,
+                line=line,
+                params=params,
             )
         elif is_total_market:
             market_family = "totals_binary"
@@ -244,6 +244,24 @@ class PolymarketSportsTransformer:
             return "away" if target_role == "home" else "home"
         return outcome
 
+    @classmethod
+    def _spread_semantics(
+        cls,
+        *,
+        sport: str,
+        target_role: str,
+        outcome: str,
+        line: Any,
+        params: dict[str, str],
+    ) -> tuple[str, str, str, str]:
+        market_family = "spread_binary"
+        market_type = f"{sport}.spread"
+        market_name = f"{sport}.{market_family}"
+        selection_role = cls._spread_selection_role(target_role=target_role, outcome=outcome)
+        if outcome == "no" and line is not None:
+            params["line"] = cls._invert_numeric_line(line)
+        return market_family, market_name, market_type, selection_role
+
     @staticmethod
     def _total_selection_role(*, question: str, outcome: str) -> str:
         normalized = question.lower()
@@ -264,6 +282,17 @@ class PolymarketSportsTransformer:
     def _line_from_question(question: str) -> str | None:
         match = re.search(r"(?<![A-Za-z0-9])([+-]?\d+(?:\.\d+)?)(?![A-Za-z0-9])", question)
         return match.group(1) if match is not None else None
+
+    @staticmethod
+    def _invert_numeric_line(value: Any) -> str:
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return str(value)
+        inverted = -numeric
+        if inverted.is_integer():
+            return str(int(inverted))
+        return f"{inverted:g}"
 
     @staticmethod
     def _market_type_from_question(question: str) -> str:

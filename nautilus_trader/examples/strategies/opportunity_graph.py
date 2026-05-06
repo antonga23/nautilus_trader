@@ -557,6 +557,31 @@ class OpportunityGraph:
     def coverage_hyperedge_count(self) -> int:
         return self._coverage_hyperedge_count
 
+    def semantic_coverage_summary(self) -> dict[str, object]:
+        """
+        Return coverage proof and hyperedge diagnostics loaded into the graph core.
+        """
+        if self._rust_core is not None and hasattr(
+            self._rust_core,
+            "semantic_coverage_summary_json",
+        ):
+            try:
+                payload = json.loads(self._rust_core.semantic_coverage_summary_json())
+            except (TypeError, ValueError, json.JSONDecodeError):
+                payload = {}
+            if isinstance(payload, dict):
+                return payload
+        return {
+            "coverageProofCount": self._coverage_proof_count,
+            "coverageHyperedgeCount": self._coverage_hyperedge_count,
+            "executionSafeCoverageProofCount": 0,
+            "executionSafeCoverageHyperedgeCount": 0,
+            "proofSafetyTierCounts": {},
+            "hyperedgeSafetyTierCounts": {},
+            "sampleProofIds": [],
+            "sampleHyperedges": [],
+        }
+
     def _sync_edges_from_rust(self) -> None:
         if self._rust_core is None:
             return

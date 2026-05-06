@@ -19,6 +19,8 @@ import time
 from typing import Any
 from nautilus_trader.adapters.betting.runtime_cache import active_venue_instrument_index_key
 from nautilus_trader.adapters.betting.runtime_cache import encode_active_venue_instrument_index
+from nautilus_trader.adapters.betting.runtime_cache import encode_venue_quote_poll_stats
+from nautilus_trader.adapters.betting.runtime_cache import venue_quote_poll_stats_key
 from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.clock import LiveClock
 from nautilus_trader.common.enums import LogColor
@@ -132,6 +134,7 @@ class CloudbetDataClient(LiveMarketDataClient):
         self._quote_poll_concurrency = int(getattr(self._config, "quote_poll_concurrency", 4))
         self._last_quote_poll_summary_at = 0.0
         self._quote_polling_running = False
+        self._quote_poll_cycle_id = 0
 
         # Hot caches
         self.subscribed_orderbooks: dict[InstrumentId, OrderBook] = {}
@@ -473,16 +476,28 @@ class CloudbetDataClient(LiveMarketDataClient):
 
         results = await asyncio.gather(*[_fetch(instrument_id) for instrument_id in instrument_ids])
         published = 0
+        max_fetch_latency_secs = 0.0
         for quote in results:
             if quote is None:
                 continue
             self._handle_data(quote)
             published += 1
+            max_fetch_latency_secs = max(
+                max_fetch_latency_secs,
+                max(0.0, (quote.ts_init - quote.ts_event) / 1_000_000_000),
+            )
 
+        cycle_elapsed = time.perf_counter() - started_at
+        self._record_quote_poll_stats(
+            instrument_count=len(instrument_ids),
+            quote_count=published,
+            cycle_elapsed=cycle_elapsed,
+            max_fetch_latency_secs=max_fetch_latency_secs,
+        )
         self._log_quote_poll_summary(
             instrument_count=len(instrument_ids),
             quote_count=published,
-            cycle_elapsed=time.perf_counter() - started_at,
+            cycle_elapsed=cycle_elapsed,
         )
         return published, len(instrument_ids)
 
@@ -535,6 +550,34 @@ class CloudbetDataClient(LiveMarketDataClient):
             f"instruments={instrument_count} quotes={quote_count} "
             f"concurrency={self._quote_poll_concurrency} "
             f"cycle_elapsed={cycle_elapsed:.2f}s",
+        )
+
+    def _record_quote_poll_stats(
+        self,
+        *,
+        instrument_count: int,
+        quote_count: int,
+        cycle_elapsed: float,
+        max_fetch_latency_secs: float,
+    ) -> None:
+        self._quote_poll_cycle_id += 1
+        backlog_count = max(0, instrument_count - max(1, self._quote_poll_concurrency))
+        self._cache.add(
+            venue_quote_poll_stats_key(CLOUDBET_VENUE.value),
+            encode_venue_quote_poll_stats(
+                venue=CLOUDBET_VENUE.value,
+                updated_at_ns=self._clock.timestamp_ns(),
+                cycle_id=self._quote_poll_cycle_id,
+                source="rest_poll",
+                subscribed_instrument_count=len(self._subscribed_quote_instruments),
+                market_count=instrument_count,
+                quote_count=quote_count,
+                concurrency=self._quote_poll_concurrency,
+                backlog_count=backlog_count,
+                cycle_elapsed_secs=cycle_elapsed,
+                max_fetch_latency_secs=max_fetch_latency_secs,
+                poll_interval_secs=self._quote_polling_interval,
+            ),
         )
 
     # async def _remove_all_instruments_from_data_engine(self) -> None:

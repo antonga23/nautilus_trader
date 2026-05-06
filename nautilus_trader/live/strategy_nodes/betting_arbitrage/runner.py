@@ -779,6 +779,7 @@ def _collect_runtime_probe_payload(
                 "opportunity_graph_coverage_hyperedge_count",
                 0,
             ),
+            "coverageDiagnostics": stats.get("opportunity_graph_coverage_summary", {}),
             "semanticMatchInstruments": 0,
             "quotedSemanticMatchInstruments": 0,
             "executionSafeEdges": 0,
@@ -795,8 +796,10 @@ def _collect_runtime_probe_payload(
                 "total": 0,
             },
             "candidateQuality": _empty_candidate_quality_payload(),
+            "instrumentRefresh": _instrument_refresh_payload(stats),
             "strategyStats": stats,
             "semanticDiagnostics": semantic_diagnostics,
+            "providerQuotePollStats": stats.get("provider_quote_poll_stats", {}),
             "venueCoverage": venue_coverage,
             "sampleCandidates": [],
             "negativeNearMisses": [],
@@ -834,6 +837,7 @@ def _collect_runtime_probe_payload(
         "semanticTemplateCount": stats.get("opportunity_graph_semantic_template_count", 0),
         "coverageProofCount": stats.get("opportunity_graph_coverage_proof_count", 0),
         "coverageHyperedgeCount": stats.get("opportunity_graph_coverage_hyperedge_count", 0),
+        "coverageDiagnostics": stats.get("opportunity_graph_coverage_summary", {}),
         "semanticMatchInstruments": len(snapshot["matched_node_ids"]),
         "quotedSemanticMatchInstruments": sum(
             1 for node_id in snapshot["matched_node_ids"] if node_id in snapshot["quotes"]
@@ -881,12 +885,32 @@ def _collect_runtime_probe_payload(
             "topPositiveCandidates": profitability["sample_candidates"],
             "topNegativeNearMisses": profitability["negative_near_misses"],
         },
+        "instrumentRefresh": _instrument_refresh_payload(stats),
         "strategyStats": stats,
         "latencyDiagnostics": stats.get("latency_diagnostics", {}),
+        "providerQuotePollStats": stats.get("provider_quote_poll_stats", {}),
         "semanticDiagnostics": semantic_diagnostics,
         "venueCoverage": venue_coverage,
         "sampleCandidates": profitability["sample_candidates"],
         "negativeNearMisses": profitability["negative_near_misses"],
+    }
+
+
+def _instrument_refresh_payload(stats: dict[str, object]) -> dict[str, object]:
+    latency_diagnostics = stats.get("latency_diagnostics") or {}
+    if not isinstance(latency_diagnostics, dict):
+        latency_diagnostics = {}
+    return {
+        "requests": int(stats.get("instrument_refresh_requests") or 0),
+        "failures": int(stats.get("instrument_refresh_failures") or 0),
+        "added": int(stats.get("instrument_refresh_added") or 0),
+        "removed": int(stats.get("instrument_refresh_removed") or 0),
+        "delistedRemoved": int(stats.get("instrument_refresh_delisted_removed") or 0),
+        "reconciles": int(stats.get("instrument_refresh_reconciles") or 0),
+        "graphRebuilds": int(stats.get("instrument_refresh_graph_rebuilds") or 0),
+        "staleQuoteTriggers": int(stats.get("instrument_refresh_stale_triggers") or 0),
+        "quoteUnsubscribeRequests": int(stats.get("quote_unsubscribe_requests") or 0),
+        "reconcileLatency": latency_diagnostics.get("instrument_refresh_reconcile", {}),
     }
 
 

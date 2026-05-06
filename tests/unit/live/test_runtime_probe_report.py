@@ -36,6 +36,12 @@ def _runtime_status_payload() -> dict[str, object]:
             "semanticTemplateCount": 1248,
             "coverageProofCount": 5367,
             "coverageHyperedgeCount": 482,
+            "coverageDiagnostics": {
+                "executionSafeCoverageProofCount": 6,
+                "executionSafeCoverageHyperedgeCount": 4,
+                "proofSafetyTierCounts": {"EXECUTION_SAFE": 6},
+                "hyperedgeSafetyTierCounts": {"EXECUTION_SAFE": 4},
+            },
             "graphNodes": 40,
             "graphEdges": 22,
             "graphQuoteStates": 15,
@@ -54,6 +60,28 @@ def _runtime_status_payload() -> dict[str, object]:
                 "executionSafe": 1,
                 "sameVenueExecutionEligible": 1,
                 "total": 2,
+            },
+            "providerQuotePollStats": {
+                "CLOUDBET": {
+                    "cycle_id": 12,
+                    "source": "rest_poll",
+                    "market_count": 10,
+                    "quote_count": 8,
+                    "cycle_elapsed_secs": 1.25,
+                    "max_fetch_latency_secs": 0.2,
+                    "backlog_count": 6,
+                },
+            },
+            "instrumentRefresh": {
+                "requests": 3,
+                "failures": 0,
+                "added": 4,
+                "removed": 2,
+                "delistedRemoved": 2,
+                "reconciles": 3,
+                "graphRebuilds": 2,
+                "staleQuoteTriggers": 1,
+                "quoteUnsubscribeRequests": 2,
             },
             "venueCoverage": {
                 "enabledVenues": ["CLOUDBET", "SXBET"],
@@ -122,6 +150,7 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
     assert summary["graph"]["engine"] == "rust"
     assert summary["graph"]["topologySource"] == "rust_semantic"
     assert summary["graph"]["coverageHyperedgeCount"] == 482
+    assert summary["graph"]["coverageDiagnostics"]["executionSafeCoverageHyperedgeCount"] == 4
     assert summary["graph"]["quotedSemanticMatchInstruments"] == 14
     assert summary["graph"]["executionSafeEdges"] == 9
     assert summary["candidates"]["positiveTotal"] == 3
@@ -140,6 +169,8 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
     assert summary["candidateQuality"]["liveQuoteAgeSlo"]["violations"] == 0
     assert summary["candidateQuality"]["sameVenueDryRun"]["passes"] == 2
     assert summary["candidateQuality"]["diagnosticWarnings"] == []
+    assert summary["providerQuotePollStats"]["CLOUDBET"]["cycle_id"] == 12
+    assert summary["instrumentRefresh"]["staleQuoteTriggers"] == 1
 
 
 def test_runtime_probe_report_flags_legacy_semantic_blocked_artifacts():

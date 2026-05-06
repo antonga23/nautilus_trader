@@ -11,6 +11,8 @@ import pytest
 
 from nautilus_trader.adapters.betting.common.enums import SelectionSide
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
+from nautilus_trader.adapters.betting.runtime_cache import decode_venue_quote_poll_stats
+from nautilus_trader.adapters.betting.runtime_cache import venue_quote_poll_stats_key
 from nautilus_trader.adapters.sxbet.config import SXBetDataClientConfig
 from nautilus_trader.adapters.sxbet.config import SXBetInstrumentProviderConfig
 from nautilus_trader.adapters.sxbet.constants import SXBET_TOKENS
@@ -234,6 +236,64 @@ async def test_fetch_and_publish_quote_stats_reports_two_sided_liquidity():
         quote = call.args[0]
         assert quote.ts_event > 0
         assert quote.ts_init >= quote.ts_event
+
+
+@pytest.mark.asyncio
+async def test_poll_order_books_once_records_provider_poll_stats():
+    instrument_one = _make_instrument(outcome="home", outcome_one=True)
+    instrument_two = _make_instrument(outcome="away", outcome_one=False)
+
+    http_client = Mock()
+    http_client.get_order_book = AsyncMock(
+        return_value={
+            "data": {
+                "orders": [
+                    {
+                        "isMakerBettingOutcomeOne": True,
+                        "percentageOdds": decimal_odds_to_percentage(2.0),
+                    },
+                    {
+                        "isMakerBettingOutcomeOne": False,
+                        "percentageOdds": decimal_odds_to_percentage(2.1),
+                    },
+                ],
+            },
+        },
+    )
+    instrument_provider = _make_provider()
+    instrument_provider.find = Mock(side_effect=lambda instrument_id: {
+        instrument_one.id: instrument_one,
+        instrument_two.id: instrument_two,
+    }.get(instrument_id))
+    instrument_provider.find_by_market_hash = Mock(return_value=[instrument_one, instrument_two])
+    cache = TestComponentStubs.cache()
+    client = SXBetDataClient(
+        loop=get_event_loop(),
+        http_client=http_client,
+        instrument_provider=instrument_provider,
+        msgbus=TestComponentStubs.msgbus(),
+        cache=cache,
+        clock=TestComponentStubs.clock(),
+        logger=Logger(name="test-sxbet-data"),
+        config=SXBetDataClientConfig(order_book_concurrency=1),
+    )
+    client._subscribed_instruments = {instrument_one.id, instrument_two.id}
+    client._handle_data = Mock()
+
+    await client._poll_order_books_once()
+
+    stats = decode_venue_quote_poll_stats(cache.get(venue_quote_poll_stats_key("SXBET")))
+    assert stats is not None
+    assert stats.venue == "SXBET"
+    assert stats.cycle_id == 1
+    assert stats.source == "rest_order_book_poll"
+    assert stats.subscribed_instrument_count == 2
+    assert stats.market_count == 1
+    assert stats.quote_count == 2
+    assert stats.order_count == 2
+    assert stats.two_sided_market_count == 1
+    assert stats.concurrency == 1
+    assert stats.poll_interval_secs == 3.0
 
 
 @pytest.mark.asyncio

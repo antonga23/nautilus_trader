@@ -24,6 +24,8 @@ from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.betting.market_matcher import MarketMatcher
 from nautilus_trader.adapters.betting.runtime_cache import active_venue_instrument_index_key
 from nautilus_trader.adapters.betting.runtime_cache import encode_active_venue_instrument_index
+from nautilus_trader.adapters.betting.runtime_cache import encode_venue_quote_poll_stats
+from nautilus_trader.adapters.betting.runtime_cache import venue_quote_poll_stats_key
 from nautilus_trader.adapters.betting.semantics import FileRuleCache
 from nautilus_trader.adapters.betting.semantics import RuleStore
 from nautilus_trader.adapters.cloudbet.client.schema import (
@@ -87,6 +89,7 @@ class TestBettingArbitrageConfig:  # skipcq
         ensure(config.quote_max_pair_skew_secs is None)
         ensure(config.quote_max_fetch_latency_secs is None)
         ensure(config.instrument_refresh_interval_secs is None)
+        ensure(config.stale_quote_refresh_cooldown_secs == 60.0)
 
     def test_custom_venues(self):  # skipcq
         """
@@ -146,6 +149,13 @@ class TestBettingArbitrageConfig:  # skipcq
 
         with pytest.raises(ValueError, match="instrument_refresh_interval_secs"):
             BettingArbitrageConfig(instrument_refresh_interval_secs=0.0)
+
+    def test_stale_quote_refresh_cooldown_validation(self):  # skipcq
+        config = BettingArbitrageConfig(stale_quote_refresh_cooldown_secs=None)
+        ensure(config.stale_quote_refresh_cooldown_secs is None)
+
+        with pytest.raises(ValueError, match="stale_quote_refresh_cooldown_secs"):
+            BettingArbitrageConfig(stale_quote_refresh_cooldown_secs=0.0)
 
     def test_quote_freshness_profile_validation(self):  # skipcq
         for profile in ["pre_match", "live", "custom"]:
@@ -316,6 +326,7 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure("opportunity_graph_rust_enabled" in stats)
         ensure("opportunity_graph_topology_source" in stats)
         ensure("opportunity_graph_semantic_template_count" in stats)
+        ensure("opportunity_graph_coverage_summary" in stats)
         ensure("duplicate_opportunities_suppressed" in stats)
         ensure("stale_quote_suppressions" in stats)
         ensure("matcher_suspect_suppressions" in stats)
@@ -329,7 +340,9 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure("instrument_refresh_delisted_removed" in stats)
         ensure("instrument_refresh_reconciles" in stats)
         ensure("instrument_refresh_graph_rebuilds" in stats)
+        ensure("instrument_refresh_stale_triggers" in stats)
         ensure("quote_unsubscribe_requests" in stats)
+        ensure("provider_quote_poll_stats" in stats)
         ensure("success_rate" in stats)
         ensure(stats["subscribed_instruments"] == 0)
         ensure(stats["opportunity_graph_nodes"] == 0)
@@ -344,8 +357,138 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(stats["instrument_refresh_delisted_removed"] == 0)
         ensure(stats["instrument_refresh_reconciles"] == 0)
         ensure(stats["instrument_refresh_graph_rebuilds"] == 0)
+        ensure(stats["instrument_refresh_stale_triggers"] == 0)
         ensure(stats["quote_unsubscribe_requests"] == 0)
+        ensure(stats["provider_quote_poll_stats"] == {})
         ensure(stats["success_rate"] == 0)
+
+    def test_get_stats_reads_provider_quote_poll_stats(self):  # skipcq
+        cache = TestComponentStubs.cache()
+        cache.add(
+            venue_quote_poll_stats_key("SXBET"),
+            encode_venue_quote_poll_stats(
+                venue="SXBET",
+                updated_at_ns=123,
+                cycle_id=4,
+                source="rest_order_book_poll",
+                subscribed_instrument_count=12,
+                market_count=6,
+                quote_count=9,
+                order_count=20,
+                empty_market_count=1,
+                one_sided_market_count=2,
+                two_sided_market_count=3,
+                concurrency=4,
+                backlog_count=2,
+                cycle_elapsed_secs=1.25,
+                max_fetch_latency_secs=0.4,
+                poll_interval_secs=3.0,
+            ),
+        )
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(enabled_venues=frozenset({"SXBET"})),
+        )
+        strategy.register(
+            trader_id=TraderId("TESTER-POLL-STATS"),
+            portfolio=TestComponentStubs.portfolio(),
+            msgbus=TestComponentStubs.msgbus(),
+            cache=cache,
+            clock=TestComponentStubs.clock(),
+        )
+
+        stats = strategy.get_stats()["provider_quote_poll_stats"]
+
+        ensure(stats["SXBET"]["cycle_id"] == 4)
+        ensure(stats["SXBET"]["source"] == "rest_order_book_poll")
+        ensure(stats["SXBET"]["market_count"] == 6)
+        ensure(stats["SXBET"]["quote_count"] == 9)
+        ensure(stats["SXBET"]["backlog_count"] == 2)
+        ensure(stats["SXBET"]["max_fetch_latency_secs"] == 0.4)
+
+    def test_stale_quote_refresh_triggers_bounded_provider_refresh(self, monkeypatch):  # skipcq
+        requested: list[tuple[str, dict[str, object]]] = []
+
+        def fake_request_instruments(self, *, venue, params=None, client_id=None) -> None:
+            requested.append((venue.value, dict(params or {})))
+
+        monkeypatch.setattr(
+            BettingArbitrageStrategy,
+            "request_instruments",
+            fake_request_instruments,
+        )
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset({"SXBET", "CLOUDBET"}),
+                stale_quote_refresh_cooldown_secs=60.0,
+            ),
+        )
+        strategy.register(
+            trader_id=TraderId("TESTER-STALE-REFRESH"),
+            portfolio=TestComponentStubs.portfolio(),
+            msgbus=TestComponentStubs.msgbus(),
+            cache=TestComponentStubs.cache(),
+            clock=TestComponentStubs.clock(),
+        )
+        sxbet = CryptoBettingInstrument(
+            venue=Venue("SXBET"),
+            event_id="event-1",
+            event_name="Team A vs Team B",
+            home_name="Team A",
+            away_name="Team B",
+            sport_name="Soccer",
+            competition_name="Test League",
+            market_name="Match Odds",
+            market_type="match_odds",
+            outcome="home",
+            side=SelectionSide.BACK,
+            price=2.0,
+            currency=Currency.from_str("USDC"),
+            params="",
+        )
+        cloudbet = CryptoBettingInstrument(
+            venue=Venue("CLOUDBET"),
+            event_id="event-1",
+            event_name="Team A vs Team B",
+            home_name="Team A",
+            away_name="Team B",
+            sport_name="Soccer",
+            competition_name="Test League",
+            market_name="Match Odds",
+            market_type="match_odds",
+            outcome="away",
+            side=SelectionSide.BACK,
+            price=2.0,
+            currency=Currency.from_str("USDC"),
+            params="",
+        )
+        now_ns = strategy.clock.timestamp_ns()
+
+        strategy._maybe_trigger_stale_quote_refresh(
+            sxbet,
+            cloudbet,
+            reason="stale_quote",
+            now_ns=now_ns,
+        )
+        strategy._maybe_trigger_stale_quote_refresh(
+            sxbet,
+            cloudbet,
+            reason="stale_quote",
+            now_ns=now_ns + 1,
+        )
+
+        ensure(requested == [
+            (
+                "CLOUDBET",
+                {"semantic_refresh": True, "only_last": True, "trigger": "stale_quote"},
+            ),
+            (
+                "SXBET",
+                {"semantic_refresh": True, "only_last": True, "trigger": "stale_quote"},
+            ),
+        ])
+        stats = strategy.get_stats()
+        ensure(stats["instrument_refresh_stale_triggers"] == 2)
+        ensure(stats["instrument_refresh_requests"] == 2)
 
     def test_instrument_refresh_requests_all_enabled_venues(self, monkeypatch):  # skipcq
         requested: list[tuple[str, dict[str, bool]]] = []
