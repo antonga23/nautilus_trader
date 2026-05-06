@@ -136,6 +136,13 @@ class SelectionPredicateBuilder:
         provider: str | None = None,
         source_record_id: str = "",
     ) -> SelectionPredicate:
+        bucket_predicate = cls._bucket_predicate(
+            selection,
+            provider=provider or selection.venue,
+            source_record_id=source_record_id,
+        )
+        if bucket_predicate is not None:
+            return bucket_predicate
         vector = PayoffVectorBuilder.build(selection)
         return cls.from_vector(
             selection,
@@ -143,6 +150,70 @@ class SelectionPredicateBuilder:
             provider=provider or selection.venue,
             source_record_id=source_record_id,
         )
+
+    @classmethod
+    def _bucket_predicate(
+        cls,
+        selection: NormalizedSelection,
+        *,
+        provider: str,
+        source_record_id: str,
+    ) -> SelectionPredicate | None:
+        state_id, bucket_key, bucket_value = cls._bucket_state(selection)
+        if not state_id:
+            return None
+
+        params = dict(selection.params)
+        params.setdefault(bucket_key, bucket_value)
+        payload = {
+            "instrument_id": selection.instrument_id,
+            "sport": selection.sport,
+            "scope": selection.scope,
+            "market_type": selection.market_type,
+            "selection": selection.selection,
+            "params": tuple(sorted(params.items())),
+            "provider": provider,
+            "source_record_id": source_record_id,
+        }
+        return SelectionPredicate(
+            predicate_id=_stable_digest("coverage:predicate", payload),
+            instrument_id=selection.instrument_id,
+            sport=selection.sport,
+            scope=selection.scope,
+            market_type=selection.market_type,
+            market_family=selection.market_family,
+            selection=selection.selection,
+            params=tuple(sorted((str(key), str(value)) for key, value in params.items())),
+            result_states=(state_id,),
+            win_states=(state_id,),
+            lose_states=(),
+            void_states=(),
+            partial_states=(),
+            unknown_states=(),
+            provider=provider,
+            event_key=selection.event_key,
+            source_record_id=source_record_id,
+            caveats=(),
+            provider_rule_flags=selection.rules_flags,
+        )
+
+    @staticmethod
+    def _bucket_state(selection: NormalizedSelection) -> tuple[str | None, str, str]:
+        raw_market = selection.raw_market_name.lower()
+        if selection.market_family == CanonicalMarketType.CORRECT_SCORE.value:
+            if selection.selection.startswith("SCORE_"):
+                return selection.selection, "score", selection.selection.removeprefix("SCORE_").replace("_", "-")
+            if selection.selection.startswith("ANY_OTHER_"):
+                return selection.selection, "bucket", selection.selection
+        if "exact_goals" in raw_market:
+            return selection.selection, "bucket", selection.selection
+        if "highest_scoring_inning" in raw_market:
+            return selection.selection, "bucket", selection.selection
+        if "winning_margin" in raw_market or "margin" in raw_market:
+            return selection.selection, "margin", selection.selection
+        if "set_score" in raw_market or "map_score" in raw_market or "exact_sets" in raw_market:
+            return selection.selection, "bucket", selection.selection
+        return None, "", ""
 
     @classmethod
     def from_vector(
@@ -443,11 +514,22 @@ def _coverage_candidates(
     ]
     if len(range_predicates) >= 2:
         yield tuple(sorted(range_predicates, key=_range_sort_key))
+    elif _bucket_market_group(predicates):
+        yield tuple(sorted(predicates, key=lambda predicate: predicate.selection))
 
 
 def _coverage_group_params(predicate: SelectionPredicate) -> tuple[tuple[str, str], ...]:
-    ignored = {"selection", "outcome", "side", "participant", "range"}
+    ignored = {"selection", "outcome", "side", "participant", "range", "bucket", "score", "margin"}
     return tuple((key, value) for key, value in predicate.params if key not in ignored)
+
+
+def _bucket_market_group(predicates: list[SelectionPredicate]) -> bool:
+    if len(predicates) < 2:
+        return False
+    families = {predicate.market_family for predicate in predicates}
+    if CanonicalMarketType.CORRECT_SCORE.value in families:
+        return True
+    return all(_range_param(predicate) is not None for predicate in predicates)
 
 
 def _blocker_reasons(

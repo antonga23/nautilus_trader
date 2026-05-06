@@ -285,6 +285,63 @@ def test_set_score_full_book_uses_same_coverage_model():
     assert proof.same_venue_execution_eligible is True
 
 
+def test_correct_score_records_mine_bucket_coverage_from_realized_selection_labels(tmp_path):
+    records = [
+        NormalizedSelectionRecord(
+            record_id=f"record-{selection.lower()}",
+            provider="CLOUDBET",
+            selection=_selection(
+                instrument_id=f"score-{selection.lower()}",
+                market_type=CanonicalMarketType.CORRECT_SCORE.value,
+                selection=selection,
+            ),
+        )
+        for selection in ("SCORE_1_0", "SCORE_2_0", "ANY_OTHER_HOME_WIN")
+    ]
+
+    proofs, hyperedges = RuleMiner(RuleStore(FileRuleCache(tmp_path))).mine_coverage(
+        records,
+        persist=False,
+    )
+
+    assert any(proof.complete for proof in proofs)
+    assert len(hyperedges) == 1
+
+
+def test_other_bucket_market_records_mine_full_book_coverage(tmp_path):
+    records = [
+        NormalizedSelectionRecord(
+            record_id=f"record-{selection.lower()}",
+            provider="CLOUDBET",
+            selection=NormalizedSelection(
+                venue="CLOUDBET",
+                instrument_id=f"inning-{selection.lower()}",
+                sport="baseball",
+                event_key="baseball-event-1",
+                period="overtime",
+                scope="overtime",
+                market_type=CanonicalMarketType.OTHER.value,
+                market_family=CanonicalMarketType.OTHER.value,
+                selection=selection,
+                params=(("period", "ft|ot|innings1|inning2|inning3"),),
+                raw_market_name="baseball.highest_scoring_inning",
+                raw_market_type="baseball.highest_scoring_inning",
+                raw_outcome=selection.lower(),
+                outcome_key=selection.lower(),
+            ),
+        )
+        for selection in ("1ST_INNING", "2ND_INNING", "3RD_INNING")
+    ]
+
+    proofs, hyperedges = RuleMiner(RuleStore(FileRuleCache(tmp_path))).mine_coverage(
+        records,
+        persist=False,
+    )
+
+    assert any(proof.complete for proof in proofs)
+    assert len(hyperedges) == 1
+
+
 def test_coverage_proofs_round_trip_through_rule_store(tmp_path):
     home = SelectionPredicateBuilder.from_selection(
         _selection(

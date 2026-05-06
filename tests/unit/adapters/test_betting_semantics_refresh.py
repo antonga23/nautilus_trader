@@ -24,6 +24,7 @@ from nautilus_trader.adapters.betting.semantics import CorpusSnapshot
 from nautilus_trader.adapters.betting.semantics import FileRuleCache
 from nautilus_trader.adapters.betting.semantics import HistoricalRuleValidator
 from nautilus_trader.adapters.betting.semantics import MarketNormalizer
+from nautilus_trader.adapters.betting.semantics import NormalizedSelection
 from nautilus_trader.adapters.betting.semantics import NormalizedSelectionRecord
 from nautilus_trader.adapters.betting.semantics import PayoffVectorBuilder
 from nautilus_trader.adapters.betting.semantics import PolymarketSportsTransformer
@@ -340,14 +341,20 @@ def test_market_normalizer_canonicalizes_multi_period_params():
 def test_polymarket_inferred_sports_market_preserves_yes_no_semantics():
     base_info = {
         "condition_id": "0xdef",
-        "question": "Will the Minnesota Vikings win the 2027 NFL league championship?",
+        "question": "Will the Minnesota Vikings beat the Chicago Bears?",
         "_gamma_original": {
             "sport": "nfl",
             "description": (
-                "This market resolves to Yes if the named team wins the 2027 NFL championship."
+                "This market resolves to Yes if the Minnesota Vikings beat the Chicago Bears."
             ),
             "outcomePrices": ["0.14", "0.86"],
-            "events": [{"title": "NFL Champion 2027", "sport": "american_football"}],
+            "events": [
+                {
+                    "title": "Minnesota Vikings vs Chicago Bears",
+                    "sport": "american_football",
+                    "startDateIso": "2026-09-15T00:00:00Z",
+                },
+            ],
         },
     }
     yes_instrument = BinaryOption(
@@ -399,9 +406,9 @@ def test_polymarket_inferred_sports_market_preserves_yes_no_semantics():
     assert transformed_yes is not None
     assert transformed_no is not None
     assert transformed_yes.market_type == "american_football.winner"
-    assert transformed_yes.outcome == "yes"
+    assert transformed_yes.outcome == "home"
     assert "line=" not in transformed_yes.params
-    assert transformed_no.outcome == "no"
+    assert transformed_no.outcome == "away"
 
     rule = RuleClassifier().classify(transformed_yes, transformed_no)
 
@@ -675,6 +682,41 @@ def test_polymarket_corpus_skips_outrights_without_event_participants():
     assert sports == set()
     assert event_keys == set()
     assert market_names == set()
+
+
+def test_polymarket_transform_skips_non_fixture_sports_futures():
+    info = {
+        "condition_id": "0xnhl-draft",
+        "question": "Will James Hagens be drafted 1st overall in the 2026 NHL Draft?",
+        "_gamma_original": {
+            "sport": "nhl",
+            "description": "Resolves to Yes if James Hagens is drafted first overall.",
+            "events": [
+                {
+                    "title": "2026 NHL Draft",
+                    "sport": "ice_hockey",
+                    "startDateIso": "2026-06-26T00:00:00Z",
+                },
+            ],
+        },
+        "tokens": [
+            {"token_id": "future-yes", "outcome": "Yes", "price": 0.47},
+            {"token_id": "future-no", "outcome": "No", "price": 0.53},
+        ],
+        "selected_token_id": "future-yes",
+        "selected_outcome": "Yes",
+    }
+
+    transformed = PolymarketSportsTransformer.to_crypto_betting_instrument(
+        polymarket_binary_option(
+            symbol="future-yes",
+            outcome="Yes",
+            question=info["question"],
+            info=info,
+        ),
+    )
+
+    assert transformed is None
 
 
 def test_rule_store_persists_corpus_artifacts():
@@ -1275,8 +1317,68 @@ def test_completion_report_fails_when_required_provider_has_no_candidates():
     )
 
     assert report.passed is False
-    assert report.providers[0].blockers == ("no_normalized_selections", "no_event_candidates")
-    assert report.sports[0].blockers == ("no_normalized_selections", "no_event_candidates")
+    assert report.providers[0].blockers == ("no_normalized_selections", "no_semantic_candidates")
+    assert report.sports[0].blockers == ("no_normalized_selections", "no_semantic_candidates")
+
+
+def test_completion_report_counts_coverage_candidates_toward_sport_gate(tmp_path):
+    cache = FileRuleCache(tmp_path / "semantic-cache")
+    store = RuleStore(cache)
+    store.save_manifest(
+        RuleCorpusManifest(
+            manifest_id="manifest-cloudbet",
+            provider="CLOUDBET",
+            fetched_at="2026-05-06T00:00:00Z",
+            endpoint_version="test",
+            sport_count=1,
+            event_count=1,
+            selection_count=3,
+            market_taxonomy_hash="hash-cloudbet",
+            source_refs=(),
+        ),
+    )
+
+    for selection in ("SCORE_1_0", "SCORE_2_0", "ANY_OTHER_HOME_WIN"):
+        store.save_normalized_selection(
+            NormalizedSelectionRecord(
+                record_id=f"record-{selection.lower()}",
+                provider="CLOUDBET",
+                manifest_id="manifest-cloudbet",
+                selection=NormalizedSelection(
+                    venue="CLOUDBET",
+                    instrument_id=f"score-{selection.lower()}",
+                    sport="ice_hockey",
+                    event_key="ice-hockey-event-1",
+                    period="full_time",
+                    scope="full_time",
+                    market_type=CanonicalMarketType.CORRECT_SCORE.value,
+                    market_family=CanonicalMarketType.CORRECT_SCORE.value,
+                    selection=selection,
+                    params=(),
+                    raw_market_name="ice_hockey.correct_score",
+                    raw_market_type="ice_hockey.correct_score",
+                    raw_outcome=selection.lower(),
+                    outcome_key=selection.lower(),
+                ),
+            ),
+        )
+
+    RuleMiner(store).mine_coverage_from_store(persist=True)
+    report = build_completion_report(
+        store,
+        required_providers=("CLOUDBET",),
+        target_sports=("ice_hockey",),
+        min_candidates=1,
+        target_candidates=1,
+    )
+
+    assert report.passed is True
+    assert report.total_event_candidates == 0
+    assert report.total_coverage_proofs >= 1
+    assert report.total_semantic_candidates >= 1
+    assert report.providers[0].coverage_proof_count >= 1
+    assert report.sports[0].coverage_proof_count >= 1
+    assert report.sports[0].semantic_candidate_count >= 1
 
 
 def test_semantic_rule_mining_cli_reports_tiered_promotion_counts(tmp_path):
@@ -1662,6 +1764,8 @@ def test_completion_helpers_report_blockers_and_normalize_sport_aliases():
         manifest_count=0,
         selection_count=0,
         event_candidate_count=0,
+        coverage_proof_count=0,
+        coverage_hyperedge_count=0,
         template_candidate_count=0,
         promoted_template_count=0,
         execution_safe_template_count=0,
@@ -1671,6 +1775,8 @@ def test_completion_helpers_report_blockers_and_normalize_sport_aliases():
         sport="soccer",
         selection_count=1,
         event_candidate_count=5,
+        coverage_proof_count=0,
+        coverage_hyperedge_count=0,
         template_candidate_count=0,
         providers=("SXBET",),
         min_candidates=10,
@@ -1712,7 +1818,7 @@ def test_completion_helpers_report_blockers_and_normalize_sport_aliases():
     assert provider_report.blockers == (
         "missing_manifest",
         "no_normalized_selections",
-        "no_event_candidates",
+        "no_semantic_candidates",
     )
     assert sport_report.blockers == ("below_min_candidate_count",)
     assert blockers["dangerous_non_equivalent"] == 1

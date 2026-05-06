@@ -101,6 +101,20 @@ class PolymarketSportsTransformer:
         "ice_hockey",
         "tennis",
     }
+    NON_FIXTURE_TOKENS = (
+        "draft",
+        "award",
+        "mvp",
+        "champion",
+        "championship",
+        "cup winner",
+        "league winner",
+        "division winner",
+        "top scorer",
+        "ballon d",
+        "first overall",
+        "1st overall",
+    )
 
     @classmethod
     def canonical_sport(cls, raw_sport: str | None) -> str | None:
@@ -114,7 +128,11 @@ class PolymarketSportsTransformer:
         return cls.canonical_sport(raw_sport)
 
     @classmethod
-    def _infer_sports_market(cls, instrument: BinaryOption, info: dict) -> dict | None:
+    def _infer_sports_market(  # noqa: C901
+        cls,
+        instrument: BinaryOption,
+        info: dict,
+    ) -> dict | None:
         question = str(info.get("question") or getattr(instrument, "description", "")).strip()
         original = info.get("_gamma_original", {})
         event = original.get("events", [{}])[0] if isinstance(original.get("events"), list) else {}
@@ -142,6 +160,13 @@ class PolymarketSportsTransformer:
         home_name, away_name = cls._parse_event_participants(event_title)
         if not home_name or not away_name:
             home_name, away_name = cls._parse_event_participants(question)
+        if not cls._is_fixture_market(
+            question=question,
+            event_title=event_title,
+            home_name=home_name,
+            away_name=away_name,
+        ):
+            return None
         target_role = cls._participant_role(selection_target, home_name, away_name)
         outcome = str(getattr(instrument, "outcome", "") or "").strip().lower()
 
@@ -197,6 +222,35 @@ class PolymarketSportsTransformer:
             "params": params,
             "resolution_policy": cls._resolution_policy(question, original),
         }
+
+    @classmethod
+    def _is_fixture_market(
+        cls,
+        *,
+        question: str,
+        event_title: str,
+        home_name: str,
+        away_name: str,
+    ) -> bool:
+        if not home_name or not away_name:
+            return False
+        combined = " ".join(part for part in (question, event_title) if part).lower()
+        if any(token in combined for token in cls.NON_FIXTURE_TOKENS):
+            return False
+        return not (
+            cls._looks_invalid_participant(home_name) or cls._looks_invalid_participant(away_name)
+        )
+
+    @staticmethod
+    def _looks_invalid_participant(value: str) -> bool:
+        normalized = value.strip().lower()
+        if not normalized:
+            return True
+        invalid_prefixes = ("will ", "to ", "be ")
+        invalid_tokens = ("draft", "award", "championship", "title", "overall")
+        return normalized.startswith(invalid_prefixes) or any(
+            token in normalized for token in invalid_tokens
+        )
 
     @classmethod
     def _winner_market_semantics(
