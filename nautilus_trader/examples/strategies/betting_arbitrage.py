@@ -527,12 +527,14 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         return f"{INSTRUMENT_RECONCILE_TIMER_PREFIX}:{venue_value.upper()}"
 
     def _schedule_instrument_reconcile(self, venue_value: str) -> None:
+        timer_name = self._instrument_reconcile_timer_name(venue_value)
+        if timer_name in self.clock.timer_names:
+            self.clock.cancel_timer(timer_name)
         self._pending_refresh_reconcile_venues.add(venue_value)
         self.clock.set_time_alert(
-            self._instrument_reconcile_timer_name(venue_value),
+            timer_name,
             self.clock.utc_now() + timedelta(seconds=INSTRUMENT_RECONCILE_DELAY_SECS),
             self.on_time_event,
-            override=True,
         )
 
     def _refresh_enabled_venue_instruments(self) -> None:

@@ -477,6 +477,27 @@ class TestBettingArbitrageStrategy:  # skipcq
         scheduled = {call.args[0] for call in calls}
         ensure(scheduled == {"CLOUDBET", "SXBET"})
 
+    def test_schedule_instrument_reconcile_replaces_existing_timer_safely(self):  # skipcq
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(enabled_venues=frozenset({"CLOUDBET"})),
+        )
+        clock = TestComponentStubs.clock()
+        strategy.register(
+            trader_id=TraderId("TESTER-REFRESH-RESCHEDULE"),
+            portfolio=TestComponentStubs.portfolio(),
+            msgbus=TestComponentStubs.msgbus(),
+            cache=TestComponentStubs.cache(),
+            clock=clock,
+        )
+
+        timer_name = strategy._instrument_reconcile_timer_name("CLOUDBET")
+        strategy._schedule_instrument_reconcile("CLOUDBET")
+        ensure(timer_name in clock.timer_names)
+
+        strategy._schedule_instrument_reconcile("CLOUDBET")
+
+        ensure(clock.timer_names.count(timer_name) == 1)
+
     def test_active_cached_venue_instruments_prefers_current_refresh_index(self):  # skipcq
         cache = TestComponentStubs.cache()
         active = CryptoBettingInstrument(
