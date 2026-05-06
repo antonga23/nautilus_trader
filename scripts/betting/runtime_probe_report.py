@@ -54,6 +54,7 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
     provider_quote_poll_stats = _as_dict(runtime.get("providerQuotePollStats"))
     instrument_refresh = _as_dict(runtime.get("instrumentRefresh"))
     coverage_diagnostics = _as_dict(runtime.get("coverageDiagnostics"))
+    semantic_diagnostics = _as_dict(runtime.get("semanticDiagnostics"))
     positive = runtime.get("positiveMarginCandidates")
     threshold = runtime.get("thresholdMarginCandidates")
     blocker_samples = _as_dict(candidate_quality.get("blockerSamples"))
@@ -140,6 +141,23 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
         },
         "providerQuotePollStats": provider_quote_poll_stats,
         "instrumentRefresh": instrument_refresh,
+        "semanticDiagnostics": {
+            "supportedProviderNodeCount": semantic_diagnostics.get("supportedProviderNodeCount"),
+            "unsupportedProviderNodeCount": semantic_diagnostics.get("unsupportedProviderNodeCount"),
+            "supportedProviderCoverageRatio": semantic_diagnostics.get(
+                "supportedProviderCoverageRatio",
+            ),
+            "commonPatternKeyCount": semantic_diagnostics.get("commonPatternKeyCount"),
+            "unsupportedProviderPatternCount": semantic_diagnostics.get(
+                "unsupportedProviderPatternCount",
+            ),
+            "unsupportedProviderPatterns": semantic_diagnostics.get(
+                "unsupportedProviderPatterns",
+            ),
+            "unsupportedProviderPatternSamples": (
+                semantic_diagnostics.get("unsupportedProviderPatternSamples") or []
+            )[:top_limit],
+        },
         "venueCoverage": {
             "enabledVenues": venue_coverage.get("enabledVenues"),
             "nodeCounts": venue_coverage.get("nodeCounts"),
@@ -267,6 +285,7 @@ def _format_text(path: Path, summary: dict[str, Any]) -> str:
     if provider_poll:
         lines.append(f"  provider_poll {provider_poll}")
     lines.extend(_format_refresh_lines(summary.get("instrumentRefresh")))
+    lines.extend(_format_semantic_diagnostic_lines(summary.get("semanticDiagnostics")))
     same_venue_dry_run = quality.get("sameVenueDryRun") or {}
     if isinstance(same_venue_dry_run, dict) and (
         same_venue_dry_run.get("passes") or same_venue_dry_run.get("failures")
@@ -361,6 +380,30 @@ def _format_refresh_lines(value: Any) -> list[str]:
             )
             if rendered:
                 lines.append(f"  instrument_refresh_by_venue {rendered}")
+    return lines
+
+
+def _format_semantic_diagnostic_lines(value: Any) -> list[str]:
+    diagnostics = value if isinstance(value, dict) else {}
+    if not diagnostics:
+        return []
+    lines = [
+        "  semantic_diagnostics "
+        f"supported_nodes={diagnostics.get('supportedProviderNodeCount', 0)} "
+        f"unsupported_nodes={diagnostics.get('unsupportedProviderNodeCount', 0)} "
+        f"coverage_ratio={diagnostics.get('supportedProviderCoverageRatio', 0)} "
+        f"common_patterns={diagnostics.get('commonPatternKeyCount', 0)} "
+        f"unsupported_patterns={diagnostics.get('unsupportedProviderPatternCount', 0)}",
+    ]
+    top_patterns = diagnostics.get("unsupportedProviderPatterns") or []
+    if isinstance(top_patterns, list) and top_patterns:
+        rendered = ", ".join(
+            f"{item.get('key')}={item.get('value')}"
+            for item in top_patterns
+            if isinstance(item, dict)
+        )
+        if rendered:
+            lines.append(f"  unsupported_provider_patterns {rendered}")
     return lines
 
 

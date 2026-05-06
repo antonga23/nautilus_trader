@@ -1914,7 +1914,12 @@ class TestBettingArbitrageNodeRunner:
         assert diagnostics["normalizedNodeCount"] == 1
         assert diagnostics["normalizationErrorCount"] == 0
         assert diagnostics["supportedProviderNodeCount"] == 1
+        assert diagnostics["unsupportedProviderNodeCount"] == 0
+        assert diagnostics["supportedProviderCoverageRatio"] == 1.0
         assert diagnostics["commonPatternKeyCount"] == 1
+        assert diagnostics["unsupportedProviderPatternCount"] == 0
+        assert diagnostics["unsupportedProviderPatterns"] == []
+        assert diagnostics["unsupportedProviderPatternSamples"] == []
         assert diagnostics["nodeSports"] == [{"key": "soccer", "count": 1}]
         assert diagnostics["templateTierRelationships"] == [
             {
@@ -1927,6 +1932,54 @@ class TestBettingArbitrageNodeRunner:
         ]
         assert diagnostics["sameVenueEligibleTemplates"][0]["templateId"] == "template-total-25"
         assert diagnostics["sameVenueEligibleTemplates"][0]["patternA"]["selection"] == "OVER"
+
+    def test_semantic_probe_diagnostics_reports_unsupported_provider_patterns(self):
+        unsupported_instrument = _instrument(
+            venue="POLYMARKET",
+            market_type="totals",
+            market_name="TOTALS",
+            outcome="over",
+            params="line=3.5",
+            sport_name="soccer",
+        )
+
+        class FakeGraph:
+            nodes_by_id = {
+                "node-1": SimpleNamespace(
+                    instrument=unsupported_instrument,
+                    canonical_event_key=unsupported_instrument.event_key(include_start_time=True),
+                ),
+            }
+
+            @staticmethod
+            def _semantic_template_payloads():
+                return []
+
+        diagnostics = node_runner._semantic_probe_diagnostics(FakeGraph())
+
+        assert diagnostics["supportedProviderNodeCount"] == 0
+        assert diagnostics["unsupportedProviderNodeCount"] == 1
+        assert diagnostics["supportedProviderCoverageRatio"] == 0.0
+        assert diagnostics["unsupportedProviderPatternCount"] == 1
+        assert diagnostics["unsupportedProviderPatterns"] == [
+            {
+                "key": [
+                    "POLYMARKET",
+                    "soccer",
+                    "full_time",
+                    "TOTALS",
+                    "TOTALS",
+                    "OVER",
+                    '[["line","3.5"]]',
+                ],
+                "count": 1,
+            },
+        ]
+        assert diagnostics["unsupportedProviderPatternSamples"][0]["provider"] == "POLYMARKET"
+        assert diagnostics["unsupportedProviderPatternSamples"][0]["selection"] == "OVER"
+        assert diagnostics["unsupportedProviderPatternSamples"][0]["samples"][0][
+            "instrumentId"
+        ] == str(unsupported_instrument.id)
 
     def test_runtime_probe_venue_coverage_explains_zero_cross_venue_pairs(self):
         sxbet_instrument = _instrument(

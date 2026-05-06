@@ -93,6 +93,40 @@ def _runtime_status_payload() -> dict[str, object]:
                     "CLOUDBET": {"requests": 3, "added": 4, "removed": 2, "stale_triggers": 1},
                 },
             },
+            "semanticDiagnostics": {
+                "supportedProviderNodeCount": 18,
+                "unsupportedProviderNodeCount": 2,
+                "supportedProviderCoverageRatio": 0.9,
+                "commonPatternKeyCount": 14,
+                "unsupportedProviderPatternCount": 1,
+                "unsupportedProviderPatterns": [
+                    {
+                        "key": [
+                            "POLYMARKET",
+                            "soccer",
+                            "full_time",
+                            "TOTALS",
+                            "TOTALS",
+                            "OVER",
+                            '[["line","3.5"]]',
+                        ],
+                        "value": 2,
+                    },
+                ],
+                "unsupportedProviderPatternSamples": [
+                    {
+                        "provider": "POLYMARKET",
+                        "sport": "soccer",
+                        "scope": "full_time",
+                        "marketType": "TOTALS",
+                        "marketFamily": "TOTALS",
+                        "selection": "OVER",
+                        "paramsKey": '[["line","3.5"]]',
+                        "count": 2,
+                        "samples": [{"instrumentId": "poly-1"}],
+                    },
+                ],
+            },
             "venueCoverage": {
                 "enabledVenues": ["CLOUDBET", "SXBET"],
                 "crossVenueCandidateCount": 2,
@@ -193,6 +227,12 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
     assert summary["candidateQuality"]["diagnosticWarnings"] == []
     assert summary["providerQuotePollStats"]["CLOUDBET"]["cycle_id"] == 12
     assert summary["instrumentRefresh"]["staleQuoteTriggers"] == 1
+    assert summary["semanticDiagnostics"]["supportedProviderNodeCount"] == 18
+    assert summary["semanticDiagnostics"]["unsupportedProviderNodeCount"] == 2
+    assert summary["semanticDiagnostics"]["unsupportedProviderPatternCount"] == 1
+    assert summary["semanticDiagnostics"]["unsupportedProviderPatternSamples"][0]["provider"] == (
+        "POLYMARKET"
+    )
 
 
 def test_runtime_probe_report_flags_legacy_semantic_blocked_artifacts():
@@ -294,6 +334,8 @@ def test_runtime_probe_report_cli_outputs_json_and_text(tmp_path, monkeypatch, c
     assert "ts=request_started->response_received" in text_output
     assert "failures=2 rate_limits=1 backoff=1.0s" in text_output
     assert "instrument_refresh_by_venue CLOUDBET:req=3 add=4 rm=2 stale=1" in text_output
+    assert "semantic_diagnostics supported_nodes=18 unsupported_nodes=2" in text_output
+    assert "unsupported_provider_patterns" in text_output
 
 
 def test_runtime_probe_report_cli_can_fail_on_incomplete_diagnostics(

@@ -1437,16 +1437,34 @@ def _semantic_probe_diagnostics(graph) -> dict[str, object]:
         node_diagnostics["provider_pattern_counts"],
         template_diagnostics["provider_pattern_counts"],
     )
+    unsupported_provider_patterns = _unsupported_provider_patterns(
+        node_diagnostics["provider_pattern_counts"],
+        template_diagnostics["provider_pattern_counts"],
+        node_diagnostics["provider_pattern_samples"],
+    )
+    normalized_node_count = sum(node_diagnostics["pattern_counts"].values())
     common_pattern_key_count = len(
         set(node_diagnostics["pattern_counts"]) & set(template_diagnostics["pattern_counts"]),
     )
     return {
         "available": True,
         "nodeCount": len(nodes),
-        "normalizedNodeCount": sum(node_diagnostics["pattern_counts"].values()),
+        "normalizedNodeCount": normalized_node_count,
         "normalizationErrorCount": sum(node_diagnostics["normalization_errors"].values()),
         "supportedProviderNodeCount": supported_provider_node_count,
+        "unsupportedProviderNodeCount": unsupported_provider_patterns["node_count"],
+        "supportedProviderCoverageRatio": round(
+            (
+                supported_provider_node_count / normalized_node_count
+                if normalized_node_count > 0
+                else 0.0
+            ),
+            6,
+        ),
         "commonPatternKeyCount": common_pattern_key_count,
+        "unsupportedProviderPatternCount": unsupported_provider_patterns["pattern_count"],
+        "unsupportedProviderPatterns": unsupported_provider_patterns["top_patterns"],
+        "unsupportedProviderPatternSamples": unsupported_provider_patterns["samples"],
         "templateCount": template_diagnostics["template_count"],
         "nodeSports": _top_counter(node_diagnostics["sport_counts"]),
         "nodeMarkets": _top_counter(node_diagnostics["market_counts"]),
@@ -1479,6 +1497,7 @@ def _semantic_node_diagnostics(nodes: dict[str, object]) -> dict[str, object]:
     normalization_errors: Counter[str] = Counter()
     normalization_error_samples: list[dict[str, object]] = []
     normalized_node_samples: list[dict[str, object]] = []
+    provider_pattern_samples: dict[tuple[str, ...], list[dict[str, object]]] = {}
     for node_id, node in nodes.items():
         instrument = getattr(node, "instrument", None)
         try:
@@ -1512,6 +1531,22 @@ def _semantic_node_diagnostics(nodes: dict[str, object]) -> dict[str, object]:
         provider_pattern_counts[provider_pattern_key] += 1
         sport_counts[normalized.sport] += 1
         market_counts[normalized.market_type] += 1
+        provider_samples = provider_pattern_samples.setdefault(provider_pattern_key, [])
+        if len(provider_samples) < 3:
+            provider_samples.append(
+                {
+                    "nodeId": str(node_id),
+                    "instrumentId": str(getattr(instrument, "id", node_id)),
+                    "venue": normalized.venue,
+                    "sport": normalized.sport,
+                    "scope": normalized.scope,
+                    "marketType": normalized.market_type,
+                    "marketFamily": normalized.market_family,
+                    "selection": normalized.selection,
+                    "paramsKey": pattern_key[-1],
+                    "eventKey": normalized.event_key,
+                },
+            )
         if len(normalized_node_samples) < 5:
             normalized_node_samples.append(
                 {
@@ -1533,6 +1568,7 @@ def _semantic_node_diagnostics(nodes: dict[str, object]) -> dict[str, object]:
         "normalization_errors": normalization_errors,
         "normalization_error_samples": normalization_error_samples,
         "normalized_node_samples": normalized_node_samples,
+        "provider_pattern_samples": provider_pattern_samples,
     }
 
 
@@ -1625,6 +1661,44 @@ def _supported_provider_node_count(
         ) or template_provider_pattern_counts.get(("venue_agnostic", *pattern_key), 0):
             supported_provider_node_count += count
     return supported_provider_node_count
+
+
+def _unsupported_provider_patterns(
+    node_provider_pattern_counts: Counter[tuple[str, ...]],
+    template_provider_pattern_counts: Counter[tuple[str, ...]],
+    provider_pattern_samples: dict[tuple[str, ...], list[dict[str, object]]],
+    *,
+    limit: int = 10,
+) -> dict[str, object]:
+    unsupported_counts: Counter[tuple[str, ...]] = Counter()
+    for provider_pattern_key, count in node_provider_pattern_counts.items():
+        venue = provider_pattern_key[0]
+        pattern_key = provider_pattern_key[1:]
+        if template_provider_pattern_counts.get((venue, *pattern_key), 0):
+            continue
+        if template_provider_pattern_counts.get(("venue_agnostic", *pattern_key), 0):
+            continue
+        unsupported_counts[provider_pattern_key] += count
+
+    return {
+        "node_count": sum(unsupported_counts.values()),
+        "pattern_count": len(unsupported_counts),
+        "top_patterns": _top_counter(unsupported_counts, limit=limit),
+        "samples": [
+            {
+                "provider": key[0],
+                "sport": key[1],
+                "scope": key[2],
+                "marketType": key[3],
+                "marketFamily": key[4],
+                "selection": key[5],
+                "paramsKey": key[6],
+                "count": count,
+                "samples": provider_pattern_samples.get(key, [])[:3],
+            }
+            for key, count in unsupported_counts.most_common(limit)
+        ],
+    }
 
 
 def _semantic_template_payloads_for_diagnostics(graph) -> list[dict[str, object]]:
