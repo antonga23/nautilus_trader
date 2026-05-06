@@ -973,11 +973,29 @@ class TestSemanticCacheBootstrap:
                 mapping = {
                     "exec-safe": SimpleNamespace(
                         safety_tier=node_cache.SafetyTier.EXECUTION_SAFE.value,
+                        execution_safe=True,
+                        same_venue_execution_eligible=False,
+                        relationship_type="COMPLEMENTARY_COVERAGE",
+                        has_void=False,
+                        has_partial=False,
+                        has_unknown=False,
+                        support=SimpleNamespace(catalog_promotable=True),
+                        caveats=(),
+                        eligibility_reasons=("execution_safe_complementary_coverage",),
                     ),
                     "same-venue": SimpleNamespace(
                         safety_tier=(
                             node_cache.SafetyTier.EXECUTION_SAFE_SAME_VENUE_ELIGIBLE.value
                         ),
+                        execution_safe=False,
+                        same_venue_execution_eligible=True,
+                        relationship_type="COMPLEMENTARY_COVERAGE",
+                        has_void=False,
+                        has_partial=False,
+                        has_unknown=False,
+                        support=SimpleNamespace(catalog_promotable=True),
+                        caveats=(),
+                        eligibility_reasons=("same_venue_risk_engine_elevation_required",),
                     ),
                 }
                 return mapping.get(template_id)
@@ -991,6 +1009,13 @@ class TestSemanticCacheBootstrap:
         assert status.promoted_template_count == 3
         assert status.execution_safe_template_count == 1
         assert status.same_venue_execution_eligible_template_count == 1
+        assert status.promoted_safety_tier_counts == {
+            "EXECUTION_SAFE": 1,
+            "EXECUTION_SAFE_SAME_VENUE_ELIGIBLE": 1,
+        }
+        assert status.strict_execution_blocker_counts == {
+            "same_venue_risk_engine_elevation_required": 1,
+        }
         assert status.coverage_proof_count == 2
         assert status.coverage_hyperedge_count == 1
 
@@ -2234,6 +2259,8 @@ class TestBettingArbitrageNodeRunner:
             promoted_template_count=3,
             execution_safe_template_count=1,
             same_venue_execution_eligible_template_count=1,
+            promoted_safety_tier_counts={"EXECUTION_SAFE": 1},
+            strict_execution_blocker_counts={"same_venue_risk_engine_elevation_required": 1},
         )
         monkeypatch.setattr(node_runner, "ensure_semantic_cache_ready", lambda _: expected_status)
 
@@ -2247,6 +2274,10 @@ class TestBettingArbitrageNodeRunner:
             "promotedTemplateCount": 3,
             "executionSafeTemplateCount": 1,
             "sameVenueExecutionEligibleTemplateCount": 1,
+            "promotedSafetyTierCounts": {"EXECUTION_SAFE": 1},
+            "strictExecutionBlockerCounts": {
+                "same_venue_risk_engine_elevation_required": 1,
+            },
             "coverageProofCount": 0,
             "coverageHyperedgeCount": 0,
             "compatibilityVersion": None,

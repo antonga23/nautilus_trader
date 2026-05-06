@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import Iterable
 from dataclasses import asdict
 from dataclasses import dataclass
+from dataclasses import field
 import hashlib
 import json
 import os
@@ -55,6 +56,8 @@ class SemanticCacheStatus:
     promoted_template_count: int
     execution_safe_template_count: int
     same_venue_execution_eligible_template_count: int
+    promoted_safety_tier_counts: dict[str, int] = field(default_factory=dict)
+    strict_execution_blocker_counts: dict[str, int] = field(default_factory=dict)
     coverage_proof_count: int = 0
     coverage_hyperedge_count: int = 0
     compatibility_version: str | None = None
@@ -151,6 +154,7 @@ def semantic_cache_status(
 
     template_counts = _semantic_template_counts(store)
     coverage_counts = _semantic_coverage_counts(store)
+    strictness = _semantic_template_strictness(store)
 
     return SemanticCacheStatus(
         path=str(path),
@@ -159,6 +163,8 @@ def semantic_cache_status(
         promoted_template_count=template_counts.promoted,
         execution_safe_template_count=template_counts.execution_safe,
         same_venue_execution_eligible_template_count=template_counts.same_venue_eligible,
+        promoted_safety_tier_counts=strictness["promoted_safety_tier_counts"],
+        strict_execution_blocker_counts=strictness["strict_execution_blocker_counts"],
         coverage_proof_count=coverage_counts.proofs,
         coverage_hyperedge_count=coverage_counts.hyperedges,
         compatibility_version=compatibility_version,
@@ -192,6 +198,58 @@ def _semantic_coverage_counts(store: RuleStore) -> _SemanticCoverageCounts:
         store.list_coverage_hyperedge_ids() if hasattr(store, "list_coverage_hyperedge_ids") else []
     )
     return _SemanticCoverageCounts(proofs=len(proof_ids), hyperedges=len(hyperedge_ids))
+
+
+def _semantic_template_strictness(store: RuleStore) -> dict[str, dict[str, int]]:
+    tier_counts: dict[str, int] = {}
+    strict_blockers: dict[str, int] = {}
+    for template_id in store.list_promoted_template_ids():
+        template = store.load_promoted_template(template_id)
+        if template is None:
+            continue
+        tier_counts[template.safety_tier] = tier_counts.get(template.safety_tier, 0) + 1
+        if template.execution_safe:
+            continue
+        for blocker in _strict_execution_blockers(template):
+            strict_blockers[blocker] = strict_blockers.get(blocker, 0) + 1
+    return {
+        "promoted_safety_tier_counts": dict(sorted(tier_counts.items())),
+        "strict_execution_blocker_counts": dict(sorted(strict_blockers.items())),
+    }
+
+
+def _strict_execution_blockers(template: object) -> tuple[str, ...]:
+    blockers: list[str] = []
+    relationship_type = str(getattr(template, "relationship_type", "") or "")
+    same_venue_execution_eligible = bool(
+        getattr(template, "same_venue_execution_eligible", False),
+    )
+    has_void = bool(getattr(template, "has_void", False))
+    has_partial = bool(getattr(template, "has_partial", False))
+    has_unknown = bool(getattr(template, "has_unknown", False))
+    execution_safe = bool(getattr(template, "execution_safe", False))
+    support = getattr(template, "support", None)
+    catalog_promotable = bool(getattr(support, "catalog_promotable", False)) if support else False
+    caveats = tuple(getattr(template, "caveats", ()) or ())
+    eligibility_reasons = tuple(getattr(template, "eligibility_reasons", ()) or ())
+
+    if same_venue_execution_eligible:
+        blockers.append("same_venue_risk_engine_elevation_required")
+    if relationship_type != "COMPLEMENTARY_COVERAGE":
+        blockers.append("non_complementary_relationship")
+    if has_void:
+        blockers.append("void_states_present")
+    if has_partial:
+        blockers.append("partial_settlement_present")
+    if has_unknown:
+        blockers.append("unknown_settlement_present")
+    if support is not None and not catalog_promotable:
+        blockers.append("catalog_support_below_gate")
+    for caveat in caveats:
+        blockers.append(f"caveat:{caveat}")
+    if not blockers and not execution_safe:
+        blockers.extend(str(reason) for reason in eligibility_reasons)
+    return tuple(sorted(set(blockers)))
 
 
 def _read_semantic_cache_compatibility(cache_dir: Path) -> dict[str, str | None]:
