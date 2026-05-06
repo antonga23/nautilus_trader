@@ -5,6 +5,11 @@ permissions:
 
 on:
   workflow_dispatch:
+    inputs:
+      run_cleanup:
+        description: Run self-hosted runner cleanup before health checks
+        required: false
+        default: 'false'
 
 jobs:
   gcp-ci-health:
@@ -71,6 +76,27 @@ jobs:
           echo "runner_os=${RUNNER_OS}"
           echo "runner_arch=${RUNNER_ARCH}"
           echo "expected_labels=self-hosted,Linux,X64,cloudbet-market-maker,ci,gcp,ubuntu24"
+
+      - name: Run requested runner cleanup
+        if: ${{ github.event.inputs.run_cleanup == 'true' }}
+        shell: bash
+        env:
+          ACTIONS_RUNNER_ROOT: /opt/actions-runner
+          RUNNER_ARTIFACT_RETENTION_DAYS: '2'
+          RUNNER_MONITOR_LOG_RETENTION_DAYS: '2'
+          RUNNER_MONITOR_LOG_MAX_MB: '1024'
+          DOCKER_BUILD_CACHE_PRUNE_UNTIL: 48h
+          ROOT_TMP_RETENTION_DAYS: '2'
+        run: |
+          set -euo pipefail
+          bash scripts/ci/self_hosted_runner_cleanup.sh
+          df -h
+          echo
+          echo "Root usage by top-level directory:"
+          du -xhd1 / 2> /dev/null | sort -h || true
+          if command -v docker > /dev/null 2>&1; then
+            docker system df || true
+          fi
 
       - name: Verify host tooling and paths
         shell: bash
@@ -147,6 +173,27 @@ jobs:
           echo "runner_os=${RUNNER_OS}"
           echo "runner_arch=${RUNNER_ARCH}"
           echo "expected_labels=self-hosted,Linux,X64,ec2,deploy,trading"
+
+      - name: Run requested runner cleanup
+        if: ${{ github.event.inputs.run_cleanup == 'true' }}
+        shell: bash
+        env:
+          ACTIONS_RUNNER_ROOT: /home/ubuntu/actions-runner
+          RUNNER_ARTIFACT_RETENTION_DAYS: '2'
+          RUNNER_MONITOR_LOG_RETENTION_DAYS: '2'
+          RUNNER_MONITOR_LOG_MAX_MB: '1024'
+          DOCKER_BUILD_CACHE_PRUNE_UNTIL: 48h
+          ROOT_TMP_RETENTION_DAYS: '2'
+        run: |
+          set -euo pipefail
+          bash scripts/ci/self_hosted_runner_cleanup.sh
+          df -h
+          echo
+          echo "Root usage by top-level directory:"
+          du -xhd1 / 2> /dev/null | sort -h || true
+          if command -v docker > /dev/null 2>&1; then
+            docker system df || true
+          fi
 
       - name: Verify host tooling and paths
         shell: bash

@@ -101,6 +101,7 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
             "marketFamilies": candidate_quality.get("marketFamilies"),
             "latencyHistograms": candidate_quality.get("latencyHistograms"),
             "liveQuoteAgeSlo": candidate_quality.get("liveQuoteAgeSlo"),
+            "sameVenueDryRun": candidate_quality.get("sameVenueDryRun"),
             "topRejectionBuckets": _top_items(
                 _as_dict(candidate_quality.get("rejectionBuckets")),
                 limit=top_limit,
@@ -270,6 +271,16 @@ def _format_text(path: Path, summary: dict[str, Any]) -> str:
             f"observations={live_slo.get('observations')} "
             f"violations={live_slo.get('violations')} "
             f"max={live_slo.get('maxQuoteAgeSeconds')}s",
+        )
+    same_venue_dry_run = quality.get("sameVenueDryRun") or {}
+    if isinstance(same_venue_dry_run, dict) and (
+        same_venue_dry_run.get("passes") or same_venue_dry_run.get("failures")
+    ):
+        lines.append(
+            "  same_venue_dry_run "
+            f"passes={same_venue_dry_run.get('passes', 0)} "
+            f"failures={same_venue_dry_run.get('failures', 0)} "
+            f"failure_reasons={same_venue_dry_run.get('failureReasons', {})}",
         )
     warnings = quality.get("diagnosticWarnings") or []
     if warnings:

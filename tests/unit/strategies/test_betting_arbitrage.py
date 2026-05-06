@@ -307,6 +307,9 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure("opportunities_found" in stats)
         ensure("opportunities_executed" in stats)
         ensure("raw_arbitrage_detections" in stats)
+        ensure("unique_opportunity_pairs" in stats)
+        ensure("active_opportunity_pairs" in stats)
+        ensure("duplicate_suppression_cooldown_secs" in stats)
         ensure("opportunity_graph_nodes" in stats)
         ensure("opportunity_graph_edges" in stats)
         ensure("opportunity_graph_quote_states" in stats)
@@ -324,6 +327,7 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure("instrument_refresh_added" in stats)
         ensure("instrument_refresh_removed" in stats)
         ensure("instrument_refresh_delisted_removed" in stats)
+        ensure("instrument_refresh_reconciles" in stats)
         ensure("instrument_refresh_graph_rebuilds" in stats)
         ensure("quote_unsubscribe_requests" in stats)
         ensure("success_rate" in stats)
@@ -338,6 +342,7 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(stats["instrument_refresh_added"] == 0)
         ensure(stats["instrument_refresh_removed"] == 0)
         ensure(stats["instrument_refresh_delisted_removed"] == 0)
+        ensure(stats["instrument_refresh_reconciles"] == 0)
         ensure(stats["instrument_refresh_graph_rebuilds"] == 0)
         ensure(stats["quote_unsubscribe_requests"] == 0)
         ensure(stats["success_rate"] == 0)
@@ -441,6 +446,7 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(stats["instrument_refresh_added"] == 1)
         ensure(stats["instrument_refresh_removed"] == 1)
         ensure(stats["instrument_refresh_delisted_removed"] == 1)
+        ensure(stats["instrument_refresh_reconciles"] == 1)
         ensure(stats["quote_unsubscribe_requests"] == 1)
 
     def test_refresh_schedules_delayed_reconcile_alerts(self, monkeypatch):  # skipcq
@@ -1454,6 +1460,11 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(live.max_quote_age_secs == 3.0)
         ensure(live.max_pair_skew_secs == 1.0)
         ensure(live.max_fetch_latency_secs == 2.0)
+        ensure(live_strategy.live_quote_age_slo_secs == 5.0)
+
+    def test_live_quote_age_slo_must_be_positive(self):  # skipcq
+        with pytest.raises(ValueError, match="live_quote_age_slo_secs must be positive"):
+            BettingArbitrageConfig(live_quote_age_slo_secs=0.0)
 
     def test_latency_summary_reports_percentiles(self):  # skipcq
         samples: list[int] = []
@@ -1467,6 +1478,20 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(summary["p50_ms"] == 2.0)
         ensure(summary["p95_ms"] == 2.0)
         ensure(summary["max_ms"] == 3.0)
+
+    def test_quote_receive_latency_records_event_and_publish_stages(self):  # skipcq
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(enabled_venues=frozenset(["SXBET"])),
+        )
+
+        strategy._record_quote_receive_latency(
+            Mock(ts_event=1_000_000_000, ts_init=1_200_000_000),
+            1_500_000_000,
+        )
+
+        stats = strategy.get_stats()
+        ensure(stats["latency_diagnostics"]["quote_event_to_strategy"]["p50_ms"] == 500.0)
+        ensure(stats["latency_diagnostics"]["quote_publish_to_strategy"]["p50_ms"] == 300.0)
 
     def test_arbitrage_diagnostics_flags_fetch_latency(self):  # skipcq
         strategy = BettingArbitrageStrategy(
@@ -1986,6 +2011,34 @@ class TestBettingArbitrageStrategy:  # skipcq
         )
         ensure("pair-a" in strategy._seen_opportunity_pairs)
         ensure("pair-a" not in strategy._active_opportunity_pairs)
+
+    def test_changed_price_pair_can_reenter_after_cooldown_while_active(self):  # skipcq
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["SXBET"]),
+                duplicate_suppression_cooldown_secs=1.0,
+            ),
+        )
+
+        strategy._record_opportunity_pair("pair-a", "pair-a|same_market|2.1:2.2", 1_000_000_000)
+
+        ensure(
+            strategy._is_duplicate_opportunity_pair(
+                "pair-a",
+                "pair-a|same_market|2.2:2.3",
+                1_500_000_000,
+            )
+            is True,
+        )
+        ensure(
+            strategy._is_duplicate_opportunity_pair(
+                "pair-a",
+                "pair-a|same_market|2.2:2.3",
+                2_200_000_000,
+            )
+            is False,
+        )
+        ensure("pair-a" in strategy._active_opportunity_pairs)
 
     def test_fast_graph_batch_suppresses_stale_quotes_from_snapshot_before_context(self):  # skipcq
         strategy = BettingArbitrageStrategy(

@@ -58,8 +58,12 @@ class ProbeProfitabilityCounters:
     quote_age_samples_secs: list[float] = field(default_factory=list)
     fetch_latency_samples_secs: list[float] = field(default_factory=list)
     pair_skew_samples_secs: list[float] = field(default_factory=list)
+    live_quote_age_slo_secs: float = 5.0
     live_quote_age_observations: int = 0
     live_quote_age_violations: int = 0
+    same_venue_dry_run_passes: int = 0
+    same_venue_dry_run_failures: int = 0
+    same_venue_dry_run_failure_reasons: Counter[str] = field(default_factory=Counter)
     samples: list[tuple[Decimal, dict[str, object]]] = field(default_factory=list)
     negative_samples: list[tuple[Decimal, dict[str, object]]] = field(default_factory=list)
 
@@ -97,9 +101,14 @@ class ProbeProfitabilityCounters:
                 "pair_skew_secs": _percentile_payload(self.pair_skew_samples_secs),
             },
             "live_quote_age_slo": {
-                "max_quote_age_secs": 5.0,
+                "max_quote_age_secs": self.live_quote_age_slo_secs,
                 "observations": self.live_quote_age_observations,
                 "violations": self.live_quote_age_violations,
+            },
+            "same_venue_dry_run": {
+                "passes": self.same_venue_dry_run_passes,
+                "failures": self.same_venue_dry_run_failures,
+                "failure_reasons": dict(self.same_venue_dry_run_failure_reasons),
             },
             "venue_pairs": {
                 key: dict(counter)
@@ -861,6 +870,11 @@ def _collect_runtime_probe_payload(
                 "observations": profitability["live_quote_age_slo"]["observations"],
                 "violations": profitability["live_quote_age_slo"]["violations"],
             },
+            "sameVenueDryRun": {
+                "passes": profitability["same_venue_dry_run"]["passes"],
+                "failures": profitability["same_venue_dry_run"]["failures"],
+                "failureReasons": profitability["same_venue_dry_run"]["failure_reasons"],
+            },
             "venuePairs": profitability["venue_pairs"],
             "marketFamilies": profitability["market_families"],
             "zeroCandidateVenuePairSamples": venue_coverage["zeroCandidateVenuePairs"],
@@ -1000,6 +1014,11 @@ def _empty_candidate_quality_payload() -> dict[str, object]:
             "maxQuoteAgeSeconds": 5.0,
             "observations": 0,
             "violations": 0,
+        },
+        "sameVenueDryRun": {
+            "passes": 0,
+            "failures": 0,
+            "failureReasons": {},
         },
         "venuePairs": {},
         "marketFamilies": {},
@@ -1614,6 +1633,7 @@ def _probe_edge_profitability(
 ) -> dict[str, object]:
     matcher = strategy.market_matcher
     counters = ProbeProfitabilityCounters()
+    counters.live_quote_age_slo_secs = float(getattr(strategy, "live_quote_age_slo_secs", 5.0))
 
     for edge in edges:
         quoted_edge = _quoted_probe_edge(edge, nodes, quotes)
@@ -1902,10 +1922,11 @@ def _record_probe_quality(
     counters.pair_skew_samples_secs.append(quote_delta_secs)
     if str(quality.get("freshnessProfile") or "") == "live":
         counters.live_quote_age_observations += 2
-        if quote_age_a_secs > 5.0:
+        if quote_age_a_secs > counters.live_quote_age_slo_secs:
             counters.live_quote_age_violations += 1
-        if quote_age_b_secs > 5.0:
+        if quote_age_b_secs > counters.live_quote_age_slo_secs:
             counters.live_quote_age_violations += 1
+    _record_same_venue_dry_run_quality(counters, quality)
     if rejection_bucket in _SEMANTIC_NON_EXECUTION_BUCKETS:
         counters.semantic_blocked_reasons[_semantic_blocked_reason(quality)] += 1
         samples = counters.blocker_samples.setdefault(rejection_bucket, [])
@@ -1945,6 +1966,32 @@ def _record_probe_quality(
         counters.samples.append((margin, quality))
     elif margin > Decimal("-0.05"):
         counters.negative_samples.append((margin, quality))
+
+
+def _record_same_venue_dry_run_quality(
+    counters: ProbeProfitabilityCounters,
+    quality: dict[str, object],
+) -> None:
+    if not bool(quality.get("sameVenueExecutionEligible")) or bool(quality.get("executionSafe")):
+        return
+    if bool(quality.get("wouldExecuteSameVenueDryRun")):
+        counters.same_venue_dry_run_passes += 1
+        return
+
+    counters.same_venue_dry_run_failures += 1
+    policy = quality.get("sameVenueRiskPolicy")
+    if not isinstance(policy, dict):
+        return
+    for reason in (
+        "sameVenue",
+        "sameFixture",
+        "compatibleMarketFamily",
+        "freshQuotes",
+        "sufficientLiquidity",
+        "thresholdProfit",
+    ):
+        if policy.get(reason) is False:
+            counters.same_venue_dry_run_failure_reasons[reason] += 1
 
 
 def _semantic_blocked_reason(quality: dict[str, object]) -> str:

@@ -140,6 +140,7 @@ class OpportunityPairState:
     """
 
     last_opportunity_id: str
+    last_accepted_ns: int
     last_seen_ns: int
 
 
@@ -195,6 +196,8 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         Custom maximum timestamp skew between two quotes.
     quote_max_fetch_latency_secs : float | None, default None
         Custom maximum REST fetch latency encoded as ``QuoteTick.ts_init - ts_event``.
+    live_quote_age_slo_secs : float, default 5.0
+        Maximum live quote age at strategy decision time for diagnostics.
     instrument_refresh_interval_secs : float | None, default None
         Optional timer interval for requesting refreshed venue instrument catalogs.
 
@@ -221,6 +224,7 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
     quote_freshness_profile: str = "pre_match"
     quote_max_pair_skew_secs: float | None = None
     quote_max_fetch_latency_secs: float | None = None
+    live_quote_age_slo_secs: float = 5.0
     instrument_refresh_interval_secs: float | None = None
 
     def __post_init__(self) -> None:
@@ -262,6 +266,9 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         if self.duplicate_suppression_cooldown_secs < 0:
             msg = "duplicate_suppression_cooldown_secs must be non-negative"
             raise ValueError(msg)
+        if self.live_quote_age_slo_secs <= 0:
+            msg = "live_quote_age_slo_secs must be positive"
+            raise ValueError(msg)
         if self.semantic_unmatched_quote_probe_limit_per_venue < 0:
             msg = "semantic_unmatched_quote_probe_limit_per_venue must be non-negative"
             raise ValueError(msg)
@@ -283,6 +290,11 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
             semantic_unmatched_quote_probe_venues,
         )
         msgspec.structs.force_setattr(self, "quote_freshness_profile", quote_freshness_profile)
+        msgspec.structs.force_setattr(
+            self,
+            "live_quote_age_slo_secs",
+            float(self.live_quote_age_slo_secs),
+        )
 
 
 # skipcq: PYL-R0902
@@ -341,6 +353,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._instrument_refresh_added = 0
         self._instrument_refresh_removed = 0
         self._instrument_refresh_delisted_removed = 0
+        self._instrument_refresh_reconciles = 0
         self._instrument_refresh_graph_rebuilds = 0
         self._quote_unsubscribe_requests = 0
         self._pending_refresh_reconcile_venues: set[str] = set()
@@ -351,6 +364,9 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._candidate_decision_latency_ns: list[int] = []
         self._order_construction_latency_ns: list[int] = []
         self._order_submit_latency_ns: list[int] = []
+        self._quote_event_to_strategy_latency_ns: list[int] = []
+        self._quote_publish_to_strategy_latency_ns: list[int] = []
+        self._instrument_refresh_reconcile_latency_ns: list[int] = []
         self._last_arbitrage_summary_at_ns = 0
 
     @property
@@ -562,6 +578,14 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 )
 
     def _reconcile_cached_venue_instruments(self, venue_value: str) -> None:
+        now_ns = self.clock.timestamp_ns()
+        requested_at_ns = self._last_refresh_request_at_ns.get(venue_value, 0)
+        if requested_at_ns > 0:
+            self._record_latency_sample(
+                self._instrument_refresh_reconcile_latency_ns,
+                max(0, now_ns - requested_at_ns),
+            )
+        self._instrument_refresh_reconciles += 1
         active_cached = self._active_cached_venue_instruments(venue_value)
         active_ids = {str(instrument.id) for instrument in active_cached}
         added_instruments = self._add_refreshed_active_instruments(active_cached)
@@ -1034,6 +1058,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
 
         """
         # Store latest quote
+        strategy_received_ns = self.clock.timestamp_ns()
+        self._record_quote_receive_latency(tick, strategy_received_ns)
         self._latest_quotes[str(tick.instrument_id)] = tick
 
         instrument = self._coerce_betting_instrument(self.cache.instrument(tick.instrument_id))
@@ -1046,6 +1072,18 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             return
 
         self._handle_search_quote_tick(tick, instrument)
+
+    def _record_quote_receive_latency(self, tick: QuoteTick, strategy_received_ns: int) -> None:
+        if tick.ts_event > 0:
+            self._record_latency_sample(
+                self._quote_event_to_strategy_latency_ns,
+                max(0, strategy_received_ns - int(tick.ts_event)),
+            )
+        if tick.ts_init > 0:
+            self._record_latency_sample(
+                self._quote_publish_to_strategy_latency_ns,
+                max(0, strategy_received_ns - int(tick.ts_init)),
+            )
 
     @staticmethod
     def _quote_tick_for_betting_instrument(
@@ -1297,6 +1335,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._seen_opportunity_pairs.add(canonical_pair_id)
         self._active_opportunity_pairs[canonical_pair_id] = OpportunityPairState(
             last_opportunity_id=opportunity_id,
+            last_accepted_ns=now_ns,
             last_seen_ns=now_ns,
         )
 
@@ -1317,10 +1356,13 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             return False
 
         self._active_opportunity_pairs[canonical_pair_id] = OpportunityPairState(
-            last_opportunity_id=opportunity_id,
+            last_opportunity_id=state.last_opportunity_id,
+            last_accepted_ns=state.last_accepted_ns,
             last_seen_ns=now_ns,
         )
-        return True
+        if opportunity_id == state.last_opportunity_id:
+            return True
+        return now_ns - state.last_accepted_ns <= cooldown_ns
 
     def _prune_inactive_opportunity_pairs(self, now_ns: int) -> None:
         cooldown_ns = self._duplicate_suppression_cooldown_ns()
@@ -2435,6 +2477,13 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             max_fetch_latency_secs=3.0,
         )
 
+    @property
+    def live_quote_age_slo_secs(self) -> float:
+        """
+        Maximum live quote age at decision time for runtime diagnostics.
+        """
+        return float(self._config.live_quote_age_slo_secs)
+
     @staticmethod
     def _is_trusted_same_venue_match_odds_pair(
         instrument_a: CryptoBettingInstrument,
@@ -2762,6 +2811,11 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             "opportunities_found": self._opportunities_found,
             "opportunities_executed": self._opportunities_executed,
             "raw_arbitrage_detections": self._raw_arbitrage_detections,
+            "unique_opportunity_pairs": len(self._seen_opportunity_pairs),
+            "active_opportunity_pairs": len(self._active_opportunity_pairs),
+            "duplicate_suppression_cooldown_secs": (
+                self._config.duplicate_suppression_cooldown_secs
+            ),
             "duplicate_opportunities_suppressed": self._duplicate_opportunities_suppressed,
             "stale_quote_suppressions": self._stale_quote_suppressions,
             "matcher_suspect_suppressions": self._matcher_suspect_suppressions,
@@ -2773,9 +2827,19 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             "instrument_refresh_added": self._instrument_refresh_added,
             "instrument_refresh_removed": self._instrument_refresh_removed,
             "instrument_refresh_delisted_removed": self._instrument_refresh_delisted_removed,
+            "instrument_refresh_reconciles": self._instrument_refresh_reconciles,
             "instrument_refresh_graph_rebuilds": self._instrument_refresh_graph_rebuilds,
             "quote_unsubscribe_requests": self._quote_unsubscribe_requests,
             "latency_diagnostics": {
+                "quote_event_to_strategy": self._latency_summary(
+                    self._quote_event_to_strategy_latency_ns,
+                ),
+                "quote_publish_to_strategy": self._latency_summary(
+                    self._quote_publish_to_strategy_latency_ns,
+                ),
+                "instrument_refresh_reconcile": self._latency_summary(
+                    self._instrument_refresh_reconcile_latency_ns,
+                ),
                 "graph_scan": self._latency_summary(self._graph_scan_latency_ns),
                 "candidate_decision": self._latency_summary(
                     self._candidate_decision_latency_ns,

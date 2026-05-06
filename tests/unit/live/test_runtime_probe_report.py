@@ -95,6 +95,11 @@ def _runtime_status_payload() -> dict[str, object]:
                     "observations": 8,
                     "violations": 0,
                 },
+                "sameVenueDryRun": {
+                    "passes": 2,
+                    "failures": 1,
+                    "failureReasons": {"freshQuotes": 1},
+                },
                 "blockerSamples": {
                     "void_settlement": [
                         {"instrumentIdA": "a", "instrumentIdB": "b"},
@@ -133,6 +138,7 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
     ]
     assert summary["candidateQuality"]["latencyHistograms"]["quoteAgeSeconds"]["p95"] == 1.2
     assert summary["candidateQuality"]["liveQuoteAgeSlo"]["violations"] == 0
+    assert summary["candidateQuality"]["sameVenueDryRun"]["passes"] == 2
     assert summary["candidateQuality"]["diagnosticWarnings"] == []
 
 

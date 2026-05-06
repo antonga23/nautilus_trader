@@ -2107,6 +2107,50 @@ class TestBettingArbitrageNodeRunner:
         assert payload["latency_histograms"]["fetch_latency_secs"]["max"] == 0.1
         assert payload["latency_histograms"]["pair_skew_secs"]["count"] == 1
         assert payload["live_quote_age_slo"]["observations"] == 0
+        assert payload["same_venue_dry_run"] == {
+            "passes": 0,
+            "failures": 0,
+            "failure_reasons": {},
+        }
+
+    def test_runtime_probe_aggregates_same_venue_dry_run_reasons(self):
+        counters = node_runner.ProbeProfitabilityCounters()
+        quality = {
+            "profitMargin": "0.05",
+            "marginBand": "positive",
+            "rejectionBucket": "positive",
+            "venuePair": "SXBET->SXBET",
+            "marketFamily": "TOTALS",
+            "venueA": "SXBET",
+            "venueB": "SXBET",
+            "freshnessProfile": "live",
+            "timingFlags": ["quote_age"],
+            "quoteAgeASeconds": 6.0,
+            "quoteAgeBSeconds": 0.5,
+            "quoteDeltaSeconds": 0.1,
+            "fetchLatencyASeconds": 0.05,
+            "fetchLatencyBSeconds": 0.1,
+            "executionSafe": False,
+            "sameVenueExecutionEligible": True,
+            "wouldExecuteSameVenueDryRun": False,
+            "sameVenueRiskPolicy": {
+                "sameVenue": True,
+                "sameFixture": True,
+                "compatibleMarketFamily": True,
+                "freshQuotes": False,
+                "sufficientLiquidity": True,
+                "thresholdProfit": True,
+            },
+        }
+
+        node_runner._record_probe_quality(counters, quality)
+
+        payload = counters.to_payload()
+        assert payload["same_venue_dry_run"]["passes"] == 0
+        assert payload["same_venue_dry_run"]["failures"] == 1
+        assert payload["same_venue_dry_run"]["failure_reasons"] == {"freshQuotes": 1}
+        assert payload["live_quote_age_slo"]["observations"] == 2
+        assert payload["live_quote_age_slo"]["violations"] == 1
 
     def test_run_success_and_failure_paths_record_status_transitions(self, tmp_path, monkeypatch):
         def semantic_status(_manifest):
