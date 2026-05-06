@@ -363,8 +363,8 @@ class CloudbetClient(HttpClient):
             self._log.error(
                 f"Failed to retrieve latest odds for event {event_id} from the Cloudbet API. Response: {resp.text}")
             if resp.status == 429:
-                time.sleep(1)
-                await self.get_latest_odds(event_id, market_url)
+                await asyncio.sleep(1)
+                return await self.get_latest_odds(event_id, market_url)
             raise CloudbetAPIError(message="Failed to retrieve latests odds from the Cloudbet API.", code=resp.status)
         return msgspec.json.decode(resp.data, type=GetLatestOddsResponse)
 

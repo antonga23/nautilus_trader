@@ -567,6 +567,17 @@ def test_polymarket_totals_binary_maps_over_under_and_extracts_line():
     assert normalized.market_type == CanonicalMarketType.TOTALS.value
     assert normalized.selection == "UNDER"
     assert normalized.param("line") == "224.5"
+    sxbet_under = betting_instrument(
+        sport="basketball",
+        market_name="totals",
+        market_type="totals",
+        outcome="under",
+        params="line=224.5",
+        venue="SXBET",
+    )
+    rule = RuleClassifier().classify(transformed, sxbet_under)
+    assert rule is not None
+    assert rule.relationship_type == RelationshipType.EQUIVALENT_SELECTION.value
 
 
 def test_polymarket_infers_team_role_from_nickname_and_beat_question():

@@ -23,6 +23,7 @@ class _Response:
     def __init__(self, data: bytes, status: int = 200) -> None:
         self.data = data
         self.status = status
+        self.text = data.decode("utf-8", errors="replace")
 
 
 def _client() -> CloudbetClient:
@@ -133,6 +134,42 @@ async def test_get_bet_status_uses_v4_bets_endpoint():
     assert result.bet_id == "21b40aef-01ed-41cb-8254-27aeba7d8133"
     assert result.market_url == "soccer.match_odds/home"
     assert result.status.value == "ACCEPTED"
+
+
+@pytest.mark.asyncio
+async def test_get_latest_odds_returns_retry_result_after_rate_limit(monkeypatch):
+    client = _client()
+    payload = {
+        "outcome": "over",
+        "params": "total=1",
+        "price": 2.11,
+        "minStake": 0.1,
+        "maxStake": 118.96808,
+        "probability": 0.431,
+        "status": "SELECTION_ENABLED",
+        "side": "BACK",
+    }
+    responses = [
+        _Response(b"rate limit", status=429),
+        _Response(msgspec.json.encode(payload), status=200),
+    ]
+    sleeps: list[float] = []
+
+    async def fake_post(*, url, headers, data):
+        assert url.endswith("/v2/odds/lines")
+        return responses.pop(0)
+
+    async def fake_sleep(seconds: float):
+        sleeps.append(seconds)
+
+    client.post = fake_post  # type: ignore[method-assign]
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    result = await client.get_latest_odds("event-1", "basketball.total/over?total=1")
+
+    assert result.price == 2.11
+    assert sleeps == [1]
+    assert responses == []
 
 
 @pytest.mark.asyncio
