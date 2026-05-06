@@ -23,6 +23,7 @@ Quote ticks only update node state and re-evaluate edges adjacent to the changed
 
 """
 
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -197,6 +198,7 @@ class OpportunityGraph:
         self._semantic_template_count = 0
         self._coverage_proof_count = 0
         self._coverage_hyperedge_count = 0
+        self._coverage_summary_payload: dict[str, object] = self._empty_coverage_summary()
         self._rust_semantic_templates_loaded = False
         self.nodes_by_id: dict[str, OpportunityNode] = {}
         self.edges_by_id: dict[str, OpportunityEdge] = {}
@@ -571,16 +573,7 @@ class OpportunityGraph:
                 payload = {}
             if isinstance(payload, dict):
                 return payload
-        return {
-            "coverageProofCount": self._coverage_proof_count,
-            "coverageHyperedgeCount": self._coverage_hyperedge_count,
-            "executionSafeCoverageProofCount": 0,
-            "executionSafeCoverageHyperedgeCount": 0,
-            "proofSafetyTierCounts": {},
-            "hyperedgeSafetyTierCounts": {},
-            "sampleProofIds": [],
-            "sampleHyperedges": [],
-        }
+        return dict(self._coverage_summary_payload)
 
     def _sync_edges_from_rust(self) -> None:
         if self._rust_core is None:
@@ -1127,6 +1120,7 @@ class OpportunityGraph:
         if rule_store is None:
             self._coverage_proof_count = 0
             self._coverage_hyperedge_count = 0
+            self._coverage_summary_payload = self._empty_coverage_summary()
             return [], []
 
         proof_payloads: list[dict[str, object]] = []
@@ -1163,7 +1157,59 @@ class OpportunityGraph:
 
         self._coverage_proof_count = len(proof_payloads)
         self._coverage_hyperedge_count = len(hyperedge_payloads)
+        self._coverage_summary_payload = self._coverage_summary_from_payloads(
+            proof_payloads,
+            hyperedge_payloads,
+        )
         return proof_payloads, hyperedge_payloads
+
+    @staticmethod
+    def _empty_coverage_summary() -> dict[str, object]:
+        return {
+            "coverageProofCount": 0,
+            "coverageHyperedgeCount": 0,
+            "executionSafeCoverageProofCount": 0,
+            "executionSafeCoverageHyperedgeCount": 0,
+            "proofSafetyTierCounts": {},
+            "hyperedgeSafetyTierCounts": {},
+            "sampleProofIds": [],
+            "sampleHyperedges": [],
+        }
+
+    @classmethod
+    def _coverage_summary_from_payloads(
+        cls,
+        proof_payloads: list[dict[str, object]],
+        hyperedge_payloads: list[dict[str, object]],
+    ) -> dict[str, object]:
+        proof_tiers = Counter(
+            cls._coverage_safe_string(payload.get("safety_tier")) for payload in proof_payloads
+        )
+        hyperedge_tiers = Counter(
+            cls._coverage_safe_string(payload.get("safety_tier")) for payload in hyperedge_payloads
+        )
+        return {
+            "coverageProofCount": len(proof_payloads),
+            "coverageHyperedgeCount": len(hyperedge_payloads),
+            "executionSafeCoverageProofCount": sum(
+                1 for payload in proof_payloads if bool(payload.get("execution_safe"))
+            ),
+            "executionSafeCoverageHyperedgeCount": sum(
+                1 for payload in hyperedge_payloads if bool(payload.get("execution_safe"))
+            ),
+            "proofSafetyTierCounts": dict(sorted(proof_tiers.items())),
+            "hyperedgeSafetyTierCounts": dict(sorted(hyperedge_tiers.items())),
+            "sampleProofIds": [
+                cls._coverage_safe_string(payload.get("proof_id"))
+                for payload in proof_payloads[:10]
+                if payload.get("proof_id")
+            ],
+            "sampleHyperedges": hyperedge_payloads[:10],
+        }
+
+    @staticmethod
+    def _coverage_safe_string(value: object) -> str:
+        return str(value or "UNKNOWN")
 
     def _load_rust_semantic_coverage(
         self,

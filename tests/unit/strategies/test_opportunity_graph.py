@@ -14,6 +14,7 @@ Parity and fast-path tests for the opportunity graph engines.
 from decimal import Decimal
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from typing import cast
 
@@ -461,6 +462,64 @@ def test_venue_agnostic_polymarket_template_builds_cross_venue_edge(
     edge = next(iter(graph.edges_by_id.values()))
     ensure(edge.template_id == template.template_id)
     ensure(edge.execution_safe is True)
+
+
+def test_python_graph_coverage_summary_reports_store_tiers_and_samples() -> None:
+    class FakeRuleStore:
+        def list_promoted_template_ids(self):
+            return []
+
+        def list_coverage_proof_ids(self):
+            return ["proof-exec", "proof-topology"]
+
+        def load_coverage_proof(self, proof_id):
+            return {
+                "proof-exec": SimpleNamespace(
+                    proof_id="proof-exec",
+                    safety_tier="EXECUTION_SAFE",
+                    execution_safe=True,
+                    relationship_type="COMPLEMENTARY_COVERAGE",
+                    blocker_reasons=(),
+                ),
+                "proof-topology": SimpleNamespace(
+                    proof_id="proof-topology",
+                    safety_tier="TOPOLOGY_SAFE",
+                    execution_safe=False,
+                    relationship_type="EQUIVALENT_SELECTION",
+                    blocker_reasons=("equivalent_selection",),
+                ),
+            }.get(proof_id)
+
+        def list_coverage_hyperedge_ids(self):
+            return ["hyperedge-exec"]
+
+        def load_coverage_hyperedge(self, hyperedge_id):
+            return {
+                "hyperedge-exec": SimpleNamespace(
+                    hyperedge_id="hyperedge-exec",
+                    coverage_proof_id="proof-exec",
+                    instrument_ids=("home.SXBET", "draw.SXBET", "away.SXBET"),
+                    safety_tier="EXECUTION_SAFE",
+                    execution_safe=True,
+                ),
+            }.get(hyperedge_id)
+
+    graph = OpportunityGraph(
+        MarketMatcher(rule_store=FakeRuleStore(), allow_unpromoted_topology=False),
+        engine="python",
+    )
+
+    graph.build([_instrument()])
+
+    summary = graph.semantic_coverage_summary()
+    ensure(summary["coverageProofCount"] == 2)
+    ensure(summary["coverageHyperedgeCount"] == 1)
+    ensure(summary["executionSafeCoverageProofCount"] == 1)
+    ensure(summary["executionSafeCoverageHyperedgeCount"] == 1)
+    ensure(summary["proofSafetyTierCounts"] == {"EXECUTION_SAFE": 1, "TOPOLOGY_SAFE": 1})
+    ensure(summary["hyperedgeSafetyTierCounts"] == {"EXECUTION_SAFE": 1})
+    ensure(summary["sampleProofIds"] == ["proof-exec", "proof-topology"])
+    ensure(summary["sampleHyperedges"][0]["hyperedge_id"] == "hyperedge-exec")
 
 
 def test_sync_keeps_rust_semantic_edges_without_python_rediscovery() -> None:  # skipcq
