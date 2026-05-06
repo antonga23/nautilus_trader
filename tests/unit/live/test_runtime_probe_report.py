@@ -70,6 +70,9 @@ def _runtime_status_payload() -> dict[str, object]:
                     "cycle_elapsed_secs": 1.25,
                     "max_fetch_latency_secs": 0.2,
                     "backlog_count": 6,
+                    "failure_count": 2,
+                    "rate_limit_count": 1,
+                    "backoff_secs": 1.0,
                 },
             },
             "instrumentRefresh": {
@@ -266,6 +269,8 @@ def test_runtime_probe_report_cli_outputs_json_and_text(tmp_path, monkeypatch, c
     assert "candidates positive=3 threshold=2 cross_venue=2" in text_output
     assert "aggregate: artifacts=1 positive=3 threshold=2 cross_venue=2" in text_output
     assert "top_semantic_blockers" in text_output
+    assert "provider_poll CLOUDBET:cycle=12" in text_output
+    assert "failures=2 rate_limits=1 backoff=1.0s" in text_output
 
 
 def test_runtime_probe_report_cli_can_fail_on_incomplete_diagnostics(

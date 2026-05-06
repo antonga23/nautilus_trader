@@ -53,6 +53,10 @@ def test_venue_quote_poll_stats_round_trip() -> None:
         cycle_elapsed_secs=0.75,
         max_fetch_latency_secs=0.25,
         poll_interval_secs=3.0,
+        failure_count=2,
+        rate_limit_count=1,
+        backoff_secs=1.0,
+        last_error="rate limit",
     )
 
     payload = decode_venue_quote_poll_stats(raw)
@@ -75,6 +79,10 @@ def test_venue_quote_poll_stats_round_trip() -> None:
         cycle_elapsed_secs=0.75,
         max_fetch_latency_secs=0.25,
         poll_interval_secs=3.0,
+        failure_count=2,
+        rate_limit_count=1,
+        backoff_secs=1.0,
+        last_error="rate limit",
     )
 
 

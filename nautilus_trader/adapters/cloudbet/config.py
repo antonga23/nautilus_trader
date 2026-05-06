@@ -98,9 +98,12 @@ class CloudbetExecClientConfig(LiveExecClientConfig, kw_only=True, frozen=True):
         The cloudbet api key.
     api_url : str
         The cloudbet api url.
+    dry_run : bool, default False
+        If True, build Cloudbet bet requests but do not submit them to the Trading API.
     """
 
     base_currency: Currency = None
     market_filter: Optional[dict] = None
     api_key: Optional[str] = None
     api_url: Optional[str] = None
+    dry_run: bool = False

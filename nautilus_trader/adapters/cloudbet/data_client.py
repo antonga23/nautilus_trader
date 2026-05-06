@@ -39,6 +39,7 @@ from nautilus_trader.msgbus.bus import MessageBus
 
 from nautilus_trader.adapters.cloudbet.client.core import CLOUDBET_VENUE
 from nautilus_trader.adapters.cloudbet.client.core import CloudbetClient
+from nautilus_trader.adapters.cloudbet.client.exceptions import CloudbetAPIError
 from nautilus_trader.adapters.cloudbet.client.schema import (
     SelectionId,
     GetLatestOddsResponse,
@@ -470,14 +471,30 @@ class CloudbetDataClient(LiveMarketDataClient):
         started_at = time.perf_counter()
         semaphore = asyncio.Semaphore(max(1, self._quote_poll_concurrency))
 
-        async def _fetch(instrument_id: InstrumentId) -> QuoteTick | None:
+        async def _fetch(instrument_id: InstrumentId) -> tuple[QuoteTick | None, str | None]:
             async with semaphore:
-                return await self._fetch_quote_tick(instrument_id)
+                try:
+                    return await self._fetch_quote_tick(instrument_id), None
+                except CloudbetAPIError as exc:
+                    self._log.warning(f"Cloudbet quote poll failed for {instrument_id}: {exc}")
+                    return None, str(exc)
+                except (ValueError, TypeError, KeyError) as exc:
+                    self._log.warning(f"Cloudbet quote poll failed for {instrument_id}: {exc}")
+                    return None, str(exc)
 
         results = await asyncio.gather(*[_fetch(instrument_id) for instrument_id in instrument_ids])
         published = 0
         max_fetch_latency_secs = 0.0
-        for quote in results:
+        failure_count = 0
+        rate_limit_count = 0
+        last_error: str | None = None
+        for quote, error in results:
+            if error is not None:
+                failure_count += 1
+                last_error = error
+                if "429" in error or "code='429'" in error or "code=429" in error:
+                    rate_limit_count += 1
+                continue
             if quote is None:
                 continue
             self._handle_data(quote)
@@ -493,6 +510,10 @@ class CloudbetDataClient(LiveMarketDataClient):
             quote_count=published,
             cycle_elapsed=cycle_elapsed,
             max_fetch_latency_secs=max_fetch_latency_secs,
+            failure_count=failure_count,
+            rate_limit_count=rate_limit_count,
+            backoff_secs=float(rate_limit_count),
+            last_error=last_error,
         )
         self._log_quote_poll_summary(
             instrument_count=len(instrument_ids),
@@ -559,6 +580,10 @@ class CloudbetDataClient(LiveMarketDataClient):
         quote_count: int,
         cycle_elapsed: float,
         max_fetch_latency_secs: float,
+        failure_count: int = 0,
+        rate_limit_count: int = 0,
+        backoff_secs: float = 0.0,
+        last_error: str | None = None,
     ) -> None:
         self._quote_poll_cycle_id += 1
         backlog_count = max(0, instrument_count - max(1, self._quote_poll_concurrency))
@@ -577,6 +602,10 @@ class CloudbetDataClient(LiveMarketDataClient):
                 cycle_elapsed_secs=cycle_elapsed,
                 max_fetch_latency_secs=max_fetch_latency_secs,
                 poll_interval_secs=self._quote_polling_interval,
+                failure_count=failure_count,
+                rate_limit_count=rate_limit_count,
+                backoff_secs=backoff_secs,
+                last_error=last_error,
             ),
         )
 

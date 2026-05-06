@@ -269,6 +269,7 @@ def _build_sxbet_exec_importable(
         "instrument_provider": provider_config,
         "max_retry_attempts": 3,
         "base_currency": _resolve_base_currency(venue),
+        "dry_run": venue.execution_dry_run,
         "routing": {"venues": [venue.venue]},
     }
     return ImportableConfig(
@@ -324,6 +325,7 @@ def _build_cloudbet_exec_importable(
         "api_url": api_url,
         "base_currency": _resolve_base_currency(venue),
         "market_filter": dict(filters) if filters else None,
+        "dry_run": venue.execution_dry_run,
         "routing": {"venues": [venue.venue]},
     }
     return ImportableConfig(

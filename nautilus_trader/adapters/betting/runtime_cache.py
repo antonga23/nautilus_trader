@@ -32,6 +32,10 @@ class VenueQuotePollStats:
     cycle_elapsed_secs: float
     max_fetch_latency_secs: float
     poll_interval_secs: float
+    failure_count: int = 0
+    rate_limit_count: int = 0
+    backoff_secs: float = 0.0
+    last_error: str | None = None
 
 
 def active_venue_instrument_index_key(venue: str) -> str:
@@ -76,6 +80,10 @@ def encode_venue_quote_poll_stats(
     cycle_elapsed_secs: float = 0.0,
     max_fetch_latency_secs: float = 0.0,
     poll_interval_secs: float = 0.0,
+    failure_count: int = 0,
+    rate_limit_count: int = 0,
+    backoff_secs: float = 0.0,
+    last_error: str | None = None,
 ) -> bytes:
     payload = {
         "venue": venue.strip().upper(),
@@ -94,6 +102,10 @@ def encode_venue_quote_poll_stats(
         "cycle_elapsed_secs": max(0.0, float(cycle_elapsed_secs)),
         "max_fetch_latency_secs": max(0.0, float(max_fetch_latency_secs)),
         "poll_interval_secs": max(0.0, float(poll_interval_secs)),
+        "failure_count": max(0, int(failure_count)),
+        "rate_limit_count": max(0, int(rate_limit_count)),
+        "backoff_secs": max(0.0, float(backoff_secs)),
+        "last_error": str(last_error)[:240] if last_error else None,
     }
     return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
@@ -152,6 +164,10 @@ def decode_venue_quote_poll_stats(raw: bytes | None) -> VenueQuotePollStats | No
             cycle_elapsed_secs=float(payload.get("cycle_elapsed_secs") or 0.0),
             max_fetch_latency_secs=float(payload.get("max_fetch_latency_secs") or 0.0),
             poll_interval_secs=float(payload.get("poll_interval_secs") or 0.0),
+            failure_count=int(payload.get("failure_count") or 0),
+            rate_limit_count=int(payload.get("rate_limit_count") or 0),
+            backoff_secs=float(payload.get("backoff_secs") or 0.0),
+            last_error=str(payload.get("last_error") or "") or None,
         )
     except (TypeError, ValueError):
         return None

@@ -124,6 +124,7 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
         )
 
         self._instrument_provider: CloudbetInstrumentProvider = instrument_provider
+        self._config = config
         self._set_account_id(account_id or AccountId(f"{CLOUDBET_VENUE.value}-001"))
         # an asyncio Task to watch the stream
         # self._watch_stream_task: Optional[asyncio.Task] = None
@@ -1129,6 +1130,18 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
                 ts_event=self._clock.timestamp_ns(),
             )
             self._log.debug("Generated _generate_order_submitted")
+            if getattr(self._config, "dry_run", False):
+                self._log.info(
+                    "Cloudbet dry-run execution enabled; bet request was built but not submitted",
+                )
+                self.generate_order_rejected(
+                    strategy_id=command.strategy_id,
+                    instrument_id=command.instrument_id,
+                    client_order_id=client_order_id,
+                    reason="dry_run_no_submit",
+                    ts_event=self._clock.timestamp_ns(),
+                )
+                return
             place_bet_response: GetBetResponse = await self._client.place_bets(
                 event_id=instrument.event_id,
                 market_url=market_url,

@@ -326,7 +326,10 @@ def _format_provider_poll_stats(value: Any) -> str:
             f"markets={stats.get('market_count', 0)} "
             f"cycle_elapsed={stats.get('cycle_elapsed_secs', 0)}s "
             f"max_fetch={stats.get('max_fetch_latency_secs', 0)}s "
-            f"backlog={stats.get('backlog_count', 0)}",
+            f"backlog={stats.get('backlog_count', 0)} "
+            f"failures={stats.get('failure_count', 0)} "
+            f"rate_limits={stats.get('rate_limit_count', 0)} "
+            f"backoff={stats.get('backoff_secs', 0)}s",
         )
     return "; ".join(rendered)
 

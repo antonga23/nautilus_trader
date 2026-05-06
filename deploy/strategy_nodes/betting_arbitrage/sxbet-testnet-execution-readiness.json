@@ -25,6 +25,7 @@
       "client_key": "SXBET_PRIMARY",
       "data_enabled": true,
       "execution_enabled": true,
+      "execution_dry_run": true,
       "credential_prefix": "SXBET",
       "environment": "testnet",
       "base_currency": "USDC",

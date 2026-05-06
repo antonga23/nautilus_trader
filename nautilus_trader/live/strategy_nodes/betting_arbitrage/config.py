@@ -54,6 +54,7 @@ class BettingVenueManifest(NautilusConfig, frozen=True):
     ws_url: str | None = None
     environment: str | None = None
     base_currency: str | None = None
+    execution_dry_run: bool = False
     signature_type: int = 0
     use_data_api: bool = False
     metadata: dict[str, str] | None = None

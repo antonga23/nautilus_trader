@@ -307,6 +307,7 @@ class TestBettingArbitrageNodeBuilder:
         assert exec_client.config["api_url"] == "https://api.toronto.sx.bet"
         assert exec_client.config["ws_url"] == "wss://api.toronto.sx.bet"
         assert exec_client.config["base_currency"] == "USDC"
+        assert exec_client.config["dry_run"] is True
 
     def test_sxbet_data_client_receives_order_book_runtime_settings(self):
         manifest = BettingArbitrageNodeManifest(
@@ -433,6 +434,7 @@ class TestBettingArbitrageNodeBuilder:
         assert exec_client.config["base_currency"] == "PLAY_EUR"
         assert exec_client.config["api_key"] == "cloudbet-live-api-key"
         assert exec_client.config.get("api_url") is None
+        assert exec_client.config["dry_run"] is True
 
     def test_cloudbet_factories_match_live_node_builder_signature(self, monkeypatch):
         from nautilus_trader.adapters.cloudbet import factories as cloudbet_factories

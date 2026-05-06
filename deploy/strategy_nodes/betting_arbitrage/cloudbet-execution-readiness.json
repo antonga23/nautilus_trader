@@ -24,6 +24,7 @@
       "client_key": "CLOUDBET_PRIMARY",
       "data_enabled": true,
       "execution_enabled": true,
+      "execution_dry_run": true,
       "credential_prefix": "CLOUDBET",
       "environment": "paper",
       "base_currency": "PLAY_EUR",
