@@ -55,6 +55,11 @@ class ProbeProfitabilityCounters:
     venue_quote_counts: Counter[str] = field(default_factory=Counter)
     venue_max_quote_age_secs: dict[str, float] = field(default_factory=dict)
     venue_max_fetch_latency_secs: dict[str, float] = field(default_factory=dict)
+    quote_age_samples_secs: list[float] = field(default_factory=list)
+    fetch_latency_samples_secs: list[float] = field(default_factory=list)
+    pair_skew_samples_secs: list[float] = field(default_factory=list)
+    live_quote_age_observations: int = 0
+    live_quote_age_violations: int = 0
     samples: list[tuple[Decimal, dict[str, object]]] = field(default_factory=list)
     negative_samples: list[tuple[Decimal, dict[str, object]]] = field(default_factory=list)
 
@@ -86,6 +91,16 @@ class ProbeProfitabilityCounters:
                 }
                 for venue in sorted(self.venue_quote_counts)
             },
+            "latency_histograms": {
+                "quote_age_secs": _percentile_payload(self.quote_age_samples_secs),
+                "fetch_latency_secs": _percentile_payload(self.fetch_latency_samples_secs),
+                "pair_skew_secs": _percentile_payload(self.pair_skew_samples_secs),
+            },
+            "live_quote_age_slo": {
+                "max_quote_age_secs": 5.0,
+                "observations": self.live_quote_age_observations,
+                "violations": self.live_quote_age_violations,
+            },
             "venue_pairs": {
                 key: dict(counter)
                 for key, counter in sorted(self.venue_pairs.items(), key=lambda item: item[0])
@@ -101,6 +116,24 @@ class ProbeProfitabilityCounters:
             "sample_candidates": [payload for _, payload in self.samples[:10]],
             "negative_near_misses": [payload for _, payload in self.negative_samples[:10]],
         }
+
+
+def _percentile_payload(samples: list[float]) -> dict[str, float | int]:
+    if not samples:
+        return {"count": 0, "p50": 0.0, "p95": 0.0, "p99": 0.0, "max": 0.0}
+    ordered = sorted(samples)
+    return {
+        "count": len(ordered),
+        "p50": round(_percentile(ordered, 0.50), 6),
+        "p95": round(_percentile(ordered, 0.95), 6),
+        "p99": round(_percentile(ordered, 0.99), 6),
+        "max": round(ordered[-1], 6),
+    }
+
+
+def _percentile(ordered_samples: list[float], percentile: float) -> float:
+    index = max(0, min(len(ordered_samples) - 1, int((len(ordered_samples) - 1) * percentile)))
+    return ordered_samples[index]
 
 
 class RuntimeProbeCoverageError(RuntimeError):
@@ -818,6 +851,16 @@ def _collect_runtime_probe_payload(
             "semanticBlockedReasons": profitability["semantic_blocked_reasons"],
             "blockerSamples": profitability["blocker_samples"],
             "venueQuoteHealth": profitability["venue_quote_health"],
+            "latencyHistograms": {
+                "quoteAgeSeconds": profitability["latency_histograms"]["quote_age_secs"],
+                "fetchLatencySeconds": profitability["latency_histograms"]["fetch_latency_secs"],
+                "pairSkewSeconds": profitability["latency_histograms"]["pair_skew_secs"],
+            },
+            "liveQuoteAgeSlo": {
+                "maxQuoteAgeSeconds": profitability["live_quote_age_slo"]["max_quote_age_secs"],
+                "observations": profitability["live_quote_age_slo"]["observations"],
+                "violations": profitability["live_quote_age_slo"]["violations"],
+            },
             "venuePairs": profitability["venue_pairs"],
             "marketFamilies": profitability["market_families"],
             "zeroCandidateVenuePairSamples": venue_coverage["zeroCandidateVenuePairs"],
@@ -825,6 +868,7 @@ def _collect_runtime_probe_payload(
             "topNegativeNearMisses": profitability["negative_near_misses"],
         },
         "strategyStats": stats,
+        "latencyDiagnostics": stats.get("latency_diagnostics", {}),
         "semanticDiagnostics": semantic_diagnostics,
         "venueCoverage": venue_coverage,
         "sampleCandidates": profitability["sample_candidates"],
@@ -941,6 +985,22 @@ def _empty_candidate_quality_payload() -> dict[str, object]:
         "semanticBlockedReasons": {},
         "blockerSamples": {},
         "venueQuoteHealth": {},
+        "latencyHistograms": {
+            "quoteAgeSeconds": {"count": 0, "p50": 0.0, "p95": 0.0, "p99": 0.0, "max": 0.0},
+            "fetchLatencySeconds": {
+                "count": 0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "p99": 0.0,
+                "max": 0.0,
+            },
+            "pairSkewSeconds": {"count": 0, "p50": 0.0, "p95": 0.0, "p99": 0.0, "max": 0.0},
+        },
+        "liveQuoteAgeSlo": {
+            "maxQuoteAgeSeconds": 5.0,
+            "observations": 0,
+            "violations": 0,
+        },
         "venuePairs": {},
         "marketFamilies": {},
         "zeroCandidateVenuePairSamples": [],
@@ -1168,7 +1228,7 @@ def _zero_venue_pair_report(
     common_event_keys = sorted((source_event_keys & target_event_keys) - {""})
     if reason == "no_semantic_edge":
         report["blockerReason"] = (
-            CoverageBlockerReason.FIXTURE_IDENTITY_MISMATCH.value
+            "no_common_fixture"
             if not common_event_keys
             else CoverageBlockerReason.NO_SEMANTIC_EDGE.value
         )
@@ -1179,6 +1239,10 @@ def _zero_venue_pair_report(
     report["commonEventKeyCount"] = len(common_event_keys)
     report["sourceEventKeySamples"] = sorted(source_event_keys - {""})[:5]
     report["targetEventKeySamples"] = sorted(target_event_keys - {""})[:5]
+    if reason == "no_semantic_edge" and not common_event_keys:
+        report["marketFamilyPairs"] = {}
+        report["samples"] = []
+        return report
 
     market_family_pairs: Counter[str] = Counter()
     samples: list[dict[str, object]] = []
@@ -1828,6 +1892,20 @@ def _record_probe_quality(
     counters.margin_bands[margin_band] += 1
     counters.rejection_buckets[rejection_bucket] += 1
     counters.freshness_profiles[str(quality.get("freshnessProfile") or "unknown")] += 1
+    quote_age_a_secs = float(quality.get("quoteAgeASeconds") or 0.0)
+    quote_age_b_secs = float(quality.get("quoteAgeBSeconds") or 0.0)
+    fetch_latency_a_secs = float(quality.get("fetchLatencyASeconds") or 0.0)
+    fetch_latency_b_secs = float(quality.get("fetchLatencyBSeconds") or 0.0)
+    quote_delta_secs = float(quality.get("quoteDeltaSeconds") or 0.0)
+    counters.quote_age_samples_secs.extend([quote_age_a_secs, quote_age_b_secs])
+    counters.fetch_latency_samples_secs.extend([fetch_latency_a_secs, fetch_latency_b_secs])
+    counters.pair_skew_samples_secs.append(quote_delta_secs)
+    if str(quality.get("freshnessProfile") or "") == "live":
+        counters.live_quote_age_observations += 2
+        if quote_age_a_secs > 5.0:
+            counters.live_quote_age_violations += 1
+        if quote_age_b_secs > 5.0:
+            counters.live_quote_age_violations += 1
     if rejection_bucket in _SEMANTIC_NON_EXECUTION_BUCKETS:
         counters.semantic_blocked_reasons[_semantic_blocked_reason(quality)] += 1
         samples = counters.blocker_samples.setdefault(rejection_bucket, [])
@@ -1854,14 +1932,14 @@ def _record_probe_quality(
     _record_venue_quote_health(
         counters,
         venue=str(quality.get("venueA") or ""),
-        quote_age_secs=float(quality.get("quoteAgeASeconds") or 0.0),
-        fetch_latency_secs=float(quality.get("fetchLatencyASeconds") or 0.0),
+        quote_age_secs=quote_age_a_secs,
+        fetch_latency_secs=fetch_latency_a_secs,
     )
     _record_venue_quote_health(
         counters,
         venue=str(quality.get("venueB") or ""),
-        quote_age_secs=float(quality.get("quoteAgeBSeconds") or 0.0),
-        fetch_latency_secs=float(quality.get("fetchLatencyBSeconds") or 0.0),
+        quote_age_secs=quote_age_b_secs,
+        fetch_latency_secs=fetch_latency_b_secs,
     )
     if margin > 0:
         counters.samples.append((margin, quality))

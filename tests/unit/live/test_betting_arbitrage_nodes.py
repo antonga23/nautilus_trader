@@ -63,14 +63,19 @@ def _instrument(
     market_name: str | None = None,
     params: str = "",
     handicap: float | None = None,
+    event_id: str = "event-1",
+    event_name: str = "Team A vs Team B",
+    home_name: str = "Team A",
+    away_name: str = "Team B",
+    sport_name: str = "soccer",
 ) -> CryptoBettingInstrument:
     return CryptoBettingInstrument(
         venue=Venue(venue),
-        event_id="event-1",
-        event_name="Team A vs Team B",
-        home_name="Team A",
-        away_name="Team B",
-        sport_name="soccer",
+        event_id=event_id,
+        event_name=event_name,
+        home_name=home_name,
+        away_name=away_name,
+        sport_name=sport_name,
         competition_name="Test League",
         market_name=market_name or market_type,
         market_type=market_type,
@@ -1995,6 +2000,51 @@ class TestBettingArbitrageNodeRunner:
             "MATCH_ODDS + MATCH_ODDS"
         )
 
+    def test_venue_pair_coverage_reports_no_common_fixture_without_false_pair_samples(self):
+        sxbet_instrument = _instrument(
+            venue="SXBET",
+            market_type="match_odds",
+            outcome="home",
+            event_id="event-sxbet",
+            event_name="Team A vs Team B",
+            home_name="Team A",
+            away_name="Team B",
+            sport_name="soccer",
+        )
+        cloudbet_instrument = _instrument(
+            venue="CLOUDBET",
+            market_type="match_odds",
+            outcome="away",
+            event_id="event-cloudbet",
+            event_name="Team C vs Team D",
+            home_name="Team C",
+            away_name="Team D",
+            sport_name="basketball",
+        )
+        strategy = SimpleNamespace(
+            _config=SimpleNamespace(enabled_venues=frozenset({"CLOUDBET", "SXBET"})),
+            _quote_subscribed_instrument_ids={sxbet_instrument.id, cloudbet_instrument.id},
+        )
+
+        coverage = node_runner._venue_pair_coverage(
+            strategy,
+            edges=[],
+            nodes={
+                "sxbet-node": SimpleNamespace(instrument=sxbet_instrument),
+                "cloudbet-node": SimpleNamespace(instrument=cloudbet_instrument),
+            },
+            quotes={},
+            matched_node_ids=set(),
+            candidate_venue_pairs={},
+        )
+
+        reports = {item["venuePair"]: item for item in coverage["zeroCandidateVenuePairs"]}
+        report = reports["SXBET->CLOUDBET"]
+        assert report["reason"] == "no_semantic_edge"
+        assert report["blockerReason"] == "no_common_fixture"
+        assert report["commonEventKeyCount"] == 0
+        assert report["samples"] == []
+
     def test_runtime_probe_candidate_samples_include_dry_run_provenance(self):
         instrument_a = _instrument(
             venue="CLOUDBET",
@@ -2053,6 +2103,10 @@ class TestBettingArbitrageNodeRunner:
         assert payload["freshness_profiles"] == {"pre_match": 1}
         assert payload["venue_quote_health"]["CLOUDBET"]["max_quote_age_secs"] == 0.25
         assert payload["venue_quote_health"]["POLYMARKET"]["max_fetch_latency_secs"] == 0.1
+        assert payload["latency_histograms"]["quote_age_secs"]["count"] == 2
+        assert payload["latency_histograms"]["fetch_latency_secs"]["max"] == 0.1
+        assert payload["latency_histograms"]["pair_skew_secs"]["count"] == 1
+        assert payload["live_quote_age_slo"]["observations"] == 0
 
     def test_run_success_and_failure_paths_record_status_transitions(self, tmp_path, monkeypatch):
         def semantic_status(_manifest):
@@ -2419,6 +2473,9 @@ class TestBettingArbitrageNodeRunner:
         assert "docker logs" in script
         assert "docker stats" in script
         assert "docker stop" in script
+        assert "remove:" in workflow
+        assert "docker rm" in script
+        assert "node_dir_removed=true" in script
 
     def test_wait_for_strategy_node_status_can_require_ready_semantic_cache(self, tmp_path):
         status_path = tmp_path / "status.json"

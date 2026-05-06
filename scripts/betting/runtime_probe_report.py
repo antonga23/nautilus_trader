@@ -99,6 +99,8 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
             "semanticBlockedReasons": candidate_quality.get("semanticBlockedReasons"),
             "venuePairs": candidate_quality.get("venuePairs"),
             "marketFamilies": candidate_quality.get("marketFamilies"),
+            "latencyHistograms": candidate_quality.get("latencyHistograms"),
+            "liveQuoteAgeSlo": candidate_quality.get("liveQuoteAgeSlo"),
             "topRejectionBuckets": _top_items(
                 _as_dict(candidate_quality.get("rejectionBuckets")),
                 limit=top_limit,
@@ -250,6 +252,25 @@ def _format_text(path: Path, summary: dict[str, Any]) -> str:
     if top_blockers:
         rendered = ", ".join(f"{item['key']}={item['value']}" for item in top_blockers)
         lines.append(f"  top_semantic_blockers {rendered}")
+    latency = quality.get("latencyHistograms") or {}
+    if isinstance(latency, dict) and latency:
+        quote_age = _as_dict(latency.get("quoteAgeSeconds"))
+        fetch_latency = _as_dict(latency.get("fetchLatencySeconds"))
+        pair_skew = _as_dict(latency.get("pairSkewSeconds"))
+        lines.append(
+            "  latency "
+            f"quote_age_p95={quote_age.get('p95', 0)}s "
+            f"fetch_p95={fetch_latency.get('p95', 0)}s "
+            f"pair_skew_p95={pair_skew.get('p95', 0)}s",
+        )
+    live_slo = quality.get("liveQuoteAgeSlo") or {}
+    if isinstance(live_slo, dict) and live_slo.get("observations"):
+        lines.append(
+            "  live_quote_age_slo "
+            f"observations={live_slo.get('observations')} "
+            f"violations={live_slo.get('violations')} "
+            f"max={live_slo.get('maxQuoteAgeSeconds')}s",
+        )
     warnings = quality.get("diagnosticWarnings") or []
     if warnings:
         lines.append(f"  warnings {', '.join(warnings)}")

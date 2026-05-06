@@ -556,6 +556,13 @@ jobs:
           artifacts/strategy-node-image/betting-arbitrage-node.tar.gz
           "$IMAGE_ARCHIVE_KEY"
 
+      - name: Post-build cleanup of stale Docker artifacts
+        if: always()
+        run: |
+          docker image prune -f || true
+          docker builder prune -f --filter "until=48h" || true
+          find artifacts -type f -mtime +2 -delete 2> /dev/null || true
+
   deploy-strategy-node:
     name: deploy-strategy-node
     timeout-minutes: 30
