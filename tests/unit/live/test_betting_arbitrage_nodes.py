@@ -2351,6 +2351,21 @@ class TestBettingArbitrageNodeRunner:
                 "quote_delta_secs": 6.0,
             },
         ) == ["quote_age", "pair_skew"]
+        assert (
+            node_runner._semantic_blocked_reason(
+                {"blockerReason": "void_settlement", "rejectionBucket": "topology_only"},
+            )
+            == "void_settlement"
+        )
+        assert (
+            node_runner._semantic_blocked_relationship(
+                {
+                    "safetyTier": "TOPOLOGY_SAFE",
+                    "relationshipType": "EQUIVALENT_SELECTION",
+                },
+            )
+            == "TOPOLOGY_SAFE:EQUIVALENT_SELECTION"
+        )
 
     def test_runtime_probe_same_venue_policy_uses_fixture_identity(self):
         instrument_a = _instrument(
@@ -2428,6 +2443,41 @@ class TestBettingArbitrageNodeRunner:
         assert policy["fixtureSuspectReason"] == "none"
         assert policy["diagnosticSuspect"] is True
         assert quality["wouldExecuteSameVenueDryRun"] is True
+
+    def test_instrument_refresh_payload_includes_per_venue_counts(self):
+        payload = node_runner._instrument_refresh_payload(
+            {
+                "instrument_refresh_requests": 3,
+                "instrument_refresh_failures": 1,
+                "instrument_refresh_added": 4,
+                "instrument_refresh_removed": 2,
+                "instrument_refresh_delisted_removed": 2,
+                "instrument_refresh_reconciles": 3,
+                "instrument_refresh_graph_rebuilds": 2,
+                "instrument_refresh_stale_triggers": 1,
+                "quote_unsubscribe_requests": 2,
+                "instrument_refresh_by_venue": {
+                    "SXBET": {
+                        "requests": 2,
+                        "failures": 1,
+                        "added": 4,
+                        "removed": 2,
+                        "delisted_removed": 2,
+                        "reconciles": 3,
+                        "graph_rebuilds": 2,
+                        "stale_triggers": 1,
+                        "quote_unsubscribe_requests": 2,
+                    },
+                },
+                "latency_diagnostics": {
+                    "instrument_refresh_reconcile": {"count": 3, "p95_ms": 1200.0},
+                },
+            },
+        )
+
+        assert payload["venues"]["SXBET"]["requests"] == 2
+        assert payload["venues"]["SXBET"]["quote_unsubscribe_requests"] == 2
+        assert payload["reconcileLatency"]["p95_ms"] == 1200.0
 
     def test_runtime_manifest_rewrite_includes_semantic_cache_dir(self):
         deploy_script = Path(

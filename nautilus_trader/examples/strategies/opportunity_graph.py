@@ -1132,8 +1132,23 @@ class OpportunityGraph:
                 proof_payloads.append(
                     {
                         "proof_id": proof.proof_id,
+                        "sport": proof.universe.sport,
+                        "scope": proof.universe.scope,
+                        "provider_scope": list(proof.coverage_set.provider_scope),
+                        "predicate_count": len(proof.predicates),
+                        "instrument_ids": [
+                            predicate.instrument_id for predicate in proof.predicates
+                        ],
+                        "complete": proof.complete,
+                        "win_covered_states": list(proof.win_covered_states),
+                        "overlapping_win_states": list(proof.overlapping_win_states),
+                        "gap_count": len(proof.gaps),
+                        "risk_count": len(proof.risks),
+                        "gaps": [gap.reason for gap in proof.gaps],
+                        "risks": [risk.reason for risk in proof.risks],
                         "safety_tier": proof.safety_tier,
                         "execution_safe": proof.execution_safe,
+                        "same_venue_execution_eligible": proof.same_venue_execution_eligible,
                         "relationship_type": proof.relationship_type,
                         "blocker_reasons": list(proof.blocker_reasons),
                     },
@@ -1150,8 +1165,11 @@ class OpportunityGraph:
                         "hyperedge_id": hyperedge.hyperedge_id,
                         "coverage_proof_id": hyperedge.coverage_proof_id,
                         "instrument_ids": list(hyperedge.instrument_ids),
+                        "provider_scope": list(hyperedge.provider_scope),
+                        "relationship_type": hyperedge.relationship_type,
                         "safety_tier": hyperedge.safety_tier,
                         "execution_safe": hyperedge.execution_safe,
+                        "caveats": list(hyperedge.caveats),
                     },
                 )
 
@@ -1170,9 +1188,15 @@ class OpportunityGraph:
             "coverageHyperedgeCount": 0,
             "executionSafeCoverageProofCount": 0,
             "executionSafeCoverageHyperedgeCount": 0,
+            "sameVenueEligibleCoverageProofCount": 0,
             "proofSafetyTierCounts": {},
             "hyperedgeSafetyTierCounts": {},
+            "proofRelationshipTypeCounts": {},
+            "proofBlockerReasonCounts": {},
+            "proofGapReasonCounts": {},
+            "proofRiskReasonCounts": {},
             "sampleProofIds": [],
+            "sampleProofs": [],
             "sampleHyperedges": [],
         }
 
@@ -1184,6 +1208,25 @@ class OpportunityGraph:
     ) -> dict[str, object]:
         proof_tiers = Counter(
             cls._coverage_safe_string(payload.get("safety_tier")) for payload in proof_payloads
+        )
+        proof_relationships = Counter(
+            cls._coverage_safe_string(payload.get("relationship_type"))
+            for payload in proof_payloads
+        )
+        proof_blockers = Counter(
+            cls._coverage_safe_string(reason)
+            for payload in proof_payloads
+            for reason in (payload.get("blocker_reasons") or [])
+        )
+        proof_gaps = Counter(
+            cls._coverage_safe_string(reason)
+            for payload in proof_payloads
+            for reason in (payload.get("gaps") or [])
+        )
+        proof_risks = Counter(
+            cls._coverage_safe_string(reason)
+            for payload in proof_payloads
+            for reason in (payload.get("risks") or [])
         )
         hyperedge_tiers = Counter(
             cls._coverage_safe_string(payload.get("safety_tier")) for payload in hyperedge_payloads
@@ -1197,13 +1240,23 @@ class OpportunityGraph:
             "executionSafeCoverageHyperedgeCount": sum(
                 1 for payload in hyperedge_payloads if bool(payload.get("execution_safe"))
             ),
+            "sameVenueEligibleCoverageProofCount": sum(
+                1
+                for payload in proof_payloads
+                if bool(payload.get("same_venue_execution_eligible"))
+            ),
             "proofSafetyTierCounts": dict(sorted(proof_tiers.items())),
             "hyperedgeSafetyTierCounts": dict(sorted(hyperedge_tiers.items())),
+            "proofRelationshipTypeCounts": dict(sorted(proof_relationships.items())),
+            "proofBlockerReasonCounts": dict(sorted(proof_blockers.items())),
+            "proofGapReasonCounts": dict(sorted(proof_gaps.items())),
+            "proofRiskReasonCounts": dict(sorted(proof_risks.items())),
             "sampleProofIds": [
                 cls._coverage_safe_string(payload.get("proof_id"))
                 for payload in proof_payloads[:10]
                 if payload.get("proof_id")
             ],
+            "sampleProofs": proof_payloads[:10],
             "sampleHyperedges": hyperedge_payloads[:10],
         }
 

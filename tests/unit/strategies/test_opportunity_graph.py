@@ -476,15 +476,40 @@ def test_python_graph_coverage_summary_reports_store_tiers_and_samples() -> None
             return {
                 "proof-exec": SimpleNamespace(
                     proof_id="proof-exec",
+                    universe=SimpleNamespace(sport="soccer", scope="match"),
+                    coverage_set=SimpleNamespace(provider_scope=("SXBET",)),
+                    predicates=(
+                        SimpleNamespace(instrument_id="home.SXBET"),
+                        SimpleNamespace(instrument_id="draw.SXBET"),
+                        SimpleNamespace(instrument_id="away.SXBET"),
+                    ),
+                    complete=True,
+                    win_covered_states=("HOME_WIN", "DRAW", "AWAY_WIN"),
+                    overlapping_win_states=(),
+                    gaps=(),
+                    risks=(),
                     safety_tier="EXECUTION_SAFE",
                     execution_safe=True,
+                    same_venue_execution_eligible=False,
                     relationship_type="COMPLEMENTARY_COVERAGE",
                     blocker_reasons=(),
                 ),
                 "proof-topology": SimpleNamespace(
                     proof_id="proof-topology",
+                    universe=SimpleNamespace(sport="soccer", scope="match"),
+                    coverage_set=SimpleNamespace(provider_scope=("SXBET",)),
+                    predicates=(
+                        SimpleNamespace(instrument_id="dnb_home.SXBET"),
+                        SimpleNamespace(instrument_id="ah0_home.SXBET"),
+                    ),
+                    complete=False,
+                    win_covered_states=("HOME_WIN",),
+                    overlapping_win_states=("HOME_WIN",),
+                    gaps=(SimpleNamespace(reason="incomplete_coverage"),),
+                    risks=(SimpleNamespace(reason="equivalent_selection"),),
                     safety_tier="TOPOLOGY_SAFE",
                     execution_safe=False,
+                    same_venue_execution_eligible=True,
                     relationship_type="EQUIVALENT_SELECTION",
                     blocker_reasons=("equivalent_selection",),
                 ),
@@ -499,8 +524,11 @@ def test_python_graph_coverage_summary_reports_store_tiers_and_samples() -> None
                     hyperedge_id="hyperedge-exec",
                     coverage_proof_id="proof-exec",
                     instrument_ids=("home.SXBET", "draw.SXBET", "away.SXBET"),
+                    provider_scope=("SXBET",),
+                    relationship_type="COMPLEMENTARY_COVERAGE",
                     safety_tier="EXECUTION_SAFE",
                     execution_safe=True,
+                    caveats=(),
                 ),
             }.get(hyperedge_id)
 
@@ -516,9 +544,20 @@ def test_python_graph_coverage_summary_reports_store_tiers_and_samples() -> None
     ensure(summary["coverageHyperedgeCount"] == 1)
     ensure(summary["executionSafeCoverageProofCount"] == 1)
     ensure(summary["executionSafeCoverageHyperedgeCount"] == 1)
+    ensure(summary["sameVenueEligibleCoverageProofCount"] == 1)
     ensure(summary["proofSafetyTierCounts"] == {"EXECUTION_SAFE": 1, "TOPOLOGY_SAFE": 1})
     ensure(summary["hyperedgeSafetyTierCounts"] == {"EXECUTION_SAFE": 1})
+    ensure(
+        summary["proofRelationshipTypeCounts"]
+        == {"COMPLEMENTARY_COVERAGE": 1, "EQUIVALENT_SELECTION": 1},
+    )
+    ensure(summary["proofBlockerReasonCounts"] == {"equivalent_selection": 1})
+    ensure(summary["proofGapReasonCounts"] == {"incomplete_coverage": 1})
+    ensure(summary["proofRiskReasonCounts"] == {"equivalent_selection": 1})
     ensure(summary["sampleProofIds"] == ["proof-exec", "proof-topology"])
+    ensure(
+        summary["sampleProofs"][0]["instrument_ids"] == ["home.SXBET", "draw.SXBET", "away.SXBET"]
+    )
     ensure(summary["sampleHyperedges"][0]["hyperedge_id"] == "hyperedge-exec")
 
 

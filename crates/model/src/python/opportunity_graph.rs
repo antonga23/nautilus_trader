@@ -206,6 +206,12 @@ struct CoverageProofSnapshot {
     proof_id: String,
     safety_tier: String,
     execution_safe: bool,
+    same_venue_execution_eligible: bool,
+    relationship_type: String,
+    blocker_reasons: Vec<String>,
+    gaps: Vec<String>,
+    risks: Vec<String>,
+    instrument_ids: Vec<String>,
 }
 
 impl CoverageProofSnapshot {
@@ -215,6 +221,16 @@ impl CoverageProofSnapshot {
             proof_id: get_string(dict, "proof_id")?,
             safety_tier: get_optional_string(dict, "safety_tier")?.unwrap_or_default(),
             execution_safe: get_optional_bool(dict, "execution_safe")?.unwrap_or(false),
+            same_venue_execution_eligible: get_optional_bool(
+                dict,
+                "same_venue_execution_eligible",
+            )?
+            .unwrap_or(false),
+            relationship_type: get_optional_string(dict, "relationship_type")?.unwrap_or_default(),
+            blocker_reasons: get_string_vec(dict, "blocker_reasons")?,
+            gaps: get_string_vec(dict, "gaps")?,
+            risks: get_string_vec(dict, "risks")?,
+            instrument_ids: get_string_vec(dict, "instrument_ids")?,
         })
     }
 }
@@ -224,8 +240,11 @@ struct CoverageHyperedgeSnapshot {
     hyperedge_id: String,
     coverage_proof_id: String,
     instrument_ids: Vec<String>,
+    provider_scope: Vec<String>,
+    relationship_type: String,
     safety_tier: String,
     execution_safe: bool,
+    caveats: Vec<String>,
 }
 
 impl CoverageHyperedgeSnapshot {
@@ -235,8 +254,11 @@ impl CoverageHyperedgeSnapshot {
             hyperedge_id: get_string(dict, "hyperedge_id")?,
             coverage_proof_id: get_string(dict, "coverage_proof_id")?,
             instrument_ids: get_string_vec(dict, "instrument_ids")?,
+            provider_scope: get_string_vec(dict, "provider_scope")?,
+            relationship_type: get_optional_string(dict, "relationship_type")?.unwrap_or_default(),
             safety_tier: get_optional_string(dict, "safety_tier")?.unwrap_or_default(),
             execution_safe: get_optional_bool(dict, "execution_safe")?.unwrap_or(false),
+            caveats: get_string_vec(dict, "caveats")?,
         })
     }
 }
@@ -588,9 +610,25 @@ impl OpportunityGraphCore {
 
     fn semantic_coverage_summary_json(&self) -> String {
         let mut proof_tiers: HashMap<String, usize> = HashMap::default();
+        let mut proof_relationships: HashMap<String, usize> = HashMap::default();
+        let mut proof_blockers: HashMap<String, usize> = HashMap::default();
+        let mut proof_gaps: HashMap<String, usize> = HashMap::default();
+        let mut proof_risks: HashMap<String, usize> = HashMap::default();
         let mut hyperedge_tiers: HashMap<String, usize> = HashMap::default();
         for proof in &self.coverage_proofs {
             *proof_tiers.entry(proof.safety_tier.clone()).or_default() += 1;
+            *proof_relationships
+                .entry(proof.relationship_type.clone())
+                .or_default() += 1;
+            for blocker in &proof.blocker_reasons {
+                *proof_blockers.entry(blocker.clone()).or_default() += 1;
+            }
+            for gap in &proof.gaps {
+                *proof_gaps.entry(gap.clone()).or_default() += 1;
+            }
+            for risk in &proof.risks {
+                *proof_risks.entry(risk.clone()).or_default() += 1;
+            }
         }
         for hyperedge in &self.coverage_hyperedges {
             *hyperedge_tiers
@@ -602,14 +640,37 @@ impl OpportunityGraphCore {
             "coverageHyperedgeCount": self.coverage_hyperedges.len(),
             "executionSafeCoverageProofCount": self.coverage_proofs.iter().filter(|proof| proof.execution_safe).count(),
             "executionSafeCoverageHyperedgeCount": self.coverage_hyperedges.iter().filter(|hyperedge| hyperedge.execution_safe).count(),
+            "sameVenueEligibleCoverageProofCount": self.coverage_proofs.iter().filter(|proof| proof.same_venue_execution_eligible).count(),
             "proofSafetyTierCounts": proof_tiers,
             "hyperedgeSafetyTierCounts": hyperedge_tiers,
+            "proofRelationshipTypeCounts": proof_relationships,
+            "proofBlockerReasonCounts": proof_blockers,
+            "proofGapReasonCounts": proof_gaps,
+            "proofRiskReasonCounts": proof_risks,
             "sampleProofIds": self.coverage_proofs.iter().take(5).map(|proof| proof.proof_id.as_str()).collect::<Vec<_>>(),
+            "sampleProofs": self.coverage_proofs.iter().take(5).map(|proof| {
+                json!({
+                    "proof_id": proof.proof_id.as_str(),
+                    "instrument_ids": &proof.instrument_ids,
+                    "relationship_type": proof.relationship_type.as_str(),
+                    "safety_tier": proof.safety_tier.as_str(),
+                    "execution_safe": proof.execution_safe,
+                    "same_venue_execution_eligible": proof.same_venue_execution_eligible,
+                    "blocker_reasons": &proof.blocker_reasons,
+                    "gaps": &proof.gaps,
+                    "risks": &proof.risks,
+                })
+            }).collect::<Vec<_>>(),
             "sampleHyperedges": self.coverage_hyperedges.iter().take(5).map(|hyperedge| {
                 json!({
-                    "hyperedgeId": hyperedge.hyperedge_id.as_str(),
-                    "coverageProofId": hyperedge.coverage_proof_id.as_str(),
-                    "instrumentIds": &hyperedge.instrument_ids,
+                    "hyperedge_id": hyperedge.hyperedge_id.as_str(),
+                    "coverage_proof_id": hyperedge.coverage_proof_id.as_str(),
+                    "instrument_ids": &hyperedge.instrument_ids,
+                    "provider_scope": &hyperedge.provider_scope,
+                    "relationship_type": hyperedge.relationship_type.as_str(),
+                    "safety_tier": hyperedge.safety_tier.as_str(),
+                    "execution_safe": hyperedge.execution_safe,
+                    "caveats": &hyperedge.caveats,
                 })
             }).collect::<Vec<_>>(),
         })

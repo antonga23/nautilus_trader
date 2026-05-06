@@ -342,6 +342,7 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure("instrument_refresh_graph_rebuilds" in stats)
         ensure("instrument_refresh_stale_triggers" in stats)
         ensure("quote_unsubscribe_requests" in stats)
+        ensure("instrument_refresh_by_venue" in stats)
         ensure("provider_quote_poll_stats" in stats)
         ensure("success_rate" in stats)
         ensure(stats["subscribed_instruments"] == 0)
@@ -359,6 +360,7 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(stats["instrument_refresh_graph_rebuilds"] == 0)
         ensure(stats["instrument_refresh_stale_triggers"] == 0)
         ensure(stats["quote_unsubscribe_requests"] == 0)
+        ensure(stats["instrument_refresh_by_venue"] == {})
         ensure(stats["provider_quote_poll_stats"] == {})
         ensure(stats["success_rate"] == 0)
 
@@ -383,6 +385,12 @@ class TestBettingArbitrageStrategy:  # skipcq
                 cycle_elapsed_secs=1.25,
                 max_fetch_latency_secs=0.4,
                 poll_interval_secs=3.0,
+                quote_event_timestamp_source="request_started",
+                quote_init_timestamp_source="response_received",
+                failure_count=2,
+                rate_limit_count=1,
+                backoff_secs=1.5,
+                last_error="429 rate limit",
             ),
         )
         strategy = BettingArbitrageStrategy(
@@ -404,6 +412,45 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(stats["SXBET"]["quote_count"] == 9)
         ensure(stats["SXBET"]["backlog_count"] == 2)
         ensure(stats["SXBET"]["max_fetch_latency_secs"] == 0.4)
+        ensure(stats["SXBET"]["quote_event_timestamp_source"] == "request_started")
+        ensure(stats["SXBET"]["quote_init_timestamp_source"] == "response_received")
+        ensure(stats["SXBET"]["failure_count"] == 2)
+        ensure(stats["SXBET"]["rate_limit_count"] == 1)
+        ensure(stats["SXBET"]["backoff_secs"] == 1.5)
+        ensure(stats["SXBET"]["last_error"] == "429 rate limit")
+
+    def test_get_stats_reports_instrument_refresh_by_venue(self):  # skipcq
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(enabled_venues=frozenset({"CLOUDBET", "SXBET"})),
+        )
+        strategy.register(
+            trader_id=TraderId("TESTER-REFRESH-STATS"),
+            portfolio=TestComponentStubs.portfolio(),
+            msgbus=TestComponentStubs.msgbus(),
+            cache=TestComponentStubs.cache(),
+            clock=TestComponentStubs.clock(),
+        )
+        strategy._instrument_refresh_requests_by_venue["SXBET"] = 2
+        strategy._instrument_refresh_failures_by_venue["SXBET"] = 1
+        strategy._instrument_refresh_added_by_venue["SXBET"] = 3
+        strategy._instrument_refresh_removed_by_venue["SXBET"] = 1
+        strategy._instrument_refresh_delisted_removed_by_venue["SXBET"] = 1
+        strategy._instrument_refresh_reconciles_by_venue["SXBET"] = 2
+        strategy._instrument_refresh_graph_rebuilds_by_venue["SXBET"] = 2
+        strategy._instrument_refresh_stale_triggers_by_venue["SXBET"] = 1
+        strategy._quote_unsubscribe_requests_by_venue["SXBET"] = 1
+
+        payload = strategy.get_stats()["instrument_refresh_by_venue"]
+
+        ensure(payload["SXBET"]["requests"] == 2)
+        ensure(payload["SXBET"]["failures"] == 1)
+        ensure(payload["SXBET"]["added"] == 3)
+        ensure(payload["SXBET"]["removed"] == 1)
+        ensure(payload["SXBET"]["delisted_removed"] == 1)
+        ensure(payload["SXBET"]["reconciles"] == 2)
+        ensure(payload["SXBET"]["graph_rebuilds"] == 2)
+        ensure(payload["SXBET"]["stale_triggers"] == 1)
+        ensure(payload["SXBET"]["quote_unsubscribe_requests"] == 1)
 
     def test_stale_quote_refresh_triggers_bounded_provider_refresh(self, monkeypatch):  # skipcq
         requested: list[tuple[str, dict[str, object]]] = []
@@ -476,16 +523,19 @@ class TestBettingArbitrageStrategy:  # skipcq
             now_ns=now_ns + 1,
         )
 
-        ensure(requested == [
-            (
-                "CLOUDBET",
-                {"semantic_refresh": True, "only_last": True, "trigger": "stale_quote"},
-            ),
-            (
-                "SXBET",
-                {"semantic_refresh": True, "only_last": True, "trigger": "stale_quote"},
-            ),
-        ])
+        ensure(
+            requested
+            == [
+                (
+                    "CLOUDBET",
+                    {"semantic_refresh": True, "only_last": True, "trigger": "stale_quote"},
+                ),
+                (
+                    "SXBET",
+                    {"semantic_refresh": True, "only_last": True, "trigger": "stale_quote"},
+                ),
+            ]
+        )
         stats = strategy.get_stats()
         ensure(stats["instrument_refresh_stale_triggers"] == 2)
         ensure(stats["instrument_refresh_requests"] == 2)

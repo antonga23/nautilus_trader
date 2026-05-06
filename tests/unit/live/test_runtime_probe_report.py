@@ -39,8 +39,10 @@ def _runtime_status_payload() -> dict[str, object]:
             "coverageDiagnostics": {
                 "executionSafeCoverageProofCount": 6,
                 "executionSafeCoverageHyperedgeCount": 4,
+                "sameVenueEligibleCoverageProofCount": 2,
                 "proofSafetyTierCounts": {"EXECUTION_SAFE": 6},
                 "hyperedgeSafetyTierCounts": {"EXECUTION_SAFE": 4},
+                "proofBlockerReasonCounts": {"void_settlement": 3},
             },
             "graphNodes": 40,
             "graphEdges": 22,
@@ -69,6 +71,8 @@ def _runtime_status_payload() -> dict[str, object]:
                     "quote_count": 8,
                     "cycle_elapsed_secs": 1.25,
                     "max_fetch_latency_secs": 0.2,
+                    "quote_event_timestamp_source": "request_started",
+                    "quote_init_timestamp_source": "response_received",
                     "backlog_count": 6,
                     "failure_count": 2,
                     "rate_limit_count": 1,
@@ -85,6 +89,9 @@ def _runtime_status_payload() -> dict[str, object]:
                 "graphRebuilds": 2,
                 "staleQuoteTriggers": 1,
                 "quoteUnsubscribeRequests": 2,
+                "venues": {
+                    "CLOUDBET": {"requests": 3, "added": 4, "removed": 2, "stale_triggers": 1},
+                },
             },
             "venueCoverage": {
                 "enabledVenues": ["CLOUDBET", "SXBET"],
@@ -99,6 +106,10 @@ def _runtime_status_payload() -> dict[str, object]:
                     "void_settlement": 2,
                 },
                 "semanticBlockedReasons": {
+                    "equivalent_selection": 4,
+                    "void_settlement": 2,
+                },
+                "semanticBlockedRelationships": {
                     "TOPOLOGY_SAFE:EQUIVALENT_SELECTION": 4,
                     "COVERAGE_SAFE:COMPLEMENTARY_COVERAGE": 2,
                 },
@@ -137,6 +148,7 @@ def _runtime_status_payload() -> dict[str, object]:
                         {"instrumentIdA": "c", "instrumentIdB": "d"},
                     ],
                 },
+                "zeroCandidateBlockerCounts": {"fixture_identity_mismatch": 2},
                 "topPositiveCandidates": [{"instrumentIdA": "a"}],
                 "topNegativeNearMisses": [{"instrumentIdA": "x"}],
             },
@@ -154,6 +166,7 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
     assert summary["graph"]["topologySource"] == "rust_semantic"
     assert summary["graph"]["coverageHyperedgeCount"] == 482
     assert summary["graph"]["coverageDiagnostics"]["executionSafeCoverageHyperedgeCount"] == 4
+    assert summary["graph"]["coverageDiagnostics"]["sameVenueEligibleCoverageProofCount"] == 2
     assert summary["graph"]["quotedSemanticMatchInstruments"] == 14
     assert summary["graph"]["executionSafeEdges"] == 9
     assert summary["candidates"]["positiveTotal"] == 3
@@ -163,11 +176,17 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
         {"key": "stale", "value": 5},
     ]
     assert summary["candidateQuality"]["topSemanticBlockedReasons"] == [
+        {"key": "equivalent_selection", "value": 4},
+    ]
+    assert summary["candidateQuality"]["topSemanticBlockedRelationships"] == [
         {"key": "TOPOLOGY_SAFE:EQUIVALENT_SELECTION", "value": 4},
     ]
     assert summary["candidateQuality"]["blockerSamples"]["void_settlement"] == [
         {"instrumentIdA": "a", "instrumentIdB": "b"},
     ]
+    assert summary["candidateQuality"]["zeroCandidateBlockerCounts"] == {
+        "fixture_identity_mismatch": 2,
+    }
     assert summary["candidateQuality"]["latencyHistograms"]["quoteAgeSeconds"]["p95"] == 1.2
     assert summary["candidateQuality"]["liveQuoteAgeSlo"]["violations"] == 0
     assert summary["candidateQuality"]["sameVenueDryRun"]["passes"] == 2
@@ -269,8 +288,12 @@ def test_runtime_probe_report_cli_outputs_json_and_text(tmp_path, monkeypatch, c
     assert "candidates positive=3 threshold=2 cross_venue=2" in text_output
     assert "aggregate: artifacts=1 positive=3 threshold=2 cross_venue=2" in text_output
     assert "top_semantic_blockers" in text_output
+    assert "top_semantic_relationships" in text_output
+    assert "zero_candidate_blockers fixture_identity_mismatch=2" in text_output
     assert "provider_poll CLOUDBET:cycle=12" in text_output
+    assert "ts=request_started->response_received" in text_output
     assert "failures=2 rate_limits=1 backoff=1.0s" in text_output
+    assert "instrument_refresh_by_venue CLOUDBET:req=3 add=4 rm=2 stale=1" in text_output
 
 
 def test_runtime_probe_report_cli_can_fail_on_incomplete_diagnostics(

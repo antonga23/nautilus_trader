@@ -32,6 +32,8 @@ class VenueQuotePollStats:
     cycle_elapsed_secs: float
     max_fetch_latency_secs: float
     poll_interval_secs: float
+    quote_event_timestamp_source: str = ""
+    quote_init_timestamp_source: str = ""
     failure_count: int = 0
     rate_limit_count: int = 0
     backoff_secs: float = 0.0
@@ -80,6 +82,8 @@ def encode_venue_quote_poll_stats(
     cycle_elapsed_secs: float = 0.0,
     max_fetch_latency_secs: float = 0.0,
     poll_interval_secs: float = 0.0,
+    quote_event_timestamp_source: str = "",
+    quote_init_timestamp_source: str = "",
     failure_count: int = 0,
     rate_limit_count: int = 0,
     backoff_secs: float = 0.0,
@@ -102,6 +106,8 @@ def encode_venue_quote_poll_stats(
         "cycle_elapsed_secs": max(0.0, float(cycle_elapsed_secs)),
         "max_fetch_latency_secs": max(0.0, float(max_fetch_latency_secs)),
         "poll_interval_secs": max(0.0, float(poll_interval_secs)),
+        "quote_event_timestamp_source": str(quote_event_timestamp_source or ""),
+        "quote_init_timestamp_source": str(quote_init_timestamp_source or ""),
         "failure_count": max(0, int(failure_count)),
         "rate_limit_count": max(0, int(rate_limit_count)),
         "backoff_secs": max(0.0, float(backoff_secs)),
@@ -164,6 +170,10 @@ def decode_venue_quote_poll_stats(raw: bytes | None) -> VenueQuotePollStats | No
             cycle_elapsed_secs=float(payload.get("cycle_elapsed_secs") or 0.0),
             max_fetch_latency_secs=float(payload.get("max_fetch_latency_secs") or 0.0),
             poll_interval_secs=float(payload.get("poll_interval_secs") or 0.0),
+            quote_event_timestamp_source=str(
+                payload.get("quote_event_timestamp_source") or "",
+            ),
+            quote_init_timestamp_source=str(payload.get("quote_init_timestamp_source") or ""),
             failure_count=int(payload.get("failure_count") or 0),
             rate_limit_count=int(payload.get("rate_limit_count") or 0),
             backoff_secs=float(payload.get("backoff_secs") or 0.0),

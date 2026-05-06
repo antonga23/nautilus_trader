@@ -101,6 +101,7 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
             "marginBands": candidate_quality.get("marginBands"),
             "rejectionBuckets": candidate_quality.get("rejectionBuckets"),
             "semanticBlockedReasons": candidate_quality.get("semanticBlockedReasons"),
+            "semanticBlockedRelationships": candidate_quality.get("semanticBlockedRelationships"),
             "venuePairs": candidate_quality.get("venuePairs"),
             "marketFamilies": candidate_quality.get("marketFamilies"),
             "latencyHistograms": candidate_quality.get("latencyHistograms"),
@@ -112,6 +113,10 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
             ),
             "topSemanticBlockedReasons": _top_items(
                 _as_dict(candidate_quality.get("semanticBlockedReasons")),
+                limit=top_limit,
+            ),
+            "topSemanticBlockedRelationships": _top_items(
+                _as_dict(candidate_quality.get("semanticBlockedRelationships")),
                 limit=top_limit,
             ),
             "topVenuePairs": _top_items(
@@ -129,6 +134,7 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
             "zeroCandidateVenuePairSamples": (
                 candidate_quality.get("zeroCandidateVenuePairSamples") or []
             )[:top_limit],
+            "zeroCandidateBlockerCounts": candidate_quality.get("zeroCandidateBlockerCounts"),
             "topPositiveCandidates": candidate_quality.get("topPositiveCandidates"),
             "topNegativeNearMisses": candidate_quality.get("topNegativeNearMisses"),
         },
@@ -217,6 +223,10 @@ def _diagnostic_warnings(candidate_quality: dict[str, Any]) -> list[str]:
         warnings.append("semantic_blocked_without_reason_breakdown")
     if semantic_blocked > 0 and not candidate_quality.get("blockerSamples"):
         warnings.append("semantic_blocked_without_blocker_samples")
+    if candidate_quality.get("zeroCandidateVenuePairSamples") and not candidate_quality.get(
+        "zeroCandidateBlockerCounts",
+    ):
+        warnings.append("zero_candidate_blockers_without_counts")
     if not candidate_quality.get("topPositiveCandidates"):
         warnings.append("missing_top_positive_candidates")
     if not candidate_quality.get("topNegativeNearMisses"):
@@ -251,13 +261,42 @@ def _format_text(path: Path, summary: dict[str, Any]) -> str:
         f"threshold={candidates.get('thresholdTotal')} "
         f"cross_venue={candidates.get('crossVenueCandidateCount')}",
     ]
+    lines.extend(_format_coverage_lines(graph))
+    lines.extend(_format_quality_lines(quality))
+    provider_poll = _format_provider_poll_stats(summary.get("providerQuotePollStats"))
+    if provider_poll:
+        lines.append(f"  provider_poll {provider_poll}")
+    lines.extend(_format_refresh_lines(summary.get("instrumentRefresh")))
+    same_venue_dry_run = quality.get("sameVenueDryRun") or {}
+    if isinstance(same_venue_dry_run, dict) and (
+        same_venue_dry_run.get("passes") or same_venue_dry_run.get("failures")
+    ):
+        lines.append(
+            "  same_venue_dry_run "
+            f"passes={same_venue_dry_run.get('passes', 0)} "
+            f"failures={same_venue_dry_run.get('failures', 0)} "
+            f"failure_reasons={same_venue_dry_run.get('failureReasons', {})}",
+        )
+    warnings = quality.get("diagnosticWarnings") or []
+    if warnings:
+        lines.append(f"  warnings {', '.join(warnings)}")
+    return "\n".join(lines)
+
+
+def _format_coverage_lines(graph: dict[str, Any]) -> list[str]:
     coverage_diagnostics = graph.get("coverageDiagnostics") or {}
+    lines: list[str] = []
     if isinstance(coverage_diagnostics, dict) and coverage_diagnostics:
         lines.append(
             "  coverage_execution_safe "
             f"proofs={coverage_diagnostics.get('executionSafeCoverageProofCount', 0)} "
             f"hyperedges={coverage_diagnostics.get('executionSafeCoverageHyperedgeCount', 0)}",
         )
+    return lines
+
+
+def _format_quality_lines(quality: dict[str, Any]) -> list[str]:
+    lines: list[str] = []
     top_rejections = quality.get("topRejectionBuckets") or []
     if top_rejections:
         rendered = ", ".join(f"{item['key']}={item['value']}" for item in top_rejections)
@@ -266,6 +305,16 @@ def _format_text(path: Path, summary: dict[str, Any]) -> str:
     if top_blockers:
         rendered = ", ".join(f"{item['key']}={item['value']}" for item in top_blockers)
         lines.append(f"  top_semantic_blockers {rendered}")
+    top_blocker_relationships = quality.get("topSemanticBlockedRelationships") or []
+    if top_blocker_relationships:
+        rendered = ", ".join(f"{item['key']}={item['value']}" for item in top_blocker_relationships)
+        lines.append(f"  top_semantic_relationships {rendered}")
+    zero_candidate_blockers = quality.get("zeroCandidateBlockerCounts") or {}
+    if isinstance(zero_candidate_blockers, dict) and zero_candidate_blockers:
+        rendered = ", ".join(
+            f"{key}={value}" for key, value in sorted(zero_candidate_blockers.items())
+        )
+        lines.append(f"  zero_candidate_blockers {rendered}")
     latency = quality.get("latencyHistograms") or {}
     if isinstance(latency, dict) and latency:
         quote_age = _as_dict(latency.get("quoteAgeSeconds"))
@@ -285,10 +334,12 @@ def _format_text(path: Path, summary: dict[str, Any]) -> str:
             f"violations={live_slo.get('violations')} "
             f"max={live_slo.get('maxQuoteAgeSeconds')}s",
         )
-    provider_poll = _format_provider_poll_stats(summary.get("providerQuotePollStats"))
-    if provider_poll:
-        lines.append(f"  provider_poll {provider_poll}")
-    instrument_refresh = summary.get("instrumentRefresh") or {}
+    return lines
+
+
+def _format_refresh_lines(value: Any) -> list[str]:
+    instrument_refresh = value or {}
+    lines: list[str] = []
     if isinstance(instrument_refresh, dict) and instrument_refresh:
         lines.append(
             "  instrument_refresh "
@@ -298,20 +349,19 @@ def _format_text(path: Path, summary: dict[str, Any]) -> str:
             f"removed={instrument_refresh.get('removed', 0)} "
             f"stale_triggers={instrument_refresh.get('staleQuoteTriggers', 0)}",
         )
-    same_venue_dry_run = quality.get("sameVenueDryRun") or {}
-    if isinstance(same_venue_dry_run, dict) and (
-        same_venue_dry_run.get("passes") or same_venue_dry_run.get("failures")
-    ):
-        lines.append(
-            "  same_venue_dry_run "
-            f"passes={same_venue_dry_run.get('passes', 0)} "
-            f"failures={same_venue_dry_run.get('failures', 0)} "
-            f"failure_reasons={same_venue_dry_run.get('failureReasons', {})}",
-        )
-    warnings = quality.get("diagnosticWarnings") or []
-    if warnings:
-        lines.append(f"  warnings {', '.join(warnings)}")
-    return "\n".join(lines)
+        venue_refresh = instrument_refresh.get("venues") or {}
+        if isinstance(venue_refresh, dict) and venue_refresh:
+            rendered = ", ".join(
+                (
+                    f"{venue}:req={stats.get('requests', 0)} add={stats.get('added', 0)} "
+                    f"rm={stats.get('removed', 0)} stale={stats.get('stale_triggers', 0)}"
+                )
+                for venue, stats in sorted(venue_refresh.items())
+                if isinstance(stats, dict)
+            )
+            if rendered:
+                lines.append(f"  instrument_refresh_by_venue {rendered}")
+    return lines
 
 
 def _format_provider_poll_stats(value: Any) -> str:
@@ -326,6 +376,7 @@ def _format_provider_poll_stats(value: Any) -> str:
             f"markets={stats.get('market_count', 0)} "
             f"cycle_elapsed={stats.get('cycle_elapsed_secs', 0)}s "
             f"max_fetch={stats.get('max_fetch_latency_secs', 0)}s "
+            f"ts={stats.get('quote_event_timestamp_source', '')}->{stats.get('quote_init_timestamp_source', '')} "
             f"backlog={stats.get('backlog_count', 0)} "
             f"failures={stats.get('failure_count', 0)} "
             f"rate_limits={stats.get('rate_limit_count', 0)} "

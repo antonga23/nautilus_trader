@@ -376,6 +376,15 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._instrument_refresh_graph_rebuilds = 0
         self._instrument_refresh_stale_triggers = 0
         self._quote_unsubscribe_requests = 0
+        self._instrument_refresh_requests_by_venue: Counter[str] = Counter()
+        self._instrument_refresh_failures_by_venue: Counter[str] = Counter()
+        self._instrument_refresh_added_by_venue: Counter[str] = Counter()
+        self._instrument_refresh_removed_by_venue: Counter[str] = Counter()
+        self._instrument_refresh_delisted_removed_by_venue: Counter[str] = Counter()
+        self._instrument_refresh_reconciles_by_venue: Counter[str] = Counter()
+        self._instrument_refresh_graph_rebuilds_by_venue: Counter[str] = Counter()
+        self._instrument_refresh_stale_triggers_by_venue: Counter[str] = Counter()
+        self._quote_unsubscribe_requests_by_venue: Counter[str] = Counter()
         self._pending_refresh_reconcile_venues: set[str] = set()
         self._last_refresh_request_at_ns: dict[str, int] = {}
         self._last_stale_refresh_trigger_at_ns: dict[str, int] = {}
@@ -592,9 +601,11 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                     params={"semantic_refresh": True, "only_last": True},
                 )
                 self._instrument_refresh_requests += 1
+                self._instrument_refresh_requests_by_venue[venue_value] += 1
                 self._schedule_instrument_reconcile(venue_value)
             except Exception as exc:
                 self._instrument_refresh_failures += 1
+                self._instrument_refresh_failures_by_venue[venue_value] += 1
                 self.log.warning(
                     "Unable to request refreshed betting instruments: "
                     f"venue={venue_value} error={exc}",
@@ -635,6 +646,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 )
                 self._instrument_refresh_requests += 1
                 self._instrument_refresh_stale_triggers += 1
+                self._instrument_refresh_requests_by_venue[venue_value] += 1
+                self._instrument_refresh_stale_triggers_by_venue[venue_value] += 1
                 self._schedule_instrument_reconcile(venue_value)
                 self.log.info(
                     "Requested stale-quote-driven betting instrument refresh: "
@@ -642,6 +655,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 )
             except Exception as exc:
                 self._instrument_refresh_failures += 1
+                self._instrument_refresh_failures_by_venue[venue_value] += 1
                 self.log.warning(
                     "Unable to request stale-quote-driven betting instrument refresh: "
                     f"venue={venue_value} reason={reason} error={exc}",
@@ -656,6 +670,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 max(0, now_ns - requested_at_ns),
             )
         self._instrument_refresh_reconciles += 1
+        self._instrument_refresh_reconciles_by_venue[venue_value] += 1
         active_cached = self._active_cached_venue_instruments(venue_value)
         active_ids = {str(instrument.id) for instrument in active_cached}
         added_instruments = self._add_refreshed_active_instruments(active_cached)
@@ -669,7 +684,9 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
 
         self._instrument_refresh_added += added
         self._instrument_refresh_removed += removed
-        self._rebuild_after_instrument_refresh(added_instruments)
+        self._instrument_refresh_added_by_venue[venue_value] += added
+        self._instrument_refresh_removed_by_venue[venue_value] += removed
+        self._rebuild_after_instrument_refresh(venue_value, added_instruments)
         self._log_graph_topology_summary()
         self.log.info(
             "Reconciled refreshed betting instruments: "
@@ -728,6 +745,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
 
     def _rebuild_after_instrument_refresh(
         self,
+        venue_value: str,
         added_instruments: list[BettingInstrument],
     ) -> None:
         if not (
@@ -736,6 +754,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             return
         self._opportunity_graph.build(list(self._subscribed_instruments))
         self._instrument_refresh_graph_rebuilds += 1
+        self._instrument_refresh_graph_rebuilds_by_venue[venue_value] += 1
         if self._semantic_quote_priority_enabled():
             self._subscribe_semantic_connected_quote_ticks()
             self._subscribe_semantic_unmatched_quote_probe_ticks()
@@ -774,6 +793,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         for instrument in to_remove:
             self._remove_subscribed_instrument(instrument)
         self._instrument_refresh_delisted_removed += len(to_remove)
+        self._instrument_refresh_delisted_removed_by_venue[venue_value] += len(to_remove)
         return len(to_remove)
 
     def _remove_subscribed_instrument(self, instrument: BettingInstrument) -> None:
@@ -784,6 +804,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         if str(quote_instrument_id) in self._quote_subscribed_instrument_ids:
             self._quote_subscribed_instrument_ids.discard(str(quote_instrument_id))
             self._quote_unsubscribe_requests += 1
+            self._quote_unsubscribe_requests_by_venue[instrument.id.venue.value.upper()] += 1
             try:
                 self.unsubscribe_quote_ticks(quote_instrument_id)
             except Exception as exc:
@@ -2932,6 +2953,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             "instrument_refresh_graph_rebuilds": self._instrument_refresh_graph_rebuilds,
             "instrument_refresh_stale_triggers": self._instrument_refresh_stale_triggers,
             "quote_unsubscribe_requests": self._quote_unsubscribe_requests,
+            "instrument_refresh_by_venue": self._instrument_refresh_by_venue_payload(),
             "provider_quote_poll_stats": self._provider_quote_poll_stats(),
             "latency_diagnostics": {
                 "quote_event_to_strategy": self._latency_summary(
@@ -2966,8 +2988,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 raw = self.cache.get(venue_quote_poll_stats_key(venue_value))
             except Exception as exc:
                 self.log.debug(
-                    "Unable to read provider quote poll stats: "
-                    f"venue={venue_value} error={exc}",
+                    f"Unable to read provider quote poll stats: venue={venue_value} error={exc}",
                 )
                 continue
             payload = decode_venue_quote_poll_stats(raw)
@@ -2989,5 +3010,46 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 "cycle_elapsed_secs": round(payload.cycle_elapsed_secs, 6),
                 "max_fetch_latency_secs": round(payload.max_fetch_latency_secs, 6),
                 "poll_interval_secs": round(payload.poll_interval_secs, 6),
+                "quote_event_timestamp_source": payload.quote_event_timestamp_source,
+                "quote_init_timestamp_source": payload.quote_init_timestamp_source,
+                "failure_count": payload.failure_count,
+                "rate_limit_count": payload.rate_limit_count,
+                "backoff_secs": round(payload.backoff_secs, 6),
+                "last_error": payload.last_error,
             }
         return stats
+
+    def _instrument_refresh_by_venue_payload(self) -> dict[str, dict[str, int]]:
+        venues = sorted(
+            {
+                *self._instrument_refresh_requests_by_venue.keys(),
+                *self._instrument_refresh_failures_by_venue.keys(),
+                *self._instrument_refresh_added_by_venue.keys(),
+                *self._instrument_refresh_removed_by_venue.keys(),
+                *self._instrument_refresh_delisted_removed_by_venue.keys(),
+                *self._instrument_refresh_reconciles_by_venue.keys(),
+                *self._instrument_refresh_graph_rebuilds_by_venue.keys(),
+                *self._instrument_refresh_stale_triggers_by_venue.keys(),
+                *self._quote_unsubscribe_requests_by_venue.keys(),
+            },
+        )
+        return {
+            venue: {
+                "requests": self._instrument_refresh_requests_by_venue.get(venue, 0),
+                "failures": self._instrument_refresh_failures_by_venue.get(venue, 0),
+                "added": self._instrument_refresh_added_by_venue.get(venue, 0),
+                "removed": self._instrument_refresh_removed_by_venue.get(venue, 0),
+                "delisted_removed": self._instrument_refresh_delisted_removed_by_venue.get(
+                    venue,
+                    0,
+                ),
+                "reconciles": self._instrument_refresh_reconciles_by_venue.get(venue, 0),
+                "graph_rebuilds": self._instrument_refresh_graph_rebuilds_by_venue.get(venue, 0),
+                "stale_triggers": self._instrument_refresh_stale_triggers_by_venue.get(venue, 0),
+                "quote_unsubscribe_requests": self._quote_unsubscribe_requests_by_venue.get(
+                    venue,
+                    0,
+                ),
+            }
+            for venue in venues
+        }

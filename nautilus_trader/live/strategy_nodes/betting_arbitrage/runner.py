@@ -49,6 +49,7 @@ class ProbeProfitabilityCounters:
     timing_flags: Counter[str] = field(default_factory=Counter)
     freshness_profiles: Counter[str] = field(default_factory=Counter)
     semantic_blocked_reasons: Counter[str] = field(default_factory=Counter)
+    semantic_blocked_relationships: Counter[str] = field(default_factory=Counter)
     venue_pairs: dict[str, Counter[str]] = field(default_factory=dict)
     market_families: dict[str, Counter[str]] = field(default_factory=dict)
     blocker_samples: dict[str, list[dict[str, object]]] = field(default_factory=dict)
@@ -81,6 +82,7 @@ class ProbeProfitabilityCounters:
             "timing_flags": dict(self.timing_flags),
             "freshness_profiles": dict(self.freshness_profiles),
             "semantic_blocked_reasons": dict(self.semantic_blocked_reasons),
+            "semantic_blocked_relationships": dict(self.semantic_blocked_relationships),
             "venue_quote_health": {
                 venue: {
                     "quoted_observations": self.venue_quote_counts.get(venue, 0),
@@ -862,6 +864,7 @@ def _collect_runtime_probe_payload(
             "timingFlags": profitability["timing_flags"],
             "freshnessProfiles": profitability["freshness_profiles"],
             "semanticBlockedReasons": profitability["semantic_blocked_reasons"],
+            "semanticBlockedRelationships": profitability["semantic_blocked_relationships"],
             "blockerSamples": profitability["blocker_samples"],
             "venueQuoteHealth": profitability["venue_quote_health"],
             "latencyHistograms": {
@@ -882,6 +885,7 @@ def _collect_runtime_probe_payload(
             "venuePairs": profitability["venue_pairs"],
             "marketFamilies": profitability["market_families"],
             "zeroCandidateVenuePairSamples": venue_coverage["zeroCandidateVenuePairs"],
+            "zeroCandidateBlockerCounts": venue_coverage["zeroCandidateBlockerCounts"],
             "topPositiveCandidates": profitability["sample_candidates"],
             "topNegativeNearMisses": profitability["negative_near_misses"],
         },
@@ -910,6 +914,7 @@ def _instrument_refresh_payload(stats: dict[str, object]) -> dict[str, object]:
         "graphRebuilds": int(stats.get("instrument_refresh_graph_rebuilds") or 0),
         "staleQuoteTriggers": int(stats.get("instrument_refresh_stale_triggers") or 0),
         "quoteUnsubscribeRequests": int(stats.get("quote_unsubscribe_requests") or 0),
+        "venues": stats.get("instrument_refresh_by_venue", {}),
         "reconcileLatency": latency_diagnostics.get("instrument_refresh_reconcile", {}),
     }
 
@@ -1021,6 +1026,7 @@ def _empty_candidate_quality_payload() -> dict[str, object]:
         "timingFlags": {},
         "freshnessProfiles": {},
         "semanticBlockedReasons": {},
+        "semanticBlockedRelationships": {},
         "blockerSamples": {},
         "venueQuoteHealth": {},
         "latencyHistograms": {
@@ -1047,6 +1053,7 @@ def _empty_candidate_quality_payload() -> dict[str, object]:
         "venuePairs": {},
         "marketFamilies": {},
         "zeroCandidateVenuePairSamples": [],
+        "zeroCandidateBlockerCounts": {},
         "topPositiveCandidates": [],
         "topNegativeNearMisses": [],
     }
@@ -1132,6 +1139,11 @@ def _venue_pair_coverage(
         for pair in all_pairs
         if candidate_counts.get(pair, 0) == 0
     ]
+    zero_pair_blocker_counts = Counter(
+        str(report.get("blockerReason") or report.get("reason") or "unknown")
+        for report in zero_pairs
+        if isinstance(report, dict)
+    )
     cross_venue_candidate_count = sum(
         count for pair, count in candidate_counts.items() if _is_cross_venue_pair(pair)
     )
@@ -1175,6 +1187,7 @@ def _venue_pair_coverage(
         "quotedEdgeCounts": {pair: quoted_edge_counts.get(pair, 0) for pair in all_pairs},
         "candidateCounts": {pair: candidate_counts.get(pair, 0) for pair in all_pairs},
         "crossVenueCandidateCount": cross_venue_candidate_count,
+        "zeroCandidateBlockerCounts": dict(sorted(zero_pair_blocker_counts.items())),
         "crossVenuePairsWithCandidates": [
             pair
             for pair in all_pairs
@@ -1953,6 +1966,7 @@ def _record_probe_quality(
     _record_same_venue_dry_run_quality(counters, quality)
     if rejection_bucket in _SEMANTIC_NON_EXECUTION_BUCKETS:
         counters.semantic_blocked_reasons[_semantic_blocked_reason(quality)] += 1
+        counters.semantic_blocked_relationships[_semantic_blocked_relationship(quality)] += 1
         samples = counters.blocker_samples.setdefault(rejection_bucket, [])
         if len(samples) < 5:
             samples.append(
@@ -2019,6 +2033,14 @@ def _record_same_venue_dry_run_quality(
 
 
 def _semantic_blocked_reason(quality: dict[str, object]) -> str:
+    return str(
+        quality.get("blockerReason")
+        or quality.get("rejectionBucket")
+        or CoverageBlockerReason.UNSUPPORTED_MARKET_FAMILY.value,
+    )
+
+
+def _semantic_blocked_relationship(quality: dict[str, object]) -> str:
     safety_tier = str(quality.get("safetyTier") or "unknown")
     relationship_type = str(quality.get("relationshipType") or "unknown")
     return f"{safety_tier}:{relationship_type}"

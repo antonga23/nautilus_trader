@@ -602,6 +602,8 @@ class CloudbetDataClient(LiveMarketDataClient):
                 cycle_elapsed_secs=cycle_elapsed,
                 max_fetch_latency_secs=max_fetch_latency_secs,
                 poll_interval_secs=self._quote_polling_interval,
+                quote_event_timestamp_source="request_started",
+                quote_init_timestamp_source="response_received",
                 failure_count=failure_count,
                 rate_limit_count=rate_limit_count,
                 backoff_secs=backoff_secs,
