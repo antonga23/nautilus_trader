@@ -250,6 +250,10 @@ async def _refresh_corpus(args: argparse.Namespace) -> None:
                     to_time=args.to_timestamp,
                     instrument_limit=args.instrument_limit,
                     market_discovery_limit=args.market_discovery_limit,
+                    prefer_liquid_markets=args.prefer_liquid_markets,
+                    liquidity_probe_limit=args.liquidity_probe_limit,
+                    min_two_sided_markets=args.min_two_sided_markets,
+                    live_only=args.live_only,
                 ),
             )
         finally:
@@ -1166,6 +1170,10 @@ def _parse_args() -> argparse.Namespace:
     refresh.add_argument("--limit", type=int, default=20)
     refresh.add_argument("--instrument-limit", type=int, default=1000)
     refresh.add_argument("--market-discovery-limit", type=int, default=1000)
+    refresh.add_argument("--prefer-liquid-markets", action="store_true")
+    refresh.add_argument("--liquidity-probe-limit", type=int, default=100)
+    refresh.add_argument("--min-two-sided-markets", type=int, default=1)
+    refresh.add_argument("--live-only", action="store_true")
     refresh.add_argument("--include-bets", action="store_true")
     refresh.add_argument("--skip-bets", action="store_true")
     refresh.add_argument("--bet-page-size", type=int, default=50)

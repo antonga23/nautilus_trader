@@ -486,6 +486,9 @@ def _semantic_provider_coverage_summary(
         "total_selection_count": total_selection_count,
         "total_event_count": total_event_count,
         "total_market_count": total_market_count,
+        "coverage_mode": str(payload.get("coverage_mode") or ""),
+        "live_only": bool(payload.get("live_only", False)),
+        "prefer_liquid_markets": bool(payload.get("prefer_liquid_markets", False)),
         "requested_sports": requested_sports,
         "resolved_sports": resolved_sports,
         "unresolved_requested_sports": unresolved_requested_sports,
@@ -1046,6 +1049,7 @@ async def _refresh_required_sxbet_corpus(
             prefer_liquid_markets=scope.prefer_liquid_markets,
             liquidity_probe_limit=scope.liquidity_probe_limit,
             min_two_sided_markets=scope.min_two_sided_markets,
+            live_only=scope.live_only,
         )
     finally:
         await client.disconnect()

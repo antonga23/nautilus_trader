@@ -2723,8 +2723,8 @@ def test_refresh_sxbet_uses_requested_sports_and_balances_per_sport_budgets(monk
         async def get_fixtures(self, *, sport_id, from_time, to_time):
             return {"sportId": sport_id, "from": from_time, "to": to_time, "data": []}
 
-        async def get_markets(self, *, sport_id, page_size):
-            market_page_sizes.append((sport_id, page_size))
+        async def get_markets(self, *, sport_id, page_size, live_only=None):
+            market_page_sizes.append((sport_id, page_size, live_only))
             return {"sportId": sport_id, "data": {"markets": []}}
 
     instruments_by_sport = {
@@ -2766,6 +2766,10 @@ def test_refresh_sxbet_uses_requested_sports_and_balances_per_sport_budgets(monk
                     "sport_ids": sorted(filters.get("sport_ids") or ()),
                     "instrument_load_limit": self.config.instrument_load_limit,
                     "market_discovery_limit": self.config.market_discovery_limit,
+                    "live_only": self.config.live_only,
+                    "prefer_liquid_markets": self.config.prefer_liquid_markets,
+                    "liquidity_probe_limit": self.config.liquidity_probe_limit,
+                    "min_two_sided_markets": self.config.min_two_sided_markets,
                 },
             )
 
@@ -2780,6 +2784,10 @@ def test_refresh_sxbet_uses_requested_sports_and_balances_per_sport_budgets(monk
             sports=["Soccer/Football", "basketball", "tennis", "American Football"],
             instrument_limit=7,
             market_discovery_limit=10,
+            prefer_liquid_markets=True,
+            liquidity_probe_limit=9,
+            min_two_sided_markets=2,
+            live_only=True,
         ),
     )
 
@@ -2790,19 +2798,31 @@ def test_refresh_sxbet_uses_requested_sports_and_balances_per_sport_budgets(monk
             "sport_ids": [1],
             "instrument_load_limit": 3,
             "market_discovery_limit": 4,
+            "live_only": True,
+            "prefer_liquid_markets": True,
+            "liquidity_probe_limit": 9,
+            "min_two_sided_markets": 2,
         },
         {
             "sport_ids": [5],
             "instrument_load_limit": 2,
             "market_discovery_limit": 3,
+            "live_only": True,
+            "prefer_liquid_markets": True,
+            "liquidity_probe_limit": 9,
+            "min_two_sided_markets": 2,
         },
         {
             "sport_ids": [6],
             "instrument_load_limit": 2,
             "market_discovery_limit": 3,
+            "live_only": True,
+            "prefer_liquid_markets": True,
+            "liquidity_probe_limit": 9,
+            "min_two_sided_markets": 2,
         },
     ]
-    assert market_page_sizes == [(1, 4), (5, 3), (6, 3)]
+    assert market_page_sizes == [(1, 4, True), (5, 3, True), (6, 3, True)]
 
     coverage_snapshot = None
     for snapshot_id in store.list_snapshot_ids():
@@ -2812,6 +2832,11 @@ def test_refresh_sxbet_uses_requested_sports_and_balances_per_sport_budgets(monk
             break
     assert coverage_snapshot is not None
     payload = json.loads(coverage_snapshot.payload.decode("utf-8"))
+    assert payload["coverage_mode"] == "active_live"
+    assert payload["live_only"] is True
+    assert payload["prefer_liquid_markets"] is True
+    assert payload["liquidity_probe_limit"] == 9
+    assert payload["min_two_sided_markets"] == 2
     assert payload["requested_sports"] == [
         "american_football",
         "basketball",
@@ -2948,6 +2973,10 @@ def test_semantic_rule_mining_refresh_corpus_passes_sports_to_sxbet(tmp_path, mo
         to_timestamp=222,
         instrument_limit=333,
         market_discovery_limit=444,
+        prefer_liquid_markets=True,
+        liquidity_probe_limit=55,
+        min_two_sided_markets=2,
+        live_only=True,
         persist_cache=False,
         cache_dir=None,
         fixture_dir=None,
@@ -2975,3 +3004,7 @@ def test_semantic_rule_mining_refresh_corpus_passes_sports_to_sxbet(tmp_path, mo
     assert call["to_time"] == 222
     assert call["instrument_limit"] == 333
     assert call["market_discovery_limit"] == 444
+    assert call["prefer_liquid_markets"] is True
+    assert call["liquidity_probe_limit"] == 55
+    assert call["min_two_sided_markets"] == 2
+    assert call["live_only"] is True

@@ -471,6 +471,7 @@ class SnapshotIngestor:
         prefer_liquid_markets: bool = False,
         liquidity_probe_limit: int = 100,
         min_two_sided_markets: int = 1,
+        live_only: bool = False,
     ) -> RuleCorpusManifest:
         fetched_at = _utc_now()
         active_sports = await client.get_active_sports()
@@ -537,6 +538,7 @@ class SnapshotIngestor:
                         payload=await client.get_markets(
                             sport_id=sport_id,
                             page_size=min(50, market_budgets.get(sport_id, market_discovery_limit)),
+                            live_only=live_only,
                         ),
                     ),
                 )
@@ -553,6 +555,7 @@ class SnapshotIngestor:
                     prefer_liquid_markets=prefer_liquid_markets,
                     liquidity_probe_limit=liquidity_probe_limit,
                     min_two_sided_markets=min_two_sided_markets,
+                    live_only=live_only,
                 ),
             )
             try:
@@ -605,6 +608,13 @@ class SnapshotIngestor:
                 fetched_at=fetched_at,
                 payload={
                     "provider": "SXBET",
+                    "coverage_mode": "active_live" if live_only else "active_catalog",
+                    "from_time": from_time,
+                    "to_time": to_time,
+                    "live_only": live_only,
+                    "prefer_liquid_markets": prefer_liquid_markets,
+                    "liquidity_probe_limit": liquidity_probe_limit,
+                    "min_two_sided_markets": min_two_sided_markets,
                     "requested_sports": sorted(requested_sport_names),
                     "resolved_sports": sorted(selected_sport_names),
                     "unresolved_requested_sports": unresolved_requested_sports,

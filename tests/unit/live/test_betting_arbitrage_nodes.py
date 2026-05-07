@@ -1187,6 +1187,9 @@ class TestSemanticCacheBootstrap:
                     },
                     "coverage-sxbet-new": {
                         "provider": "SXBET",
+                        "coverage_mode": "active_live",
+                        "live_only": True,
+                        "prefer_liquid_markets": True,
                         "requested_sports": ["basketball", "baseball", "american_football"],
                         "resolved_sports": ["basketball", "baseball"],
                         "unresolved_requested_sports": ["american_football"],
@@ -1280,6 +1283,9 @@ class TestSemanticCacheBootstrap:
         assert status.provider_corpus_coverage["SXBET"]["sports_with_selections"] == 1
         assert status.provider_corpus_coverage["SXBET"]["total_selection_count"] == 12
         assert status.provider_corpus_coverage["SXBET"]["zero_selection_sports"] == ["baseball"]
+        assert status.provider_corpus_coverage["SXBET"]["coverage_mode"] == "active_live"
+        assert status.provider_corpus_coverage["SXBET"]["live_only"] is True
+        assert status.provider_corpus_coverage["SXBET"]["prefer_liquid_markets"] is True
         assert status.provider_corpus_coverage["SXBET"]["requested_sports"] == [
             "american_football",
             "baseball",
@@ -1659,6 +1665,7 @@ class TestSemanticCacheBootstrap:
                 prefer_liquid_markets,
                 liquidity_probe_limit,
                 min_two_sided_markets,
+                live_only,
             ):
                 refresh_calls.append(
                     {
@@ -1672,6 +1679,7 @@ class TestSemanticCacheBootstrap:
                         "prefer_liquid_markets": prefer_liquid_markets,
                         "liquidity_probe_limit": liquidity_probe_limit,
                         "min_two_sided_markets": min_two_sided_markets,
+                        "live_only": live_only,
                     },
                 )
 
@@ -1714,6 +1722,7 @@ class TestSemanticCacheBootstrap:
         assert call["prefer_liquid_markets"] is True
         assert call["liquidity_probe_limit"] == 350
         assert call["min_two_sided_markets"] == 2
+        assert call["live_only"] is True
         assert call["client"].connected is True
         assert call["client"].disconnected is True
 

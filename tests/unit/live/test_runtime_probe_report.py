@@ -46,6 +46,9 @@ def _runtime_status_payload() -> dict[str, object]:
                     "total_selection_count": 842,
                     "total_event_count": 114,
                     "total_market_count": 0,
+                    "coverage_mode": "active_live",
+                    "live_only": True,
+                    "prefer_liquid_markets": True,
                     "requested_sports": [
                         "american_football",
                         "baseball",
@@ -357,6 +360,10 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
     assert summary["semanticCacheCorpusHealth"]["providers"]["SXBET"][
         "unresolvedRequestedSports"
     ] == ["american_football"]
+    assert summary["semanticCacheCorpusHealth"]["providers"]["SXBET"]["coverageMode"] == (
+        "active_live"
+    )
+    assert summary["semanticCacheCorpusHealth"]["providers"]["SXBET"]["liveOnly"] is True
     assert "inspect_unresolved_provider_sport_targets" in summary["recommendedActions"]
     assert "inspect_zero_selection_target_sports" in summary["recommendedActions"]
     assert summary["executionReadiness"]["validationMode"] is True
@@ -746,7 +753,9 @@ def test_runtime_probe_report_cli_outputs_json_and_text(tmp_path, monkeypatch, c
     assert "fetch_p95=0.18s" in text_output
     assert "provider_poll_health overall=fail CLOUDBET:status=fail" in text_output
     assert "semantic_cache_corpus_health overall=warn SXBET:status=warn" in text_output
-    assert "corpus_coverage provider=SXBET sports=3/6 selections=842" in text_output
+    assert (
+        "corpus_coverage provider=SXBET mode=active_live sports=3/6 selections=842" in text_output
+    )
     assert "unresolved=['american_football']" in text_output
     assert "venue_coverage_health overall=warn CLOUDBET:status=warn" in text_output
     assert "recommended_actions" in text_output

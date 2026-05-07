@@ -516,6 +516,9 @@ def _merge_provider_corpus_coverage(
                 "requestedSports": [],
                 "resolvedSports": [],
                 "unresolvedRequestedSports": [],
+                "coverageModes": [],
+                "liveOnlyObserved": False,
+                "preferLiquidMarketsObserved": False,
             },
         )
         existing["sportCount"] = max(
@@ -573,6 +576,20 @@ def _merge_provider_corpus_coverage(
                 *[str(item) for item in report.get("unresolved_requested_sports", []) if item],
             },
         )
+        coverage_mode = report.get("coverage_mode")
+        if coverage_mode:
+            existing["coverageModes"] = sorted(
+                {
+                    *[str(item) for item in existing.get("coverageModes", [])],
+                    str(coverage_mode),
+                },
+            )
+        existing["liveOnlyObserved"] = bool(existing.get("liveOnlyObserved")) or bool(
+            report.get("live_only"),
+        )
+        existing["preferLiquidMarketsObserved"] = bool(
+            existing.get("preferLiquidMarketsObserved"),
+        ) or bool(report.get("prefer_liquid_markets"))
 
 
 def _count_values(values: Iterable[Any]) -> dict[str, int]:
@@ -1166,6 +1183,7 @@ def _format_provider_corpus_coverage_lines(value: Any) -> list[str]:
         lines.append(
             "  corpus_coverage "
             f"provider={provider} "
+            f"mode={report.get('coverage_mode') or 'unknown'} "
             f"sports={report.get('sports_with_selections', 0)}/{report.get('sport_count', 0)} "
             f"selections={report.get('total_selection_count', 0)} "
             f"events={report.get('total_event_count', 0)} "
@@ -1763,6 +1781,9 @@ def _semantic_cache_corpus_health(provider_corpus_coverage: dict[str, Any]) -> d
             "sportCount": sport_count,
             "sportsWithSelections": sports_with_selections,
             "totalSelectionCount": total_selection_count,
+            "coverageMode": str(report.get("coverage_mode") or ""),
+            "liveOnly": bool(report.get("live_only")),
+            "preferLiquidMarkets": bool(report.get("prefer_liquid_markets")),
             "unresolvedRequestedSports": unresolved_requested_sports,
             "zeroSelectionSports": zero_selection_sports,
             "sparseSports": sparse_sports,
