@@ -1640,6 +1640,14 @@ class TestSemanticCacheBootstrap:
         assert scope.instrument_limit == 250
         assert scope.market_discovery_limit == 360
 
+    def test_sxbet_corpus_scope_defaults_to_six_target_sports(self):
+        scope = node_cache._sxbet_corpus_scope([BettingVenueManifest(venue="SXBET")])
+
+        assert scope.sport_keys == list(node_cache.DEFAULT_SXBET_SPORTS)
+        assert scope.sport_ids is None
+        assert scope.instrument_limit == 480
+        assert scope.market_discovery_limit == 720
+
     def test_refresh_required_sxbet_corpus_disconnects_after_failure(self, monkeypatch):
         monkeypatch.setenv("SXBET_API_KEY", "sxbet-live-key")
 

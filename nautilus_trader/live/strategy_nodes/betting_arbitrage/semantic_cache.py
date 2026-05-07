@@ -34,8 +34,9 @@ from nautilus_trader.live.strategy_nodes.betting_arbitrage.config import Betting
 
 
 DEFAULT_CLOUDBET_SPORTS = SEMANTIC_TARGET_SPORTS
+DEFAULT_SXBET_SPORTS = SEMANTIC_TARGET_SPORTS
 DEFAULT_POLYMARKET_SPORTS = SEMANTIC_TARGET_SPORTS
-SEMANTIC_CACHE_COMPATIBILITY_VERSION = "semantic-rule-cache:20260506:sxbet-balanced-corpus-v1"
+SEMANTIC_CACHE_COMPATIBILITY_VERSION = "semantic-rule-cache:20260507:sxbet-six-sport-default-v2"
 SEMANTIC_CACHE_COMPATIBILITY_FILE = ".semantic-cache-version"
 SEMANTIC_CACHE_SUMMARY_FILE = ".semantic-cache-summary.json"
 SEMANTIC_CACHE_BOOTSTRAP_TIMINGS_FILE = ".semantic-cache-bootstrap-timings.json"
@@ -873,12 +874,15 @@ def _sxbet_corpus_scope(sxbet_venues: Iterable[BettingVenueManifest]) -> _SxbetC
         min_two_sided_markets = max(min_two_sided_markets, int(venue.min_two_sided_markets))
         live_only = live_only or venue.live_only
 
-    target_sport_count = max(len(sport_ids), len(sport_keys), 1)
+    resolved_sport_keys = (
+        sorted(sport_keys) if sport_keys else (None if sport_ids else list(DEFAULT_SXBET_SPORTS))
+    )
+    target_sport_count = max(len(sport_ids), len(resolved_sport_keys or ()), 1)
     instrument_limit = max(instrument_limit, target_sport_count * 80)
     market_discovery_limit = max(market_discovery_limit, target_sport_count * 120)
 
     return _SxbetCorpusScope(
-        sport_keys=sorted(sport_keys) or None,
+        sport_keys=resolved_sport_keys,
         sport_ids=sorted(sport_ids) or None,
         instrument_limit=instrument_limit,
         market_discovery_limit=market_discovery_limit,
