@@ -682,6 +682,7 @@ def test_venue_coverage_health_flags_quote_subscription_limit_overrun():
     assert venue["quoteSubscriptionLimit"] == 80
     assert venue["quoteSubscriptionLimitExceeded"] == 1746
     assert "quote_subscription_limit_exceeded" in venue["reasons"]
+    assert "reduce_semantic_quote_subscription_load" in summary["recommendedActions"]
 
 
 def test_provider_poll_health_flags_slow_poll_cycles():

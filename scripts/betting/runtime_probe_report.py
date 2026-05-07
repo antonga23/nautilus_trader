@@ -1067,6 +1067,7 @@ def _recommended_actions(summary: dict[str, Any]) -> list[str]:
                 "no_quote_subscription": "refresh_market_subscriptions",
                 "no_quoted_nodes": "refresh_market_subscriptions",
                 "no_semantic_edges": "inspect_semantic_template_coverage",
+                "quote_subscription_limit_exceeded": ("reduce_semantic_quote_subscription_load"),
             },
         ),
     )
