@@ -10,6 +10,7 @@
 import asyncio
 from collections import Counter
 from dataclasses import replace
+import hashlib
 import json
 from decimal import Decimal
 import os
@@ -1723,6 +1724,37 @@ class TestSemanticCacheBootstrap:
         assert scope.sport_ids is None
         assert scope.instrument_limit == 480
         assert scope.market_discovery_limit == 720
+
+    def test_semantic_cache_scope_records_default_target_sports(self, tmp_path):
+        manifest = BettingArbitrageNodeManifest(
+            node_id="sxbet-node",
+            trader_id="BETARB-TEST-SEM",
+            validation_mode=True,
+            semantic_rule_cache_dir=str(tmp_path / "semantic-cache"),
+            venues=[BettingVenueManifest(venue="SXBET")],
+        )
+
+        payload = {
+            "providers": [
+                {
+                    "venue": "SXBET",
+                    "sport_keys": list(node_cache.DEFAULT_SXBET_SPORTS),
+                    "sport_ids": "all",
+                    "league_ids": "all",
+                    "live_only": False,
+                    "instrument_load_limit": None,
+                    "market_discovery_limit": None,
+                    "prefer_liquid_markets": False,
+                    "liquidity_probe_limit": 100,
+                    "min_two_sided_markets": 1,
+                },
+            ],
+        }
+        expected = hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8"),
+        ).hexdigest()[:24]
+
+        assert node_cache._semantic_cache_scope_key(manifest) == expected
 
     def test_refresh_required_sxbet_corpus_disconnects_after_failure(self, monkeypatch):
         monkeypatch.setenv("SXBET_API_KEY", "sxbet-live-key")

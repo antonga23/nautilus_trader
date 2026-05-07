@@ -782,7 +782,7 @@ def _semantic_cache_scope_key(manifest: BettingArbitrageNodeManifest | None) -> 
         venues.append(
             {
                 "venue": venue.venue,
-                "sport_keys": sorted(venue.sport_keys) if venue.sport_keys else "default",
+                "sport_keys": _semantic_cache_scope_sport_keys(venue),
                 "sport_ids": sorted(venue.sport_ids) if venue.sport_ids else "all",
                 "league_ids": sorted(venue.league_ids) if venue.league_ids else "all",
                 "live_only": bool(venue.live_only),
@@ -796,6 +796,21 @@ def _semantic_cache_scope_key(manifest: BettingArbitrageNodeManifest | None) -> 
     payload = {"providers": venues}
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()[:24]
+
+
+def _semantic_cache_scope_sport_keys(venue: BettingVenueManifest) -> list[str] | str:
+    if venue.sport_keys:
+        return sorted(venue.sport_keys)
+    if venue.sport_ids:
+        return "sport_ids"
+    venue_name = venue.venue.upper()
+    if venue_name == "CLOUDBET":
+        return list(DEFAULT_CLOUDBET_SPORTS)
+    if venue_name == "SXBET":
+        return list(DEFAULT_SXBET_SPORTS)
+    if venue_name == "POLYMARKET":
+        return list(DEFAULT_POLYMARKET_SPORTS)
+    return "default"
 
 
 def _reset_semantic_cache_dir(cache_dir: Path) -> None:
