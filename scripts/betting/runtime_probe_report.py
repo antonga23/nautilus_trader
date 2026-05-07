@@ -1087,7 +1087,11 @@ def _venue_pair_total(counts: dict[str, Any], venue: str) -> int:
     suffix = f"->{venue}"
     for key, value in counts.items():
         rendered_key = str(key)
-        if rendered_key == venue or rendered_key.startswith(prefix) or rendered_key.endswith(suffix):
+        if (
+            rendered_key == venue
+            or rendered_key.startswith(prefix)
+            or rendered_key.endswith(suffix)
+        ):
             total += _int_value(value)
     return total
 
