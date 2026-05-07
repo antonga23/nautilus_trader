@@ -788,6 +788,47 @@ def test_provider_poll_health_flags_live_quote_slo_cycle_before_slow_cycle():
     assert "increase_poll_concurrency_or_reduce_subscriptions" in summary["recommendedActions"]
 
 
+def test_provider_poll_health_explains_cloudbet_poll_fanout_bottlenecks():
+    module = _load_module()
+    summary = module.summarize_payload(
+        {
+            "runtimeProbe": {
+                "providerQuotePollStats": {
+                    "CLOUDBET": {
+                        "source": "rest_event_poll",
+                        "cycle_elapsed_secs": 8.2,
+                        "poll_target_cycle_secs": 4.0,
+                        "max_fetch_latency_secs": 0.8,
+                        "request_count": 40,
+                        "event_request_count": 10,
+                        "line_request_count": 30,
+                        "quote_count": 16,
+                        "concurrency": 16,
+                        "max_concurrency": 16,
+                        "adaptive_concurrency": True,
+                        "backlog_count": 0,
+                        "failure_count": 0,
+                        "rate_limit_count": 0,
+                    },
+                },
+            },
+        },
+    )
+
+    cloudbet = summary["providerPollHealth"]["venues"]["CLOUDBET"]
+    assert cloudbet["status"] == "warn"
+    assert cloudbet["requestFanoutPerQuote"] == 2.5
+    assert cloudbet["lineFallbackRatio"] == 0.75
+    assert cloudbet["pollTargetCycleSeconds"] == 4.0
+    assert "poll_target_missed" in cloudbet["reasons"]
+    assert "line_fallback_fanout" in cloudbet["reasons"]
+    assert "request_fanout_high" in cloudbet["reasons"]
+    assert "at_max_concurrency" in cloudbet["reasons"]
+    assert "inspect_provider_event_batching_mapping" in summary["recommendedActions"]
+    assert "reduce_provider_request_fanout" in summary["recommendedActions"]
+    assert "reduce_subscription_count_or_shard_provider_polling" in summary["recommendedActions"]
+
+
 def test_zero_candidate_blockers_map_to_specific_actions():
     module = _load_module()
     summary = module.summarize_payload(

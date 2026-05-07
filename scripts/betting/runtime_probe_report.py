@@ -1355,14 +1355,33 @@ def _provider_poll_health(provider_quote_poll_stats: dict[str, Any]) -> dict[str
         failure_count = _int_value(stats.get("failure_count"))
         rate_limit_count = _int_value(stats.get("rate_limit_count"))
         backlog_count = _int_value(stats.get("backlog_count"))
+        request_count = _int_value(stats.get("request_count"))
+        event_request_count = _int_value(stats.get("event_request_count"))
+        line_request_count = _int_value(stats.get("line_request_count"))
+        quote_count = _int_value(stats.get("quote_count"))
+        concurrency = _int_value(stats.get("concurrency"))
+        max_concurrency = _int_value(stats.get("max_concurrency"))
+        poll_target_cycle_secs = _float_value(stats.get("poll_target_cycle_secs"))
         max_fetch_latency_secs = _float_value(stats.get("max_fetch_latency_secs"))
         cycle_elapsed_secs = _float_value(stats.get("cycle_elapsed_secs"))
+        source = str(stats.get("source") or "")
+        request_fanout_per_quote = _ratio(request_count, quote_count)
+        line_fallback_ratio = _ratio(line_request_count, request_count)
         reasons = _provider_poll_reasons(
+            source=source,
             failure_count=failure_count,
             rate_limit_count=rate_limit_count,
             backlog_count=backlog_count,
+            request_count=request_count,
+            line_request_count=line_request_count,
+            quote_count=quote_count,
+            concurrency=concurrency,
+            max_concurrency=max_concurrency,
+            poll_target_cycle_secs=poll_target_cycle_secs,
             max_fetch_latency_secs=max_fetch_latency_secs,
             cycle_elapsed_secs=cycle_elapsed_secs,
+            request_fanout_per_quote=request_fanout_per_quote,
+            line_fallback_ratio=line_fallback_ratio,
         )
         status = _provider_poll_status(
             reasons,
@@ -1377,6 +1396,17 @@ def _provider_poll_health(provider_quote_poll_stats: dict[str, Any]) -> dict[str
             "failureCount": failure_count,
             "rateLimitCount": rate_limit_count,
             "backlogCount": backlog_count,
+            "requestCount": request_count,
+            "eventRequestCount": event_request_count,
+            "lineRequestCount": line_request_count,
+            "quoteCount": quote_count,
+            "requestFanoutPerQuote": round(request_fanout_per_quote, 4),
+            "lineFallbackRatio": round(line_fallback_ratio, 4),
+            "source": source,
+            "concurrency": concurrency,
+            "maxConcurrency": max_concurrency,
+            "adaptiveConcurrency": bool(stats.get("adaptive_concurrency")),
+            "pollTargetCycleSeconds": poll_target_cycle_secs,
             "maxFetchLatencySeconds": max_fetch_latency_secs,
             "cycleElapsedSeconds": cycle_elapsed_secs,
         }
@@ -1388,25 +1418,89 @@ def _provider_poll_health(provider_quote_poll_stats: dict[str, Any]) -> dict[str
 
 def _provider_poll_reasons(
     *,
+    source: str,
     failure_count: int,
     rate_limit_count: int,
     backlog_count: int,
+    request_count: int,
+    line_request_count: int,
+    quote_count: int,
+    concurrency: int,
+    max_concurrency: int,
+    poll_target_cycle_secs: float,
     max_fetch_latency_secs: float,
     cycle_elapsed_secs: float,
+    request_fanout_per_quote: float,
+    line_fallback_ratio: float,
 ) -> list[str]:
     reasons: list[str] = []
     if failure_count > 0:
         reasons.append("provider_failures")
     if rate_limit_count > 0:
         reasons.append("rate_limited")
+    if backlog_count > 0:
+        reasons.append("poll_backlog")
+    reasons.extend(
+        _provider_poll_latency_reasons(
+            cycle_elapsed_secs=cycle_elapsed_secs,
+            poll_target_cycle_secs=poll_target_cycle_secs,
+            max_fetch_latency_secs=max_fetch_latency_secs,
+            concurrency=concurrency,
+            max_concurrency=max_concurrency,
+        ),
+    )
+    reasons.extend(
+        _provider_poll_fanout_reasons(
+            source=source,
+            request_count=request_count,
+            line_request_count=line_request_count,
+            quote_count=quote_count,
+            request_fanout_per_quote=request_fanout_per_quote,
+            line_fallback_ratio=line_fallback_ratio,
+        ),
+    )
+    return reasons
+
+
+def _provider_poll_latency_reasons(
+    *,
+    cycle_elapsed_secs: float,
+    poll_target_cycle_secs: float,
+    max_fetch_latency_secs: float,
+    concurrency: int,
+    max_concurrency: int,
+) -> list[str]:
+    reasons: list[str] = []
+    target_missed = poll_target_cycle_secs > 0 and cycle_elapsed_secs > poll_target_cycle_secs
+    if target_missed:
+        reasons.append("poll_target_missed")
     if max_fetch_latency_secs > 5.0:
         reasons.append("slow_fetch_latency")
     if cycle_elapsed_secs > 5.0:
         reasons.append("poll_cycle_exceeds_live_quote_slo")
     if cycle_elapsed_secs > 30.0:
         reasons.append("slow_poll_cycle")
-    if backlog_count > 0:
-        reasons.append("poll_backlog")
+    if target_missed and max_concurrency > 0 and concurrency >= max_concurrency:
+        reasons.append("at_max_concurrency")
+    return reasons
+
+
+def _provider_poll_fanout_reasons(
+    *,
+    source: str,
+    request_count: int,
+    line_request_count: int,
+    quote_count: int,
+    request_fanout_per_quote: float,
+    line_fallback_ratio: float,
+) -> list[str]:
+    reasons: list[str] = []
+    if "event" in source and line_request_count > 0 and line_fallback_ratio > 0.25:
+        reasons.append("line_fallback_fanout")
+    if "line" in source and request_count >= 20:
+        reasons.append("event_batching_disabled")
+    if quote_count > 0 and request_fanout_per_quote > 1.5:
+        reasons.append("request_fanout_high")
     return reasons
 
 
@@ -1448,11 +1542,16 @@ def _recommended_actions(summary: dict[str, Any]) -> list[str]:
                 "provider_failures": "inspect_provider_poll_failures",
                 "rate_limited": "reduce_poll_rate_or_add_backoff",
                 "slow_fetch_latency": "profile_provider_rest_latency",
+                "poll_target_missed": "profile_provider_poll_cycle_target",
                 "poll_cycle_exceeds_live_quote_slo": (
                     "increase_poll_concurrency_or_reduce_subscriptions"
                 ),
                 "slow_poll_cycle": "reduce_subscription_count_or_raise_poll_concurrency",
                 "poll_backlog": "increase_poll_concurrency_or_reduce_subscriptions",
+                "line_fallback_fanout": "inspect_provider_event_batching_mapping",
+                "event_batching_disabled": "enable_event_batched_provider_polling",
+                "request_fanout_high": "reduce_provider_request_fanout",
+                "at_max_concurrency": "reduce_subscription_count_or_shard_provider_polling",
             },
         ),
     )
@@ -1582,6 +1681,12 @@ def _float_value(value: Any) -> float:
     if isinstance(value, int | float) and not isinstance(value, bool):
         return float(value)
     return 0.0
+
+
+def _ratio(numerator: int, denominator: int) -> float:
+    if denominator <= 0:
+        return 0.0
+    return max(0.0, float(numerator) / float(denominator))
 
 
 if __name__ == "__main__":
