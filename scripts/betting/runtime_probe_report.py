@@ -85,7 +85,7 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
     }
     candidate_warnings = diagnostic_warnings
     graph_warnings = graph_diagnostic_warnings
-    return {
+    summary = {
         "nodeId": payload.get("nodeId"),
         "status": payload.get("status"),
         "semanticCache": {
@@ -228,6 +228,8 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
             latency_slo_status=_as_dict(latency_block.get("sloStatus")),
         ),
     }
+    summary["recommendedActions"] = _recommended_actions(summary)
+    return summary
 
 
 def _normalized_latency_diagnostics(value: Any) -> dict[str, Any]:
@@ -561,6 +563,11 @@ def _format_text(path: Path, summary: dict[str, Any]) -> str:
     latency_warnings = _as_dict(summary.get("latencyDiagnostics")).get("diagnosticWarnings") or []
     if latency_warnings:
         lines.append(f"  latency_warnings {', '.join(latency_warnings)}")
+    recommended_actions = summary.get("recommendedActions") or []
+    if isinstance(recommended_actions, list) and recommended_actions:
+        lines.append(
+            "  recommended_actions " + ", ".join(str(action) for action in recommended_actions),
+        )
     return "\n".join(lines)
 
 
@@ -990,6 +997,48 @@ def _provider_poll_health(provider_quote_poll_stats: dict[str, Any]) -> dict[str
     }
 
 
+def _recommended_actions(summary: dict[str, Any]) -> list[str]:
+    actions: list[str] = []
+    latency_slo = _as_dict(_as_dict(summary.get("latencyDiagnostics")).get("sloStatus"))
+    if latency_slo.get("overall") == "fail":
+        actions.append("inspect_live_latency_slo_violations")
+    actions.extend(
+        _actions_from_reason_payloads(
+            _as_dict(_as_dict(summary.get("providerPollHealth")).get("venues")).values(),
+            {
+                "provider_failures": "inspect_provider_poll_failures",
+                "rate_limited": "reduce_poll_rate_or_add_backoff",
+                "slow_fetch_latency": "profile_provider_rest_latency",
+                "poll_backlog": "increase_poll_concurrency_or_reduce_subscriptions",
+            },
+        ),
+    )
+    actions.extend(
+        _actions_from_reason_payloads(
+            _as_dict(_as_dict(summary.get("venueCoverageHealth")).get("venues")).values(),
+            {
+                "no_quote_subscription": "refresh_market_subscriptions",
+                "no_quoted_nodes": "refresh_market_subscriptions",
+                "no_semantic_edges": "inspect_semantic_template_coverage",
+            },
+        ),
+    )
+    if _as_dict(summary.get("candidateQuality")).get("zeroCandidateBlockerCounts"):
+        actions.append("inspect_zero_candidate_blockers")
+    return sorted(set(actions))
+
+
+def _actions_from_reason_payloads(
+    payloads: Iterable[Any],
+    mapping: dict[str, str],
+) -> list[str]:
+    actions: list[str] = []
+    for payload in payloads:
+        reasons = set(_as_list_of_strings(_as_dict(payload).get("reasons")))
+        actions.extend(action for reason, action in mapping.items() if reason in reasons)
+    return actions
+
+
 def _venue_coverage_health(venue_coverage: dict[str, Any]) -> dict[str, Any]:
     enabled_venues = venue_coverage.get("enabledVenues") or []
     quote_subscriptions = _as_dict(venue_coverage.get("quoteSubscriptionCounts"))
@@ -1022,6 +1071,12 @@ def _venue_coverage_health(venue_coverage: dict[str, Any]) -> dict[str, Any]:
         "overall": overall if venues else "unknown",
         "venues": venues,
     }
+
+
+def _as_list_of_strings(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value]
 
 
 def _float_value(value: Any) -> float:
