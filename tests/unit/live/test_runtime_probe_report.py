@@ -484,6 +484,44 @@ def test_runtime_probe_report_flags_missing_strategy_latency_diagnostics():
     ]
 
 
+def test_runtime_probe_report_uses_latency_histograms_when_live_slo_missing():
+    module = _load_module()
+
+    summary = module.summarize_payload(
+        {
+            "runtimeProbe": {
+                "quotedEdges": 4,
+                "candidateQuality": {
+                    "latencyHistograms": {
+                        "quoteAgeSeconds": {"count": 8, "p95": 7.5, "max": 8.0},
+                        "fetchLatencySeconds": {"count": 8, "p95": 0.4, "max": 0.5},
+                        "pairSkewSeconds": {"count": 8, "p95": 0.2, "max": 0.4},
+                    },
+                },
+                "latencyDiagnostics": {
+                    "graph_scan": {"count": 4},
+                    "quote_event_to_strategy": {"count": 4},
+                },
+            },
+        },
+    )
+
+    slo = summary["latencyDiagnostics"]["sloStatus"]
+    assert slo["overall"] == "fail"
+    assert slo["quoteAge"] == {
+        "status": "fail",
+        "observations": 8,
+        "violations": 8,
+        "violationRate": 1.0,
+        "thresholdSeconds": 5.0,
+        "minThresholdSeconds": None,
+        "maxThresholdSeconds": None,
+        "thresholdMode": "histogram_p95_or_max",
+    }
+    assert slo["fetchLatency"]["status"] == "pass"
+    assert slo["pairSkew"]["status"] == "pass"
+
+
 def test_runtime_probe_report_aggregates_multiple_artifacts():
     module = _load_module()
     first = module.summarize_payload(_runtime_status_payload())

@@ -420,9 +420,28 @@ def _latency_slo_status(
     latency: dict[str, Any],
 ) -> dict[str, Any]:
     live_timing = _as_dict(candidate_quality.get("liveTimingSlo"))
-    quote_age = _slo_section_status(_as_dict(live_timing.get("quoteAge")))
-    fetch_latency = _slo_section_status(_as_dict(live_timing.get("fetchLatency")))
-    pair_skew = _slo_section_status(_as_dict(live_timing.get("pairSkew")))
+    histograms = _as_dict(candidate_quality.get("latencyHistograms"))
+    quote_age = _slo_section_status(
+        _as_dict(live_timing.get("quoteAge")),
+        fallback=_histogram_slo_status(
+            _as_dict(histograms.get("quoteAgeSeconds")),
+            threshold_seconds=5.0,
+        ),
+    )
+    fetch_latency = _slo_section_status(
+        _as_dict(live_timing.get("fetchLatency")),
+        fallback=_histogram_slo_status(
+            _as_dict(histograms.get("fetchLatencySeconds")),
+            threshold_seconds=5.0,
+        ),
+    )
+    pair_skew = _slo_section_status(
+        _as_dict(live_timing.get("pairSkew")),
+        fallback=_histogram_slo_status(
+            _as_dict(histograms.get("pairSkewSeconds")),
+            threshold_seconds=1.0,
+        ),
+    )
     strategy_latency = {
         "graphScanObserved": _int_value(_as_dict(latency.get("graphScan")).get("count")) > 0,
         "candidateDecisionObserved": _int_value(
@@ -480,8 +499,31 @@ def _operator_health(
     }
 
 
-def _slo_section_status(section: dict[str, Any]) -> dict[str, Any]:
+def _histogram_slo_status(histogram: dict[str, Any], *, threshold_seconds: float) -> dict[str, Any]:
+    observations = _int_value(histogram.get("count"))
+    p95 = _float_value(histogram.get("p95"))
+    max_value = _float_value(histogram.get("max"))
+    violations = observations if observations > 0 and max(p95, max_value) > threshold_seconds else 0
+    return {
+        "status": "fail" if violations else "pass" if observations else "no_observations",
+        "observations": observations,
+        "violations": violations,
+        "violationRate": 1.0 if violations else 0.0,
+        "thresholdSeconds": threshold_seconds,
+        "minThresholdSeconds": None,
+        "maxThresholdSeconds": None,
+        "thresholdMode": "histogram_p95_or_max",
+    }
+
+
+def _slo_section_status(
+    section: dict[str, Any],
+    *,
+    fallback: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     observations = _int_value(section.get("observations"))
+    if observations <= 0 and fallback is not None and _int_value(fallback.get("observations")) > 0:
+        return fallback
     violations = _int_value(section.get("violations"))
     if observations <= 0:
         status = "no_observations"
