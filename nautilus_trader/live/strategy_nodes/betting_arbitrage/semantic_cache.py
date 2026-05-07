@@ -345,10 +345,13 @@ def _semantic_template_analysis(
             )
         if template.safety_tier == SafetyTier.EXECUTION_SAFE_SAME_VENUE_ELIGIBLE.value:
             same_venue_eligible += 1
-            same_venue_family_counts[family_pair] = same_venue_family_counts.get(
-                family_pair,
-                0,
-            ) + 1
+            same_venue_family_counts[family_pair] = (
+                same_venue_family_counts.get(
+                    family_pair,
+                    0,
+                )
+                + 1
+            )
         tier_counts[template.safety_tier] = tier_counts.get(template.safety_tier, 0) + 1
         if not template.execution_safe:
             for blocker in _strict_execution_blockers(template):
@@ -668,9 +671,7 @@ def _write_semantic_cache_summary(
         "coverage_hyperedge_count": coverage_counts.hyperedges,
         "promoted_safety_tier_counts": strictness["promoted_safety_tier_counts"],
         "promoted_market_family_counts": strictness["promoted_market_family_counts"],
-        "execution_safe_market_family_counts": strictness[
-            "execution_safe_market_family_counts"
-        ],
+        "execution_safe_market_family_counts": strictness["execution_safe_market_family_counts"],
         "same_venue_eligible_market_family_counts": strictness[
             "same_venue_eligible_market_family_counts"
         ],
