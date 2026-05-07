@@ -272,7 +272,7 @@ async def test_poll_order_books_once_records_provider_poll_stats():
         side_effect=lambda instrument_id: {
             instrument_one.id: instrument_one,
             instrument_two.id: instrument_two,
-        }.get(instrument_id)
+        }.get(instrument_id),
     )
     instrument_provider.find_by_market_hash = Mock(return_value=[instrument_one, instrument_two])
     cache = TestComponentStubs.cache()

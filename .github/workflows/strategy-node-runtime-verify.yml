@@ -598,7 +598,10 @@ jobs:
             semantic_completion_rc=$?
             set -e
             if [[ ! -s "$artifact_dir/semantic-completion.json" ]]; then
-              python3 - "$semantic_completion_rc" "$semantic_completion_stderr" "$artifact_dir/semantic-completion.json" <<'PY'
+              python3 - \
+                "$semantic_completion_rc" \
+                "$semantic_completion_stderr" \
+                "$artifact_dir/semantic-completion.json" <<'PY'
           import json
           import pathlib
           import sys

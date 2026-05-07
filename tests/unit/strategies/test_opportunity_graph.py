@@ -533,7 +533,7 @@ def test_python_graph_coverage_summary_reports_store_tiers_and_samples() -> None
             }.get(hyperedge_id)
 
     graph = OpportunityGraph(
-        MarketMatcher(rule_store=FakeRuleStore(), allow_unpromoted_topology=False),
+        MarketMatcher(rule_store=cast(RuleStore, FakeRuleStore()), allow_unpromoted_topology=False),
         engine="python",
     )
 
@@ -555,10 +555,12 @@ def test_python_graph_coverage_summary_reports_store_tiers_and_samples() -> None
     ensure(summary["proofGapReasonCounts"] == {"incomplete_coverage": 1})
     ensure(summary["proofRiskReasonCounts"] == {"equivalent_selection": 1})
     ensure(summary["sampleProofIds"] == ["proof-exec", "proof-topology"])
+    sample_proofs = cast(list[dict[str, object]], summary["sampleProofs"])
+    sample_hyperedges = cast(list[dict[str, object]], summary["sampleHyperedges"])
     ensure(
-        summary["sampleProofs"][0]["instrument_ids"] == ["home.SXBET", "draw.SXBET", "away.SXBET"]
+        sample_proofs[0]["instrument_ids"] == ["home.SXBET", "draw.SXBET", "away.SXBET"],
     )
-    ensure(summary["sampleHyperedges"][0]["hyperedge_id"] == "hyperedge-exec")
+    ensure(sample_hyperedges[0]["hyperedge_id"] == "hyperedge-exec")
 
 
 def test_sync_keeps_rust_semantic_edges_without_python_rediscovery() -> None:  # skipcq

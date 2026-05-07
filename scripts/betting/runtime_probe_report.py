@@ -199,7 +199,7 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
         "semanticDiagnostics": {
             "supportedProviderNodeCount": semantic_diagnostics.get("supportedProviderNodeCount"),
             "unsupportedProviderNodeCount": semantic_diagnostics.get(
-                "unsupportedProviderNodeCount"
+                "unsupportedProviderNodeCount",
             ),
             "supportedProviderCoverageRatio": semantic_diagnostics.get(
                 "supportedProviderCoverageRatio",
@@ -347,7 +347,7 @@ def aggregate_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
         health = str(_as_dict(summary.get("operatorHealth")).get("overall") or "unknown")
         health_counts[health] = health_counts.get(health, 0) + 1
         provider_health = str(
-            _as_dict(summary.get("providerPollHealth")).get("overall") or "unknown"
+            _as_dict(summary.get("providerPollHealth")).get("overall") or "unknown",
         )
         provider_poll_health_counts[provider_health] = (
             provider_poll_health_counts.get(provider_health, 0) + 1
@@ -1033,7 +1033,10 @@ def _format_provider_poll_stats(value: Any) -> str:
             f"quotes={stats.get('quote_count', 0)} "
             f"markets={stats.get('market_count', 0)} "
             f"cycle_elapsed={stats.get('cycle_elapsed_secs', 0)}s "
+            f"target={stats.get('poll_target_cycle_secs', 0)}s "
+            f"next_sleep={stats.get('next_poll_sleep_secs', 0)}s "
             f"max_fetch={stats.get('max_fetch_latency_secs', 0)}s "
+            f"concurrency={stats.get('concurrency', 0)}/{stats.get('max_concurrency', 0)} "
             f"ts={stats.get('quote_event_timestamp_source', '')}->{stats.get('quote_init_timestamp_source', '')} "
             f"backlog={stats.get('backlog_count', 0)} "
             f"failures={stats.get('failure_count', 0)} "

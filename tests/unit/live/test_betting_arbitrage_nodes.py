@@ -403,6 +403,9 @@ class TestBettingArbitrageNodeBuilder:
         assert data_client.config["quote_poll_interval_secs"] == 7.0
         assert data_client.config["quote_poll_summary_interval_secs"] == 31.0
         assert data_client.config["quote_poll_concurrency"] == 3
+        assert data_client.config["quote_poll_min_concurrency"] == 1
+        assert data_client.config["quote_poll_target_cycle_secs"] == 5.0
+        assert data_client.config["quote_poll_adaptive_concurrency"] is True
 
     def test_cloudbet_data_client_keeps_auto_subscribe_without_semantic_cache(self):
         manifest = BettingArbitrageNodeManifest(
@@ -770,7 +773,13 @@ class TestBettingArbitrageNodeBuilder:
             config.strategies[0].config["semantic_rule_cache_dir"]
             == "artifacts/semantic-rule-cache/multi-venue-validation"
         )
-        assert config.data_clients["CLOUDBET_PRIMARY"].config["quote_poll_concurrency"] == 8
+        cloudbet_config = config.data_clients["CLOUDBET_PRIMARY"].config
+        assert cloudbet_config["quote_poll_interval_secs"] == 1.0
+        assert cloudbet_config["quote_poll_concurrency"] == 12
+        assert cloudbet_config["quote_poll_min_concurrency"] == 4
+        assert cloudbet_config["quote_poll_max_concurrency"] == 16
+        assert cloudbet_config["quote_poll_target_cycle_secs"] == 4.0
+        assert cloudbet_config["quote_poll_adaptive_concurrency"] is True
         assert (
             config.data_clients["POLYMARKET_PRIMARY"].config["instrument_provider"]["load_all"]
             is True
@@ -1089,6 +1098,78 @@ class TestSemanticCacheBootstrap:
         }
         assert status.coverage_proof_count == 2
         assert status.coverage_hyperedge_count == 1
+
+    def test_semantic_cache_status_reuses_summary_without_template_scan(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        summary_path = tmp_path / node_cache.SEMANTIC_CACHE_SUMMARY_FILE
+        summary_path.write_text(
+            json.dumps(
+                {
+                    "compatibility_version": None,
+                    "compatibility_scope": None,
+                    "manifest_count": 2,
+                    "promoted_template_count": 3,
+                    "execution_safe_template_count": 1,
+                    "same_venue_execution_eligible_template_count": 1,
+                    "coverage_proof_count": 2,
+                    "coverage_hyperedge_count": 1,
+                    "manifest_index_signature": node_cache._semantic_cache_index_signature(
+                        ["manifest-a", "manifest-b"],
+                    ),
+                    "promoted_template_index_signature": node_cache._semantic_cache_index_signature(
+                        ["missing-template", "exec-safe", "same-venue"],
+                    ),
+                    "coverage_proof_index_signature": node_cache._semantic_cache_index_signature(
+                        ["proof-a", "proof-b"],
+                    ),
+                    "coverage_hyperedge_index_signature": node_cache._semantic_cache_index_signature(
+                        ["hyperedge-a"],
+                    ),
+                    "promoted_safety_tier_counts": {
+                        "EXECUTION_SAFE": 1,
+                        "EXECUTION_SAFE_SAME_VENUE_ELIGIBLE": 1,
+                    },
+                    "strict_execution_blocker_counts": {
+                        "same_venue_risk_engine_elevation_required": 1,
+                    },
+                },
+            ),
+            encoding="utf-8",
+        )
+
+        class SummaryOnlyStore:
+            def __init__(self, _cache):
+                pass
+
+            def list_manifest_ids(self):
+                return ["manifest-a", "manifest-b"]
+
+            def list_promoted_template_ids(self):
+                return ["missing-template", "exec-safe", "same-venue"]
+
+            def list_coverage_proof_ids(self):
+                return ["proof-a", "proof-b"]
+
+            def list_coverage_hyperedge_ids(self):
+                return ["hyperedge-a"]
+
+            def load_promoted_template(self, template_id):
+                raise AssertionError(f"summary cache should avoid loading {template_id}")
+
+        monkeypatch.setattr(node_cache, "RuleStore", SummaryOnlyStore)
+        monkeypatch.setattr(node_cache, "FileRuleCache", lambda path: path)
+
+        summary_status = node_cache.semantic_cache_status(tmp_path)
+
+        assert summary_status.promoted_template_count == 3
+        assert summary_status.execution_safe_template_count == 1
+        assert summary_status.same_venue_execution_eligible_template_count == 1
+        assert summary_status.strict_execution_blocker_counts == {
+            "same_venue_risk_engine_elevation_required": 1,
+        }
 
     def test_run_bootstrap_without_running_loop_executes_async_path(self, tmp_path, monkeypatch):
         manifest = _manifest(tmp_path, cache_dir=tmp_path / "semantic-cache")

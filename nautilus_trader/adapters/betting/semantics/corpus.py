@@ -892,7 +892,7 @@ class SnapshotIngestor:
             sports_market.get("event_type") == "team_future"
             and sports_market.get("event_name")
             and isinstance(params, dict)
-            and params.get("subject")
+            and params.get("subject"),
         )
 
     @staticmethod

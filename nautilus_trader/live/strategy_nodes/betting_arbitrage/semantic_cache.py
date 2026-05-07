@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterable
+from contextlib import nullcontext
 from dataclasses import asdict
 from dataclasses import dataclass
 from dataclasses import field
@@ -36,6 +37,7 @@ DEFAULT_CLOUDBET_SPORTS = SEMANTIC_TARGET_SPORTS
 DEFAULT_POLYMARKET_SPORTS = SEMANTIC_TARGET_SPORTS
 SEMANTIC_CACHE_COMPATIBILITY_VERSION = "semantic-rule-cache:20260506:sxbet-balanced-corpus-v1"
 SEMANTIC_CACHE_COMPATIBILITY_FILE = ".semantic-cache-version"
+SEMANTIC_CACHE_SUMMARY_FILE = ".semantic-cache-summary.json"
 PORTABLE_POLYMARKET_MARKET_FAMILIES = frozenset(
     {
         "MATCH_ODDS",
@@ -193,31 +195,76 @@ def semantic_cache_status(
         expected_scope is None or compatibility_scope == expected_scope
     )
 
-    template_counts = _semantic_template_counts(store)
-    coverage_counts = _semantic_coverage_counts(store)
-    strictness = _semantic_template_strictness(store)
+    manifest_ids = store.list_manifest_ids()
+    promoted_template_ids = store.list_promoted_template_ids()
+    proof_ids = store.list_coverage_proof_ids() if hasattr(store, "list_coverage_proof_ids") else []
+    hyperedge_ids = (
+        store.list_coverage_hyperedge_ids() if hasattr(store, "list_coverage_hyperedge_ids") else []
+    )
+    summary_signatures = {
+        "manifest_index_signature": _semantic_cache_index_signature(manifest_ids),
+        "promoted_template_index_signature": _semantic_cache_index_signature(promoted_template_ids),
+        "coverage_proof_index_signature": _semantic_cache_index_signature(proof_ids),
+        "coverage_hyperedge_index_signature": _semantic_cache_index_signature(hyperedge_ids),
+    }
+    summary_counts = _semantic_summary_counts(
+        _read_semantic_cache_summary(path),
+        compatibility_version=compatibility_version,
+        compatibility_scope=compatibility_scope,
+        manifest_count=len(manifest_ids),
+        promoted_template_count=len(promoted_template_ids),
+        coverage_proof_count=len(proof_ids),
+        coverage_hyperedge_count=len(hyperedge_ids),
+        signatures=summary_signatures,
+    )
+    if summary_counts is None:
+        template_counts, strictness = _semantic_template_analysis(
+            store,
+            promoted_template_ids=promoted_template_ids,
+        )
+        _write_semantic_cache_summary(
+            path,
+            compatibility_version=compatibility_version,
+            compatibility_scope=compatibility_scope,
+            manifest_count=len(manifest_ids),
+            template_counts=template_counts,
+            strictness=strictness,
+            coverage_counts=_SemanticCoverageCounts(
+                proofs=len(proof_ids),
+                hyperedges=len(hyperedge_ids),
+            ),
+            signatures=summary_signatures,
+        )
+    else:
+        template_counts, strictness = summary_counts
 
     return SemanticCacheStatus(
         path=str(path),
         source=source,
-        manifest_count=len(store.list_manifest_ids()),
+        manifest_count=len(manifest_ids),
         promoted_template_count=template_counts.promoted,
         execution_safe_template_count=template_counts.execution_safe,
         same_venue_execution_eligible_template_count=template_counts.same_venue_eligible,
         promoted_safety_tier_counts=strictness["promoted_safety_tier_counts"],
         strict_execution_blocker_counts=strictness["strict_execution_blocker_counts"],
-        coverage_proof_count=coverage_counts.proofs,
-        coverage_hyperedge_count=coverage_counts.hyperedges,
+        coverage_proof_count=len(proof_ids),
+        coverage_hyperedge_count=len(hyperedge_ids),
         compatibility_version=compatibility_version,
         compatibility_scope=compatibility_scope,
         compatible=compatible,
     )
 
 
-def _semantic_template_counts(store: RuleStore) -> _SemanticTemplateCounts:
-    promoted_template_ids = store.list_promoted_template_ids()
+def _semantic_template_analysis(
+    store: RuleStore,
+    *,
+    promoted_template_ids: list[str] | None = None,
+) -> tuple[_SemanticTemplateCounts, dict[str, dict[str, int]]]:
+    promoted_template_ids = promoted_template_ids or store.list_promoted_template_ids()
     execution_safe = 0
     same_venue_eligible = 0
+    tier_counts: dict[str, int] = {}
+    strict_blockers: dict[str, int] = {}
     for template_id in promoted_template_ids:
         template = store.load_promoted_template(template_id)
         if template is None:
@@ -226,10 +273,20 @@ def _semantic_template_counts(store: RuleStore) -> _SemanticTemplateCounts:
             execution_safe += 1
         if template.safety_tier == SafetyTier.EXECUTION_SAFE_SAME_VENUE_ELIGIBLE.value:
             same_venue_eligible += 1
-    return _SemanticTemplateCounts(
-        promoted=len(promoted_template_ids),
-        execution_safe=execution_safe,
-        same_venue_eligible=same_venue_eligible,
+        tier_counts[template.safety_tier] = tier_counts.get(template.safety_tier, 0) + 1
+        if not template.execution_safe:
+            for blocker in _strict_execution_blockers(template):
+                strict_blockers[blocker] = strict_blockers.get(blocker, 0) + 1
+    return (
+        _SemanticTemplateCounts(
+            promoted=len(promoted_template_ids),
+            execution_safe=execution_safe,
+            same_venue_eligible=same_venue_eligible,
+        ),
+        {
+            "promoted_safety_tier_counts": dict(sorted(tier_counts.items())),
+            "strict_execution_blocker_counts": dict(sorted(strict_blockers.items())),
+        },
     )
 
 
@@ -241,22 +298,126 @@ def _semantic_coverage_counts(store: RuleStore) -> _SemanticCoverageCounts:
     return _SemanticCoverageCounts(proofs=len(proof_ids), hyperedges=len(hyperedge_ids))
 
 
-def _semantic_template_strictness(store: RuleStore) -> dict[str, dict[str, int]]:
-    tier_counts: dict[str, int] = {}
-    strict_blockers: dict[str, int] = {}
-    for template_id in store.list_promoted_template_ids():
-        template = store.load_promoted_template(template_id)
-        if template is None:
-            continue
-        tier_counts[template.safety_tier] = tier_counts.get(template.safety_tier, 0) + 1
-        if template.execution_safe:
-            continue
-        for blocker in _strict_execution_blockers(template):
-            strict_blockers[blocker] = strict_blockers.get(blocker, 0) + 1
-    return {
-        "promoted_safety_tier_counts": dict(sorted(tier_counts.items())),
-        "strict_execution_blocker_counts": dict(sorted(strict_blockers.items())),
+def _semantic_cache_index_signature(ids: Iterable[str]) -> str:
+    digest = hashlib.sha256()
+    for item in sorted(str(item) for item in ids):
+        digest.update(item.encode("utf-8"))
+        digest.update(b"\0")
+    return digest.hexdigest()[:24]
+
+
+def _read_semantic_cache_summary(cache_dir: Path) -> dict[str, object] | None:
+    summary_path = cache_dir / SEMANTIC_CACHE_SUMMARY_FILE
+    if not summary_path.exists():
+        return None
+    try:
+        payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _semantic_summary_counts(
+    summary: dict[str, object] | None,
+    *,
+    compatibility_version: str | None,
+    compatibility_scope: str | None,
+    manifest_count: int,
+    promoted_template_count: int,
+    coverage_proof_count: int,
+    coverage_hyperedge_count: int,
+    signatures: dict[str, str],
+) -> tuple[_SemanticTemplateCounts, dict[str, dict[str, int]]] | None:
+    if summary is None:
+        return None
+    if summary.get("compatibility_version") != compatibility_version:
+        return None
+    if summary.get("compatibility_scope") != compatibility_scope:
+        return None
+    expected_counts = {
+        "manifest_count": manifest_count,
+        "promoted_template_count": promoted_template_count,
+        "coverage_proof_count": coverage_proof_count,
+        "coverage_hyperedge_count": coverage_hyperedge_count,
     }
+    for count_key, expected_count in expected_counts.items():
+        if _semantic_summary_int(summary.get(count_key), default=-1) != expected_count:
+            return None
+    for signature_key, expected_signature in signatures.items():
+        if summary.get(signature_key) != expected_signature:
+            return None
+
+    safety_tier_counts = summary.get("promoted_safety_tier_counts")
+    strict_blocker_counts = summary.get("strict_execution_blocker_counts")
+    if not isinstance(safety_tier_counts, dict) or not isinstance(strict_blocker_counts, dict):
+        return None
+
+    return (
+        _SemanticTemplateCounts(
+            promoted=promoted_template_count,
+            execution_safe=max(
+                0,
+                _semantic_summary_int(summary.get("execution_safe_template_count")),
+            ),
+            same_venue_eligible=max(
+                0,
+                _semantic_summary_int(
+                    summary.get("same_venue_execution_eligible_template_count"),
+                ),
+            ),
+        ),
+        {
+            "promoted_safety_tier_counts": {
+                str(key): int(value) for key, value in safety_tier_counts.items()
+            },
+            "strict_execution_blocker_counts": {
+                str(key): int(value) for key, value in strict_blocker_counts.items()
+            },
+        },
+    )
+
+
+def _semantic_summary_int(value: object, *, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int | float | str):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+    return default
+
+
+def _write_semantic_cache_summary(
+    cache_dir: Path,
+    *,
+    compatibility_version: str | None,
+    compatibility_scope: str | None,
+    manifest_count: int,
+    template_counts: _SemanticTemplateCounts,
+    strictness: dict[str, dict[str, int]],
+    coverage_counts: _SemanticCoverageCounts,
+    signatures: dict[str, str],
+) -> None:
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    payload: dict[str, object] = {
+        "compatibility_version": compatibility_version,
+        "compatibility_scope": compatibility_scope,
+        "manifest_count": manifest_count,
+        "promoted_template_count": template_counts.promoted,
+        "execution_safe_template_count": template_counts.execution_safe,
+        "same_venue_execution_eligible_template_count": template_counts.same_venue_eligible,
+        "coverage_proof_count": coverage_counts.proofs,
+        "coverage_hyperedge_count": coverage_counts.hyperedges,
+        "promoted_safety_tier_counts": strictness["promoted_safety_tier_counts"],
+        "strict_execution_blocker_counts": strictness["strict_execution_blocker_counts"],
+        **signatures,
+        "generated_at_unix_secs": time.time(),
+    }
+    (cache_dir / SEMANTIC_CACHE_SUMMARY_FILE).write_text(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _strict_execution_blockers(template: object) -> tuple[str, ...]:
@@ -432,30 +593,33 @@ async def _bootstrap_semantic_cache(
     promotion_policy = RulePromotionPolicy()
     venues = [venue for venue in manifest.venues if venue.enabled]
 
-    await _refresh_required_sxbet_corpus(venues=venues, ingestor=ingestor, logger=logger)
-    await _refresh_cloudbet_corpus(
-        manifest=manifest,
-        venues=venues,
-        ingestor=ingestor,
-        logger=logger,
-    )
-    await _refresh_polymarket_corpus(
-        venues=venues,
-        ingestor=ingestor,
-        logger=logger,
-    )
-
-    miner.mine_store(persist=True)
-    templates = miner.mine_templates_from_store(persist=True, persist_event_candidates=False)
-    miner.mine_coverage_from_store(persist=True)
-    for template in templates:
-        portable_polymarket = _is_portable_polymarket_template(template)
-        promotion_policy.promote_template(
-            store,
-            template,
-            allowlisted=portable_polymarket,
-            venue_agnostic=portable_polymarket,
+    defer_index_writes = getattr(store, "defer_index_writes", None)
+    index_context = defer_index_writes() if callable(defer_index_writes) else nullcontext()
+    with index_context:
+        await _refresh_required_sxbet_corpus(venues=venues, ingestor=ingestor, logger=logger)
+        await _refresh_cloudbet_corpus(
+            manifest=manifest,
+            venues=venues,
+            ingestor=ingestor,
+            logger=logger,
         )
+        await _refresh_polymarket_corpus(
+            venues=venues,
+            ingestor=ingestor,
+            logger=logger,
+        )
+
+        miner.mine_store(persist=True)
+        templates = miner.mine_templates_from_store(persist=True, persist_event_candidates=False)
+        miner.mine_coverage_from_store(persist=True)
+        for template in templates:
+            portable_polymarket = _is_portable_polymarket_template(template)
+            promotion_policy.promote_template(
+                store,
+                template,
+                allowlisted=portable_polymarket,
+                venue_agnostic=portable_polymarket,
+            )
 
 
 def _is_portable_polymarket_template(template: object) -> bool:

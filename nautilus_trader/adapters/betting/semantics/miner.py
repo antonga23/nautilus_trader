@@ -129,7 +129,7 @@ class RuleMiner:
         for bucket in grouped.values():
             prepared = self._prepare_bucket(bucket)
             grouped_by_result_states: dict[tuple[str, ...], list[_PreparedRecord]] = defaultdict(
-                list
+                list,
             )
             for item in prepared:
                 grouped_by_result_states[item.result_states].append(item)

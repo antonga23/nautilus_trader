@@ -9,6 +9,7 @@ PnLs = "PnLs" # Plural of PnL
 # Variable naming conventions used throughout the codebase
 strat = "strat" # Common shorthand for strategy
 ACN = "ACN" # Domain-specific abbreviation
+acn = "acn" # Sports abbreviation in provider taxonomies
 CLEA = "CLEA" # Part of CLEARs (order book action plural)
 
 # Windows system libraries
@@ -17,19 +18,24 @@ secur32 = "secur32" # Windows security library (secur32.lib)
 
 # Intentional variable names and abbreviations
 NOO = "NOO" # Test data/identifier
-ot = "ot" # Order tag variable naming convention
+ot = "ot" # Overtime/period abbreviation in sports market keys
+nd = "nd" # Ordinal suffix in sports period labels
+ND = "ND" # Ordinal suffix in normalized sports labels
 
 # External API terms (exact spelling from their documentation)
 HIGHTER = "HIGHTER" # Binance API error code (their official typo)
 cummulative = "cummulative" # Binance API: cummulativeQuoteQty field (their official typo)
 cummulativeQuoteQty = "cummulativeQuoteQty" # Binance API field name
 Alo = "Alo" # Hyperliquid API: Add Liquidity Only (post-only TIF)
+alo = "alo" # Hyperliquid API shorthand in variables
+ALO = "ALO" # Hyperliquid API shorthand in comments/docs
 BadAloPx = "BadAloPx" # Hyperliquid API: rejection code for post-only orders
 
 # Blockchain names (official branding)
 Superseed = "Superseed" # Superseed blockchain (chain ID 10001)
 SUPERSEED = "SUPERSEED" # Superseed blockchain constant
 Serie = "Serie" # Italian football league naming (Serie A)
+serie = "serie" # Italian football league naming in lowercase taxonomies
 
 # Test data and hex/encoded strings
 ba = "ba" # Hex digit in UUID test strings

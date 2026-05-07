@@ -374,8 +374,12 @@ def _template_candidate_counters(
             providers_by_sport[sport].add(normalized_provider)
 
     for hyperedge in collections.coverage_hyperedges:
-        proof = proof_by_id.get(str(hyperedge.get("coverage_proof_id") or ""))
-        sport = _normalize_sport(((proof or {}).get("universe") or {}).get("sport"))
+        hyperedge_proof = proof_by_id.get(str(hyperedge.get("coverage_proof_id") or ""))
+        proof_payload = hyperedge_proof if isinstance(hyperedge_proof, dict) else {}
+        universe_payload = proof_payload.get("universe") or {}
+        sport = _normalize_sport(
+            universe_payload.get("sport") if isinstance(universe_payload, dict) else None,
+        )
         coverage_hyperedges_by_sport[sport] += 1
         for provider in hyperedge.get("provider_scope", ()) or ():
             coverage_hyperedges_by_provider[str(provider).upper()] += 1

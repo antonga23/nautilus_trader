@@ -1909,6 +1909,61 @@ def test_file_rule_cache_recovers_from_torn_key_index(tmp_path):
     assert reloaded._key_index == {}
 
 
+def test_rule_store_immediate_indexes_are_visible_to_reloaded_file_store(tmp_path):
+    cache_dir = tmp_path / "semantic-cache"
+    store = RuleStore(FileRuleCache(cache_dir))
+    rule = RuleClassifier().classify(
+        betting_instrument(market_name="match_odds", market_type="match_odds", outcome="home"),
+        betting_instrument(
+            market_name="double_chance",
+            market_type="double_chance",
+            outcome="away_draw",
+        ),
+    )
+    assert rule is not None
+    template = SemanticRuleTemplate.from_rule(
+        rule,
+        promotion_status="PROMOTED",
+        safety_tier=SafetyTier.EXECUTION_SAFE.value,
+        eligibility_reasons=("execution_safe_complementary_coverage",),
+    )
+
+    store.save_promoted_template(template)
+
+    reloaded = RuleStore(FileRuleCache(cache_dir))
+    assert reloaded.list_promoted_template_ids() == [template.template_id]
+    assert reloaded.load_promoted_template(template.template_id) == template
+
+
+def test_rule_store_deferred_indexes_flush_at_bulk_context_exit(tmp_path):
+    cache_dir = tmp_path / "semantic-cache"
+    store = RuleStore(FileRuleCache(cache_dir))
+    rule = RuleClassifier().classify(
+        betting_instrument(market_name="match_odds", market_type="match_odds", outcome="home"),
+        betting_instrument(
+            market_name="double_chance",
+            market_type="double_chance",
+            outcome="away_draw",
+        ),
+    )
+    assert rule is not None
+    template = SemanticRuleTemplate.from_rule(
+        rule,
+        promotion_status="PROMOTED",
+        safety_tier=SafetyTier.EXECUTION_SAFE.value,
+        eligibility_reasons=("execution_safe_complementary_coverage",),
+    )
+
+    with store.defer_index_writes():
+        store.save_promoted_template(template)
+        assert store.list_promoted_template_ids() == [template.template_id]
+        assert RuleStore(FileRuleCache(cache_dir)).list_promoted_template_ids() == []
+
+    assert RuleStore(FileRuleCache(cache_dir)).list_promoted_template_ids() == [
+        template.template_id,
+    ]
+
+
 def test_semantic_rule_mining_cli_reports_tiered_promotion_counts(tmp_path):
     cache_dir = tmp_path / "semantic-cache"
     store = RuleStore(FileRuleCache(cache_dir))

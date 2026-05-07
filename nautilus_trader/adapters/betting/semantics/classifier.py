@@ -57,7 +57,8 @@ class RuleClassifier:
         return self.classify_precomputed(selection_a, selection_b, vector_a, vector_b)
 
     def build_payoff_vector(
-        self, item: CryptoBettingInstrument | NormalizedSelection | object
+        self,
+        item: CryptoBettingInstrument | NormalizedSelection | object,
     ) -> PayoffVector:
         selection = self._coerce_selection(item)
         return self._vector_builder.build(selection)

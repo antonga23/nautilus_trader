@@ -347,6 +347,10 @@ def _build_cloudbet_data_importable(
         "quote_poll_interval_secs": venue.order_book_poll_interval_secs,
         "quote_poll_summary_interval_secs": venue.order_book_poll_summary_interval_secs,
         "quote_poll_concurrency": venue.order_book_concurrency,
+        "quote_poll_min_concurrency": venue.order_book_min_concurrency,
+        "quote_poll_max_concurrency": venue.order_book_max_concurrency,
+        "quote_poll_target_cycle_secs": venue.order_book_target_cycle_secs,
+        "quote_poll_adaptive_concurrency": venue.order_book_adaptive_concurrency,
         "routing": {"venues": [venue.venue]},
     }
     return ImportableConfig(

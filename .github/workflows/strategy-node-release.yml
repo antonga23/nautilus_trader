@@ -1033,6 +1033,8 @@ jobs:
 
       - name: Evaluate deployed runtime report
         if: always()
+        env:
+          MANIFEST_PATH: ${{ github.event.inputs.manifest_path }}
         run: |
           if [ ! -f artifacts/strategy-node-deploy/status.json ]; then
             echo "No deployed status artifact available for runtime report evaluation."
@@ -1046,7 +1048,7 @@ jobs:
             --require-coverage-runtime
             --min-quoted-semantic-instruments 2
           )
-          if [ "${{ github.event.inputs.manifest_path }}" = "deploy/strategy_nodes/betting_arbitrage/multi-venue-validation.json" ]; then
+          if [ "$MANIFEST_PATH" = "deploy/strategy_nodes/betting_arbitrage/multi-venue-validation.json" ]; then
             report_args+=(--min-cross-venue-candidates 1)
           fi
           python3 scripts/betting/runtime_probe_report.py \

@@ -1216,17 +1216,17 @@ class OpportunityGraph:
         proof_blockers = Counter(
             cls._coverage_safe_string(reason)
             for payload in proof_payloads
-            for reason in (payload.get("blocker_reasons") or [])
+            for reason in cls._coverage_string_sequence(payload.get("blocker_reasons"))
         )
         proof_gaps = Counter(
             cls._coverage_safe_string(reason)
             for payload in proof_payloads
-            for reason in (payload.get("gaps") or [])
+            for reason in cls._coverage_string_sequence(payload.get("gaps"))
         )
         proof_risks = Counter(
             cls._coverage_safe_string(reason)
             for payload in proof_payloads
-            for reason in (payload.get("risks") or [])
+            for reason in cls._coverage_string_sequence(payload.get("risks"))
         )
         hyperedge_tiers = Counter(
             cls._coverage_safe_string(payload.get("safety_tier")) for payload in hyperedge_payloads
@@ -1259,6 +1259,14 @@ class OpportunityGraph:
             "sampleProofs": proof_payloads[:10],
             "sampleHyperedges": hyperedge_payloads[:10],
         }
+
+    @staticmethod
+    def _coverage_string_sequence(value: object) -> tuple[object, ...]:
+        if value is None:
+            return ()
+        if isinstance(value, list | tuple | set):
+            return tuple(value)
+        return (value,)
 
     @staticmethod
     def _coverage_safe_string(value: object) -> str:

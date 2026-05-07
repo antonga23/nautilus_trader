@@ -133,6 +133,26 @@ class CloudbetDataClient(LiveMarketDataClient):
             getattr(self._config, "quote_poll_summary_interval_secs", 30.0),
         )
         self._quote_poll_concurrency = int(getattr(self._config, "quote_poll_concurrency", 4))
+        self._quote_poll_min_concurrency = max(
+            1,
+            int(getattr(self._config, "quote_poll_min_concurrency", 1)),
+        )
+        self._quote_poll_max_concurrency = max(
+            self._quote_poll_min_concurrency,
+            int(getattr(self._config, "quote_poll_max_concurrency", 16)),
+        )
+        self._quote_poll_target_cycle_secs = max(
+            0.1,
+            float(getattr(self._config, "quote_poll_target_cycle_secs", 5.0)),
+        )
+        self._quote_poll_adaptive_concurrency = bool(
+            getattr(self._config, "quote_poll_adaptive_concurrency", True),
+        )
+        self._quote_poll_concurrency = min(
+            max(self._quote_poll_min_concurrency, self._quote_poll_concurrency),
+            self._quote_poll_max_concurrency,
+        )
+        self._next_quote_poll_sleep_secs = self._quote_polling_interval
         self._last_quote_poll_summary_at = 0.0
         self._quote_polling_running = False
         self._quote_poll_cycle_id = 0
@@ -455,7 +475,7 @@ class CloudbetDataClient(LiveMarketDataClient):
         while self._quote_polling_running:
             try:
                 await self._poll_quote_ticks_once()
-                await asyncio.sleep(self._quote_polling_interval)
+                await asyncio.sleep(self._next_quote_poll_sleep_secs)
             except asyncio.CancelledError:
                 break
             except (RuntimeError, ValueError, TypeError, KeyError) as e:
@@ -505,6 +525,12 @@ class CloudbetDataClient(LiveMarketDataClient):
             )
 
         cycle_elapsed = time.perf_counter() - started_at
+        self._adapt_quote_poll_schedule(
+            instrument_count=len(instrument_ids),
+            cycle_elapsed=cycle_elapsed,
+            rate_limit_count=rate_limit_count,
+            failure_count=failure_count,
+        )
         self._record_quote_poll_stats(
             instrument_count=len(instrument_ids),
             quote_count=published,
@@ -521,6 +547,45 @@ class CloudbetDataClient(LiveMarketDataClient):
             cycle_elapsed=cycle_elapsed,
         )
         return published, len(instrument_ids)
+
+    def _adapt_quote_poll_schedule(
+        self,
+        *,
+        instrument_count: int,
+        cycle_elapsed: float,
+        rate_limit_count: int,
+        failure_count: int,
+    ) -> None:
+        if not self._quote_poll_adaptive_concurrency:
+            self._next_quote_poll_sleep_secs = self._quote_polling_interval
+            return
+
+        target = self._quote_poll_target_cycle_secs
+        if rate_limit_count > 0:
+            self._quote_poll_concurrency = max(
+                self._quote_poll_min_concurrency,
+                self._quote_poll_concurrency // 2,
+            )
+        elif instrument_count > self._quote_poll_concurrency and cycle_elapsed > target:
+            scale = min(2.0, max(1.1, cycle_elapsed / target))
+            self._quote_poll_concurrency = min(
+                self._quote_poll_max_concurrency,
+                max(self._quote_poll_concurrency + 1, int(self._quote_poll_concurrency * scale)),
+            )
+        elif (
+            failure_count == 0
+            and instrument_count <= self._quote_poll_concurrency // 2
+            and cycle_elapsed < target * 0.35
+        ):
+            self._quote_poll_concurrency = max(
+                self._quote_poll_min_concurrency,
+                self._quote_poll_concurrency - 1,
+            )
+
+        self._next_quote_poll_sleep_secs = min(
+            self._quote_polling_interval,
+            max(0.25, target - cycle_elapsed),
+        )
 
     async def _fetch_quote_tick(self, instrument_id: InstrumentId) -> QuoteTick | None:
         instrument = self._instrument_provider.find(instrument_id)
@@ -570,7 +635,8 @@ class CloudbetDataClient(LiveMarketDataClient):
             "Cloudbet quote poll cycle: "
             f"instruments={instrument_count} quotes={quote_count} "
             f"concurrency={self._quote_poll_concurrency} "
-            f"cycle_elapsed={cycle_elapsed:.2f}s",
+            f"cycle_elapsed={cycle_elapsed:.2f}s "
+            f"next_sleep={self._next_quote_poll_sleep_secs:.2f}s",
         )
 
     def _record_quote_poll_stats(
@@ -602,6 +668,11 @@ class CloudbetDataClient(LiveMarketDataClient):
                 cycle_elapsed_secs=cycle_elapsed,
                 max_fetch_latency_secs=max_fetch_latency_secs,
                 poll_interval_secs=self._quote_polling_interval,
+                poll_target_cycle_secs=self._quote_poll_target_cycle_secs,
+                next_poll_sleep_secs=self._next_quote_poll_sleep_secs,
+                min_concurrency=self._quote_poll_min_concurrency,
+                max_concurrency=self._quote_poll_max_concurrency,
+                adaptive_concurrency=self._quote_poll_adaptive_concurrency,
                 quote_event_timestamp_source="request_started",
                 quote_init_timestamp_source="response_received",
                 failure_count=failure_count,

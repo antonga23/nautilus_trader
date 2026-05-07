@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-  cat <<'EOF'
+  cat << 'EOF'
 Usage: cleanup_local_betting_workspace.sh [options]
 
 Safely prune stale local artifacts and oversized monitor logs for the current
@@ -46,7 +46,7 @@ while [[ $# -gt 0 ]]; do
       dry_run=true
       shift
       ;;
-    -h|--help)
+    -h | --help)
       usage
       exit 0
       ;;
@@ -60,14 +60,15 @@ done
 
 repo_root="$(git rev-parse --show-toplevel)"
 repo_name="$(basename "$repo_root")"
-retention_minutes="$(( retention_hours * 60 ))"
+retention_minutes="$((retention_hours * 60))"
 
 run_cmd() {
+  local command="$*"
   if [[ "$dry_run" == "true" ]]; then
-    printf '[dry-run] %s\n' "$*"
+    printf '[dry-run] %s\n' "$command"
     return 0
   fi
-  eval "$@"
+  bash -c "$command"
 }
 
 cap_file_tail() {
@@ -82,10 +83,10 @@ cap_file_tail() {
     rm -f "$tmp_file"
     return 0
   fi
-  if tail -c "${max_mb}M" "$file" > "$tmp_file" 2>/dev/null; then
-    cat "$tmp_file" > "$file" 2>/dev/null || true
+  if tail -c "${max_mb}M" "$file" > "$tmp_file" 2> /dev/null; then
+    cat "$tmp_file" > "$file" 2> /dev/null || true
   fi
-  rm -f "$tmp_file" 2>/dev/null || true
+  rm -f "$tmp_file" 2> /dev/null || true
 }
 
 collect_active_worktrees() {
@@ -108,7 +109,7 @@ cleanup_repo_path() {
   done < <(
     find "$root" -type f \
       \( -name '*.log' -o -path '*/artifacts/monitors/*' \) \
-      -size +"${max_log_mb}"M 2>/dev/null
+      -size +"${max_log_mb}"M 2> /dev/null
   )
 
   run_cmd "find \"$root\" -type f \\( -name '*.log' -o -path '*/artifacts/monitors/*' \\) -mmin +$retention_minutes -delete 2>/dev/null || true"
@@ -146,7 +147,7 @@ main() {
     prune_stale_repo_dirs "$HOME/.codex/worktrees" "$active_worktrees_file"
   fi
 
-  if [[ "$do_docker" == "true" ]] && command -v docker >/dev/null 2>&1; then
+  if [[ "$do_docker" == "true" ]] && command -v docker > /dev/null 2>&1; then
     run_cmd "docker container prune -f >/dev/null 2>&1 || true"
     run_cmd "docker image prune -f >/dev/null 2>&1 || true"
     run_cmd "docker builder prune -f --filter \"until=${retention_hours}h\" >/dev/null 2>&1 || true"

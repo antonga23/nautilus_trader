@@ -406,6 +406,11 @@ class TestBettingArbitrageStrategy:  # skipcq
                 cycle_elapsed_secs=1.25,
                 max_fetch_latency_secs=0.4,
                 poll_interval_secs=3.0,
+                poll_target_cycle_secs=4.0,
+                next_poll_sleep_secs=1.0,
+                min_concurrency=2,
+                max_concurrency=16,
+                adaptive_concurrency=True,
                 quote_event_timestamp_source="request_started",
                 quote_init_timestamp_source="response_received",
                 failure_count=2,
@@ -433,6 +438,11 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(stats["SXBET"]["quote_count"] == 9)
         ensure(stats["SXBET"]["backlog_count"] == 2)
         ensure(stats["SXBET"]["max_fetch_latency_secs"] == 0.4)
+        ensure(stats["SXBET"]["poll_target_cycle_secs"] == 4.0)
+        ensure(stats["SXBET"]["next_poll_sleep_secs"] == 1.0)
+        ensure(stats["SXBET"]["min_concurrency"] == 2)
+        ensure(stats["SXBET"]["max_concurrency"] == 16)
+        ensure(stats["SXBET"]["adaptive_concurrency"] is True)
         ensure(stats["SXBET"]["quote_event_timestamp_source"] == "request_started")
         ensure(stats["SXBET"]["quote_init_timestamp_source"] == "response_received")
         ensure(stats["SXBET"]["failure_count"] == 2)
@@ -555,7 +565,7 @@ class TestBettingArbitrageStrategy:  # skipcq
                     "SXBET",
                     {"semantic_refresh": True, "only_last": True, "trigger": "stale_quote"},
                 ),
-            ]
+            ],
         )
         stats = strategy.get_stats()
         ensure(stats["instrument_refresh_stale_triggers"] == 2)

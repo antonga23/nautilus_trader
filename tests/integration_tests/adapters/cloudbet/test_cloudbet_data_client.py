@@ -231,6 +231,30 @@ class TestCloudbetDataClient:
         assert quote.ts_init >= quote.ts_event
         mock_get_latest_odds.assert_called_once()
 
+    def test_quote_poll_schedule_adapts_cloudbet_concurrency(self, data_client):
+        data_client._quote_poll_concurrency = 4
+        data_client._quote_poll_max_concurrency = 16
+        data_client._quote_poll_target_cycle_secs = 5.0
+
+        data_client._adapt_quote_poll_schedule(
+            instrument_count=80,
+            cycle_elapsed=8.0,
+            rate_limit_count=0,
+            failure_count=0,
+        )
+
+        assert data_client._quote_poll_concurrency > 4
+        assert data_client._next_quote_poll_sleep_secs == 0.25
+
+        data_client._adapt_quote_poll_schedule(
+            instrument_count=80,
+            cycle_elapsed=8.0,
+            rate_limit_count=1,
+            failure_count=1,
+        )
+
+        assert data_client._quote_poll_concurrency >= data_client._quote_poll_min_concurrency
+
     @pytest.mark.asyncio
     @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 1)], indirect=["instruments"])
     # @patch('nautilus_trader.adapters.cloudbet.client.core.CloudbetClient.get_latest_odds')

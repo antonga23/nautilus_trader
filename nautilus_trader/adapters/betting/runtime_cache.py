@@ -32,6 +32,11 @@ class VenueQuotePollStats:
     cycle_elapsed_secs: float
     max_fetch_latency_secs: float
     poll_interval_secs: float
+    poll_target_cycle_secs: float = 0.0
+    next_poll_sleep_secs: float = 0.0
+    min_concurrency: int = 1
+    max_concurrency: int = 1
+    adaptive_concurrency: bool = False
     quote_event_timestamp_source: str = ""
     quote_init_timestamp_source: str = ""
     failure_count: int = 0
@@ -82,6 +87,11 @@ def encode_venue_quote_poll_stats(
     cycle_elapsed_secs: float = 0.0,
     max_fetch_latency_secs: float = 0.0,
     poll_interval_secs: float = 0.0,
+    poll_target_cycle_secs: float = 0.0,
+    next_poll_sleep_secs: float = 0.0,
+    min_concurrency: int = 1,
+    max_concurrency: int = 1,
+    adaptive_concurrency: bool = False,
     quote_event_timestamp_source: str = "",
     quote_init_timestamp_source: str = "",
     failure_count: int = 0,
@@ -106,6 +116,11 @@ def encode_venue_quote_poll_stats(
         "cycle_elapsed_secs": max(0.0, float(cycle_elapsed_secs)),
         "max_fetch_latency_secs": max(0.0, float(max_fetch_latency_secs)),
         "poll_interval_secs": max(0.0, float(poll_interval_secs)),
+        "poll_target_cycle_secs": max(0.0, float(poll_target_cycle_secs)),
+        "next_poll_sleep_secs": max(0.0, float(next_poll_sleep_secs)),
+        "min_concurrency": max(1, int(min_concurrency)),
+        "max_concurrency": max(1, int(max_concurrency)),
+        "adaptive_concurrency": bool(adaptive_concurrency),
         "quote_event_timestamp_source": str(quote_event_timestamp_source or ""),
         "quote_init_timestamp_source": str(quote_init_timestamp_source or ""),
         "failure_count": max(0, int(failure_count)),
@@ -170,6 +185,11 @@ def decode_venue_quote_poll_stats(raw: bytes | None) -> VenueQuotePollStats | No
             cycle_elapsed_secs=float(payload.get("cycle_elapsed_secs") or 0.0),
             max_fetch_latency_secs=float(payload.get("max_fetch_latency_secs") or 0.0),
             poll_interval_secs=float(payload.get("poll_interval_secs") or 0.0),
+            poll_target_cycle_secs=float(payload.get("poll_target_cycle_secs") or 0.0),
+            next_poll_sleep_secs=float(payload.get("next_poll_sleep_secs") or 0.0),
+            min_concurrency=max(1, int(payload.get("min_concurrency") or 1)),
+            max_concurrency=max(1, int(payload.get("max_concurrency") or 1)),
+            adaptive_concurrency=bool(payload.get("adaptive_concurrency")),
             quote_event_timestamp_source=str(
                 payload.get("quote_event_timestamp_source") or "",
             ),

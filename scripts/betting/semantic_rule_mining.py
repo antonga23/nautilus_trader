@@ -18,6 +18,7 @@ import shlex
 import sys
 import time
 from typing import Any
+from typing import TypedDict
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -48,6 +49,19 @@ _DEFAULT_LOCAL_ENV_FILES = (
     REPO_ROOT / ".env.local",
     REPO_ROOT / ".env",
 )
+
+
+class _BreakdownBucket(TypedDict):
+    promoted_template_count: int
+    execution_safe_template_count: int
+    same_venue_execution_eligible_template_count: int
+    safety_tier_counts: Counter[str]
+    strict_execution_blocker_counts: Counter[str]
+    strict_execution_caveat_counts: Counter[str]
+    coverage_proof_count: int
+    coverage_hyperedge_count: int
+    coverage_blocker_counts: Counter[str]
+    coverage_blocker_samples: dict[str, list[dict[str, object]]]
 
 
 def _parse_env_assignment(line: str) -> tuple[str, str] | None:
@@ -682,9 +696,9 @@ def _template_coverage(
 
 
 def _breakdown_bucket(
-    breakdown: dict[str, dict[str, object]],
+    breakdown: dict[str, _BreakdownBucket],
     key: str,
-) -> dict[str, object]:
+) -> _BreakdownBucket:
     return breakdown.setdefault(
         key,
         {
@@ -703,7 +717,7 @@ def _breakdown_bucket(
 
 
 def _finalize_breakdown(
-    breakdown: dict[str, dict[str, object]],
+    breakdown: dict[str, _BreakdownBucket],
 ) -> dict[str, dict[str, object]]:
     return {
         key: {
@@ -745,7 +759,7 @@ def _report_sport_key(sport: str) -> str:
 
 
 def _accumulate_template_breakdown(
-    bucket: dict[str, object],
+    bucket: _BreakdownBucket,
     template: Any,
 ) -> None:
     bucket["promoted_template_count"] += 1
@@ -761,7 +775,7 @@ def _accumulate_template_breakdown(
 
 
 def _accumulate_proof_breakdown(
-    bucket: dict[str, object],
+    bucket: _BreakdownBucket,
     proof: Any,
     *,
     sample_limit_per_reason: int = 3,
@@ -780,7 +794,7 @@ def _provider_template_breakdown(
     coverage_proofs: list[Any],
     coverage_hyperedges: list[Any],
 ) -> dict[str, dict[str, object]]:
-    breakdown: dict[str, dict[str, object]] = {}
+    breakdown: dict[str, _BreakdownBucket] = {}
 
     for template in promoted_templates:
         providers = tuple(str(provider).upper() for provider in template.support.providers)
@@ -804,7 +818,7 @@ def _sport_template_breakdown(
     coverage_proofs: list[Any],
     coverage_hyperedges: list[Any],
 ) -> dict[str, dict[str, object]]:
-    breakdown: dict[str, dict[str, object]] = {}
+    breakdown: dict[str, _BreakdownBucket] = {}
     proof_sports = {
         str(proof.proof_id): _report_sport_key(str(proof.universe.sport))
         for proof in coverage_proofs
@@ -835,7 +849,7 @@ def _provider_sport_template_breakdown(
     coverage_proofs: list[Any],
     coverage_hyperedges: list[Any],
 ) -> dict[str, dict[str, object]]:
-    breakdown: dict[str, dict[str, object]] = {}
+    breakdown: dict[str, _BreakdownBucket] = {}
     proof_sports = {
         str(proof.proof_id): _report_sport_key(str(proof.universe.sport))
         for proof in coverage_proofs

@@ -22,6 +22,8 @@ from __future__ import annotations
 import base64
 import atexit
 from collections.abc import Iterable
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import asdict
 import gzip
 import hashlib
@@ -76,6 +78,9 @@ class FileRuleCache:
     def flush_key_index(self) -> None:
         with self._lock:
             if self._dirty_key_index_entries <= 0:
+                return
+            if not self._path.exists():
+                self._dirty_key_index_entries = 0
                 return
             self._atomic_write_text(
                 self._key_index_path,
@@ -143,8 +148,31 @@ class RuleStore:
     COVERAGE_PROOF_INDEX_KEY = "betting:semantic_rules:index:coverage_proofs"
     COVERAGE_HYPEREDGE_INDEX_KEY = "betting:semantic_rules:index:coverage_hyperedges"
 
-    def __init__(self, cache) -> None:
+    def __init__(self, cache: Any) -> None:
         self._cache = cache
+        self._index_cache: dict[str, list[str]] = {}
+        self._dirty_index_keys: set[str] = set()
+        self._dirty_index_entries = 0
+        self._deferred_index_write_depth = 0
+
+    @contextmanager
+    def defer_index_writes(self) -> Iterator[RuleStore]:
+        self._deferred_index_write_depth += 1
+        try:
+            yield self
+        finally:
+            self._deferred_index_write_depth -= 1
+            if self._deferred_index_write_depth <= 0:
+                self._deferred_index_write_depth = 0
+                self.flush_indexes()
+
+    def flush_indexes(self) -> None:
+        if not self._dirty_index_keys:
+            return
+        for key in sorted(self._dirty_index_keys):
+            self._write_json(key, {"items": self._index_cache.get(key, [])})
+        self._dirty_index_keys.clear()
+        self._dirty_index_entries = 0
 
     def save_candidate(self, rule: MinedRule) -> None:
         self._write_bytes(self.candidate_key(rule.rule_id), rule.to_json_bytes())
@@ -437,15 +465,32 @@ class RuleStore:
     def _append_index_many(self, key: str, values: Iterable[str]) -> None:
         items = self._read_index(key)
         seen = set(items)
+        changed = False
         for value in values:
             if value not in seen:
                 items.append(value)
                 seen.add(value)
+                changed = True
+        if not changed:
+            return
+        self._index_cache[key] = items
+        if self._deferred_index_write_depth > 0:
+            self._dirty_index_keys.add(key)
+            self._dirty_index_entries += 1
+            if self._dirty_index_entries >= 500:
+                self.flush_indexes()
+            return
         self._write_json(key, {"items": items})
 
     def _read_index(self, key: str) -> list[str]:
+        cached = self._index_cache.get(key)
+        if cached is not None:
+            return list(cached)
         payload = self._read_json(key)
         if payload is None:
+            self._index_cache[key] = []
             return []
         items = payload.get("items", [])
-        return [str(item) for item in items]
+        parsed = [str(item) for item in items]
+        self._index_cache[key] = parsed
+        return list(parsed)
