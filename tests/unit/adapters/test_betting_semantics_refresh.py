@@ -2695,6 +2695,12 @@ def test_sxbet_six_sport_alias_resolution_includes_hockey_and_baseball():
     assert resolved == [1, 2, 3, 5, 6, 17]
 
 
+def test_sxbet_coverage_sport_names_are_canonical():
+    assert SnapshotIngestor._canonical_sport_name("Hockey") == "ice_hockey"
+    assert SnapshotIngestor._canonical_sport_name("Ice Hockey") == "ice_hockey"
+    assert SnapshotIngestor._canonical_sport_name("Soccer/Football") == "soccer"
+
+
 def test_refresh_sxbet_uses_requested_sports_and_balances_per_sport_budgets(monkeypatch):
     store = RuleStore(DictCache())
     ingestor = SnapshotIngestor(store)

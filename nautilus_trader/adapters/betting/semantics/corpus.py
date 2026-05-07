@@ -585,7 +585,7 @@ class SnapshotIngestor:
 
         sport_coverage = {}
         for sport_id in selected_sport_ids:
-            sport_name = self._normalize_sxbet_sport_name(
+            sport_name = self._canonical_sport_name(
                 active_sport_names.get(sport_id) or SXBET_SPORT_IDS.get(sport_id, ""),
             )
             selection_count = sport_selection_counts.get(sport_id, 0)
