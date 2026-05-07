@@ -660,6 +660,30 @@ def test_venue_coverage_health_counts_venue_pair_edges():
     assert summary["venueCoverageHealth"]["venues"]["CLOUDBET"]["edgeCount"] == 12
 
 
+def test_venue_coverage_health_flags_quote_subscription_limit_overrun():
+    module = _load_module()
+    summary = module.summarize_payload(
+        {
+            "runtimeProbe": {
+                "venueCoverage": {
+                    "enabledVenues": ["CLOUDBET"],
+                    "quoteSubscriptionCounts": {"CLOUDBET": 1826},
+                    "quoteSubscriptionLimits": {"CLOUDBET": 80},
+                    "quoteSubscriptionLimitExceededCounts": {"CLOUDBET": 1746},
+                    "quotedNodeCounts": {"CLOUDBET": 80},
+                    "edgeCounts": {"CLOUDBET->CLOUDBET": 12},
+                },
+            },
+        },
+    )
+
+    venue = summary["venueCoverageHealth"]["venues"]["CLOUDBET"]
+    assert summary["venueCoverageHealth"]["overall"] == "warn"
+    assert venue["quoteSubscriptionLimit"] == 80
+    assert venue["quoteSubscriptionLimitExceeded"] == 1746
+    assert "quote_subscription_limit_exceeded" in venue["reasons"]
+
+
 def test_provider_poll_health_flags_slow_poll_cycles():
     module = _load_module()
     summary = module.summarize_payload(

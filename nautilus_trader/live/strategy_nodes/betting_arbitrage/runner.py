@@ -1320,6 +1320,24 @@ def _venue_pair_coverage(
         )
         for venue in venues
     }
+    config = getattr(strategy, "_config", None)
+    quote_subscription_limits = {
+        str(venue).upper(): int(limit)
+        for venue, limit in (
+            getattr(config, "semantic_quote_subscription_limit_by_venue", {}) or {}
+        ).items()
+    }
+    quote_subscription_limit_exceeded_counts = {
+        venue: max(
+            int(quote_subscription_counts.get(venue, 0) or 0)
+            - int(quote_subscription_limits.get(venue, 0) or 0),
+            0,
+        )
+        for venue in venues
+        if quote_subscription_limits.get(venue) is not None
+        and int(quote_subscription_counts.get(venue, 0) or 0)
+        > int(quote_subscription_limits.get(venue, 0) or 0)
+    }
     unquoted_semantic_match_counts = {
         venue: max(
             int(matched_node_counts.get(venue, 0) or 0)
@@ -1335,6 +1353,12 @@ def _venue_pair_coverage(
         "quoteSubscriptionCounts": {
             venue: quote_subscription_counts.get(venue, 0) for venue in venues
         },
+        "quoteSubscriptionLimits": {
+            venue: quote_subscription_limits.get(venue)
+            for venue in venues
+            if quote_subscription_limits.get(venue) is not None
+        },
+        "quoteSubscriptionLimitExceededCounts": quote_subscription_limit_exceeded_counts,
         "quoteSubscriptionGapCounts": quote_subscription_gap_counts,
         "venuesWithSubscriptionQuoteGap": [
             venue for venue in venues if quote_subscription_gap_counts.get(venue, 0) > 0

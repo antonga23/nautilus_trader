@@ -1089,6 +1089,8 @@ def _actions_from_reason_payloads(
 def _venue_coverage_health(venue_coverage: dict[str, Any]) -> dict[str, Any]:
     enabled_venues = venue_coverage.get("enabledVenues") or []
     quote_subscriptions = _as_dict(venue_coverage.get("quoteSubscriptionCounts"))
+    quote_subscription_limits = _as_dict(venue_coverage.get("quoteSubscriptionLimits"))
+    quote_limit_exceeded = _as_dict(venue_coverage.get("quoteSubscriptionLimitExceededCounts"))
     quoted_nodes = _as_dict(venue_coverage.get("quotedNodeCounts"))
     edge_counts = _as_dict(venue_coverage.get("edgeCounts"))
     venues: dict[str, dict[str, Any]] = {}
@@ -1096,10 +1098,14 @@ def _venue_coverage_health(venue_coverage: dict[str, Any]) -> dict[str, Any]:
     for venue in sorted(str(item) for item in enabled_venues if item):
         reasons: list[str] = []
         quote_subscription_count = _int_value(quote_subscriptions.get(venue))
+        quote_subscription_limit = quote_subscription_limits.get(venue)
+        quote_subscription_limit_exceeded = _int_value(quote_limit_exceeded.get(venue))
         quoted_node_count = _int_value(quoted_nodes.get(venue))
         edge_count = _venue_pair_total(edge_counts, venue)
         if quote_subscription_count <= 0:
             reasons.append("no_quote_subscription")
+        if quote_subscription_limit_exceeded > 0:
+            reasons.append("quote_subscription_limit_exceeded")
         if quoted_node_count <= 0:
             reasons.append("no_quoted_nodes")
         if edge_count <= 0:
@@ -1111,6 +1117,8 @@ def _venue_coverage_health(venue_coverage: dict[str, Any]) -> dict[str, Any]:
             "status": status,
             "reasons": reasons,
             "quoteSubscriptionCount": quote_subscription_count,
+            "quoteSubscriptionLimit": quote_subscription_limit,
+            "quoteSubscriptionLimitExceeded": quote_subscription_limit_exceeded,
             "quotedNodeCount": quoted_node_count,
             "edgeCount": edge_count,
         }

@@ -2108,6 +2108,7 @@ class TestBettingArbitrageNodeRunner:
         strategy = SimpleNamespace(
             _config=SimpleNamespace(
                 enabled_venues=frozenset({"CLOUDBET", "POLYMARKET", "SXBET"}),
+                semantic_quote_subscription_limit_by_venue={"CLOUDBET": 80, "SXBET": 120},
             ),
             _quote_subscribed_instrument_ids={
                 sxbet_instrument.id,
@@ -2145,6 +2146,8 @@ class TestBettingArbitrageNodeRunner:
             "POLYMARKET": 0,
             "SXBET": 1,
         }
+        assert coverage["quoteSubscriptionLimits"] == {"CLOUDBET": 80, "SXBET": 120}
+        assert coverage["quoteSubscriptionLimitExceededCounts"] == {}
         assert coverage["quoteSubscriptionGapCounts"] == {
             "CLOUDBET": 1,
             "POLYMARKET": 0,

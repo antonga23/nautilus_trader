@@ -2951,9 +2951,20 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         """
         Get strategy statistics.
         """
+        quote_subscription_counts = dict(sorted(self._quote_subscription_counts_by_venue().items()))
+        semantic_quote_limits = dict(
+            sorted(self._config.semantic_quote_subscription_limit_by_venue.items()),
+        )
         return {
             "subscribed_instruments": len(self._subscribed_instruments),
             "quote_subscribed_instruments": len(self._quote_subscribed_instrument_ids),
+            "quote_subscription_counts_by_venue": quote_subscription_counts,
+            "semantic_quote_subscription_limit_by_venue": semantic_quote_limits,
+            "semantic_quote_subscription_limit_exceeded_by_venue": {
+                venue: max(quote_subscription_counts.get(venue, 0) - limit, 0)
+                for venue, limit in semantic_quote_limits.items()
+                if quote_subscription_counts.get(venue, 0) > limit
+            },
             "opportunity_graph_nodes": self._opportunity_graph.node_count,
             "opportunity_graph_edges": self._opportunity_graph.edge_count,
             "opportunity_graph_quote_states": self._opportunity_graph.quote_state_count,
