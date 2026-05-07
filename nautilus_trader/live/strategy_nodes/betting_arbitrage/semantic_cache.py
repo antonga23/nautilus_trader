@@ -38,6 +38,8 @@ DEFAULT_POLYMARKET_SPORTS = SEMANTIC_TARGET_SPORTS
 SEMANTIC_CACHE_COMPATIBILITY_VERSION = "semantic-rule-cache:20260506:sxbet-balanced-corpus-v1"
 SEMANTIC_CACHE_COMPATIBILITY_FILE = ".semantic-cache-version"
 SEMANTIC_CACHE_SUMMARY_FILE = ".semantic-cache-summary.json"
+SEMANTIC_CACHE_BOOTSTRAP_TIMINGS_FILE = ".semantic-cache-bootstrap-timings.json"
+SEMANTIC_CACHE_SEED_DIR_ENV = "SEMANTIC_RULE_CACHE_SEED_DIR"
 PORTABLE_POLYMARKET_MARKET_FAMILIES = frozenset(
     {
         "MATCH_ODDS",
@@ -71,6 +73,8 @@ class SemanticCacheStatus:
     compatibility_version: str | None = None
     compatibility_scope: str | None = None
     compatible: bool = True
+    summary_reused: bool = False
+    bootstrap_phase_timings_secs: dict[str, float] = field(default_factory=dict)
 
     @property
     def ready(self) -> bool:
@@ -167,6 +171,10 @@ def ensure_semantic_cache_ready(
     if status.ready and not status.compatible:
         _reset_semantic_cache_dir(path)
 
+    seeded_status = _try_seed_semantic_cache(path, manifest=manifest, logger=logger)
+    if seeded_status is not None:
+        return seeded_status
+
     _run_bootstrap(manifest=manifest, cache_dir=path, logger=logger)
     _write_semantic_cache_compatibility(path, manifest=manifest)
     status = semantic_cache_status(path, source="bootstrapped", manifest=manifest)
@@ -177,6 +185,45 @@ def ensure_semantic_cache_ready(
             f"promoted_templates={status.promoted_template_count})",
         )
     return status
+
+
+def _try_seed_semantic_cache(
+    cache_dir: Path,
+    *,
+    manifest: BettingArbitrageNodeManifest,
+    logger: Logger | None,
+) -> SemanticCacheStatus | None:
+    seed_value = (os.getenv(SEMANTIC_CACHE_SEED_DIR_ENV) or "").strip()
+    if not seed_value:
+        return None
+    seed_dir = Path(seed_value).expanduser()
+    if not seed_dir.is_dir():
+        if logger is not None:
+            logger.warning(f"Semantic cache seed directory does not exist: {seed_dir}")
+        return None
+    if seed_dir.resolve() == cache_dir.resolve():
+        return None
+
+    seed_status = semantic_cache_status(seed_dir, manifest=manifest)
+    if not seed_status.ready or not seed_status.compatible:
+        if logger is not None:
+            logger.warning(
+                "Ignoring incompatible semantic cache seed: "
+                f"path={seed_dir} ready={seed_status.ready} compatible={seed_status.compatible}",
+            )
+        return None
+
+    _reset_semantic_cache_dir(cache_dir)
+    shutil.copytree(seed_dir, cache_dir, dirs_exist_ok=True)
+    status = semantic_cache_status(cache_dir, source="seeded", manifest=manifest)
+    if status.ready and status.compatible:
+        if logger is not None:
+            logger.info(
+                "Seeded semantic cache from compatible source: "
+                f"source={seed_dir} target={cache_dir}",
+            )
+        return status
+    return None
 
 
 def semantic_cache_status(
@@ -217,6 +264,7 @@ def semantic_cache_status(
         coverage_hyperedge_count=len(hyperedge_ids),
         signatures=summary_signatures,
     )
+    summary_reused = summary_counts is not None
     if summary_counts is None:
         template_counts, strictness = _semantic_template_analysis(
             store,
@@ -237,6 +285,7 @@ def semantic_cache_status(
         )
     else:
         template_counts, strictness = summary_counts
+    bootstrap_phase_timings = _read_semantic_cache_bootstrap_timings(path)
 
     return SemanticCacheStatus(
         path=str(path),
@@ -252,6 +301,8 @@ def semantic_cache_status(
         compatibility_version=compatibility_version,
         compatibility_scope=compatibility_scope,
         compatible=compatible,
+        summary_reused=summary_reused,
+        bootstrap_phase_timings_secs=bootstrap_phase_timings,
     )
 
 
@@ -315,6 +366,47 @@ def _read_semantic_cache_summary(cache_dir: Path) -> dict[str, object] | None:
     except (json.JSONDecodeError, OSError, ValueError):
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def _read_semantic_cache_bootstrap_timings(cache_dir: Path) -> dict[str, float]:
+    timings_path = cache_dir / SEMANTIC_CACHE_BOOTSTRAP_TIMINGS_FILE
+    if not timings_path.exists():
+        return {}
+    try:
+        payload = json.loads(timings_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, ValueError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    timings = payload.get("phase_timings_secs")
+    if not isinstance(timings, dict):
+        return {}
+    normalized: dict[str, float] = {}
+    for key, value in timings.items():
+        try:
+            normalized[str(key)] = round(max(0.0, float(value)), 6)
+        except (TypeError, ValueError):
+            continue
+    return dict(sorted(normalized.items()))
+
+
+def _write_semantic_cache_bootstrap_timings(
+    cache_dir: Path,
+    *,
+    phase_timings_secs: dict[str, float],
+) -> None:
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "phase_timings_secs": {
+            key: round(max(0.0, float(value)), 6)
+            for key, value in sorted(phase_timings_secs.items())
+        },
+        "generated_at_unix_secs": time.time(),
+    }
+    (cache_dir / SEMANTIC_CACHE_BOOTSTRAP_TIMINGS_FILE).write_text(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _semantic_summary_counts(
@@ -592,34 +684,99 @@ async def _bootstrap_semantic_cache(
     miner = RuleMiner(store)
     promotion_policy = RulePromotionPolicy()
     venues = [venue for venue in manifest.venues if venue.enabled]
+    phase_timings_secs: dict[str, float] = {}
 
     defer_index_writes = getattr(store, "defer_index_writes", None)
     index_context = defer_index_writes() if callable(defer_index_writes) else nullcontext()
+    total_started = time.perf_counter()
     with index_context:
-        await _refresh_required_sxbet_corpus(venues=venues, ingestor=ingestor, logger=logger)
-        await _refresh_cloudbet_corpus(
-            manifest=manifest,
-            venues=venues,
-            ingestor=ingestor,
-            logger=logger,
+        await _timed_async_phase(
+            "refresh_sxbet_corpus",
+            phase_timings_secs,
+            _refresh_required_sxbet_corpus(venues=venues, ingestor=ingestor, logger=logger),
         )
-        await _refresh_polymarket_corpus(
-            venues=venues,
-            ingestor=ingestor,
-            logger=logger,
+        await _timed_async_phase(
+            "refresh_cloudbet_corpus",
+            phase_timings_secs,
+            _refresh_cloudbet_corpus(
+                manifest=manifest,
+                venues=venues,
+                ingestor=ingestor,
+                logger=logger,
+            ),
+        )
+        await _timed_async_phase(
+            "refresh_polymarket_corpus",
+            phase_timings_secs,
+            _refresh_polymarket_corpus(
+                venues=venues,
+                ingestor=ingestor,
+                logger=logger,
+            ),
         )
 
-        miner.mine_store(persist=True)
-        templates = miner.mine_templates_from_store(persist=True, persist_event_candidates=False)
-        miner.mine_coverage_from_store(persist=True)
-        for template in templates:
-            portable_polymarket = _is_portable_polymarket_template(template)
-            promotion_policy.promote_template(
-                store,
-                template,
-                allowlisted=portable_polymarket,
-                venue_agnostic=portable_polymarket,
-            )
+        _timed_sync_phase(
+            "mine_event_candidates",
+            phase_timings_secs,
+            miner.mine_store,
+            persist=True,
+        )
+        templates = _timed_sync_phase(
+            "generalize_templates",
+            phase_timings_secs,
+            miner.mine_templates_from_store,
+            persist=True,
+            persist_event_candidates=False,
+        )
+        _timed_sync_phase(
+            "mine_coverage",
+            phase_timings_secs,
+            miner.mine_coverage_from_store,
+            persist=True,
+        )
+
+        def _promote_templates() -> None:
+            for template in templates:
+                portable_polymarket = _is_portable_polymarket_template(template)
+                promotion_policy.promote_template(
+                    store,
+                    template,
+                    allowlisted=portable_polymarket,
+                    venue_agnostic=portable_polymarket,
+                )
+
+        _timed_sync_phase("promote_templates", phase_timings_secs, _promote_templates)
+    phase_timings_secs["total"] = time.perf_counter() - total_started
+    _write_semantic_cache_bootstrap_timings(
+        cache_dir,
+        phase_timings_secs=phase_timings_secs,
+    )
+
+
+async def _timed_async_phase(
+    name: str,
+    phase_timings_secs: dict[str, float],
+    awaitable,
+):
+    started = time.perf_counter()
+    try:
+        return await awaitable
+    finally:
+        phase_timings_secs[name] = time.perf_counter() - started
+
+
+def _timed_sync_phase(
+    name: str,
+    phase_timings_secs: dict[str, float],
+    func,
+    *args,
+    **kwargs,
+):
+    started = time.perf_counter()
+    try:
+        return func(*args, **kwargs)
+    finally:
+        phase_timings_secs[name] = time.perf_counter() - started
 
 
 def _is_portable_polymarket_template(template: object) -> bool:

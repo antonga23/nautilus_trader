@@ -719,6 +719,8 @@ def _semantic_cache_payload(status: SemanticCacheStatus | None) -> dict[str, obj
         "compatibilityVersion": payload.get("compatibility_version"),
         "compatibilityScope": payload.get("compatibility_scope"),
         "compatible": payload.get("compatible", True),
+        "summaryReused": payload.get("summary_reused", False),
+        "bootstrapPhaseTimingsSeconds": payload.get("bootstrap_phase_timings_secs", {}),
     }
 
 

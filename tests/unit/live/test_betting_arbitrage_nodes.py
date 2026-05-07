@@ -406,6 +406,7 @@ class TestBettingArbitrageNodeBuilder:
         assert data_client.config["quote_poll_min_concurrency"] == 1
         assert data_client.config["quote_poll_target_cycle_secs"] == 5.0
         assert data_client.config["quote_poll_adaptive_concurrency"] is True
+        assert data_client.config["quote_poll_event_batching"] is True
 
     def test_cloudbet_data_client_keeps_auto_subscribe_without_semantic_cache(self):
         manifest = BettingArbitrageNodeManifest(
@@ -780,6 +781,7 @@ class TestBettingArbitrageNodeBuilder:
         assert cloudbet_config["quote_poll_max_concurrency"] == 16
         assert cloudbet_config["quote_poll_target_cycle_secs"] == 4.0
         assert cloudbet_config["quote_poll_adaptive_concurrency"] is True
+        assert cloudbet_config["quote_poll_event_batching"] is True
         assert (
             config.data_clients["POLYMARKET_PRIMARY"].config["instrument_provider"]["load_all"]
             is True
@@ -1017,6 +1019,58 @@ class TestSemanticCacheBootstrap:
         assert status.manifest_count >= 1
         assert status.promoted_template_count >= 1
 
+    def test_seeds_missing_semantic_cache_before_bootstrap(self, tmp_path, monkeypatch):
+        cache_dir = tmp_path / "semantic-cache"
+        seed_dir = tmp_path / "seed-cache"
+        manifest = _manifest(tmp_path, cache_dir=cache_dir)
+        seed_dir.mkdir()
+        (seed_dir / "marker").write_text("seeded", encoding="utf-8")
+        monkeypatch.setenv(node_cache.SEMANTIC_CACHE_SEED_DIR_ENV, str(seed_dir))
+        statuses = {
+            (str(cache_dir), "existing"): SemanticCacheStatus(
+                path=str(cache_dir),
+                source="existing",
+                manifest_count=0,
+                promoted_template_count=0,
+                execution_safe_template_count=0,
+                same_venue_execution_eligible_template_count=0,
+            ),
+            (str(seed_dir), "existing"): SemanticCacheStatus(
+                path=str(seed_dir),
+                source="existing",
+                manifest_count=1,
+                promoted_template_count=2,
+                execution_safe_template_count=1,
+                same_venue_execution_eligible_template_count=0,
+                compatibility_version=node_cache.SEMANTIC_CACHE_COMPATIBILITY_VERSION,
+                compatible=True,
+            ),
+            (str(cache_dir), "seeded"): SemanticCacheStatus(
+                path=str(cache_dir),
+                source="seeded",
+                manifest_count=1,
+                promoted_template_count=2,
+                execution_safe_template_count=1,
+                same_venue_execution_eligible_template_count=0,
+                compatibility_version=node_cache.SEMANTIC_CACHE_COMPATIBILITY_VERSION,
+                compatible=True,
+            ),
+        }
+
+        def fake_status(path, *, source="existing", manifest=None):
+            return statuses[(str(path), source)]
+
+        monkeypatch.setattr(node_cache, "semantic_cache_status", fake_status)
+        monkeypatch.setattr(
+            "nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache._run_bootstrap",
+            lambda **_: (_ for _ in ()).throw(AssertionError("bootstrap should not run")),
+        )
+
+        status = ensure_semantic_cache_ready(manifest)
+
+        assert status.source == "seeded"
+        assert (cache_dir / "marker").read_text(encoding="utf-8") == "seeded"
+
     def test_unusable_semantic_cache_fails_validation(self, tmp_path, monkeypatch):
         manifest = _manifest(tmp_path, cache_dir=tmp_path / "semantic-cache")
 
@@ -1098,6 +1152,8 @@ class TestSemanticCacheBootstrap:
         }
         assert status.coverage_proof_count == 2
         assert status.coverage_hyperedge_count == 1
+        assert status.summary_reused is False
+        assert status.bootstrap_phase_timings_secs == {}
 
     def test_semantic_cache_status_reuses_summary_without_template_scan(
         self,
@@ -1139,6 +1195,18 @@ class TestSemanticCacheBootstrap:
             ),
             encoding="utf-8",
         )
+        timings_path = tmp_path / node_cache.SEMANTIC_CACHE_BOOTSTRAP_TIMINGS_FILE
+        timings_path.write_text(
+            json.dumps(
+                {
+                    "phase_timings_secs": {
+                        "refresh_sxbet_corpus": 1.25,
+                        "mine_event_candidates": 0.5,
+                    },
+                },
+            ),
+            encoding="utf-8",
+        )
 
         class SummaryOnlyStore:
             def __init__(self, _cache):
@@ -1169,6 +1237,11 @@ class TestSemanticCacheBootstrap:
         assert summary_status.same_venue_execution_eligible_template_count == 1
         assert summary_status.strict_execution_blocker_counts == {
             "same_venue_risk_engine_elevation_required": 1,
+        }
+        assert summary_status.summary_reused is True
+        assert summary_status.bootstrap_phase_timings_secs == {
+            "mine_event_candidates": 0.5,
+            "refresh_sxbet_corpus": 1.25,
         }
 
     def test_run_bootstrap_without_running_loop_executes_async_path(self, tmp_path, monkeypatch):
@@ -1873,6 +1946,8 @@ class TestBettingArbitrageNodeRunner:
             promoted_template_count=2,
             execution_safe_template_count=1,
             same_venue_execution_eligible_template_count=1,
+            summary_reused=True,
+            bootstrap_phase_timings_secs={"total": 12.5, "mine_event_candidates": 1.25},
         )
         monkeypatch.setattr(
             (
@@ -1890,6 +1965,8 @@ class TestBettingArbitrageNodeRunner:
         assert payload["semanticCache"]["source"] == "bootstrapped"
         assert payload["semanticCache"]["promotedTemplateCount"] == 2
         assert payload["semanticCache"]["sameVenueExecutionEligibleTemplateCount"] == 1
+        assert payload["semanticCache"]["summaryReused"] is True
+        assert payload["semanticCache"]["bootstrapPhaseTimingsSeconds"]["total"] == 12.5
         assert payload["executionReadiness"]["validationMode"] is True
         assert payload["executionReadiness"]["autoExecute"] is False
         assert payload["executionReadiness"]["venues"][0]["venue"] == "SXBET"
@@ -2636,6 +2713,8 @@ class TestBettingArbitrageNodeRunner:
             "compatibilityVersion": None,
             "compatibilityScope": None,
             "compatible": True,
+            "summaryReused": False,
+            "bootstrapPhaseTimingsSeconds": {},
         }
         assert node_runner._semantic_cache_payload(None) is None
 

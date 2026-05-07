@@ -23,6 +23,9 @@ class VenueQuotePollStats:
     subscribed_instrument_count: int
     market_count: int
     quote_count: int
+    request_count: int
+    event_request_count: int
+    line_request_count: int
     order_count: int
     empty_market_count: int
     one_sided_market_count: int
@@ -78,6 +81,9 @@ def encode_venue_quote_poll_stats(
     subscribed_instrument_count: int,
     market_count: int,
     quote_count: int,
+    request_count: int = 0,
+    event_request_count: int = 0,
+    line_request_count: int = 0,
     order_count: int = 0,
     empty_market_count: int = 0,
     one_sided_market_count: int = 0,
@@ -107,6 +113,9 @@ def encode_venue_quote_poll_stats(
         "subscribed_instrument_count": max(0, int(subscribed_instrument_count)),
         "market_count": max(0, int(market_count)),
         "quote_count": max(0, int(quote_count)),
+        "request_count": max(0, int(request_count)),
+        "event_request_count": max(0, int(event_request_count)),
+        "line_request_count": max(0, int(line_request_count)),
         "order_count": max(0, int(order_count)),
         "empty_market_count": max(0, int(empty_market_count)),
         "one_sided_market_count": max(0, int(one_sided_market_count)),
@@ -176,6 +185,9 @@ def decode_venue_quote_poll_stats(raw: bytes | None) -> VenueQuotePollStats | No
             subscribed_instrument_count=int(payload.get("subscribed_instrument_count") or 0),
             market_count=int(payload.get("market_count") or 0),
             quote_count=int(payload.get("quote_count") or 0),
+            request_count=int(payload.get("request_count") or 0),
+            event_request_count=int(payload.get("event_request_count") or 0),
+            line_request_count=int(payload.get("line_request_count") or 0),
             order_count=int(payload.get("order_count") or 0),
             empty_market_count=int(payload.get("empty_market_count") or 0),
             one_sided_market_count=int(payload.get("one_sided_market_count") or 0),

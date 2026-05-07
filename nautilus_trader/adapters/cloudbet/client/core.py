@@ -388,7 +388,7 @@ class CloudbetClient(HttpClient):
                 f"Failed to retrieve raw line for event {event_id} from the Cloudbet API. Response: {resp.text}",
             )
             if resp.status == 429:
-                time.sleep(1)
+                await asyncio.sleep(1)
                 return await self.get_line(event_id, market_url)
             raise CloudbetAPIError(
                 message="Failed to retrieve raw line from the Cloudbet API.",
@@ -421,8 +421,8 @@ class CloudbetClient(HttpClient):
         if not (200 <= resp.status < 300):
             self._log.error(f"Failed to retrieve event from the Cloudbet API. Response: {resp.text}")
             if resp.status == 429:
-                time.sleep(1)
-                await self.get_event(event_id, sport_key, market_filter)
+                await asyncio.sleep(1)
+                return await self.get_event(event_id, sport_key, market_filter)
             raise CloudbetAPIError(message="Failed to retrieve event from the Cloudbet API.", code=resp.status)
         return msgspec.json.decode(resp.data, type=GetEventResponse)
 

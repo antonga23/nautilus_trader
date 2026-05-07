@@ -54,6 +54,7 @@ class BettingVenueManifest(NautilusConfig, frozen=True):
     order_book_max_concurrency: PositiveInt | None = None
     order_book_target_cycle_secs: PositiveFloat = 5.0
     order_book_adaptive_concurrency: bool = True
+    order_book_event_batching: bool = True
     api_url: str | None = None
     ws_url: str | None = None
     environment: str | None = None

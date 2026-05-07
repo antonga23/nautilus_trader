@@ -51,6 +51,7 @@ class CloudbetDataClientConfig(LiveDataClientConfig, frozen=True):
     quote_poll_max_concurrency: PositiveInt = 16
     quote_poll_target_cycle_secs: PositiveFloat = 5.0
     quote_poll_adaptive_concurrency: bool = True
+    quote_poll_event_batching: bool = True
 
 
 class CloudbetInstrumentProviderConfig(InstrumentProviderConfig, frozen=True):

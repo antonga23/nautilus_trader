@@ -77,7 +77,8 @@
       "order_book_min_concurrency": 4,
       "order_book_max_concurrency": 16,
       "order_book_target_cycle_secs": 4.0,
-      "order_book_adaptive_concurrency": true
+      "order_book_adaptive_concurrency": true,
+      "order_book_event_batching": true
     },
     {
       "venue": "POLYMARKET",

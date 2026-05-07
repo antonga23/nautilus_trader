@@ -99,6 +99,8 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
             ),
             "promotedSafetyTierCounts": semantic_cache.get("promotedSafetyTierCounts"),
             "strictExecutionBlockerCounts": semantic_cache.get("strictExecutionBlockerCounts"),
+            "summaryReused": semantic_cache.get("summaryReused"),
+            "bootstrapPhaseTimingsSeconds": semantic_cache.get("bootstrapPhaseTimingsSeconds"),
         },
         "executionReadiness": {
             "validationMode": execution_readiness.get("validationMode"),
@@ -1031,6 +1033,9 @@ def _format_provider_poll_stats(value: Any) -> str:
         rendered.append(
             f"{venue}:cycle={stats.get('cycle_id', 0)} "
             f"quotes={stats.get('quote_count', 0)} "
+            f"requests={stats.get('request_count', 0)} "
+            f"event_requests={stats.get('event_request_count', 0)} "
+            f"line_requests={stats.get('line_request_count', 0)} "
             f"markets={stats.get('market_count', 0)} "
             f"cycle_elapsed={stats.get('cycle_elapsed_secs', 0)}s "
             f"target={stats.get('poll_target_cycle_secs', 0)}s "
