@@ -241,6 +241,7 @@ jobs:
           dump_node_runtime_artifacts() {
             set +e
             persist_node_runtime_artifacts
+            set +e
             echo
             echo "runtime_diagnostics<<EOF"
             echo "container=$container_name"
