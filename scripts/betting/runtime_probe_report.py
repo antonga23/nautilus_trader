@@ -220,6 +220,7 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
             "candidateCounts": venue_coverage.get("candidateCounts"),
             "zeroCandidateVenuePairs": venue_coverage.get("zeroCandidateVenuePairs"),
         },
+        "venueCoverageHealth": _venue_coverage_health(venue_coverage),
         "operatorHealth": _operator_health(
             candidate_warnings=candidate_warnings,
             graph_warnings=graph_warnings,
@@ -251,6 +252,7 @@ def aggregate_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
     topology_counts: dict[str, int] = {}
     health_counts: dict[str, int] = {}
     provider_poll_health_counts: dict[str, int] = {}
+    venue_coverage_health_counts: dict[str, int] = {}
     for summary in summaries:
         graph = _as_dict(summary.get("graph"))
         engine = str(graph.get("engine") or "unknown")
@@ -274,6 +276,10 @@ def aggregate_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
         )
         provider_poll_health_counts[provider_health] = (
             provider_poll_health_counts.get(provider_health, 0) + 1
+        )
+        venue_health = str(_as_dict(summary.get("venueCoverageHealth")).get("overall") or "unknown")
+        venue_coverage_health_counts[venue_health] = (
+            venue_coverage_health_counts.get(venue_health, 0) + 1
         )
 
     return {
@@ -313,6 +319,7 @@ def aggregate_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
         "latencySloStatusCounts": dict(sorted(latency_slo_counts.items())),
         "operatorHealthCounts": dict(sorted(health_counts.items())),
         "providerPollHealthCounts": dict(sorted(provider_poll_health_counts.items())),
+        "venueCoverageHealthCounts": dict(sorted(venue_coverage_health_counts.items())),
     }
 
 
@@ -530,6 +537,9 @@ def _format_text(path: Path, summary: dict[str, Any]) -> str:
     provider_poll_health = _format_provider_poll_health(summary.get("providerPollHealth"))
     if provider_poll_health:
         lines.append(f"  provider_poll_health {provider_poll_health}")
+    venue_coverage_health = _format_venue_coverage_health(summary.get("venueCoverageHealth"))
+    if venue_coverage_health:
+        lines.append(f"  venue_coverage_health {venue_coverage_health}")
     lines.extend(_format_refresh_lines(summary.get("instrumentRefresh")))
     lines.extend(_format_semantic_diagnostic_lines(summary.get("semanticDiagnostics")))
     same_venue_dry_run = quality.get("sameVenueDryRun") or {}
@@ -801,6 +811,21 @@ def _format_provider_poll_health(value: Any) -> str:
     return f"overall={health.get('overall')} " + "; ".join(rendered)
 
 
+def _format_venue_coverage_health(value: Any) -> str:
+    health = value if isinstance(value, dict) else {}
+    venues = _as_dict(health.get("venues"))
+    if not venues:
+        return ""
+    rendered = []
+    for venue, raw_payload in sorted(venues.items()):
+        payload = _as_dict(raw_payload)
+        reasons = payload.get("reasons") or []
+        rendered.append(
+            f"{venue}:status={payload.get('status')} reasons={','.join(str(r) for r in reasons)}",
+        )
+    return f"overall={health.get('overall')} " + "; ".join(rendered)
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -865,7 +890,8 @@ def main() -> int:
                 f"warnings={aggregate['diagnosticWarningCounts']} "
                 f"latency_slo={aggregate['latencySloStatusCounts']} "
                 f"health={aggregate['operatorHealthCounts']} "
-                f"provider_poll_health={aggregate['providerPollHealthCounts']}",
+                f"provider_poll_health={aggregate['providerPollHealthCounts']} "
+                f"venue_coverage_health={aggregate['venueCoverageHealthCounts']}",
             )
     else:
         payload: object = (
@@ -943,6 +969,40 @@ def _provider_poll_health(provider_quote_poll_stats: dict[str, Any]) -> dict[str
             "rateLimitCount": rate_limit_count,
             "backlogCount": backlog_count,
             "maxFetchLatencySeconds": max_fetch_latency_secs,
+        }
+    return {
+        "overall": overall if venues else "unknown",
+        "venues": venues,
+    }
+
+
+def _venue_coverage_health(venue_coverage: dict[str, Any]) -> dict[str, Any]:
+    enabled_venues = venue_coverage.get("enabledVenues") or []
+    quote_subscriptions = _as_dict(venue_coverage.get("quoteSubscriptionCounts"))
+    quoted_nodes = _as_dict(venue_coverage.get("quotedNodeCounts"))
+    edge_counts = _as_dict(venue_coverage.get("edgeCounts"))
+    venues: dict[str, dict[str, Any]] = {}
+    overall = "pass"
+    for venue in sorted(str(item) for item in enabled_venues if item):
+        reasons: list[str] = []
+        quote_subscription_count = _int_value(quote_subscriptions.get(venue))
+        quoted_node_count = _int_value(quoted_nodes.get(venue))
+        edge_count = _int_value(edge_counts.get(venue))
+        if quote_subscription_count <= 0:
+            reasons.append("no_quote_subscription")
+        if quoted_node_count <= 0:
+            reasons.append("no_quoted_nodes")
+        if edge_count <= 0:
+            reasons.append("no_semantic_edges")
+        status = "warn" if reasons else "pass"
+        if _operator_health_at_or_above(status, overall):
+            overall = status
+        venues[venue] = {
+            "status": status,
+            "reasons": reasons,
+            "quoteSubscriptionCount": quote_subscription_count,
+            "quotedNodeCount": quoted_node_count,
+            "edgeCount": edge_count,
         }
     return {
         "overall": overall if venues else "unknown",
