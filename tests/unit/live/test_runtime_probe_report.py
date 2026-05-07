@@ -681,3 +681,23 @@ def test_runtime_probe_report_cli_can_fail_on_provider_poll_health(
     assert module.main() == 5
     payload = json.loads(capsys.readouterr().out)
     assert payload[0]["providerPollHealth"]["overall"] == "fail"
+
+
+def test_runtime_probe_report_cli_can_fail_on_venue_coverage_health(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    module = _load_module()
+    status_path = tmp_path / "status.json"
+    status_path.write_text(json.dumps(_runtime_status_payload()), encoding="utf-8")
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [str(SCRIPT_PATH), str(status_path), "--fail-on-venue-coverage-health", "warn"],
+    )
+
+    assert module.main() == 6
+    payload = json.loads(capsys.readouterr().out)
+    assert payload[0]["venueCoverageHealth"]["overall"] == "warn"
