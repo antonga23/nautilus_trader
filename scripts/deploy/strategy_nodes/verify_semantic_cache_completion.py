@@ -18,6 +18,7 @@ import hashlib
 import json
 from pathlib import Path
 from typing import Any
+import zlib
 
 
 MANIFEST_INDEX_KEY = "betting:semantic_rules:index:manifests"
@@ -46,6 +47,7 @@ class CacheCollections:
     promoted_templates: list[dict[str, Any]]
     coverage_proofs: list[dict[str, Any]]
     coverage_hyperedges: list[dict[str, Any]]
+    load_errors: list[dict[str, str]]
 
 
 @dataclass(frozen=True)
@@ -90,31 +92,74 @@ def _cache_file(cache_dir: Path, key: str) -> Path:
     return cache_dir / f"{digest}.bin"
 
 
-def _read_bytes(cache_dir: Path, key: str) -> bytes | None:
+def _record_load_error(
+    errors: list[dict[str, str]] | None,
+    *,
+    key: str,
+    reason: str,
+    detail: BaseException | str,
+) -> None:
+    if errors is None:
+        return
+    errors.append(
+        {
+            "key": key,
+            "reason": reason,
+            "detail": str(detail),
+        },
+    )
+
+
+def _read_bytes(
+    cache_dir: Path,
+    key: str,
+    errors: list[dict[str, str]] | None = None,
+) -> bytes | None:
     path = _cache_file(cache_dir, key)
     if not path.exists():
         return None
-    raw = path.read_bytes()
-    return gzip.decompress(raw) if raw[:2] == b"\x1f\x8b" else raw
+    try:
+        raw = path.read_bytes()
+        return gzip.decompress(raw) if raw[:2] == b"\x1f\x8b" else raw
+    except (OSError, EOFError, gzip.BadGzipFile, zlib.error) as exc:
+        _record_load_error(errors, key=key, reason="unreadable_cache_payload", detail=exc)
+        return None
 
 
-def _read_json(cache_dir: Path, key: str) -> dict[str, Any] | None:
-    raw = _read_bytes(cache_dir, key)
+def _read_json(
+    cache_dir: Path,
+    key: str,
+    errors: list[dict[str, str]] | None = None,
+) -> dict[str, Any] | None:
+    raw = _read_bytes(cache_dir, key, errors)
     if raw is None:
         return None
-    payload = json.loads(raw.decode("utf-8"))
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        _record_load_error(errors, key=key, reason="invalid_cache_json", detail=exc)
+        return None
     return payload if isinstance(payload, dict) else None
 
 
-def _read_index(cache_dir: Path, key: str) -> list[str]:
-    payload = _read_json(cache_dir, key) or {}
+def _read_index(
+    cache_dir: Path,
+    key: str,
+    errors: list[dict[str, str]] | None = None,
+) -> list[str]:
+    payload = _read_json(cache_dir, key, errors) or {}
     return [str(item) for item in payload.get("items", [])]
 
 
-def _load_many(cache_dir: Path, index_key: str, prefix: str) -> list[dict[str, Any]]:
+def _load_many(
+    cache_dir: Path,
+    index_key: str,
+    prefix: str,
+    errors: list[dict[str, str]],
+) -> list[dict[str, Any]]:
     payloads: list[dict[str, Any]] = []
-    for item_id in _read_index(cache_dir, index_key):
-        payload = _read_json(cache_dir, f"{prefix}:{item_id}")
+    for item_id in _read_index(cache_dir, index_key, errors):
+        payload = _read_json(cache_dir, f"{prefix}:{item_id}", errors)
         if payload is not None:
             payloads.append(payload)
     return payloads
@@ -225,30 +270,41 @@ def _sport_report(
 
 
 def _load_cache_collections(cache_dir: Path) -> CacheCollections:
+    load_errors: list[dict[str, str]] = []
     return CacheCollections(
-        manifests=_load_many(cache_dir, MANIFEST_INDEX_KEY, MANIFEST_PREFIX),
-        normalized_records=_load_many(cache_dir, NORMALIZED_INDEX_KEY, NORMALIZED_PREFIX),
-        candidate_rules=_load_many(cache_dir, CANDIDATE_INDEX_KEY, CANDIDATE_PREFIX),
+        manifests=_load_many(cache_dir, MANIFEST_INDEX_KEY, MANIFEST_PREFIX, load_errors),
+        normalized_records=_load_many(
+            cache_dir,
+            NORMALIZED_INDEX_KEY,
+            NORMALIZED_PREFIX,
+            load_errors,
+        ),
+        candidate_rules=_load_many(cache_dir, CANDIDATE_INDEX_KEY, CANDIDATE_PREFIX, load_errors),
         template_candidates=_load_many(
             cache_dir,
             TEMPLATE_CANDIDATE_INDEX_KEY,
             TEMPLATE_CANDIDATE_PREFIX,
+            load_errors,
         ),
         promoted_templates=_load_many(
             cache_dir,
             TEMPLATE_PROMOTED_INDEX_KEY,
             TEMPLATE_PROMOTED_PREFIX,
+            load_errors,
         ),
         coverage_proofs=_load_many(
             cache_dir,
             COVERAGE_PROOF_INDEX_KEY,
             COVERAGE_PROOF_PREFIX,
+            load_errors,
         ),
         coverage_hyperedges=_load_many(
             cache_dir,
             COVERAGE_HYPEREDGE_INDEX_KEY,
             COVERAGE_HYPEREDGE_PREFIX,
+            load_errors,
         ),
+        load_errors=load_errors,
     )
 
 
@@ -457,6 +513,8 @@ def build_completion_report(
         "total_execution_safe_templates": sum(
             1 for template in collections.promoted_templates if bool(template.get("execution_safe"))
         ),
+        "load_error_count": len(collections.load_errors),
+        "load_errors": tuple(collections.load_errors[:20]),
         "safety_tier_counts": tuple(sorted(promotion_counts.safety_tier_counts.items())),
         "providers": providers,
         "sports": sport_reports,

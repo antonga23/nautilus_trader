@@ -544,11 +544,45 @@ jobs:
                 fi
               done
             fi
-            python3 "${semantic_args[@]}" > "$artifact_dir/semantic-completion.json"
+            semantic_completion_stderr="$artifact_dir/semantic-completion.stderr"
+            set +e
+            python3 "${semantic_args[@]}" \
+              > "$artifact_dir/semantic-completion.json" \
+              2> "$semantic_completion_stderr"
+            semantic_completion_rc=$?
+            set -e
+            if [[ ! -s "$artifact_dir/semantic-completion.json" ]]; then
+              python3 - "$semantic_completion_rc" "$semantic_completion_stderr" "$artifact_dir/semantic-completion.json" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          return_code = int(sys.argv[1])
+          stderr_path = pathlib.Path(sys.argv[2])
+          output_path = pathlib.Path(sys.argv[3])
+          stderr_text = stderr_path.read_text(encoding="utf-8", errors="replace") if stderr_path.exists() else ""
+          output_path.write_text(
+              json.dumps(
+                  {
+                      "passed": False,
+                      "error": "semantic_completion_verifier_failed_before_json_output",
+                      "return_code": return_code,
+                      "stderr_tail": stderr_text[-4000:],
+                  },
+                  indent=2,
+                  sort_keys=True,
+              ),
+              encoding="utf-8",
+          )
+          PY
+            fi
             echo
             echo "semantic_completion_summary<<EOF"
             cat "$artifact_dir/semantic-completion.json"
             echo "EOF"
+            if [[ "$semantic_completion_rc" -ne 0 ]]; then
+              exit "$semantic_completion_rc"
+            fi
           fi
 
       - name: Upload runtime verification artifacts

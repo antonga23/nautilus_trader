@@ -215,3 +215,71 @@ def test_lightweight_semantic_cache_completion_verifier_tolerates_torn_key_index
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert payload["passed"] is True
+
+
+def test_lightweight_semantic_cache_completion_verifier_reports_corrupt_records(
+    tmp_path: Path,
+):
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+
+    _write_index(cache_dir, "betting:semantic_rules:index:manifests", ["manifest-sxbet"])
+    _write_index(
+        cache_dir,
+        "betting:semantic_rules:index:normalized",
+        ["selection-sxbet", "selection-corrupt"],
+    )
+    _write_index(cache_dir, "betting:semantic_rules:index:template_candidates", ["template-sxbet"])
+    _write_cache_json(
+        cache_dir,
+        "betting:semantic_rules:manifest:manifest-sxbet",
+        {"provider": "SXBET"},
+    )
+    _write_cache_json(
+        cache_dir,
+        "betting:semantic_rules:normalized:selection-sxbet",
+        {"provider": "SXBET", "selection": {"sport": "soccer"}},
+    )
+    _cache_path(
+        cache_dir,
+        "betting:semantic_rules:normalized:selection-corrupt",
+    ).write_bytes(b"\x1f\x8bnot-valid-gzip")
+    _write_cache_json(
+        cache_dir,
+        "betting:semantic_rules:template:candidate:template-sxbet",
+        {
+            "execution_safe": False,
+            "safety_tier": "TOPOLOGY_SAFE",
+            "sport": "soccer",
+            "support": {"observed_count": 12, "providers": ["SXBET"]},
+        },
+    )
+
+    result = subprocess.run(  # noqa: S603
+        [
+            sys.executable,
+            "scripts/deploy/strategy_nodes/verify_semantic_cache_completion.py",
+            "--cache-dir",
+            str(cache_dir),
+            "--required-provider",
+            "SXBET",
+            "--target-sport",
+            "soccer",
+            "--min-candidates",
+            "10",
+            "--target-candidates",
+            "20",
+        ],
+        cwd=Path.cwd(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["passed"] is True
+    assert payload["load_error_count"] == 1
+    assert payload["load_errors"][0]["key"] == (
+        "betting:semantic_rules:normalized:selection-corrupt"
+    )
