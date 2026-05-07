@@ -18,7 +18,6 @@ Provider-backed corpus ingestion for semantic rule mining.
 
 from __future__ import annotations
 
-from collections import Counter
 from contextlib import suppress
 from datetime import UTC
 from datetime import datetime
@@ -73,6 +72,7 @@ class SnapshotIngestor:
         limit: int = 20,
         adaptive_window: bool = True,
         max_window_seconds: int = 7 * 24 * 60 * 60,
+        sparse_history_window_seconds: int = 180 * 24 * 60 * 60,
         min_events_per_sport: int = 1,
         include_recent_past_on_sparse: bool = False,
         include_bets: bool = True,
@@ -107,6 +107,7 @@ class SnapshotIngestor:
             "adaptive_window": adaptive_window,
             "max_window_seconds": max_window_seconds,
             "min_events_per_sport": min_events_per_sport,
+            "past_sparse_event_threshold": max(min_events_per_sport, 4),
             "sports": {},
         }
 
@@ -173,10 +174,11 @@ class SnapshotIngestor:
                     break
                 window_seconds = min(max_window_seconds, window_seconds * 2)
 
+            sparse_event_threshold = max(min_events_per_sport, 4)
             if (
                 include_recent_past_on_sparse
                 and adaptive_window
-                and len({selection.event_id for selection in selections}) < min_events_per_sport
+                and len({selection.event_id for selection in selections}) < sparse_event_threshold
             ):
                 attempt_from = from_timestamp - max_window_seconds
                 attempt_to = from_timestamp
@@ -198,8 +200,11 @@ class SnapshotIngestor:
                     )
                     source_refs.append(past_snapshot_id)
                     past_selections = client.event_to_selection(past_response)
-                    if len({selection.event_id for selection in past_selections}) > len(
-                        {selection.event_id for selection in selections},
+                    current_event_count = len({selection.event_id for selection in selections})
+                    past_event_count = len({selection.event_id for selection in past_selections})
+                    if past_event_count > current_event_count or (
+                        past_event_count == current_event_count
+                        and len(past_selections) > len(selections)
                     ):
                         events_response = past_response
                         selections = past_selections
@@ -221,6 +226,64 @@ class SnapshotIngestor:
                             "to": attempt_to,
                             "direction": "past",
                             "error": type(exc).__name__,
+                        },
+                    )
+
+            if (
+                include_recent_past_on_sparse
+                and adaptive_window
+                and sparse_history_window_seconds > max_window_seconds
+                and len({selection.event_id for selection in selections}) < sparse_event_threshold
+            ):
+                attempt_from = from_timestamp - sparse_history_window_seconds
+                attempt_to = from_timestamp
+                historical_limit = max(limit, 200)
+                try:
+                    historical_response = await client.get_events_for_sport(
+                        sport_key=sport_key,
+                        from_timestamp=attempt_from,
+                        to_timestamp=attempt_to,
+                        limit=historical_limit,
+                    )
+                    historical_snapshot_id = self._save_snapshot(
+                        provider="CLOUDBET",
+                        endpoint=(
+                            f"/pub/v2/odds/events?sport={sport_key}"
+                            f"&from={attempt_from}&to={attempt_to}&direction=historical"
+                        ),
+                        fetched_at=fetched_at,
+                        payload=historical_response,
+                    )
+                    source_refs.append(historical_snapshot_id)
+                    historical_selections = client.event_to_selection(historical_response)
+                    current_event_count = len({selection.event_id for selection in selections})
+                    historical_event_count = len(
+                        {selection.event_id for selection in historical_selections},
+                    )
+                    if historical_event_count > current_event_count or (
+                        historical_event_count == current_event_count
+                        and len(historical_selections) > len(selections)
+                    ):
+                        events_response = historical_response
+                        selections = historical_selections
+                    attempt_reports.append(
+                        {
+                            "from": attempt_from,
+                            "to": attempt_to,
+                            "direction": "historical",
+                            "event_count": historical_event_count,
+                            "selection_count": len(historical_selections),
+                            "limit": historical_limit,
+                        },
+                    )
+                except Exception as exc:
+                    attempt_reports.append(
+                        {
+                            "from": attempt_from,
+                            "to": attempt_to,
+                            "direction": "historical",
+                            "error": type(exc).__name__,
+                            "limit": historical_limit,
                         },
                     )
 
@@ -277,7 +340,8 @@ class SnapshotIngestor:
                 "event_count": len(seen_event_ids),
                 "selection_count": len(selections),
                 "attempts": attempt_reports,
-                "sparse": len(seen_event_ids) < min_events_per_sport,
+                "sparse": len(seen_event_ids) < sparse_event_threshold,
+                "sparse_event_threshold": sparse_event_threshold,
             }
 
             for selection in selections:
@@ -398,6 +462,7 @@ class SnapshotIngestor:
         self,
         client: SXBetHttpClient,
         *,
+        sports: list[str] | None = None,
         sport_ids: list[int] | None = None,
         from_time: int | None = None,
         to_time: int | None = None,
@@ -417,15 +482,29 @@ class SnapshotIngestor:
                 payload=active_sports,
             ),
         ]
-        selected_sport_ids = sport_ids or [
-            int(sport["sportId"])
+        active_sport_names = {
+            int(sport["sportId"]): str(sport.get("name") or sport.get("label") or "")
             for sport in active_sports.get("data", [])
             if isinstance(sport, dict) and sport.get("sportId") is not None
-        ]
+        }
+        selected_sport_ids = sorted({int(sport_id) for sport_id in (sport_ids or [])})
+        if not selected_sport_ids:
+            selected_sport_ids = self._resolve_sxbet_sport_ids(
+                requested_sports=sports,
+                active_sports=active_sport_names,
+            )
+        if not selected_sport_ids:
+            selected_sport_ids = sorted(active_sport_names)
 
         market_names: set[str] = set()
         event_keys: set[str] = set()
         normalized_records: list[NormalizedSelectionRecord] = []
+        record_ids_seen: set[str] = set()
+        sport_selection_counts: dict[int, int] = {}
+        sport_snapshot_errors: dict[int, str] = {}
+        sport_provider_errors: dict[int, str] = {}
+        instrument_budgets = self._distribute_budget(instrument_limit, selected_sport_ids)
+        market_budgets = self._distribute_budget(market_discovery_limit, selected_sport_ids)
 
         for sport_id in selected_sport_ids:
             try:
@@ -456,62 +535,71 @@ class SnapshotIngestor:
                         fetched_at=fetched_at,
                         payload=await client.get_markets(
                             sport_id=sport_id,
-                            page_size=min(50, market_discovery_limit),
+                            page_size=min(50, market_budgets.get(sport_id, market_discovery_limit)),
                         ),
                     ),
                 )
-            except Exception:  # noqa: S112
-                continue
+            except Exception as exc:
+                sport_snapshot_errors[sport_id] = type(exc).__name__
 
-        provider = SXBetInstrumentProvider(
-            http_client=client,
-            config=SXBetInstrumentProviderConfig(
-                load_all=True,
-                sport_ids=frozenset(selected_sport_ids) if selected_sport_ids else None,
-                instrument_load_limit=instrument_limit,
-                market_discovery_limit=market_discovery_limit,
-                prefer_liquid_markets=prefer_liquid_markets,
-                liquidity_probe_limit=liquidity_probe_limit,
-                min_two_sided_markets=min_two_sided_markets,
-            ),
-        )
-        await provider.load_all_async(
-            filters={
-                "sport_ids": frozenset(selected_sport_ids) if selected_sport_ids else None,
-            },
-        )
-
-        for instrument in provider.list_all():
-            normalized = self._normalizer.normalize(instrument)
-            market_names.add(normalized.raw_market_name or normalized.market_type)
-            event_keys.add(normalized.event_key)
-            normalized_records.append(
-                NormalizedSelectionRecord(
-                    record_id=self._normalized_record_id("SXBET", normalized),
-                    provider="SXBET",
-                    selection=normalized,
-                    manifest_id=None,
+            provider = SXBetInstrumentProvider(
+                http_client=client,
+                config=SXBetInstrumentProviderConfig(
+                    load_all=True,
+                    sport_ids=frozenset({sport_id}),
+                    instrument_load_limit=instrument_budgets.get(sport_id, instrument_limit),
+                    market_discovery_limit=market_budgets.get(sport_id, market_discovery_limit),
+                    prefer_liquid_markets=prefer_liquid_markets,
+                    liquidity_probe_limit=liquidity_probe_limit,
+                    min_two_sided_markets=min_two_sided_markets,
                 ),
             )
+            try:
+                await provider.load_all_async(
+                    filters={
+                        "sport_ids": frozenset({sport_id}),
+                    },
+                )
+            except Exception as exc:
+                sport_provider_errors[sport_id] = type(exc).__name__
+                continue
 
-        active_sport_names = {
-            int(sport["sportId"]): str(sport.get("name") or sport.get("label") or "")
-            for sport in active_sports.get("data", [])
-            if isinstance(sport, dict) and sport.get("sportId") is not None
-        }
-        selections_by_sport = Counter(record.selection.sport for record in normalized_records)
+            selection_count_before = len(normalized_records)
+            for instrument in provider.list_all():
+                normalized = self._normalizer.normalize(instrument)
+                record_id = self._normalized_record_id("SXBET", normalized)
+                if record_id in record_ids_seen:
+                    continue
+                record_ids_seen.add(record_id)
+                market_names.add(normalized.raw_market_name or normalized.market_type)
+                event_keys.add(normalized.event_key)
+                normalized_records.append(
+                    NormalizedSelectionRecord(
+                        record_id=record_id,
+                        provider="SXBET",
+                        selection=normalized,
+                        manifest_id=None,
+                    ),
+                )
+            sport_selection_counts[sport_id] = len(normalized_records) - selection_count_before
+
         sport_coverage = {}
         for sport_id in selected_sport_ids:
             sport_name = self._normalize_sxbet_sport_name(
                 active_sport_names.get(sport_id) or SXBET_SPORT_IDS.get(sport_id, ""),
             )
-            selection_count = selections_by_sport.get(sport_name, 0)
+            selection_count = sport_selection_counts.get(sport_id, 0)
             blocker = None
             if selection_count == 0:
-                blocker = "no_active_markets_or_provider_data"
+                blocker = sport_provider_errors.get(
+                    sport_id,
+                    sport_snapshot_errors.get(sport_id, "no_active_markets_or_provider_data"),
+                )
             report: dict[str, object] = {
                 "sport_id": sport_id,
                 "selection_count": selection_count,
+                "instrument_budget": instrument_budgets.get(sport_id, instrument_limit),
+                "market_discovery_budget": market_budgets.get(sport_id, market_discovery_limit),
                 "blocker": blocker,
             }
             sport_coverage[sport_name or str(sport_id)] = report
@@ -556,6 +644,55 @@ class SnapshotIngestor:
     @staticmethod
     def _normalize_sxbet_sport_name(value: str) -> str:
         return value.strip().lower().replace("-", "_").replace(" ", "_").replace("__", "_")
+
+    @classmethod
+    def _canonical_sport_name(cls, value: str) -> str:
+        normalized = cls._normalize_sxbet_sport_name(value)
+        aliases = {
+            "soccer/football": "soccer",
+            "soccer_football": "soccer",
+            "football": "soccer",
+            "american_football": "american_football",
+            "american-football": "american_football",
+            "hockey": "ice_hockey",
+        }
+        return aliases.get(normalized, normalized)
+
+    @classmethod
+    def _resolve_sxbet_sport_ids(
+        cls,
+        *,
+        requested_sports: list[str] | None,
+        active_sports: dict[int, str],
+    ) -> list[int]:
+        if not requested_sports:
+            return []
+
+        canonical_by_id: dict[int, str] = {}
+        for sport_id, name in active_sports.items():
+            canonical_by_id[int(sport_id)] = cls._canonical_sport_name(name)
+        for sport_id, fallback_name in SXBET_SPORT_IDS.items():
+            canonical_by_id.setdefault(int(sport_id), cls._canonical_sport_name(fallback_name))
+
+        requested = {
+            cls._canonical_sport_name(sport) for sport in requested_sports if str(sport).strip()
+        }
+        return sorted(
+            sport_id
+            for sport_id, canonical_name in canonical_by_id.items()
+            if canonical_name in requested
+        )
+
+    @staticmethod
+    def _distribute_budget(total: int | None, sport_ids: list[int]) -> dict[int, int]:
+        item_count = len(sport_ids)
+        if total is None or item_count <= 0:
+            return {}
+        base, remainder = divmod(max(int(total), item_count), item_count)
+        return {
+            sport_id: base + (1 if index < remainder else 0)
+            for index, sport_id in enumerate(sport_ids)
+        }
 
     async def refresh_polymarket(
         self,
@@ -748,7 +885,15 @@ class SnapshotIngestor:
         sports_market = info.get("sports_market") if isinstance(info, dict) else {}
         if not isinstance(sports_market, dict):
             return False
-        return bool(sports_market.get("home_name") and sports_market.get("away_name"))
+        if sports_market.get("home_name") and sports_market.get("away_name"):
+            return True
+        params = sports_market.get("params")
+        return bool(
+            sports_market.get("event_type") == "team_future"
+            and sports_market.get("event_name")
+            and isinstance(params, dict)
+            and params.get("subject")
+        )
 
     @staticmethod
     def _polymarket_refresh_target(

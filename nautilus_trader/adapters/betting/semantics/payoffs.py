@@ -90,11 +90,20 @@ class SettlementPluginRegistry:
             }
             return cls._vector(selection, ("HOME_WIN", "AWAY_WIN"), settlement_by_selection)
         if selection.selection in {"YES", "NO"}:
+            params = dict(selection.params)
+            team = params.get("team", "").strip().upper()
+            subject = params.get("subject", "").strip().upper()
+            state_subject = team if team in {"HOME", "AWAY"} else subject
+            state_prefix = f"{state_subject}_" if state_subject else ""
             settlement_by_selection = {
                 "YES": (WIN, LOSE),
                 "NO": (LOSE, WIN),
             }
-            return cls._vector(selection, ("EVENT_TRUE", "EVENT_FALSE"), settlement_by_selection)
+            return cls._vector(
+                selection,
+                (f"{state_prefix}EVENT_TRUE", f"{state_prefix}EVENT_FALSE"),
+                settlement_by_selection,
+            )
         return cls._unknown(selection)
 
     @classmethod

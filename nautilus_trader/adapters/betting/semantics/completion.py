@@ -109,7 +109,22 @@ class SemanticMiningCompletionReport:
     promotion_blockers: tuple[tuple[str, int], ...]
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        for sport in payload.get("sports", []):
+            event_candidate_count = int(sport.get("event_candidate_count") or 0)
+            semantic_candidate_count = int(sport.get("semantic_candidate_count") or 0)
+            min_candidates = int(sport.get("min_candidates") or 0)
+            target_candidates = int(sport.get("target_candidates") or 0)
+            sport["event_candidate_floor_met"] = event_candidate_count >= min_candidates
+            sport["semantic_candidate_floor_met"] = semantic_candidate_count >= min_candidates
+            sport["event_target_reached"] = event_candidate_count >= target_candidates
+            sport["semantic_target_reached"] = semantic_candidate_count >= target_candidates
+            sport["event_candidate_shortfall"] = max(0, min_candidates - event_candidate_count)
+            sport["semantic_candidate_shortfall"] = max(
+                0,
+                min_candidates - semantic_candidate_count,
+            )
+        return payload
 
 
 def build_completion_report(  # noqa: C901
@@ -271,7 +286,11 @@ def build_completion_report(  # noqa: C901
         total_coverage_proofs=len(coverage_proofs),
         total_coverage_hyperedges=len(coverage_hyperedges),
         total_semantic_candidates=(
-            (sum(event_candidates_by_sport.values()) if template_candidates else len(candidate_rules))
+            (
+                sum(event_candidates_by_sport.values())
+                if template_candidates
+                else len(candidate_rules)
+            )
             + len(coverage_proofs)
         ),
         total_template_candidates=len(template_candidates),

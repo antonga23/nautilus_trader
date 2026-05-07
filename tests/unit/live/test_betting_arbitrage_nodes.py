@@ -12,6 +12,7 @@ from collections import Counter
 from dataclasses import replace
 import json
 from decimal import Decimal
+import os
 from pathlib import Path
 import subprocess
 from types import SimpleNamespace
@@ -39,6 +40,9 @@ from nautilus_trader.live.strategy_nodes.betting_arbitrage import builder as nod
 from nautilus_trader.live.strategy_nodes.betting_arbitrage import runner as node_runner
 from nautilus_trader.live.strategy_nodes.betting_arbitrage import semantic_cache as node_cache
 from nautilus_trader.live.strategy_nodes.betting_arbitrage.builder import build_trading_node_config
+from nautilus_trader.live.strategy_nodes.betting_arbitrage.builder import (
+    manifest_execution_readiness,
+)
 from nautilus_trader.live.strategy_nodes.betting_arbitrage.config import (
     BettingArbitrageNodeManifest,
 )
@@ -265,7 +269,10 @@ class TestBettingArbitrageNodeBuilder:
             == "artifacts/semantic-rule-cache/sxbet-validation"
         )
 
-    def test_sxbet_exec_client_uses_dummy_credentials(self):
+    def test_sxbet_exec_client_uses_dummy_credentials(self, monkeypatch):
+        monkeypatch.delenv("SXBET_API_KEY", raising=False)
+        monkeypatch.delenv("SXBET_PRIVATE_KEY", raising=False)
+        monkeypatch.delenv("SXBET_WALLET_ADDRESS", raising=False)
         manifest = BettingArbitrageNodeManifest(
             node_id="sxbet-live",
             trader_id="BETARB-TEST-002",
@@ -309,7 +316,10 @@ class TestBettingArbitrageNodeBuilder:
         assert exec_client.config["base_currency"] == "USDC"
         assert exec_client.config["dry_run"] is True
 
-    def test_sxbet_data_client_receives_order_book_runtime_settings(self):
+    def test_sxbet_data_client_receives_order_book_runtime_settings(self, monkeypatch):
+        monkeypatch.delenv("SXBET_API_KEY", raising=False)
+        monkeypatch.delenv("SXBET_PRIVATE_KEY", raising=False)
+        monkeypatch.delenv("SXBET_WALLET_ADDRESS", raising=False)
         manifest = BettingArbitrageNodeManifest(
             node_id="sxbet-runtime",
             trader_id="BETARB-TEST-002",
@@ -435,6 +445,62 @@ class TestBettingArbitrageNodeBuilder:
         assert exec_client.config["api_key"] == "cloudbet-live-api-key"
         assert exec_client.config.get("api_url") is None
         assert exec_client.config["dry_run"] is True
+
+        readiness = manifest_execution_readiness(manifest)
+        assert readiness["validationMode"] is False
+        assert readiness["autoExecute"] is False
+        assert readiness["semanticCacheConfigured"] is True
+        assert readiness["venues"] == [
+            {
+                "venue": "CLOUDBET",
+                "clientKey": "CLOUDBET_PRIMARY",
+                "dataEnabled": True,
+                "executionEnabled": True,
+                "executionDryRun": True,
+                "environment": "paper",
+                "baseCurrency": "PLAY_EUR",
+                "apiUrl": None,
+                "wsUrl": None,
+                "sportKeys": [
+                    "american_football",
+                    "baseball",
+                    "basketball",
+                    "ice_hockey",
+                    "soccer",
+                    "tennis",
+                ],
+                "sportIds": [],
+                "liveOnly": False,
+                "loadAllInstruments": True,
+                "instrumentLoadLimit": 40,
+                "marketDiscoveryLimit": 40,
+            },
+        ]
+
+    def test_sxbet_execution_readiness_manifest_uses_testnet_endpoints(self, monkeypatch):
+        monkeypatch.setenv("SXBET_API_KEY", "sxbet-live-api-key")
+        monkeypatch.setenv("SXBET_PRIVATE_KEY", "0x" + "a" * 64)
+        monkeypatch.setenv("SXBET_WALLET_ADDRESS", "0x" + "b" * 40)
+
+        manifest = node_builder.load_manifest(
+            Path("deploy/strategy_nodes/betting_arbitrage/sxbet-testnet-execution-readiness.json"),
+        )
+
+        config = build_trading_node_config(manifest)
+        exec_client = config.exec_clients["SXBET_PRIMARY"]
+
+        assert manifest.validation_mode is False
+        assert config.strategies[0].config["auto_execute"] is False
+        assert exec_client.config["api_url"] == node_builder.SXBET_TESTNET_API_URL
+        assert exec_client.config["ws_url"] == node_builder.SXBET_TESTNET_WS_URL
+        assert exec_client.config["dry_run"] is True
+        assert exec_client.config["base_currency"] == "USDC"
+
+        readiness = manifest_execution_readiness(manifest)
+        assert readiness["venues"][0]["environment"] == "testnet"
+        assert readiness["venues"][0]["apiUrl"] == node_builder.SXBET_TESTNET_API_URL
+        assert readiness["venues"][0]["wsUrl"] == node_builder.SXBET_TESTNET_WS_URL
+        assert readiness["venues"][0]["executionDryRun"] is True
 
     def test_cloudbet_factories_match_live_node_builder_signature(self, monkeypatch):
         from nautilus_trader.adapters.cloudbet import factories as cloudbet_factories
@@ -1231,6 +1297,7 @@ class TestSemanticCacheBootstrap:
 
     def test_refresh_required_sxbet_corpus_requires_api_key(self, monkeypatch):
         monkeypatch.delenv("SXBET_API_KEY", raising=False)
+        monkeypatch.setattr(node_cache, "_DEFAULT_LOCAL_ENV_FILES", ())
 
         with pytest.raises(RuntimeError, match="SXBET_API_KEY"):
             asyncio.run(
@@ -1267,6 +1334,7 @@ class TestSemanticCacheBootstrap:
                 self,
                 client,
                 *,
+                sports,
                 sport_ids,
                 from_time,
                 to_time,
@@ -1279,6 +1347,7 @@ class TestSemanticCacheBootstrap:
                 refresh_calls.append(
                     {
                         "client": client,
+                        "sports": sports,
                         "sport_ids": sport_ids,
                         "from_time": from_time,
                         "to_time": to_time,
@@ -1320,6 +1389,7 @@ class TestSemanticCacheBootstrap:
 
         assert len(refresh_calls) == 1
         call = refresh_calls[0]
+        assert call["sports"] is None
         assert call["sport_ids"] == [3, 77]
         assert call["from_time"] == 1_000_000 - 6 * 60 * 60
         assert call["to_time"] == 1_000_000 + 6 * 60 * 60
@@ -1330,6 +1400,21 @@ class TestSemanticCacheBootstrap:
         assert call["min_two_sided_markets"] == 2
         assert call["client"].connected is True
         assert call["client"].disconnected is True
+
+    def test_sxbet_corpus_scope_uses_sport_keys_and_scales_defaults(self):
+        scope = node_cache._sxbet_corpus_scope(
+            [
+                BettingVenueManifest(
+                    venue="SXBET",
+                    sport_keys=frozenset({"soccer", "basketball", "tennis"}),
+                ),
+            ],
+        )
+
+        assert scope.sport_keys == ["basketball", "soccer", "tennis"]
+        assert scope.sport_ids is None
+        assert scope.instrument_limit == 250
+        assert scope.market_discovery_limit == 360
 
     def test_refresh_required_sxbet_corpus_disconnects_after_failure(self, monkeypatch):
         monkeypatch.setenv("SXBET_API_KEY", "sxbet-live-key")
@@ -1466,6 +1551,7 @@ class TestSemanticCacheBootstrap:
 
     def test_refresh_cloudbet_corpus_required_without_api_key_fails(self, monkeypatch):
         monkeypatch.delenv("CLOUDBET_API_KEY", raising=False)
+        monkeypatch.setattr(node_cache, "_DEFAULT_LOCAL_ENV_FILES", ())
 
         with pytest.raises(RuntimeError, match="CLOUDBET_API_KEY"):
             asyncio.run(
@@ -1554,6 +1640,24 @@ class TestSemanticCacheBootstrap:
         assert call["max_window_seconds"] == 7 * 24 * 60 * 60
         assert call["include_recent_past_on_sparse"] is True
         assert call["include_bets"] is False
+
+    def test_semantic_cache_local_env_loader_sources_repo_local_workspace_env(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        env_file = tmp_path / ".env.cloud-workspace.local"
+        env_file.write_text("SXBET_API_KEY=file-sxbet-key\n", encoding="utf-8")
+        monkeypatch.setattr(node_cache, "_DEFAULT_LOCAL_ENV_FILES", (env_file,))
+        original = os.environ.pop("SXBET_API_KEY", None)
+        try:
+            loaded = node_cache._load_local_workspace_env()
+            assert loaded == env_file
+            assert os.environ["SXBET_API_KEY"] == "file-sxbet-key"
+        finally:
+            os.environ.pop("SXBET_API_KEY", None)
+            if original is not None:
+                os.environ["SXBET_API_KEY"] = original
 
     def test_refresh_polymarket_corpus_derives_manifest_scope(self):
         refresh_calls: list[dict[str, object]] = []
@@ -1700,6 +1804,9 @@ class TestBettingArbitrageNodeRunner:
         assert payload["semanticCache"]["source"] == "bootstrapped"
         assert payload["semanticCache"]["promotedTemplateCount"] == 2
         assert payload["semanticCache"]["sameVenueExecutionEligibleTemplateCount"] == 1
+        assert payload["executionReadiness"]["validationMode"] is True
+        assert payload["executionReadiness"]["autoExecute"] is False
+        assert payload["executionReadiness"]["venues"][0]["venue"] == "SXBET"
 
     def test_validate_manifest_failure_writes_failed_status(self, tmp_path, monkeypatch):
         manifest = _manifest(tmp_path, cache_dir=tmp_path / "semantic-cache")
@@ -1730,6 +1837,7 @@ class TestBettingArbitrageNodeRunner:
         assert payload["status"] == "failed"
         assert payload["error"] == "ValueError('bad-config')"
         assert payload["semanticCache"]["ready"] is True
+        assert payload["executionReadiness"]["venues"][0]["executionEnabled"] is False
 
     def test_run_no_start_records_semantic_cache_status(self, tmp_path, monkeypatch):
         manifest = _manifest(tmp_path, cache_dir=tmp_path / "semantic-cache")
@@ -1770,6 +1878,7 @@ class TestBettingArbitrageNodeRunner:
         assert payload["status"] == "built"
         assert payload["semanticCache"]["source"] == "existing"
         assert payload["semanticCache"]["executionSafeTemplateCount"] == 1
+        assert payload["executionReadiness"]["semanticCacheConfigured"] is True
 
     def test_probe_runtime_records_runtime_probe_status(self, tmp_path, monkeypatch):
         manifest = _manifest(tmp_path, cache_dir=tmp_path / "semantic-cache")
@@ -2249,6 +2358,8 @@ class TestBettingArbitrageNodeRunner:
         assert payload["latency_histograms"]["fetch_latency_secs"]["max"] == 0.1
         assert payload["latency_histograms"]["pair_skew_secs"]["count"] == 1
         assert payload["live_quote_age_slo"]["observations"] == 0
+        assert payload["live_timing_slo"]["fetch_latency"]["observations"] == 0
+        assert payload["live_timing_slo"]["pair_skew"]["observations"] == 0
         assert payload["same_venue_dry_run"] == {
             "passes": 0,
             "failures": 0,
@@ -2272,6 +2383,8 @@ class TestBettingArbitrageNodeRunner:
             "quoteDeltaSeconds": 0.1,
             "fetchLatencyASeconds": 0.05,
             "fetchLatencyBSeconds": 0.1,
+            "maxPairSkewSeconds": 0.1,
+            "maxFetchLatencySeconds": 0.1,
             "executionSafe": False,
             "sameVenueExecutionEligible": True,
             "wouldExecuteSameVenueDryRun": False,
@@ -2293,6 +2406,16 @@ class TestBettingArbitrageNodeRunner:
         assert payload["same_venue_dry_run"]["failure_reasons"] == {"freshQuotes": 1}
         assert payload["live_quote_age_slo"]["observations"] == 2
         assert payload["live_quote_age_slo"]["violations"] == 1
+        assert payload["live_timing_slo"]["quote_age"]["observations"] == 2
+        assert payload["live_timing_slo"]["quote_age"]["violations"] == 1
+        assert payload["live_timing_slo"]["fetch_latency"]["observations"] == 2
+        assert payload["live_timing_slo"]["fetch_latency"]["violations"] == 0
+        assert payload["live_timing_slo"]["fetch_latency"]["min_threshold_secs"] == 0.1
+        assert payload["live_timing_slo"]["fetch_latency"]["max_threshold_secs"] == 0.1
+        assert payload["live_timing_slo"]["pair_skew"]["observations"] == 1
+        assert payload["live_timing_slo"]["pair_skew"]["violations"] == 0
+        assert payload["live_timing_slo"]["pair_skew"]["min_threshold_secs"] == 0.1
+        assert payload["live_timing_slo"]["pair_skew"]["max_threshold_secs"] == 0.1
 
     def test_run_success_and_failure_paths_record_status_transitions(self, tmp_path, monkeypatch):
         def semantic_status(_manifest):

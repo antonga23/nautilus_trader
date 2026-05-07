@@ -48,6 +48,9 @@ SXBET_MARKET_TYPE_MAP = {
     3: MarketType.ASIAN_HANDICAP.value,
     52: MarketType.MATCH_ODDS.value,
     88: MarketType.WINNER.value,
+    202: MarketType.MATCH_ODDS.value,
+    203: MarketType.MATCH_ODDS.value,
+    204: MarketType.MATCH_ODDS.value,
     201: MarketType.ASIAN_HANDICAP.value,
     226: MarketType.MATCH_ODDS.value,
     342: MarketType.ASIAN_HANDICAP.value,
@@ -371,9 +374,13 @@ class SXBetInstrumentProvider(InstrumentProvider):
         )
         market_params = self._market_params(
             market_type=normalized_market_type,
+            raw_market_type=market_type,
+            sport_name=sport_name,
             handicap=market.get("line"),
             outcome_labels=outcome_labels,
             proposition_subject=proposition_subject,
+            outcome_one_label=str(market.get("outcomeOneName") or ""),
+            outcome_two_label=str(market.get("outcomeTwoName") or ""),
         )
 
         outcome_one_odds = self._extract_best_odds(market, True)
@@ -491,6 +498,13 @@ class SXBetInstrumentProvider(InstrumentProvider):
 
         outcome_one = self._normalize_label(market.get("outcomeOneName"))
         outcome_two = self._normalize_label(market.get("outcomeTwoName"))
+        if self._scoped_winner_params(
+            raw_market_type=raw_market_type,
+            sport_name=self._sport_name(market.get("sportId")),
+            outcome_one_label=str(market.get("outcomeOneName") or ""),
+            outcome_two_label=str(market.get("outcomeTwoName") or ""),
+        ):
+            return MarketType.MATCH_ODDS.value
         if outcome_one.startswith("over") or outcome_two.startswith("under"):
             return MarketType.TOTAL_GOALS.value
         if self._is_yes_no_pair(outcome_one, outcome_two):
@@ -574,9 +588,13 @@ class SXBetInstrumentProvider(InstrumentProvider):
     def _market_params(
         cls,
         market_type: str,
+        raw_market_type: int | None,
+        sport_name: str,
         handicap: float | None,
         outcome_labels: tuple[str, str],
         proposition_subject: str | None,
+        outcome_one_label: str,
+        outcome_two_label: str,
     ) -> str:
         parts: list[str] = []
         if handicap is not None and market_type in {
@@ -590,7 +608,69 @@ class SXBetInstrumentProvider(InstrumentProvider):
             subject_key = re.sub(r"[^a-z0-9]+", "_", proposition_subject).strip("_")
             if subject_key:
                 parts.append(f"subject={subject_key}")
+        period_params = cls._scoped_winner_params(
+            raw_market_type=raw_market_type,
+            sport_name=sport_name,
+            outcome_one_label=outcome_one_label,
+            outcome_two_label=outcome_two_label,
+        )
+        for key, value in period_params.items():
+            parts.append(f"{key}={value}")
         return ",".join(parts)
+
+    @classmethod
+    def _scoped_winner_params(
+        cls,
+        *,
+        raw_market_type: int | None,
+        sport_name: str,
+        outcome_one_label: str,
+        outcome_two_label: str,
+    ) -> dict[str, str]:
+        sport = cls._canonical_sport_label(sport_name)
+        combined = " ".join(part for part in (outcome_one_label, outcome_two_label) if part).lower()
+        if not combined and raw_market_type not in {202, 203, 204}:
+            return {}
+
+        set_number = cls._extract_scoped_number(combined, "set")
+        if sport == "tennis" and set_number is not None:
+            return {"set": str(set_number), "period": f"set{set_number}"}
+
+        if raw_market_type in {202, 203, 204}:
+            ordinal = {202: 1, 203: 2, 204: 3}[raw_market_type]
+        else:
+            ordinal = None
+
+        quarter_number = cls._extract_scoped_number(combined, "quarter")
+        period_number = cls._extract_scoped_number(combined, "period") or ordinal
+        inning_number = cls._extract_scoped_number(combined, "inning")
+
+        if sport == "basketball":
+            quarter = quarter_number or period_number
+            if quarter is not None:
+                return {"period": f"q{quarter}"}
+        if sport in {"ice_hockey", "soccer"} and period_number is not None:
+            return {"period": f"p{period_number}"}
+        if sport == "baseball" and inning_number is not None:
+            return {"inning": str(inning_number), "period": f"inning{inning_number}"}
+        if period_number is not None:
+            return {"period": f"p{period_number}"}
+        return {}
+
+    @staticmethod
+    def _extract_scoped_number(text: str, scope_word: str) -> int | None:
+        patterns = (
+            rf"(\d+)(?:st|nd|rd|th)\s+{scope_word}\b",
+            rf"{scope_word}\s+(\d+)\b",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if match:
+                try:
+                    return int(match.group(1))
+                except (TypeError, ValueError):
+                    return None
+        return None
 
     @staticmethod
     def _normalize_label(value: Any) -> str:

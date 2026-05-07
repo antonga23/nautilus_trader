@@ -92,6 +92,25 @@ def test_normalizer_reconciles_sxbet_raw_type_3_with_line_metadata():
     assert normalized_dnb.market_type == CanonicalMarketType.DRAW_NO_BET.value
 
 
+def test_normalizer_preserves_sxbet_two_way_match_odds_numeric_type_mapping():
+    normalizer = MarketNormalizer()
+    selection = betting_instrument(
+        market_name="match_odds",
+        market_type="match_odds",
+        outcome="home",
+        info={
+            "raw_market_type": 1,
+            "is_two_way_market": True,
+            "sxbet_market_hash": "market-1",
+        },
+    )
+
+    normalized = normalizer.normalize(selection)
+
+    assert normalized.market_type == CanonicalMarketType.WINNER.value
+    assert normalized.selection == "HOME"
+
+
 def test_dnb_home_and_asian_handicap_zero_home_are_equivalent():
     classifier = RuleClassifier()
     dnb_home = betting_instrument(

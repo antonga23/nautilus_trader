@@ -8,6 +8,7 @@ from dataclasses import field
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import threading
 import time
@@ -33,7 +34,7 @@ from nautilus_trader.live.strategy_nodes.betting_arbitrage.config import Betting
 
 DEFAULT_CLOUDBET_SPORTS = SEMANTIC_TARGET_SPORTS
 DEFAULT_POLYMARKET_SPORTS = SEMANTIC_TARGET_SPORTS
-SEMANTIC_CACHE_COMPATIBILITY_VERSION = "semantic-rule-cache:20260505:coverage-runtime-v1"
+SEMANTIC_CACHE_COMPATIBILITY_VERSION = "semantic-rule-cache:20260506:sxbet-balanced-corpus-v1"
 SEMANTIC_CACHE_COMPATIBILITY_FILE = ".semantic-cache-version"
 PORTABLE_POLYMARKET_MARKET_FAMILIES = frozenset(
     {
@@ -45,6 +46,11 @@ PORTABLE_POLYMARKET_MARKET_FAMILIES = frozenset(
         "POINT_SPREAD",
         "ASIAN_HANDICAP",
     },
+)
+_DEFAULT_LOCAL_ENV_FILES = (
+    Path(__file__).resolve().parents[4] / ".env.cloud-workspace.local",
+    Path(__file__).resolve().parents[4] / ".env.local",
+    Path(__file__).resolve().parents[4] / ".env",
 )
 
 
@@ -89,6 +95,7 @@ class _SemanticCoverageCounts:
 
 @dataclass(frozen=True)
 class _SxbetCorpusScope:
+    sport_keys: list[str] | None
     sport_ids: list[int] | None
     instrument_limit: int
     market_discovery_limit: int
@@ -98,11 +105,45 @@ class _SxbetCorpusScope:
     live_only: bool
 
 
+def _parse_env_assignment(line: str) -> tuple[str, str] | None:
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#") or "=" not in stripped:
+        return None
+    key, value = stripped.split("=", 1)
+    key = key.strip()
+    if not key or not key.replace("_", "A").isalnum() or key[0].isdigit():
+        return None
+    value = value.strip()
+    if value:
+        try:
+            parsed = shlex.split(value, comments=False, posix=True)
+        except ValueError:
+            parsed = [value]
+        if len(parsed) == 1:
+            value = parsed[0]
+    return key, value
+
+
+def _load_local_workspace_env() -> Path | None:
+    for candidate in _DEFAULT_LOCAL_ENV_FILES:
+        if not candidate.is_file():
+            continue
+        for line in candidate.read_text(encoding="utf-8").splitlines():
+            parsed = _parse_env_assignment(line)
+            if parsed is None:
+                continue
+            key, value = parsed
+            os.environ.setdefault(key, value)
+        return candidate
+    return None
+
+
 def ensure_semantic_cache_ready(
     manifest: BettingArbitrageNodeManifest,
     *,
     logger: Logger | None = None,
 ) -> SemanticCacheStatus:
+    _load_local_workspace_env()
     cache_dir = manifest.semantic_rule_cache_dir
     if not cache_dir:
         return SemanticCacheStatus(
@@ -229,8 +270,6 @@ def _strict_execution_blockers(template: object) -> tuple[str, ...]:
     has_unknown = bool(getattr(template, "has_unknown", False))
     execution_safe = bool(getattr(template, "execution_safe", False))
     support = getattr(template, "support", None)
-    catalog_promotable = bool(getattr(support, "catalog_promotable", False)) if support else False
-    caveats = tuple(getattr(template, "caveats", ()) or ())
     eligibility_reasons = tuple(getattr(template, "eligibility_reasons", ()) or ())
 
     if same_venue_execution_eligible:
@@ -243,12 +282,32 @@ def _strict_execution_blockers(template: object) -> tuple[str, ...]:
         blockers.append("partial_settlement_present")
     if has_unknown:
         blockers.append("unknown_settlement_present")
-    if support is not None and not catalog_promotable:
-        blockers.append("catalog_support_below_gate")
-    for caveat in caveats:
-        blockers.append(f"caveat:{caveat}")
+    blockers.extend(_catalog_support_blockers(support))
     if not blockers and not execution_safe:
         blockers.extend(str(reason) for reason in eligibility_reasons)
+    return tuple(sorted(set(blockers)))
+
+
+def _catalog_support_blockers(support: object | None) -> tuple[str, ...]:
+    blockers: list[str] = []
+    if support is None:
+        return tuple(blockers)
+    if bool(getattr(support, "catalog_promotable", False)):
+        return tuple(blockers)
+    if not bool(getattr(support, "deterministic", True)):
+        blockers.append("nondeterministic_support")
+    if int(getattr(support, "unknown_settlement_count", 0)) > 0:
+        blockers.append("support_unknown_settlement_present")
+    if int(getattr(support, "observed_count", 0)) < 10:
+        blockers.append("observed_count_below_10")
+    if int(getattr(support, "event_count", 0)) < 3:
+        blockers.append("event_count_below_3")
+    if float(getattr(support, "mismatch_rate", 1.0)) > 0.01:
+        blockers.append("mismatch_rate_above_0_01")
+    if float(getattr(support, "confidence", 0.0)) < 0.99:
+        blockers.append("confidence_below_0_99")
+    if not blockers:
+        blockers.append("catalog_support_below_gate")
     return tuple(sorted(set(blockers)))
 
 
@@ -455,6 +514,7 @@ async def _refresh_required_sxbet_corpus(
     try:
         await ingestor.refresh_sxbet(
             client,
+            sports=scope.sport_keys,
             sport_ids=scope.sport_ids,
             from_time=from_time,
             to_time=to_time,
@@ -469,6 +529,7 @@ async def _refresh_required_sxbet_corpus(
 
 
 def _sxbet_corpus_scope(sxbet_venues: Iterable[BettingVenueManifest]) -> _SxbetCorpusScope:
+    sport_keys: set[str] = set()
     sport_ids: set[int] = set()
     instrument_limit = 250
     market_discovery_limit = 250
@@ -477,6 +538,8 @@ def _sxbet_corpus_scope(sxbet_venues: Iterable[BettingVenueManifest]) -> _SxbetC
     min_two_sided_markets = 1
     live_only = False
     for venue in sxbet_venues:
+        if venue.sport_keys:
+            sport_keys.update(key.strip().lower() for key in venue.sport_keys if key.strip())
         if venue.sport_ids:
             sport_ids.update(int(value) for value in venue.sport_ids)
         if venue.instrument_load_limit is not None:
@@ -488,7 +551,12 @@ def _sxbet_corpus_scope(sxbet_venues: Iterable[BettingVenueManifest]) -> _SxbetC
         min_two_sided_markets = max(min_two_sided_markets, int(venue.min_two_sided_markets))
         live_only = live_only or venue.live_only
 
+    target_sport_count = max(len(sport_ids), len(sport_keys), 1)
+    instrument_limit = max(instrument_limit, target_sport_count * 80)
+    market_discovery_limit = max(market_discovery_limit, target_sport_count * 120)
+
     return _SxbetCorpusScope(
+        sport_keys=sorted(sport_keys) or None,
         sport_ids=sorted(sport_ids) or None,
         instrument_limit=instrument_limit,
         market_discovery_limit=market_discovery_limit,

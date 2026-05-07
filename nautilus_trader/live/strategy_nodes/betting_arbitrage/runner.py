@@ -17,6 +17,9 @@ from nautilus_trader.adapters.betting.semantics import MarketNormalizer
 from nautilus_trader.live.strategy_nodes.betting_arbitrage.builder import build_trading_node_config
 from nautilus_trader.live.strategy_nodes.betting_arbitrage.builder import default_render_paths
 from nautilus_trader.live.strategy_nodes.betting_arbitrage.builder import load_manifest
+from nautilus_trader.live.strategy_nodes.betting_arbitrage.builder import (
+    manifest_execution_readiness,
+)
 from nautilus_trader.live.strategy_nodes.betting_arbitrage.builder import write_manifest_snapshot
 from nautilus_trader.live.strategy_nodes.betting_arbitrage.builder import write_rendered_node_config
 from nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache import (
@@ -62,6 +65,14 @@ class ProbeProfitabilityCounters:
     live_quote_age_slo_secs: float = 5.0
     live_quote_age_observations: int = 0
     live_quote_age_violations: int = 0
+    live_fetch_latency_observations: int = 0
+    live_fetch_latency_violations: int = 0
+    live_fetch_latency_threshold_min_secs: float | None = None
+    live_fetch_latency_threshold_max_secs: float | None = None
+    live_pair_skew_observations: int = 0
+    live_pair_skew_violations: int = 0
+    live_pair_skew_threshold_min_secs: float | None = None
+    live_pair_skew_threshold_max_secs: float | None = None
     same_venue_dry_run_passes: int = 0
     same_venue_dry_run_failures: int = 0
     same_venue_dry_run_failure_reasons: Counter[str] = field(default_factory=Counter)
@@ -107,6 +118,35 @@ class ProbeProfitabilityCounters:
                 "observations": self.live_quote_age_observations,
                 "violations": self.live_quote_age_violations,
             },
+            "live_timing_slo": {
+                "quote_age": {
+                    "threshold_secs": self.live_quote_age_slo_secs,
+                    "observations": self.live_quote_age_observations,
+                    "violations": self.live_quote_age_violations,
+                },
+                "fetch_latency": {
+                    "threshold_mode": "per_candidate",
+                    "min_threshold_secs": _rounded_or_none(
+                        self.live_fetch_latency_threshold_min_secs,
+                    ),
+                    "max_threshold_secs": _rounded_or_none(
+                        self.live_fetch_latency_threshold_max_secs,
+                    ),
+                    "observations": self.live_fetch_latency_observations,
+                    "violations": self.live_fetch_latency_violations,
+                },
+                "pair_skew": {
+                    "threshold_mode": "per_candidate",
+                    "min_threshold_secs": _rounded_or_none(
+                        self.live_pair_skew_threshold_min_secs,
+                    ),
+                    "max_threshold_secs": _rounded_or_none(
+                        self.live_pair_skew_threshold_max_secs,
+                    ),
+                    "observations": self.live_pair_skew_observations,
+                    "violations": self.live_pair_skew_violations,
+                },
+            },
             "same_venue_dry_run": {
                 "passes": self.same_venue_dry_run_passes,
                 "failures": self.same_venue_dry_run_failures,
@@ -145,6 +185,68 @@ def _percentile_payload(samples: list[float]) -> dict[str, float | int]:
 def _percentile(ordered_samples: list[float], percentile: float) -> float:
     index = max(0, min(len(ordered_samples) - 1, int((len(ordered_samples) - 1) * percentile)))
     return ordered_samples[index]
+
+
+def _rounded_or_none(value: float | None) -> float | None:
+    return None if value is None else round(value, 6)
+
+
+def _min_threshold(current: float | None, candidate: float) -> float | None:
+    if candidate <= 0:
+        return current
+    if current is None:
+        return candidate
+    return min(current, candidate)
+
+
+def _max_threshold(current: float | None, candidate: float) -> float | None:
+    if candidate <= 0:
+        return current
+    if current is None:
+        return candidate
+    return max(current, candidate)
+
+
+def _record_live_timing_slo(
+    counters: ProbeProfitabilityCounters,
+    *,
+    quote_age_a_secs: float,
+    quote_age_b_secs: float,
+    fetch_latency_a_secs: float,
+    fetch_latency_b_secs: float,
+    quote_delta_secs: float,
+    max_fetch_latency_secs: float,
+    max_pair_skew_secs: float,
+) -> None:
+    counters.live_quote_age_observations += 2
+    if quote_age_a_secs > counters.live_quote_age_slo_secs:
+        counters.live_quote_age_violations += 1
+    if quote_age_b_secs > counters.live_quote_age_slo_secs:
+        counters.live_quote_age_violations += 1
+    counters.live_fetch_latency_observations += 2
+    if max_fetch_latency_secs > 0 and fetch_latency_a_secs > max_fetch_latency_secs:
+        counters.live_fetch_latency_violations += 1
+    if max_fetch_latency_secs > 0 and fetch_latency_b_secs > max_fetch_latency_secs:
+        counters.live_fetch_latency_violations += 1
+    counters.live_pair_skew_observations += 1
+    if max_pair_skew_secs > 0 and quote_delta_secs > max_pair_skew_secs:
+        counters.live_pair_skew_violations += 1
+    counters.live_fetch_latency_threshold_min_secs = _min_threshold(
+        counters.live_fetch_latency_threshold_min_secs,
+        max_fetch_latency_secs,
+    )
+    counters.live_fetch_latency_threshold_max_secs = _max_threshold(
+        counters.live_fetch_latency_threshold_max_secs,
+        max_fetch_latency_secs,
+    )
+    counters.live_pair_skew_threshold_min_secs = _min_threshold(
+        counters.live_pair_skew_threshold_min_secs,
+        max_pair_skew_secs,
+    )
+    counters.live_pair_skew_threshold_max_secs = _max_threshold(
+        counters.live_pair_skew_threshold_max_secs,
+        max_pair_skew_secs,
+    )
 
 
 class RuntimeProbeCoverageError(RuntimeError):
@@ -558,6 +660,7 @@ def _write_status(
         "manifestPath": str(manifest_snapshot),
         "renderedConfigPath": str(rendered_config_path),
         "semanticCache": semantic_cache,
+        "executionReadiness": manifest_execution_readiness(manifest),
     }
     if heartbeat_path is not None:
         payload["heartbeatPath"] = str(heartbeat_path)
@@ -879,6 +982,43 @@ def _collect_runtime_probe_payload(
                 "observations": profitability["live_quote_age_slo"]["observations"],
                 "violations": profitability["live_quote_age_slo"]["violations"],
             },
+            "liveTimingSlo": {
+                "quoteAge": {
+                    "thresholdSeconds": profitability["live_timing_slo"]["quote_age"][
+                        "threshold_secs"
+                    ],
+                    "observations": profitability["live_timing_slo"]["quote_age"]["observations"],
+                    "violations": profitability["live_timing_slo"]["quote_age"]["violations"],
+                },
+                "fetchLatency": {
+                    "thresholdMode": profitability["live_timing_slo"]["fetch_latency"][
+                        "threshold_mode"
+                    ],
+                    "minThresholdSeconds": profitability["live_timing_slo"]["fetch_latency"][
+                        "min_threshold_secs"
+                    ],
+                    "maxThresholdSeconds": profitability["live_timing_slo"]["fetch_latency"][
+                        "max_threshold_secs"
+                    ],
+                    "observations": profitability["live_timing_slo"]["fetch_latency"][
+                        "observations"
+                    ],
+                    "violations": profitability["live_timing_slo"]["fetch_latency"]["violations"],
+                },
+                "pairSkew": {
+                    "thresholdMode": profitability["live_timing_slo"]["pair_skew"][
+                        "threshold_mode"
+                    ],
+                    "minThresholdSeconds": profitability["live_timing_slo"]["pair_skew"][
+                        "min_threshold_secs"
+                    ],
+                    "maxThresholdSeconds": profitability["live_timing_slo"]["pair_skew"][
+                        "max_threshold_secs"
+                    ],
+                    "observations": profitability["live_timing_slo"]["pair_skew"]["observations"],
+                    "violations": profitability["live_timing_slo"]["pair_skew"]["violations"],
+                },
+            },
             "sameVenueDryRun": {
                 "passes": profitability["same_venue_dry_run"]["passes"],
                 "failures": profitability["same_venue_dry_run"]["failures"],
@@ -1046,6 +1186,27 @@ def _empty_candidate_quality_payload() -> dict[str, object]:
             "maxQuoteAgeSeconds": 5.0,
             "observations": 0,
             "violations": 0,
+        },
+        "liveTimingSlo": {
+            "quoteAge": {
+                "thresholdSeconds": 5.0,
+                "observations": 0,
+                "violations": 0,
+            },
+            "fetchLatency": {
+                "thresholdMode": "per_candidate",
+                "minThresholdSeconds": None,
+                "maxThresholdSeconds": None,
+                "observations": 0,
+                "violations": 0,
+            },
+            "pairSkew": {
+                "thresholdMode": "per_candidate",
+                "minThresholdSeconds": None,
+                "maxThresholdSeconds": None,
+                "observations": 0,
+                "violations": 0,
+            },
         },
         "sameVenueDryRun": {
             "passes": 0,
@@ -1298,7 +1459,7 @@ def _zero_venue_pair_report(
     common_event_keys = sorted((source_event_keys & target_event_keys) - {""})
     if reason == "no_semantic_edge":
         report["blockerReason"] = (
-            "no_common_fixture"
+            CoverageBlockerReason.NO_COMMON_FIXTURE.value
             if not common_event_keys
             else CoverageBlockerReason.NO_SEMANTIC_EDGE.value
         )
@@ -2160,15 +2321,22 @@ def _record_probe_quality(
     fetch_latency_a_secs = float(quality.get("fetchLatencyASeconds") or 0.0)
     fetch_latency_b_secs = float(quality.get("fetchLatencyBSeconds") or 0.0)
     quote_delta_secs = float(quality.get("quoteDeltaSeconds") or 0.0)
+    max_fetch_latency_secs = float(quality.get("maxFetchLatencySeconds") or 0.0)
+    max_pair_skew_secs = float(quality.get("maxPairSkewSeconds") or 0.0)
     counters.quote_age_samples_secs.extend([quote_age_a_secs, quote_age_b_secs])
     counters.fetch_latency_samples_secs.extend([fetch_latency_a_secs, fetch_latency_b_secs])
     counters.pair_skew_samples_secs.append(quote_delta_secs)
     if str(quality.get("freshnessProfile") or "") == "live":
-        counters.live_quote_age_observations += 2
-        if quote_age_a_secs > counters.live_quote_age_slo_secs:
-            counters.live_quote_age_violations += 1
-        if quote_age_b_secs > counters.live_quote_age_slo_secs:
-            counters.live_quote_age_violations += 1
+        _record_live_timing_slo(
+            counters,
+            quote_age_a_secs=quote_age_a_secs,
+            quote_age_b_secs=quote_age_b_secs,
+            fetch_latency_a_secs=fetch_latency_a_secs,
+            fetch_latency_b_secs=fetch_latency_b_secs,
+            quote_delta_secs=quote_delta_secs,
+            max_fetch_latency_secs=max_fetch_latency_secs,
+            max_pair_skew_secs=max_pair_skew_secs,
+        )
     _record_same_venue_dry_run_quality(counters, quality)
     if rejection_bucket in _SEMANTIC_NON_EXECUTION_BUCKETS:
         counters.semantic_blocked_reasons[_semantic_blocked_reason(quality)] += 1

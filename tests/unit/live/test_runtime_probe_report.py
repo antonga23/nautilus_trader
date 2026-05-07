@@ -32,6 +32,27 @@ def _runtime_status_payload() -> dict[str, object]:
             "promotedSafetyTierCounts": {"EXECUTION_SAFE": 65, "TOPOLOGY_SAFE": 900},
             "strictExecutionBlockerCounts": {"void_states_present": 40},
         },
+        "executionReadiness": {
+            "validationMode": True,
+            "autoExecute": False,
+            "semanticCacheConfigured": True,
+            "venues": [
+                {
+                    "venue": "CLOUDBET",
+                    "executionEnabled": True,
+                    "executionDryRun": True,
+                    "environment": "paper",
+                    "baseCurrency": "PLAY_EUR",
+                },
+                {
+                    "venue": "SXBET",
+                    "executionEnabled": False,
+                    "executionDryRun": False,
+                    "environment": "prod",
+                    "baseCurrency": "USDC",
+                },
+            ],
+        },
         "runtimeProbe": {
             "graphEngine": "rust",
             "topologySource": "rust_semantic",
@@ -173,6 +194,27 @@ def _runtime_status_payload() -> dict[str, object]:
                     "observations": 8,
                     "violations": 0,
                 },
+                "liveTimingSlo": {
+                    "quoteAge": {
+                        "thresholdSeconds": 5.0,
+                        "observations": 8,
+                        "violations": 0,
+                    },
+                    "fetchLatency": {
+                        "thresholdMode": "per_candidate",
+                        "minThresholdSeconds": 1.5,
+                        "maxThresholdSeconds": 2.0,
+                        "observations": 8,
+                        "violations": 1,
+                    },
+                    "pairSkew": {
+                        "thresholdMode": "per_candidate",
+                        "minThresholdSeconds": 1.0,
+                        "maxThresholdSeconds": 1.0,
+                        "observations": 4,
+                        "violations": 0,
+                    },
+                },
                 "sameVenueDryRun": {
                     "passes": 2,
                     "failures": 1,
@@ -188,6 +230,57 @@ def _runtime_status_payload() -> dict[str, object]:
                 "topPositiveCandidates": [{"instrumentIdA": "a"}],
                 "topNegativeNearMisses": [{"instrumentIdA": "x"}],
             },
+            "latencyDiagnostics": {
+                "quote_event_to_strategy": {
+                    "count": 8,
+                    "p50_ms": 10.0,
+                    "p95_ms": 25.0,
+                    "p99_ms": 28.0,
+                    "max_ms": 30.0,
+                },
+                "quote_publish_to_strategy": {
+                    "count": 8,
+                    "p50_ms": 5.0,
+                    "p95_ms": 12.0,
+                    "p99_ms": 13.0,
+                    "max_ms": 15.0,
+                },
+                "instrument_refresh_reconcile": {
+                    "count": 2,
+                    "p50_ms": 100.0,
+                    "p95_ms": 120.0,
+                    "p99_ms": 120.0,
+                    "max_ms": 125.0,
+                },
+                "graph_scan": {
+                    "count": 8,
+                    "p50_ms": 1.2,
+                    "p95_ms": 3.1,
+                    "p99_ms": 3.5,
+                    "max_ms": 4.0,
+                },
+                "candidate_decision": {
+                    "count": 3,
+                    "p50_ms": 0.8,
+                    "p95_ms": 1.4,
+                    "p99_ms": 1.5,
+                    "max_ms": 1.6,
+                },
+                "order_construction": {
+                    "count": 0,
+                    "p50_ms": 0.0,
+                    "p95_ms": 0.0,
+                    "p99_ms": 0.0,
+                    "max_ms": 0.0,
+                },
+                "order_submit": {
+                    "count": 0,
+                    "p50_ms": 0.0,
+                    "p95_ms": 0.0,
+                    "p99_ms": 0.0,
+                    "max_ms": 0.0,
+                },
+            },
         },
     }
 
@@ -200,6 +293,10 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
     assert summary["semanticCache"]["promotedTemplateCount"] == 1248
     assert summary["semanticCache"]["promotedSafetyTierCounts"]["EXECUTION_SAFE"] == 65
     assert summary["semanticCache"]["strictExecutionBlockerCounts"] == {"void_states_present": 40}
+    assert summary["executionReadiness"]["validationMode"] is True
+    assert summary["executionReadiness"]["autoExecute"] is False
+    assert summary["executionReadiness"]["venues"][0]["environment"] == "paper"
+    assert summary["executionReadiness"]["venues"][0]["executionDryRun"] is True
     assert summary["graph"]["engine"] == "rust"
     assert summary["graph"]["topologySource"] == "rust_semantic"
     assert summary["graph"]["coverageHyperedgeCount"] == 482
@@ -215,6 +312,10 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
     assert summary["candidates"]["positiveTotal"] == 3
     assert summary["candidates"]["thresholdTotal"] == 2
     assert summary["candidates"]["crossVenueCandidateCount"] == 2
+    assert summary["latencyDiagnostics"]["quoteEventToStrategy"]["p95_ms"] == 25.0
+    assert summary["latencyDiagnostics"]["graphScan"]["p95_ms"] == 3.1
+    assert summary["latencyDiagnostics"]["instrumentRefreshReconcile"]["max_ms"] == 125.0
+    assert summary["latencyDiagnostics"]["diagnosticWarnings"] == []
     assert summary["candidateQuality"]["topRejectionBuckets"] == [
         {"key": "stale", "value": 5},
     ]
@@ -232,8 +333,11 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
     }
     assert summary["candidateQuality"]["latencyHistograms"]["quoteAgeSeconds"]["p95"] == 1.2
     assert summary["candidateQuality"]["liveQuoteAgeSlo"]["violations"] == 0
+    assert summary["candidateQuality"]["liveTimingSlo"]["fetchLatency"]["violations"] == 1
     assert summary["candidateQuality"]["sameVenueDryRun"]["passes"] == 2
-    assert summary["candidateQuality"]["diagnosticWarnings"] == []
+    assert summary["candidateQuality"]["diagnosticWarnings"] == [
+        "live_fetch_latency_slo_violations",
+    ]
     assert summary["providerQuotePollStats"]["CLOUDBET"]["cycle_id"] == 12
     assert summary["instrumentRefresh"]["staleQuoteTriggers"] == 1
     assert summary["semanticDiagnostics"]["supportedProviderNodeCount"] == 18
@@ -263,6 +367,21 @@ def test_runtime_probe_report_flags_missing_coverage_diagnostics():
     ]
 
 
+def test_runtime_probe_report_formats_execution_readiness_line():
+    module = _load_module()
+
+    rendered = module._format_text(
+        Path("status.json"),
+        module.summarize_payload(_runtime_status_payload()),
+    )
+
+    assert (
+        "execution_readiness validation_mode=True auto_execute=False semantic_cache=True"
+        in rendered
+    )
+    assert "CLOUDBET(exec=True,dry_run=True,env=paper,base=PLAY_EUR)" in rendered
+
+
 def test_runtime_probe_report_flags_legacy_semantic_blocked_artifacts():
     module = _load_module()
 
@@ -281,6 +400,24 @@ def test_runtime_probe_report_flags_legacy_semantic_blocked_artifacts():
         "semantic_blocked_without_blocker_samples",
         "missing_top_positive_candidates",
         "missing_top_negative_near_misses",
+    ]
+
+
+def test_runtime_probe_report_flags_missing_strategy_latency_diagnostics():
+    module = _load_module()
+
+    summary = module.summarize_payload(
+        {
+            "runtimeProbe": {
+                "quotedEdges": 4,
+                "positiveMarginCandidates": {"total": 1},
+                "thresholdMarginCandidates": {"total": 1},
+            },
+        },
+    )
+
+    assert summary["latencyDiagnostics"]["diagnosticWarnings"] == [
+        "missing_strategy_latency_diagnostics",
     ]
 
 
@@ -321,12 +458,16 @@ def test_runtime_probe_report_aggregates_multiple_artifacts():
     assert aggregate["thresholdCandidates"] == 3
     assert aggregate["crossVenueCandidates"] == 3
     assert aggregate["diagnosticWarningCounts"] == {
+        "live_fetch_latency_slo_violations": 1,
         "missing_top_negative_near_misses": 1,
         "missing_top_positive_candidates": 1,
         "semantic_blocked_without_blocker_samples": 1,
         "semantic_blocked_without_reason_breakdown": 1,
     }
     assert aggregate["graphDiagnosticWarningCounts"] == {}
+    assert aggregate["latencyDiagnosticWarningCounts"] == {
+        "missing_strategy_latency_diagnostics": 1,
+    }
 
 
 def test_runtime_probe_report_cli_outputs_json_and_text(tmp_path, monkeypatch, capsys):
@@ -360,6 +501,8 @@ def test_runtime_probe_report_cli_outputs_json_and_text(tmp_path, monkeypatch, c
     assert "top_semantic_blockers" in text_output
     assert "top_semantic_relationships" in text_output
     assert "zero_candidate_blockers fixture_identity_mismatch=2" in text_output
+    assert "strategy_latency quote_event_p95=25.0ms" in text_output
+    assert "refresh_reconcile_latency p95=120.0ms" in text_output
     assert "provider_poll CLOUDBET:cycle=12" in text_output
     assert "ts=request_started->response_received" in text_output
     assert "failures=2 rate_limits=1 backoff=1.0s" in text_output

@@ -95,6 +95,7 @@ class CoverageBlockerReason(str, Enum):
     SAME_MARKET_PARAMS_MISMATCH = "same_market_params_mismatch"
     PROVIDER_SCOPE_MISMATCH = "provider_scope_mismatch"
     FIXTURE_IDENTITY_MISMATCH = "fixture_identity_mismatch"
+    NO_COMMON_FIXTURE = "no_common_fixture"
     SCOPE_MISMATCH = "scope_mismatch"
     UNSUPPORTED_MARKET_FAMILY = "unsupported_market_family"
     UNKNOWN_SETTLEMENT = "unknown_settlement"

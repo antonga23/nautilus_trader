@@ -49,11 +49,13 @@ def _candidate_total(value: Any) -> int:
 def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[str, Any]:
     runtime = _as_dict(payload.get("runtimeProbe"))
     semantic_cache = _as_dict(payload.get("semanticCache"))
+    execution_readiness = _as_dict(payload.get("executionReadiness"))
     candidate_quality = _as_dict(runtime.get("candidateQuality"))
     venue_coverage = _as_dict(runtime.get("venueCoverage"))
     provider_quote_poll_stats = _as_dict(runtime.get("providerQuotePollStats"))
     instrument_refresh = _as_dict(runtime.get("instrumentRefresh"))
     coverage_diagnostics = _as_dict(runtime.get("coverageDiagnostics"))
+    latency_diagnostics = _normalized_latency_diagnostics(runtime.get("latencyDiagnostics"))
     semantic_diagnostics = _as_dict(runtime.get("semanticDiagnostics"))
     positive = runtime.get("positiveMarginCandidates")
     threshold = runtime.get("thresholdMarginCandidates")
@@ -82,6 +84,12 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
             ),
             "promotedSafetyTierCounts": semantic_cache.get("promotedSafetyTierCounts"),
             "strictExecutionBlockerCounts": semantic_cache.get("strictExecutionBlockerCounts"),
+        },
+        "executionReadiness": {
+            "validationMode": execution_readiness.get("validationMode"),
+            "autoExecute": execution_readiness.get("autoExecute"),
+            "semanticCacheConfigured": execution_readiness.get("semanticCacheConfigured"),
+            "venues": execution_readiness.get("venues"),
         },
         "graph": {
             "engine": runtime.get("graphEngine"),
@@ -121,6 +129,15 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
             "threshold": threshold,
             "crossVenueCandidateCount": venue_coverage.get("crossVenueCandidateCount"),
         },
+        "latencyDiagnostics": {
+            **latency_diagnostics,
+            "diagnosticWarnings": _latency_diagnostic_warnings(
+                latency_diagnostics,
+                quoted_edges=_int_value(runtime.get("quotedEdges")),
+                positive_candidates=_candidate_total(positive),
+                threshold_candidates=_candidate_total(threshold),
+            ),
+        },
         "candidateQuality": {
             "diagnosticWarnings": diagnostic_warnings,
             "marginBands": candidate_quality.get("marginBands"),
@@ -131,6 +148,7 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
             "marketFamilies": candidate_quality.get("marketFamilies"),
             "latencyHistograms": candidate_quality.get("latencyHistograms"),
             "liveQuoteAgeSlo": candidate_quality.get("liveQuoteAgeSlo"),
+            "liveTimingSlo": candidate_quality.get("liveTimingSlo"),
             "sameVenueDryRun": candidate_quality.get("sameVenueDryRun"),
             "topRejectionBuckets": _top_items(
                 _as_dict(candidate_quality.get("rejectionBuckets")),
@@ -167,7 +185,9 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
         "instrumentRefresh": instrument_refresh,
         "semanticDiagnostics": {
             "supportedProviderNodeCount": semantic_diagnostics.get("supportedProviderNodeCount"),
-            "unsupportedProviderNodeCount": semantic_diagnostics.get("unsupportedProviderNodeCount"),
+            "unsupportedProviderNodeCount": semantic_diagnostics.get(
+                "unsupportedProviderNodeCount"
+            ),
             "supportedProviderCoverageRatio": semantic_diagnostics.get(
                 "supportedProviderCoverageRatio",
             ),
@@ -195,9 +215,23 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
     }
 
 
+def _normalized_latency_diagnostics(value: Any) -> dict[str, Any]:
+    diagnostics = _as_dict(value)
+    return {
+        "quoteEventToStrategy": _as_dict(diagnostics.get("quote_event_to_strategy")),
+        "quotePublishToStrategy": _as_dict(diagnostics.get("quote_publish_to_strategy")),
+        "instrumentRefreshReconcile": _as_dict(diagnostics.get("instrument_refresh_reconcile")),
+        "graphScan": _as_dict(diagnostics.get("graph_scan")),
+        "candidateDecision": _as_dict(diagnostics.get("candidate_decision")),
+        "orderConstruction": _as_dict(diagnostics.get("order_construction")),
+        "orderSubmit": _as_dict(diagnostics.get("order_submit")),
+    }
+
+
 def aggregate_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
     warning_counts: dict[str, int] = {}
     graph_warning_counts: dict[str, int] = {}
+    latency_warning_counts: dict[str, int] = {}
     engine_counts: dict[str, int] = {}
     topology_counts: dict[str, int] = {}
     for summary in summaries:
@@ -211,6 +245,8 @@ def aggregate_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
             warning_counts[str(warning)] = warning_counts.get(str(warning), 0) + 1
         for warning in _as_dict(summary.get("graph")).get("diagnosticWarnings") or []:
             graph_warning_counts[str(warning)] = graph_warning_counts.get(str(warning), 0) + 1
+        for warning in _as_dict(summary.get("latencyDiagnostics")).get("diagnosticWarnings") or []:
+            latency_warning_counts[str(warning)] = latency_warning_counts.get(str(warning), 0) + 1
 
     return {
         "artifactCount": len(summaries),
@@ -245,6 +281,7 @@ def aggregate_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
         ),
         "diagnosticWarningCounts": dict(sorted(warning_counts.items())),
         "graphDiagnosticWarningCounts": dict(sorted(graph_warning_counts.items())),
+        "latencyDiagnosticWarningCounts": dict(sorted(latency_warning_counts.items())),
     }
 
 
@@ -273,6 +310,16 @@ def _diagnostic_warnings(candidate_quality: dict[str, Any]) -> list[str]:
         "zeroCandidateBlockerCounts",
     ):
         warnings.append("zero_candidate_blockers_without_counts")
+    live_timing = _as_dict(candidate_quality.get("liveTimingSlo"))
+    quote_age_slo = _as_dict(live_timing.get("quoteAge"))
+    fetch_latency_slo = _as_dict(live_timing.get("fetchLatency"))
+    pair_skew_slo = _as_dict(live_timing.get("pairSkew"))
+    if _int_value(quote_age_slo.get("violations")) > 0:
+        warnings.append("live_quote_age_slo_violations")
+    if _int_value(fetch_latency_slo.get("violations")) > 0:
+        warnings.append("live_fetch_latency_slo_violations")
+    if _int_value(pair_skew_slo.get("violations")) > 0:
+        warnings.append("live_pair_skew_slo_violations")
     if not candidate_quality.get("topPositiveCandidates"):
         warnings.append("missing_top_positive_candidates")
     if not candidate_quality.get("topNegativeNearMisses"):
@@ -295,6 +342,38 @@ def _graph_diagnostic_warnings(graph: dict[str, Any]) -> list[str]:
     return warnings
 
 
+def _latency_diagnostic_warnings(
+    latency: dict[str, Any],
+    *,
+    quoted_edges: int,
+    positive_candidates: int,
+    threshold_candidates: int,
+) -> list[str]:
+    warnings: list[str] = []
+    has_candidate_activity = quoted_edges > 0 or positive_candidates > 0 or threshold_candidates > 0
+    has_any_latency = any(isinstance(section, dict) and section for section in latency.values())
+    if has_candidate_activity and not has_any_latency:
+        return ["missing_strategy_latency_diagnostics"]
+    if has_candidate_activity and _int_value(_as_dict(latency.get("graphScan")).get("count")) == 0:
+        warnings.append("missing_graph_scan_latency")
+    if (
+        has_candidate_activity
+        and _int_value(_as_dict(latency.get("candidateDecision")).get("count")) == 0
+    ):
+        warnings.append("missing_candidate_decision_latency")
+    if (
+        quoted_edges > 0
+        and _int_value(_as_dict(latency.get("quoteEventToStrategy")).get("count")) == 0
+    ):
+        warnings.append("missing_quote_event_to_strategy_latency")
+    if (
+        quoted_edges > 0
+        and _int_value(_as_dict(latency.get("quotePublishToStrategy")).get("count")) == 0
+    ):
+        warnings.append("missing_quote_publish_to_strategy_latency")
+    return warnings
+
+
 def _load_json(path: Path) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
@@ -309,6 +388,7 @@ def _format_text(path: Path, summary: dict[str, Any]) -> str:
     lines = [
         f"{path}:",
         f"  status={summary.get('status')} node={summary.get('nodeId')}",
+        _format_execution_readiness_line(summary.get("executionReadiness")),
         f"  graph={graph.get('engine')}/{graph.get('topologySource')} "
         f"nodes={graph.get('nodes')} edges={graph.get('edges')} "
         f"quoted_edges={graph.get('quotedEdges')}",
@@ -324,6 +404,7 @@ def _format_text(path: Path, summary: dict[str, Any]) -> str:
     ]
     lines.extend(_format_coverage_lines(graph))
     lines.extend(_format_quality_lines(quality))
+    lines.extend(_format_latency_lines(summary.get("latencyDiagnostics")))
     provider_poll = _format_provider_poll_stats(summary.get("providerQuotePollStats"))
     if provider_poll:
         lines.append(f"  provider_poll {provider_poll}")
@@ -345,7 +426,36 @@ def _format_text(path: Path, summary: dict[str, Any]) -> str:
         lines.append(f"  warnings {', '.join(warnings)}")
     if graph_warnings:
         lines.append(f"  graph_warnings {', '.join(graph_warnings)}")
+    latency_warnings = _as_dict(summary.get("latencyDiagnostics")).get("diagnosticWarnings") or []
+    if latency_warnings:
+        lines.append(f"  latency_warnings {', '.join(latency_warnings)}")
     return "\n".join(lines)
+
+
+def _format_execution_readiness_line(value: Any) -> str:
+    readiness = value if isinstance(value, dict) else {}
+    venues = readiness.get("venues") or []
+    rendered_venues: list[str] = []
+    if isinstance(venues, list):
+        for venue in venues:
+            if not isinstance(venue, dict):
+                continue
+            rendered_venues.append(
+                (
+                    f"{venue.get('venue')}("
+                    f"exec={venue.get('executionEnabled', False)},"
+                    f"dry_run={venue.get('executionDryRun', False)},"
+                    f"env={venue.get('environment')},"
+                    f"base={venue.get('baseCurrency')})"
+                ),
+            )
+    return (
+        "  execution_readiness "
+        f"validation_mode={readiness.get('validationMode')} "
+        f"auto_execute={readiness.get('autoExecute')} "
+        f"semantic_cache={readiness.get('semanticCacheConfigured')} "
+        f"venues=[{', '.join(rendered_venues)}]"
+    )
 
 
 def _format_coverage_lines(graph: dict[str, Any]) -> list[str]:
@@ -360,8 +470,7 @@ def _format_coverage_lines(graph: dict[str, Any]) -> list[str]:
         blocker_counts = _as_dict(coverage_diagnostics.get("proofBlockerReasonCounts"))
         if blocker_counts:
             rendered = ", ".join(
-                f"{item['key']}={item['value']}"
-                for item in _top_items(blocker_counts, limit=5)
+                f"{item['key']}={item['value']}" for item in _top_items(blocker_counts, limit=5)
             )
             lines.append(f"  coverage_blockers {rendered}")
     return lines
@@ -405,6 +514,56 @@ def _format_quality_lines(quality: dict[str, Any]) -> list[str]:
             f"observations={live_slo.get('observations')} "
             f"violations={live_slo.get('violations')} "
             f"max={live_slo.get('maxQuoteAgeSeconds')}s",
+        )
+    live_timing_slo = quality.get("liveTimingSlo") or {}
+    if isinstance(live_timing_slo, dict) and live_timing_slo:
+        quote_age = _as_dict(live_timing_slo.get("quoteAge"))
+        fetch_latency = _as_dict(live_timing_slo.get("fetchLatency"))
+        pair_skew = _as_dict(live_timing_slo.get("pairSkew"))
+        if any(
+            _int_value(item.get("observations"))
+            for item in (quote_age, fetch_latency, pair_skew)
+            if isinstance(item, dict)
+        ):
+            lines.append(
+                "  live_timing_slo "
+                f"quote_age={quote_age.get('violations', 0)}/{quote_age.get('observations', 0)} "
+                f"fetch_latency={fetch_latency.get('violations', 0)}/{fetch_latency.get('observations', 0)} "
+                f"pair_skew={pair_skew.get('violations', 0)}/{pair_skew.get('observations', 0)}",
+            )
+    return lines
+
+
+def _format_latency_lines(value: Any) -> list[str]:
+    latency = value if isinstance(value, dict) else {}
+    if not latency:
+        return []
+    lines: list[str] = []
+    summary_bits: list[str] = []
+    for label, payload in (
+        ("quote_event", _as_dict(latency.get("quoteEventToStrategy"))),
+        ("quote_publish", _as_dict(latency.get("quotePublishToStrategy"))),
+        ("graph_scan", _as_dict(latency.get("graphScan"))),
+        ("candidate_decision", _as_dict(latency.get("candidateDecision"))),
+        ("order_construction", _as_dict(latency.get("orderConstruction"))),
+        ("order_submit", _as_dict(latency.get("orderSubmit"))),
+    ):
+        if _int_value(payload.get("count")) <= 0:
+            continue
+        summary_bits.append(
+            f"{label}_p95={payload.get('p95_ms', 0)}ms "
+            f"p99={payload.get('p99_ms', 0)}ms "
+            f"max={payload.get('max_ms', 0)}ms",
+        )
+    if summary_bits:
+        lines.append(f"  strategy_latency {'; '.join(summary_bits)}")
+    reconcile = _as_dict(latency.get("instrumentRefreshReconcile"))
+    if _int_value(reconcile.get("count")) > 0:
+        lines.append(
+            "  refresh_reconcile_latency "
+            f"p95={reconcile.get('p95_ms', 0)}ms "
+            f"p99={reconcile.get('p99_ms', 0)}ms "
+            f"max={reconcile.get('max_ms', 0)}ms",
         )
     return lines
 

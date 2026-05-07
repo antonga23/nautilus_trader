@@ -165,6 +165,15 @@ class SelectionPredicateBuilder:
 
         params = dict(selection.params)
         params.setdefault(bucket_key, bucket_value)
+        if selection.market_family == CanonicalMarketType.OTHER.value:
+            raw_bucket_market = selection.raw_market_type or selection.raw_market_name
+            if raw_bucket_market:
+                params.setdefault(
+                    "bucket_market",
+                    "".join(
+                        char if char.isalnum() else "_" for char in raw_bucket_market.lower()
+                    ).strip("_"),
+                )
         payload = {
             "instrument_id": selection.instrument_id,
             "sport": selection.sport,
@@ -202,15 +211,23 @@ class SelectionPredicateBuilder:
         raw_market = selection.raw_market_name.lower()
         if selection.market_family == CanonicalMarketType.CORRECT_SCORE.value:
             if selection.selection.startswith("SCORE_"):
-                return selection.selection, "score", selection.selection.removeprefix("SCORE_").replace("_", "-")
+                return (
+                    selection.selection,
+                    "score",
+                    selection.selection.removeprefix("SCORE_").replace("_", "-"),
+                )
             if selection.selection.startswith("ANY_OTHER_"):
                 return selection.selection, "bucket", selection.selection
         if "exact_goals" in raw_market:
             return selection.selection, "bucket", selection.selection
+        if "halftime_fulltime_result" in raw_market or "halftime_fulltime" in raw_market:
+            return selection.selection, "bucket", selection.selection
+        if "highest_scoring_quarter" in raw_market:
+            return selection.selection, "bucket", selection.selection
         if "highest_scoring_inning" in raw_market:
             return selection.selection, "bucket", selection.selection
         if "winning_margin" in raw_market or "margin" in raw_market:
-            return selection.selection, "margin", selection.selection
+            return selection.selection, "bucket", selection.selection
         if "set_score" in raw_market or "map_score" in raw_market or "exact_sets" in raw_market:
             return selection.selection, "bucket", selection.selection
         return None, "", ""
@@ -393,7 +410,7 @@ class CoverageEngine:
     ) -> tuple[list[CoverageProof], list[CoverageHyperedge]]:
         predicates = [SelectionPredicateBuilder.from_record(record) for record in records]
         groups: dict[
-            tuple[str, str, str, tuple[tuple[str, str], ...]],
+            tuple[str, str, str, str, tuple[tuple[str, str], ...]],
             list[SelectionPredicate],
         ] = defaultdict(list)
         for predicate in predicates:
@@ -401,6 +418,7 @@ class CoverageEngine:
                 predicate.sport,
                 predicate.scope,
                 predicate.market_family,
+                predicate.market_type,
                 _coverage_group_params(predicate),
             )
             groups[key].append(predicate)

@@ -142,6 +142,42 @@ def build_trading_node_config(manifest: BettingArbitrageNodeManifest) -> Trading
     )
 
 
+def manifest_execution_readiness(
+    manifest: BettingArbitrageNodeManifest,
+) -> dict[str, object]:
+    enabled_venues = [venue for venue in manifest.venues if venue.enabled]
+    venue_payloads: list[dict[str, object]] = []
+    for index, venue in enumerate(enabled_venues, start=1):
+        client_key = _client_key(venue, index)
+        api_url, ws_url = _resolve_venue_endpoints(venue)
+        venue_payloads.append(
+            {
+                "venue": venue.venue,
+                "clientKey": client_key,
+                "dataEnabled": venue.data_enabled,
+                "executionEnabled": venue.execution_enabled,
+                "executionDryRun": venue.execution_dry_run,
+                "environment": venue.environment or "prod",
+                "baseCurrency": _resolve_base_currency(venue),
+                "apiUrl": api_url,
+                "wsUrl": ws_url,
+                "sportKeys": sorted(venue.sport_keys) if venue.sport_keys else [],
+                "sportIds": sorted(venue.sport_ids) if venue.sport_ids else [],
+                "liveOnly": venue.live_only,
+                "loadAllInstruments": venue.load_all_instruments,
+                "instrumentLoadLimit": venue.instrument_load_limit,
+                "marketDiscoveryLimit": venue.market_discovery_limit,
+            },
+        )
+
+    return {
+        "validationMode": manifest.validation_mode,
+        "autoExecute": manifest.strategy.auto_execute,
+        "semanticCacheConfigured": bool(manifest.semantic_rule_cache_dir),
+        "venues": venue_payloads,
+    }
+
+
 def _add_venue_clients(
     *,
     venue: BettingVenueManifest,
@@ -525,6 +561,7 @@ __all__ = [
     "build_trading_node_config",
     "default_render_paths",
     "load_manifest",
+    "manifest_execution_readiness",
     "manifest_to_json",
     "render_trading_node_config_json",
     "write_manifest_snapshot",
