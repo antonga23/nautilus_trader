@@ -2373,6 +2373,31 @@ class TestBettingArbitrageNodeRunner:
             "failure_reasons": {},
         }
 
+    def test_runtime_probe_candidate_decision_latency_fills_strategy_gap(self):
+        counters = node_runner.ProbeProfitabilityCounters()
+        counters.candidate_decision_latency_ns.extend([1_000_000, 3_000_000])
+        profitability = counters.to_payload()
+
+        diagnostics = node_runner._runtime_latency_diagnostics(
+            {
+                "latency_diagnostics": {
+                    "candidate_decision": {
+                        "count": 0,
+                        "p50_ms": 0.0,
+                        "p95_ms": 0.0,
+                        "p99_ms": 0.0,
+                        "max_ms": 0.0,
+                    },
+                },
+            },
+            profitability,
+        )
+
+        assert diagnostics["candidate_decision"]["count"] == 2
+        assert diagnostics["candidate_decision"]["p95_ms"] == 1.0
+        assert diagnostics["candidate_decision"]["max_ms"] == 3.0
+        assert diagnostics["runtime_probe_candidate_decision"]["count"] == 2
+
     def test_runtime_probe_aggregates_same_venue_dry_run_reasons(self):
         counters = node_runner.ProbeProfitabilityCounters()
         quality = {

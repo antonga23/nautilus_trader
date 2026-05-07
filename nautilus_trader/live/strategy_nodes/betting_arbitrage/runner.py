@@ -76,6 +76,7 @@ class ProbeProfitabilityCounters:
     same_venue_dry_run_passes: int = 0
     same_venue_dry_run_failures: int = 0
     same_venue_dry_run_failure_reasons: Counter[str] = field(default_factory=Counter)
+    candidate_decision_latency_ns: list[int] = field(default_factory=list)
     samples: list[tuple[Decimal, dict[str, object]]] = field(default_factory=list)
     negative_samples: list[tuple[Decimal, dict[str, object]]] = field(default_factory=list)
 
@@ -152,6 +153,9 @@ class ProbeProfitabilityCounters:
                 "failures": self.same_venue_dry_run_failures,
                 "failure_reasons": dict(self.same_venue_dry_run_failure_reasons),
             },
+            "candidate_decision_latency": _latency_ns_payload(
+                self.candidate_decision_latency_ns,
+            ),
             "venue_pairs": {
                 key: dict(counter)
                 for key, counter in sorted(self.venue_pairs.items(), key=lambda item: item[0])
@@ -179,6 +183,19 @@ def _percentile_payload(samples: list[float]) -> dict[str, float | int]:
         "p95": round(_percentile(ordered, 0.95), 6),
         "p99": round(_percentile(ordered, 0.99), 6),
         "max": round(ordered[-1], 6),
+    }
+
+
+def _latency_ns_payload(samples: list[int]) -> dict[str, float | int]:
+    if not samples:
+        return {"count": 0, "p50_ms": 0.0, "p95_ms": 0.0, "p99_ms": 0.0, "max_ms": 0.0}
+    ordered_ms = sorted(sample / 1_000_000 for sample in samples)
+    return {
+        "count": len(ordered_ms),
+        "p50_ms": round(_percentile(ordered_ms, 0.50), 6),
+        "p95_ms": round(_percentile(ordered_ms, 0.95), 6),
+        "p99_ms": round(_percentile(ordered_ms, 0.99), 6),
+        "max_ms": round(ordered_ms[-1], 6),
     }
 
 
@@ -922,6 +939,7 @@ def _collect_runtime_probe_payload(
         quotes=snapshot["quotes"],
         min_profit_margin=min_profit_margin,
     )
+    latency_diagnostics = _runtime_latency_diagnostics(stats, profitability)
     venue_coverage = _venue_pair_coverage(
         strategy,
         edges=snapshot["edges"],
@@ -1033,7 +1051,7 @@ def _collect_runtime_probe_payload(
         },
         "instrumentRefresh": _instrument_refresh_payload(stats),
         "strategyStats": stats,
-        "latencyDiagnostics": stats.get("latency_diagnostics", {}),
+        "latencyDiagnostics": latency_diagnostics,
         "providerQuotePollStats": stats.get("provider_quote_poll_stats", {}),
         "semanticDiagnostics": semantic_diagnostics,
         "venueCoverage": venue_coverage,
@@ -1059,6 +1077,24 @@ def _instrument_refresh_payload(stats: dict[str, object]) -> dict[str, object]:
         "venues": stats.get("instrument_refresh_by_venue", {}),
         "reconcileLatency": latency_diagnostics.get("instrument_refresh_reconcile", {}),
     }
+
+
+def _runtime_latency_diagnostics(
+    stats: dict[str, object],
+    profitability: dict[str, object],
+) -> dict[str, object]:
+    diagnostics = dict(stats.get("latency_diagnostics") or {})
+    candidate_decision = diagnostics.get("candidate_decision")
+    candidate_decision_count = (
+        int(candidate_decision.get("count") or 0) if isinstance(candidate_decision, dict) else 0
+    )
+    probe_candidate_decision = profitability.get("candidate_decision_latency")
+    if candidate_decision_count == 0 and isinstance(probe_candidate_decision, dict):
+        diagnostics["candidate_decision"] = probe_candidate_decision
+    diagnostics["runtime_probe_candidate_decision"] = (
+        probe_candidate_decision if isinstance(probe_candidate_decision, dict) else {}
+    )
+    return diagnostics
 
 
 def _runtime_probe_satisfied(
@@ -2062,40 +2098,46 @@ def _probe_edge_profitability(
         source_node, target_node, quote_a, quote_b = quoted_edge
 
         counters.quoted_edges += 1
-        allow_same_venue = edge.same_venue_execution_eligible and not edge.execution_safe
-        quality = _probe_candidate_quality(
-            strategy,
-            edge=edge,
-            source_node=source_node,
-            target_node=target_node,
-            quote_a=quote_a,
-            quote_b=quote_b,
-            min_profit_margin=min_profit_margin,
-            allow_same_venue=allow_same_venue,
-        )
-        _record_probe_quality(counters, quality)
-        if not edge.execution_safe and not allow_same_venue:
-            continue
+        decision_started_ns = time.perf_counter_ns()
+        try:
+            allow_same_venue = edge.same_venue_execution_eligible and not edge.execution_safe
+            quality = _probe_candidate_quality(
+                strategy,
+                edge=edge,
+                source_node=source_node,
+                target_node=target_node,
+                quote_a=quote_a,
+                quote_b=quote_b,
+                min_profit_margin=min_profit_margin,
+                allow_same_venue=allow_same_venue,
+            )
+            _record_probe_quality(counters, quality)
+            if not edge.execution_safe and not allow_same_venue:
+                continue
 
-        opportunity = matcher.check_arbitrage(
-            source_node.instrument,
-            target_node.instrument,
-            odds_a=quote_a.odds,
-            odds_b=quote_b.odds,
-            allow_same_venue_execution_eligible=allow_same_venue,
-        )
-        if opportunity is None:
-            continue
+            opportunity = matcher.check_arbitrage(
+                source_node.instrument,
+                target_node.instrument,
+                odds_a=quote_a.odds,
+                odds_b=quote_b.odds,
+                allow_same_venue_execution_eligible=allow_same_venue,
+            )
+            if opportunity is None:
+                continue
 
-        _record_probe_opportunity(
-            counters,
-            opportunity=opportunity,
-            edge=edge,
-            source_node=source_node,
-            target_node=target_node,
-            allow_same_venue=allow_same_venue,
-            min_profit_margin=min_profit_margin,
-        )
+            _record_probe_opportunity(
+                counters,
+                opportunity=opportunity,
+                edge=edge,
+                source_node=source_node,
+                target_node=target_node,
+                allow_same_venue=allow_same_venue,
+                min_profit_margin=min_profit_margin,
+            )
+        finally:
+            counters.candidate_decision_latency_ns.append(
+                time.perf_counter_ns() - decision_started_ns,
+            )
 
     return counters.to_payload()
 
