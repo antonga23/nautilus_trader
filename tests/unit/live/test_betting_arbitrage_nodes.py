@@ -2808,6 +2808,10 @@ class TestBettingArbitrageNodeRunner:
         assert "$remote_bundle/$name.json" in workflow
         assert "node.log" in workflow
         assert "events.jsonl" in workflow
+        assert '"executionReadiness": status.get("executionReadiness")' in workflow
+        assert "runtime_probe_summary = dict(runtime)" in workflow
+        assert "latencyDiagnostics" in workflow
+        assert "providerQuotePollStats" in workflow
         assert "zeroCandidateVenuePairSamples" in workflow
         assert "venueQuoteHealth" in workflow
         assert "Upload deployed node status artifacts to transient CI storage" in workflow

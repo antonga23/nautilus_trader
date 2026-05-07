@@ -815,7 +815,7 @@ def _format_semantic_diagnostic_lines(value: Any) -> list[str]:
     top_patterns = diagnostics.get("unsupportedProviderPatterns") or []
     if isinstance(top_patterns, list) and top_patterns:
         rendered = ", ".join(
-            f"{item.get('key')}={item.get('value')}"
+            f"{item.get('key')}={item.get('value', item.get('count', item.get('total', 0)))}"
             for item in top_patterns
             if isinstance(item, dict)
         )

@@ -637,6 +637,7 @@ def test_runtime_probe_report_cli_outputs_json_and_text(tmp_path, monkeypatch, c
     assert "instrument_refresh_by_venue CLOUDBET:req=3 add=4 rm=2 stale=1" in text_output
     assert "semantic_diagnostics supported_nodes=18 unsupported_nodes=2" in text_output
     assert "unsupported_provider_patterns" in text_output
+    assert "=2" in text_output
 
 
 def test_venue_coverage_health_counts_venue_pair_edges():
