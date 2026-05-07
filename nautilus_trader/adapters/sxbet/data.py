@@ -49,6 +49,18 @@ from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
 
 
+def _latency_percentiles(values: list[float]) -> tuple[float, float, float]:
+    if not values:
+        return (0.0, 0.0, 0.0)
+    ordered = sorted(max(0.0, float(value)) for value in values)
+
+    def percentile(fraction: float) -> float:
+        index = min(len(ordered) - 1, max(0, round((len(ordered) - 1) * fraction)))
+        return ordered[index]
+
+    return (percentile(0.50), percentile(0.95), percentile(0.99))
+
+
 class SXBetDataClient(LiveMarketDataClient):
     """
     Provides a data client for the SX.bet venue.
@@ -202,6 +214,7 @@ class SXBetDataClient(LiveMarketDataClient):
         one_sided_count = 0
         two_sided_count = 0
         max_latency = 0.0
+        fetch_latencies_secs: list[float] = []
         failure_count = 0
         rate_limit_count = 0
         last_error: str | None = None
@@ -218,6 +231,7 @@ class SXBetDataClient(LiveMarketDataClient):
             quote_count += published
             order_count += orders
             max_latency = max(max_latency, elapsed)
+            fetch_latencies_secs.append(max(0.0, elapsed))
             if failed:
                 failure_count += 1
                 last_error = error
@@ -239,6 +253,7 @@ class SXBetDataClient(LiveMarketDataClient):
             one_sided_count=one_sided_count,
             two_sided_count=two_sided_count,
             max_latency=max_latency,
+            fetch_latency_percentiles=_latency_percentiles(fetch_latencies_secs),
             cycle_elapsed=cycle_elapsed,
             failure_count=failure_count,
             rate_limit_count=rate_limit_count,
@@ -325,6 +340,7 @@ class SXBetDataClient(LiveMarketDataClient):
         one_sided_count: int,
         two_sided_count: int,
         max_latency: float,
+        fetch_latency_percentiles: tuple[float, float, float] = (0.0, 0.0, 0.0),
         cycle_elapsed: float,
     ) -> None:
         now = time.monotonic()
@@ -351,6 +367,7 @@ class SXBetDataClient(LiveMarketDataClient):
         one_sided_count: int,
         two_sided_count: int,
         max_latency: float,
+        fetch_latency_percentiles: tuple[float, float, float],
         cycle_elapsed: float,
         failure_count: int = 0,
         rate_limit_count: int = 0,
@@ -378,6 +395,9 @@ class SXBetDataClient(LiveMarketDataClient):
                 cycle_elapsed_secs=cycle_elapsed,
                 max_fetch_latency_secs=max_latency,
                 poll_interval_secs=self._polling_interval,
+                fetch_latency_p50_secs=fetch_latency_percentiles[0],
+                fetch_latency_p95_secs=fetch_latency_percentiles[1],
+                fetch_latency_p99_secs=fetch_latency_percentiles[2],
                 quote_event_timestamp_source="request_started",
                 quote_init_timestamp_source="response_received",
                 failure_count=failure_count,

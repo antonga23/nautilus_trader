@@ -1071,6 +1071,7 @@ def _format_provider_poll_stats(value: Any) -> str:
             f"target={stats.get('poll_target_cycle_secs', 0)}s "
             f"next_sleep={stats.get('next_poll_sleep_secs', 0)}s "
             f"max_fetch={stats.get('max_fetch_latency_secs', 0)}s "
+            f"fetch_p95={stats.get('fetch_latency_p95_secs', 0)}s "
             f"concurrency={stats.get('concurrency', 0)}/{stats.get('max_concurrency', 0)} "
             f"ts={stats.get('quote_event_timestamp_source', '')}->{stats.get('quote_init_timestamp_source', '')} "
             f"backlog={stats.get('backlog_count', 0)} "
@@ -1395,6 +1396,9 @@ def _provider_poll_health(provider_quote_poll_stats: dict[str, Any]) -> dict[str
         max_concurrency = _int_value(stats.get("max_concurrency"))
         poll_target_cycle_secs = _float_value(stats.get("poll_target_cycle_secs"))
         max_fetch_latency_secs = _float_value(stats.get("max_fetch_latency_secs"))
+        fetch_latency_p50_secs = _float_value(stats.get("fetch_latency_p50_secs"))
+        fetch_latency_p95_secs = _float_value(stats.get("fetch_latency_p95_secs"))
+        fetch_latency_p99_secs = _float_value(stats.get("fetch_latency_p99_secs"))
         cycle_elapsed_secs = _float_value(stats.get("cycle_elapsed_secs"))
         source = str(stats.get("source") or "")
         request_fanout_per_quote = _ratio(request_count, quote_count)
@@ -1413,6 +1417,7 @@ def _provider_poll_health(provider_quote_poll_stats: dict[str, Any]) -> dict[str
             max_concurrency=max_concurrency,
             poll_target_cycle_secs=poll_target_cycle_secs,
             max_fetch_latency_secs=max_fetch_latency_secs,
+            fetch_latency_p95_secs=fetch_latency_p95_secs,
             cycle_elapsed_secs=cycle_elapsed_secs,
             request_fanout_per_quote=request_fanout_per_quote,
             line_fallback_ratio=line_fallback_ratio,
@@ -1444,6 +1449,9 @@ def _provider_poll_health(provider_quote_poll_stats: dict[str, Any]) -> dict[str
             "adaptiveConcurrency": bool(stats.get("adaptive_concurrency")),
             "pollTargetCycleSeconds": poll_target_cycle_secs,
             "maxFetchLatencySeconds": max_fetch_latency_secs,
+            "fetchLatencyP50Seconds": fetch_latency_p50_secs,
+            "fetchLatencyP95Seconds": fetch_latency_p95_secs,
+            "fetchLatencyP99Seconds": fetch_latency_p99_secs,
             "cycleElapsedSeconds": cycle_elapsed_secs,
         }
     return {
@@ -1467,6 +1475,7 @@ def _provider_poll_reasons(
     max_concurrency: int,
     poll_target_cycle_secs: float,
     max_fetch_latency_secs: float,
+    fetch_latency_p95_secs: float,
     cycle_elapsed_secs: float,
     request_fanout_per_quote: float,
     line_fallback_ratio: float,
@@ -1483,6 +1492,7 @@ def _provider_poll_reasons(
             cycle_elapsed_secs=cycle_elapsed_secs,
             poll_target_cycle_secs=poll_target_cycle_secs,
             max_fetch_latency_secs=max_fetch_latency_secs,
+            fetch_latency_p95_secs=fetch_latency_p95_secs,
             concurrency=concurrency,
             max_concurrency=max_concurrency,
         ),
@@ -1507,6 +1517,7 @@ def _provider_poll_latency_reasons(
     cycle_elapsed_secs: float,
     poll_target_cycle_secs: float,
     max_fetch_latency_secs: float,
+    fetch_latency_p95_secs: float,
     concurrency: int,
     max_concurrency: int,
 ) -> list[str]:
@@ -1514,7 +1525,7 @@ def _provider_poll_latency_reasons(
     target_missed = poll_target_cycle_secs > 0 and cycle_elapsed_secs > poll_target_cycle_secs
     if target_missed:
         reasons.append("poll_target_missed")
-    if max_fetch_latency_secs > 5.0:
+    if max(max_fetch_latency_secs, fetch_latency_p95_secs) > 5.0:
         reasons.append("slow_fetch_latency")
     if cycle_elapsed_secs > 5.0:
         reasons.append("poll_cycle_exceeds_live_quote_slo")

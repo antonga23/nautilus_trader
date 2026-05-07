@@ -37,6 +37,9 @@ class VenueQuotePollStats:
     cycle_elapsed_secs: float
     max_fetch_latency_secs: float
     poll_interval_secs: float
+    fetch_latency_p50_secs: float = 0.0
+    fetch_latency_p95_secs: float = 0.0
+    fetch_latency_p99_secs: float = 0.0
     poll_target_cycle_secs: float = 0.0
     next_poll_sleep_secs: float = 0.0
     min_concurrency: int = 1
@@ -97,6 +100,9 @@ def encode_venue_quote_poll_stats(
     cycle_elapsed_secs: float = 0.0,
     max_fetch_latency_secs: float = 0.0,
     poll_interval_secs: float = 0.0,
+    fetch_latency_p50_secs: float = 0.0,
+    fetch_latency_p95_secs: float = 0.0,
+    fetch_latency_p99_secs: float = 0.0,
     poll_target_cycle_secs: float = 0.0,
     next_poll_sleep_secs: float = 0.0,
     min_concurrency: int = 1,
@@ -131,6 +137,9 @@ def encode_venue_quote_poll_stats(
         "cycle_elapsed_secs": max(0.0, float(cycle_elapsed_secs)),
         "max_fetch_latency_secs": max(0.0, float(max_fetch_latency_secs)),
         "poll_interval_secs": max(0.0, float(poll_interval_secs)),
+        "fetch_latency_p50_secs": max(0.0, float(fetch_latency_p50_secs)),
+        "fetch_latency_p95_secs": max(0.0, float(fetch_latency_p95_secs)),
+        "fetch_latency_p99_secs": max(0.0, float(fetch_latency_p99_secs)),
         "poll_target_cycle_secs": max(0.0, float(poll_target_cycle_secs)),
         "next_poll_sleep_secs": max(0.0, float(next_poll_sleep_secs)),
         "min_concurrency": max(1, int(min_concurrency)),
@@ -205,6 +214,9 @@ def decode_venue_quote_poll_stats(raw: bytes | None) -> VenueQuotePollStats | No
             cycle_elapsed_secs=float(payload.get("cycle_elapsed_secs") or 0.0),
             max_fetch_latency_secs=float(payload.get("max_fetch_latency_secs") or 0.0),
             poll_interval_secs=float(payload.get("poll_interval_secs") or 0.0),
+            fetch_latency_p50_secs=float(payload.get("fetch_latency_p50_secs") or 0.0),
+            fetch_latency_p95_secs=float(payload.get("fetch_latency_p95_secs") or 0.0),
+            fetch_latency_p99_secs=float(payload.get("fetch_latency_p99_secs") or 0.0),
             poll_target_cycle_secs=float(payload.get("poll_target_cycle_secs") or 0.0),
             next_poll_sleep_secs=float(payload.get("next_poll_sleep_secs") or 0.0),
             min_concurrency=max(1, int(payload.get("min_concurrency") or 1)),

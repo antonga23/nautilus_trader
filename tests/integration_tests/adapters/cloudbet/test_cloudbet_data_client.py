@@ -323,6 +323,7 @@ class TestCloudbetDataClient:
         assert b'"request_count":1' in stats
         assert b'"event_request_count":1' in stats
         assert b'"line_request_count":0' in stats
+        assert b'"fetch_latency_p95_secs"' in stats
         assert b'"pruned_subscription_count":0' in stats
 
     @pytest.mark.asyncio

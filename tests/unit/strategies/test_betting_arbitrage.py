@@ -410,6 +410,9 @@ class TestBettingArbitrageStrategy:  # skipcq
                 backlog_count=2,
                 cycle_elapsed_secs=1.25,
                 max_fetch_latency_secs=0.4,
+                fetch_latency_p50_secs=0.12,
+                fetch_latency_p95_secs=0.32,
+                fetch_latency_p99_secs=0.4,
                 poll_interval_secs=3.0,
                 poll_target_cycle_secs=4.0,
                 next_poll_sleep_secs=1.0,
@@ -448,6 +451,9 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(stats["SXBET"]["refilled_subscription_count"] == 1)
         ensure(stats["SXBET"]["backlog_count"] == 2)
         ensure(stats["SXBET"]["max_fetch_latency_secs"] == 0.4)
+        ensure(stats["SXBET"]["fetch_latency_p50_secs"] == 0.12)
+        ensure(stats["SXBET"]["fetch_latency_p95_secs"] == 0.32)
+        ensure(stats["SXBET"]["fetch_latency_p99_secs"] == 0.4)
         ensure(stats["SXBET"]["poll_target_cycle_secs"] == 4.0)
         ensure(stats["SXBET"]["next_poll_sleep_secs"] == 1.0)
         ensure(stats["SXBET"]["min_concurrency"] == 2)

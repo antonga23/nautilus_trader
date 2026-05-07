@@ -58,6 +58,18 @@ from nautilus_trader.model.instruments.crypto_betting import CryptoBettingInstru
 from nautilus_trader.model.orderbook import OrderBook
 
 
+def _latency_percentiles(values: list[float]) -> tuple[float, float, float]:
+    if not values:
+        return (0.0, 0.0, 0.0)
+    ordered = sorted(max(0.0, float(value)) for value in values)
+
+    def percentile(fraction: float) -> float:
+        index = min(len(ordered) - 1, max(0, round((len(ordered) - 1) * fraction)))
+        return ordered[index]
+
+    return (percentile(0.50), percentile(0.95), percentile(0.99))
+
+
 class CloudbetDataClient(LiveMarketDataClient):
     """
     Provides a data client of common methods for Cloudbet adapter.
@@ -525,6 +537,7 @@ class CloudbetDataClient(LiveMarketDataClient):
             event_request_count = 0
             request_count = line_request_count
         published = 0
+        fetch_latencies_secs: list[float] = []
         max_fetch_latency_secs = 0.0
         failure_count = 0
         rate_limit_count = 0
@@ -550,6 +563,7 @@ class CloudbetDataClient(LiveMarketDataClient):
                 max_fetch_latency_secs,
                 max(0.0, (quote.ts_init - quote.ts_event) / 1_000_000_000),
             )
+            fetch_latencies_secs.append(max(0.0, (quote.ts_init - quote.ts_event) / 1_000_000_000))
         refilled_subscription_count = 0
         if pruned_subscription_count > 0:
             refilled_subscription_count = self._refill_quote_subscriptions(
@@ -574,6 +588,7 @@ class CloudbetDataClient(LiveMarketDataClient):
             refilled_subscription_count=refilled_subscription_count,
             cycle_elapsed=cycle_elapsed,
             max_fetch_latency_secs=max_fetch_latency_secs,
+            fetch_latency_percentiles=_latency_percentiles(fetch_latencies_secs),
             failure_count=failure_count,
             rate_limit_count=rate_limit_count,
             backoff_secs=float(rate_limit_count),
@@ -960,6 +975,7 @@ class CloudbetDataClient(LiveMarketDataClient):
         refilled_subscription_count: int,
         cycle_elapsed: float,
         max_fetch_latency_secs: float,
+        fetch_latency_percentiles: tuple[float, float, float] = (0.0, 0.0, 0.0),
         failure_count: int = 0,
         rate_limit_count: int = 0,
         backoff_secs: float = 0.0,
@@ -987,6 +1003,9 @@ class CloudbetDataClient(LiveMarketDataClient):
                 cycle_elapsed_secs=cycle_elapsed,
                 max_fetch_latency_secs=max_fetch_latency_secs,
                 poll_interval_secs=self._quote_polling_interval,
+                fetch_latency_p50_secs=fetch_latency_percentiles[0],
+                fetch_latency_p95_secs=fetch_latency_percentiles[1],
+                fetch_latency_p99_secs=fetch_latency_percentiles[2],
                 poll_target_cycle_secs=self._quote_poll_target_cycle_secs,
                 next_poll_sleep_secs=self._next_quote_poll_sleep_secs,
                 min_concurrency=self._quote_poll_min_concurrency,

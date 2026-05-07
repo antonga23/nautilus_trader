@@ -106,6 +106,9 @@ def _runtime_status_payload() -> dict[str, object]:
                     "quote_count": 8,
                     "cycle_elapsed_secs": 1.25,
                     "max_fetch_latency_secs": 0.2,
+                    "fetch_latency_p50_secs": 0.1,
+                    "fetch_latency_p95_secs": 0.18,
+                    "fetch_latency_p99_secs": 0.2,
                     "quote_event_timestamp_source": "request_started",
                     "quote_init_timestamp_source": "response_received",
                     "backlog_count": 6,
@@ -693,6 +696,7 @@ def test_runtime_probe_report_cli_outputs_json_and_text(tmp_path, monkeypatch, c
     )
     assert "refresh_reconcile_latency p95=120.0ms" in text_output
     assert "provider_poll CLOUDBET:cycle=12" in text_output
+    assert "fetch_p95=0.18s" in text_output
     assert "provider_poll_health overall=fail CLOUDBET:status=fail" in text_output
     assert "corpus_coverage provider=SXBET sports=3/6 selections=842" in text_output
     assert "venue_coverage_health overall=warn CLOUDBET:status=warn" in text_output
