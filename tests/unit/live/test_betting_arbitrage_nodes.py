@@ -2913,6 +2913,10 @@ class TestBettingArbitrageNodeRunner:
             "strictExecutionBlockerCounts": {
                 "same_venue_risk_engine_elevation_required": 1,
             },
+            "promotedMarketFamilyCounts": {},
+            "executionSafeMarketFamilyCounts": {},
+            "sameVenueEligibleMarketFamilyCounts": {},
+            "providerCorpusCoverage": {},
             "coverageProofCount": 0,
             "coverageHyperedgeCount": 0,
             "compatibilityVersion": None,
@@ -3111,6 +3115,10 @@ class TestBettingArbitrageNodeRunner:
         assert policy["fixtureSuspectReason"] == "none"
         assert policy["diagnosticSuspect"] is True
         assert quality["wouldExecuteSameVenueDryRun"] is True
+        assert quality["rawProfitMargin"] == quality["feeAdjustedProfitMargin"]
+        assert quality["feeDrag"] == "0"
+        assert quality["takerFeeRateA"] == "0"
+        assert quality["takerFeeRateB"] == "0"
 
     def test_instrument_refresh_payload_includes_per_venue_counts(self):
         payload = node_runner._instrument_refresh_payload(

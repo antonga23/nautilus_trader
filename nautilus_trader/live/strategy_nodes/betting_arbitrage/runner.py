@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from nautilus_trader.adapters.betting.market_matcher import ArbitrageOpportunity
 from nautilus_trader.adapters.betting.semantics import CoverageBlockerReason
 from nautilus_trader.adapters.betting.semantics import MarketNormalizer
 from nautilus_trader.live.strategy_nodes.betting_arbitrage.builder import build_trading_node_config
@@ -76,6 +77,8 @@ class ProbeProfitabilityCounters:
     same_venue_dry_run_passes: int = 0
     same_venue_dry_run_failures: int = 0
     same_venue_dry_run_failure_reasons: Counter[str] = field(default_factory=Counter)
+    fee_adjusted_edges: int = 0
+    fee_drag_samples: list[float] = field(default_factory=list)
     candidate_decision_latency_ns: list[int] = field(default_factory=list)
     samples: list[tuple[Decimal, dict[str, object]]] = field(default_factory=list)
     negative_samples: list[tuple[Decimal, dict[str, object]]] = field(default_factory=list)
@@ -152,6 +155,10 @@ class ProbeProfitabilityCounters:
                 "passes": self.same_venue_dry_run_passes,
                 "failures": self.same_venue_dry_run_failures,
                 "failure_reasons": dict(self.same_venue_dry_run_failure_reasons),
+            },
+            "fee_adjustment": {
+                "evaluated_edges": self.fee_adjusted_edges,
+                "fee_drag_margin": _percentile_payload(self.fee_drag_samples),
             },
             "candidate_decision_latency": _latency_ns_payload(
                 self.candidate_decision_latency_ns,
@@ -975,6 +982,10 @@ def _collect_runtime_probe_payload(
         "coverageProofCount": stats.get("opportunity_graph_coverage_proof_count", 0),
         "coverageHyperedgeCount": stats.get("opportunity_graph_coverage_hyperedge_count", 0),
         "coverageDiagnostics": stats.get("opportunity_graph_coverage_summary", {}),
+        "feePolicy": {
+            "venueTakerFeeRates": stats.get("venue_taker_fee_rates", {}),
+            "venueWinningProfitFeeRates": stats.get("venue_winning_profit_fee_rates", {}),
+        },
         "semanticMatchInstruments": len(snapshot["matched_node_ids"]),
         "quotedSemanticMatchInstruments": sum(
             1 for node_id in snapshot["matched_node_ids"] if node_id in snapshot["quotes"]
@@ -1053,6 +1064,10 @@ def _collect_runtime_probe_payload(
                 "passes": profitability["same_venue_dry_run"]["passes"],
                 "failures": profitability["same_venue_dry_run"]["failures"],
                 "failureReasons": profitability["same_venue_dry_run"]["failure_reasons"],
+            },
+            "feeAdjustment": {
+                "evaluatedEdges": profitability["fee_adjustment"]["evaluated_edges"],
+                "feeDragMargin": profitability["fee_adjustment"]["fee_drag_margin"],
             },
             "venuePairs": profitability["venue_pairs"],
             "marketFamilies": profitability["market_families"],
@@ -1262,6 +1277,10 @@ def _empty_candidate_quality_payload() -> dict[str, object]:
             "passes": 0,
             "failures": 0,
             "failureReasons": {},
+        },
+        "feeAdjustment": {
+            "evaluatedEdges": 0,
+            "feeDragMargin": {"count": 0, "p50": 0.0, "p95": 0.0, "p99": 0.0, "max": 0.0},
         },
         "venuePairs": {},
         "marketFamilies": {},
@@ -2138,6 +2157,7 @@ def _probe_edge_profitability(
             )
             if opportunity is None:
                 continue
+            opportunity = _strategy_fee_adjusted_opportunity(strategy, opportunity)
 
             _record_probe_opportunity(
                 counters,
@@ -2169,10 +2189,32 @@ def _probe_candidate_quality(
 ) -> dict[str, object]:
     odds_a = Decimal(str(quote_a.odds))
     odds_b = Decimal(str(quote_b.odds))
-    probability_a = Decimal(1) / odds_a
-    probability_b = Decimal(1) / odds_b
-    total_probability = probability_a + probability_b
-    profit_margin = (Decimal(1) / total_probability) - Decimal(1)
+    raw_probability_a = Decimal(1) / odds_a
+    raw_probability_b = Decimal(1) / odds_b
+    raw_total_probability = raw_probability_a + raw_probability_b
+    raw_profit_margin = (Decimal(1) / raw_total_probability) - Decimal(1)
+    match_type = _probe_match_type(source_node.instrument, target_node.instrument)
+    opportunity = _strategy_fee_adjusted_opportunity(
+        strategy,
+        ArbitrageOpportunity(
+            instrument_a=source_node.instrument,
+            instrument_b=target_node.instrument,
+            probability_a=raw_probability_a,
+            probability_b=raw_probability_b,
+            total_probability=raw_total_probability,
+            profit_margin=raw_profit_margin,
+            odds_a=odds_a,
+            odds_b=odds_b,
+            is_same_venue=source_node.instrument.venue_name == target_node.instrument.venue_name,
+            match_type=match_type,
+            raw_probability_a=raw_probability_a,
+            raw_probability_b=raw_probability_b,
+            raw_total_probability=raw_total_probability,
+            raw_profit_margin=raw_profit_margin,
+        ),
+    )
+    total_probability = opportunity.total_probability
+    profit_margin = opportunity.profit_margin
     observed_ns = max(int(quote_a.received_ns), int(quote_b.received_ns))
     quote_age_a_secs = strategy.quote_age_secs(observed_ns, quote_a.quote)
     quote_age_b_secs = strategy.quote_age_secs(observed_ns, quote_b.quote)
@@ -2259,6 +2301,18 @@ def _probe_candidate_quality(
         "outcomeB": target_node.outcome,
         "profitMargin": str(profit_margin),
         "totalProbability": str(total_probability),
+        "rawProfitMargin": str(raw_profit_margin),
+        "rawTotalProbability": str(raw_total_probability),
+        "feeAdjusted": opportunity.fee_adjusted,
+        "feeAdjustedProfitMargin": str(opportunity.profit_margin),
+        "feeAdjustedTotalProbability": str(opportunity.total_probability),
+        "feeDrag": str(opportunity.fee_drag),
+        "feeAdjustedOddsA": str(opportunity.fee_adjusted_odds_a or opportunity.odds_a),
+        "feeAdjustedOddsB": str(opportunity.fee_adjusted_odds_b or opportunity.odds_b),
+        "takerFeeRateA": str(opportunity.taker_fee_rate_a),
+        "takerFeeRateB": str(opportunity.taker_fee_rate_b),
+        "winningProfitFeeRateA": str(opportunity.winning_profit_fee_rate_a),
+        "winningProfitFeeRateB": str(opportunity.winning_profit_fee_rate_b),
         "gapToZero": str(max(Decimal(0), -profit_margin)),
         "gapToMinProfitThreshold": str(max(Decimal(0), min_profit_margin - profit_margin)),
         "marginBand": _probe_margin_band(profit_margin),
@@ -2302,6 +2356,21 @@ def _probe_candidate_quality(
         "sameVenueRiskPolicy": same_venue_policy,
         "wouldExecuteSameVenueDryRun": would_execute_same_venue,
     }
+
+
+def _strategy_fee_adjusted_opportunity(strategy, opportunity: ArbitrageOpportunity):
+    adjuster = getattr(strategy, "fee_adjusted_opportunity", None)
+    if callable(adjuster):
+        return adjuster(opportunity)
+    return opportunity
+
+
+def _probe_match_type(instrument_a, instrument_b) -> str:
+    if getattr(instrument_a, "market_name", None) == getattr(instrument_b, "market_name", None):
+        return "same_market"
+    if getattr(instrument_a, "venue_name", None) == getattr(instrument_b, "venue_name", None):
+        return "cross_market"
+    return "cross_venue"
 
 
 def _semantic_fixture_suspect_reason(
@@ -2396,6 +2465,9 @@ def _record_probe_quality(
     counters.margin_bands[margin_band] += 1
     counters.rejection_buckets[rejection_bucket] += 1
     counters.freshness_profiles[str(quality.get("freshnessProfile") or "unknown")] += 1
+    if quality.get("feeAdjusted"):
+        counters.fee_adjusted_edges += 1
+        counters.fee_drag_samples.append(float(quality.get("feeDrag") or 0.0))
     quote_age_a_secs = float(quality.get("quoteAgeASeconds") or 0.0)
     quote_age_b_secs = float(quality.get("quoteAgeBSeconds") or 0.0)
     fetch_latency_a_secs = float(quality.get("fetchLatencyASeconds") or 0.0)

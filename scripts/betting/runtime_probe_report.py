@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -158,6 +159,7 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
             "threshold": threshold,
             "crossVenueCandidateCount": venue_coverage.get("crossVenueCandidateCount"),
         },
+        "feePolicy": _as_dict(runtime.get("feePolicy")),
         "latencyDiagnostics": latency_block,
         "candidateQuality": {
             "diagnosticWarnings": diagnostic_warnings,
@@ -171,6 +173,7 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
             "liveQuoteAgeSlo": candidate_quality.get("liveQuoteAgeSlo"),
             "liveTimingSlo": candidate_quality.get("liveTimingSlo"),
             "sameVenueDryRun": candidate_quality.get("sameVenueDryRun"),
+            "feeAdjustment": candidate_quality.get("feeAdjustment"),
             "topRejectionBuckets": _top_items(
                 _as_dict(candidate_quality.get("rejectionBuckets")),
                 limit=top_limit,
@@ -880,6 +883,7 @@ def _format_text(path: Path, summary: dict[str, Any]) -> str:
     execution_safety = _format_execution_safety_line(summary.get("executionSafety"))
     if execution_safety:
         lines.append(execution_safety)
+    lines.extend(_format_fee_policy_lines(summary.get("feePolicy")))
     lines.extend(_format_semantic_cache_family_lines(summary.get("semanticCache")))
     lines.extend(_format_coverage_lines(graph))
     lines.extend(_format_quality_lines(quality))
@@ -936,6 +940,19 @@ def _format_operator_health_line(value: Any) -> str:
         f"reason_count={health.get('reasonCount', 0)} "
         f"reasons=[{rendered_reasons}]"
     )
+
+
+def _format_fee_policy_lines(value: Any) -> list[str]:
+    fee_policy = value if isinstance(value, dict) else {}
+    taker = _as_dict(fee_policy.get("venueTakerFeeRates"))
+    winning = _as_dict(fee_policy.get("venueWinningProfitFeeRates"))
+    if not taker and not winning:
+        return []
+    return [
+        "  fee_policy "
+        f"taker={dict(sorted(taker.items()))} "
+        f"winning_profit={dict(sorted(winning.items()))}"
+    ]
 
 
 def _format_execution_readiness_line(value: Any) -> str:
@@ -1237,7 +1254,12 @@ def _format_provider_poll_health(value: Any) -> str:
         payload = _as_dict(raw_payload)
         reasons = payload.get("reasons") or []
         rendered.append(
-            f"{venue}:status={payload.get('status')} reasons={','.join(str(r) for r in reasons)}",
+            f"{venue}:status={payload.get('status')} "
+            f"shards={payload.get('estimatedShardsForTarget', 1)} "
+            f"headroom={payload.get('cycleHeadroomSeconds', 0)}s "
+            f"fanout={payload.get('requestFanoutPerQuote', 0)} "
+            f"yield={payload.get('quoteYieldRatio', 0)} "
+            f"reasons={','.join(str(r) for r in reasons)}",
         )
     return f"overall={health.get('overall')} " + "; ".join(rendered)
 
@@ -1569,6 +1591,12 @@ def _provider_poll_health(provider_quote_poll_stats: dict[str, Any]) -> dict[str
         source = str(stats.get("source") or "")
         request_fanout_per_quote = _ratio(request_count, quote_count)
         line_fallback_ratio = _ratio(line_request_count, request_count)
+        cycle_headroom_secs = poll_target_cycle_secs - cycle_elapsed_secs
+        estimated_shards_for_target = (
+            max(1, math.ceil(cycle_elapsed_secs / poll_target_cycle_secs))
+            if poll_target_cycle_secs > 0
+            else 1
+        )
         reasons = _provider_poll_reasons(
             source=source,
             failure_count=failure_count,
@@ -1609,6 +1637,11 @@ def _provider_poll_health(provider_quote_poll_stats: dict[str, Any]) -> dict[str
             "quoteCount": quote_count,
             "requestFanoutPerQuote": round(request_fanout_per_quote, 4),
             "lineFallbackRatio": round(line_fallback_ratio, 4),
+            "quoteYieldRatio": round(_ratio(quote_count, request_count), 4),
+            "requestsPerSecond": round(_ratio(request_count, cycle_elapsed_secs), 4),
+            "quotesPerSecond": round(_ratio(quote_count, cycle_elapsed_secs), 4),
+            "cycleHeadroomSeconds": round(cycle_headroom_secs, 4),
+            "estimatedShardsForTarget": estimated_shards_for_target,
             "source": source,
             "concurrency": concurrency,
             "maxConcurrency": max_concurrency,

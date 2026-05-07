@@ -100,6 +100,10 @@ def _runtime_status_payload() -> dict[str, object]:
                 "hyperedgeSafetyTierCounts": {"EXECUTION_SAFE": 4},
                 "proofBlockerReasonCounts": {"void_settlement": 3},
             },
+            "feePolicy": {
+                "venueTakerFeeRates": {"POLYMARKET": "0.03"},
+                "venueWinningProfitFeeRates": {},
+            },
             "graphNodes": 40,
             "graphEdges": 22,
             "graphQuoteStates": 15,
@@ -267,6 +271,16 @@ def _runtime_status_payload() -> dict[str, object]:
                     "passes": 2,
                     "failures": 1,
                     "failureReasons": {"freshQuotes": 1},
+                },
+                "feeAdjustment": {
+                    "evaluatedEdges": 8,
+                    "feeDragMargin": {
+                        "count": 8,
+                        "p50": 0.001,
+                        "p95": 0.003,
+                        "p99": 0.004,
+                        "max": 0.004,
+                    },
                 },
                 "blockerSamples": {
                     "void_settlement": [
@@ -449,6 +463,9 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
     assert summary["candidateQuality"]["liveQuoteAgeSlo"]["violations"] == 0
     assert summary["candidateQuality"]["liveTimingSlo"]["fetchLatency"]["violations"] == 1
     assert summary["candidateQuality"]["sameVenueDryRun"]["passes"] == 2
+    assert summary["candidateQuality"]["feeAdjustment"]["evaluatedEdges"] == 8
+    assert summary["candidateQuality"]["feeAdjustment"]["feeDragMargin"]["p95"] == 0.003
+    assert summary["feePolicy"]["venueTakerFeeRates"] == {"POLYMARKET": "0.03"}
     assert summary["candidateQuality"]["diagnosticWarnings"] == [
         "live_fetch_latency_slo_violations",
     ]
@@ -528,8 +545,9 @@ def test_runtime_probe_report_formats_execution_readiness_line():
         in rendered
     )
     assert "CLOUDBET(exec=True,dry_run=True,env=paper,base=PLAY_EUR)" in rendered
+    assert "fee_policy taker={'POLYMARKET': '0.03'} winning_profit={}" in rendered
     assert "semantic_cache_execution_safe_families TOTALS + TOTALS=25" in rendered
-    assert "corpus_coverage provider=SXBET sports=3/6 selections=842" in rendered
+    assert "corpus_coverage provider=SXBET mode=active_live sports=3/6 selections=842" in rendered
 
 
 def test_runtime_probe_report_flags_legacy_semantic_blocked_artifacts():
@@ -898,6 +916,11 @@ def test_provider_poll_health_explains_cloudbet_poll_fanout_bottlenecks():
     assert cloudbet["status"] == "warn"
     assert cloudbet["requestFanoutPerQuote"] == 2.5
     assert cloudbet["lineFallbackRatio"] == 0.75
+    assert cloudbet["quoteYieldRatio"] == 0.4
+    assert cloudbet["requestsPerSecond"] == 4.878
+    assert cloudbet["quotesPerSecond"] == 1.9512
+    assert cloudbet["cycleHeadroomSeconds"] == -4.2
+    assert cloudbet["estimatedShardsForTarget"] == 3
     assert cloudbet["prunedSubscriptionCount"] == 3
     assert cloudbet["refilledSubscriptionCount"] == 0
     assert cloudbet["pollTargetCycleSeconds"] == 4.0

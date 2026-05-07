@@ -13,6 +13,7 @@ Strategy regression tests for the betting arbitrage fast-path integration.
 
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from typing import cast
 from unittest.mock import Mock
@@ -91,6 +92,8 @@ class TestBettingArbitrageConfig:  # skipcq
         ensure(config.quote_max_fetch_latency_secs is None)
         ensure(config.instrument_refresh_interval_secs is None)
         ensure(config.stale_quote_refresh_cooldown_secs == 60.0)
+        ensure(config.venue_taker_fee_rates == {"POLYMARKET": Decimal("0.03")})
+        ensure(config.venue_winning_profit_fee_rates == {})
 
     def test_custom_venues(self):  # skipcq
         """
@@ -171,6 +174,21 @@ class TestBettingArbitrageConfig:  # skipcq
 
         with pytest.raises(ValueError, match="stale_quote_refresh_cooldown_secs"):
             BettingArbitrageConfig(stale_quote_refresh_cooldown_secs=0.0)
+
+    def test_venue_fee_rate_validation(self):  # skipcq
+        config = BettingArbitrageConfig(
+            venue_taker_fee_rates={" polymarket ": "0.02", "sxbet": Decimal("0.01")},
+            venue_winning_profit_fee_rates={"cloudbet": "0.005"},
+        )
+
+        ensure(
+            config.venue_taker_fee_rates
+            == {"POLYMARKET": Decimal("0.02"), "SXBET": Decimal("0.01")},
+        )
+        ensure(config.venue_winning_profit_fee_rates == {"CLOUDBET": Decimal("0.005")})
+
+        with pytest.raises(ValueError, match="less than 1"):
+            BettingArbitrageConfig(venue_taker_fee_rates={"POLYMARKET": "1.0"})
 
     def test_quote_freshness_profile_validation(self):  # skipcq
         for profile in ["pre_match", "live", "custom"]:
@@ -320,6 +338,74 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(strategy._raw_arbitrage_detections == 0)
         ensure(strategy._executable_candidates == 0)
 
+    def test_fee_adjusted_opportunity_preserves_raw_margin_and_applies_venue_fees(self):  # skipcq
+        """
+        Fee-aware decisions should use net margin while preserving raw vig diagnostics.
+        """
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(enabled_venues=frozenset(["POLYMARKET", "SXBET"])),
+        )
+        polymarket = self._sxbet_instrument(
+            event_id="event-1",
+            venue="POLYMARKET",
+            outcome="over",
+        )
+        sxbet = self._sxbet_instrument(event_id="event-1", venue="SXBET", outcome="under")
+        opportunity = MarketMatcher().check_arbitrage(
+            polymarket,
+            sxbet,
+            odds_a=Decimal("2.02"),
+            odds_b=Decimal("2.02"),
+        )
+
+        ensure(opportunity is not None)
+        adjusted = strategy.fee_adjusted_opportunity(opportunity)
+
+        ensure(adjusted.fee_adjusted is True)
+        ensure(adjusted.raw_profit_margin == Decimal("0.01"))
+        ensure(adjusted.profit_margin < adjusted.raw_profit_margin)
+        ensure(adjusted.fee_drag > 0)
+        ensure(adjusted.taker_fee_rate_a == Decimal("0.03"))
+        ensure(adjusted.taker_fee_rate_b == Decimal(0))
+
+    def test_fee_adjusted_margin_blocks_raw_only_opportunity_candidate(self):  # skipcq
+        """
+        Raw overround edge is not enough when configured fees erase the margin.
+        """
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                min_profit_margin=Decimal("0.005"),
+                enabled_venues=frozenset(["POLYMARKET", "SXBET"]),
+            ),
+        )
+        strategy._handle_arbitrage_opportunity = Mock()
+        polymarket = self._sxbet_instrument(
+            event_id="event-1",
+            venue="POLYMARKET",
+            outcome="over",
+        )
+        sxbet = self._sxbet_instrument(event_id="event-1", venue="SXBET", outcome="under")
+        opportunity = MarketMatcher().check_arbitrage(
+            polymarket,
+            sxbet,
+            odds_a=Decimal("2.02"),
+            odds_b=Decimal("2.02"),
+        )
+        ensure(opportunity is not None)
+        candidate = SimpleNamespace(
+            opportunity=opportunity,
+            edge=SimpleNamespace(hedge_type="same_market", confidence=1.0),
+            quote_a=None,
+            quote_b=None,
+        )
+
+        strategy._handle_opportunity_candidate(candidate, 10_000_000_000)
+
+        ensure(strategy._raw_arbitrage_detections == 1)
+        ensure(strategy._opportunities_found == 0)
+        ensure(strategy._executable_candidates == 0)
+        strategy._handle_arbitrage_opportunity.assert_not_called()
+
     def test_get_stats(self, default_config):  # skipcq
         """
         Test get_stats returns correct structure.
@@ -360,6 +446,8 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure("quote_subscription_counts_by_venue" in stats)
         ensure("semantic_quote_subscription_limit_by_venue" in stats)
         ensure("semantic_quote_subscription_limit_exceeded_by_venue" in stats)
+        ensure(stats["venue_taker_fee_rates"] == {"POLYMARKET": "0.03"})
+        ensure(stats["venue_winning_profit_fee_rates"] == {})
         ensure("instrument_refresh_by_venue" in stats)
         ensure("provider_quote_poll_stats" in stats)
         ensure("success_rate" in stats)
@@ -1215,6 +1303,46 @@ class TestBettingArbitrageStrategy:  # skipcq
         )
 
         ensure(strategy._quote_odds(quote) == Decimal("2.25"))
+
+    def test_quote_odds_converts_polymarket_probability_price(self, default_config):  # skipcq
+        strategy = BettingArbitrageStrategy(config=default_config)
+        instrument = self._sxbet_instrument(
+            event_id="pm-evt-1",
+            venue="POLYMARKET",
+            outcome="home",
+            market_name="basketball.moneyline",
+        )
+        quote = TestDataStubs.quote_tick(
+            instrument=instrument,
+            bid_price=0.42,
+            ask_price=0.43,
+            bid_size=500,
+            ask_size=400,
+        )
+
+        ensure(strategy._quote_odds(quote) == Decimal(1) / Decimal("0.43"))
+        ensure(strategy._quote_available_size(quote) == Decimal("172.0"))
+
+    def test_order_price_converts_polymarket_decimal_odds_back_to_probability(self):  # skipcq
+        polymarket = self._sxbet_instrument(
+            event_id="pm-evt-1",
+            venue="POLYMARKET",
+            outcome="home",
+            market_name="basketball.moneyline",
+        )
+        sxbet = self._sxbet_instrument(event_id="event-1", venue="SXBET", outcome="home")
+
+        ensure(
+            BettingArbitrageStrategy._order_price_for_instrument(
+                polymarket,
+                Decimal("2.50"),
+            )
+            == Decimal("0.4"),
+        )
+        ensure(
+            BettingArbitrageStrategy._order_price_for_instrument(sxbet, Decimal("2.50"))
+            == Decimal("2.50"),
+        )
 
     def test_on_start_subscribes_cached_matching_instruments(self, default_config):  # skipcq
         strategy = BettingArbitrageStrategy(config=default_config)

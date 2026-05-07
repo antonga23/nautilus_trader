@@ -915,6 +915,10 @@ class OpportunityGraph:
             odds_b=target_quote.odds,
             is_same_venue=is_same_venue,
             match_type=match_type,
+            raw_probability_a=probability_a,
+            raw_probability_b=probability_b,
+            raw_total_probability=total_probability,
+            raw_profit_margin=profit_margin,
         )
 
     def _legacy_cross_market_candidate(

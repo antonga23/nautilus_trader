@@ -20,12 +20,16 @@ Cross-venue arbitrage strategy for sports betting.
 
 from collections import Counter
 from dataclasses import dataclass
+from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal
 import time
 
 import msgspec
 
+from nautilus_trader.adapters.betting.common.fees import DEFAULT_TAKER_FEE_RATES
+from nautilus_trader.adapters.betting.common.fees import fee_adjusted_odds
+from nautilus_trader.adapters.betting.common.fees import normalize_venue_fee_rates
 from nautilus_trader.adapters.betting.common.odds import calculate_arbitrage_stakes
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.betting.market_matcher import ArbitrageOpportunity
@@ -131,6 +135,15 @@ class ArbitrageDiagnostics:  # skipcq
     suggested_stake_a: Decimal
     suggested_stake_b: Decimal
     expected_profit: Decimal
+    raw_profit_margin: Decimal
+    fee_adjusted_profit_margin: Decimal
+    fee_drag: Decimal
+    raw_total_probability: Decimal
+    fee_adjusted_total_probability: Decimal
+    taker_fee_rate_a: Decimal
+    taker_fee_rate_b: Decimal
+    winning_profit_fee_rate_a: Decimal
+    winning_profit_fee_rate_b: Decimal
     available_size_a: Decimal
     available_size_b: Decimal
     classification: str
@@ -210,6 +223,11 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         Optional timer interval for requesting refreshed venue instrument catalogs.
     stale_quote_refresh_cooldown_secs : float | None, default 60.0
         Minimum interval between stale-quote-triggered catalog refresh requests per venue.
+    venue_taker_fee_rates : dict[str, Decimal], default {"POLYMARKET": Decimal("0.03")}
+        Venue-level taker fee-rate parameters. Prediction-market venues use the
+        protocol formula ``shares * rate * price * (1 - price)``.
+    venue_winning_profit_fee_rates : dict[str, Decimal], default {}
+        Venue-level fee rates applied only to winning profit.
 
     """
 
@@ -238,6 +256,8 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
     live_quote_age_slo_secs: float = 5.0
     instrument_refresh_interval_secs: float | None = None
     stale_quote_refresh_cooldown_secs: float | None = 60.0
+    venue_taker_fee_rates: dict[str, Decimal] = {}
+    venue_winning_profit_fee_rates: dict[str, Decimal] = {}
 
     def __post_init__(self) -> None:
         """
@@ -258,6 +278,13 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
             self._normalize_semantic_quote_subscription_limits(
                 self.semantic_quote_subscription_limit_by_venue,
             )
+        )
+        venue_taker_fee_rates = normalize_venue_fee_rates(
+            self.venue_taker_fee_rates,
+            defaults=DEFAULT_TAKER_FEE_RATES,
+        )
+        venue_winning_profit_fee_rates = normalize_venue_fee_rates(
+            self.venue_winning_profit_fee_rates,
         )
         opportunity_graph_engine = self.opportunity_graph_engine.strip().lower()
         quote_freshness_profile = self.quote_freshness_profile.strip().lower()
@@ -316,6 +343,12 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
             self,
             "semantic_quote_subscription_limit_by_venue",
             semantic_quote_subscription_limit_by_venue,
+        )
+        msgspec.structs.force_setattr(self, "venue_taker_fee_rates", venue_taker_fee_rates)
+        msgspec.structs.force_setattr(
+            self,
+            "venue_winning_profit_fee_rates",
+            venue_winning_profit_fee_rates,
         )
         msgspec.structs.force_setattr(self, "quote_freshness_profile", quote_freshness_profile)
         msgspec.structs.force_setattr(
@@ -1138,11 +1171,21 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         if quote is None:
             return None
 
+        venue = str(quote.instrument_id.venue).upper()
         bid_price = quote.bid_price.as_decimal()
-        if str(quote.instrument_id.venue) == "SXBET" and bid_price > 0:
+        ask_price = quote.ask_price.as_decimal()
+
+        if venue == "POLYMARKET":
+            prediction_price = ask_price if ask_price > 0 else bid_price
+            if Decimal(0) < prediction_price < Decimal(1):
+                return Decimal(1) / prediction_price
+            if prediction_price > Decimal(1):
+                return prediction_price
+            return None
+
+        if venue == "SXBET" and bid_price > 0:
             return bid_price
 
-        ask_price = quote.ask_price.as_decimal()
         if ask_price > 0:
             return ask_price
 
@@ -1165,7 +1208,15 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         bid_size = quote.bid_size.as_decimal()
         ask_size = quote.ask_size.as_decimal()
 
-        if str(quote.instrument_id.venue) == "SXBET" and bid_price > 0:
+        venue = str(quote.instrument_id.venue).upper()
+        if venue == "POLYMARKET":
+            if ask_price > 0:
+                return ask_size * ask_price
+            if bid_price > 0:
+                return bid_size * bid_price
+            return Decimal(0)
+
+        if venue == "SXBET" and bid_price > 0:
             return bid_size
         if ask_price > 0:
             return ask_size
@@ -1389,7 +1440,30 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             self._matcher_suspect_suppressions += 1
             return True
 
+        source_node = self._opportunity_graph.nodes_by_id.get(source_node_id)
+        target_node = self._opportunity_graph.nodes_by_id.get(target_node_id)
+
         if not self._config.auto_execute and not self._config.opportunity_log_manual_instructions:
+            log_profit_margin = profit_margin_raw
+            if (
+                source_node is not None
+                and target_node is not None
+                and self._pair_has_configured_fee(
+                    source_node.instrument,
+                    target_node.instrument,
+                )
+            ):
+                opportunity = self._fast_arbitrage_opportunity(
+                    source_node.instrument,
+                    target_node.instrument,
+                    odds_a_raw=odds_a_raw,
+                    odds_b_raw=odds_b_raw,
+                    match_type=match_type,
+                )
+                if opportunity.profit_margin < self._config.min_profit_margin:
+                    return False
+                log_profit_margin = float(opportunity.profit_margin)
+
             opportunity_id = self._fast_opportunity_id(
                 canonical_pair_id,
                 match_type,
@@ -1406,15 +1480,13 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 hedge_confidence=hedge_confidence,
                 odds_a_raw=odds_a_raw,
                 odds_b_raw=odds_b_raw,
-                profit_margin_raw=profit_margin_raw,
+                profit_margin_raw=log_profit_margin,
                 quote_ts_a=quote_ts_a,
                 quote_ts_b=quote_ts_b,
                 now_ns=now_ns,
             )
             return True
 
-        source_node = self._opportunity_graph.nodes_by_id.get(source_node_id)
-        target_node = self._opportunity_graph.nodes_by_id.get(target_node_id)
         if source_node is None or target_node is None:
             return False
 
@@ -1918,6 +1990,9 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 odds_b=hedge_odds,
             )
 
+            if opportunity is not None:
+                opportunity = self.fee_adjusted_opportunity(opportunity)
+
             if opportunity and opportunity.profit_margin >= self._config.min_profit_margin:
                 self._raw_arbitrage_detections += 1
                 now_ns = self.clock.timestamp_ns()
@@ -1950,8 +2025,16 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
     ) -> None:
         decision_started_ns = time.perf_counter_ns()
         self._raw_arbitrage_detections += 1
+        opportunity = self.fee_adjusted_opportunity(candidate.opportunity)
+        if opportunity.profit_margin < self._config.min_profit_margin:
+            self._record_latency_sample(
+                self._candidate_decision_latency_ns,
+                time.perf_counter_ns() - decision_started_ns,
+            )
+            return
+
         diagnostics = self._build_arbitrage_diagnostics(
-            opportunity=candidate.opportunity,
+            opportunity=opportunity,
             hedge_match_type=candidate.edge.hedge_type,
             hedge_confidence=candidate.edge.confidence,
             quote_a=candidate.quote_a.quote,
@@ -1973,7 +2056,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         )
         self._opportunities_found += 1
         self._executable_candidates += 1
-        self._handle_arbitrage_opportunity(candidate.opportunity, diagnostics)
+        self._handle_arbitrage_opportunity(opportunity, diagnostics)
         self._log_arbitrage_summary()
         self._record_latency_sample(
             self._candidate_decision_latency_ns,
@@ -1991,8 +2074,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             return "cross_market"
         return "cross_venue"
 
-    @staticmethod
     def _fast_arbitrage_opportunity(
+        self,
         instrument_a: CryptoBettingInstrument,
         instrument_b: CryptoBettingInstrument,
         *,
@@ -2006,7 +2089,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         probability_b = Decimal(1) / odds_b
         total_probability = probability_a + probability_b
         profit_margin = (Decimal(1) / total_probability) - Decimal(1)
-        return ArbitrageOpportunity(
+        opportunity = ArbitrageOpportunity(
             instrument_a=instrument_a,
             instrument_b=instrument_b,
             probability_a=probability_a,
@@ -2017,7 +2100,12 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             odds_b=odds_b,
             is_same_venue=instrument_a.venue_name == instrument_b.venue_name,
             match_type=match_type,
+            raw_probability_a=probability_a,
+            raw_probability_b=probability_b,
+            raw_total_probability=total_probability,
+            raw_profit_margin=profit_margin,
         )
+        return self.fee_adjusted_opportunity(opportunity)
 
     # skipcq: PYL-R0913, PYL-R0914
     def _fast_arbitrage_diagnostics(
@@ -2049,9 +2137,10 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             fetch_latency_a_secs > freshness.max_fetch_latency_secs
             or fetch_latency_b_secs > freshness.max_fetch_latency_secs
         )
+        stake_odds_a, stake_odds_b = self._stake_pricing_odds(opportunity)
         suggested_stake_a, suggested_stake_b, expected_profit = calculate_arbitrage_stakes(
-            odds_a=opportunity.odds_a,
-            odds_b=opportunity.odds_b,
+            odds_a=stake_odds_a,
+            odds_b=stake_odds_b,
             total_stake=self._config.max_total_stake,
         )
         available_size_a = self._quote_available_size(quote_a)
@@ -2127,6 +2216,16 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             suggested_stake_a=suggested_stake_a,
             suggested_stake_b=suggested_stake_b,
             expected_profit=expected_profit,
+            raw_profit_margin=opportunity.raw_profit_margin or opportunity.profit_margin,
+            fee_adjusted_profit_margin=opportunity.profit_margin,
+            fee_drag=opportunity.fee_drag,
+            raw_total_probability=opportunity.raw_total_probability
+            or opportunity.total_probability,
+            fee_adjusted_total_probability=opportunity.total_probability,
+            taker_fee_rate_a=opportunity.taker_fee_rate_a,
+            taker_fee_rate_b=opportunity.taker_fee_rate_b,
+            winning_profit_fee_rate_a=opportunity.winning_profit_fee_rate_a,
+            winning_profit_fee_rate_b=opportunity.winning_profit_fee_rate_b,
             available_size_a=available_size_a,
             available_size_b=available_size_b,
             classification=classification,
@@ -2353,6 +2452,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             f"params={diagnostics.params_a!r} "
             f"selection={diagnostics.outcome_a!r} "
             f"odds={diagnostics.odds_a} "
+            f"taker_fee_rate={diagnostics.taker_fee_rate_a} "
+            f"winning_profit_fee_rate={diagnostics.winning_profit_fee_rate_a} "
             f"market_id={diagnostics.market_id_a} "
             f"available_size={diagnostics.available_size_a} "
             f"quote_cycle_id={diagnostics.quote_cycle_id_a} "
@@ -2366,6 +2467,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             f"params={diagnostics.params_b!r} "
             f"selection={diagnostics.outcome_b!r} "
             f"odds={diagnostics.odds_b} "
+            f"taker_fee_rate={diagnostics.taker_fee_rate_b} "
+            f"winning_profit_fee_rate={diagnostics.winning_profit_fee_rate_b} "
             f"market_id={diagnostics.market_id_b} "
             f"available_size={diagnostics.available_size_b} "
             f"quote_cycle_id={diagnostics.quote_cycle_id_b} "
@@ -2423,6 +2526,11 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             f"quote_age_secs={diagnostics.quote_age_b_secs:.2f} "
             f"fetch_latency_secs={diagnostics.fetch_latency_b_secs:.2f}; "
             f"expected_profit={expected_profit} "
+            f"raw_profit_margin={diagnostics.raw_profit_margin} "
+            f"fee_adjusted_profit_margin={diagnostics.fee_adjusted_profit_margin} "
+            f"fee_drag={diagnostics.fee_drag} "
+            f"raw_total_probability={diagnostics.raw_total_probability} "
+            f"fee_adjusted_total_probability={diagnostics.fee_adjusted_total_probability} "
             f"max_total_stake={self._config.max_total_stake}"
         )
 
@@ -2461,9 +2569,10 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             or fetch_latency_b_secs > freshness.max_fetch_latency_secs
         )
         matcher_suspect, suspect_reason = self._matcher_suspect_reason(inst_a, inst_b)
+        stake_odds_a, stake_odds_b = self._stake_pricing_odds(opportunity)
         suggested_stake_a, suggested_stake_b, expected_profit = calculate_arbitrage_stakes(
-            odds_a=opportunity.odds_a,
-            odds_b=opportunity.odds_b,
+            odds_a=stake_odds_a,
+            odds_b=stake_odds_b,
             total_stake=self._config.max_total_stake,
         )
         available_size_a = self._quote_available_size(quote_a)
@@ -2528,6 +2637,16 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             suggested_stake_a=suggested_stake_a,
             suggested_stake_b=suggested_stake_b,
             expected_profit=expected_profit,
+            raw_profit_margin=opportunity.raw_profit_margin or opportunity.profit_margin,
+            fee_adjusted_profit_margin=opportunity.profit_margin,
+            fee_drag=opportunity.fee_drag,
+            raw_total_probability=opportunity.raw_total_probability
+            or opportunity.total_probability,
+            fee_adjusted_total_probability=opportunity.total_probability,
+            taker_fee_rate_a=opportunity.taker_fee_rate_a,
+            taker_fee_rate_b=opportunity.taker_fee_rate_b,
+            winning_profit_fee_rate_a=opportunity.winning_profit_fee_rate_a,
+            winning_profit_fee_rate_b=opportunity.winning_profit_fee_rate_b,
             available_size_a=available_size_a,
             available_size_b=available_size_b,
             classification=classification,
@@ -2642,6 +2761,101 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         Maximum live quote age at decision time for runtime diagnostics.
         """
         return float(self._config.live_quote_age_slo_secs)
+
+    def fee_adjusted_opportunity(self, opportunity: ArbitrageOpportunity) -> ArbitrageOpportunity:
+        """
+        Apply configured venue fees to an opportunity before strategy decisions.
+        """
+        if opportunity.fee_adjusted:
+            return opportunity
+
+        fee_a = fee_adjusted_odds(
+            opportunity.odds_a,
+            taker_fee_rate=self.venue_taker_fee_rate(opportunity.instrument_a),
+            winning_profit_fee_rate=self.venue_winning_profit_fee_rate(opportunity.instrument_a),
+        )
+        fee_b = fee_adjusted_odds(
+            opportunity.odds_b,
+            taker_fee_rate=self.venue_taker_fee_rate(opportunity.instrument_b),
+            winning_profit_fee_rate=self.venue_winning_profit_fee_rate(opportunity.instrument_b),
+        )
+        raw_probability_a = opportunity.raw_probability_a or (Decimal(1) / opportunity.odds_a)
+        raw_probability_b = opportunity.raw_probability_b or (Decimal(1) / opportunity.odds_b)
+        raw_total_probability = opportunity.raw_total_probability or (
+            raw_probability_a + raw_probability_b
+        )
+        raw_profit_margin = opportunity.raw_profit_margin or (
+            (Decimal(1) / raw_total_probability) - Decimal(1)
+        )
+        adjusted_total_probability = fee_a.effective_probability + fee_b.effective_probability
+        adjusted_profit_margin = (Decimal(1) / adjusted_total_probability) - Decimal(1)
+        return replace(
+            opportunity,
+            probability_a=fee_a.effective_probability,
+            probability_b=fee_b.effective_probability,
+            total_probability=adjusted_total_probability,
+            profit_margin=adjusted_profit_margin,
+            raw_probability_a=raw_probability_a,
+            raw_probability_b=raw_probability_b,
+            raw_total_probability=raw_total_probability,
+            raw_profit_margin=raw_profit_margin,
+            fee_adjusted=True,
+            fee_drag=raw_profit_margin - adjusted_profit_margin,
+            fee_adjusted_odds_a=fee_a.effective_odds,
+            fee_adjusted_odds_b=fee_b.effective_odds,
+            taker_fee_rate_a=fee_a.taker_fee_rate,
+            taker_fee_rate_b=fee_b.taker_fee_rate,
+            winning_profit_fee_rate_a=fee_a.winning_profit_fee_rate,
+            winning_profit_fee_rate_b=fee_b.winning_profit_fee_rate,
+        )
+
+    def venue_taker_fee_rate(self, instrument: Instrument) -> Decimal:
+        """
+        Return the configured taker fee-rate parameter for an instrument venue.
+        """
+        return self._config.venue_taker_fee_rates.get(str(instrument.id.venue).upper(), Decimal(0))
+
+    def venue_winning_profit_fee_rate(self, instrument: Instrument) -> Decimal:
+        """
+        Return the configured winning-profit commission for an instrument venue.
+        """
+        return self._config.venue_winning_profit_fee_rates.get(
+            str(instrument.id.venue).upper(),
+            Decimal(0),
+        )
+
+    def _pair_has_configured_fee(
+        self,
+        instrument_a: Instrument,
+        instrument_b: Instrument,
+    ) -> bool:
+        return any(
+            (
+                self.venue_taker_fee_rate(instrument_a),
+                self.venue_taker_fee_rate(instrument_b),
+                self.venue_winning_profit_fee_rate(instrument_a),
+                self.venue_winning_profit_fee_rate(instrument_b),
+            ),
+        )
+
+    @staticmethod
+    def _stake_pricing_odds(opportunity: ArbitrageOpportunity) -> tuple[Decimal, Decimal]:
+        """
+        Return fee-adjusted odds for sizing when available, otherwise raw odds.
+        """
+        return (
+            opportunity.fee_adjusted_odds_a or opportunity.odds_a,
+            opportunity.fee_adjusted_odds_b or opportunity.odds_b,
+        )
+
+    @staticmethod
+    def _order_price_for_instrument(instrument: Instrument, odds: Decimal) -> Decimal:
+        """
+        Convert strategy decimal odds back to the venue's executable price domain.
+        """
+        if str(instrument.id.venue).upper() == "POLYMARKET" and odds > 1:
+            return Decimal(1) / odds
+        return odds
 
     @staticmethod
     def _is_trusted_same_venue_match_odds_pair(
@@ -2815,6 +3029,9 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 f"fetch_latency_b_secs={diagnostics.fetch_latency_b_secs:.2f} "
                 f"freshness_profile={diagnostics.freshness_profile} "
                 f"same_quote_cycle={diagnostics.same_quote_cycle}"
+                f" raw_profit_margin={diagnostics.raw_profit_margin} "
+                f"fee_adjusted_profit_margin={diagnostics.fee_adjusted_profit_margin} "
+                f"fee_drag={diagnostics.fee_drag}"
                 f"{self._manual_execution_plan(diagnostics)}"
             )
 
@@ -2847,10 +3064,12 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             The arbitrage opportunity to execute.
 
         """
+        opportunity = self.fee_adjusted_opportunity(opportunity)
         # Calculate optimal stakes
+        stake_odds_a, stake_odds_b = self._stake_pricing_odds(opportunity)
         stake_a, stake_b, profit = calculate_arbitrage_stakes(
-            odds_a=opportunity.odds_a,
-            odds_b=opportunity.odds_b,
+            odds_a=stake_odds_a,
+            odds_b=stake_odds_b,
             total_stake=self._config.max_total_stake,
         )
 
@@ -2866,7 +3085,9 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             instrument_id=instrument_a.id,
             order_side=OrderSide.BUY,  # Betting is always "buying" the selection
             quantity=instrument_a.make_qty(float(stake_a)),
-            price=instrument_a.make_price(float(opportunity.odds_a)),
+            price=instrument_a.make_price(
+                float(self._order_price_for_instrument(instrument_a, opportunity.odds_a)),
+            ),
             time_in_force=TimeInForce.GTC,
         )
 
@@ -2875,7 +3096,9 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             instrument_id=instrument_b.id,
             order_side=OrderSide.BUY,
             quantity=instrument_b.make_qty(float(stake_b)),
-            price=instrument_b.make_price(float(opportunity.odds_b)),
+            price=instrument_b.make_price(
+                float(self._order_price_for_instrument(instrument_b, opportunity.odds_b)),
+            ),
             time_in_force=TimeInForce.GTC,
         )
         self._record_latency_sample(
@@ -2964,6 +3187,14 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 venue: max(quote_subscription_counts.get(venue, 0) - limit, 0)
                 for venue, limit in semantic_quote_limits.items()
                 if quote_subscription_counts.get(venue, 0) > limit
+            },
+            "venue_taker_fee_rates": {
+                venue: str(rate)
+                for venue, rate in sorted(self._config.venue_taker_fee_rates.items())
+            },
+            "venue_winning_profit_fee_rates": {
+                venue: str(rate)
+                for venue, rate in sorted(self._config.venue_winning_profit_fee_rates.items())
             },
             "opportunity_graph_nodes": self._opportunity_graph.node_count,
             "opportunity_graph_edges": self._opportunity_graph.edge_count,

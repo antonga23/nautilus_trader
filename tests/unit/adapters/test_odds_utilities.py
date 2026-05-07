@@ -8,6 +8,8 @@ from decimal import Decimal
 
 import pytest
 
+from nautilus_trader.adapters.betting.common.fees import fee_adjusted_odds
+from nautilus_trader.adapters.betting.common.fees import normalize_venue_fee_rates
 from nautilus_trader.adapters.betting.common.odds import calculate_arbitrage_stakes
 from nautilus_trader.adapters.betting.common.odds import decimal_to_american
 from nautilus_trader.adapters.betting.common.odds import decimal_to_fractional
@@ -156,3 +158,29 @@ class TestArbitrageCalculations:
         assert stake_b == Decimal("80.00")
         assert stake_a * Decimal("4.0") == stake_b * Decimal("2.0")
         assert profit == Decimal("40.00")
+
+
+class TestFeeAdjustedOdds:
+    def test_prediction_market_taker_fee_reduces_effective_odds(self):
+        adjusted = fee_adjusted_odds(Decimal("2.02"), taker_fee_rate=Decimal("0.03"))
+
+        assert adjusted.raw_odds == Decimal("2.02")
+        assert adjusted.effective_odds < adjusted.raw_odds
+        assert adjusted.effective_probability > adjusted.raw_probability
+        assert adjusted.taker_cost_fraction == Decimal("0.03") * (
+            Decimal(1) - (Decimal(1) / Decimal("2.02"))
+        )
+
+    def test_winning_profit_fee_reduces_net_return(self):
+        adjusted = fee_adjusted_odds(Decimal("3.00"), winning_profit_fee_rate=Decimal("0.10"))
+
+        assert adjusted.effective_odds == Decimal("2.80")
+        assert adjusted.effective_probability == Decimal(1) / Decimal("2.80")
+
+    def test_normalize_venue_fee_rates_uppercases_and_validates(self):
+        assert normalize_venue_fee_rates({" polymarket ": "0.03"}) == {
+            "POLYMARKET": Decimal("0.03"),
+        }
+
+        with pytest.raises(ValueError, match="less than 1"):
+            normalize_venue_fee_rates({"SXBET": "1.0"})
