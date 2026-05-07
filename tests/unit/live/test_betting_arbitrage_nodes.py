@@ -770,6 +770,7 @@ class TestBettingArbitrageNodeBuilder:
             config.strategies[0].config["semantic_rule_cache_dir"]
             == "artifacts/semantic-rule-cache/multi-venue-validation"
         )
+        assert config.data_clients["CLOUDBET_PRIMARY"].config["quote_poll_concurrency"] == 8
         assert (
             config.data_clients["POLYMARKET_PRIMARY"].config["instrument_provider"]["load_all"]
             is True
