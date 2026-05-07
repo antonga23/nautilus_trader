@@ -1050,7 +1050,7 @@ def _venue_coverage_health(venue_coverage: dict[str, Any]) -> dict[str, Any]:
         reasons: list[str] = []
         quote_subscription_count = _int_value(quote_subscriptions.get(venue))
         quoted_node_count = _int_value(quoted_nodes.get(venue))
-        edge_count = _int_value(edge_counts.get(venue))
+        edge_count = _venue_pair_total(edge_counts, venue)
         if quote_subscription_count <= 0:
             reasons.append("no_quote_subscription")
         if quoted_node_count <= 0:
@@ -1071,6 +1071,20 @@ def _venue_coverage_health(venue_coverage: dict[str, Any]) -> dict[str, Any]:
         "overall": overall if venues else "unknown",
         "venues": venues,
     }
+
+
+def _venue_pair_total(counts: dict[str, Any], venue: str) -> int:
+    direct = _int_value(counts.get(venue))
+    if direct > 0:
+        return direct
+    total = 0
+    prefix = f"{venue}->"
+    suffix = f"->{venue}"
+    for key, value in counts.items():
+        rendered_key = str(key)
+        if rendered_key == venue or rendered_key.startswith(prefix) or rendered_key.endswith(suffix):
+            total += _int_value(value)
+    return total
 
 
 def _as_list_of_strings(value: Any) -> list[str]:

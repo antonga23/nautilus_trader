@@ -600,6 +600,27 @@ def test_runtime_probe_report_cli_outputs_json_and_text(tmp_path, monkeypatch, c
     assert "unsupported_provider_patterns" in text_output
 
 
+def test_venue_coverage_health_counts_venue_pair_edges():
+    module = _load_module()
+    summary = module.summarize_payload(
+        {
+            "nodeId": "cloudbet-single",
+            "status": "running",
+            "runtimeProbe": {
+                "venueCoverage": {
+                    "enabledVenues": ["CLOUDBET"],
+                    "quoteSubscriptionCounts": {"CLOUDBET": 10},
+                    "quotedNodeCounts": {"CLOUDBET": 7},
+                    "edgeCounts": {"CLOUDBET->CLOUDBET": 12},
+                },
+            },
+        },
+    )
+
+    assert summary["venueCoverageHealth"]["overall"] == "pass"
+    assert summary["venueCoverageHealth"]["venues"]["CLOUDBET"]["edgeCount"] == 12
+
+
 def test_runtime_probe_report_cli_can_fail_on_incomplete_diagnostics(
     tmp_path,
     monkeypatch,
