@@ -204,7 +204,7 @@ class TestCloudbetDataClient:
         assert data_client._update_instruments_task is None
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 1)], indirect=["instruments"])
+    @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 2)], indirect=["instruments"])
     @patch.object(CloudbetClient, "get_latest_odds", new_callable=AsyncMock)
     async def test_poll_quote_ticks_publishes_latest_cloudbet_price(
         self,
@@ -242,7 +242,7 @@ class TestCloudbetDataClient:
         mock_get_latest_odds.assert_called_once()
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 1)], indirect=["instruments"])
+    @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 2)], indirect=["instruments"])
     @patch.object(CloudbetClient, "get_latest_odds", new_callable=AsyncMock)
     @patch.object(CloudbetClient, "get_event", new_callable=AsyncMock)
     async def test_poll_quote_ticks_uses_event_batch_before_line_fallback(
@@ -326,7 +326,7 @@ class TestCloudbetDataClient:
         assert b'"pruned_subscription_count":0' in stats
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 1)], indirect=["instruments"])
+    @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 2)], indirect=["instruments"])
     @patch.object(CloudbetClient, "get_latest_odds", new_callable=AsyncMock)
     @patch.object(CloudbetClient, "get_event", new_callable=AsyncMock)
     async def test_poll_quote_ticks_prunes_consecutive_missing_cloudbet_selection(
@@ -337,7 +337,9 @@ class TestCloudbetDataClient:
         instruments,
     ):
         instrument = instruments[0]
+        replacement = instruments[1]
         data_client.instrument_provider.add(instrument)
+        data_client.instrument_provider.add(replacement)
         data_client._subscribed_quote_instruments.add(instrument.id)
         data_client._quote_poll_missing_prune_threshold = 1
         mock_get_event.return_value = GetEventResponse(
@@ -386,8 +388,10 @@ class TestCloudbetDataClient:
         assert requested == 1
         assert published == 0
         assert instrument.id not in data_client._subscribed_quote_instruments
+        assert len(data_client._subscribed_quote_instruments) == 1
         stats = data_client._cache.get("betting:venue_quote_poll_stats:CLOUDBET")
         assert b'"pruned_subscription_count":1' in stats
+        assert b'"refilled_subscription_count":1' in stats
         assert b'"event_request_count":1' in stats
         assert b'"line_request_count":1' in stats
         mock_get_latest_odds.assert_called_once()

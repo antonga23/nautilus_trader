@@ -803,6 +803,7 @@ def test_provider_poll_health_explains_cloudbet_poll_fanout_bottlenecks():
                         "event_request_count": 10,
                         "line_request_count": 30,
                         "pruned_subscription_count": 3,
+                        "refilled_subscription_count": 0,
                         "quote_count": 16,
                         "concurrency": 16,
                         "max_concurrency": 16,
@@ -821,16 +822,19 @@ def test_provider_poll_health_explains_cloudbet_poll_fanout_bottlenecks():
     assert cloudbet["requestFanoutPerQuote"] == 2.5
     assert cloudbet["lineFallbackRatio"] == 0.75
     assert cloudbet["prunedSubscriptionCount"] == 3
+    assert cloudbet["refilledSubscriptionCount"] == 0
     assert cloudbet["pollTargetCycleSeconds"] == 4.0
     assert "poll_target_missed" in cloudbet["reasons"]
     assert "line_fallback_fanout" in cloudbet["reasons"]
     assert "request_fanout_high" in cloudbet["reasons"]
     assert "at_max_concurrency" in cloudbet["reasons"]
     assert "stale_subscription_pruned" in cloudbet["reasons"]
+    assert "stale_subscription_refill_gap" in cloudbet["reasons"]
     assert "inspect_provider_event_batching_mapping" in summary["recommendedActions"]
     assert "reduce_provider_request_fanout" in summary["recommendedActions"]
     assert "reduce_subscription_count_or_shard_provider_polling" in summary["recommendedActions"]
     assert "inspect_pruned_provider_subscriptions" in summary["recommendedActions"]
+    assert "refresh_provider_market_catalog" in summary["recommendedActions"]
 
 
 def test_zero_candidate_blockers_map_to_specific_actions():

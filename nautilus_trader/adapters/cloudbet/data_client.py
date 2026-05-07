@@ -530,6 +530,7 @@ class CloudbetDataClient(LiveMarketDataClient):
         rate_limit_count = 0
         last_error: str | None = None
         pruned_subscription_count = 0
+        pruned_instrument_ids: set[InstrumentId] = set()
         for instrument_id, quote, error in results:
             if error is not None:
                 failure_count += 1
@@ -540,6 +541,7 @@ class CloudbetDataClient(LiveMarketDataClient):
             if quote is None:
                 if self._record_missing_quote_subscription(instrument_id):
                     pruned_subscription_count += 1
+                    pruned_instrument_ids.add(instrument_id)
                 continue
             self._quote_poll_missing_counts.pop(instrument_id, None)
             self._handle_data(quote)
@@ -547,6 +549,12 @@ class CloudbetDataClient(LiveMarketDataClient):
             max_fetch_latency_secs = max(
                 max_fetch_latency_secs,
                 max(0.0, (quote.ts_init - quote.ts_event) / 1_000_000_000),
+            )
+        refilled_subscription_count = 0
+        if pruned_subscription_count > 0:
+            refilled_subscription_count = self._refill_quote_subscriptions(
+                exclude=pruned_instrument_ids,
+                max_added=pruned_subscription_count,
             )
 
         cycle_elapsed = time.perf_counter() - started_at
@@ -563,6 +571,7 @@ class CloudbetDataClient(LiveMarketDataClient):
             event_request_count=event_request_count,
             line_request_count=line_request_count,
             pruned_subscription_count=pruned_subscription_count,
+            refilled_subscription_count=refilled_subscription_count,
             cycle_elapsed=cycle_elapsed,
             max_fetch_latency_secs=max_fetch_latency_secs,
             failure_count=failure_count,
@@ -577,6 +586,43 @@ class CloudbetDataClient(LiveMarketDataClient):
             cycle_elapsed=cycle_elapsed,
         )
         return published, len(instrument_ids)
+
+    def _refill_quote_subscriptions(
+        self,
+        *,
+        exclude: set[InstrumentId],
+        max_added: int,
+    ) -> int:
+        if max_added <= 0:
+            return 0
+        limit = getattr(self._config, "quote_subscription_limit", None)
+        if limit is not None:
+            slots_available = max(0, int(limit) - len(self._subscribed_quote_instruments))
+            max_added = min(max_added, slots_available)
+        if max_added <= 0:
+            return 0
+        candidates = [
+            instrument
+            for instrument in self._instrument_provider.list_all()
+            if isinstance(instrument, CryptoBettingInstrument)
+            and instrument.id not in self._subscribed_quote_instruments
+            and instrument.id not in exclude
+        ]
+        candidates.sort(key=self._quote_subscription_priority_key)
+        added = 0
+        for instrument in candidates:
+            self._subscribed_quote_instruments.add(instrument.id)
+            self._quote_poll_missing_counts.pop(instrument.id, None)
+            added += 1
+            if added >= max_added:
+                break
+        if added > 0:
+            self._quote_polling_running = True
+            self._log.info(
+                "Refilled Cloudbet quote subscriptions after pruning: "
+                f"added={added} subscribed={len(self._subscribed_quote_instruments)}",
+            )
+        return added
 
     async def _fetch_quote_ticks_individual(
         self,
@@ -911,6 +957,7 @@ class CloudbetDataClient(LiveMarketDataClient):
         event_request_count: int,
         line_request_count: int,
         pruned_subscription_count: int,
+        refilled_subscription_count: int,
         cycle_elapsed: float,
         max_fetch_latency_secs: float,
         failure_count: int = 0,
@@ -934,6 +981,7 @@ class CloudbetDataClient(LiveMarketDataClient):
                 event_request_count=event_request_count,
                 line_request_count=line_request_count,
                 pruned_subscription_count=pruned_subscription_count,
+                refilled_subscription_count=refilled_subscription_count,
                 concurrency=self._quote_poll_concurrency,
                 backlog_count=backlog_count,
                 cycle_elapsed_secs=cycle_elapsed,
