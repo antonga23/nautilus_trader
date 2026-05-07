@@ -2817,6 +2817,12 @@ class TestBettingArbitrageNodeRunner:
         assert "timeout-minutes: 30" in workflow
         assert "default: '900'" in workflow
         assert 'timeout_seconds="${INPUT_TIMEOUT_SECONDS:-900}"' in workflow
+        assert "persist_node_runtime_artifacts" in workflow
+        assert "dump_node_runtime_artifacts() {" in workflow
+        assert (
+            "persist_node_runtime_artifacts"
+            in workflow.split("dump_node_runtime_artifacts() {", maxsplit=1)[1]
+        )
         assert "dump_node_runtime_artifacts" in workflow
         assert "trap 'status=$?;" in workflow
         assert "node_log_tail" in workflow
