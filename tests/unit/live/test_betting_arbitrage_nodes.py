@@ -2830,6 +2830,7 @@ class TestBettingArbitrageNodeRunner:
         assert ".venv/bin/python" not in workflow
         assert "semantic-completion.json" in workflow
         assert "semantic-completion.stderr" in workflow
+        assert "sudo -n python3" in workflow
         assert "semantic_completion_verifier_failed_before_json_output" in workflow
 
     def test_strategy_node_maintenance_workflow_archives_before_stop(self):

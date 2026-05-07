@@ -533,8 +533,12 @@ jobs:
               done
             fi
             semantic_completion_stderr="$artifact_dir/semantic-completion.stderr"
+            semantic_python=(python3)
+            if command -v sudo >/dev/null 2>&1; then
+              semantic_python=(sudo -n python3)
+            fi
             set +e
-            python3 "${semantic_args[@]}" \
+            "${semantic_python[@]}" "${semantic_args[@]}" \
               > "$artifact_dir/semantic-completion.json" \
               2> "$semantic_completion_stderr"
             semantic_completion_rc=$?
