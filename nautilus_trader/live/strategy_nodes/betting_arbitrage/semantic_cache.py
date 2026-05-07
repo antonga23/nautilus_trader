@@ -76,6 +76,7 @@ class SemanticCacheStatus:
     compatible: bool = True
     summary_reused: bool = False
     bootstrap_phase_timings_secs: dict[str, float] = field(default_factory=dict)
+    provider_corpus_coverage: dict[str, object] = field(default_factory=dict)
 
     @property
     def ready(self) -> bool:
@@ -288,6 +289,7 @@ def semantic_cache_status(
     else:
         template_counts, strictness = summary_counts
     bootstrap_phase_timings = _read_semantic_cache_bootstrap_timings(path)
+    provider_corpus_coverage = _semantic_provider_corpus_coverage(store)
 
     return SemanticCacheStatus(
         path=str(path),
@@ -305,6 +307,7 @@ def semantic_cache_status(
         compatible=compatible,
         summary_reused=summary_reused,
         bootstrap_phase_timings_secs=bootstrap_phase_timings,
+        provider_corpus_coverage=provider_corpus_coverage,
     )
 
 
@@ -349,6 +352,113 @@ def _semantic_coverage_counts(store: RuleStore) -> _SemanticCoverageCounts:
         store.list_coverage_hyperedge_ids() if hasattr(store, "list_coverage_hyperedge_ids") else []
     )
     return _SemanticCoverageCounts(proofs=len(proof_ids), hyperedges=len(hyperedge_ids))
+
+
+def _semantic_provider_corpus_coverage(store: RuleStore) -> dict[str, object]:
+    list_snapshot_ids = getattr(store, "list_snapshot_ids", None)
+    load_snapshot = getattr(store, "load_snapshot", None)
+    if not callable(list_snapshot_ids) or not callable(load_snapshot):
+        return {}
+
+    latest_by_provider: dict[str, tuple[str, dict[str, object]]] = {}
+    for snapshot_id in list_snapshot_ids():
+        snapshot = load_snapshot(snapshot_id)
+        if snapshot is None or not str(snapshot.endpoint).startswith("/semantic/coverage/"):
+            continue
+        try:
+            payload = json.loads(snapshot.payload.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        provider = str(payload.get("provider") or snapshot.provider or "").upper()
+        if not provider:
+            continue
+        fetched_at = str(snapshot.fetched_at or "")
+        previous = latest_by_provider.get(provider)
+        if previous is None or fetched_at >= previous[0]:
+            latest_by_provider[provider] = (fetched_at, payload)
+
+    return {
+        provider: _semantic_provider_coverage_summary(payload, fetched_at=fetched_at)
+        for provider, (fetched_at, payload) in sorted(latest_by_provider.items())
+    }
+
+
+def _semantic_provider_coverage_summary(
+    payload: dict[str, object],
+    *,
+    fetched_at: str,
+) -> dict[str, object]:
+    sports_payload = payload.get("sports")
+    sports = sports_payload if isinstance(sports_payload, dict) else {}
+    sport_summaries: dict[str, object] = {}
+    blocker_counts: dict[str, int] = {}
+    sparse_sports: list[str] = []
+    zero_selection_sports: list[str] = []
+    total_selection_count = 0
+    total_event_count = 0
+    total_market_count = 0
+
+    for sport, raw_report in sorted(sports.items(), key=lambda item: str(item[0])):
+        if not isinstance(raw_report, dict):
+            continue
+        sport_key = str(sport)
+        selection_count = _semantic_coverage_int(raw_report.get("selection_count"))
+        event_count = _semantic_coverage_int(raw_report.get("event_count"))
+        market_count = _semantic_coverage_int(raw_report.get("market_count"))
+        attempts = raw_report.get("attempts")
+        attempt_count = len(attempts) if isinstance(attempts, list) else 0
+        blocker = raw_report.get("blocker")
+        blocker_name = str(blocker) if blocker else ""
+        sparse = bool(raw_report.get("sparse", False))
+
+        total_selection_count += selection_count
+        total_event_count += event_count
+        total_market_count += market_count
+        if blocker_name:
+            blocker_counts[blocker_name] = blocker_counts.get(blocker_name, 0) + 1
+        if sparse:
+            sparse_sports.append(sport_key)
+        if selection_count <= 0:
+            zero_selection_sports.append(sport_key)
+
+        sport_summaries[sport_key] = {
+            "selection_count": selection_count,
+            "event_count": event_count,
+            "market_count": market_count,
+            "attempt_count": attempt_count,
+            "blocker": blocker_name or None,
+            "sparse": sparse,
+        }
+
+    return {
+        "fetched_at": fetched_at,
+        "sport_count": len(sport_summaries),
+        "sports_with_selections": sum(
+            1
+            for report in sport_summaries.values()
+            if isinstance(report, dict) and int(report.get("selection_count", 0)) > 0
+        ),
+        "total_selection_count": total_selection_count,
+        "total_event_count": total_event_count,
+        "total_market_count": total_market_count,
+        "blocker_counts": dict(sorted(blocker_counts.items())),
+        "sparse_sports": sparse_sports,
+        "zero_selection_sports": zero_selection_sports,
+        "sports": sport_summaries,
+    }
+
+
+def _semantic_coverage_int(value: object) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int | float | str):
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return 0
+    return 0
 
 
 def _semantic_cache_index_signature(ids: Iterable[str]) -> str:

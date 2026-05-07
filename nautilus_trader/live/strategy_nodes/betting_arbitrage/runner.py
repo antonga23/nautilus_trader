@@ -721,6 +721,7 @@ def _semantic_cache_payload(status: SemanticCacheStatus | None) -> dict[str, obj
         "compatible": payload.get("compatible", True),
         "summaryReused": payload.get("summary_reused", False),
         "bootstrapPhaseTimingsSeconds": payload.get("bootstrap_phase_timings_secs", {}),
+        "providerCorpusCoverage": payload.get("provider_corpus_coverage", {}),
     }
 
 

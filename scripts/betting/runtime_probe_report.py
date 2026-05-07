@@ -101,6 +101,7 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
             "strictExecutionBlockerCounts": semantic_cache.get("strictExecutionBlockerCounts"),
             "summaryReused": semantic_cache.get("summaryReused"),
             "bootstrapPhaseTimingsSeconds": semantic_cache.get("bootstrapPhaseTimingsSeconds"),
+            "providerCorpusCoverage": semantic_cache.get("providerCorpusCoverage"),
         },
         "executionReadiness": {
             "validationMode": execution_readiness.get("validationMode"),
@@ -773,6 +774,7 @@ def _format_text(path: Path, summary: dict[str, Any]) -> str:
         lines.append(f"  venue_coverage_health {venue_coverage_health}")
     lines.extend(_format_refresh_lines(summary.get("instrumentRefresh")))
     lines.extend(_format_semantic_diagnostic_lines(summary.get("semanticDiagnostics")))
+    lines.extend(_format_provider_corpus_coverage_lines(summary.get("semanticCache")))
     same_venue_dry_run = quality.get("sameVenueDryRun") or {}
     if isinstance(same_venue_dry_run, dict) and (
         same_venue_dry_run.get("passes") or same_venue_dry_run.get("failures")
@@ -1021,6 +1023,32 @@ def _format_semantic_diagnostic_lines(value: Any) -> list[str]:
         )
         if rendered:
             lines.append(f"  unsupported_provider_patterns {rendered}")
+    return lines
+
+
+def _format_provider_corpus_coverage_lines(value: Any) -> list[str]:
+    semantic_cache = value if isinstance(value, dict) else {}
+    coverage = semantic_cache.get("providerCorpusCoverage")
+    if not isinstance(coverage, dict) or not coverage:
+        return []
+    lines: list[str] = []
+    for provider, report in sorted(coverage.items(), key=lambda item: str(item[0])):
+        if not isinstance(report, dict):
+            continue
+        blocker_counts = report.get("blocker_counts")
+        sparse_sports = report.get("sparse_sports")
+        zero_selection_sports = report.get("zero_selection_sports")
+        lines.append(
+            "  corpus_coverage "
+            f"provider={provider} "
+            f"sports={report.get('sports_with_selections', 0)}/{report.get('sport_count', 0)} "
+            f"selections={report.get('total_selection_count', 0)} "
+            f"events={report.get('total_event_count', 0)} "
+            f"markets={report.get('total_market_count', 0)} "
+            f"blockers={blocker_counts if isinstance(blocker_counts, dict) else {}} "
+            f"sparse={sparse_sports if isinstance(sparse_sports, list) else []} "
+            f"zero={zero_selection_sports if isinstance(zero_selection_sports, list) else []}",
+        )
     return lines
 
 

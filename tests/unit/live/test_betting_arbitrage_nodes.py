@@ -25,6 +25,7 @@ import pytest
 from nautilus_trader.adapters.betting.common.enums import SelectionSide
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.betting.semantics import FileRuleCache
+from nautilus_trader.adapters.betting.semantics import CorpusSnapshot
 from nautilus_trader.adapters.betting.semantics import RuleClassifier
 from nautilus_trader.adapters.betting.semantics import RuleCorpusManifest
 from nautilus_trader.adapters.betting.semantics import RulePromotionPolicy
@@ -1168,6 +1169,47 @@ class TestSemanticCacheBootstrap:
             def list_coverage_hyperedge_ids(self):
                 return ["hyperedge-a"]
 
+            def list_snapshot_ids(self):
+                return ["coverage-sxbet-old", "coverage-sxbet-new"]
+
+            def load_snapshot(self, snapshot_id):
+                payloads = {
+                    "coverage-sxbet-old": {
+                        "provider": "SXBET",
+                        "sports": {
+                            "soccer": {
+                                "selection_count": 0,
+                                "event_count": 0,
+                                "blocker": "old",
+                            },
+                        },
+                    },
+                    "coverage-sxbet-new": {
+                        "provider": "SXBET",
+                        "sports": {
+                            "basketball": {
+                                "selection_count": 12,
+                                "event_count": 4,
+                                "attempts": [{"source": "active"}],
+                            },
+                            "baseball": {
+                                "selection_count": 0,
+                                "event_count": 0,
+                                "blocker": "no_active_markets_or_provider_data",
+                            },
+                        },
+                    },
+                }
+                return CorpusSnapshot(
+                    snapshot_id=snapshot_id,
+                    provider="SXBET",
+                    endpoint="/semantic/coverage/sxbet",
+                    fetched_at="2026-05-07T00:00:00Z"
+                    if snapshot_id.endswith("new")
+                    else "2026-05-06T00:00:00Z",
+                    payload=json.dumps(payloads[snapshot_id]).encode("utf-8"),
+                )
+
             def load_promoted_template(self, template_id):
                 mapping = {
                     "exec-safe": SimpleNamespace(
@@ -1219,6 +1261,12 @@ class TestSemanticCacheBootstrap:
         assert status.coverage_hyperedge_count == 1
         assert status.summary_reused is False
         assert status.bootstrap_phase_timings_secs == {}
+        assert status.provider_corpus_coverage["SXBET"]["sports_with_selections"] == 1
+        assert status.provider_corpus_coverage["SXBET"]["total_selection_count"] == 12
+        assert status.provider_corpus_coverage["SXBET"]["zero_selection_sports"] == ["baseball"]
+        assert status.provider_corpus_coverage["SXBET"]["blocker_counts"] == {
+            "no_active_markets_or_provider_data": 1,
+        }
 
     def test_semantic_cache_status_reuses_summary_without_template_scan(
         self,

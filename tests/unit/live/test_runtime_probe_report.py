@@ -31,6 +31,18 @@ def _runtime_status_payload() -> dict[str, object]:
             "sameVenueExecutionEligibleTemplateCount": 237,
             "promotedSafetyTierCounts": {"EXECUTION_SAFE": 65, "TOPOLOGY_SAFE": 900},
             "strictExecutionBlockerCounts": {"void_states_present": 40},
+            "providerCorpusCoverage": {
+                "SXBET": {
+                    "sport_count": 6,
+                    "sports_with_selections": 3,
+                    "total_selection_count": 842,
+                    "total_event_count": 114,
+                    "total_market_count": 0,
+                    "blocker_counts": {"no_active_markets_or_provider_data": 2},
+                    "sparse_sports": ["american_football"],
+                    "zero_selection_sports": ["baseball", "ice_hockey"],
+                },
+            },
         },
         "executionReadiness": {
             "validationMode": True,
@@ -312,6 +324,7 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
     assert summary["semanticCache"]["promotedTemplateCount"] == 1248
     assert summary["semanticCache"]["promotedSafetyTierCounts"]["EXECUTION_SAFE"] == 65
     assert summary["semanticCache"]["strictExecutionBlockerCounts"] == {"void_states_present": 40}
+    assert summary["semanticCache"]["providerCorpusCoverage"]["SXBET"]["sport_count"] == 6
     assert summary["executionReadiness"]["validationMode"] is True
     assert summary["executionReadiness"]["autoExecute"] is False
     assert summary["executionReadiness"]["venues"][0]["environment"] == "paper"
@@ -470,6 +483,7 @@ def test_runtime_probe_report_formats_execution_readiness_line():
         in rendered
     )
     assert "CLOUDBET(exec=True,dry_run=True,env=paper,base=PLAY_EUR)" in rendered
+    assert "corpus_coverage provider=SXBET sports=3/6 selections=842" in rendered
 
 
 def test_runtime_probe_report_flags_legacy_semantic_blocked_artifacts():
@@ -680,6 +694,7 @@ def test_runtime_probe_report_cli_outputs_json_and_text(tmp_path, monkeypatch, c
     assert "refresh_reconcile_latency p95=120.0ms" in text_output
     assert "provider_poll CLOUDBET:cycle=12" in text_output
     assert "provider_poll_health overall=fail CLOUDBET:status=fail" in text_output
+    assert "corpus_coverage provider=SXBET sports=3/6 selections=842" in text_output
     assert "venue_coverage_health overall=warn CLOUDBET:status=warn" in text_output
     assert "recommended_actions" in text_output
     assert "inspect_live_latency_slo_violations" in text_output
