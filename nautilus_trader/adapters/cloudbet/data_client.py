@@ -529,9 +529,12 @@ class CloudbetDataClient(LiveMarketDataClient):
 
         started_at = time.perf_counter()
         if self._quote_poll_event_batching:
-            results, request_count, event_request_count, line_request_count = (
-                await self._fetch_quote_ticks_event_batched(instrument_ids)
-            )
+            (
+                results,
+                request_count,
+                event_request_count,
+                line_request_count,
+            ) = await self._fetch_quote_ticks_event_batched(instrument_ids)
         else:
             results, line_request_count = await self._fetch_quote_ticks_individual(instrument_ids)
             event_request_count = 0
