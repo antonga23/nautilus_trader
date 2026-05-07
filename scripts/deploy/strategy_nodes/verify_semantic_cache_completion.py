@@ -194,7 +194,9 @@ def _observed_count(template: dict[str, Any]) -> int:
 
 
 def _is_execution_safe_template(template: dict[str, Any]) -> bool:
-    return bool(template.get("execution_safe")) or str(template.get("safety_tier")) == "EXECUTION_SAFE"
+    return (
+        bool(template.get("execution_safe")) or str(template.get("safety_tier")) == "EXECUTION_SAFE"
+    )
 
 
 def _provider_report(
@@ -515,7 +517,9 @@ def build_completion_report(
         "total_template_candidates": len(collections.template_candidates),
         "total_promoted_templates": len(collections.promoted_templates),
         "total_execution_safe_templates": sum(
-            1 for template in collections.promoted_templates if _is_execution_safe_template(template)
+            1
+            for template in collections.promoted_templates
+            if _is_execution_safe_template(template)
         ),
         "load_error_count": len(collections.load_errors),
         "load_errors": tuple(collections.load_errors[:20]),
