@@ -386,6 +386,7 @@ class TestBettingArbitrageNodeBuilder:
                     order_book_poll_interval_secs=7.0,
                     order_book_poll_summary_interval_secs=31.0,
                     order_book_concurrency=3,
+                    order_book_missing_prune_threshold=2,
                 ),
             ],
         )
@@ -414,6 +415,7 @@ class TestBettingArbitrageNodeBuilder:
         assert data_client.config["quote_poll_target_cycle_secs"] == 5.0
         assert data_client.config["quote_poll_adaptive_concurrency"] is True
         assert data_client.config["quote_poll_event_batching"] is True
+        assert data_client.config["quote_poll_missing_prune_threshold"] == 2
 
     def test_cloudbet_data_client_keeps_auto_subscribe_without_semantic_cache(self):
         manifest = BettingArbitrageNodeManifest(
@@ -789,6 +791,7 @@ class TestBettingArbitrageNodeBuilder:
         assert cloudbet_config["quote_poll_target_cycle_secs"] == 4.0
         assert cloudbet_config["quote_poll_adaptive_concurrency"] is True
         assert cloudbet_config["quote_poll_event_batching"] is True
+        assert cloudbet_config["quote_poll_missing_prune_threshold"] == 3
         assert (
             config.data_clients["POLYMARKET_PRIMARY"].config["instrument_provider"]["load_all"]
             is True

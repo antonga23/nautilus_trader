@@ -323,6 +323,74 @@ class TestCloudbetDataClient:
         assert b'"request_count":1' in stats
         assert b'"event_request_count":1' in stats
         assert b'"line_request_count":0' in stats
+        assert b'"pruned_subscription_count":0' in stats
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 1)], indirect=["instruments"])
+    @patch.object(CloudbetClient, "get_latest_odds", new_callable=AsyncMock)
+    @patch.object(CloudbetClient, "get_event", new_callable=AsyncMock)
+    async def test_poll_quote_ticks_prunes_consecutive_missing_cloudbet_selection(
+        self,
+        mock_get_event,
+        mock_get_latest_odds,
+        data_client,
+        instruments,
+    ):
+        instrument = instruments[0]
+        data_client.instrument_provider.add(instrument)
+        data_client._subscribed_quote_instruments.add(instrument.id)
+        data_client._quote_poll_missing_prune_threshold = 1
+        mock_get_event.return_value = GetEventResponse(
+            sequence="1",
+            id=int(instrument.event_id),
+            sport=Identifier(name=instrument.sport_name, key="sport"),
+            competition=CompetitionWithCategory(
+                category=Identifier(name="category", key="category"),
+                key="competition",
+                name=instrument.competition_name,
+            ),
+            home=TeamIdentifier(
+                abbreviation="H",
+                key="home",
+                name=instrument.home_name,
+                nationality="",
+            ),
+            away=TeamIdentifier(
+                abbreviation="A",
+                key="away",
+                name=instrument.away_name,
+                nationality="",
+            ),
+            status=EventStatus.TRADING,
+            markets={},
+            name=instrument.event_name,
+            key="event",
+            cutoff_time="2026-05-07T12:00:00Z",
+            type="EVENT",
+            end_time="2026-05-07T14:00:00Z",
+            grading_duration=None,
+        )
+        mock_get_latest_odds.return_value = GetLatestOddsResponse(
+            max_stake=0,
+            min_stake=0,
+            price=0,
+            status=SelectionStatus.DISABLED,
+            outcome=instrument.outcome,
+            params=instrument.params,
+            probability=0,
+            side=SelectionSide.UNDEFINED,
+        )
+
+        published, requested = await data_client._poll_quote_ticks_once()
+
+        assert requested == 1
+        assert published == 0
+        assert instrument.id not in data_client._subscribed_quote_instruments
+        stats = data_client._cache.get("betting:venue_quote_poll_stats:CLOUDBET")
+        assert b'"pruned_subscription_count":1' in stats
+        assert b'"event_request_count":1' in stats
+        assert b'"line_request_count":1' in stats
+        mock_get_latest_odds.assert_called_once()
 
     def test_quote_poll_schedule_adapts_cloudbet_concurrency(self, data_client):
         data_client._quote_poll_concurrency = 4

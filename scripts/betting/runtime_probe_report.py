@@ -1036,6 +1036,7 @@ def _format_provider_poll_stats(value: Any) -> str:
             f"requests={stats.get('request_count', 0)} "
             f"event_requests={stats.get('event_request_count', 0)} "
             f"line_requests={stats.get('line_request_count', 0)} "
+            f"pruned={stats.get('pruned_subscription_count', 0)} "
             f"markets={stats.get('market_count', 0)} "
             f"cycle_elapsed={stats.get('cycle_elapsed_secs', 0)}s "
             f"target={stats.get('poll_target_cycle_secs', 0)}s "
@@ -1358,6 +1359,7 @@ def _provider_poll_health(provider_quote_poll_stats: dict[str, Any]) -> dict[str
         request_count = _int_value(stats.get("request_count"))
         event_request_count = _int_value(stats.get("event_request_count"))
         line_request_count = _int_value(stats.get("line_request_count"))
+        pruned_subscription_count = _int_value(stats.get("pruned_subscription_count"))
         quote_count = _int_value(stats.get("quote_count"))
         concurrency = _int_value(stats.get("concurrency"))
         max_concurrency = _int_value(stats.get("max_concurrency"))
@@ -1374,6 +1376,7 @@ def _provider_poll_health(provider_quote_poll_stats: dict[str, Any]) -> dict[str
             backlog_count=backlog_count,
             request_count=request_count,
             line_request_count=line_request_count,
+            pruned_subscription_count=pruned_subscription_count,
             quote_count=quote_count,
             concurrency=concurrency,
             max_concurrency=max_concurrency,
@@ -1399,6 +1402,7 @@ def _provider_poll_health(provider_quote_poll_stats: dict[str, Any]) -> dict[str
             "requestCount": request_count,
             "eventRequestCount": event_request_count,
             "lineRequestCount": line_request_count,
+            "prunedSubscriptionCount": pruned_subscription_count,
             "quoteCount": quote_count,
             "requestFanoutPerQuote": round(request_fanout_per_quote, 4),
             "lineFallbackRatio": round(line_fallback_ratio, 4),
@@ -1424,6 +1428,7 @@ def _provider_poll_reasons(
     backlog_count: int,
     request_count: int,
     line_request_count: int,
+    pruned_subscription_count: int,
     quote_count: int,
     concurrency: int,
     max_concurrency: int,
@@ -1454,6 +1459,7 @@ def _provider_poll_reasons(
             source=source,
             request_count=request_count,
             line_request_count=line_request_count,
+            pruned_subscription_count=pruned_subscription_count,
             quote_count=quote_count,
             request_fanout_per_quote=request_fanout_per_quote,
             line_fallback_ratio=line_fallback_ratio,
@@ -1490,6 +1496,7 @@ def _provider_poll_fanout_reasons(
     source: str,
     request_count: int,
     line_request_count: int,
+    pruned_subscription_count: int,
     quote_count: int,
     request_fanout_per_quote: float,
     line_fallback_ratio: float,
@@ -1501,6 +1508,8 @@ def _provider_poll_fanout_reasons(
         reasons.append("event_batching_disabled")
     if quote_count > 0 and request_fanout_per_quote > 1.5:
         reasons.append("request_fanout_high")
+    if pruned_subscription_count > 0:
+        reasons.append("stale_subscription_pruned")
     return reasons
 
 
@@ -1552,6 +1561,7 @@ def _recommended_actions(summary: dict[str, Any]) -> list[str]:
                 "event_batching_disabled": "enable_event_batched_provider_polling",
                 "request_fanout_high": "reduce_provider_request_fanout",
                 "at_max_concurrency": "reduce_subscription_count_or_shard_provider_polling",
+                "stale_subscription_pruned": "inspect_pruned_provider_subscriptions",
             },
         ),
     )

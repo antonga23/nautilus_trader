@@ -397,6 +397,10 @@ class TestBettingArbitrageStrategy:  # skipcq
                 subscribed_instrument_count=12,
                 market_count=6,
                 quote_count=9,
+                request_count=5,
+                event_request_count=4,
+                line_request_count=1,
+                pruned_subscription_count=2,
                 order_count=20,
                 empty_market_count=1,
                 one_sided_market_count=2,
@@ -436,6 +440,10 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(stats["SXBET"]["source"] == "rest_order_book_poll")
         ensure(stats["SXBET"]["market_count"] == 6)
         ensure(stats["SXBET"]["quote_count"] == 9)
+        ensure(stats["SXBET"]["request_count"] == 5)
+        ensure(stats["SXBET"]["event_request_count"] == 4)
+        ensure(stats["SXBET"]["line_request_count"] == 1)
+        ensure(stats["SXBET"]["pruned_subscription_count"] == 2)
         ensure(stats["SXBET"]["backlog_count"] == 2)
         ensure(stats["SXBET"]["max_fetch_latency_secs"] == 0.4)
         ensure(stats["SXBET"]["poll_target_cycle_secs"] == 4.0)

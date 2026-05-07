@@ -3055,6 +3055,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 "request_count": payload.request_count,
                 "event_request_count": payload.event_request_count,
                 "line_request_count": payload.line_request_count,
+                "pruned_subscription_count": payload.pruned_subscription_count,
                 "order_count": payload.order_count,
                 "empty_market_count": payload.empty_market_count,
                 "one_sided_market_count": payload.one_sided_market_count,

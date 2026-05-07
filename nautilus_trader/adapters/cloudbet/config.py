@@ -52,6 +52,7 @@ class CloudbetDataClientConfig(LiveDataClientConfig, frozen=True):
     quote_poll_target_cycle_secs: PositiveFloat = 5.0
     quote_poll_adaptive_concurrency: bool = True
     quote_poll_event_batching: bool = True
+    quote_poll_missing_prune_threshold: PositiveInt = 3
 
 
 class CloudbetInstrumentProviderConfig(InstrumentProviderConfig, frozen=True):

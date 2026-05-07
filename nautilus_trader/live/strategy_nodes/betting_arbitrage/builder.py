@@ -352,6 +352,7 @@ def _build_cloudbet_data_importable(
         "quote_poll_target_cycle_secs": venue.order_book_target_cycle_secs,
         "quote_poll_adaptive_concurrency": venue.order_book_adaptive_concurrency,
         "quote_poll_event_batching": venue.order_book_event_batching,
+        "quote_poll_missing_prune_threshold": venue.order_book_missing_prune_threshold,
         "routing": {"venues": [venue.venue]},
     }
     return ImportableConfig(
