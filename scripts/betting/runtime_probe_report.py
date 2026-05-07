@@ -57,6 +57,9 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
     coverage_diagnostics = _as_dict(runtime.get("coverageDiagnostics"))
     latency_diagnostics = _normalized_latency_diagnostics(runtime.get("latencyDiagnostics"))
     semantic_diagnostics = _as_dict(runtime.get("semanticDiagnostics"))
+    corpus_health = _semantic_cache_corpus_health(
+        _as_dict(semantic_cache.get("providerCorpusCoverage")),
+    )
     positive = runtime.get("positiveMarginCandidates")
     threshold = runtime.get("thresholdMarginCandidates")
     blocker_samples = _as_dict(candidate_quality.get("blockerSamples"))
@@ -205,6 +208,7 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
         },
         "providerQuotePollStats": provider_quote_poll_stats,
         "providerPollHealth": _provider_poll_health(provider_quote_poll_stats),
+        "semanticCacheCorpusHealth": corpus_health,
         "instrumentRefresh": instrument_refresh,
         "semanticDiagnostics": {
             "supportedProviderNodeCount": semantic_diagnostics.get("supportedProviderNodeCount"),
@@ -325,6 +329,7 @@ def aggregate_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
     topology_counts: dict[str, int] = {}
     health_counts: dict[str, int] = {}
     provider_poll_health_counts: dict[str, int] = {}
+    corpus_health_counts: dict[str, int] = {}
     venue_coverage_health_counts: dict[str, int] = {}
     execution_safety_counts: dict[str, int] = {}
     quote_subscription_counts: dict[str, int] = {}
@@ -363,6 +368,10 @@ def aggregate_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
         provider_poll_health_counts[provider_health] = (
             provider_poll_health_counts.get(provider_health, 0) + 1
         )
+        corpus_health = str(
+            _as_dict(summary.get("semanticCacheCorpusHealth")).get("overall") or "unknown",
+        )
+        corpus_health_counts[corpus_health] = corpus_health_counts.get(corpus_health, 0) + 1
         venue_health = str(_as_dict(summary.get("venueCoverageHealth")).get("overall") or "unknown")
         venue_coverage_health_counts[venue_health] = (
             venue_coverage_health_counts.get(venue_health, 0) + 1
@@ -456,6 +465,7 @@ def aggregate_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
         "latencySloStatusCounts": dict(sorted(latency_slo_counts.items())),
         "operatorHealthCounts": dict(sorted(health_counts.items())),
         "providerPollHealthCounts": dict(sorted(provider_poll_health_counts.items())),
+        "semanticCacheCorpusHealthCounts": dict(sorted(corpus_health_counts.items())),
         "venueCoverageHealthCounts": dict(sorted(venue_coverage_health_counts.items())),
         "executionSafetyCounts": dict(sorted(execution_safety_counts.items())),
         "quoteSubscriptionCountsByVenue": dict(sorted(quote_subscription_counts.items())),
@@ -845,6 +855,9 @@ def _format_text(path: Path, summary: dict[str, Any]) -> str:
     venue_coverage_health = _format_venue_coverage_health(summary.get("venueCoverageHealth"))
     if venue_coverage_health:
         lines.append(f"  venue_coverage_health {venue_coverage_health}")
+    lines.extend(
+        _format_semantic_cache_corpus_health_lines(summary.get("semanticCacheCorpusHealth"))
+    )
     lines.extend(_format_refresh_lines(summary.get("instrumentRefresh")))
     lines.extend(_format_semantic_diagnostic_lines(summary.get("semanticDiagnostics")))
     lines.extend(_format_provider_corpus_coverage_lines(summary.get("semanticCache")))
@@ -1187,6 +1200,26 @@ def _format_provider_poll_health(value: Any) -> str:
     return f"overall={health.get('overall')} " + "; ".join(rendered)
 
 
+def _format_semantic_cache_corpus_health(value: Any) -> str:
+    health = value if isinstance(value, dict) else {}
+    providers = _as_dict(health.get("providers"))
+    if not providers:
+        return ""
+    rendered = []
+    for provider, raw_payload in sorted(providers.items()):
+        payload = _as_dict(raw_payload)
+        reasons = payload.get("reasons") or []
+        rendered.append(
+            f"{provider}:status={payload.get('status')} reasons={','.join(str(r) for r in reasons)}",
+        )
+    return f"overall={health.get('overall')} " + "; ".join(rendered)
+
+
+def _format_semantic_cache_corpus_health_lines(value: Any) -> list[str]:
+    rendered = _format_semantic_cache_corpus_health(value)
+    return [f"  semantic_cache_corpus_health {rendered}"] if rendered else []
+
+
 def _format_venue_coverage_health(value: Any) -> str:
     health = value if isinstance(value, dict) else {}
     venues = _as_dict(health.get("venues"))
@@ -1219,6 +1252,7 @@ def _format_aggregate_line(aggregate: dict[str, Any]) -> str:
         f"health={aggregate['operatorHealthCounts']} "
         f"execution_safety={aggregate['executionSafetyCounts']} "
         f"provider_poll_health={aggregate['providerPollHealthCounts']} "
+        f"corpus_health={aggregate['semanticCacheCorpusHealthCounts']} "
         f"venue_coverage_health={aggregate['venueCoverageHealthCounts']} "
         f"actions={aggregate['recommendedActionCounts']}"
     )
@@ -1662,6 +1696,51 @@ def _provider_poll_status(
     return "warn" if reasons else "pass"
 
 
+def _semantic_cache_corpus_health(provider_corpus_coverage: dict[str, Any]) -> dict[str, Any]:
+    providers: dict[str, dict[str, Any]] = {}
+    overall = "unknown"
+    if not provider_corpus_coverage:
+        return {"overall": overall, "providers": providers}
+
+    overall = "pass"
+    for provider, raw_report in sorted(
+        provider_corpus_coverage.items(), key=lambda item: str(item[0])
+    ):
+        report = _as_dict(raw_report)
+        reasons: list[str] = []
+        sport_count = _int_value(report.get("sport_count"))
+        sports_with_selections = _int_value(report.get("sports_with_selections"))
+        total_selection_count = _int_value(report.get("total_selection_count"))
+        zero_selection_sports = _as_list_of_strings(report.get("zero_selection_sports"))
+        sparse_sports = _as_list_of_strings(report.get("sparse_sports"))
+        blocker_counts = _as_dict(report.get("blocker_counts"))
+        if sport_count <= 0:
+            reasons.append("no_corpus_sports")
+        if sports_with_selections <= 0 or total_selection_count <= 0:
+            reasons.append("no_corpus_selections")
+        if zero_selection_sports:
+            reasons.append("zero_selection_sports")
+        if sparse_sports:
+            reasons.append("sparse_corpus_sports")
+        if blocker_counts:
+            reasons.append("provider_corpus_blockers")
+
+        status = "fail" if "no_corpus_selections" in reasons else ("warn" if reasons else "pass")
+        if _operator_health_at_or_above(status, overall):
+            overall = status
+        providers[str(provider)] = {
+            "status": status,
+            "reasons": reasons,
+            "sportCount": sport_count,
+            "sportsWithSelections": sports_with_selections,
+            "totalSelectionCount": total_selection_count,
+            "zeroSelectionSports": zero_selection_sports,
+            "sparseSports": sparse_sports,
+            "blockerCounts": blocker_counts,
+        }
+    return {"overall": overall, "providers": providers}
+
+
 def _recommended_actions(summary: dict[str, Any]) -> list[str]:
     actions: list[str] = []
     execution_safety = _as_dict(summary.get("executionSafety"))
@@ -1713,6 +1792,18 @@ def _recommended_actions(summary: dict[str, Any]) -> list[str]:
                 "no_semantic_edges": "inspect_semantic_template_coverage",
                 "quote_subscription_gap": "increase_quote_subscription_limit_or_refresh_quotes",
                 "quote_subscription_limit_exceeded": ("reduce_semantic_quote_subscription_load"),
+            },
+        ),
+    )
+    actions.extend(
+        _actions_from_reason_payloads(
+            _as_dict(_as_dict(summary.get("semanticCacheCorpusHealth")).get("providers")).values(),
+            {
+                "no_corpus_sports": "inspect_provider_corpus_discovery",
+                "no_corpus_selections": "inspect_provider_corpus_discovery",
+                "zero_selection_sports": "inspect_zero_selection_target_sports",
+                "sparse_corpus_sports": "widen_provider_corpus_window_or_limits",
+                "provider_corpus_blockers": "inspect_provider_corpus_blockers",
             },
         ),
     )

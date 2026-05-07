@@ -337,6 +337,13 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
     assert summary["semanticCache"]["executionSafeMarketFamilyCounts"]["TOTALS + TOTALS"] == 25
     assert summary["semanticCache"]["strictExecutionBlockerCounts"] == {"void_states_present": 40}
     assert summary["semanticCache"]["providerCorpusCoverage"]["SXBET"]["sport_count"] == 6
+    assert summary["semanticCacheCorpusHealth"]["overall"] == "warn"
+    assert summary["semanticCacheCorpusHealth"]["providers"]["SXBET"]["reasons"] == [
+        "zero_selection_sports",
+        "sparse_corpus_sports",
+        "provider_corpus_blockers",
+    ]
+    assert "inspect_zero_selection_target_sports" in summary["recommendedActions"]
     assert summary["executionReadiness"]["validationMode"] is True
     assert summary["executionReadiness"]["autoExecute"] is False
     assert summary["executionReadiness"]["venues"][0]["environment"] == "paper"
@@ -450,9 +457,12 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
         "increase_poll_concurrency_or_reduce_subscriptions",
         "increase_quote_subscription_limit_or_refresh_quotes",
         "inspect_live_latency_slo_violations",
+        "inspect_provider_corpus_blockers",
         "inspect_provider_poll_failures",
         "inspect_zero_candidate_blockers",
+        "inspect_zero_selection_target_sports",
         "reduce_poll_rate_or_add_backoff",
+        "widen_provider_corpus_window_or_limits",
     ]
     assert summary["instrumentRefresh"]["staleQuoteTriggers"] == 1
     assert summary["semanticDiagnostics"]["supportedProviderNodeCount"] == 18
@@ -636,6 +646,10 @@ def test_runtime_probe_report_aggregates_multiple_artifacts():
         "fail": 1,
         "unknown": 1,
     }
+    assert aggregate["semanticCacheCorpusHealthCounts"] == {
+        "unknown": 1,
+        "warn": 1,
+    }
     assert aggregate["venueCoverageHealthCounts"] == {
         "unknown": 1,
         "warn": 1,
@@ -702,6 +716,7 @@ def test_runtime_probe_report_cli_outputs_json_and_text(tmp_path, monkeypatch, c
     assert "execution_safety={'pass': 1}" in text_output
     assert "health={'fail': 1}" in text_output
     assert "provider_poll_health={'fail': 1}" in text_output
+    assert "corpus_health={'warn': 1}" in text_output
     assert "venue_coverage_health={'warn': 1}" in text_output
     assert "top_semantic_blockers" in text_output
     assert "top_semantic_relationships" in text_output
@@ -714,6 +729,7 @@ def test_runtime_probe_report_cli_outputs_json_and_text(tmp_path, monkeypatch, c
     assert "provider_poll CLOUDBET:cycle=12" in text_output
     assert "fetch_p95=0.18s" in text_output
     assert "provider_poll_health overall=fail CLOUDBET:status=fail" in text_output
+    assert "semantic_cache_corpus_health overall=warn SXBET:status=warn" in text_output
     assert "corpus_coverage provider=SXBET sports=3/6 selections=842" in text_output
     assert "venue_coverage_health overall=warn CLOUDBET:status=warn" in text_output
     assert "recommended_actions" in text_output
