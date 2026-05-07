@@ -87,7 +87,7 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
     graph_warnings = graph_diagnostic_warnings
     summary = {
         "nodeId": payload.get("nodeId"),
-        "status": payload.get("status"),
+        "status": payload.get("status") or payload.get("state"),
         "semanticCache": {
             "ready": semantic_cache.get("ready"),
             "source": semantic_cache.get("source"),
@@ -106,6 +106,7 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
             "semanticCacheConfigured": execution_readiness.get("semanticCacheConfigured"),
             "venues": execution_readiness.get("venues"),
         },
+        "executionSafety": _execution_safety_health(execution_readiness),
         "graph": {
             "engine": runtime.get("graphEngine"),
             "topologySource": runtime.get("topologySource"),
@@ -185,8 +186,12 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
                 candidate_quality.get("zeroCandidateVenuePairSamples") or []
             )[:top_limit],
             "zeroCandidateBlockerCounts": candidate_quality.get("zeroCandidateBlockerCounts"),
-            "topPositiveCandidates": candidate_quality.get("topPositiveCandidates"),
-            "topNegativeNearMisses": candidate_quality.get("topNegativeNearMisses"),
+            "topPositiveCandidates": (candidate_quality.get("topPositiveCandidates") or [])[
+                :top_limit
+            ],
+            "topNegativeNearMisses": (candidate_quality.get("topNegativeNearMisses") or [])[
+                :top_limit
+            ],
         },
         "providerQuotePollStats": provider_quote_poll_stats,
         "providerPollHealth": _provider_poll_health(provider_quote_poll_stats),
@@ -203,9 +208,9 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
             "unsupportedProviderPatternCount": semantic_diagnostics.get(
                 "unsupportedProviderPatternCount",
             ),
-            "unsupportedProviderPatterns": semantic_diagnostics.get(
-                "unsupportedProviderPatterns",
-            ),
+            "unsupportedProviderPatterns": (
+                semantic_diagnostics.get("unsupportedProviderPatterns") or []
+            )[:top_limit],
             "unsupportedProviderPatternSamples": (
                 semantic_diagnostics.get("unsupportedProviderPatternSamples") or []
             )[:top_limit],
@@ -214,11 +219,34 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
             "enabledVenues": venue_coverage.get("enabledVenues"),
             "nodeCounts": venue_coverage.get("nodeCounts"),
             "quoteSubscriptionCounts": venue_coverage.get("quoteSubscriptionCounts"),
+            "quoteSubscriptionLimits": venue_coverage.get("quoteSubscriptionLimits"),
+            "quoteSubscriptionLimitExceededCounts": venue_coverage.get(
+                "quoteSubscriptionLimitExceededCounts",
+            ),
+            "quoteSubscriptionGapCounts": venue_coverage.get("quoteSubscriptionGapCounts"),
+            "venuesWithSubscriptionQuoteGap": venue_coverage.get(
+                "venuesWithSubscriptionQuoteGap",
+            ),
             "quotedNodeCounts": venue_coverage.get("quotedNodeCounts"),
+            "semanticMatchedNodeCounts": venue_coverage.get("semanticMatchedNodeCounts"),
+            "quotedSemanticMatchedNodeCounts": venue_coverage.get(
+                "quotedSemanticMatchedNodeCounts",
+            ),
+            "unquotedSemanticMatchedNodeCounts": venue_coverage.get(
+                "unquotedSemanticMatchedNodeCounts",
+            ),
+            "unquotedSemanticMatchedNodeSamples": venue_coverage.get(
+                "unquotedSemanticMatchedNodeSamples",
+            ),
             "edgeCounts": venue_coverage.get("edgeCounts"),
             "quotedEdgeCounts": venue_coverage.get("quotedEdgeCounts"),
             "candidateCounts": venue_coverage.get("candidateCounts"),
+            "crossVenueCandidateCount": venue_coverage.get("crossVenueCandidateCount"),
+            "crossVenuePairsWithCandidates": venue_coverage.get(
+                "crossVenuePairsWithCandidates",
+            ),
             "zeroCandidateVenuePairs": venue_coverage.get("zeroCandidateVenuePairs"),
+            "zeroCandidateBlockerCounts": venue_coverage.get("zeroCandidateBlockerCounts"),
         },
         "venueCoverageHealth": _venue_coverage_health(venue_coverage),
         "operatorHealth": _operator_health(
@@ -226,6 +254,7 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
             graph_warnings=graph_warnings,
             latency_warnings=latency_block["diagnosticWarnings"],
             latency_slo_status=_as_dict(latency_block.get("sloStatus")),
+            execution_safety_status=_execution_safety_health(execution_readiness),
         ),
     }
     summary["recommendedActions"] = _recommended_actions(summary)
@@ -234,14 +263,46 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
 
 def _normalized_latency_diagnostics(value: Any) -> dict[str, Any]:
     diagnostics = _as_dict(value)
+    runtime_probe_candidate_decision = _as_dict(
+        diagnostics.get("runtime_probe_candidate_decision")
+        or diagnostics.get("runtimeProbeCandidateDecision"),
+    )
+    candidate_decision = _as_dict(
+        diagnostics.get("candidate_decision") or diagnostics.get("candidateDecision"),
+    )
+    strategy_candidate_decision_observed = _int_value(candidate_decision.get("count")) > 0
+    if not strategy_candidate_decision_observed and runtime_probe_candidate_decision:
+        candidate_decision = runtime_probe_candidate_decision
+    candidate_decision_source = diagnostics.get("candidate_decision_source") or diagnostics.get(
+        "candidateDecisionSource",
+    )
+    if not candidate_decision_source:
+        if strategy_candidate_decision_observed:
+            candidate_decision_source = "strategy"
+        elif runtime_probe_candidate_decision:
+            candidate_decision_source = "runtime_probe"
+        else:
+            candidate_decision_source = "none"
     return {
-        "quoteEventToStrategy": _as_dict(diagnostics.get("quote_event_to_strategy")),
-        "quotePublishToStrategy": _as_dict(diagnostics.get("quote_publish_to_strategy")),
-        "instrumentRefreshReconcile": _as_dict(diagnostics.get("instrument_refresh_reconcile")),
-        "graphScan": _as_dict(diagnostics.get("graph_scan")),
-        "candidateDecision": _as_dict(diagnostics.get("candidate_decision")),
-        "orderConstruction": _as_dict(diagnostics.get("order_construction")),
-        "orderSubmit": _as_dict(diagnostics.get("order_submit")),
+        "quoteEventToStrategy": _as_dict(
+            diagnostics.get("quote_event_to_strategy") or diagnostics.get("quoteEventToStrategy"),
+        ),
+        "quotePublishToStrategy": _as_dict(
+            diagnostics.get("quote_publish_to_strategy")
+            or diagnostics.get("quotePublishToStrategy"),
+        ),
+        "instrumentRefreshReconcile": _as_dict(
+            diagnostics.get("instrument_refresh_reconcile")
+            or diagnostics.get("instrumentRefreshReconcile"),
+        ),
+        "graphScan": _as_dict(diagnostics.get("graph_scan") or diagnostics.get("graphScan")),
+        "candidateDecision": candidate_decision,
+        "runtimeProbeCandidateDecision": runtime_probe_candidate_decision,
+        "candidateDecisionSource": str(candidate_decision_source),
+        "orderConstruction": _as_dict(
+            diagnostics.get("order_construction") or diagnostics.get("orderConstruction"),
+        ),
+        "orderSubmit": _as_dict(diagnostics.get("order_submit") or diagnostics.get("orderSubmit")),
     }
 
 
@@ -255,6 +316,18 @@ def aggregate_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
     health_counts: dict[str, int] = {}
     provider_poll_health_counts: dict[str, int] = {}
     venue_coverage_health_counts: dict[str, int] = {}
+    execution_safety_counts: dict[str, int] = {}
+    quote_subscription_counts: dict[str, int] = {}
+    quoted_node_counts: dict[str, int] = {}
+    semantic_matched_node_counts: dict[str, int] = {}
+    quoted_semantic_matched_node_counts: dict[str, int] = {}
+    candidate_counts_by_venue_pair: dict[str, int] = {}
+    edge_counts_by_venue_pair: dict[str, int] = {}
+    quoted_edge_counts_by_venue_pair: dict[str, int] = {}
+    rejection_bucket_counts: dict[str, int] = {}
+    semantic_blocker_counts: dict[str, int] = {}
+    zero_candidate_blocker_counts: dict[str, int] = {}
+    recommended_action_counts: dict[str, int] = {}
     for summary in summaries:
         graph = _as_dict(summary.get("graph"))
         engine = str(graph.get("engine") or "unknown")
@@ -283,6 +356,33 @@ def aggregate_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
         venue_coverage_health_counts[venue_health] = (
             venue_coverage_health_counts.get(venue_health, 0) + 1
         )
+        execution_safety = str(_as_dict(summary.get("executionSafety")).get("overall") or "unknown")
+        execution_safety_counts[execution_safety] = (
+            execution_safety_counts.get(execution_safety, 0) + 1
+        )
+        coverage = _as_dict(summary.get("venueCoverage"))
+        _merge_int_mapping(quote_subscription_counts, coverage.get("quoteSubscriptionCounts"))
+        _merge_int_mapping(quoted_node_counts, coverage.get("quotedNodeCounts"))
+        _merge_int_mapping(
+            semantic_matched_node_counts,
+            coverage.get("semanticMatchedNodeCounts"),
+        )
+        _merge_int_mapping(
+            quoted_semantic_matched_node_counts,
+            coverage.get("quotedSemanticMatchedNodeCounts"),
+        )
+        _merge_int_mapping(candidate_counts_by_venue_pair, coverage.get("candidateCounts"))
+        _merge_int_mapping(edge_counts_by_venue_pair, coverage.get("edgeCounts"))
+        _merge_int_mapping(quoted_edge_counts_by_venue_pair, coverage.get("quotedEdgeCounts"))
+        _merge_nested_count_mapping(rejection_bucket_counts, quality.get("rejectionBuckets"))
+        _merge_nested_count_mapping(semantic_blocker_counts, quality.get("semanticBlockedReasons"))
+        _merge_nested_count_mapping(
+            zero_candidate_blocker_counts,
+            quality.get("zeroCandidateBlockerCounts"),
+        )
+        for action in summary.get("recommendedActions") or []:
+            key = str(action)
+            recommended_action_counts[key] = recommended_action_counts.get(key, 0) + 1
 
     return {
         "artifactCount": len(summaries),
@@ -303,6 +403,26 @@ def aggregate_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
         "quotedEdges": sum(
             _int_value(_as_dict(summary.get("graph")).get("quotedEdges")) for summary in summaries
         ),
+        "semanticTemplateCount": sum(
+            _int_value(_as_dict(summary.get("graph")).get("semanticTemplateCount"))
+            for summary in summaries
+        ),
+        "coverageProofCount": sum(
+            _int_value(_as_dict(summary.get("graph")).get("coverageProofCount"))
+            for summary in summaries
+        ),
+        "coverageHyperedgeCount": sum(
+            _int_value(_as_dict(summary.get("graph")).get("coverageHyperedgeCount"))
+            for summary in summaries
+        ),
+        "executionSafeEdges": sum(
+            _int_value(_as_dict(summary.get("graph")).get("executionSafeEdges"))
+            for summary in summaries
+        ),
+        "sameVenueExecutionEligibleEdges": sum(
+            _int_value(_as_dict(summary.get("graph")).get("sameVenueExecutionEligibleEdges"))
+            for summary in summaries
+        ),
         "positiveCandidates": sum(
             _int_value(_as_dict(summary.get("candidates")).get("positiveTotal"))
             for summary in summaries
@@ -322,7 +442,31 @@ def aggregate_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
         "operatorHealthCounts": dict(sorted(health_counts.items())),
         "providerPollHealthCounts": dict(sorted(provider_poll_health_counts.items())),
         "venueCoverageHealthCounts": dict(sorted(venue_coverage_health_counts.items())),
+        "executionSafetyCounts": dict(sorted(execution_safety_counts.items())),
+        "quoteSubscriptionCountsByVenue": dict(sorted(quote_subscription_counts.items())),
+        "quotedNodeCountsByVenue": dict(sorted(quoted_node_counts.items())),
+        "semanticMatchedNodeCountsByVenue": dict(sorted(semantic_matched_node_counts.items())),
+        "quotedSemanticMatchedNodeCountsByVenue": dict(
+            sorted(quoted_semantic_matched_node_counts.items()),
+        ),
+        "candidateCountsByVenuePair": dict(sorted(candidate_counts_by_venue_pair.items())),
+        "edgeCountsByVenuePair": dict(sorted(edge_counts_by_venue_pair.items())),
+        "quotedEdgeCountsByVenuePair": dict(sorted(quoted_edge_counts_by_venue_pair.items())),
+        "rejectionBucketCounts": dict(sorted(rejection_bucket_counts.items())),
+        "semanticBlockerCounts": dict(sorted(semantic_blocker_counts.items())),
+        "zeroCandidateBlockerCounts": dict(sorted(zero_candidate_blocker_counts.items())),
+        "recommendedActionCounts": dict(sorted(recommended_action_counts.items())),
     }
+
+
+def _merge_int_mapping(target: dict[str, int], value: Any) -> None:
+    for key, raw_count in _as_dict(value).items():
+        target[str(key)] = target.get(str(key), 0) + _int_value(raw_count)
+
+
+def _merge_nested_count_mapping(target: dict[str, int], value: Any) -> None:
+    for key, raw_count in _as_dict(value).items():
+        target[str(key)] = target.get(str(key), 0) + int(_numeric(raw_count))
 
 
 def _count_values(values: Iterable[Any]) -> dict[str, int]:
@@ -339,6 +483,7 @@ def _int_value(value: Any) -> int:
 
 def _diagnostic_warnings(candidate_quality: dict[str, Any]) -> list[str]:
     rejection_buckets = _as_dict(candidate_quality.get("rejectionBuckets"))
+    margin_bands = _as_dict(candidate_quality.get("marginBands"))
     semantic_blocked = _numeric(rejection_buckets.get("semantic_blocked"))
     semantic_reasons = _as_dict(candidate_quality.get("semanticBlockedReasons"))
     warnings: list[str] = []
@@ -360,9 +505,15 @@ def _diagnostic_warnings(candidate_quality: dict[str, Any]) -> list[str]:
         warnings.append("live_fetch_latency_slo_violations")
     if _int_value(pair_skew_slo.get("violations")) > 0:
         warnings.append("live_pair_skew_slo_violations")
-    if not candidate_quality.get("topPositiveCandidates"):
+    positive_observations = _numeric(rejection_buckets.get("positive")) + _numeric(
+        margin_bands.get("positive"),
+    )
+    near_miss_observations = sum(
+        _numeric(rejection_buckets.get(key)) for key in ("negative_margin", "below_threshold")
+    ) + sum(_numeric(margin_bands.get(key)) for key in ("0% to -1%", "-1% to -2%", "-2% to -5%"))
+    if positive_observations > 0 and not candidate_quality.get("topPositiveCandidates"):
         warnings.append("missing_top_positive_candidates")
-    if not candidate_quality.get("topNegativeNearMisses"):
+    if near_miss_observations > 0 and not candidate_quality.get("topNegativeNearMisses"):
         warnings.append("missing_top_negative_near_misses")
     return warnings
 
@@ -448,6 +599,7 @@ def _latency_slo_status(
             _as_dict(latency.get("candidateDecision")).get("count"),
         )
         > 0,
+        "candidateDecisionSource": latency.get("candidateDecisionSource"),
         "quoteReceiveObserved": (
             _int_value(_as_dict(latency.get("quoteEventToStrategy")).get("count")) > 0
             or _int_value(_as_dict(latency.get("quotePublishToStrategy")).get("count")) > 0
@@ -479,14 +631,18 @@ def _operator_health(
     graph_warnings: list[str],
     latency_warnings: list[str],
     latency_slo_status: dict[str, Any],
+    execution_safety_status: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     reasons: list[str] = []
     if latency_slo_status.get("overall") == "fail":
         reasons.append("latency_slo_failed")
+    execution_safety = _as_dict(execution_safety_status)
+    if execution_safety.get("overall") in {"warn", "fail"}:
+        reasons.extend(f"execution:{reason}" for reason in execution_safety.get("reasons") or [])
     reasons.extend(f"candidate:{warning}" for warning in candidate_warnings)
     reasons.extend(f"graph:{warning}" for warning in graph_warnings)
     reasons.extend(f"latency:{warning}" for warning in latency_warnings)
-    if latency_slo_status.get("overall") == "fail":
+    if latency_slo_status.get("overall") == "fail" or execution_safety.get("overall") == "fail":
         overall = "fail"
     elif reasons:
         overall = "warn"
@@ -496,6 +652,32 @@ def _operator_health(
         "overall": overall,
         "reasonCount": len(reasons),
         "reasons": reasons,
+    }
+
+
+def _execution_safety_health(execution_readiness: dict[str, Any]) -> dict[str, Any]:
+    reasons: list[str] = []
+    validation_mode = bool(execution_readiness.get("validationMode"))
+    auto_execute = bool(execution_readiness.get("autoExecute"))
+    if auto_execute:
+        reasons.append("auto_execute_enabled")
+    venues = execution_readiness.get("venues") or []
+    if isinstance(venues, list):
+        for venue in venues:
+            if not isinstance(venue, dict):
+                continue
+            if (
+                validation_mode
+                and bool(venue.get("executionEnabled"))
+                and not bool(venue.get("executionDryRun"))
+            ):
+                reasons.append(f"{venue.get('venue')}:validation_execution_not_dry_run")
+    overall = "fail" if auto_execute else "warn" if reasons else "pass"
+    return {
+        "overall": overall,
+        "reasons": reasons,
+        "validationMode": validation_mode,
+        "autoExecute": auto_execute,
     }
 
 
@@ -572,6 +754,9 @@ def _format_text(path: Path, summary: dict[str, Any]) -> str:
         f"threshold={candidates.get('thresholdTotal')} "
         f"cross_venue={candidates.get('crossVenueCandidateCount')}",
     ]
+    execution_safety = _format_execution_safety_line(summary.get("executionSafety"))
+    if execution_safety:
+        lines.append(execution_safety)
     lines.extend(_format_coverage_lines(graph))
     lines.extend(_format_quality_lines(quality))
     lines.extend(_format_latency_lines(summary.get("latencyDiagnostics")))
@@ -648,6 +833,19 @@ def _format_execution_readiness_line(value: Any) -> str:
         f"auto_execute={readiness.get('autoExecute')} "
         f"semantic_cache={readiness.get('semanticCacheConfigured')} "
         f"venues=[{', '.join(rendered_venues)}]"
+    )
+
+
+def _format_execution_safety_line(value: Any) -> str:
+    safety = value if isinstance(value, dict) else {}
+    if not safety:
+        return ""
+    reasons = safety.get("reasons") or []
+    return (
+        "  execution_safety "
+        f"overall={safety.get('overall')} "
+        f"auto_execute={safety.get('autoExecute')} "
+        f"reasons=[{', '.join(str(reason) for reason in reasons[:5])}]"
     )
 
 
@@ -875,6 +1073,28 @@ def _format_venue_coverage_health(value: Any) -> str:
     return f"overall={health.get('overall')} " + "; ".join(rendered)
 
 
+def _format_aggregate_line(aggregate: dict[str, Any]) -> str:
+    return (
+        "\naggregate: "
+        f"artifacts={aggregate['artifactCount']} "
+        f"positive={aggregate['positiveCandidates']} "
+        f"threshold={aggregate['thresholdCandidates']} "
+        f"cross_venue={aggregate['crossVenueCandidates']} "
+        f"quoted_semantic={aggregate['quotedSemanticMatchInstruments']} "
+        f"edges={aggregate['graphEdges']} "
+        f"quoted_edges={aggregate['quotedEdges']} "
+        f"coverage_proofs={aggregate['coverageProofCount']} "
+        f"hyperedges={aggregate['coverageHyperedgeCount']} "
+        f"warnings={aggregate['diagnosticWarningCounts']} "
+        f"latency_slo={aggregate['latencySloStatusCounts']} "
+        f"health={aggregate['operatorHealthCounts']} "
+        f"execution_safety={aggregate['executionSafetyCounts']} "
+        f"provider_poll_health={aggregate['providerPollHealthCounts']} "
+        f"venue_coverage_health={aggregate['venueCoverageHealthCounts']} "
+        f"actions={aggregate['recommendedActionCounts']}"
+    )
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -913,6 +1133,50 @@ def _parse_args() -> argparse.Namespace:
         help="Return non-zero when venue coverage health is at or above the chosen severity",
     )
     parser.add_argument(
+        "--require-auto-execute-false",
+        action="store_true",
+        help="Return non-zero if any artifact allows strategy auto execution",
+    )
+    parser.add_argument(
+        "--require-validation-mode",
+        action="store_true",
+        help="Return non-zero if any artifact is not running in validation mode",
+    )
+    parser.add_argument(
+        "--require-rust-semantic",
+        action="store_true",
+        help="Return non-zero unless every artifact uses rust/rust_semantic topology",
+    )
+    parser.add_argument(
+        "--require-coverage-runtime",
+        action="store_true",
+        help="Return non-zero unless every artifact exposes nonzero coverage proofs and hyperedges",
+    )
+    parser.add_argument(
+        "--min-positive-candidates",
+        type=int,
+        default=None,
+        help="Return non-zero unless aggregate positive candidates meet this count",
+    )
+    parser.add_argument(
+        "--min-threshold-candidates",
+        type=int,
+        default=None,
+        help="Return non-zero unless aggregate threshold candidates meet this count",
+    )
+    parser.add_argument(
+        "--min-cross-venue-candidates",
+        type=int,
+        default=None,
+        help="Return non-zero unless aggregate cross-venue candidates meet this count",
+    )
+    parser.add_argument(
+        "--min-quoted-semantic-instruments",
+        type=int,
+        default=None,
+        help="Return non-zero unless aggregate quoted semantic instruments meet this count",
+    )
+    parser.add_argument(
         "--aggregate",
         action="store_true",
         help="Include aggregate counts across all input artifacts",
@@ -932,66 +1196,142 @@ def main() -> int:
         {"path": str(path), **summarize_payload(_load_json(path), top_limit=args.top_limit)}
         for path in args.paths
     ]
+    aggregate = aggregate_summaries(summaries)
     if args.format == "text":
         print("\n".join(_format_text(Path(item["path"]), item) for item in summaries))
         if args.aggregate:
-            aggregate = aggregate_summaries(summaries)
-            print(
-                "\naggregate: "
-                f"artifacts={aggregate['artifactCount']} "
-                f"positive={aggregate['positiveCandidates']} "
-                f"threshold={aggregate['thresholdCandidates']} "
-                f"cross_venue={aggregate['crossVenueCandidates']} "
-                f"warnings={aggregate['diagnosticWarningCounts']} "
-                f"latency_slo={aggregate['latencySloStatusCounts']} "
-                f"health={aggregate['operatorHealthCounts']} "
-                f"provider_poll_health={aggregate['providerPollHealthCounts']} "
-                f"venue_coverage_health={aggregate['venueCoverageHealthCounts']}",
-            )
+            print(_format_aggregate_line(aggregate))
     else:
         payload: object = (
             {
                 "artifacts": summaries,
-                "aggregate": aggregate_summaries(summaries),
+                "aggregate": aggregate,
             }
             if args.aggregate
             else summaries
         )
         print(json.dumps(payload, indent=2, sort_keys=True))
-    if args.fail_on_warning and any(
-        item["candidateQuality"].get("diagnosticWarnings") for item in summaries
-    ):
-        return 2
-    if args.fail_on_latency_slo and any(
+    return _gate_exit_code(args, summaries=summaries, aggregate=aggregate)
+
+
+def _gate_exit_code(
+    args: argparse.Namespace,
+    *,
+    summaries: list[dict[str, Any]],
+    aggregate: dict[str, Any],
+) -> int:
+    gate_checks = [
+        (2, args.fail_on_warning, _has_candidate_warnings(summaries)),
+        (3, args.fail_on_latency_slo, _has_latency_slo_failure(summaries)),
+        (
+            4,
+            args.fail_on_operator_health,
+            _has_health_at_or_above(summaries, "operatorHealth", args.fail_on_operator_health),
+        ),
+        (
+            5,
+            args.fail_on_provider_poll_health,
+            _has_health_at_or_above(
+                summaries,
+                "providerPollHealth",
+                args.fail_on_provider_poll_health,
+            ),
+        ),
+        (
+            6,
+            args.fail_on_venue_coverage_health,
+            _has_health_at_or_above(
+                summaries,
+                "venueCoverageHealth",
+                args.fail_on_venue_coverage_health,
+            ),
+        ),
+        (7, args.require_auto_execute_false, _has_auto_execute_enabled(summaries)),
+        (8, args.require_validation_mode, _has_non_validation_mode(summaries)),
+        (9, args.require_rust_semantic, _has_non_rust_semantic_topology(summaries)),
+        (10, args.require_coverage_runtime, _has_missing_runtime_coverage(summaries)),
+        (
+            11,
+            args.min_positive_candidates is not None,
+            aggregate["positiveCandidates"] < (args.min_positive_candidates or 0),
+        ),
+        (
+            12,
+            args.min_threshold_candidates is not None,
+            aggregate["thresholdCandidates"] < (args.min_threshold_candidates or 0),
+        ),
+        (
+            13,
+            args.min_cross_venue_candidates is not None,
+            aggregate["crossVenueCandidates"] < (args.min_cross_venue_candidates or 0),
+        ),
+        (
+            14,
+            args.min_quoted_semantic_instruments is not None,
+            aggregate["quotedSemanticMatchInstruments"]
+            < (args.min_quoted_semantic_instruments or 0),
+        ),
+    ]
+    for code, enabled, failed in gate_checks:
+        if enabled and failed:
+            return code
+    return 0
+
+
+def _has_candidate_warnings(summaries: list[dict[str, Any]]) -> bool:
+    return any(item["candidateQuality"].get("diagnosticWarnings") for item in summaries)
+
+
+def _has_latency_slo_failure(summaries: list[dict[str, Any]]) -> bool:
+    return any(
         _as_dict(item["latencyDiagnostics"].get("sloStatus")).get("overall") == "fail"
         for item in summaries
-    ):
-        return 3
-    if args.fail_on_operator_health and any(
+    )
+
+
+def _has_health_at_or_above(
+    summaries: list[dict[str, Any]],
+    key: str,
+    threshold: str | None,
+) -> bool:
+    if threshold is None:
+        return False
+    return any(
         _operator_health_at_or_above(
-            str(_as_dict(item.get("operatorHealth")).get("overall") or "unknown"),
-            args.fail_on_operator_health,
+            str(_as_dict(item.get(key)).get("overall") or "unknown"),
+            threshold,
         )
         for item in summaries
-    ):
-        return 4
-    if args.fail_on_provider_poll_health and any(
-        _operator_health_at_or_above(
-            str(_as_dict(item.get("providerPollHealth")).get("overall") or "unknown"),
-            args.fail_on_provider_poll_health,
-        )
+    )
+
+
+def _has_auto_execute_enabled(summaries: list[dict[str, Any]]) -> bool:
+    return any(
+        bool(_as_dict(item.get("executionReadiness")).get("autoExecute")) for item in summaries
+    )
+
+
+def _has_non_validation_mode(summaries: list[dict[str, Any]]) -> bool:
+    return any(
+        not bool(_as_dict(item.get("executionReadiness")).get("validationMode"))
         for item in summaries
-    ):
-        return 5
-    if args.fail_on_venue_coverage_health and any(
-        _operator_health_at_or_above(
-            str(_as_dict(item.get("venueCoverageHealth")).get("overall") or "unknown"),
-            args.fail_on_venue_coverage_health,
-        )
+    )
+
+
+def _has_non_rust_semantic_topology(summaries: list[dict[str, Any]]) -> bool:
+    return any(
+        _as_dict(item.get("graph")).get("engine") != "rust"
+        or _as_dict(item.get("graph")).get("topologySource") != "rust_semantic"
         for item in summaries
-    ):
-        return 6
-    return 0
+    )
+
+
+def _has_missing_runtime_coverage(summaries: list[dict[str, Any]]) -> bool:
+    return any(
+        _int_value(_as_dict(item.get("graph")).get("coverageProofCount")) <= 0
+        or _int_value(_as_dict(item.get("graph")).get("coverageHyperedgeCount")) <= 0
+        for item in summaries
+    )
 
 
 def _operator_health_at_or_above(actual: str, threshold: str) -> bool:
@@ -1009,23 +1349,18 @@ def _provider_poll_health(provider_quote_poll_stats: dict[str, Any]) -> dict[str
         backlog_count = _int_value(stats.get("backlog_count"))
         max_fetch_latency_secs = _float_value(stats.get("max_fetch_latency_secs"))
         cycle_elapsed_secs = _float_value(stats.get("cycle_elapsed_secs"))
-        reasons: list[str] = []
-        if failure_count > 0:
-            reasons.append("provider_failures")
-        if rate_limit_count > 0:
-            reasons.append("rate_limited")
-        if max_fetch_latency_secs > 5.0:
-            reasons.append("slow_fetch_latency")
-        if cycle_elapsed_secs > 30.0:
-            reasons.append("slow_poll_cycle")
-        if backlog_count > 0:
-            reasons.append("poll_backlog")
-        if failure_count > 0 or rate_limit_count > 0:
-            status = "fail"
-        elif reasons:
-            status = "warn"
-        else:
-            status = "pass"
+        reasons = _provider_poll_reasons(
+            failure_count=failure_count,
+            rate_limit_count=rate_limit_count,
+            backlog_count=backlog_count,
+            max_fetch_latency_secs=max_fetch_latency_secs,
+            cycle_elapsed_secs=cycle_elapsed_secs,
+        )
+        status = _provider_poll_status(
+            reasons,
+            failure_count=failure_count,
+            rate_limit_count=rate_limit_count,
+        )
         if _operator_health_at_or_above(status, overall):
             overall = status
         venues[str(venue)] = {
@@ -1043,11 +1378,61 @@ def _provider_poll_health(provider_quote_poll_stats: dict[str, Any]) -> dict[str
     }
 
 
+def _provider_poll_reasons(
+    *,
+    failure_count: int,
+    rate_limit_count: int,
+    backlog_count: int,
+    max_fetch_latency_secs: float,
+    cycle_elapsed_secs: float,
+) -> list[str]:
+    reasons: list[str] = []
+    if failure_count > 0:
+        reasons.append("provider_failures")
+    if rate_limit_count > 0:
+        reasons.append("rate_limited")
+    if max_fetch_latency_secs > 5.0:
+        reasons.append("slow_fetch_latency")
+    if cycle_elapsed_secs > 5.0:
+        reasons.append("poll_cycle_exceeds_live_quote_slo")
+    if cycle_elapsed_secs > 30.0:
+        reasons.append("slow_poll_cycle")
+    if backlog_count > 0:
+        reasons.append("poll_backlog")
+    return reasons
+
+
+def _provider_poll_status(
+    reasons: list[str],
+    *,
+    failure_count: int,
+    rate_limit_count: int,
+) -> str:
+    if failure_count > 0 or rate_limit_count > 0:
+        return "fail"
+    return "warn" if reasons else "pass"
+
+
 def _recommended_actions(summary: dict[str, Any]) -> list[str]:
     actions: list[str] = []
+    execution_safety = _as_dict(summary.get("executionSafety"))
+    if execution_safety.get("overall") == "fail":
+        actions.append("disable_auto_execute_until_approved")
     latency_slo = _as_dict(_as_dict(summary.get("latencyDiagnostics")).get("sloStatus"))
     if latency_slo.get("overall") == "fail":
         actions.append("inspect_live_latency_slo_violations")
+    latency_warnings = set(
+        _as_list_of_strings(_as_dict(summary.get("latencyDiagnostics")).get("diagnosticWarnings")),
+    )
+    if "missing_candidate_decision_latency" in latency_warnings:
+        actions.append("inspect_candidate_decision_latency_instrumentation")
+    if "missing_graph_scan_latency" in latency_warnings:
+        actions.append("inspect_graph_scan_latency_instrumentation")
+    if (
+        "missing_quote_event_to_strategy_latency" in latency_warnings
+        or "missing_quote_publish_to_strategy_latency" in latency_warnings
+    ):
+        actions.append("inspect_quote_timestamp_instrumentation")
     actions.extend(
         _actions_from_reason_payloads(
             _as_dict(_as_dict(summary.get("providerPollHealth")).get("venues")).values(),
@@ -1055,6 +1440,9 @@ def _recommended_actions(summary: dict[str, Any]) -> list[str]:
                 "provider_failures": "inspect_provider_poll_failures",
                 "rate_limited": "reduce_poll_rate_or_add_backoff",
                 "slow_fetch_latency": "profile_provider_rest_latency",
+                "poll_cycle_exceeds_live_quote_slo": (
+                    "increase_poll_concurrency_or_reduce_subscriptions"
+                ),
                 "slow_poll_cycle": "reduce_subscription_count_or_raise_poll_concurrency",
                 "poll_backlog": "increase_poll_concurrency_or_reduce_subscriptions",
             },
@@ -1067,12 +1455,29 @@ def _recommended_actions(summary: dict[str, Any]) -> list[str]:
                 "no_quote_subscription": "refresh_market_subscriptions",
                 "no_quoted_nodes": "refresh_market_subscriptions",
                 "no_semantic_edges": "inspect_semantic_template_coverage",
+                "quote_subscription_gap": "increase_quote_subscription_limit_or_refresh_quotes",
                 "quote_subscription_limit_exceeded": ("reduce_semantic_quote_subscription_load"),
             },
         ),
     )
     if _as_dict(summary.get("candidateQuality")).get("zeroCandidateBlockerCounts"):
         actions.append("inspect_zero_candidate_blockers")
+        zero_candidate_blockers = _as_dict(summary.get("candidateQuality")).get(
+            "zeroCandidateBlockerCounts",
+        )
+        actions.extend(
+            _actions_from_reason_names(
+                _as_dict(zero_candidate_blockers),
+                {
+                    "no_common_fixture": "improve_cross_venue_fixture_discovery",
+                    "quotes_missing_for_semantic_edges": "increase_quote_subscription_limit_or_refresh_quotes",
+                    "no_semantic_edge": "inspect_semantic_template_coverage",
+                    "fixture_identity_mismatch": "audit_fixture_identity_normalization",
+                    "same_market_params_mismatch": "audit_market_param_normalization",
+                    "provider_scope_mismatch": "audit_provider_scope_rules",
+                },
+            ),
+        )
     return sorted(set(actions))
 
 
@@ -1087,11 +1492,19 @@ def _actions_from_reason_payloads(
     return actions
 
 
+def _actions_from_reason_names(
+    counts: dict[str, Any],
+    mapping: dict[str, str],
+) -> list[str]:
+    return [action for reason, action in mapping.items() if _numeric(counts.get(reason)) > 0]
+
+
 def _venue_coverage_health(venue_coverage: dict[str, Any]) -> dict[str, Any]:
     enabled_venues = venue_coverage.get("enabledVenues") or []
     quote_subscriptions = _as_dict(venue_coverage.get("quoteSubscriptionCounts"))
     quote_subscription_limits = _as_dict(venue_coverage.get("quoteSubscriptionLimits"))
     quote_limit_exceeded = _as_dict(venue_coverage.get("quoteSubscriptionLimitExceededCounts"))
+    quote_subscription_gaps = _as_dict(venue_coverage.get("quoteSubscriptionGapCounts"))
     quoted_nodes = _as_dict(venue_coverage.get("quotedNodeCounts"))
     edge_counts = _as_dict(venue_coverage.get("edgeCounts"))
     venues: dict[str, dict[str, Any]] = {}
@@ -1101,12 +1514,15 @@ def _venue_coverage_health(venue_coverage: dict[str, Any]) -> dict[str, Any]:
         quote_subscription_count = _int_value(quote_subscriptions.get(venue))
         quote_subscription_limit = quote_subscription_limits.get(venue)
         quote_subscription_limit_exceeded = _int_value(quote_limit_exceeded.get(venue))
+        quote_subscription_gap = _int_value(quote_subscription_gaps.get(venue))
         quoted_node_count = _int_value(quoted_nodes.get(venue))
         edge_count = _venue_pair_total(edge_counts, venue)
         if quote_subscription_count <= 0:
             reasons.append("no_quote_subscription")
         if quote_subscription_limit_exceeded > 0:
             reasons.append("quote_subscription_limit_exceeded")
+        if quote_subscription_gap > 0:
+            reasons.append("quote_subscription_gap")
         if quoted_node_count <= 0:
             reasons.append("no_quoted_nodes")
         if edge_count <= 0:
@@ -1120,6 +1536,7 @@ def _venue_coverage_health(venue_coverage: dict[str, Any]) -> dict[str, Any]:
             "quoteSubscriptionCount": quote_subscription_count,
             "quoteSubscriptionLimit": quote_subscription_limit,
             "quoteSubscriptionLimitExceeded": quote_subscription_limit_exceeded,
+            "quoteSubscriptionGap": quote_subscription_gap,
             "quotedNodeCount": quoted_node_count,
             "edgeCount": edge_count,
         }

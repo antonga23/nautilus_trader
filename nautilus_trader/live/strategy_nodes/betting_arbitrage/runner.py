@@ -1089,8 +1089,10 @@ def _runtime_latency_diagnostics(
         int(candidate_decision.get("count") or 0) if isinstance(candidate_decision, dict) else 0
     )
     probe_candidate_decision = profitability.get("candidate_decision_latency")
+    diagnostics["candidate_decision_source"] = "strategy"
     if candidate_decision_count == 0 and isinstance(probe_candidate_decision, dict):
         diagnostics["candidate_decision"] = probe_candidate_decision
+        diagnostics["candidate_decision_source"] = "runtime_probe"
     diagnostics["runtime_probe_candidate_decision"] = (
         probe_candidate_decision if isinstance(probe_candidate_decision, dict) else {}
     )

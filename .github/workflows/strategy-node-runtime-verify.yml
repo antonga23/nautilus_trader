@@ -345,6 +345,19 @@ jobs:
             --min-cross-venue-candidates "$min_cross_venue_candidates" \
             "${quoted_node_args[@]}"
 
+          report_args=(
+            --format text
+            --require-auto-execute-false
+            --require-validation-mode
+            --require-rust-semantic
+            --require-coverage-runtime
+            --min-quoted-semantic-instruments 2
+          )
+          if [ "$min_cross_venue_candidates" -gt 0 ]; then
+            report_args+=(--min-cross-venue-candidates "$min_cross_venue_candidates")
+          fi
+          python3 scripts/betting/runtime_probe_report.py "$status_file" "${report_args[@]}"
+
           docker_state="$(docker inspect --format '{{.State.Status}}' "$container_name")"
           docker_running="$(docker inspect --format '{{.State.Running}}' "$container_name")"
           docker_image="$(docker inspect --format '{{.Config.Image}}' "$container_name")"

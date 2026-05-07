@@ -2397,6 +2397,7 @@ class TestBettingArbitrageNodeRunner:
         assert diagnostics["candidate_decision"]["count"] == 2
         assert diagnostics["candidate_decision"]["p95_ms"] == 1.0
         assert diagnostics["candidate_decision"]["max_ms"] == 3.0
+        assert diagnostics["candidate_decision_source"] == "runtime_probe"
         assert diagnostics["runtime_probe_candidate_decision"]["count"] == 2
 
     def test_runtime_probe_aggregates_same_venue_dry_run_reasons(self):
@@ -2840,6 +2841,13 @@ class TestBettingArbitrageNodeRunner:
         assert "providerQuotePollStats" in workflow
         assert "zeroCandidateVenuePairSamples" in workflow
         assert "venueQuoteHealth" in workflow
+        assert "Evaluate deployed runtime report" in workflow
+        assert "scripts/betting/runtime_probe_report.py" in workflow
+        assert "--require-auto-execute-false" in workflow
+        assert "--require-validation-mode" in workflow
+        assert "--require-rust-semantic" in workflow
+        assert "--require-coverage-runtime" in workflow
+        assert "--min-quoted-semantic-instruments 2" in workflow
         assert "Upload deployed node status artifacts to transient CI storage" in workflow
 
     def test_runtime_verify_workflow_dumps_logs_on_failure(self):
@@ -2872,6 +2880,12 @@ class TestBettingArbitrageNodeRunner:
         assert "semantic_verify_enabled" in workflow
         assert "semantic_verify_required_providers" in workflow
         assert "semantic_verify_target_sports" in workflow
+        assert "scripts/betting/runtime_probe_report.py" in workflow
+        assert "--require-auto-execute-false" in workflow
+        assert "--require-validation-mode" in workflow
+        assert "--require-rust-semantic" in workflow
+        assert "--require-coverage-runtime" in workflow
+        assert "--min-quoted-semantic-instruments 2" in workflow
         assert "verify_semantic_cache_completion.py" in workflow
         assert ".venv/bin/python" not in workflow
         assert "semantic-completion.json" in workflow
