@@ -236,6 +236,7 @@ def aggregate_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
     warning_counts: dict[str, int] = {}
     graph_warning_counts: dict[str, int] = {}
     latency_warning_counts: dict[str, int] = {}
+    latency_slo_counts: dict[str, int] = {}
     engine_counts: dict[str, int] = {}
     topology_counts: dict[str, int] = {}
     for summary in summaries:
@@ -251,6 +252,9 @@ def aggregate_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
             graph_warning_counts[str(warning)] = graph_warning_counts.get(str(warning), 0) + 1
         for warning in _as_dict(summary.get("latencyDiagnostics")).get("diagnosticWarnings") or []:
             latency_warning_counts[str(warning)] = latency_warning_counts.get(str(warning), 0) + 1
+        slo_status = _as_dict(_as_dict(summary.get("latencyDiagnostics")).get("sloStatus"))
+        slo_key = str(slo_status.get("overall") or "unknown")
+        latency_slo_counts[slo_key] = latency_slo_counts.get(slo_key, 0) + 1
 
     return {
         "artifactCount": len(summaries),
@@ -286,6 +290,7 @@ def aggregate_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
         "diagnosticWarningCounts": dict(sorted(warning_counts.items())),
         "graphDiagnosticWarningCounts": dict(sorted(graph_warning_counts.items())),
         "latencyDiagnosticWarningCounts": dict(sorted(latency_warning_counts.items())),
+        "latencySloStatusCounts": dict(sorted(latency_slo_counts.items())),
     }
 
 
@@ -766,7 +771,8 @@ def main() -> int:
                 f"positive={aggregate['positiveCandidates']} "
                 f"threshold={aggregate['thresholdCandidates']} "
                 f"cross_venue={aggregate['crossVenueCandidates']} "
-                f"warnings={aggregate['diagnosticWarningCounts']}",
+                f"warnings={aggregate['diagnosticWarningCounts']} "
+                f"latency_slo={aggregate['latencySloStatusCounts']}",
             )
     else:
         payload: object = (

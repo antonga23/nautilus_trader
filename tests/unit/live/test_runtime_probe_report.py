@@ -506,6 +506,10 @@ def test_runtime_probe_report_aggregates_multiple_artifacts():
     assert aggregate["latencyDiagnosticWarningCounts"] == {
         "missing_strategy_latency_diagnostics": 1,
     }
+    assert aggregate["latencySloStatusCounts"] == {
+        "fail": 1,
+        "no_observations": 1,
+    }
 
 
 def test_runtime_probe_report_cli_outputs_json_and_text(tmp_path, monkeypatch, capsys):
