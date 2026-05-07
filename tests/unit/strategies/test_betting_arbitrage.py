@@ -83,6 +83,7 @@ class TestBettingArbitrageConfig:  # skipcq
         ensure(config.opportunity_log_manual_instructions is True)
         ensure(config.graph_rebuild_on_new_instrument is True)
         ensure(config.opportunity_graph_engine == "auto")
+        ensure(config.semantic_quote_subscription_limit_by_venue == {})
         ensure(config.semantic_unmatched_quote_probe_venues == frozenset({"POLYMARKET"}))
         ensure(config.semantic_unmatched_quote_probe_limit_per_venue == 20)
         ensure(config.quote_freshness_profile == "pre_match")
@@ -142,6 +143,20 @@ class TestBettingArbitrageConfig:  # skipcq
 
         with pytest.raises(ValueError, match="semantic_unmatched_quote_probe_limit"):
             BettingArbitrageConfig(semantic_unmatched_quote_probe_limit_per_venue=-1)
+
+    def test_semantic_quote_subscription_limit_validation(self):  # skipcq
+        config = BettingArbitrageConfig(
+            semantic_quote_subscription_limit_by_venue={" cloudbet ": 80, "sxbet": 120},
+        )
+
+        ensure(
+            config.semantic_quote_subscription_limit_by_venue == {"CLOUDBET": 80, "SXBET": 120},
+        )
+
+        with pytest.raises(ValueError, match="semantic_quote_subscription_limit_by_venue"):
+            BettingArbitrageConfig(
+                semantic_quote_subscription_limit_by_venue={"CLOUDBET": -1},
+            )
 
     def test_instrument_refresh_interval_validation(self):  # skipcq
         config = BettingArbitrageConfig(instrument_refresh_interval_secs=300.0)
@@ -1499,6 +1514,64 @@ class TestBettingArbitrageStrategy:  # skipcq
         quoted_ids = {call.args[0] for call in strategy.subscribe_quote_ticks.call_args_list}
         ensure(quoted_ids == {over.id, under.id})
         ensure(strategy.get_stats()["quote_subscribed_instruments"] == 2)
+
+    def test_semantic_connected_quote_subscriptions_respect_venue_limit(
+        self,
+        tmp_path: Path,
+    ) -> None:  # skipcq
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["CLOUDBET"]),
+                opportunity_graph_engine="python",
+                semantic_quote_subscription_limit_by_venue={"CLOUDBET": 1},
+            ),
+        )
+        strategy._matcher.set_rule_store(RuleStore(FileRuleCache(tmp_path / "rules")))
+        strategy.subscribe_quote_ticks = Mock()
+
+        over = LegacyCryptoBettingInstrument(
+            home_name="Team A",
+            away_name="Team B",
+            sport_name="Basketball",
+            competition_name="Test League",
+            price=2.0,
+            currency=Currency.from_str("USDT"),
+            event_name="Team A vs Team B",
+            market_name="basketball.total_points",
+            venue=Venue("CLOUDBET"),
+            live=False,
+            enabled=True,
+            outcome="over",
+            side=CloudbetSelectionSide.BACK,
+            params="line=2.5",
+            market_type="basketball.total_points",
+            start_time="2026-03-13T18:00:00Z",
+            event_id=1,
+        )
+        under = LegacyCryptoBettingInstrument(
+            home_name="Team A",
+            away_name="Team B",
+            sport_name="Basketball",
+            competition_name="Test League",
+            price=2.0,
+            currency=Currency.from_str("USDT"),
+            event_name="Team A vs Team B",
+            market_name="basketball.total_points",
+            venue=Venue("CLOUDBET"),
+            live=False,
+            enabled=True,
+            outcome="under",
+            side=CloudbetSelectionSide.BACK,
+            params="line=2.5",
+            market_type="basketball.total_points",
+            start_time="2026-03-13T18:00:00Z",
+            event_id=1,
+        )
+
+        strategy.subscribe_instruments([over, under])
+
+        ensure(strategy.subscribe_quote_ticks.call_count == 1)
+        ensure(strategy.get_stats()["quote_subscribed_instruments"] == 1)
 
     def test_on_start_skips_subscription_when_cache_is_empty(self, default_config):  # skipcq
         strategy = BettingArbitrageStrategy(config=default_config)

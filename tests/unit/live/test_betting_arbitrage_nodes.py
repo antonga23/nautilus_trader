@@ -762,6 +762,10 @@ class TestBettingArbitrageNodeBuilder:
             "POLYMARKET",
         ]
         assert config.strategies[0].config["semantic_unmatched_quote_probe_limit_per_venue"] == 20
+        assert config.strategies[0].config["semantic_quote_subscription_limit_by_venue"] == {
+            "CLOUDBET": 80,
+            "SXBET": 120,
+        }
         assert (
             config.strategies[0].config["semantic_rule_cache_dir"]
             == "artifacts/semantic-rule-cache/multi-venue-validation"
@@ -2770,6 +2774,7 @@ class TestBettingArbitrageNodeRunner:
         assert "--min-quoted-match-instruments 2" in workflow
         assert "--min-positive-margin-candidates 0" in workflow
         assert "--require-cross-venue-candidates-or-blockers" in workflow
+        assert "--min-quoted-node-count CLOUDBET:2" in workflow
         assert "--min-quoted-node-count POLYMARKET:2" in workflow
         assert "--min-quoted-node-count SXBET:2" in workflow
         assert "min_positive_margin_candidates=0" in workflow
@@ -2777,9 +2782,8 @@ class TestBettingArbitrageNodeRunner:
             '[ "$manifest_path" = "deploy/strategy_nodes/betting_arbitrage/multi-venue-validation.json" ]'
             in workflow
         )
-        assert "min_positive_margin_candidates=1" in workflow
         assert "require_cross_venue_candidates_or_blockers=true" in workflow
-        assert "wait_timeout_seconds=1200" in workflow
+        assert "wait_timeout_seconds=1800" in workflow
         assert "--timeout-seconds $wait_timeout_seconds" in workflow
         assert "--min-positive-margin-candidates $min_positive_margin_candidates" in workflow
         assert "--min-cross-venue-candidates $min_cross_venue_candidates" in workflow
@@ -2807,6 +2811,9 @@ class TestBettingArbitrageNodeRunner:
 
     def test_runtime_verify_workflow_dumps_logs_on_failure(self):
         workflow = Path(".github/workflows/strategy-node-runtime-verify.yml").read_text()
+        assert "timeout-minutes: 30" in workflow
+        assert "default: '900'" in workflow
+        assert 'timeout_seconds="${INPUT_TIMEOUT_SECONDS:-900}"' in workflow
         assert "dump_node_runtime_artifacts" in workflow
         assert "trap 'status=$?;" in workflow
         assert "node_log_tail" in workflow

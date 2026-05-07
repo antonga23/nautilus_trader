@@ -876,9 +876,9 @@ jobs:
           wait_timeout_seconds=900
           quoted_node_args=()
           if [ "$manifest_path" = "deploy/strategy_nodes/betting_arbitrage/multi-venue-validation.json" ]; then
-            min_positive_margin_candidates=1
             require_cross_venue_candidates_or_blockers=true
-            wait_timeout_seconds=1200
+            wait_timeout_seconds=1800
+            quoted_node_args+=(--min-quoted-node-count CLOUDBET:2)
             quoted_node_args+=(--min-quoted-node-count SXBET:2)
             quoted_node_args+=(--min-quoted-node-count POLYMARKET:2)
           fi

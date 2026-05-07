@@ -210,6 +210,13 @@ def _build_strategy_importable_config(
 ) -> ImportableStrategyConfig:
     strategy_config: dict[str, Any] = dict(manifest.strategy.json_primitives() or {})
     strategy_config["enabled_venues"] = sorted({venue.venue for venue in enabled_venues})
+    semantic_quote_limits = {
+        venue.venue: int(venue.quote_subscription_limit)
+        for venue in enabled_venues
+        if venue.quote_subscription_limit is not None
+    }
+    if semantic_quote_limits:
+        strategy_config["semantic_quote_subscription_limit_by_venue"] = semantic_quote_limits
     if manifest.semantic_rule_cache_dir:
         strategy_config["semantic_rule_cache_dir"] = manifest.semantic_rule_cache_dir
     if manifest.validation_mode:

@@ -189,6 +189,10 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         Opportunity graph engine: "auto", "python", "rust", or "semantic_rust".
     semantic_rule_cache_dir : str | None, default None
         Optional file-backed semantic rule cache directory for trading-node runtime.
+    semantic_quote_subscription_limit_by_venue : dict[str, int], default {}
+        Optional venue-level cap for semantic-connected quote subscriptions. Trading-node
+        manifests derive this from provider ``quote_subscription_limit`` so semantic graph
+        mode cannot silently subscribe every connected instrument.
     semantic_unmatched_quote_probe_venues : frozenset[str], default {"POLYMARKET"}
         Venues whose unmatched instruments should still receive bounded quote
         subscriptions in semantic mode for audit/runtime diagnostics.
@@ -225,6 +229,7 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
     graph_rebuild_on_new_instrument: bool = True
     opportunity_graph_engine: str = "auto"
     semantic_rule_cache_dir: str | None = None
+    semantic_quote_subscription_limit_by_venue: dict[str, int] = {}
     semantic_unmatched_quote_probe_venues: frozenset[str] = frozenset({"POLYMARKET"})
     semantic_unmatched_quote_probe_limit_per_venue: int = 20
     quote_freshness_profile: str = "pre_match"
@@ -248,6 +253,11 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
             str(venue).strip().upper()
             for venue in self.semantic_unmatched_quote_probe_venues
             if str(venue).strip()
+        )
+        semantic_quote_subscription_limit_by_venue = (
+            self._normalize_semantic_quote_subscription_limits(
+                self.semantic_quote_subscription_limit_by_venue,
+            )
         )
         opportunity_graph_engine = self.opportunity_graph_engine.strip().lower()
         quote_freshness_profile = self.quote_freshness_profile.strip().lower()
@@ -302,6 +312,11 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
             "semantic_unmatched_quote_probe_venues",
             semantic_unmatched_quote_probe_venues,
         )
+        msgspec.structs.force_setattr(
+            self,
+            "semantic_quote_subscription_limit_by_venue",
+            semantic_quote_subscription_limit_by_venue,
+        )
         msgspec.structs.force_setattr(self, "quote_freshness_profile", quote_freshness_profile)
         msgspec.structs.force_setattr(
             self,
@@ -314,6 +329,23 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
                 "stale_quote_refresh_cooldown_secs",
                 float(self.stale_quote_refresh_cooldown_secs),
             )
+
+    @staticmethod
+    def _normalize_semantic_quote_subscription_limits(
+        limits: dict[str, int],
+    ) -> dict[str, int]:
+        normalized = {
+            str(venue).strip().upper(): int(limit)
+            for venue, limit in limits.items()
+            if str(venue).strip() and limit is not None
+        }
+        invalid = {venue: limit for venue, limit in normalized.items() if limit < 0}
+        if invalid:
+            msg = (
+                f"semantic_quote_subscription_limit_by_venue values must be non-negative: {invalid}"
+            )
+            raise ValueError(msg)
+        return normalized
 
 
 # skipcq: PYL-R0902
@@ -928,6 +960,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         return True
 
     def _subscribe_semantic_connected_quote_ticks(self) -> int:
+        subscribed_by_venue = self._quote_subscription_counts_by_venue()
         subscribed_count = 0
         for node_id, edge_ids in self._opportunity_graph.edge_ids_by_node_id.items():
             if not edge_ids:
@@ -935,13 +968,20 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             node = self._opportunity_graph.nodes_by_id.get(node_id)
             if node is None:
                 continue
+            venue = node.instrument.id.venue.value.upper()
+            venue_limit = self._config.semantic_quote_subscription_limit_by_venue.get(venue)
+            if venue_limit is not None and subscribed_by_venue[venue] >= venue_limit:
+                continue
             if self._subscribe_quote_ticks_for_instrument(node.instrument):
+                subscribed_by_venue[venue] += 1
                 subscribed_count += 1
         if subscribed_count:
             self.log.info(
                 "Subscribed semantic-connected quote streams: "
                 f"new={subscribed_count} "
-                f"total={len(self._quote_subscribed_instrument_ids)}",
+                f"total={len(self._quote_subscribed_instrument_ids)} "
+                "by_venue="
+                f"{dict(sorted(self._quote_subscription_counts_by_venue().items()))}",
             )
         return subscribed_count
 

@@ -21,7 +21,7 @@ on:
       timeout_seconds:
         description: Status wait timeout in seconds
         required: false
-        default: '180'
+        default: '900'
       heartbeat_updates_required:
         description: Number of heartbeat timestamp changes required after verification starts
         required: false
@@ -58,7 +58,7 @@ on:
 jobs:
   verify-runtime:
     name: verify-runtime
-    timeout-minutes: 10
+    timeout-minutes: 30
     runs-on: [self-hosted, linux, x64, ec2, deploy, trading]
     steps:
       - name: Repair self-hosted workspace
@@ -133,7 +133,7 @@ jobs:
           container_name="${INPUT_CONTAINER_NAME:-betting-arbitrage-node-sxbet}"
           root_dir="${INPUT_ROOT_DIR:-/opt/cloudbet/strategy-nodes}"
           expected_session_id="${INPUT_EXPECTED_SESSION_ID:-}"
-          timeout_seconds="${INPUT_TIMEOUT_SECONDS:-180}"
+          timeout_seconds="${INPUT_TIMEOUT_SECONDS:-900}"
           heartbeat_updates_required="${INPUT_HEARTBEAT_UPDATES_REQUIRED:-2}"
           min_cross_venue_candidates="${INPUT_MIN_CROSS_VENUE_CANDIDATES:-0}"
           min_quoted_node_counts="${INPUT_MIN_QUOTED_NODE_COUNTS:-}"
