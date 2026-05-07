@@ -5,6 +5,7 @@ from nautilus_trader.adapters.betting.runtime_cache import decode_active_venue_i
 from nautilus_trader.adapters.betting.runtime_cache import decode_venue_quote_poll_stats
 from nautilus_trader.adapters.betting.runtime_cache import encode_active_venue_instrument_index
 from nautilus_trader.adapters.betting.runtime_cache import encode_venue_quote_poll_stats
+from nautilus_trader.adapters.betting.runtime_cache import latency_percentiles
 from nautilus_trader.adapters.betting.runtime_cache import venue_quote_poll_stats_key
 
 
@@ -114,6 +115,11 @@ def test_venue_quote_poll_stats_round_trip() -> None:
         backoff_secs=1.0,
         last_error="rate limit",
     )
+
+
+def test_latency_percentiles_normalize_empty_and_negative_values() -> None:
+    assert latency_percentiles([]) == (0.0, 0.0, 0.0)
+    assert latency_percentiles([-1.0, 0.1, 0.2, 0.3]) == (0.2, 0.3, 0.3)
 
 
 def test_venue_quote_poll_stats_decode_rejects_invalid_payload() -> None:

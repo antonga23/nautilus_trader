@@ -25,6 +25,7 @@ from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.betting.runtime_cache import active_venue_instrument_index_key
 from nautilus_trader.adapters.betting.runtime_cache import encode_active_venue_instrument_index
 from nautilus_trader.adapters.betting.runtime_cache import encode_venue_quote_poll_stats
+from nautilus_trader.adapters.betting.runtime_cache import latency_percentiles
 from nautilus_trader.adapters.betting.runtime_cache import venue_quote_poll_stats_key
 from nautilus_trader.adapters.sxbet.config import SXBetDataClientConfig
 from nautilus_trader.adapters.sxbet.constants import SXBET_TOKENS
@@ -47,18 +48,6 @@ from nautilus_trader.model.identifiers import ClientId
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
-
-
-def _latency_percentiles(values: list[float]) -> tuple[float, float, float]:
-    if not values:
-        return (0.0, 0.0, 0.0)
-    ordered = sorted(max(0.0, float(value)) for value in values)
-
-    def percentile(fraction: float) -> float:
-        index = min(len(ordered) - 1, max(0, round((len(ordered) - 1) * fraction)))
-        return ordered[index]
-
-    return (percentile(0.50), percentile(0.95), percentile(0.99))
 
 
 class SXBetDataClient(LiveMarketDataClient):
@@ -253,7 +242,7 @@ class SXBetDataClient(LiveMarketDataClient):
             one_sided_count=one_sided_count,
             two_sided_count=two_sided_count,
             max_latency=max_latency,
-            fetch_latency_percentiles=_latency_percentiles(fetch_latencies_secs),
+            fetch_latency_percentiles=latency_percentiles(fetch_latencies_secs),
             cycle_elapsed=cycle_elapsed,
             failure_count=failure_count,
             rate_limit_count=rate_limit_count,

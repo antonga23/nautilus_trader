@@ -21,6 +21,7 @@ from typing import Any
 from nautilus_trader.adapters.betting.runtime_cache import active_venue_instrument_index_key
 from nautilus_trader.adapters.betting.runtime_cache import encode_active_venue_instrument_index
 from nautilus_trader.adapters.betting.runtime_cache import encode_venue_quote_poll_stats
+from nautilus_trader.adapters.betting.runtime_cache import latency_percentiles
 from nautilus_trader.adapters.betting.runtime_cache import venue_quote_poll_stats_key
 from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.clock import LiveClock
@@ -56,18 +57,6 @@ from nautilus_trader.live.data_client import LiveMarketDataClient
 from nautilus_trader.model.instruments import Instrument
 from nautilus_trader.model.instruments.crypto_betting import CryptoBettingInstrument
 from nautilus_trader.model.orderbook import OrderBook
-
-
-def _latency_percentiles(values: list[float]) -> tuple[float, float, float]:
-    if not values:
-        return (0.0, 0.0, 0.0)
-    ordered = sorted(max(0.0, float(value)) for value in values)
-
-    def percentile(fraction: float) -> float:
-        index = min(len(ordered) - 1, max(0, round((len(ordered) - 1) * fraction)))
-        return ordered[index]
-
-    return (percentile(0.50), percentile(0.95), percentile(0.99))
 
 
 class CloudbetDataClient(LiveMarketDataClient):
@@ -591,7 +580,7 @@ class CloudbetDataClient(LiveMarketDataClient):
             refilled_subscription_count=refilled_subscription_count,
             cycle_elapsed=cycle_elapsed,
             max_fetch_latency_secs=max_fetch_latency_secs,
-            fetch_latency_percentiles=_latency_percentiles(fetch_latencies_secs),
+            fetch_latency_percentiles=latency_percentiles(fetch_latencies_secs),
             failure_count=failure_count,
             rate_limit_count=rate_limit_count,
             backoff_secs=float(rate_limit_count),

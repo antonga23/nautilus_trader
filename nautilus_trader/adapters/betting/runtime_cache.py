@@ -61,6 +61,18 @@ def venue_quote_poll_stats_key(venue: str) -> str:
     return f"{VENUE_QUOTE_POLL_STATS_PREFIX}:{venue.strip().upper()}"
 
 
+def latency_percentiles(values: Iterable[float]) -> tuple[float, float, float]:
+    ordered = sorted(max(0.0, float(value)) for value in values)
+    if not ordered:
+        return (0.0, 0.0, 0.0)
+
+    def percentile(fraction: float) -> float:
+        index = min(len(ordered) - 1, max(0, round((len(ordered) - 1) * fraction)))
+        return ordered[index]
+
+    return (percentile(0.50), percentile(0.95), percentile(0.99))
+
+
 def encode_active_venue_instrument_index(
     *,
     venue: str,
