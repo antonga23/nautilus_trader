@@ -794,6 +794,12 @@ def _parse_args() -> argparse.Namespace:
         help="Return non-zero when any artifact has live latency SLO violations",
     )
     parser.add_argument(
+        "--fail-on-operator-health",
+        choices=("warn", "fail"),
+        default=None,
+        help="Return non-zero when operator health is at or above the chosen severity",
+    )
+    parser.add_argument(
         "--aggregate",
         action="store_true",
         help="Include aggregate counts across all input artifacts",
@@ -846,7 +852,20 @@ def main() -> int:
         for item in summaries
     ):
         return 3
+    if args.fail_on_operator_health and any(
+        _operator_health_at_or_above(
+            str(_as_dict(item.get("operatorHealth")).get("overall") or "unknown"),
+            args.fail_on_operator_health,
+        )
+        for item in summaries
+    ):
+        return 4
     return 0
+
+
+def _operator_health_at_or_above(actual: str, threshold: str) -> bool:
+    severity = {"pass": 0, "warn": 1, "fail": 2}
+    return severity.get(actual, 0) >= severity.get(threshold, 0)
 
 
 if __name__ == "__main__":

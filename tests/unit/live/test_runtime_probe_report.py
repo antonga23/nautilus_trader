@@ -617,3 +617,23 @@ def test_runtime_probe_report_cli_can_fail_on_live_latency_slo(
     assert module.main() == 3
     payload = json.loads(capsys.readouterr().out)
     assert payload[0]["latencyDiagnostics"]["sloStatus"]["overall"] == "fail"
+
+
+def test_runtime_probe_report_cli_can_fail_on_operator_health(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    module = _load_module()
+    status_path = tmp_path / "status.json"
+    status_path.write_text(json.dumps(_runtime_status_payload()), encoding="utf-8")
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [str(SCRIPT_PATH), str(status_path), "--fail-on-operator-health", "warn"],
+    )
+
+    assert module.main() == 4
+    payload = json.loads(capsys.readouterr().out)
+    assert payload[0]["operatorHealth"]["overall"] == "fail"
