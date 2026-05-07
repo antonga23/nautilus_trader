@@ -622,6 +622,18 @@ def _format_latency_lines(value: Any) -> list[str]:
         )
     if summary_bits:
         lines.append(f"  strategy_latency {'; '.join(summary_bits)}")
+    slo_status = _as_dict(latency.get("sloStatus"))
+    if slo_status:
+        quote_age = _as_dict(slo_status.get("quoteAge"))
+        fetch_latency = _as_dict(slo_status.get("fetchLatency"))
+        pair_skew = _as_dict(slo_status.get("pairSkew"))
+        lines.append(
+            "  latency_slo "
+            f"overall={slo_status.get('overall')} "
+            f"quote_age={quote_age.get('status')} "
+            f"fetch_latency={fetch_latency.get('status')} "
+            f"pair_skew={pair_skew.get('status')}",
+        )
     reconcile = _as_dict(latency.get("instrumentRefreshReconcile"))
     if _int_value(reconcile.get("count")) > 0:
         lines.append(
@@ -720,6 +732,11 @@ def _parse_args() -> argparse.Namespace:
         help="Return non-zero when any artifact has diagnostic warnings",
     )
     parser.add_argument(
+        "--fail-on-latency-slo",
+        action="store_true",
+        help="Return non-zero when any artifact has live latency SLO violations",
+    )
+    parser.add_argument(
         "--aggregate",
         action="store_true",
         help="Include aggregate counts across all input artifacts",
@@ -765,6 +782,11 @@ def main() -> int:
         item["candidateQuality"].get("diagnosticWarnings") for item in summaries
     ):
         return 2
+    if args.fail_on_latency_slo and any(
+        _as_dict(item["latencyDiagnostics"].get("sloStatus")).get("overall") == "fail"
+        for item in summaries
+    ):
+        return 3
     return 0
 
 

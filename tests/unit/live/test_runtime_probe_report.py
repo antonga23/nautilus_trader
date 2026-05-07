@@ -540,6 +540,9 @@ def test_runtime_probe_report_cli_outputs_json_and_text(tmp_path, monkeypatch, c
     assert "top_semantic_relationships" in text_output
     assert "zero_candidate_blockers fixture_identity_mismatch=2" in text_output
     assert "strategy_latency quote_event_p95=25.0ms" in text_output
+    assert (
+        "latency_slo overall=fail quote_age=pass fetch_latency=fail pair_skew=pass" in text_output
+    )
     assert "refresh_reconcile_latency p95=120.0ms" in text_output
     assert "provider_poll CLOUDBET:cycle=12" in text_output
     assert "ts=request_started->response_received" in text_output
@@ -581,3 +584,23 @@ def test_runtime_probe_report_cli_can_fail_on_incomplete_diagnostics(
         "semantic_blocked_without_reason_breakdown"
         in (payload[0]["candidateQuality"]["diagnosticWarnings"])
     )
+
+
+def test_runtime_probe_report_cli_can_fail_on_live_latency_slo(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    module = _load_module()
+    status_path = tmp_path / "status.json"
+    status_path.write_text(json.dumps(_runtime_status_payload()), encoding="utf-8")
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [str(SCRIPT_PATH), str(status_path), "--fail-on-latency-slo"],
+    )
+
+    assert module.main() == 3
+    payload = json.loads(capsys.readouterr().out)
+    assert payload[0]["latencyDiagnostics"]["sloStatus"]["overall"] == "fail"
