@@ -160,6 +160,65 @@ def test_lightweight_semantic_cache_completion_verifier_counts_coverage_proofs(t
     assert payload["sports"][0]["target_reached"] is False
 
 
+def test_lightweight_semantic_cache_completion_verifier_counts_execution_safe_tier(
+    tmp_path: Path,
+):
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+
+    _write_index(cache_dir, "betting:semantic_rules:index:manifests", ["manifest-sxbet"])
+    _write_index(cache_dir, "betting:semantic_rules:index:normalized", ["selection-sxbet"])
+    _write_index(cache_dir, "betting:semantic_rules:index:template_candidates", ["template-sxbet"])
+    _write_index(cache_dir, "betting:semantic_rules:index:template_promoted", ["template-sxbet"])
+    _write_cache_json(
+        cache_dir,
+        "betting:semantic_rules:manifest:manifest-sxbet",
+        {"provider": "SXBET"},
+    )
+    _write_cache_json(
+        cache_dir,
+        "betting:semantic_rules:normalized:selection-sxbet",
+        {"provider": "SXBET", "selection": {"sport": "soccer"}},
+    )
+    template = {
+        "safety_tier": "EXECUTION_SAFE",
+        "sport": "soccer",
+        "support": {"observed_count": 12, "providers": ["SXBET"]},
+    }
+    _write_cache_json(
+        cache_dir,
+        "betting:semantic_rules:template:candidate:template-sxbet",
+        template,
+    )
+    _write_cache_json(
+        cache_dir,
+        "betting:semantic_rules:template:promoted:template-sxbet",
+        template,
+    )
+
+    result = subprocess.run(  # noqa: S603
+        [
+            sys.executable,
+            "scripts/deploy/strategy_nodes/verify_semantic_cache_completion.py",
+            "--cache-dir",
+            str(cache_dir),
+            "--required-provider",
+            "SXBET",
+            "--target-sport",
+            "soccer",
+        ],
+        cwd=Path.cwd(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["total_execution_safe_templates"] == 1
+    assert payload["providers"][0]["execution_safe_template_count"] == 1
+
+
 def test_lightweight_semantic_cache_completion_verifier_tolerates_torn_key_index(
     tmp_path: Path,
 ):

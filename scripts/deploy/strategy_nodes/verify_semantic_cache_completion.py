@@ -193,6 +193,10 @@ def _observed_count(template: dict[str, Any]) -> int:
         return 0
 
 
+def _is_execution_safe_template(template: dict[str, Any]) -> bool:
+    return bool(template.get("execution_safe")) or str(template.get("safety_tier")) == "EXECUTION_SAFE"
+
+
 def _provider_report(
     *,
     provider: str,
@@ -429,7 +433,7 @@ def _promotion_counters(collections: CacheCollections) -> PromotionCounters:
     for template in collections.promoted_templates:
         for provider in _providers_from_support(template):
             promoted_by_provider[provider] += 1
-            if bool(template.get("execution_safe")):
+            if _is_execution_safe_template(template):
                 execution_safe_by_provider[provider] += 1
 
     return PromotionCounters(
@@ -511,7 +515,7 @@ def build_completion_report(
         "total_template_candidates": len(collections.template_candidates),
         "total_promoted_templates": len(collections.promoted_templates),
         "total_execution_safe_templates": sum(
-            1 for template in collections.promoted_templates if bool(template.get("execution_safe"))
+            1 for template in collections.promoted_templates if _is_execution_safe_template(template)
         ),
         "load_error_count": len(collections.load_errors),
         "load_errors": tuple(collections.load_errors[:20]),
