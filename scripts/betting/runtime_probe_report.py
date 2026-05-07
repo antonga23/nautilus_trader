@@ -966,6 +966,7 @@ def _provider_poll_health(provider_quote_poll_stats: dict[str, Any]) -> dict[str
         rate_limit_count = _int_value(stats.get("rate_limit_count"))
         backlog_count = _int_value(stats.get("backlog_count"))
         max_fetch_latency_secs = _float_value(stats.get("max_fetch_latency_secs"))
+        cycle_elapsed_secs = _float_value(stats.get("cycle_elapsed_secs"))
         reasons: list[str] = []
         if failure_count > 0:
             reasons.append("provider_failures")
@@ -973,6 +974,8 @@ def _provider_poll_health(provider_quote_poll_stats: dict[str, Any]) -> dict[str
             reasons.append("rate_limited")
         if max_fetch_latency_secs > 5.0:
             reasons.append("slow_fetch_latency")
+        if cycle_elapsed_secs > 30.0:
+            reasons.append("slow_poll_cycle")
         if backlog_count > 0:
             reasons.append("poll_backlog")
         if failure_count > 0 or rate_limit_count > 0:
@@ -990,6 +993,7 @@ def _provider_poll_health(provider_quote_poll_stats: dict[str, Any]) -> dict[str
             "rateLimitCount": rate_limit_count,
             "backlogCount": backlog_count,
             "maxFetchLatencySeconds": max_fetch_latency_secs,
+            "cycleElapsedSeconds": cycle_elapsed_secs,
         }
     return {
         "overall": overall if venues else "unknown",
@@ -1009,6 +1013,7 @@ def _recommended_actions(summary: dict[str, Any]) -> list[str]:
                 "provider_failures": "inspect_provider_poll_failures",
                 "rate_limited": "reduce_poll_rate_or_add_backoff",
                 "slow_fetch_latency": "profile_provider_rest_latency",
+                "slow_poll_cycle": "reduce_subscription_count_or_raise_poll_concurrency",
                 "poll_backlog": "increase_poll_concurrency_or_reduce_subscriptions",
             },
         ),

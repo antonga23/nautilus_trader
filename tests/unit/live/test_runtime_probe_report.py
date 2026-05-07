@@ -382,6 +382,7 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
     assert summary["providerQuotePollStats"]["CLOUDBET"]["cycle_id"] == 12
     assert summary["providerPollHealth"]["overall"] == "fail"
     assert summary["providerPollHealth"]["venues"]["CLOUDBET"]["status"] == "fail"
+    assert summary["providerPollHealth"]["venues"]["CLOUDBET"]["cycleElapsedSeconds"] == 1.25
     assert summary["providerPollHealth"]["venues"]["CLOUDBET"]["reasons"] == [
         "provider_failures",
         "rate_limited",
@@ -619,6 +620,31 @@ def test_venue_coverage_health_counts_venue_pair_edges():
 
     assert summary["venueCoverageHealth"]["overall"] == "pass"
     assert summary["venueCoverageHealth"]["venues"]["CLOUDBET"]["edgeCount"] == 12
+
+
+def test_provider_poll_health_flags_slow_poll_cycles():
+    module = _load_module()
+    summary = module.summarize_payload(
+        {
+            "runtimeProbe": {
+                "providerQuotePollStats": {
+                    "CLOUDBET": {
+                        "cycle_elapsed_secs": 84.0,
+                        "max_fetch_latency_secs": 0.5,
+                        "backlog_count": 0,
+                        "failure_count": 0,
+                        "rate_limit_count": 0,
+                    },
+                },
+            },
+        },
+    )
+
+    cloudbet = summary["providerPollHealth"]["venues"]["CLOUDBET"]
+    assert cloudbet["status"] == "warn"
+    assert cloudbet["cycleElapsedSeconds"] == 84.0
+    assert "slow_poll_cycle" in cloudbet["reasons"]
+    assert "reduce_subscription_count_or_raise_poll_concurrency" in summary["recommendedActions"]
 
 
 def test_runtime_probe_report_cli_can_fail_on_incomplete_diagnostics(
