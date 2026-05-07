@@ -649,6 +649,11 @@ def test_runtime_probe_report_aggregates_multiple_artifacts():
         "void_settlement": 2,
     }
     assert aggregate["zeroCandidateBlockerCounts"] == {"fixture_identity_mismatch": 2}
+    assert aggregate["providerCorpusCoverage"]["SXBET"]["sportsWithSelections"] == 3
+    assert aggregate["providerCorpusCoverage"]["SXBET"]["zeroSelectionSports"] == [
+        "baseball",
+        "ice_hockey",
+    ]
     assert aggregate["recommendedActionCounts"]["inspect_zero_candidate_blockers"] == 1
 
 

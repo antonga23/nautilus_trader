@@ -331,6 +331,7 @@ def aggregate_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
     semantic_blocker_counts: dict[str, int] = {}
     zero_candidate_blocker_counts: dict[str, int] = {}
     recommended_action_counts: dict[str, int] = {}
+    provider_corpus_coverage: dict[str, dict[str, Any]] = {}
     for summary in summaries:
         graph = _as_dict(summary.get("graph"))
         engine = str(graph.get("engine") or "unknown")
@@ -364,6 +365,10 @@ def aggregate_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
             execution_safety_counts.get(execution_safety, 0) + 1
         )
         coverage = _as_dict(summary.get("venueCoverage"))
+        _merge_provider_corpus_coverage(
+            provider_corpus_coverage,
+            _as_dict(_as_dict(summary.get("semanticCache")).get("providerCorpusCoverage")),
+        )
         _merge_int_mapping(quote_subscription_counts, coverage.get("quoteSubscriptionCounts"))
         _merge_int_mapping(quoted_node_counts, coverage.get("quotedNodeCounts"))
         _merge_int_mapping(
@@ -458,6 +463,7 @@ def aggregate_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
         "rejectionBucketCounts": dict(sorted(rejection_bucket_counts.items())),
         "semanticBlockerCounts": dict(sorted(semantic_blocker_counts.items())),
         "zeroCandidateBlockerCounts": dict(sorted(zero_candidate_blocker_counts.items())),
+        "providerCorpusCoverage": provider_corpus_coverage,
         "recommendedActionCounts": dict(sorted(recommended_action_counts.items())),
     }
 
@@ -470,6 +476,65 @@ def _merge_int_mapping(target: dict[str, int], value: Any) -> None:
 def _merge_nested_count_mapping(target: dict[str, int], value: Any) -> None:
     for key, raw_count in _as_dict(value).items():
         target[str(key)] = target.get(str(key), 0) + int(_numeric(raw_count))
+
+
+def _merge_provider_corpus_coverage(
+    target: dict[str, dict[str, Any]],
+    value: dict[str, Any],
+) -> None:
+    for provider, raw_report in sorted(value.items(), key=lambda item: str(item[0])):
+        report = _as_dict(raw_report)
+        provider_key = str(provider)
+        existing = target.setdefault(
+            provider_key,
+            {
+                "sportCount": 0,
+                "sportsWithSelections": 0,
+                "totalSelectionCount": 0,
+                "totalEventCount": 0,
+                "totalMarketCount": 0,
+                "blockerCounts": {},
+                "sparseSports": [],
+                "zeroSelectionSports": [],
+            },
+        )
+        existing["sportCount"] = max(
+            _int_value(existing.get("sportCount")),
+            _int_value(report.get("sport_count")),
+        )
+        existing["sportsWithSelections"] = max(
+            _int_value(existing.get("sportsWithSelections")),
+            _int_value(report.get("sports_with_selections")),
+        )
+        existing["totalSelectionCount"] = max(
+            _int_value(existing.get("totalSelectionCount")),
+            _int_value(report.get("total_selection_count")),
+        )
+        existing["totalEventCount"] = max(
+            _int_value(existing.get("totalEventCount")),
+            _int_value(report.get("total_event_count")),
+        )
+        existing["totalMarketCount"] = max(
+            _int_value(existing.get("totalMarketCount")),
+            _int_value(report.get("total_market_count")),
+        )
+        blocker_counts = existing.get("blockerCounts")
+        if not isinstance(blocker_counts, dict):
+            blocker_counts = {}
+            existing["blockerCounts"] = blocker_counts
+        _merge_int_mapping(blocker_counts, report.get("blocker_counts"))
+        existing["sparseSports"] = sorted(
+            {
+                *[str(item) for item in existing.get("sparseSports", [])],
+                *[str(item) for item in report.get("sparse_sports", []) if item],
+            },
+        )
+        existing["zeroSelectionSports"] = sorted(
+            {
+                *[str(item) for item in existing.get("zeroSelectionSports", [])],
+                *[str(item) for item in report.get("zero_selection_sports", []) if item],
+            },
+        )
 
 
 def _count_values(values: Iterable[Any]) -> dict[str, int]:
