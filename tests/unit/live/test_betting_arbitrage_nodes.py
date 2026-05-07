@@ -189,13 +189,19 @@ def _seed_promoted_template(
     node_cache._write_semantic_cache_compatibility(cache_dir, manifest=manifest)
 
 
-def _manifest(tmp_path: Path, *, cache_dir: Path | None = None) -> BettingArbitrageNodeManifest:
+def _manifest(
+    tmp_path: Path,
+    *,
+    cache_dir: Path | None = None,
+    seed_dir: Path | None = None,
+) -> BettingArbitrageNodeManifest:
     return BettingArbitrageNodeManifest(
         node_id="sxbet-node",
         trader_id="BETARB-TEST-SEM",
         validation_mode=True,
         allow_dummy_credentials=True,
         semantic_rule_cache_dir=str(cache_dir) if cache_dir is not None else None,
+        semantic_rule_cache_seed_dir=str(seed_dir) if seed_dir is not None else None,
         rendered_config_path=str(tmp_path / "trading-node-config.json"),
         status_path=str(tmp_path / "status.json"),
         heartbeat_path=str(tmp_path / "heartbeat.json"),
@@ -361,7 +367,8 @@ class TestBettingArbitrageNodeBuilder:
         assert data_client.config["order_book_concurrency"] == 8
         assert data_client.config["api_key_pool"] == ("dummy-sxbet-api-key",)
 
-    def test_cloudbet_data_client_receives_runtime_settings(self):
+    def test_cloudbet_data_client_receives_runtime_settings(self, monkeypatch):
+        monkeypatch.delenv("CLOUDBET_API_KEY", raising=False)
         manifest = BettingArbitrageNodeManifest(
             node_id="cloudbet-validation",
             trader_id="BETARB-TEST-CB",
@@ -1070,6 +1077,61 @@ class TestSemanticCacheBootstrap:
 
         assert status.source == "seeded"
         assert (cache_dir / "marker").read_text(encoding="utf-8") == "seeded"
+
+    def test_manifest_seed_dir_overrides_semantic_cache_seed_env(self, tmp_path, monkeypatch):
+        cache_dir = tmp_path / "semantic-cache"
+        manifest_seed_dir = tmp_path / "manifest-seed-cache"
+        env_seed_dir = tmp_path / "env-seed-cache"
+        manifest = _manifest(tmp_path, cache_dir=cache_dir, seed_dir=manifest_seed_dir)
+        manifest_seed_dir.mkdir()
+        env_seed_dir.mkdir()
+        (manifest_seed_dir / "marker").write_text("manifest-seed", encoding="utf-8")
+        (env_seed_dir / "marker").write_text("env-seed", encoding="utf-8")
+        monkeypatch.setenv(node_cache.SEMANTIC_CACHE_SEED_DIR_ENV, str(env_seed_dir))
+        statuses = {
+            (str(cache_dir), "existing"): SemanticCacheStatus(
+                path=str(cache_dir),
+                source="existing",
+                manifest_count=0,
+                promoted_template_count=0,
+                execution_safe_template_count=0,
+                same_venue_execution_eligible_template_count=0,
+            ),
+            (str(manifest_seed_dir), "existing"): SemanticCacheStatus(
+                path=str(manifest_seed_dir),
+                source="existing",
+                manifest_count=1,
+                promoted_template_count=2,
+                execution_safe_template_count=1,
+                same_venue_execution_eligible_template_count=0,
+                compatibility_version=node_cache.SEMANTIC_CACHE_COMPATIBILITY_VERSION,
+                compatible=True,
+            ),
+            (str(cache_dir), "seeded"): SemanticCacheStatus(
+                path=str(cache_dir),
+                source="seeded",
+                manifest_count=1,
+                promoted_template_count=2,
+                execution_safe_template_count=1,
+                same_venue_execution_eligible_template_count=0,
+                compatibility_version=node_cache.SEMANTIC_CACHE_COMPATIBILITY_VERSION,
+                compatible=True,
+            ),
+        }
+
+        def fake_status(path, *, source="existing", manifest=None):
+            return statuses[(str(path), source)]
+
+        monkeypatch.setattr(node_cache, "semantic_cache_status", fake_status)
+        monkeypatch.setattr(
+            "nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache._run_bootstrap",
+            lambda **_: (_ for _ in ()).throw(AssertionError("bootstrap should not run")),
+        )
+
+        status = ensure_semantic_cache_ready(manifest)
+
+        assert status.source == "seeded"
+        assert (cache_dir / "marker").read_text(encoding="utf-8") == "manifest-seed"
 
     def test_unusable_semantic_cache_fails_validation(self, tmp_path, monkeypatch):
         manifest = _manifest(tmp_path, cache_dir=tmp_path / "semantic-cache")
@@ -2950,6 +3012,11 @@ class TestBettingArbitrageNodeRunner:
             'data["semantic_rule_cache_dir"] = "/var/lib/nautilus-node/semantic-rule-cache"'
             in deploy_script
         )
+        assert (
+            'data["semantic_rule_cache_seed_dir"] = "/var/lib/nautilus-node/semantic-rule-cache-seed"'
+            in deploy_script
+        )
+        assert 'ensure_dir "$node_dir/semantic-rule-cache-seed"' in deploy_script
         assert 'rm -f "$node_dir/status.json" "$node_dir/heartbeat.json"' in deploy_script
 
     def test_release_workflow_validates_sxbet_manifest_with_semantic_env(self):

@@ -121,6 +121,7 @@ class BettingArbitrageNodeManifest(NautilusConfig, frozen=True):
     trader_id: str = "BET-ARB-001"
     strategy: BettingArbitrageConfig = BettingArbitrageConfig(auto_execute=False)
     semantic_rule_cache_dir: str | None = None
+    semantic_rule_cache_seed_dir: str | None = None
     venues: list[BettingVenueManifest] = []
     validation_mode: bool = True
     allow_dummy_credentials: bool = True
@@ -162,6 +163,12 @@ class BettingArbitrageNodeManifest(NautilusConfig, frozen=True):
                 self,
                 "semantic_rule_cache_dir",
                 self.semantic_rule_cache_dir.strip(),
+            )
+        if self.semantic_rule_cache_seed_dir is not None:
+            msgspec.structs.force_setattr(
+                self,
+                "semantic_rule_cache_seed_dir",
+                self.semantic_rule_cache_seed_dir.strip(),
             )
 
 

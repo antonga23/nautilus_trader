@@ -122,6 +122,7 @@ ensure_dir "$node_dir"
 ensure_dir "$sessions_dir"
 ensure_dir "$session_dir"
 ensure_dir "$node_dir/semantic-rule-cache"
+ensure_dir "$node_dir/semantic-rule-cache-seed"
 
 write_event() {
   local event_type="$1"
@@ -158,6 +159,8 @@ data["status_path"] = "/var/lib/nautilus-node/status.json"
 data["heartbeat_path"] = "/var/lib/nautilus-node/heartbeat.json"
 if data.get("semantic_rule_cache_dir"):
     data["semantic_rule_cache_dir"] = "/var/lib/nautilus-node/semantic-rule-cache"
+if data.get("semantic_rule_cache_seed_dir"):
+    data["semantic_rule_cache_seed_dir"] = "/var/lib/nautilus-node/semantic-rule-cache-seed"
 dest.write_text(json.dumps(data, indent=2) + "\n")
 PY
 

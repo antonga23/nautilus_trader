@@ -193,7 +193,8 @@ def _try_seed_semantic_cache(
     manifest: BettingArbitrageNodeManifest,
     logger: Logger | None,
 ) -> SemanticCacheStatus | None:
-    seed_value = (os.getenv(SEMANTIC_CACHE_SEED_DIR_ENV) or "").strip()
+    manifest_seed = str(getattr(manifest, "semantic_rule_cache_seed_dir", "") or "").strip()
+    seed_value = manifest_seed or (os.getenv(SEMANTIC_CACHE_SEED_DIR_ENV) or "").strip()
     if not seed_value:
         return None
     seed_dir = Path(seed_value).expanduser()
