@@ -487,6 +487,7 @@ class SnapshotIngestor:
             for sport in active_sports.get("data", [])
             if isinstance(sport, dict) and sport.get("sportId") is not None
         }
+        requested_sport_names = self._canonical_requested_sport_names(sports)
         selected_sport_ids = sorted({int(sport_id) for sport_id in (sport_ids or [])})
         if not selected_sport_ids:
             selected_sport_ids = self._resolve_sxbet_sport_ids(
@@ -583,26 +584,20 @@ class SnapshotIngestor:
                 )
             sport_selection_counts[sport_id] = len(normalized_records) - selection_count_before
 
-        sport_coverage = {}
-        for sport_id in selected_sport_ids:
-            sport_name = self._canonical_sport_name(
-                active_sport_names.get(sport_id) or SXBET_SPORT_IDS.get(sport_id, ""),
+        sport_coverage, selected_sport_names, unresolved_requested_sports = (
+            self._sxbet_sport_coverage_report(
+                requested_sport_names=requested_sport_names,
+                selected_sport_ids=selected_sport_ids,
+                active_sport_names=active_sport_names,
+                sport_selection_counts=sport_selection_counts,
+                sport_provider_errors=sport_provider_errors,
+                sport_snapshot_errors=sport_snapshot_errors,
+                instrument_budgets=instrument_budgets,
+                market_budgets=market_budgets,
+                default_instrument_limit=instrument_limit,
+                default_market_discovery_limit=market_discovery_limit,
             )
-            selection_count = sport_selection_counts.get(sport_id, 0)
-            blocker = None
-            if selection_count == 0:
-                blocker = sport_provider_errors.get(
-                    sport_id,
-                    sport_snapshot_errors.get(sport_id, "no_active_markets_or_provider_data"),
-                )
-            report: dict[str, object] = {
-                "sport_id": sport_id,
-                "selection_count": selection_count,
-                "instrument_budget": instrument_budgets.get(sport_id, instrument_limit),
-                "market_discovery_budget": market_budgets.get(sport_id, market_discovery_limit),
-                "blocker": blocker,
-            }
-            sport_coverage[sport_name or str(sport_id)] = report
+        )
         source_refs.append(
             self._save_snapshot(
                 provider="SXBET",
@@ -610,6 +605,9 @@ class SnapshotIngestor:
                 fetched_at=fetched_at,
                 payload={
                     "provider": "SXBET",
+                    "requested_sports": sorted(requested_sport_names),
+                    "resolved_sports": sorted(selected_sport_names),
+                    "unresolved_requested_sports": unresolved_requested_sports,
                     "sport_ids": selected_sport_ids,
                     "sports": sport_coverage,
                 },
@@ -657,6 +655,67 @@ class SnapshotIngestor:
             "hockey": "ice_hockey",
         }
         return aliases.get(normalized, normalized)
+
+    @classmethod
+    def _canonical_requested_sport_names(cls, sports: list[str] | None) -> set[str]:
+        return {
+            cls._canonical_sport_name(str(sport)) for sport in sports or () if str(sport).strip()
+        }
+
+    @classmethod
+    def _sxbet_sport_coverage_report(
+        cls,
+        *,
+        requested_sport_names: set[str],
+        selected_sport_ids: list[int],
+        active_sport_names: dict[int, str],
+        sport_selection_counts: dict[int, int],
+        sport_provider_errors: dict[int, str],
+        sport_snapshot_errors: dict[int, str],
+        instrument_budgets: dict[int, int],
+        market_budgets: dict[int, int],
+        default_instrument_limit: int,
+        default_market_discovery_limit: int,
+    ) -> tuple[dict[str, dict[str, object]], set[str], list[str]]:
+        sport_coverage: dict[str, dict[str, object]] = {}
+        selected_sport_names: set[str] = set()
+        for sport_id in selected_sport_ids:
+            sport_name = cls._canonical_sport_name(
+                active_sport_names.get(sport_id) or SXBET_SPORT_IDS.get(sport_id, ""),
+            )
+            if sport_name:
+                selected_sport_names.add(sport_name)
+            selection_count = sport_selection_counts.get(sport_id, 0)
+            blocker = None
+            if selection_count == 0:
+                blocker = sport_provider_errors.get(
+                    sport_id,
+                    sport_snapshot_errors.get(sport_id, "no_active_markets_or_provider_data"),
+                )
+            sport_coverage[sport_name or str(sport_id)] = {
+                "sport_id": sport_id,
+                "selection_count": selection_count,
+                "instrument_budget": instrument_budgets.get(sport_id, default_instrument_limit),
+                "market_discovery_budget": market_budgets.get(
+                    sport_id,
+                    default_market_discovery_limit,
+                ),
+                "blocker": blocker,
+            }
+        unresolved_requested_sports = sorted(requested_sport_names - selected_sport_names)
+        for sport_name in unresolved_requested_sports:
+            sport_coverage.setdefault(
+                sport_name,
+                {
+                    "sport_id": None,
+                    "selection_count": 0,
+                    "instrument_budget": 0,
+                    "market_discovery_budget": 0,
+                    "blocker": "not_in_sxbet_active_sports_catalog",
+                    "requested": True,
+                },
+            )
+        return sport_coverage, selected_sport_names, unresolved_requested_sports
 
     @classmethod
     def _resolve_sxbet_sport_ids(

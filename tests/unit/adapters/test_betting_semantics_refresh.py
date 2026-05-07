@@ -2777,7 +2777,7 @@ def test_refresh_sxbet_uses_requested_sports_and_balances_per_sport_budgets(monk
     manifest = asyncio.run(
         ingestor.refresh_sxbet(
             FakeClient(),
-            sports=["Soccer/Football", "basketball", "tennis"],
+            sports=["Soccer/Football", "basketball", "tennis", "American Football"],
             instrument_limit=7,
             market_discovery_limit=10,
         ),
@@ -2812,7 +2812,23 @@ def test_refresh_sxbet_uses_requested_sports_and_balances_per_sport_budgets(monk
             break
     assert coverage_snapshot is not None
     payload = json.loads(coverage_snapshot.payload.decode("utf-8"))
+    assert payload["requested_sports"] == [
+        "american_football",
+        "basketball",
+        "soccer",
+        "tennis",
+    ]
+    assert payload["resolved_sports"] == ["basketball", "soccer", "tennis"]
+    assert payload["unresolved_requested_sports"] == ["american_football"]
     assert payload["sport_ids"] == [1, 5, 6]
+    assert payload["sports"]["american_football"] == {
+        "sport_id": None,
+        "selection_count": 0,
+        "instrument_budget": 0,
+        "market_discovery_budget": 0,
+        "blocker": "not_in_sxbet_active_sports_catalog",
+        "requested": True,
+    }
     assert payload["sports"]["basketball"]["selection_count"] == 1
     assert payload["sports"]["soccer"]["selection_count"] == 1
     assert payload["sports"]["tennis"]["selection_count"] == 1
