@@ -827,6 +827,12 @@ def _parse_args() -> argparse.Namespace:
         help="Return non-zero when operator health is at or above the chosen severity",
     )
     parser.add_argument(
+        "--fail-on-provider-poll-health",
+        choices=("warn", "fail"),
+        default=None,
+        help="Return non-zero when provider poll health is at or above the chosen severity",
+    )
+    parser.add_argument(
         "--aggregate",
         action="store_true",
         help="Include aggregate counts across all input artifacts",
@@ -888,6 +894,14 @@ def main() -> int:
         for item in summaries
     ):
         return 4
+    if args.fail_on_provider_poll_health and any(
+        _operator_health_at_or_above(
+            str(_as_dict(item.get("providerPollHealth")).get("overall") or "unknown"),
+            args.fail_on_provider_poll_health,
+        )
+        for item in summaries
+    ):
+        return 5
     return 0
 
 
