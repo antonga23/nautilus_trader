@@ -131,6 +131,10 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
         },
         "latencyDiagnostics": {
             **latency_diagnostics,
+            "sloStatus": _latency_slo_status(
+                candidate_quality=candidate_quality,
+                latency=latency_diagnostics,
+            ),
             "diagnosticWarnings": _latency_diagnostic_warnings(
                 latency_diagnostics,
                 quoted_edges=_int_value(runtime.get("quotedEdges")),
@@ -372,6 +376,67 @@ def _latency_diagnostic_warnings(
     ):
         warnings.append("missing_quote_publish_to_strategy_latency")
     return warnings
+
+
+def _latency_slo_status(
+    *,
+    candidate_quality: dict[str, Any],
+    latency: dict[str, Any],
+) -> dict[str, Any]:
+    live_timing = _as_dict(candidate_quality.get("liveTimingSlo"))
+    quote_age = _slo_section_status(_as_dict(live_timing.get("quoteAge")))
+    fetch_latency = _slo_section_status(_as_dict(live_timing.get("fetchLatency")))
+    pair_skew = _slo_section_status(_as_dict(live_timing.get("pairSkew")))
+    strategy_latency = {
+        "graphScanObserved": _int_value(_as_dict(latency.get("graphScan")).get("count")) > 0,
+        "candidateDecisionObserved": _int_value(
+            _as_dict(latency.get("candidateDecision")).get("count"),
+        )
+        > 0,
+        "quoteReceiveObserved": (
+            _int_value(_as_dict(latency.get("quoteEventToStrategy")).get("count")) > 0
+            or _int_value(_as_dict(latency.get("quotePublishToStrategy")).get("count")) > 0
+        ),
+    }
+    statuses = [
+        quote_age["status"],
+        fetch_latency["status"],
+        pair_skew["status"],
+    ]
+    if any(status == "fail" for status in statuses):
+        overall = "fail"
+    elif any(status == "pass" for status in statuses):
+        overall = "pass"
+    else:
+        overall = "no_observations"
+    return {
+        "overall": overall,
+        "quoteAge": quote_age,
+        "fetchLatency": fetch_latency,
+        "pairSkew": pair_skew,
+        "strategyLatency": strategy_latency,
+    }
+
+
+def _slo_section_status(section: dict[str, Any]) -> dict[str, Any]:
+    observations = _int_value(section.get("observations"))
+    violations = _int_value(section.get("violations"))
+    if observations <= 0:
+        status = "no_observations"
+    elif violations > 0:
+        status = "fail"
+    else:
+        status = "pass"
+    return {
+        "status": status,
+        "observations": observations,
+        "violations": violations,
+        "violationRate": round((violations / observations) if observations else 0.0, 6),
+        "thresholdSeconds": section.get("thresholdSeconds"),
+        "minThresholdSeconds": section.get("minThresholdSeconds"),
+        "maxThresholdSeconds": section.get("maxThresholdSeconds"),
+        "thresholdMode": section.get("thresholdMode"),
+    }
 
 
 def _load_json(path: Path) -> dict[str, Any]:

@@ -315,6 +315,44 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
     assert summary["latencyDiagnostics"]["quoteEventToStrategy"]["p95_ms"] == 25.0
     assert summary["latencyDiagnostics"]["graphScan"]["p95_ms"] == 3.1
     assert summary["latencyDiagnostics"]["instrumentRefreshReconcile"]["max_ms"] == 125.0
+    assert summary["latencyDiagnostics"]["sloStatus"] == {
+        "overall": "fail",
+        "quoteAge": {
+            "status": "pass",
+            "observations": 8,
+            "violations": 0,
+            "violationRate": 0.0,
+            "thresholdSeconds": 5.0,
+            "minThresholdSeconds": None,
+            "maxThresholdSeconds": None,
+            "thresholdMode": None,
+        },
+        "fetchLatency": {
+            "status": "fail",
+            "observations": 8,
+            "violations": 1,
+            "violationRate": 0.125,
+            "thresholdSeconds": None,
+            "minThresholdSeconds": 1.5,
+            "maxThresholdSeconds": 2.0,
+            "thresholdMode": "per_candidate",
+        },
+        "pairSkew": {
+            "status": "pass",
+            "observations": 4,
+            "violations": 0,
+            "violationRate": 0.0,
+            "thresholdSeconds": None,
+            "minThresholdSeconds": 1.0,
+            "maxThresholdSeconds": 1.0,
+            "thresholdMode": "per_candidate",
+        },
+        "strategyLatency": {
+            "graphScanObserved": True,
+            "candidateDecisionObserved": True,
+            "quoteReceiveObserved": True,
+        },
+    }
     assert summary["latencyDiagnostics"]["diagnosticWarnings"] == []
     assert summary["candidateQuality"]["topRejectionBuckets"] == [
         {"key": "stale", "value": 5},
