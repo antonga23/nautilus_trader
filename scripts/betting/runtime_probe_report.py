@@ -513,6 +513,9 @@ def _merge_provider_corpus_coverage(
                 "blockerCounts": {},
                 "sparseSports": [],
                 "zeroSelectionSports": [],
+                "requestedSports": [],
+                "resolvedSports": [],
+                "unresolvedRequestedSports": [],
             },
         )
         existing["sportCount"] = max(
@@ -550,6 +553,24 @@ def _merge_provider_corpus_coverage(
             {
                 *[str(item) for item in existing.get("zeroSelectionSports", [])],
                 *[str(item) for item in report.get("zero_selection_sports", []) if item],
+            },
+        )
+        existing["requestedSports"] = sorted(
+            {
+                *[str(item) for item in existing.get("requestedSports", [])],
+                *[str(item) for item in report.get("requested_sports", []) if item],
+            },
+        )
+        existing["resolvedSports"] = sorted(
+            {
+                *[str(item) for item in existing.get("resolvedSports", [])],
+                *[str(item) for item in report.get("resolved_sports", []) if item],
+            },
+        )
+        existing["unresolvedRequestedSports"] = sorted(
+            {
+                *[str(item) for item in existing.get("unresolvedRequestedSports", [])],
+                *[str(item) for item in report.get("unresolved_requested_sports", []) if item],
             },
         )
 
@@ -1141,6 +1162,7 @@ def _format_provider_corpus_coverage_lines(value: Any) -> list[str]:
         blocker_counts = report.get("blocker_counts")
         sparse_sports = report.get("sparse_sports")
         zero_selection_sports = report.get("zero_selection_sports")
+        unresolved_requested_sports = report.get("unresolved_requested_sports")
         lines.append(
             "  corpus_coverage "
             f"provider={provider} "
@@ -1149,6 +1171,8 @@ def _format_provider_corpus_coverage_lines(value: Any) -> list[str]:
             f"events={report.get('total_event_count', 0)} "
             f"markets={report.get('total_market_count', 0)} "
             f"blockers={blocker_counts if isinstance(blocker_counts, dict) else {}} "
+            "unresolved="
+            f"{unresolved_requested_sports if isinstance(unresolved_requested_sports, list) else []} "
             f"sparse={sparse_sports if isinstance(sparse_sports, list) else []} "
             f"zero={zero_selection_sports if isinstance(zero_selection_sports, list) else []}",
         )
@@ -1713,11 +1737,16 @@ def _semantic_cache_corpus_health(provider_corpus_coverage: dict[str, Any]) -> d
         total_selection_count = _int_value(report.get("total_selection_count"))
         zero_selection_sports = _as_list_of_strings(report.get("zero_selection_sports"))
         sparse_sports = _as_list_of_strings(report.get("sparse_sports"))
+        unresolved_requested_sports = _as_list_of_strings(
+            report.get("unresolved_requested_sports"),
+        )
         blocker_counts = _as_dict(report.get("blocker_counts"))
         if sport_count <= 0:
             reasons.append("no_corpus_sports")
         if sports_with_selections <= 0 or total_selection_count <= 0:
             reasons.append("no_corpus_selections")
+        if unresolved_requested_sports:
+            reasons.append("unresolved_requested_sports")
         if zero_selection_sports:
             reasons.append("zero_selection_sports")
         if sparse_sports:
@@ -1734,6 +1763,7 @@ def _semantic_cache_corpus_health(provider_corpus_coverage: dict[str, Any]) -> d
             "sportCount": sport_count,
             "sportsWithSelections": sports_with_selections,
             "totalSelectionCount": total_selection_count,
+            "unresolvedRequestedSports": unresolved_requested_sports,
             "zeroSelectionSports": zero_selection_sports,
             "sparseSports": sparse_sports,
             "blockerCounts": blocker_counts,
@@ -1801,6 +1831,7 @@ def _recommended_actions(summary: dict[str, Any]) -> list[str]:
             {
                 "no_corpus_sports": "inspect_provider_corpus_discovery",
                 "no_corpus_selections": "inspect_provider_corpus_discovery",
+                "unresolved_requested_sports": "inspect_unresolved_provider_sport_targets",
                 "zero_selection_sports": "inspect_zero_selection_target_sports",
                 "sparse_corpus_sports": "widen_provider_corpus_window_or_limits",
                 "provider_corpus_blockers": "inspect_provider_corpus_blockers",

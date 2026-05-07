@@ -430,6 +430,11 @@ def _semantic_provider_coverage_summary(
 ) -> dict[str, object]:
     sports_payload = payload.get("sports")
     sports = sports_payload if isinstance(sports_payload, dict) else {}
+    requested_sports = _semantic_coverage_str_list(payload.get("requested_sports"))
+    resolved_sports = _semantic_coverage_str_list(payload.get("resolved_sports"))
+    unresolved_requested_sports = _semantic_coverage_str_list(
+        payload.get("unresolved_requested_sports"),
+    )
     sport_summaries: dict[str, object] = {}
     blocker_counts: dict[str, int] = {}
     sparse_sports: list[str] = []
@@ -481,6 +486,9 @@ def _semantic_provider_coverage_summary(
         "total_selection_count": total_selection_count,
         "total_event_count": total_event_count,
         "total_market_count": total_market_count,
+        "requested_sports": requested_sports,
+        "resolved_sports": resolved_sports,
+        "unresolved_requested_sports": unresolved_requested_sports,
         "blocker_counts": dict(sorted(blocker_counts.items())),
         "sparse_sports": sparse_sports,
         "zero_selection_sports": zero_selection_sports,
@@ -497,6 +505,12 @@ def _semantic_coverage_int(value: object) -> int:
         except (TypeError, ValueError):
             return 0
     return 0
+
+
+def _semantic_coverage_str_list(value: object) -> list[str]:
+    if not isinstance(value, (list, tuple, set)):
+        return []
+    return sorted({str(item) for item in value if str(item).strip()})
 
 
 def _semantic_cache_index_signature(ids: Iterable[str]) -> str:

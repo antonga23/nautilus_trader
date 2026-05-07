@@ -1187,6 +1187,9 @@ class TestSemanticCacheBootstrap:
                     },
                     "coverage-sxbet-new": {
                         "provider": "SXBET",
+                        "requested_sports": ["basketball", "baseball", "american_football"],
+                        "resolved_sports": ["basketball", "baseball"],
+                        "unresolved_requested_sports": ["american_football"],
                         "sports": {
                             "basketball": {
                                 "selection_count": 12,
@@ -1277,6 +1280,18 @@ class TestSemanticCacheBootstrap:
         assert status.provider_corpus_coverage["SXBET"]["sports_with_selections"] == 1
         assert status.provider_corpus_coverage["SXBET"]["total_selection_count"] == 12
         assert status.provider_corpus_coverage["SXBET"]["zero_selection_sports"] == ["baseball"]
+        assert status.provider_corpus_coverage["SXBET"]["requested_sports"] == [
+            "american_football",
+            "baseball",
+            "basketball",
+        ]
+        assert status.provider_corpus_coverage["SXBET"]["resolved_sports"] == [
+            "baseball",
+            "basketball",
+        ]
+        assert status.provider_corpus_coverage["SXBET"]["unresolved_requested_sports"] == [
+            "american_football",
+        ]
         assert status.provider_corpus_coverage["SXBET"]["blocker_counts"] == {
             "no_active_markets_or_provider_data": 1,
         }

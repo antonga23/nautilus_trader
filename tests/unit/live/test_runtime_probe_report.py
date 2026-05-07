@@ -46,6 +46,16 @@ def _runtime_status_payload() -> dict[str, object]:
                     "total_selection_count": 842,
                     "total_event_count": 114,
                     "total_market_count": 0,
+                    "requested_sports": [
+                        "american_football",
+                        "baseball",
+                        "basketball",
+                        "ice_hockey",
+                        "soccer",
+                        "tennis",
+                    ],
+                    "resolved_sports": ["basketball", "soccer", "tennis"],
+                    "unresolved_requested_sports": ["american_football"],
                     "blocker_counts": {"no_active_markets_or_provider_data": 2},
                     "sparse_sports": ["american_football"],
                     "zero_selection_sports": ["baseball", "ice_hockey"],
@@ -339,10 +349,15 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
     assert summary["semanticCache"]["providerCorpusCoverage"]["SXBET"]["sport_count"] == 6
     assert summary["semanticCacheCorpusHealth"]["overall"] == "warn"
     assert summary["semanticCacheCorpusHealth"]["providers"]["SXBET"]["reasons"] == [
+        "unresolved_requested_sports",
         "zero_selection_sports",
         "sparse_corpus_sports",
         "provider_corpus_blockers",
     ]
+    assert summary["semanticCacheCorpusHealth"]["providers"]["SXBET"][
+        "unresolvedRequestedSports"
+    ] == ["american_football"]
+    assert "inspect_unresolved_provider_sport_targets" in summary["recommendedActions"]
     assert "inspect_zero_selection_target_sports" in summary["recommendedActions"]
     assert summary["executionReadiness"]["validationMode"] is True
     assert summary["executionReadiness"]["autoExecute"] is False
@@ -459,6 +474,7 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
         "inspect_live_latency_slo_violations",
         "inspect_provider_corpus_blockers",
         "inspect_provider_poll_failures",
+        "inspect_unresolved_provider_sport_targets",
         "inspect_zero_candidate_blockers",
         "inspect_zero_selection_target_sports",
         "reduce_poll_rate_or_add_backoff",
@@ -731,6 +747,7 @@ def test_runtime_probe_report_cli_outputs_json_and_text(tmp_path, monkeypatch, c
     assert "provider_poll_health overall=fail CLOUDBET:status=fail" in text_output
     assert "semantic_cache_corpus_health overall=warn SXBET:status=warn" in text_output
     assert "corpus_coverage provider=SXBET sports=3/6 selections=842" in text_output
+    assert "unresolved=['american_football']" in text_output
     assert "venue_coverage_health overall=warn CLOUDBET:status=warn" in text_output
     assert "recommended_actions" in text_output
     assert "inspect_live_latency_slo_violations" in text_output
