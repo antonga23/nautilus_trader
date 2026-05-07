@@ -3008,3 +3008,54 @@ def test_semantic_rule_mining_refresh_corpus_passes_sports_to_sxbet(tmp_path, mo
     assert call["liquidity_probe_limit"] == 55
     assert call["min_two_sided_markets"] == 2
     assert call["live_only"] is True
+
+
+def test_semantic_rule_mining_provider_coverage_summary_reports_unresolved_targets():
+    repo_root = Path(__file__).resolve().parents[3]
+    script = repo_root / "scripts" / "betting" / "semantic_rule_mining.py"
+    spec = importlib.util.spec_from_file_location(
+        "semantic_rule_mining_script_coverage_summary",
+        script,
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    summary = module._provider_coverage_summary(
+        {
+            "/semantic/coverage/sxbet": {
+                "provider": "SXBET",
+                "coverage_mode": "active_live",
+                "live_only": True,
+                "prefer_liquid_markets": True,
+                "requested_sports": ["soccer", "american_football"],
+                "resolved_sports": ["soccer"],
+                "unresolved_requested_sports": ["american_football"],
+                "sports": {
+                    "soccer": {"selection_count": 10, "event_count": 2},
+                    "american_football": {
+                        "selection_count": 0,
+                        "blocker": "not_in_sxbet_active_sports_catalog",
+                    },
+                },
+            },
+        },
+    )
+
+    assert summary["SXBET"] == {
+        "coverage_mode": "active_live",
+        "live_only": True,
+        "prefer_liquid_markets": True,
+        "sport_count": 2,
+        "sports_with_selections": 1,
+        "total_selection_count": 10,
+        "total_event_count": 2,
+        "total_market_count": 0,
+        "requested_sports": ["american_football", "soccer"],
+        "resolved_sports": ["soccer"],
+        "unresolved_requested_sports": ["american_football"],
+        "zero_selection_sports": ["american_football"],
+        "sparse_sports": [],
+        "blocker_counts": {"not_in_sxbet_active_sports_catalog": 1},
+    }

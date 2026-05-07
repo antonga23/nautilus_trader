@@ -636,6 +636,7 @@ def _report_coverage(args: argparse.Namespace) -> None:
         "normalized_market_coverage": _normalized_market_coverage(normalized_records),
         "template_coverage": _template_coverage(candidate_templates, promoted_templates),
         "provider_coverage": provider_coverage,
+        "provider_coverage_summary": _provider_coverage_summary(provider_coverage),
         "providers": [provider.__dict__ for provider in completion.providers],
         "sports": [sport.__dict__ for sport in completion.sports],
         "promotion_blockers": dict(completion.promotion_blockers),
@@ -668,6 +669,79 @@ def _normalized_market_coverage(records: list[Any]) -> dict[str, int]:
         )
         counts[key] += 1
     return dict(sorted(counts.items()))
+
+
+def _provider_coverage_summary(provider_coverage: dict[str, object]) -> dict[str, object]:
+    summary: dict[str, object] = {}
+    for payload in provider_coverage.values():
+        if not isinstance(payload, dict):
+            continue
+        provider = str(payload.get("provider") or "").upper()
+        if not provider:
+            continue
+        sports = payload.get("sports")
+        sports_payload = sports if isinstance(sports, dict) else {}
+        blocker_counts: Counter[str] = Counter()
+        zero_selection_sports: list[str] = []
+        sparse_sports: list[str] = []
+        total_selection_count = 0
+        total_event_count = 0
+        total_market_count = 0
+        for sport, raw_report in sorted(sports_payload.items(), key=lambda item: str(item[0])):
+            if not isinstance(raw_report, dict):
+                continue
+            selection_count = _coverage_report_int(raw_report.get("selection_count"))
+            total_selection_count += selection_count
+            total_event_count += _coverage_report_int(raw_report.get("event_count"))
+            total_market_count += _coverage_report_int(raw_report.get("market_count"))
+            blocker = raw_report.get("blocker")
+            if blocker:
+                blocker_counts[str(blocker)] += 1
+            if bool(raw_report.get("sparse", False)):
+                sparse_sports.append(str(sport))
+            if selection_count <= 0:
+                zero_selection_sports.append(str(sport))
+        summary[provider] = {
+            "coverage_mode": str(payload.get("coverage_mode") or ""),
+            "live_only": bool(payload.get("live_only", False)),
+            "prefer_liquid_markets": bool(payload.get("prefer_liquid_markets", False)),
+            "sport_count": len(sports_payload),
+            "sports_with_selections": sum(
+                1
+                for raw_report in sports_payload.values()
+                if isinstance(raw_report, dict)
+                and _coverage_report_int(raw_report.get("selection_count")) > 0
+            ),
+            "total_selection_count": total_selection_count,
+            "total_event_count": total_event_count,
+            "total_market_count": total_market_count,
+            "requested_sports": _coverage_report_str_list(payload.get("requested_sports")),
+            "resolved_sports": _coverage_report_str_list(payload.get("resolved_sports")),
+            "unresolved_requested_sports": _coverage_report_str_list(
+                payload.get("unresolved_requested_sports"),
+            ),
+            "zero_selection_sports": sorted(zero_selection_sports),
+            "sparse_sports": sorted(sparse_sports),
+            "blocker_counts": dict(sorted(blocker_counts.items())),
+        }
+    return dict(sorted(summary.items()))
+
+
+def _coverage_report_int(value: Any) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int | float | str):
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return 0
+    return 0
+
+
+def _coverage_report_str_list(value: Any) -> list[str]:
+    if not isinstance(value, (list, tuple, set)):
+        return []
+    return sorted({str(item) for item in value if str(item).strip()})
 
 
 def _template_coverage(
