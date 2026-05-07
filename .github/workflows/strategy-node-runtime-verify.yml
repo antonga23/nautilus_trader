@@ -473,47 +473,35 @@ jobs:
           status = json.loads(pathlib.Path(sys.argv[1]).read_text())
           runtime_probe = status.get("runtimeProbe") or {}
           candidate_quality = runtime_probe.get("candidateQuality") or {}
+          runtime_probe_summary = dict(runtime_probe) if isinstance(runtime_probe, dict) else {}
+          if isinstance(candidate_quality, dict):
+              runtime_probe_summary["candidateQuality"] = dict(candidate_quality)
+              for key in (
+                  "blockerSamples",
+                  "latencyHistograms",
+                  "liveTimingSlo",
+                  "semanticBlockedRelationships",
+                  "topNegativeNearMisses",
+                  "topPositiveCandidates",
+                  "venueQuoteHealth",
+                  "zeroCandidateBlockerCounts",
+                  "zeroCandidateVenuePairSamples",
+              ):
+                  runtime_probe_summary["candidateQuality"][key] = candidate_quality.get(key)
+          for key in (
+              "coverageDiagnostics",
+              "latencyDiagnostics",
+              "providerQuotePollStats",
+              "instrumentRefresh",
+              "semanticDiagnostics",
+          ):
+              runtime_probe_summary[key] = runtime_probe.get(key)
           summary = {
               "nodeId": status.get("nodeId"),
               "status": status.get("status"),
               "semanticCache": status.get("semanticCache"),
-              "runtimeProbe": {
-                  "graphEngine": runtime_probe.get("graphEngine"),
-                  "topologySource": runtime_probe.get("topologySource"),
-                  "semanticTemplateCount": runtime_probe.get("semanticTemplateCount"),
-                  "coverageProofCount": runtime_probe.get("coverageProofCount"),
-                  "coverageHyperedgeCount": runtime_probe.get("coverageHyperedgeCount"),
-                  "graphNodes": runtime_probe.get("graphNodes"),
-                  "graphEdges": runtime_probe.get("graphEdges"),
-                  "quotedSemanticMatchInstruments": runtime_probe.get(
-                      "quotedSemanticMatchInstruments",
-                  ),
-                  "quotedEdges": runtime_probe.get("quotedEdges"),
-                  "positiveMarginCandidates": runtime_probe.get("positiveMarginCandidates"),
-                  "thresholdMarginCandidates": runtime_probe.get("thresholdMarginCandidates"),
-                  "venueCoverage": runtime_probe.get("venueCoverage"),
-                  "candidateQuality": {
-                      "rejectionBuckets": candidate_quality.get("rejectionBuckets"),
-                      "timingFlags": candidate_quality.get("timingFlags"),
-                      "freshnessProfiles": candidate_quality.get("freshnessProfiles"),
-                      "semanticBlockedReasons": candidate_quality.get(
-                          "semanticBlockedReasons",
-                      ),
-                      "blockerSamples": candidate_quality.get("blockerSamples"),
-                      "venueQuoteHealth": candidate_quality.get("venueQuoteHealth"),
-                      "venuePairs": candidate_quality.get("venuePairs"),
-                      "marketFamilies": candidate_quality.get("marketFamilies"),
-                      "zeroCandidateVenuePairSamples": candidate_quality.get(
-                          "zeroCandidateVenuePairSamples",
-                      ),
-                      "topPositiveCandidates": candidate_quality.get(
-                          "topPositiveCandidates",
-                      ),
-                      "topNegativeNearMisses": candidate_quality.get(
-                          "topNegativeNearMisses",
-                      ),
-                  },
-              },
+              "executionReadiness": status.get("executionReadiness"),
+              "runtimeProbe": runtime_probe_summary,
           }
           pathlib.Path(sys.argv[2]).write_text(json.dumps(summary, indent=2, sort_keys=True))
           PY

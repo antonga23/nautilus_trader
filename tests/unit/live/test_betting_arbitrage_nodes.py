@@ -2818,6 +2818,10 @@ class TestBettingArbitrageNodeRunner:
         assert "release.json" in workflow
         assert "coverageProofCount" in workflow
         assert "coverageHyperedgeCount" in workflow
+        assert "coverageDiagnostics" in workflow
+        assert "latencyDiagnostics" in workflow
+        assert "runtime_probe_summary = dict(runtime_probe)" in workflow
+        assert '"executionReadiness": status.get("executionReadiness")' in workflow
         assert "zeroCandidateVenuePairSamples" in workflow
         assert "semantic_verify_enabled" in workflow
         assert "semantic_verify_required_providers" in workflow
@@ -2825,6 +2829,8 @@ class TestBettingArbitrageNodeRunner:
         assert "verify_semantic_cache_completion.py" in workflow
         assert ".venv/bin/python" not in workflow
         assert "semantic-completion.json" in workflow
+        assert "semantic-completion.stderr" in workflow
+        assert "semantic_completion_verifier_failed_before_json_output" in workflow
 
     def test_strategy_node_maintenance_workflow_archives_before_stop(self):
         workflow = Path(".github/workflows/strategy-node-maintenance.yml").read_text()
