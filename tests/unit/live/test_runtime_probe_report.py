@@ -376,6 +376,9 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
     assert summary["candidateQuality"]["diagnosticWarnings"] == [
         "live_fetch_latency_slo_violations",
     ]
+    assert summary["operatorHealth"]["overall"] == "fail"
+    assert "latency_slo_failed" in summary["operatorHealth"]["reasons"]
+    assert "candidate:live_fetch_latency_slo_violations" in summary["operatorHealth"]["reasons"]
     assert summary["providerQuotePollStats"]["CLOUDBET"]["cycle_id"] == 12
     assert summary["instrumentRefresh"]["staleQuoteTriggers"] == 1
     assert summary["semanticDiagnostics"]["supportedProviderNodeCount"] == 18
@@ -510,6 +513,10 @@ def test_runtime_probe_report_aggregates_multiple_artifacts():
         "fail": 1,
         "no_observations": 1,
     }
+    assert aggregate["operatorHealthCounts"] == {
+        "fail": 1,
+        "warn": 1,
+    }
 
 
 def test_runtime_probe_report_cli_outputs_json_and_text(tmp_path, monkeypatch, capsys):
@@ -536,10 +543,12 @@ def test_runtime_probe_report_cli_outputs_json_and_text(tmp_path, monkeypatch, c
     assert module.main() == 0
     text_output = capsys.readouterr().out
     assert "graph=rust/rust_semantic" in text_output
+    assert "operator_health overall=fail" in text_output
     assert "coverage proofs=5367 hyperedges=482" in text_output
     assert "coverage_blockers void_settlement=3" in text_output
     assert "candidates positive=3 threshold=2 cross_venue=2" in text_output
     assert "aggregate: artifacts=1 positive=3 threshold=2 cross_venue=2" in text_output
+    assert "health={'fail': 1}" in text_output
     assert "top_semantic_blockers" in text_output
     assert "top_semantic_relationships" in text_output
     assert "zero_candidate_blockers fixture_identity_mismatch=2" in text_output

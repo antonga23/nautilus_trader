@@ -70,6 +70,21 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
         },
     )
 
+    latency_block = {
+        **latency_diagnostics,
+        "sloStatus": _latency_slo_status(
+            candidate_quality=candidate_quality,
+            latency=latency_diagnostics,
+        ),
+        "diagnosticWarnings": _latency_diagnostic_warnings(
+            latency_diagnostics,
+            quoted_edges=_int_value(runtime.get("quotedEdges")),
+            positive_candidates=_candidate_total(positive),
+            threshold_candidates=_candidate_total(threshold),
+        ),
+    }
+    candidate_warnings = diagnostic_warnings
+    graph_warnings = graph_diagnostic_warnings
     return {
         "nodeId": payload.get("nodeId"),
         "status": payload.get("status"),
@@ -129,19 +144,7 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
             "threshold": threshold,
             "crossVenueCandidateCount": venue_coverage.get("crossVenueCandidateCount"),
         },
-        "latencyDiagnostics": {
-            **latency_diagnostics,
-            "sloStatus": _latency_slo_status(
-                candidate_quality=candidate_quality,
-                latency=latency_diagnostics,
-            ),
-            "diagnosticWarnings": _latency_diagnostic_warnings(
-                latency_diagnostics,
-                quoted_edges=_int_value(runtime.get("quotedEdges")),
-                positive_candidates=_candidate_total(positive),
-                threshold_candidates=_candidate_total(threshold),
-            ),
-        },
+        "latencyDiagnostics": latency_block,
         "candidateQuality": {
             "diagnosticWarnings": diagnostic_warnings,
             "marginBands": candidate_quality.get("marginBands"),
@@ -216,6 +219,12 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
             "candidateCounts": venue_coverage.get("candidateCounts"),
             "zeroCandidateVenuePairs": venue_coverage.get("zeroCandidateVenuePairs"),
         },
+        "operatorHealth": _operator_health(
+            candidate_warnings=candidate_warnings,
+            graph_warnings=graph_warnings,
+            latency_warnings=latency_block["diagnosticWarnings"],
+            latency_slo_status=_as_dict(latency_block.get("sloStatus")),
+        ),
     }
 
 
@@ -239,6 +248,7 @@ def aggregate_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
     latency_slo_counts: dict[str, int] = {}
     engine_counts: dict[str, int] = {}
     topology_counts: dict[str, int] = {}
+    health_counts: dict[str, int] = {}
     for summary in summaries:
         graph = _as_dict(summary.get("graph"))
         engine = str(graph.get("engine") or "unknown")
@@ -255,6 +265,8 @@ def aggregate_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
         slo_status = _as_dict(_as_dict(summary.get("latencyDiagnostics")).get("sloStatus"))
         slo_key = str(slo_status.get("overall") or "unknown")
         latency_slo_counts[slo_key] = latency_slo_counts.get(slo_key, 0) + 1
+        health = str(_as_dict(summary.get("operatorHealth")).get("overall") or "unknown")
+        health_counts[health] = health_counts.get(health, 0) + 1
 
     return {
         "artifactCount": len(summaries),
@@ -291,6 +303,7 @@ def aggregate_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
         "graphDiagnosticWarningCounts": dict(sorted(graph_warning_counts.items())),
         "latencyDiagnosticWarningCounts": dict(sorted(latency_warning_counts.items())),
         "latencySloStatusCounts": dict(sorted(latency_slo_counts.items())),
+        "operatorHealthCounts": dict(sorted(health_counts.items())),
     }
 
 
@@ -423,6 +436,32 @@ def _latency_slo_status(
     }
 
 
+def _operator_health(
+    *,
+    candidate_warnings: list[str],
+    graph_warnings: list[str],
+    latency_warnings: list[str],
+    latency_slo_status: dict[str, Any],
+) -> dict[str, Any]:
+    reasons: list[str] = []
+    if latency_slo_status.get("overall") == "fail":
+        reasons.append("latency_slo_failed")
+    reasons.extend(f"candidate:{warning}" for warning in candidate_warnings)
+    reasons.extend(f"graph:{warning}" for warning in graph_warnings)
+    reasons.extend(f"latency:{warning}" for warning in latency_warnings)
+    if latency_slo_status.get("overall") == "fail":
+        overall = "fail"
+    elif reasons:
+        overall = "warn"
+    else:
+        overall = "pass"
+    return {
+        "overall": overall,
+        "reasonCount": len(reasons),
+        "reasons": reasons,
+    }
+
+
 def _slo_section_status(section: dict[str, Any]) -> dict[str, Any]:
     observations = _int_value(section.get("observations"))
     violations = _int_value(section.get("violations"))
@@ -458,6 +497,7 @@ def _format_text(path: Path, summary: dict[str, Any]) -> str:
     lines = [
         f"{path}:",
         f"  status={summary.get('status')} node={summary.get('nodeId')}",
+        _format_operator_health_line(summary.get("operatorHealth")),
         _format_execution_readiness_line(summary.get("executionReadiness")),
         f"  graph={graph.get('engine')}/{graph.get('topologySource')} "
         f"nodes={graph.get('nodes')} edges={graph.get('edges')} "
@@ -500,6 +540,18 @@ def _format_text(path: Path, summary: dict[str, Any]) -> str:
     if latency_warnings:
         lines.append(f"  latency_warnings {', '.join(latency_warnings)}")
     return "\n".join(lines)
+
+
+def _format_operator_health_line(value: Any) -> str:
+    health = value if isinstance(value, dict) else {}
+    reasons = health.get("reasons") or []
+    rendered_reasons = ", ".join(str(reason) for reason in reasons[:5])
+    return (
+        "  operator_health "
+        f"overall={health.get('overall')} "
+        f"reason_count={health.get('reasonCount', 0)} "
+        f"reasons=[{rendered_reasons}]"
+    )
 
 
 def _format_execution_readiness_line(value: Any) -> str:
@@ -772,7 +824,8 @@ def main() -> int:
                 f"threshold={aggregate['thresholdCandidates']} "
                 f"cross_venue={aggregate['crossVenueCandidates']} "
                 f"warnings={aggregate['diagnosticWarningCounts']} "
-                f"latency_slo={aggregate['latencySloStatusCounts']}",
+                f"latency_slo={aggregate['latencySloStatusCounts']} "
+                f"health={aggregate['operatorHealthCounts']}",
             )
     else:
         payload: object = (
