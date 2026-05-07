@@ -3139,6 +3139,18 @@ class TestBettingArbitrageNodeRunner:
         assert "docker rm" in script
         assert "node_dir_removed=true" in script
 
+    def test_runner_cleanup_preserves_target_cache_by_default(self):
+        script = Path("scripts/ci/self_hosted_runner_cleanup.sh").read_text()
+
+        assert 'prune_target_artifacts="${RUNNER_PRUNE_TARGET_ARTIFACTS:-false}"' in script
+        assert "-path '*/target/*'" in script
+        assert 'if [[ "$prune_target_artifacts" == "true" ]]; then' in script
+        default_artifact_block = script.split(
+            'if [[ "$prune_target_artifacts" == "true" ]]; then',
+            maxsplit=1,
+        )[0]
+        assert "-path '*/target/*'" not in default_artifact_block
+
     def test_wait_for_strategy_node_status_can_require_ready_semantic_cache(self, tmp_path):
         status_path = tmp_path / "status.json"
         script_path = Path(
