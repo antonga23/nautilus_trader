@@ -380,6 +380,13 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
     assert "latency_slo_failed" in summary["operatorHealth"]["reasons"]
     assert "candidate:live_fetch_latency_slo_violations" in summary["operatorHealth"]["reasons"]
     assert summary["providerQuotePollStats"]["CLOUDBET"]["cycle_id"] == 12
+    assert summary["providerPollHealth"]["overall"] == "fail"
+    assert summary["providerPollHealth"]["venues"]["CLOUDBET"]["status"] == "fail"
+    assert summary["providerPollHealth"]["venues"]["CLOUDBET"]["reasons"] == [
+        "provider_failures",
+        "rate_limited",
+        "poll_backlog",
+    ]
     assert summary["instrumentRefresh"]["staleQuoteTriggers"] == 1
     assert summary["semanticDiagnostics"]["supportedProviderNodeCount"] == 18
     assert summary["semanticDiagnostics"]["unsupportedProviderNodeCount"] == 2
@@ -517,6 +524,10 @@ def test_runtime_probe_report_aggregates_multiple_artifacts():
         "fail": 1,
         "warn": 1,
     }
+    assert aggregate["providerPollHealthCounts"] == {
+        "fail": 1,
+        "unknown": 1,
+    }
 
 
 def test_runtime_probe_report_cli_outputs_json_and_text(tmp_path, monkeypatch, capsys):
@@ -549,6 +560,7 @@ def test_runtime_probe_report_cli_outputs_json_and_text(tmp_path, monkeypatch, c
     assert "candidates positive=3 threshold=2 cross_venue=2" in text_output
     assert "aggregate: artifacts=1 positive=3 threshold=2 cross_venue=2" in text_output
     assert "health={'fail': 1}" in text_output
+    assert "provider_poll_health={'fail': 1}" in text_output
     assert "top_semantic_blockers" in text_output
     assert "top_semantic_relationships" in text_output
     assert "zero_candidate_blockers fixture_identity_mismatch=2" in text_output
@@ -558,6 +570,7 @@ def test_runtime_probe_report_cli_outputs_json_and_text(tmp_path, monkeypatch, c
     )
     assert "refresh_reconcile_latency p95=120.0ms" in text_output
     assert "provider_poll CLOUDBET:cycle=12" in text_output
+    assert "provider_poll_health overall=fail CLOUDBET:status=fail" in text_output
     assert "ts=request_started->response_received" in text_output
     assert "failures=2 rate_limits=1 backoff=1.0s" in text_output
     assert "instrument_refresh_by_venue CLOUDBET:req=3 add=4 rm=2 stale=1" in text_output
