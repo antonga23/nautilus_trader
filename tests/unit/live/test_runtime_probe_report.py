@@ -30,6 +30,14 @@ def _runtime_status_payload() -> dict[str, object]:
             "executionSafeTemplateCount": 65,
             "sameVenueExecutionEligibleTemplateCount": 237,
             "promotedSafetyTierCounts": {"EXECUTION_SAFE": 65, "TOPOLOGY_SAFE": 900},
+            "promotedMarketFamilyCounts": {
+                "ASIAN_HANDICAP + ASIAN_HANDICAP": 120,
+                "TOTALS + TOTALS": 80,
+            },
+            "executionSafeMarketFamilyCounts": {"TOTALS + TOTALS": 25},
+            "sameVenueEligibleMarketFamilyCounts": {
+                "ASIAN_HANDICAP + ASIAN_HANDICAP": 20,
+            },
             "strictExecutionBlockerCounts": {"void_states_present": 40},
             "providerCorpusCoverage": {
                 "SXBET": {
@@ -326,6 +334,7 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
 
     assert summary["semanticCache"]["promotedTemplateCount"] == 1248
     assert summary["semanticCache"]["promotedSafetyTierCounts"]["EXECUTION_SAFE"] == 65
+    assert summary["semanticCache"]["executionSafeMarketFamilyCounts"]["TOTALS + TOTALS"] == 25
     assert summary["semanticCache"]["strictExecutionBlockerCounts"] == {"void_states_present": 40}
     assert summary["semanticCache"]["providerCorpusCoverage"]["SXBET"]["sport_count"] == 6
     assert summary["executionReadiness"]["validationMode"] is True
@@ -486,6 +495,7 @@ def test_runtime_probe_report_formats_execution_readiness_line():
         in rendered
     )
     assert "CLOUDBET(exec=True,dry_run=True,env=paper,base=PLAY_EUR)" in rendered
+    assert "semantic_cache_execution_safe_families TOTALS + TOTALS=25" in rendered
     assert "corpus_coverage provider=SXBET sports=3/6 selections=842" in rendered
 
 
@@ -683,6 +693,7 @@ def test_runtime_probe_report_cli_outputs_json_and_text(tmp_path, monkeypatch, c
     assert "graph=rust/rust_semantic" in text_output
     assert "operator_health overall=fail" in text_output
     assert "coverage proofs=5367 hyperedges=482" in text_output
+    assert "semantic_cache_execution_safe_families TOTALS + TOTALS=25" in text_output
     assert "coverage_blockers void_settlement=3" in text_output
     assert "candidates positive=3 threshold=2 cross_venue=2" in text_output
     assert "aggregate: artifacts=1 positive=3 threshold=2 cross_venue=2" in text_output

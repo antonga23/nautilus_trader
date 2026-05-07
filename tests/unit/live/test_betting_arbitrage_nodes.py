@@ -1221,6 +1221,8 @@ class TestSemanticCacheBootstrap:
                         has_partial=False,
                         has_unknown=False,
                         support=SimpleNamespace(catalog_promotable=True),
+                        pattern_a=SimpleNamespace(market_family="TOTALS"),
+                        pattern_b=SimpleNamespace(market_family="TOTALS"),
                         caveats=(),
                         eligibility_reasons=("execution_safe_complementary_coverage",),
                     ),
@@ -1235,6 +1237,8 @@ class TestSemanticCacheBootstrap:
                         has_partial=False,
                         has_unknown=False,
                         support=SimpleNamespace(catalog_promotable=True),
+                        pattern_a=SimpleNamespace(market_family="MATCH_ODDS"),
+                        pattern_b=SimpleNamespace(market_family="MATCH_ODDS"),
                         caveats=(),
                         eligibility_reasons=("same_venue_risk_engine_elevation_required",),
                     ),
@@ -1256,6 +1260,14 @@ class TestSemanticCacheBootstrap:
         }
         assert status.strict_execution_blocker_counts == {
             "same_venue_risk_engine_elevation_required": 1,
+        }
+        assert status.promoted_market_family_counts == {
+            "MATCH_ODDS + MATCH_ODDS": 1,
+            "TOTALS + TOTALS": 1,
+        }
+        assert status.execution_safe_market_family_counts == {"TOTALS + TOTALS": 1}
+        assert status.same_venue_eligible_market_family_counts == {
+            "MATCH_ODDS + MATCH_ODDS": 1,
         }
         assert status.coverage_proof_count == 2
         assert status.coverage_hyperedge_count == 1
@@ -1300,6 +1312,14 @@ class TestSemanticCacheBootstrap:
                     "promoted_safety_tier_counts": {
                         "EXECUTION_SAFE": 1,
                         "EXECUTION_SAFE_SAME_VENUE_ELIGIBLE": 1,
+                    },
+                    "promoted_market_family_counts": {
+                        "MATCH_ODDS + MATCH_ODDS": 1,
+                        "TOTALS + TOTALS": 1,
+                    },
+                    "execution_safe_market_family_counts": {"TOTALS + TOTALS": 1},
+                    "same_venue_eligible_market_family_counts": {
+                        "MATCH_ODDS + MATCH_ODDS": 1,
                     },
                     "strict_execution_blocker_counts": {
                         "same_venue_risk_engine_elevation_required": 1,
@@ -1350,6 +1370,14 @@ class TestSemanticCacheBootstrap:
         assert summary_status.same_venue_execution_eligible_template_count == 1
         assert summary_status.strict_execution_blocker_counts == {
             "same_venue_risk_engine_elevation_required": 1,
+        }
+        assert summary_status.promoted_market_family_counts == {
+            "MATCH_ODDS + MATCH_ODDS": 1,
+            "TOTALS + TOTALS": 1,
+        }
+        assert summary_status.execution_safe_market_family_counts == {"TOTALS + TOTALS": 1}
+        assert summary_status.same_venue_eligible_market_family_counts == {
+            "MATCH_ODDS + MATCH_ODDS": 1,
         }
         assert summary_status.summary_reused is True
         assert summary_status.bootstrap_phase_timings_secs == {

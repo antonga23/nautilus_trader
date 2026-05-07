@@ -713,6 +713,15 @@ def _semantic_cache_payload(status: SemanticCacheStatus | None) -> dict[str, obj
             payload["same_venue_execution_eligible_template_count"]
         ),
         "promotedSafetyTierCounts": payload.get("promoted_safety_tier_counts", {}),
+        "promotedMarketFamilyCounts": payload.get("promoted_market_family_counts", {}),
+        "executionSafeMarketFamilyCounts": payload.get(
+            "execution_safe_market_family_counts",
+            {},
+        ),
+        "sameVenueEligibleMarketFamilyCounts": payload.get(
+            "same_venue_eligible_market_family_counts",
+            {},
+        ),
         "strictExecutionBlockerCounts": payload.get("strict_execution_blocker_counts", {}),
         "coverageProofCount": payload["coverage_proof_count"],
         "coverageHyperedgeCount": payload["coverage_hyperedge_count"],

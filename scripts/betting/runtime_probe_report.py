@@ -98,6 +98,13 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
                 "sameVenueExecutionEligibleTemplateCount",
             ),
             "promotedSafetyTierCounts": semantic_cache.get("promotedSafetyTierCounts"),
+            "promotedMarketFamilyCounts": semantic_cache.get("promotedMarketFamilyCounts"),
+            "executionSafeMarketFamilyCounts": semantic_cache.get(
+                "executionSafeMarketFamilyCounts",
+            ),
+            "sameVenueEligibleMarketFamilyCounts": semantic_cache.get(
+                "sameVenueEligibleMarketFamilyCounts",
+            ),
             "strictExecutionBlockerCounts": semantic_cache.get("strictExecutionBlockerCounts"),
             "summaryReused": semantic_cache.get("summaryReused"),
             "bootstrapPhaseTimingsSeconds": semantic_cache.get("bootstrapPhaseTimingsSeconds"),
@@ -825,6 +832,7 @@ def _format_text(path: Path, summary: dict[str, Any]) -> str:
     execution_safety = _format_execution_safety_line(summary.get("executionSafety"))
     if execution_safety:
         lines.append(execution_safety)
+    lines.extend(_format_semantic_cache_family_lines(summary.get("semanticCache")))
     lines.extend(_format_coverage_lines(graph))
     lines.extend(_format_quality_lines(quality))
     lines.extend(_format_latency_lines(summary.get("latencyDiagnostics")))
@@ -916,6 +924,23 @@ def _format_execution_safety_line(value: Any) -> str:
         f"auto_execute={safety.get('autoExecute')} "
         f"reasons=[{', '.join(str(reason) for reason in reasons[:5])}]"
     )
+
+
+def _format_semantic_cache_family_lines(value: Any) -> list[str]:
+    semantic_cache = value if isinstance(value, dict) else {}
+    family_sections = (
+        ("families", semantic_cache.get("promotedMarketFamilyCounts")),
+        ("execution_safe_families", semantic_cache.get("executionSafeMarketFamilyCounts")),
+        ("same_venue_families", semantic_cache.get("sameVenueEligibleMarketFamilyCounts")),
+    )
+    lines: list[str] = []
+    for label, counts in family_sections:
+        top_counts = _top_items(_as_dict(counts), limit=5)
+        if not top_counts:
+            continue
+        rendered = " ".join(f"{item['key']}={item['value']}" for item in top_counts)
+        lines.append(f"  semantic_cache_{label} {rendered}")
+    return lines
 
 
 def _format_coverage_lines(graph: dict[str, Any]) -> list[str]:

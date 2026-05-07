@@ -68,6 +68,9 @@ class SemanticCacheStatus:
     execution_safe_template_count: int
     same_venue_execution_eligible_template_count: int
     promoted_safety_tier_counts: dict[str, int] = field(default_factory=dict)
+    promoted_market_family_counts: dict[str, int] = field(default_factory=dict)
+    execution_safe_market_family_counts: dict[str, int] = field(default_factory=dict)
+    same_venue_eligible_market_family_counts: dict[str, int] = field(default_factory=dict)
     strict_execution_blocker_counts: dict[str, int] = field(default_factory=dict)
     coverage_proof_count: int = 0
     coverage_hyperedge_count: int = 0
@@ -299,6 +302,11 @@ def semantic_cache_status(
         execution_safe_template_count=template_counts.execution_safe,
         same_venue_execution_eligible_template_count=template_counts.same_venue_eligible,
         promoted_safety_tier_counts=strictness["promoted_safety_tier_counts"],
+        promoted_market_family_counts=strictness["promoted_market_family_counts"],
+        execution_safe_market_family_counts=strictness["execution_safe_market_family_counts"],
+        same_venue_eligible_market_family_counts=strictness[
+            "same_venue_eligible_market_family_counts"
+        ],
         strict_execution_blocker_counts=strictness["strict_execution_blocker_counts"],
         coverage_proof_count=len(proof_ids),
         coverage_hyperedge_count=len(hyperedge_ids),
@@ -320,15 +328,27 @@ def _semantic_template_analysis(
     execution_safe = 0
     same_venue_eligible = 0
     tier_counts: dict[str, int] = {}
+    market_family_counts: dict[str, int] = {}
+    execution_safe_family_counts: dict[str, int] = {}
+    same_venue_family_counts: dict[str, int] = {}
     strict_blockers: dict[str, int] = {}
     for template_id in promoted_template_ids:
         template = store.load_promoted_template(template_id)
         if template is None:
             continue
+        family_pair = _semantic_template_family_pair(template)
+        market_family_counts[family_pair] = market_family_counts.get(family_pair, 0) + 1
         if template.safety_tier == SafetyTier.EXECUTION_SAFE.value:
             execution_safe += 1
+            execution_safe_family_counts[family_pair] = (
+                execution_safe_family_counts.get(family_pair, 0) + 1
+            )
         if template.safety_tier == SafetyTier.EXECUTION_SAFE_SAME_VENUE_ELIGIBLE.value:
             same_venue_eligible += 1
+            same_venue_family_counts[family_pair] = same_venue_family_counts.get(
+                family_pair,
+                0,
+            ) + 1
         tier_counts[template.safety_tier] = tier_counts.get(template.safety_tier, 0) + 1
         if not template.execution_safe:
             for blocker in _strict_execution_blockers(template):
@@ -341,9 +361,24 @@ def _semantic_template_analysis(
         ),
         {
             "promoted_safety_tier_counts": dict(sorted(tier_counts.items())),
+            "promoted_market_family_counts": dict(sorted(market_family_counts.items())),
+            "execution_safe_market_family_counts": dict(
+                sorted(execution_safe_family_counts.items()),
+            ),
+            "same_venue_eligible_market_family_counts": dict(
+                sorted(same_venue_family_counts.items()),
+            ),
             "strict_execution_blocker_counts": dict(sorted(strict_blockers.items())),
         },
     )
+
+
+def _semantic_template_family_pair(template: SemanticRuleTemplate) -> str:
+    pattern_a = getattr(template, "pattern_a", None)
+    pattern_b = getattr(template, "pattern_b", None)
+    family_a = str(getattr(pattern_a, "market_family", "") or "UNKNOWN")
+    family_b = str(getattr(pattern_b, "market_family", "") or "UNKNOWN")
+    return " + ".join(sorted((family_a, family_b)))
 
 
 def _semantic_coverage_counts(store: RuleStore) -> _SemanticCoverageCounts:
@@ -552,8 +587,17 @@ def _semantic_summary_counts(
             return None
 
     safety_tier_counts = summary.get("promoted_safety_tier_counts")
+    market_family_counts = summary.get("promoted_market_family_counts")
+    execution_safe_family_counts = summary.get("execution_safe_market_family_counts")
+    same_venue_family_counts = summary.get("same_venue_eligible_market_family_counts")
     strict_blocker_counts = summary.get("strict_execution_blocker_counts")
-    if not isinstance(safety_tier_counts, dict) or not isinstance(strict_blocker_counts, dict):
+    if (
+        not isinstance(safety_tier_counts, dict)
+        or not isinstance(market_family_counts, dict)
+        or not isinstance(execution_safe_family_counts, dict)
+        or not isinstance(same_venue_family_counts, dict)
+        or not isinstance(strict_blocker_counts, dict)
+    ):
         return None
 
     return (
@@ -573,6 +617,15 @@ def _semantic_summary_counts(
         {
             "promoted_safety_tier_counts": {
                 str(key): int(value) for key, value in safety_tier_counts.items()
+            },
+            "promoted_market_family_counts": {
+                str(key): int(value) for key, value in market_family_counts.items()
+            },
+            "execution_safe_market_family_counts": {
+                str(key): int(value) for key, value in execution_safe_family_counts.items()
+            },
+            "same_venue_eligible_market_family_counts": {
+                str(key): int(value) for key, value in same_venue_family_counts.items()
             },
             "strict_execution_blocker_counts": {
                 str(key): int(value) for key, value in strict_blocker_counts.items()
@@ -614,6 +667,13 @@ def _write_semantic_cache_summary(
         "coverage_proof_count": coverage_counts.proofs,
         "coverage_hyperedge_count": coverage_counts.hyperedges,
         "promoted_safety_tier_counts": strictness["promoted_safety_tier_counts"],
+        "promoted_market_family_counts": strictness["promoted_market_family_counts"],
+        "execution_safe_market_family_counts": strictness[
+            "execution_safe_market_family_counts"
+        ],
+        "same_venue_eligible_market_family_counts": strictness[
+            "same_venue_eligible_market_family_counts"
+        ],
         "strict_execution_blocker_counts": strictness["strict_execution_blocker_counts"],
         **signatures,
         "generated_at_unix_secs": time.time(),
