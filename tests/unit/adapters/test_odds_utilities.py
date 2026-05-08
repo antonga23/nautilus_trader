@@ -12,6 +12,7 @@ from nautilus_trader.adapters.betting.common.fees import fee_adjusted_basket_mar
 from nautilus_trader.adapters.betting.common.fees import fee_adjusted_odds
 from nautilus_trader.adapters.betting.common.fees import normalize_venue_fee_rates
 from nautilus_trader.adapters.betting.common.odds import calculate_arbitrage_stakes
+from nautilus_trader.adapters.betting.common.odds import devig_probabilities
 from nautilus_trader.adapters.betting.common.odds import decimal_to_american
 from nautilus_trader.adapters.betting.common.odds import decimal_to_fractional
 from nautilus_trader.adapters.betting.common.odds import decimal_to_probability
@@ -109,6 +110,22 @@ class TestArbitrageCalculations:
         )
         assert is_arb is False
         assert margin == Decimal(0)
+
+    def test_devig_probabilities_strips_three_way_overround(self):
+        """
+        Full-book diagnostics should expose no-vig probabilities separately.
+        """
+        market = devig_probabilities((Decimal("2.60"), Decimal("3.20"), Decimal("2.70")))
+
+        assert market.method == "proportional"
+        assert market.overround > Decimal(1)
+        assert market.vig == market.overround - Decimal(1)
+        assert abs(sum(market.no_vig_probabilities, Decimal(0)) - Decimal(1)) < Decimal("1e-12")
+        assert market.no_vig_probabilities[0] < market.implied_probabilities[0]
+
+    def test_devig_probabilities_rejects_incomplete_book(self):
+        with pytest.raises(ValueError, match="At least two odds"):
+            devig_probabilities((Decimal("2.0"),))
 
     def test_calculate_arbitrage_stakes_equal_odds(self):
         """

@@ -19,6 +19,7 @@ Cross-venue arbitrage strategy for sports betting.
 """
 
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass
 from dataclasses import replace
 from datetime import timedelta
@@ -29,7 +30,9 @@ from typing import Any
 import msgspec
 
 from nautilus_trader.adapters.betting.common.fees import DEFAULT_TAKER_FEE_RATES
+from nautilus_trader.adapters.betting.common.fees import FeeAdjustedCoverageBasket
 from nautilus_trader.adapters.betting.common.fees import fee_adjusted_basket_margin
+from nautilus_trader.adapters.betting.common.fees import fee_adjusted_coverage_basket
 from nautilus_trader.adapters.betting.common.fees import fee_adjusted_odds
 from nautilus_trader.adapters.betting.common.fees import normalize_venue_fee_rates
 from nautilus_trader.adapters.betting.common.odds import calculate_arbitrage_stakes
@@ -3014,6 +3017,63 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             venue_rates=self._config.venue_basket_boost_rates,
         )
 
+    def fee_adjusted_coverage_basket(
+        self,
+        instruments: Sequence[Instrument],
+        odds: Sequence[Decimal | float | str],
+    ) -> FeeAdjustedCoverageBasket:
+        """
+        Apply fee and promotion policy to an N-leg semantic coverage set.
+
+        Pairwise arbitrage still uses ``fee_adjusted_opportunity``. This helper
+        gives coverage proofs and future hyperedge execution diagnostics the
+        same fee/VIG treatment, including maker rebates and temporary basket
+        rewards, without changing any execution-safety tier.
+
+        """
+        if len(instruments) != len(odds):
+            msg = f"instruments and odds lengths must match: {len(instruments)} != {len(odds)}"
+            raise ValueError(msg)
+        if len(instruments) < 2:
+            msg = "At least two instruments are required for a coverage basket"
+            raise ValueError(msg)
+        return fee_adjusted_coverage_basket(
+            odds,
+            taker_fee_rates=tuple(
+                self.venue_taker_fee_rate(instrument) for instrument in instruments
+            ),
+            maker_rebate_rates=tuple(
+                self.venue_maker_rebate_rate(instrument) for instrument in instruments
+            ),
+            winning_profit_fee_rates=tuple(
+                self.venue_winning_profit_fee_rate(instrument) for instrument in instruments
+            ),
+            basket_rebate_rate=self.coverage_basket_rebate_rate(instruments),
+            basket_boost_rate=self.coverage_basket_boost_rate(instruments),
+        )
+
+    def coverage_basket_rebate_rate(self, instruments: Sequence[Instrument]) -> Decimal:
+        """
+        Return the strongest configured cashback/reward rate across a coverage set.
+        """
+        return self._coverage_basket_rate(
+            instruments,
+            keys=("basket_rebate_rate", "promo_rebate_rate", "reward_rebate_rate"),
+            bps_keys=("basket_rebate_rate_bps", "promo_rebate_rate_bps", "reward_rebate_rate_bps"),
+            venue_rates=self._config.venue_basket_rebate_rates,
+        )
+
+    def coverage_basket_boost_rate(self, instruments: Sequence[Instrument]) -> Decimal:
+        """
+        Return the strongest configured return boost rate across a coverage set.
+        """
+        return self._coverage_basket_rate(
+            instruments,
+            keys=("basket_boost_rate", "odds_boost_rate", "reward_boost_rate"),
+            bps_keys=("basket_boost_rate_bps", "odds_boost_rate_bps", "reward_boost_rate_bps"),
+            venue_rates=self._config.venue_basket_boost_rates,
+        )
+
     @classmethod
     def _pair_basket_rate(
         cls,
@@ -3039,6 +3099,27 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             ),
         )
         return max(rates)
+
+    @classmethod
+    def _coverage_basket_rate(
+        cls,
+        instruments: Sequence[Instrument],
+        *,
+        keys: tuple[str, ...],
+        bps_keys: tuple[str, ...],
+        venue_rates: dict[str, Decimal],
+    ) -> Decimal:
+        if not instruments:
+            return Decimal(0)
+        return max(
+            cls._instrument_fee_rate(
+                instrument,
+                keys=keys,
+                bps_keys=bps_keys,
+                venue_rates=venue_rates,
+            )
+            for instrument in instruments
+        )
 
     @staticmethod
     def _instrument_fee_rate(

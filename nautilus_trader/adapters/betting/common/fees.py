@@ -16,9 +16,12 @@
 Fee and vig helpers for betting arbitrage pricing.
 """
 
+from collections.abc import Mapping
+from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal
-from collections.abc import Mapping
+
+from nautilus_trader.adapters.betting.common.odds import devig_probabilities
 
 
 DEFAULT_TAKER_FEE_RATES: dict[str, Decimal] = {
@@ -58,6 +61,26 @@ class FeeAdjustedBasket:
     basket_rebate_rate: Decimal
     basket_boost_rate: Decimal
     incentive_margin_delta: Decimal
+
+
+@dataclass(frozen=True)
+class FeeAdjustedCoverageBasket:
+    """
+    Fee and incentive adjusted economics for an N-leg coverage proof.
+    """
+
+    legs: tuple[FeeAdjustedOdds, ...]
+    basket: FeeAdjustedBasket
+    no_vig_probabilities: tuple[Decimal, ...]
+    overround: Decimal
+    vig: Decimal
+
+    @property
+    def leg_count(self) -> int:
+        """
+        Number of selections in the adjusted coverage set.
+        """
+        return len(self.legs)
 
 
 def normalize_venue_fee_rates(
@@ -181,6 +204,79 @@ def fee_adjusted_basket_margin(
         incentive_margin_delta=effective_profit_margin
         - ((Decimal(1) / effective_leg_total) - Decimal(1)),
     )
+
+
+def fee_adjusted_coverage_basket(
+    odds: Sequence[Decimal | float | str],
+    *,
+    taker_fee_rates: Sequence[Decimal | float | str] | None = None,
+    maker_rebate_rates: Sequence[Decimal | float | str] | None = None,
+    winning_profit_fee_rates: Sequence[Decimal | float | str] | None = None,
+    basket_rebate_rate: Decimal | float | str = Decimal(0),
+    basket_boost_rate: Decimal | float | str = Decimal(0),
+) -> FeeAdjustedCoverageBasket:
+    """
+    Apply per-leg fees and basket incentives to an arbitrary coverage proof.
+
+    This is the N-leg equivalent of ``fee_adjusted_basket_margin``. It is used
+    for full books and future hyperedge execution diagnostics where venue
+    promotions can improve the economics of a complete coverage set without
+    changing the semantic safety proof.
+
+    """
+    if not odds:
+        msg = "At least one odds value is required"
+        raise ValueError(msg)
+
+    taker_rates = _normalized_sequence(taker_fee_rates, len(odds), "taker_fee_rates")
+    maker_rates = _normalized_sequence(maker_rebate_rates, len(odds), "maker_rebate_rates")
+    winning_rates = _normalized_sequence(
+        winning_profit_fee_rates,
+        len(odds),
+        "winning_profit_fee_rates",
+    )
+    legs = tuple(
+        fee_adjusted_odds(
+            leg_odds,
+            taker_fee_rate=taker_rate,
+            maker_rebate_rate=maker_rate,
+            winning_profit_fee_rate=winning_rate,
+        )
+        for leg_odds, taker_rate, maker_rate, winning_rate in zip(
+            odds,
+            taker_rates,
+            maker_rates,
+            winning_rates,
+            strict=True,
+        )
+    )
+    basket = fee_adjusted_basket_margin(
+        tuple(leg.effective_probability for leg in legs),
+        raw_probabilities=tuple(leg.raw_probability for leg in legs),
+        basket_rebate_rate=basket_rebate_rate,
+        basket_boost_rate=basket_boost_rate,
+    )
+    devigged = devig_probabilities(tuple(leg.raw_odds for leg in legs))
+    return FeeAdjustedCoverageBasket(
+        legs=legs,
+        basket=basket,
+        no_vig_probabilities=devigged.no_vig_probabilities,
+        overround=devigged.overround,
+        vig=devigged.vig,
+    )
+
+
+def _normalized_sequence(
+    values: Sequence[Decimal | float | str] | None,
+    expected_length: int,
+    name: str,
+) -> tuple[Decimal | float | str, ...]:
+    if values is None:
+        return tuple(Decimal(0) for _ in range(expected_length))
+    if len(values) != expected_length:
+        msg = f"{name} length must match odds length: {len(values)} != {expected_length}"
+        raise ValueError(msg)
+    return tuple(values)
 
 
 def _normalized_rate(value: Decimal | float | str) -> Decimal:

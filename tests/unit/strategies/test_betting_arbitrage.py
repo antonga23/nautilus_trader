@@ -487,6 +487,54 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(adjusted.profit_margin > adjusted.raw_profit_margin)
         ensure(adjusted.fee_drag < 0)
 
+    def test_fee_adjusted_coverage_basket_applies_three_leg_incentives(self):  # skipcq
+        """
+        Hyperedge/full-book diagnostics should use the same fee and rebate model.
+        """
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["CLOUDBET", "SXBET"]),
+                venue_basket_rebate_rates={"SXBET": "0.015"},
+                venue_basket_boost_rates={"SXBET": "0.01"},
+                venue_winning_profit_fee_rates={"CLOUDBET": "0.005"},
+            ),
+        )
+        home = self._sxbet_instrument(event_id="event-1", venue="SXBET", outcome="home")
+        draw = self._sxbet_instrument(
+            event_id="event-1",
+            venue="SXBET",
+            outcome="draw",
+            info={"basket_rebate_rate_bps": "200"},
+        )
+        away = self._sxbet_instrument(event_id="event-1", venue="CLOUDBET", outcome="away")
+
+        adjusted = strategy.fee_adjusted_coverage_basket(
+            (home, draw, away),
+            (Decimal("3.05"), Decimal("3.10"), Decimal("3.15")),
+        )
+
+        ensure(adjusted.leg_count == 3)
+        ensure(adjusted.basket.basket_rebate_rate == Decimal("0.02"))
+        ensure(adjusted.basket.basket_boost_rate == Decimal("0.01"))
+        ensure(adjusted.legs[2].winning_profit_fee_rate == Decimal("0.005"))
+        ensure(
+            adjusted.overround
+            == sum((Decimal(1) / leg.raw_odds for leg in adjusted.legs), Decimal(0)),
+        )
+        ensure(adjusted.vig == adjusted.overround - Decimal(1))
+        ensure(abs(sum(adjusted.no_vig_probabilities, Decimal(0)) - Decimal(1)) < Decimal("1e-12"))
+        ensure(adjusted.basket.effective_profit_margin > adjusted.basket.raw_profit_margin)
+
+    def test_fee_adjusted_coverage_basket_rejects_shape_mismatch(self):  # skipcq
+        """
+        Coverage fee diagnostics must not silently drop legs from a hyperedge.
+        """
+        strategy = BettingArbitrageStrategy(config=BettingArbitrageConfig())
+        instrument = self._sxbet_instrument(event_id="event-1", venue="SXBET", outcome="home")
+
+        with pytest.raises(ValueError, match="lengths must match"):
+            strategy.fee_adjusted_coverage_basket((instrument,), (Decimal("2.0"), Decimal("2.1")))
+
     def test_fee_adjusted_margin_blocks_raw_only_opportunity_candidate(self):  # skipcq
         """
         Raw overround edge is not enough when configured fees erase the margin.
