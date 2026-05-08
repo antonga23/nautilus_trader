@@ -350,213 +350,263 @@ def _merged_latency_warnings(
     return sorted(dict.fromkeys(warnings))
 
 
-def aggregate_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
-    warning_counts: dict[str, int] = {}
-    graph_warning_counts: dict[str, int] = {}
-    latency_warning_counts: dict[str, int] = {}
-    latency_slo_counts: dict[str, int] = {}
-    engine_counts: dict[str, int] = {}
-    topology_counts: dict[str, int] = {}
-    health_counts: dict[str, int] = {}
-    provider_poll_health_counts: dict[str, int] = {}
-    corpus_health_counts: dict[str, int] = {}
-    venue_coverage_health_counts: dict[str, int] = {}
-    execution_safety_counts: dict[str, int] = {}
-    quote_subscription_counts: dict[str, int] = {}
-    quoted_node_counts: dict[str, int] = {}
-    semantic_matched_node_counts: dict[str, int] = {}
-    quoted_semantic_matched_node_counts: dict[str, int] = {}
-    candidate_counts_by_venue_pair: dict[str, int] = {}
-    edge_counts_by_venue_pair: dict[str, int] = {}
-    quoted_edge_counts_by_venue_pair: dict[str, int] = {}
-    rejection_bucket_counts: dict[str, int] = {}
-    semantic_blocker_counts: dict[str, int] = {}
-    zero_candidate_blocker_counts: dict[str, int] = {}
-    fee_impact_bucket_counts: dict[str, int] = {}
-    devig_method_counts: dict[str, int] = {}
-    devig_value_bucket_counts: dict[str, int] = {}
-    coverage_book_devig_method_counts: dict[str, int] = {}
-    coverage_book_devig_value_bucket_counts: dict[str, int] = {}
-    coverage_book_devig_sampled = 0
-    coverage_book_devig_quoted = 0
-    coverage_book_devig_incomplete = 0
-    recommended_action_counts: dict[str, int] = {}
-    provider_corpus_coverage: dict[str, dict[str, Any]] = {}
-    for summary in summaries:
+class _SummaryAggregate:
+    def __init__(self) -> None:
+        self.warning_counts: dict[str, int] = {}
+        self.graph_warning_counts: dict[str, int] = {}
+        self.latency_warning_counts: dict[str, int] = {}
+        self.latency_slo_counts: dict[str, int] = {}
+        self.engine_counts: dict[str, int] = {}
+        self.topology_counts: dict[str, int] = {}
+        self.health_counts: dict[str, int] = {}
+        self.provider_poll_health_counts: dict[str, int] = {}
+        self.corpus_health_counts: dict[str, int] = {}
+        self.venue_coverage_health_counts: dict[str, int] = {}
+        self.execution_safety_counts: dict[str, int] = {}
+        self.quote_subscription_counts: dict[str, int] = {}
+        self.quoted_node_counts: dict[str, int] = {}
+        self.semantic_matched_node_counts: dict[str, int] = {}
+        self.quoted_semantic_matched_node_counts: dict[str, int] = {}
+        self.candidate_counts_by_venue_pair: dict[str, int] = {}
+        self.edge_counts_by_venue_pair: dict[str, int] = {}
+        self.quoted_edge_counts_by_venue_pair: dict[str, int] = {}
+        self.rejection_bucket_counts: dict[str, int] = {}
+        self.semantic_blocker_counts: dict[str, int] = {}
+        self.zero_candidate_blocker_counts: dict[str, int] = {}
+        self.fee_impact_bucket_counts: dict[str, int] = {}
+        self.devig_method_counts: dict[str, int] = {}
+        self.devig_value_bucket_counts: dict[str, int] = {}
+        self.coverage_book_devig_method_counts: dict[str, int] = {}
+        self.coverage_book_devig_value_bucket_counts: dict[str, int] = {}
+        self.recommended_action_counts: dict[str, int] = {}
+        self.provider_corpus_coverage: dict[str, dict[str, Any]] = {}
+        self.coverage_book_devig_sampled = 0
+        self.coverage_book_devig_quoted = 0
+        self.coverage_book_devig_incomplete = 0
+
+    def add(self, summary: dict[str, Any]) -> None:
         graph = _as_dict(summary.get("graph"))
-        engine = str(graph.get("engine") or "unknown")
-        topology = str(graph.get("topologySource") or "unknown")
-        engine_counts[engine] = engine_counts.get(engine, 0) + 1
-        topology_counts[topology] = topology_counts.get(topology, 0) + 1
         quality = _as_dict(summary.get("candidateQuality"))
-        for warning in quality.get("diagnosticWarnings") or []:
-            warning_counts[str(warning)] = warning_counts.get(str(warning), 0) + 1
-        for warning in _as_dict(summary.get("graph")).get("diagnosticWarnings") or []:
-            graph_warning_counts[str(warning)] = graph_warning_counts.get(str(warning), 0) + 1
-        for warning in _as_dict(summary.get("latencyDiagnostics")).get("diagnosticWarnings") or []:
-            latency_warning_counts[str(warning)] = latency_warning_counts.get(str(warning), 0) + 1
-        slo_status = _as_dict(_as_dict(summary.get("latencyDiagnostics")).get("sloStatus"))
-        slo_key = str(slo_status.get("overall") or "unknown")
-        latency_slo_counts[slo_key] = latency_slo_counts.get(slo_key, 0) + 1
-        health = str(_as_dict(summary.get("operatorHealth")).get("overall") or "unknown")
-        health_counts[health] = health_counts.get(health, 0) + 1
-        provider_health = str(
+        coverage = _as_dict(summary.get("venueCoverage"))
+        self._add_graph_counts(graph)
+        self._add_warning_counts(summary, quality)
+        self._add_health_counts(summary)
+        self._add_venue_coverage(coverage)
+        self._add_candidate_quality(quality)
+        self._add_provider_corpus(summary)
+        self._add_recommended_actions(summary)
+
+    def _add_graph_counts(self, graph: dict[str, Any]) -> None:
+        _increment_count(self.engine_counts, graph.get("engine") or "unknown")
+        _increment_count(self.topology_counts, graph.get("topologySource") or "unknown")
+
+    def _add_warning_counts(self, summary: dict[str, Any], quality: dict[str, Any]) -> None:
+        _increment_all(self.warning_counts, quality.get("diagnosticWarnings"))
+        _increment_all(
+            self.graph_warning_counts,
+            _as_dict(summary.get("graph")).get("diagnosticWarnings"),
+        )
+        latency = _as_dict(summary.get("latencyDiagnostics"))
+        _increment_all(self.latency_warning_counts, latency.get("diagnosticWarnings"))
+        slo_status = _as_dict(latency.get("sloStatus"))
+        _increment_count(self.latency_slo_counts, slo_status.get("overall") or "unknown")
+
+    def _add_health_counts(self, summary: dict[str, Any]) -> None:
+        _increment_count(
+            self.health_counts,
+            _as_dict(summary.get("operatorHealth")).get("overall") or "unknown",
+        )
+        _increment_count(
+            self.provider_poll_health_counts,
             _as_dict(summary.get("providerPollHealth")).get("overall") or "unknown",
         )
-        provider_poll_health_counts[provider_health] = (
-            provider_poll_health_counts.get(provider_health, 0) + 1
-        )
-        corpus_health = str(
+        _increment_count(
+            self.corpus_health_counts,
             _as_dict(summary.get("semanticCacheCorpusHealth")).get("overall") or "unknown",
         )
-        corpus_health_counts[corpus_health] = corpus_health_counts.get(corpus_health, 0) + 1
-        venue_health = str(_as_dict(summary.get("venueCoverageHealth")).get("overall") or "unknown")
-        venue_coverage_health_counts[venue_health] = (
-            venue_coverage_health_counts.get(venue_health, 0) + 1
+        _increment_count(
+            self.venue_coverage_health_counts,
+            _as_dict(summary.get("venueCoverageHealth")).get("overall") or "unknown",
         )
-        execution_safety = str(_as_dict(summary.get("executionSafety")).get("overall") or "unknown")
-        execution_safety_counts[execution_safety] = (
-            execution_safety_counts.get(execution_safety, 0) + 1
+        _increment_count(
+            self.execution_safety_counts,
+            _as_dict(summary.get("executionSafety")).get("overall") or "unknown",
         )
-        coverage = _as_dict(summary.get("venueCoverage"))
-        _merge_provider_corpus_coverage(
-            provider_corpus_coverage,
-            _as_dict(_as_dict(summary.get("semanticCache")).get("providerCorpusCoverage")),
-        )
-        _merge_int_mapping(quote_subscription_counts, coverage.get("quoteSubscriptionCounts"))
-        _merge_int_mapping(quoted_node_counts, coverage.get("quotedNodeCounts"))
+
+    def _add_venue_coverage(self, coverage: dict[str, Any]) -> None:
+        _merge_int_mapping(self.quote_subscription_counts, coverage.get("quoteSubscriptionCounts"))
+        _merge_int_mapping(self.quoted_node_counts, coverage.get("quotedNodeCounts"))
         _merge_int_mapping(
-            semantic_matched_node_counts,
+            self.semantic_matched_node_counts,
             coverage.get("semanticMatchedNodeCounts"),
         )
         _merge_int_mapping(
-            quoted_semantic_matched_node_counts,
+            self.quoted_semantic_matched_node_counts,
             coverage.get("quotedSemanticMatchedNodeCounts"),
         )
-        _merge_int_mapping(candidate_counts_by_venue_pair, coverage.get("candidateCounts"))
-        _merge_int_mapping(edge_counts_by_venue_pair, coverage.get("edgeCounts"))
-        _merge_int_mapping(quoted_edge_counts_by_venue_pair, coverage.get("quotedEdgeCounts"))
-        _merge_nested_count_mapping(rejection_bucket_counts, quality.get("rejectionBuckets"))
-        _merge_nested_count_mapping(semantic_blocker_counts, quality.get("semanticBlockedReasons"))
+        _merge_int_mapping(self.candidate_counts_by_venue_pair, coverage.get("candidateCounts"))
+        _merge_int_mapping(self.edge_counts_by_venue_pair, coverage.get("edgeCounts"))
+        _merge_int_mapping(
+            self.quoted_edge_counts_by_venue_pair,
+            coverage.get("quotedEdgeCounts"),
+        )
+
+    def _add_candidate_quality(self, quality: dict[str, Any]) -> None:
+        _merge_nested_count_mapping(self.rejection_bucket_counts, quality.get("rejectionBuckets"))
         _merge_nested_count_mapping(
-            zero_candidate_blocker_counts,
+            self.semantic_blocker_counts,
+            quality.get("semanticBlockedReasons"),
+        )
+        _merge_nested_count_mapping(
+            self.zero_candidate_blocker_counts,
             quality.get("zeroCandidateBlockerCounts"),
         )
         _merge_nested_count_mapping(
-            fee_impact_bucket_counts,
+            self.fee_impact_bucket_counts,
             _as_dict(quality.get("feeAdjustment")).get("impactBuckets"),
         )
         _merge_nested_count_mapping(
-            devig_method_counts,
+            self.devig_method_counts,
             _as_dict(quality.get("devigDiagnostics")).get("methodCounts"),
         )
         _merge_nested_count_mapping(
-            devig_value_bucket_counts,
+            self.devig_value_bucket_counts,
             _as_dict(quality.get("devigDiagnostics")).get("valueBuckets"),
         )
-        coverage_book_devig = _as_dict(quality.get("coverageBookDevigDiagnostics"))
-        coverage_book_devig_sampled += _int_value(coverage_book_devig.get("sampledHyperedges"))
-        coverage_book_devig_quoted += _int_value(coverage_book_devig.get("quotedHyperedges"))
-        coverage_book_devig_incomplete += _int_value(
-            coverage_book_devig.get("incompleteHyperedges"),
-        )
-        _merge_nested_count_mapping(
-            coverage_book_devig_method_counts,
-            coverage_book_devig.get("methodCounts"),
-        )
-        _merge_nested_count_mapping(
-            coverage_book_devig_value_bucket_counts,
-            coverage_book_devig.get("valueBuckets"),
-        )
-        for action in summary.get("recommendedActions") or []:
-            key = str(action)
-            recommended_action_counts[key] = recommended_action_counts.get(key, 0) + 1
+        self._add_coverage_book_devig(_as_dict(quality.get("coverageBookDevigDiagnostics")))
 
-    return {
-        "artifactCount": len(summaries),
-        "statusCounts": _count_values(summary.get("status") for summary in summaries),
-        "graphEngineCounts": dict(sorted(engine_counts.items())),
-        "topologySourceCounts": dict(sorted(topology_counts.items())),
-        "semanticMatchInstruments": sum(
-            _int_value(_as_dict(summary.get("graph")).get("semanticMatchInstruments"))
-            for summary in summaries
-        ),
-        "quotedSemanticMatchInstruments": sum(
-            _int_value(_as_dict(summary.get("graph")).get("quotedSemanticMatchInstruments"))
-            for summary in summaries
-        ),
-        "graphEdges": sum(
-            _int_value(_as_dict(summary.get("graph")).get("edges")) for summary in summaries
-        ),
-        "quotedEdges": sum(
-            _int_value(_as_dict(summary.get("graph")).get("quotedEdges")) for summary in summaries
-        ),
-        "semanticTemplateCount": sum(
-            _int_value(_as_dict(summary.get("graph")).get("semanticTemplateCount"))
-            for summary in summaries
-        ),
-        "coverageProofCount": sum(
-            _int_value(_as_dict(summary.get("graph")).get("coverageProofCount"))
-            for summary in summaries
-        ),
-        "coverageHyperedgeCount": sum(
-            _int_value(_as_dict(summary.get("graph")).get("coverageHyperedgeCount"))
-            for summary in summaries
-        ),
-        "executionSafeEdges": sum(
-            _int_value(_as_dict(summary.get("graph")).get("executionSafeEdges"))
-            for summary in summaries
-        ),
-        "sameVenueExecutionEligibleEdges": sum(
-            _int_value(_as_dict(summary.get("graph")).get("sameVenueExecutionEligibleEdges"))
-            for summary in summaries
-        ),
-        "positiveCandidates": sum(
-            _int_value(_as_dict(summary.get("candidates")).get("positiveTotal"))
-            for summary in summaries
-        ),
-        "thresholdCandidates": sum(
-            _int_value(_as_dict(summary.get("candidates")).get("thresholdTotal"))
-            for summary in summaries
-        ),
-        "crossVenueCandidates": sum(
-            _int_value(_as_dict(summary.get("candidates")).get("crossVenueCandidateCount"))
-            for summary in summaries
-        ),
-        "diagnosticWarningCounts": dict(sorted(warning_counts.items())),
-        "graphDiagnosticWarningCounts": dict(sorted(graph_warning_counts.items())),
-        "latencyDiagnosticWarningCounts": dict(sorted(latency_warning_counts.items())),
-        "latencySloStatusCounts": dict(sorted(latency_slo_counts.items())),
-        "operatorHealthCounts": dict(sorted(health_counts.items())),
-        "providerPollHealthCounts": dict(sorted(provider_poll_health_counts.items())),
-        "semanticCacheCorpusHealthCounts": dict(sorted(corpus_health_counts.items())),
-        "venueCoverageHealthCounts": dict(sorted(venue_coverage_health_counts.items())),
-        "executionSafetyCounts": dict(sorted(execution_safety_counts.items())),
-        "quoteSubscriptionCountsByVenue": dict(sorted(quote_subscription_counts.items())),
-        "quotedNodeCountsByVenue": dict(sorted(quoted_node_counts.items())),
-        "semanticMatchedNodeCountsByVenue": dict(sorted(semantic_matched_node_counts.items())),
-        "quotedSemanticMatchedNodeCountsByVenue": dict(
-            sorted(quoted_semantic_matched_node_counts.items()),
-        ),
-        "candidateCountsByVenuePair": dict(sorted(candidate_counts_by_venue_pair.items())),
-        "edgeCountsByVenuePair": dict(sorted(edge_counts_by_venue_pair.items())),
-        "quotedEdgeCountsByVenuePair": dict(sorted(quoted_edge_counts_by_venue_pair.items())),
-        "rejectionBucketCounts": dict(sorted(rejection_bucket_counts.items())),
-        "semanticBlockerCounts": dict(sorted(semantic_blocker_counts.items())),
-        "zeroCandidateBlockerCounts": dict(sorted(zero_candidate_blocker_counts.items())),
-        "feeImpactBucketCounts": dict(sorted(fee_impact_bucket_counts.items())),
-        "devigMethodCounts": dict(sorted(devig_method_counts.items())),
-        "devigValueBucketCounts": dict(sorted(devig_value_bucket_counts.items())),
-        "coverageBookDevigSampledHyperedges": coverage_book_devig_sampled,
-        "coverageBookDevigQuotedHyperedges": coverage_book_devig_quoted,
-        "coverageBookDevigIncompleteHyperedges": coverage_book_devig_incomplete,
-        "coverageBookDevigMethodCounts": dict(sorted(coverage_book_devig_method_counts.items())),
-        "coverageBookDevigValueBucketCounts": dict(
-            sorted(coverage_book_devig_value_bucket_counts.items()),
-        ),
-        "providerCorpusCoverage": provider_corpus_coverage,
-        "recommendedActionCounts": dict(sorted(recommended_action_counts.items())),
-    }
+    def _add_coverage_book_devig(self, diagnostics: dict[str, Any]) -> None:
+        self.coverage_book_devig_sampled += _int_value(diagnostics.get("sampledHyperedges"))
+        self.coverage_book_devig_quoted += _int_value(diagnostics.get("quotedHyperedges"))
+        self.coverage_book_devig_incomplete += _int_value(diagnostics.get("incompleteHyperedges"))
+        _merge_nested_count_mapping(
+            self.coverage_book_devig_method_counts,
+            diagnostics.get("methodCounts"),
+        )
+        _merge_nested_count_mapping(
+            self.coverage_book_devig_value_bucket_counts,
+            diagnostics.get("valueBuckets"),
+        )
+
+    def _add_provider_corpus(self, summary: dict[str, Any]) -> None:
+        _merge_provider_corpus_coverage(
+            self.provider_corpus_coverage,
+            _as_dict(_as_dict(summary.get("semanticCache")).get("providerCorpusCoverage")),
+        )
+
+    def _add_recommended_actions(self, summary: dict[str, Any]) -> None:
+        _increment_all(self.recommended_action_counts, summary.get("recommendedActions"))
+
+    def as_dict(self, summaries: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "artifactCount": len(summaries),
+            "statusCounts": _count_values(summary.get("status") for summary in summaries),
+            "graphEngineCounts": dict(sorted(self.engine_counts.items())),
+            "topologySourceCounts": dict(sorted(self.topology_counts.items())),
+            "semanticMatchInstruments": sum(
+                _int_value(_as_dict(summary.get("graph")).get("semanticMatchInstruments"))
+                for summary in summaries
+            ),
+            "quotedSemanticMatchInstruments": sum(
+                _int_value(_as_dict(summary.get("graph")).get("quotedSemanticMatchInstruments"))
+                for summary in summaries
+            ),
+            "graphEdges": sum(
+                _int_value(_as_dict(summary.get("graph")).get("edges")) for summary in summaries
+            ),
+            "quotedEdges": sum(
+                _int_value(_as_dict(summary.get("graph")).get("quotedEdges"))
+                for summary in summaries
+            ),
+            "semanticTemplateCount": sum(
+                _int_value(_as_dict(summary.get("graph")).get("semanticTemplateCount"))
+                for summary in summaries
+            ),
+            "coverageProofCount": sum(
+                _int_value(_as_dict(summary.get("graph")).get("coverageProofCount"))
+                for summary in summaries
+            ),
+            "coverageHyperedgeCount": sum(
+                _int_value(_as_dict(summary.get("graph")).get("coverageHyperedgeCount"))
+                for summary in summaries
+            ),
+            "executionSafeEdges": sum(
+                _int_value(_as_dict(summary.get("graph")).get("executionSafeEdges"))
+                for summary in summaries
+            ),
+            "sameVenueExecutionEligibleEdges": sum(
+                _int_value(_as_dict(summary.get("graph")).get("sameVenueExecutionEligibleEdges"))
+                for summary in summaries
+            ),
+            "positiveCandidates": sum(
+                _int_value(_as_dict(summary.get("candidates")).get("positiveTotal"))
+                for summary in summaries
+            ),
+            "thresholdCandidates": sum(
+                _int_value(_as_dict(summary.get("candidates")).get("thresholdTotal"))
+                for summary in summaries
+            ),
+            "crossVenueCandidates": sum(
+                _int_value(_as_dict(summary.get("candidates")).get("crossVenueCandidateCount"))
+                for summary in summaries
+            ),
+            "diagnosticWarningCounts": dict(sorted(self.warning_counts.items())),
+            "graphDiagnosticWarningCounts": dict(sorted(self.graph_warning_counts.items())),
+            "latencyDiagnosticWarningCounts": dict(sorted(self.latency_warning_counts.items())),
+            "latencySloStatusCounts": dict(sorted(self.latency_slo_counts.items())),
+            "operatorHealthCounts": dict(sorted(self.health_counts.items())),
+            "providerPollHealthCounts": dict(sorted(self.provider_poll_health_counts.items())),
+            "semanticCacheCorpusHealthCounts": dict(sorted(self.corpus_health_counts.items())),
+            "venueCoverageHealthCounts": dict(sorted(self.venue_coverage_health_counts.items())),
+            "executionSafetyCounts": dict(sorted(self.execution_safety_counts.items())),
+            "quoteSubscriptionCountsByVenue": dict(sorted(self.quote_subscription_counts.items())),
+            "quotedNodeCountsByVenue": dict(sorted(self.quoted_node_counts.items())),
+            "semanticMatchedNodeCountsByVenue": dict(
+                sorted(self.semantic_matched_node_counts.items()),
+            ),
+            "quotedSemanticMatchedNodeCountsByVenue": dict(
+                sorted(self.quoted_semantic_matched_node_counts.items()),
+            ),
+            "candidateCountsByVenuePair": dict(sorted(self.candidate_counts_by_venue_pair.items())),
+            "edgeCountsByVenuePair": dict(sorted(self.edge_counts_by_venue_pair.items())),
+            "quotedEdgeCountsByVenuePair": dict(
+                sorted(self.quoted_edge_counts_by_venue_pair.items()),
+            ),
+            "rejectionBucketCounts": dict(sorted(self.rejection_bucket_counts.items())),
+            "semanticBlockerCounts": dict(sorted(self.semantic_blocker_counts.items())),
+            "zeroCandidateBlockerCounts": dict(sorted(self.zero_candidate_blocker_counts.items())),
+            "feeImpactBucketCounts": dict(sorted(self.fee_impact_bucket_counts.items())),
+            "devigMethodCounts": dict(sorted(self.devig_method_counts.items())),
+            "devigValueBucketCounts": dict(sorted(self.devig_value_bucket_counts.items())),
+            "coverageBookDevigSampledHyperedges": self.coverage_book_devig_sampled,
+            "coverageBookDevigQuotedHyperedges": self.coverage_book_devig_quoted,
+            "coverageBookDevigIncompleteHyperedges": self.coverage_book_devig_incomplete,
+            "coverageBookDevigMethodCounts": dict(
+                sorted(self.coverage_book_devig_method_counts.items()),
+            ),
+            "coverageBookDevigValueBucketCounts": dict(
+                sorted(self.coverage_book_devig_value_bucket_counts.items()),
+            ),
+            "providerCorpusCoverage": self.provider_corpus_coverage,
+            "recommendedActionCounts": dict(sorted(self.recommended_action_counts.items())),
+        }
+
+
+def aggregate_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
+    aggregate = _SummaryAggregate()
+    for summary in summaries:
+        aggregate.add(summary)
+    return aggregate.as_dict(summaries)
+
+
+def _increment_count(target: dict[str, int], value: Any) -> None:
+    key = str(value or "unknown")
+    target[key] = target.get(key, 0) + 1
+
+
+def _increment_all(target: dict[str, int], values: Any) -> None:
+    for value in values or []:
+        _increment_count(target, value)
 
 
 def _merge_int_mapping(target: dict[str, int], value: Any) -> None:
