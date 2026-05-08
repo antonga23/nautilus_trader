@@ -80,13 +80,28 @@ class ProbeProfitabilityCounters:
     fee_adjusted_edges: int = 0
     fee_drag_samples: list[float] = field(default_factory=list)
     fee_impact_buckets: Counter[str] = field(default_factory=Counter)
+    devig_evaluated_edges: int = 0
+    devig_complete_books: int = 0
+    devig_incomplete_books: int = 0
+    devig_method_counts: Counter[str] = field(default_factory=Counter)
+    devig_method_reason_counts: Counter[str] = field(default_factory=Counter)
+    devig_convergence_counts: Counter[str] = field(default_factory=Counter)
+    devig_value_buckets: Counter[str] = field(default_factory=Counter)
+    overround_samples: list[float] = field(default_factory=list)
+    vig_samples: list[float] = field(default_factory=list)
+    gross_value_edge_samples: list[float] = field(default_factory=list)
+    fee_adjusted_value_edge_samples: list[float] = field(default_factory=list)
     candidate_decision_latency_ns: list[int] = field(default_factory=list)
     samples: list[tuple[Decimal, dict[str, object]]] = field(default_factory=list)
     negative_samples: list[tuple[Decimal, dict[str, object]]] = field(default_factory=list)
+    value_samples: list[tuple[Decimal, dict[str, object]]] = field(default_factory=list)
+    vig_erased_samples: list[tuple[Decimal, dict[str, object]]] = field(default_factory=list)
 
     def to_payload(self) -> dict[str, object]:
         self.samples.sort(key=lambda item: item[0], reverse=True)
         self.negative_samples.sort(key=lambda item: item[0], reverse=True)
+        self.value_samples.sort(key=lambda item: item[0], reverse=True)
+        self.vig_erased_samples.sort(key=lambda item: item[0], reverse=True)
         return {
             "quoted_edges": self.quoted_edges,
             "positive_execution": self.positive_execution,
@@ -162,6 +177,21 @@ class ProbeProfitabilityCounters:
                 "fee_drag_margin": _percentile_payload(self.fee_drag_samples),
                 "impact_buckets": dict(self.fee_impact_buckets),
             },
+            "devig_diagnostics": {
+                "evaluated_edges": self.devig_evaluated_edges,
+                "complete_books": self.devig_complete_books,
+                "incomplete_books": self.devig_incomplete_books,
+                "method_counts": dict(self.devig_method_counts),
+                "method_reason_counts": dict(self.devig_method_reason_counts),
+                "convergence_counts": dict(self.devig_convergence_counts),
+                "value_buckets": dict(self.devig_value_buckets),
+                "overround": _percentile_payload(self.overround_samples),
+                "vig": _percentile_payload(self.vig_samples),
+                "gross_value_edge": _percentile_payload(self.gross_value_edge_samples),
+                "fee_adjusted_value_edge": _percentile_payload(
+                    self.fee_adjusted_value_edge_samples,
+                ),
+            },
             "candidate_decision_latency": _latency_ns_payload(
                 self.candidate_decision_latency_ns,
             ),
@@ -179,6 +209,8 @@ class ProbeProfitabilityCounters:
             },
             "sample_candidates": [payload for _, payload in self.samples[:10]],
             "negative_near_misses": [payload for _, payload in self.negative_samples[:10]],
+            "value_edge_candidates": [payload for _, payload in self.value_samples[:10]],
+            "vig_erased_candidates": [payload for _, payload in self.vig_erased_samples[:10]],
         }
 
 
@@ -990,6 +1022,12 @@ def _collect_runtime_probe_payload(
             "venueWinningProfitFeeRates": stats.get("venue_winning_profit_fee_rates", {}),
             "venueBasketRebateRates": stats.get("venue_basket_rebate_rates", {}),
             "venueBasketBoostRates": stats.get("venue_basket_boost_rates", {}),
+            "devigEnabled": stats.get("devig_enabled", False),
+            "devigMethod": stats.get("devig_method", "auto"),
+            "devigReferenceVenues": stats.get("devig_reference_venues", []),
+            "valueDiagnosticsEnabled": stats.get("value_diagnostics_enabled", False),
+            "valueExecutionEnabled": stats.get("value_execution_enabled", False),
+            "minValueEdge": stats.get("min_value_edge", "0"),
         },
         "semanticMatchInstruments": len(snapshot["matched_node_ids"]),
         "quotedSemanticMatchInstruments": sum(
@@ -1075,12 +1113,29 @@ def _collect_runtime_probe_payload(
                 "feeDragMargin": profitability["fee_adjustment"]["fee_drag_margin"],
                 "impactBuckets": profitability["fee_adjustment"].get("impact_buckets", {}),
             },
+            "devigDiagnostics": {
+                "evaluatedEdges": profitability["devig_diagnostics"]["evaluated_edges"],
+                "completeBooks": profitability["devig_diagnostics"]["complete_books"],
+                "incompleteBooks": profitability["devig_diagnostics"]["incomplete_books"],
+                "methodCounts": profitability["devig_diagnostics"]["method_counts"],
+                "methodReasonCounts": profitability["devig_diagnostics"]["method_reason_counts"],
+                "convergenceCounts": profitability["devig_diagnostics"]["convergence_counts"],
+                "valueBuckets": profitability["devig_diagnostics"]["value_buckets"],
+                "overround": profitability["devig_diagnostics"]["overround"],
+                "vig": profitability["devig_diagnostics"]["vig"],
+                "grossValueEdge": profitability["devig_diagnostics"]["gross_value_edge"],
+                "feeAdjustedValueEdge": profitability["devig_diagnostics"][
+                    "fee_adjusted_value_edge"
+                ],
+            },
             "venuePairs": profitability["venue_pairs"],
             "marketFamilies": profitability["market_families"],
             "zeroCandidateVenuePairSamples": venue_coverage["zeroCandidateVenuePairs"],
             "zeroCandidateBlockerCounts": venue_coverage["zeroCandidateBlockerCounts"],
             "topPositiveCandidates": profitability["sample_candidates"],
             "topNegativeNearMisses": profitability["negative_near_misses"],
+            "topValueEdgeCandidates": profitability["value_edge_candidates"],
+            "topVigErasedCandidates": profitability["vig_erased_candidates"],
         },
         "instrumentRefresh": _instrument_refresh_payload(stats),
         "strategyStats": stats,
@@ -1287,6 +1342,26 @@ def _empty_candidate_quality_payload() -> dict[str, object]:
         "feeAdjustment": {
             "evaluatedEdges": 0,
             "feeDragMargin": {"count": 0, "p50": 0.0, "p95": 0.0, "p99": 0.0, "max": 0.0},
+            "impactBuckets": {},
+        },
+        "devigDiagnostics": {
+            "evaluatedEdges": 0,
+            "completeBooks": 0,
+            "incompleteBooks": 0,
+            "methodCounts": {},
+            "methodReasonCounts": {},
+            "convergenceCounts": {},
+            "valueBuckets": {},
+            "overround": {"count": 0, "p50": 0.0, "p95": 0.0, "p99": 0.0, "max": 0.0},
+            "vig": {"count": 0, "p50": 0.0, "p95": 0.0, "p99": 0.0, "max": 0.0},
+            "grossValueEdge": {"count": 0, "p50": 0.0, "p95": 0.0, "p99": 0.0, "max": 0.0},
+            "feeAdjustedValueEdge": {
+                "count": 0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "p99": 0.0,
+                "max": 0.0,
+            },
         },
         "venuePairs": {},
         "marketFamilies": {},
@@ -1294,6 +1369,8 @@ def _empty_candidate_quality_payload() -> dict[str, object]:
         "zeroCandidateBlockerCounts": {},
         "topPositiveCandidates": [],
         "topNegativeNearMisses": [],
+        "topValueEdgeCandidates": [],
+        "topVigErasedCandidates": [],
     }
 
 
@@ -2219,6 +2296,20 @@ def _probe_candidate_quality(
             raw_profit_margin=raw_profit_margin,
         ),
     )
+    devig_diagnostics = _probe_devig_diagnostics(
+        strategy,
+        edge=edge,
+        source_node=source_node,
+        target_node=target_node,
+        odds_a=odds_a,
+        odds_b=odds_b,
+        raw_probability_a=raw_probability_a,
+        raw_probability_b=raw_probability_b,
+        fee_adjusted_probability_a=opportunity.probability_a,
+        fee_adjusted_probability_b=opportunity.probability_b,
+        raw_profit_margin=raw_profit_margin,
+        fee_adjusted_profit_margin=opportunity.profit_margin,
+    )
     total_probability = opportunity.total_probability
     profit_margin = opportunity.profit_margin
     observed_ns = max(int(quote_a.received_ns), int(quote_b.received_ns))
@@ -2315,6 +2406,8 @@ def _probe_candidate_quality(
         "feeDrag": str(opportunity.fee_drag),
         "feeAdjustedOddsA": str(opportunity.fee_adjusted_odds_a or opportunity.odds_a),
         "feeAdjustedOddsB": str(opportunity.fee_adjusted_odds_b or opportunity.odds_b),
+        "devig": devig_diagnostics,
+        "candidateValueClassification": devig_diagnostics.get("valueClassification"),
         "takerFeeRateA": str(opportunity.taker_fee_rate_a),
         "takerFeeRateB": str(opportunity.taker_fee_rate_b),
         "makerRebateRateA": str(opportunity.maker_rebate_rate_a),
@@ -2373,6 +2466,183 @@ def _strategy_fee_adjusted_opportunity(strategy, opportunity: ArbitrageOpportuni
     if callable(adjuster):
         return adjuster(opportunity)
     return opportunity
+
+
+def _probe_devig_diagnostics(
+    strategy,
+    *,
+    edge,
+    source_node,
+    target_node,
+    odds_a: Decimal,
+    odds_b: Decimal,
+    raw_probability_a: Decimal,
+    raw_probability_b: Decimal,
+    fee_adjusted_probability_a: Decimal,
+    fee_adjusted_probability_b: Decimal,
+    raw_profit_margin: Decimal,
+    fee_adjusted_profit_margin: Decimal,
+) -> dict[str, object]:
+    config = getattr(strategy, "_config", None)
+    if not bool(getattr(config, "devig_enabled", False)):
+        return {
+            "enabled": False,
+            "bookStatus": "disabled",
+            "valueClassification": "devig_disabled",
+        }
+    if not bool(getattr(config, "value_diagnostics_enabled", True)):
+        return {
+            "enabled": True,
+            "bookStatus": "disabled",
+            "valueClassification": "value_diagnostics_disabled",
+        }
+
+    venue_a = str(source_node.instrument.id.venue).upper()
+    venue_b = str(target_node.instrument.id.venue).upper()
+    reference_venues = getattr(config, "devig_reference_venues", None)
+    reference_allowed = (
+        not reference_venues or venue_a in reference_venues or venue_b in reference_venues
+    )
+    book_status = _probe_devig_book_status(
+        edge=edge,
+        venue_a=venue_a,
+        venue_b=venue_b,
+        reference_allowed=reference_allowed,
+    )
+    if book_status == "incomplete_book_no_devig":
+        return {
+            "enabled": True,
+            "bookStatus": book_status,
+            "valueClassification": "reference_book_incomplete",
+            "referenceVenue": _probe_devig_reference_venue(venue_a, venue_b),
+            "referenceQuality": "incomplete",
+        }
+
+    devigged_book = None
+    try:
+        devigged = getattr(strategy, "devigged_book", None)
+        if callable(devigged):
+            devigged_book = devigged((odds_a, odds_b))
+    except (ArithmeticError, ValueError) as exc:
+        return {
+            "enabled": True,
+            "bookStatus": "devig_method_failed",
+            "valueClassification": "devig_method_failed",
+            "error": str(exc)[:240],
+            "referenceVenue": _probe_devig_reference_venue(venue_a, venue_b),
+            "referenceQuality": book_status,
+        }
+    if devigged_book is None:
+        return {
+            "enabled": False,
+            "bookStatus": "disabled",
+            "valueClassification": "devig_disabled",
+        }
+
+    fair_a, fair_b = devigged_book.no_vig_probabilities
+    gross_value_edge_a = fair_a - raw_probability_a
+    gross_value_edge_b = fair_b - raw_probability_b
+    fee_adjusted_value_edge_a = fair_a - fee_adjusted_probability_a
+    fee_adjusted_value_edge_b = fair_b - fee_adjusted_probability_b
+    max_gross_value_edge = max(gross_value_edge_a, gross_value_edge_b)
+    max_fee_adjusted_value_edge = max(fee_adjusted_value_edge_a, fee_adjusted_value_edge_b)
+    best_side = "A" if fee_adjusted_value_edge_a >= fee_adjusted_value_edge_b else "B"
+    best_probability = (
+        fee_adjusted_probability_a if best_side == "A" else fee_adjusted_probability_b
+    )
+    relative_value_edge = (
+        max_fee_adjusted_value_edge / best_probability if best_probability > 0 else Decimal(0)
+    )
+    classification = _probe_value_classification(
+        config=config,
+        venue_a=venue_a,
+        venue_b=venue_b,
+        raw_profit_margin=raw_profit_margin,
+        fee_adjusted_profit_margin=fee_adjusted_profit_margin,
+        max_gross_value_edge=max_gross_value_edge,
+        max_fee_adjusted_value_edge=max_fee_adjusted_value_edge,
+    )
+    return {
+        "enabled": True,
+        "bookStatus": book_status,
+        "referenceVenue": _probe_devig_reference_venue(venue_a, venue_b),
+        "referenceQuality": book_status,
+        "rawImpliedProbabilityA": str(raw_probability_a),
+        "rawImpliedProbabilityB": str(raw_probability_b),
+        "noVigProbabilityA": str(fair_a),
+        "noVigProbabilityB": str(fair_b),
+        "bookOverround": str(devigged_book.overround),
+        "bookVig": str(devigged_book.vig),
+        "devigMethod": devigged_book.method,
+        "devigMethodReason": devigged_book.method_reason,
+        "devigConvergenceStatus": devigged_book.convergence_status,
+        "devigIterations": devigged_book.iterations,
+        "devigDelta": str(devigged_book.delta),
+        "devigZ": str(devigged_book.z) if devigged_book.z is not None else None,
+        "grossValueEdgeA": str(gross_value_edge_a),
+        "grossValueEdgeB": str(gross_value_edge_b),
+        "feeAdjustedValueEdgeA": str(fee_adjusted_value_edge_a),
+        "feeAdjustedValueEdgeB": str(fee_adjusted_value_edge_b),
+        "grossValueEdge": str(max_gross_value_edge),
+        "feeAdjustedValueEdge": str(max_fee_adjusted_value_edge),
+        "relativeValueEdge": str(relative_value_edge),
+        "bestValueSide": best_side,
+        "valueClassification": classification,
+        "valueExecutionEnabled": bool(getattr(config, "value_execution_enabled", False)),
+        "valueExecutionBlockedReason": (
+            ""
+            if bool(getattr(config, "value_execution_enabled", False))
+            else "value_execution_disabled"
+        ),
+    }
+
+
+def _probe_devig_book_status(
+    *,
+    edge,
+    venue_a: str,
+    venue_b: str,
+    reference_allowed: bool,
+) -> str:
+    if not reference_allowed:
+        return "incomplete_book_no_devig"
+    if venue_a == venue_b:
+        return "same_venue_complete_pair"
+    if bool(getattr(edge, "execution_safe", False)) or bool(
+        getattr(edge, "same_venue_execution_eligible", False),
+    ):
+        return "synthetic_cross_venue_pair"
+    return "incomplete_book_no_devig"
+
+
+def _probe_devig_reference_venue(venue_a: str, venue_b: str) -> str:
+    if venue_a == venue_b:
+        return venue_a
+    return f"mixed:{venue_a}+{venue_b}"
+
+
+def _probe_value_classification(
+    *,
+    config,
+    venue_a: str,
+    venue_b: str,
+    raw_profit_margin: Decimal,
+    fee_adjusted_profit_margin: Decimal,
+    max_gross_value_edge: Decimal,
+    max_fee_adjusted_value_edge: Decimal,
+) -> str:
+    min_value_edge = Decimal(str(getattr(config, "min_value_edge", Decimal("0.015"))))
+    if fee_adjusted_profit_margin >= Decimal(str(getattr(config, "min_profit_margin", 0))):
+        return "locked_arbitrage"
+    if raw_profit_margin > 0 and fee_adjusted_profit_margin <= 0:
+        return "fee_or_vig_erased_edge"
+    if max_gross_value_edge > 0 and max_fee_adjusted_value_edge <= 0:
+        return "fee_or_vig_erased_edge"
+    if max_fee_adjusted_value_edge >= min_value_edge:
+        if "POLYMARKET" in {venue_a, venue_b}:
+            return "prediction_market_value_edge"
+        return "sportsbook_value_edge"
+    return "vig_only_edge"
 
 
 def _probe_match_type(instrument_a, instrument_b) -> str:
@@ -2479,6 +2749,7 @@ def _record_probe_quality(
         counters.fee_adjusted_edges += 1
         counters.fee_drag_samples.append(float(quality.get("feeDrag") or 0.0))
         _record_fee_impact_bucket(counters, quality)
+    _record_devig_quality(counters, quality)
     quote_age_a_secs = float(quality.get("quoteAgeASeconds") or 0.0)
     quote_age_b_secs = float(quality.get("quoteAgeBSeconds") or 0.0)
     fetch_latency_a_secs = float(quality.get("fetchLatencyASeconds") or 0.0)
@@ -2541,6 +2812,45 @@ def _record_probe_quality(
         counters.samples.append((margin, quality))
     elif margin > Decimal("-0.05"):
         counters.negative_samples.append((margin, quality))
+
+
+def _record_devig_quality(
+    counters: ProbeProfitabilityCounters,
+    quality: dict[str, object],
+) -> None:
+    devig = quality.get("devig")
+    if not isinstance(devig, dict) or not bool(devig.get("enabled")):
+        return
+    counters.devig_evaluated_edges += 1
+    book_status = str(devig.get("bookStatus") or "unknown")
+    if book_status in {"same_venue_complete_pair", "synthetic_cross_venue_pair"}:
+        counters.devig_complete_books += 1
+    else:
+        counters.devig_incomplete_books += 1
+    method = str(devig.get("devigMethod") or "none")
+    method_reason = str(devig.get("devigMethodReason") or "none")
+    convergence = str(devig.get("devigConvergenceStatus") or "none")
+    value_classification = str(devig.get("valueClassification") or "unknown")
+    counters.devig_method_counts[method] += 1
+    counters.devig_method_reason_counts[method_reason] += 1
+    counters.devig_convergence_counts[convergence] += 1
+    counters.devig_value_buckets[value_classification] += 1
+    if "bookOverround" in devig:
+        counters.overround_samples.append(float(devig.get("bookOverround") or 0.0))
+    if "bookVig" in devig:
+        counters.vig_samples.append(float(devig.get("bookVig") or 0.0))
+    gross_edge = Decimal(str(devig.get("grossValueEdge") or 0))
+    net_edge = Decimal(str(devig.get("feeAdjustedValueEdge") or 0))
+    counters.gross_value_edge_samples.append(float(gross_edge))
+    counters.fee_adjusted_value_edge_samples.append(float(net_edge))
+    if value_classification in {
+        "sportsbook_value_edge",
+        "prediction_market_value_edge",
+        "locked_arbitrage",
+    }:
+        counters.value_samples.append((net_edge, quality))
+    if value_classification == "fee_or_vig_erased_edge":
+        counters.vig_erased_samples.append((gross_edge, quality))
 
 
 def _record_fee_impact_bucket(

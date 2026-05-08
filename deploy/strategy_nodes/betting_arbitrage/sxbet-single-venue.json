@@ -18,6 +18,11 @@
     "instrument_refresh_interval_secs": 300.0,
     "rollover_aware": true,
     "opportunity_graph_engine": "auto",
+    "devig_enabled": true,
+    "devig_method": "auto",
+    "value_diagnostics_enabled": true,
+    "value_execution_enabled": false,
+    "min_value_edge": "0.015",
     "auto_execute": false
   },
   "venues": [

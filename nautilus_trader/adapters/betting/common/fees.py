@@ -74,6 +74,9 @@ class FeeAdjustedCoverageBasket:
     no_vig_probabilities: tuple[Decimal, ...]
     overround: Decimal
     vig: Decimal
+    devig_method: str = "auto"
+    devig_method_reason: str = ""
+    devig_convergence_status: str = ""
 
     @property
     def leg_count(self) -> int:
@@ -214,6 +217,7 @@ def fee_adjusted_coverage_basket(
     winning_profit_fee_rates: Sequence[Decimal | float | str] | None = None,
     basket_rebate_rate: Decimal | float | str = Decimal(0),
     basket_boost_rate: Decimal | float | str = Decimal(0),
+    devig_method: str = "auto",
 ) -> FeeAdjustedCoverageBasket:
     """
     Apply per-leg fees and basket incentives to an arbitrary coverage proof.
@@ -256,13 +260,16 @@ def fee_adjusted_coverage_basket(
         basket_rebate_rate=basket_rebate_rate,
         basket_boost_rate=basket_boost_rate,
     )
-    devigged = devig_probabilities(tuple(leg.raw_odds for leg in legs))
+    devigged = devig_probabilities(tuple(leg.raw_odds for leg in legs), method=devig_method)
     return FeeAdjustedCoverageBasket(
         legs=legs,
         basket=basket,
         no_vig_probabilities=devigged.no_vig_probabilities,
         overround=devigged.overround,
         vig=devigged.vig,
+        devig_method=devigged.method,
+        devig_method_reason=devigged.method_reason,
+        devig_convergence_status=devigged.convergence_status,
     )
 
 

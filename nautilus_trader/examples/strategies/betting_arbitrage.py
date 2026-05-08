@@ -35,7 +35,9 @@ from nautilus_trader.adapters.betting.common.fees import fee_adjusted_basket_mar
 from nautilus_trader.adapters.betting.common.fees import fee_adjusted_coverage_basket
 from nautilus_trader.adapters.betting.common.fees import fee_adjusted_odds
 from nautilus_trader.adapters.betting.common.fees import normalize_venue_fee_rates
+from nautilus_trader.adapters.betting.common.odds import DeviggedBook
 from nautilus_trader.adapters.betting.common.odds import calculate_arbitrage_stakes
+from nautilus_trader.adapters.betting.common.odds import devig_probabilities
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.betting.market_matcher import ArbitrageOpportunity
 from nautilus_trader.adapters.betting.market_matcher import MarketMatcher
@@ -67,6 +69,7 @@ from nautilus_trader.trading.strategy import Strategy
 
 VALID_MARKET_TIMINGS = frozenset({"all", "pre_market", "live"})
 VALID_QUOTE_FRESHNESS_PROFILES = frozenset({"pre_match", "live", "custom"})
+VALID_DEVIG_METHODS = frozenset({"auto", "proportional", "shin", "logarithmic"})
 DEFAULT_ENABLED_VENUES = frozenset({"CLOUDBET", "SXBET", "10BET"})
 NANOSECONDS_PER_SECOND = 1_000_000_000
 INSTRUMENT_REFRESH_TIMER_NAME = "betting-arbitrage-instrument-refresh"
@@ -246,6 +249,20 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         useful for parlay-style or temporary promotion accounting.
     venue_basket_boost_rates : dict[str, Decimal], default {}
         Venue-level return boost rate applied to the covered set.
+    devig_enabled : bool, default True
+        Enable no-vig fair-probability diagnostics for complete books and quoted semantic pairs.
+    devig_method : str, default "auto"
+        Devig method: "auto", "proportional", "shin", or "logarithmic".
+    devig_reference_venues : frozenset[str] | None, default None
+        Optional venue allowlist for value-reference diagnostics. Empty means every complete
+        sportsbook/exchange book can contribute labelled fair-value diagnostics.
+    value_diagnostics_enabled : bool, default True
+        Emit value-edge diagnostics based on devigged fair probabilities.
+    value_execution_enabled : bool, default False
+        Reserved execution gate for future value-betting strategies. It must remain false for
+        validation deployments unless explicitly approved.
+    min_value_edge : Decimal, default Decimal("0.015")
+        Minimum net value edge used for dry-run value diagnostics.
 
     """
 
@@ -279,6 +296,12 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
     venue_winning_profit_fee_rates: dict[str, Decimal] = {}
     venue_basket_rebate_rates: dict[str, Decimal] = {}
     venue_basket_boost_rates: dict[str, Decimal] = {}
+    devig_enabled: bool = True
+    devig_method: str = "auto"
+    devig_reference_venues: frozenset[str] | None = None
+    value_diagnostics_enabled: bool = True
+    value_execution_enabled: bool = False
+    min_value_edge: Decimal = Decimal("0.015")
 
     def __post_init__(self) -> None:
         """
@@ -318,6 +341,7 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         )
         opportunity_graph_engine = self.opportunity_graph_engine.strip().lower()
         quote_freshness_profile = self.quote_freshness_profile.strip().lower()
+        devig_method, devig_reference_venues = self._normalize_devig_config()
 
         if market_timing_filter not in VALID_MARKET_TIMINGS:
             msg = (
@@ -396,6 +420,8 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
             venue_basket_boost_rates,
         )
         msgspec.structs.force_setattr(self, "quote_freshness_profile", quote_freshness_profile)
+        msgspec.structs.force_setattr(self, "devig_method", devig_method)
+        msgspec.structs.force_setattr(self, "devig_reference_venues", devig_reference_venues)
         msgspec.structs.force_setattr(
             self,
             "live_quote_age_slo_secs",
@@ -407,6 +433,28 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
                 "stale_quote_refresh_cooldown_secs",
                 float(self.stale_quote_refresh_cooldown_secs),
             )
+
+    def _normalize_devig_config(self) -> tuple[str, frozenset[str] | None]:
+        devig_method = self.devig_method.strip().lower()
+        if devig_method not in VALID_DEVIG_METHODS:
+            msg = f"Invalid devig_method: {devig_method}. Must be one of {VALID_DEVIG_METHODS}"
+            raise ValueError(msg)
+        if self.min_value_edge < 0:
+            msg = "min_value_edge must be non-negative"
+            raise ValueError(msg)
+        if self.value_execution_enabled and not self.value_diagnostics_enabled:
+            msg = "value_execution_enabled requires value_diagnostics_enabled"
+            raise ValueError(msg)
+        reference_venues = (
+            frozenset(
+                str(venue).strip().upper()
+                for venue in self.devig_reference_venues
+                if str(venue).strip()
+            )
+            if self.devig_reference_venues is not None
+            else None
+        )
+        return devig_method, reference_venues
 
     @staticmethod
     def _normalize_semantic_quote_subscription_limits(
@@ -552,6 +600,11 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             f"summary_interval_secs={self._config.arbitrage_summary_interval_secs} "
             f"opportunity_graph_enabled={self._config.opportunity_graph_enabled} "
             f"opportunity_graph_engine={self._config.opportunity_graph_engine} "
+            f"devig_enabled={self._config.devig_enabled} "
+            f"devig_method={self._config.devig_method} "
+            f"value_diagnostics_enabled={self._config.value_diagnostics_enabled} "
+            f"value_execution_enabled={self._config.value_execution_enabled} "
+            f"min_value_edge={self._config.min_value_edge} "
             "semantic_unmatched_quote_probe_venues="
             f"{sorted(self._config.semantic_unmatched_quote_probe_venues)} "
             "semantic_unmatched_quote_probe_limit_per_venue="
@@ -3050,7 +3103,41 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             ),
             basket_rebate_rate=self.coverage_basket_rebate_rate(instruments),
             basket_boost_rate=self.coverage_basket_boost_rate(instruments),
+            devig_method=self._config.devig_method,
         )
+
+    def devigged_book(
+        self,
+        odds: Sequence[Decimal | float | str],
+        *,
+        method: str | None = None,
+    ) -> DeviggedBook | None:
+        """
+        Return a no-vig probability view for diagnostics when enabled.
+
+        This helper deliberately does not affect executable arbitrage decisions. It is a
+        fair-value/reference layer used by runtime reports.
+
+        """
+        if not self._config.devig_enabled:
+            return None
+        return devig_probabilities(odds, method=method or self._config.devig_method)
+
+    @property
+    def devig_enabled(self) -> bool:
+        return bool(self._config.devig_enabled)
+
+    @property
+    def value_diagnostics_enabled(self) -> bool:
+        return bool(self._config.value_diagnostics_enabled)
+
+    @property
+    def value_execution_enabled(self) -> bool:
+        return bool(self._config.value_execution_enabled)
+
+    @property
+    def min_value_edge(self) -> Decimal:
+        return self._config.min_value_edge
 
     def coverage_basket_rebate_rate(self, instruments: Sequence[Instrument]) -> Decimal:
         """
@@ -3556,6 +3643,16 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 venue: str(rate)
                 for venue, rate in sorted(self._config.venue_basket_boost_rates.items())
             },
+            "devig_enabled": self._config.devig_enabled,
+            "devig_method": self._config.devig_method,
+            "devig_reference_venues": (
+                sorted(self._config.devig_reference_venues)
+                if self._config.devig_reference_venues
+                else []
+            ),
+            "value_diagnostics_enabled": self._config.value_diagnostics_enabled,
+            "value_execution_enabled": self._config.value_execution_enabled,
+            "min_value_edge": str(self._config.min_value_edge),
             "opportunity_graph_nodes": self._opportunity_graph.node_count,
             "opportunity_graph_edges": self._opportunity_graph.edge_count,
             "opportunity_graph_quote_states": self._opportunity_graph.quote_state_count,

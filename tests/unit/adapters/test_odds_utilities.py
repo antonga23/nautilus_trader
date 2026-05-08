@@ -115,7 +115,10 @@ class TestArbitrageCalculations:
         """
         Full-book diagnostics should expose no-vig probabilities separately.
         """
-        market = devig_probabilities((Decimal("2.60"), Decimal("3.20"), Decimal("2.70")))
+        market = devig_probabilities(
+            (Decimal("2.60"), Decimal("3.20"), Decimal("2.70")),
+            method="proportional",
+        )
 
         assert market.method == "proportional"
         assert market.overround > Decimal(1)
@@ -123,9 +126,57 @@ class TestArbitrageCalculations:
         assert abs(sum(market.no_vig_probabilities, Decimal(0)) - Decimal(1)) < Decimal("1e-12")
         assert market.no_vig_probabilities[0] < market.implied_probabilities[0]
 
+    def test_devig_probabilities_supports_shin_reference_examples(self):
+        """
+        Shin devigging should support two-way and multi-way sportsbook books.
+        """
+        small_favorite = devig_probabilities((Decimal("1.75"), Decimal("2.20")), method="shin")
+        heavy_favorite = devig_probabilities((Decimal("1.30"), Decimal("3.80")), method="shin")
+        three_way = devig_probabilities(
+            (Decimal("2.60"), Decimal("3.20"), Decimal("2.70")),
+            method="shin",
+        )
+
+        assert small_favorite.method == "shin"
+        assert small_favorite.convergence_status == "analytic"
+        assert float(small_favorite.no_vig_probabilities[0]) == pytest.approx(0.55844, rel=1e-4)
+        assert float(heavy_favorite.no_vig_probabilities[0]) == pytest.approx(0.75304, rel=1e-4)
+        assert three_way.convergence_status == "converged"
+        assert abs(sum(three_way.no_vig_probabilities, Decimal(0)) - Decimal(1)) < Decimal(
+            "1e-12",
+        )
+
+    def test_devig_probabilities_auto_selects_balanced_shin_and_extreme_methods(self):
+        balanced = devig_probabilities((Decimal("1.91"), Decimal("1.99")), method="auto")
+        normal_three_way = devig_probabilities(
+            (Decimal("2.60"), Decimal("3.20"), Decimal("2.70")),
+            method="auto",
+        )
+        extreme = devig_probabilities((Decimal("1.08"), Decimal("11.00")), method="auto")
+
+        assert balanced.method == "proportional"
+        assert balanced.method_reason == "balanced_two_way"
+        assert normal_three_way.method == "shin"
+        assert normal_three_way.method_reason == "default_shin"
+        assert extreme.method == "logarithmic"
+        assert extreme.method_reason == "extreme_odds"
+        assert abs(sum(extreme.no_vig_probabilities, Decimal(0)) - Decimal(1)) < Decimal("1e-12")
+
+    def test_devig_probabilities_logarithmic_handles_extreme_tail(self):
+        market = devig_probabilities((Decimal("1.08"), Decimal("11.00")), method="logarithmic")
+
+        assert market.method == "logarithmic"
+        assert market.convergence_status == "converged"
+        assert market.no_vig_probabilities[0] < market.implied_probabilities[0]
+        assert abs(sum(market.no_vig_probabilities, Decimal(0)) - Decimal(1)) < Decimal("1e-12")
+
     def test_devig_probabilities_rejects_incomplete_book(self):
         with pytest.raises(ValueError, match="At least two odds"):
             devig_probabilities((Decimal("2.0"),))
+
+    def test_devig_probabilities_rejects_unknown_method(self):
+        with pytest.raises(ValueError, match="Unsupported devig method"):
+            devig_probabilities((Decimal("2.0"), Decimal("2.1")), method="bad")
 
     def test_calculate_arbitrage_stakes_equal_odds(self):
         """

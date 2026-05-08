@@ -221,6 +221,7 @@ def _build_strategy_importable_config(
         strategy_config["semantic_rule_cache_dir"] = manifest.semantic_rule_cache_dir
     if manifest.validation_mode:
         strategy_config["auto_execute"] = False
+        strategy_config["value_execution_enabled"] = False
     return ImportableStrategyConfig(
         strategy_path=STRATEGY_PATH,
         config_path=STRATEGY_CONFIG_PATH,
