@@ -126,7 +126,8 @@ class TestArbitrageCalculations:
         assert abs(sum(market.no_vig_probabilities, Decimal(0)) - Decimal(1)) < Decimal("1e-12")
         assert market.no_vig_probabilities[0] < market.implied_probabilities[0]
 
-    def test_devig_probabilities_supports_shin_reference_examples(self):
+    @staticmethod
+    def test_devig_probabilities_supports_shin_reference_examples():
         """
         Shin devigging should support two-way and multi-way sportsbook books.
         """
@@ -146,7 +147,8 @@ class TestArbitrageCalculations:
             "1e-12",
         )
 
-    def test_devig_probabilities_auto_selects_balanced_shin_and_extreme_methods(self):
+    @staticmethod
+    def test_devig_probabilities_auto_selects_balanced_shin_and_extreme_methods():
         balanced = devig_probabilities((Decimal("1.91"), Decimal("1.99")), method="auto")
         normal_three_way = devig_probabilities(
             (Decimal("2.60"), Decimal("3.20"), Decimal("2.70")),
@@ -162,7 +164,8 @@ class TestArbitrageCalculations:
         assert extreme.method_reason == "extreme_odds"
         assert abs(sum(extreme.no_vig_probabilities, Decimal(0)) - Decimal(1)) < Decimal("1e-12")
 
-    def test_devig_probabilities_logarithmic_handles_extreme_tail(self):
+    @staticmethod
+    def test_devig_probabilities_logarithmic_handles_extreme_tail():
         market = devig_probabilities((Decimal("1.08"), Decimal("11.00")), method="logarithmic")
 
         assert market.method == "logarithmic"
@@ -174,7 +177,8 @@ class TestArbitrageCalculations:
         with pytest.raises(ValueError, match="At least two odds"):
             devig_probabilities((Decimal("2.0"),))
 
-    def test_devig_probabilities_rejects_unknown_method(self):
+    @staticmethod
+    def test_devig_probabilities_rejects_unknown_method():
         with pytest.raises(ValueError, match="Unsupported devig method"):
             devig_probabilities((Decimal("2.0"), Decimal("2.1")), method="bad")
 
