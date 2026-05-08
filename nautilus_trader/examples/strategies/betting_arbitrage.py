@@ -24,6 +24,7 @@ from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal
 import time
+from typing import Any
 
 import msgspec
 
@@ -1036,12 +1037,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
     def _subscribe_semantic_connected_quote_ticks(self) -> int:
         subscribed_by_venue = self._quote_subscription_counts_by_venue()
         subscribed_count = 0
-        for node_id, edge_ids in self._opportunity_graph.edge_ids_by_node_id.items():
-            if not edge_ids:
-                continue
-            node = self._opportunity_graph.nodes_by_id.get(node_id)
-            if node is None:
-                continue
+        for node in self._semantic_connected_quote_nodes():
             venue = node.instrument.id.venue.value.upper()
             venue_limit = self._config.semantic_quote_subscription_limit_by_venue.get(venue)
             if venue_limit is not None and subscribed_by_venue[venue] >= venue_limit:
@@ -1058,6 +1054,71 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 f"{dict(sorted(self._quote_subscription_counts_by_venue().items()))}",
             )
         return subscribed_count
+
+    def _semantic_connected_quote_nodes(self) -> list[Any]:
+        """
+        Return semantically connected nodes in quote-subscription priority order.
+
+        Multi-venue validation can have thousands of same-venue edges and only a
+        handful of cross-venue edges. Venue quote limits should therefore spend
+        their first slots on instruments needed to quote cross-venue topology,
+        then strict execution-safe edges, then the broader topology set.
+        """
+        ranked: list[tuple[tuple[int, int, int, int, str], Any]] = []
+        for node_id, edge_ids in self._opportunity_graph.edge_ids_by_node_id.items():
+            if not edge_ids:
+                continue
+            node = self._opportunity_graph.nodes_by_id.get(node_id)
+            if node is None:
+                continue
+            ranked.append((self._semantic_quote_subscription_priority(node_id, edge_ids), node))
+        ranked.sort(key=lambda item: item[0])
+        return [node for _, node in ranked]
+
+    def _semantic_quote_subscription_priority(
+        self,
+        node_id: str,
+        edge_ids: set[str],
+    ) -> tuple[int, int, int, int, str]:
+        nodes = self._opportunity_graph.nodes_by_id
+        edges = self._opportunity_graph.edges_by_id
+        node = nodes.get(node_id)
+        node_venue = self._node_venue_value(node)
+        cross_venue_edges = 0
+        execution_safe_edges = 0
+        same_venue_eligible_edges = 0
+        for edge_id in edge_ids:
+            edge = edges.get(edge_id)
+            if edge is None:
+                continue
+            if bool(getattr(edge, "execution_safe", False)):
+                execution_safe_edges += 1
+            if bool(getattr(edge, "same_venue_execution_eligible", False)):
+                same_venue_eligible_edges += 1
+            other_node_id = (
+                getattr(edge, "target_node_id", None)
+                if getattr(edge, "source_node_id", None) == node_id
+                else getattr(edge, "source_node_id", None)
+            )
+            other_venue = self._node_venue_value(nodes.get(other_node_id))
+            if node_venue and other_venue and node_venue != other_venue:
+                cross_venue_edges += 1
+        return (
+            -cross_venue_edges,
+            -execution_safe_edges,
+            -same_venue_eligible_edges,
+            -len(edge_ids),
+            str(getattr(getattr(node, "instrument", None), "id", "")),
+        )
+
+    @staticmethod
+    def _node_venue_value(node: object | None) -> str:
+        instrument = getattr(node, "instrument", None)
+        instrument_id = getattr(instrument, "id", None)
+        venue = getattr(instrument_id, "venue", None)
+        if venue is None:
+            return ""
+        return str(getattr(venue, "value", venue)).upper()
 
     def _subscribe_semantic_unmatched_quote_probe_ticks(self) -> int:
         """

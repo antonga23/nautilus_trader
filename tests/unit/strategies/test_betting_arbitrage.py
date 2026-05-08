@@ -1813,6 +1813,73 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(strategy.subscribe_quote_ticks.call_count == 1)
         ensure(strategy.get_stats()["quote_subscribed_instruments"] == 1)
 
+    def test_semantic_connected_quote_subscriptions_prioritize_cross_venue_edges(
+        self,
+    ) -> None:  # skipcq
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["CLOUDBET", "POLYMARKET"]),
+                semantic_quote_subscription_limit_by_venue={"CLOUDBET": 1, "POLYMARKET": 1},
+            ),
+        )
+        strategy.subscribe_quote_ticks = Mock()
+        cloudbet_same = self._sxbet_instrument(
+            event_id="same-1",
+            venue="CLOUDBET",
+            outcome="over",
+        )
+        cloudbet_same_pair = self._sxbet_instrument(
+            event_id="same-1",
+            venue="CLOUDBET",
+            outcome="under",
+        )
+        cloudbet_cross = self._sxbet_instrument(
+            event_id="cross-1",
+            venue="CLOUDBET",
+            outcome="home",
+            market_name="match_odds",
+        )
+        polymarket_cross = self._sxbet_instrument(
+            event_id="cross-1",
+            venue="POLYMARKET",
+            outcome="away",
+            market_name="match_odds",
+        )
+        strategy._opportunity_graph = SimpleNamespace(
+            nodes_by_id={
+                "cloudbet-same": SimpleNamespace(instrument=cloudbet_same),
+                "cloudbet-same-pair": SimpleNamespace(instrument=cloudbet_same_pair),
+                "cloudbet-cross": SimpleNamespace(instrument=cloudbet_cross),
+                "polymarket-cross": SimpleNamespace(instrument=polymarket_cross),
+            },
+            edges_by_id={
+                "same-edge": SimpleNamespace(
+                    source_node_id="cloudbet-same",
+                    target_node_id="cloudbet-same-pair",
+                    execution_safe=True,
+                    same_venue_execution_eligible=False,
+                ),
+                "cross-edge": SimpleNamespace(
+                    source_node_id="cloudbet-cross",
+                    target_node_id="polymarket-cross",
+                    execution_safe=True,
+                    same_venue_execution_eligible=False,
+                ),
+            },
+            edge_ids_by_node_id={
+                "cloudbet-same": {"same-edge"},
+                "cloudbet-same-pair": {"same-edge"},
+                "cloudbet-cross": {"cross-edge"},
+                "polymarket-cross": {"cross-edge"},
+            },
+        )
+
+        subscribed = strategy._subscribe_semantic_connected_quote_ticks()
+        quoted_ids = {call.args[0] for call in strategy.subscribe_quote_ticks.call_args_list}
+
+        ensure(subscribed == 2)
+        ensure(quoted_ids == {cloudbet_cross.id, polymarket_cross.id})
+
     def test_on_start_skips_subscription_when_cache_is_empty(self, default_config):  # skipcq
         strategy = BettingArbitrageStrategy(config=default_config)
         strategy.register(
