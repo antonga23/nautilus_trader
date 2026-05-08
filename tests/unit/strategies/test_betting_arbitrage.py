@@ -417,6 +417,48 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(adjusted.profit_margin < adjusted.raw_profit_margin)
         ensure(adjusted.fee_drag > 0)
 
+    def test_fee_adjusted_opportunity_accepts_basis_point_market_metadata(self):  # skipcq
+        """
+        Venue feeds may expose fee and incentive parameters in basis points.
+        """
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["POLYMARKET", "SXBET"]),
+                venue_taker_fee_rates={"POLYMARKET": "0.03"},
+                venue_maker_rebate_rates={"POLYMARKET": "0.001"},
+            ),
+        )
+        polymarket = self._sxbet_instrument(
+            event_id="event-1",
+            venue="POLYMARKET",
+            outcome="over",
+            info={
+                "feeRateBps": "75",
+                "maker_rebate_rate_bps": "25",
+                "basket_rebate_rate_bps": "50",
+            },
+        )
+        sxbet = self._sxbet_instrument(
+            event_id="event-1",
+            venue="SXBET",
+            outcome="under",
+            info={"basket_boost_rate_bps": "100"},
+        )
+        opportunity = MarketMatcher().check_arbitrage(
+            polymarket,
+            sxbet,
+            odds_a=Decimal("2.02"),
+            odds_b=Decimal("2.02"),
+        )
+
+        ensure(opportunity is not None)
+        adjusted = strategy.fee_adjusted_opportunity(opportunity)
+
+        ensure(adjusted.taker_fee_rate_a == Decimal("0.0075"))
+        ensure(adjusted.maker_rebate_rate_a == Decimal("0.0025"))
+        ensure(adjusted.basket_rebate_rate == Decimal("0.005"))
+        ensure(adjusted.basket_boost_rate == Decimal("0.01"))
+
     def test_fee_adjusted_opportunity_applies_pair_basket_incentives(self):  # skipcq
         """
         Basket-level rewards can improve a covered pair without changing safety tiers.

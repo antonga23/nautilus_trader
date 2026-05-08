@@ -2950,6 +2950,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         return self._instrument_fee_rate(
             instrument,
             keys=("taker_fee_rate", "fee_rate", "polymarket_fee_rate", "market_fee_rate"),
+            bps_keys=("taker_fee_rate_bps", "fee_rate_bps", "feeRateBps", "market_fee_rate_bps"),
             venue_rates=self._config.venue_taker_fee_rates,
         )
 
@@ -2960,6 +2961,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         return self._instrument_fee_rate(
             instrument,
             keys=("maker_rebate_rate", "rebate_rate", "polymarket_maker_rebate_rate"),
+            bps_keys=("maker_rebate_rate_bps", "rebate_rate_bps", "makerRebateRateBps"),
             venue_rates=self._config.venue_maker_rebate_rates,
         )
 
@@ -2970,6 +2972,11 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         return self._instrument_fee_rate(
             instrument,
             keys=("winning_profit_fee_rate", "commission_rate", "profit_fee_rate"),
+            bps_keys=(
+                "winning_profit_fee_rate_bps",
+                "commission_rate_bps",
+                "profit_fee_rate_bps",
+            ),
             venue_rates=self._config.venue_winning_profit_fee_rates,
         )
 
@@ -2985,6 +2992,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             instrument_a,
             instrument_b,
             keys=("basket_rebate_rate", "promo_rebate_rate", "reward_rebate_rate"),
+            bps_keys=("basket_rebate_rate_bps", "promo_rebate_rate_bps", "reward_rebate_rate_bps"),
             venue_rates=self._config.venue_basket_rebate_rates,
         )
 
@@ -3000,6 +3008,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             instrument_a,
             instrument_b,
             keys=("basket_boost_rate", "odds_boost_rate", "reward_boost_rate"),
+            bps_keys=("basket_boost_rate_bps", "odds_boost_rate_bps", "reward_boost_rate_bps"),
             venue_rates=self._config.venue_basket_boost_rates,
         )
 
@@ -3010,11 +3019,22 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         instrument_b: Instrument,
         *,
         keys: tuple[str, ...],
+        bps_keys: tuple[str, ...],
         venue_rates: dict[str, Decimal],
     ) -> Decimal:
         rates = (
-            cls._instrument_fee_rate(instrument_a, keys=keys, venue_rates=venue_rates),
-            cls._instrument_fee_rate(instrument_b, keys=keys, venue_rates=venue_rates),
+            cls._instrument_fee_rate(
+                instrument_a,
+                keys=keys,
+                bps_keys=bps_keys,
+                venue_rates=venue_rates,
+            ),
+            cls._instrument_fee_rate(
+                instrument_b,
+                keys=keys,
+                bps_keys=bps_keys,
+                venue_rates=venue_rates,
+            ),
         )
         return max(rates)
 
@@ -3023,6 +3043,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         instrument: Instrument,
         *,
         keys: tuple[str, ...],
+        bps_keys: tuple[str, ...] = (),
         venue_rates: dict[str, Decimal],
     ) -> Decimal:
         """
@@ -3030,17 +3051,37 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         """
         info = getattr(instrument, "info", None) or {}
         if isinstance(info, dict):
-            for key in keys:
-                value = info.get(key)
-                if value is not None:
-                    return normalize_venue_fee_rates({"instrument": value})["INSTRUMENT"]
+            rate = BettingArbitrageStrategy._rate_from_mapping(info, keys=keys, bps_keys=bps_keys)
+            if rate is not None:
+                return rate
             sports_market = info.get("sports_market")
             if isinstance(sports_market, dict):
-                for key in keys:
-                    value = sports_market.get(key)
-                    if value is not None:
-                        return normalize_venue_fee_rates({"instrument": value})["INSTRUMENT"]
+                rate = BettingArbitrageStrategy._rate_from_mapping(
+                    sports_market,
+                    keys=keys,
+                    bps_keys=bps_keys,
+                )
+                if rate is not None:
+                    return rate
         return venue_rates.get(str(instrument.id.venue).upper(), Decimal(0))
+
+    @staticmethod
+    def _rate_from_mapping(
+        payload: dict[str, object],
+        *,
+        keys: tuple[str, ...],
+        bps_keys: tuple[str, ...],
+    ) -> Decimal | None:
+        for key in keys:
+            value = payload.get(key)
+            if value is not None:
+                return normalize_venue_fee_rates({"instrument": str(value)})["INSTRUMENT"]
+        for key in bps_keys:
+            value = payload.get(key)
+            if value is not None:
+                rate = Decimal(str(value)) / Decimal(10_000)
+                return normalize_venue_fee_rates({"instrument": rate})["INSTRUMENT"]
+        return None
 
     def _pair_has_configured_fee(
         self,
