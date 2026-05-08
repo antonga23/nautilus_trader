@@ -192,7 +192,16 @@ jobs:
                   shutil.copy2(source, destination)
           PY
 
+      - name: Patch cached wheel with checked-out Python sources
+        if: steps.local-wheel-cache.outputs.cache-hit == 'true'
+        run: |
+          wheel_path="$(find dist -maxdepth 1 -name 'nautilus_trader-*.whl' -type f | sort | tail -n 1)"
+          test -n "$wheel_path"
+          python3 scripts/ci/patch_wheel_python_sources.py "$wheel_path"
+          ls -lh dist/
+
       - name: Build validated wheel from checked-out source
+        if: steps.local-wheel-cache.outputs.cache-hit != 'true'
         env:
           BUILD_MODE: release
         run: |
