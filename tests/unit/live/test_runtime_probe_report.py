@@ -300,7 +300,7 @@ def _runtime_status_payload() -> dict[str, object]:
                     "methodReasonCounts": {"default_shin": 5, "balanced_two_way": 3},
                     "convergenceCounts": {"analytic": 3, "converged": 5},
                     "valueBuckets": {
-                        "locked_arbitrage": 2,
+                        "locked_execution_safe_arbitrage": 2,
                         "sportsbook_value_edge": 1,
                         "fee_or_vig_erased_edge": 1,
                         "vig_only_edge": 4,
@@ -321,6 +321,33 @@ def _runtime_status_payload() -> dict[str, object]:
                         "p99": 0.018,
                         "max": 0.018,
                     },
+                },
+                "coverageBookDevigDiagnostics": {
+                    "sampledHyperedges": 3,
+                    "quotedHyperedges": 2,
+                    "incompleteHyperedges": 1,
+                    "methodCounts": {"shin": 2},
+                    "valueBuckets": {
+                        "coverage_locked_execution_safe_arbitrage": 1,
+                        "coverage_reference_book_incomplete": 1,
+                    },
+                    "overround": {"count": 2, "p50": 1.03, "p95": 1.04, "p99": 1.04, "max": 1.04},
+                    "vig": {"count": 2, "p50": 0.03, "p95": 0.04, "p99": 0.04, "max": 0.04},
+                    "rawProfitMargin": {
+                        "count": 2,
+                        "p50": 0.01,
+                        "p95": 0.02,
+                        "p99": 0.02,
+                        "max": 0.02,
+                    },
+                    "feeAdjustedProfitMargin": {
+                        "count": 2,
+                        "p50": 0.009,
+                        "p95": 0.018,
+                        "p99": 0.018,
+                        "max": 0.018,
+                    },
+                    "samples": [{"hyperedgeId": "h-1"}],
                 },
                 "blockerSamples": {
                     "void_settlement": [
@@ -520,10 +547,15 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
         "proportional": 3,
     }
     assert summary["candidateQuality"]["devigDiagnostics"]["valueBuckets"] == {
-        "locked_arbitrage": 2,
+        "locked_execution_safe_arbitrage": 2,
         "sportsbook_value_edge": 1,
         "fee_or_vig_erased_edge": 1,
         "vig_only_edge": 4,
+    }
+    assert summary["candidateQuality"]["coverageBookDevigDiagnostics"]["quotedHyperedges"] == 2
+    assert summary["candidateQuality"]["coverageBookDevigDiagnostics"]["valueBuckets"] == {
+        "coverage_locked_execution_safe_arbitrage": 1,
+        "coverage_reference_book_incomplete": 1,
     }
     assert summary["candidateQuality"]["topValueEdgeCandidates"] == [{"instrumentIdA": "v"}]
     assert summary["candidateQuality"]["topVigErasedCandidates"] == [{"instrumentIdA": "e"}]
@@ -793,7 +825,7 @@ def test_runtime_probe_report_aggregates_multiple_artifacts():
     assert aggregate["devigMethodCounts"] == {"proportional": 3, "shin": 5}
     assert aggregate["devigValueBucketCounts"] == {
         "fee_or_vig_erased_edge": 1,
-        "locked_arbitrage": 2,
+        "locked_execution_safe_arbitrage": 2,
         "sportsbook_value_edge": 1,
         "vig_only_edge": 4,
     }

@@ -992,6 +992,13 @@ def _collect_runtime_probe_payload(
         quotes=snapshot["quotes"],
         min_profit_margin=min_profit_margin,
     )
+    coverage_book_devig = _probe_coverage_book_devig_diagnostics(
+        strategy,
+        coverage_diagnostics=stats.get("opportunity_graph_coverage_summary", {}),
+        nodes=snapshot["nodes"],
+        quotes=snapshot["quotes"],
+        min_profit_margin=min_profit_margin,
+    )
     latency_diagnostics = _runtime_latency_diagnostics(stats, profitability)
     venue_coverage = _venue_pair_coverage(
         strategy,
@@ -1128,6 +1135,7 @@ def _collect_runtime_probe_payload(
                     "fee_adjusted_value_edge"
                 ],
             },
+            "coverageBookDevigDiagnostics": coverage_book_devig,
             "venuePairs": profitability["venue_pairs"],
             "marketFamilies": profitability["market_families"],
             "zeroCandidateVenuePairSamples": venue_coverage["zeroCandidateVenuePairs"],
@@ -1371,6 +1379,7 @@ def _empty_candidate_quality_payload() -> dict[str, object]:
         "topNegativeNearMisses": [],
         "topValueEdgeCandidates": [],
         "topVigErasedCandidates": [],
+        "coverageBookDevigDiagnostics": _empty_coverage_book_devig_payload(),
     }
 
 
@@ -1628,10 +1637,8 @@ def _zero_venue_pair_report(
     if reason == "missing_instruments":
         return report
 
-    source_nodes = _sample_probe_nodes_for_venue(nodes, source)
-    target_nodes = _sample_probe_nodes_for_venue(nodes, target)
-    source_event_keys = {_probe_event_key_no_time(node) for node in source_nodes}
-    target_event_keys = {_probe_event_key_no_time(node) for node in target_nodes}
+    source_event_keys = _event_keys_for_venue(nodes, source)
+    target_event_keys = _event_keys_for_venue(nodes, target)
     common_event_keys = sorted((source_event_keys & target_event_keys) - {""})
     if reason == "no_semantic_edge":
         report["blockerReason"] = (
@@ -1644,6 +1651,7 @@ def _zero_venue_pair_report(
     else:
         report["blockerReason"] = "pricing_or_threshold"
     report["commonEventKeyCount"] = len(common_event_keys)
+    report["commonEventKeySamples"] = common_event_keys[:5]
     report["sourceEventKeySamples"] = sorted(source_event_keys - {""})[:5]
     report["targetEventKeySamples"] = sorted(target_event_keys - {""})[:5]
     if reason == "no_semantic_edge" and not common_event_keys:
@@ -1652,6 +1660,16 @@ def _zero_venue_pair_report(
         report["samples"] = []
         return report
 
+    source_nodes = _sample_probe_nodes_for_venue(
+        nodes,
+        source,
+        preferred_event_keys=set(common_event_keys),
+    )
+    target_nodes = _sample_probe_nodes_for_venue(
+        nodes,
+        target,
+        preferred_event_keys=set(common_event_keys),
+    )
     market_family_pairs: Counter[str] = Counter()
     sample_blocker_counts: Counter[str] = Counter()
     samples: list[dict[str, object]] = []
@@ -1775,10 +1793,35 @@ def _zero_pair_blocker_hint(
     return ""
 
 
-def _sample_probe_nodes_for_venue(nodes: dict[Any, object], venue: str, limit: int = 40) -> list:
+def _event_keys_for_venue(nodes: dict[Any, object], venue: str) -> set[str]:
+    return {
+        _probe_event_key_no_time(node)
+        for node in nodes.values()
+        if _probe_node_venue(node) == venue
+    }
+
+
+def _sample_probe_nodes_for_venue(
+    nodes: dict[Any, object],
+    venue: str,
+    limit: int = 40,
+    preferred_event_keys: set[str] | None = None,
+) -> list:
     sampled: list[object] = []
+    preferred = preferred_event_keys or set()
+    if preferred:
+        for node in nodes.values():
+            if _probe_node_venue(node) != venue:
+                continue
+            if _probe_event_key_no_time(node) not in preferred:
+                continue
+            sampled.append(node)
+            if len(sampled) >= limit:
+                return sampled
     for node in nodes.values():
         if _probe_node_venue(node) != venue:
+            continue
+        if node in sampled:
             continue
         sampled.append(node)
         if len(sampled) >= limit:
@@ -2195,6 +2238,145 @@ def _top_counter(counter: Counter, limit: int = 10) -> list[dict[str, object]]:
     ]
 
 
+def _empty_coverage_book_devig_payload() -> dict[str, object]:
+    return {
+        "sampledHyperedges": 0,
+        "quotedHyperedges": 0,
+        "incompleteHyperedges": 0,
+        "methodCounts": {},
+        "valueBuckets": {},
+        "overround": _percentile_payload([]),
+        "vig": _percentile_payload([]),
+        "rawProfitMargin": _percentile_payload([]),
+        "feeAdjustedProfitMargin": _percentile_payload([]),
+        "samples": [],
+    }
+
+
+def _probe_coverage_book_devig_diagnostics(  # noqa: C901
+    strategy,
+    *,
+    coverage_diagnostics: object,
+    nodes: dict[Any, object],
+    quotes: dict[Any, object],
+    min_profit_margin: Decimal,
+) -> dict[str, object]:
+    if not isinstance(coverage_diagnostics, dict):
+        return _empty_coverage_book_devig_payload()
+    sample_hyperedges = coverage_diagnostics.get("sampleHyperedges")
+    if not isinstance(sample_hyperedges, list) or not sample_hyperedges:
+        return _empty_coverage_book_devig_payload()
+
+    method_counts: Counter[str] = Counter()
+    value_buckets: Counter[str] = Counter()
+    overround_samples: list[float] = []
+    vig_samples: list[float] = []
+    raw_margin_samples: list[float] = []
+    adjusted_margin_samples: list[float] = []
+    samples: list[dict[str, object]] = []
+    quoted_hyperedges = 0
+    incomplete_hyperedges = 0
+    adjuster = getattr(strategy, "fee_adjusted_coverage_basket", None)
+
+    for hyperedge in sample_hyperedges:
+        if not isinstance(hyperedge, dict):
+            continue
+        instrument_ids = tuple(str(item) for item in hyperedge.get("instrument_ids", ()) or ())
+        if len(instrument_ids) < 2 or not callable(adjuster):
+            incomplete_hyperedges += 1
+            value_buckets["coverage_reference_book_incomplete"] += 1
+            continue
+        missing_ids = [
+            instrument_id
+            for instrument_id in instrument_ids
+            if instrument_id not in nodes or instrument_id not in quotes
+        ]
+        if missing_ids:
+            incomplete_hyperedges += 1
+            value_buckets["coverage_reference_book_incomplete"] += 1
+            if len(samples) < 5:
+                samples.append(
+                    {
+                        "hyperedgeId": str(hyperedge.get("hyperedge_id") or ""),
+                        "coverageProofId": str(hyperedge.get("coverage_proof_id") or ""),
+                        "classification": "coverage_reference_book_incomplete",
+                        "missingInstrumentIds": missing_ids[:10],
+                    },
+                )
+            continue
+
+        try:
+            instruments = tuple(nodes[instrument_id].instrument for instrument_id in instrument_ids)
+            odds = tuple(
+                Decimal(str(quotes[instrument_id].odds)) for instrument_id in instrument_ids
+            )
+            adjusted = adjuster(instruments, odds)
+        except (AttributeError, ArithmeticError, TypeError, ValueError) as exc:
+            incomplete_hyperedges += 1
+            value_buckets["coverage_devig_method_failed"] += 1
+            if len(samples) < 5:
+                samples.append(
+                    {
+                        "hyperedgeId": str(hyperedge.get("hyperedge_id") or ""),
+                        "coverageProofId": str(hyperedge.get("coverage_proof_id") or ""),
+                        "classification": "coverage_devig_method_failed",
+                        "error": str(exc)[:240],
+                    },
+                )
+            continue
+
+        quoted_hyperedges += 1
+        method_counts[str(adjusted.devig_method or "none")] += 1
+        overround_samples.append(float(adjusted.overround))
+        vig_samples.append(float(adjusted.vig))
+        raw_margin_samples.append(float(adjusted.basket.raw_profit_margin))
+        adjusted_margin_samples.append(float(adjusted.basket.effective_profit_margin))
+        execution_safe = bool(hyperedge.get("execution_safe"))
+        if adjusted.basket.effective_profit_margin >= min_profit_margin:
+            classification = (
+                "coverage_locked_execution_safe_arbitrage"
+                if execution_safe
+                else "coverage_positive_non_executable_hyperedge"
+            )
+        elif adjusted.basket.effective_profit_margin > 0:
+            classification = "coverage_below_threshold"
+        else:
+            classification = "coverage_negative_margin"
+        value_buckets[classification] += 1
+        if len(samples) < 5:
+            samples.append(
+                {
+                    "hyperedgeId": str(hyperedge.get("hyperedge_id") or ""),
+                    "coverageProofId": str(hyperedge.get("coverage_proof_id") or ""),
+                    "instrumentIds": list(instrument_ids),
+                    "providerScope": list(hyperedge.get("provider_scope") or []),
+                    "safetyTier": str(hyperedge.get("safety_tier") or ""),
+                    "executionSafe": execution_safe,
+                    "classification": classification,
+                    "devigMethod": adjusted.devig_method,
+                    "bookOverround": str(adjusted.overround),
+                    "bookVig": str(adjusted.vig),
+                    "rawProfitMargin": str(adjusted.basket.raw_profit_margin),
+                    "feeAdjustedProfitMargin": str(adjusted.basket.effective_profit_margin),
+                    "basketRebateRate": str(adjusted.basket.basket_rebate_rate),
+                    "basketBoostRate": str(adjusted.basket.basket_boost_rate),
+                },
+            )
+
+    return {
+        "sampledHyperedges": len(sample_hyperedges),
+        "quotedHyperedges": quoted_hyperedges,
+        "incompleteHyperedges": incomplete_hyperedges,
+        "methodCounts": dict(method_counts),
+        "valueBuckets": dict(value_buckets),
+        "overround": _percentile_payload(overround_samples),
+        "vig": _percentile_payload(vig_samples),
+        "rawProfitMargin": _percentile_payload(raw_margin_samples),
+        "feeAdjustedProfitMargin": _percentile_payload(adjusted_margin_samples),
+        "samples": samples,
+    }
+
+
 def _probe_edge_profitability(
     strategy,
     *,
@@ -2557,6 +2739,15 @@ def _probe_devig_diagnostics(
         config=config,
         venue_a=venue_a,
         venue_b=venue_b,
+        execution_safe=bool(getattr(edge, "execution_safe", False)),
+        same_venue_execution_eligible=bool(
+            getattr(edge, "same_venue_execution_eligible", False),
+        ),
+        semantic_blocker_reason=(
+            ""
+            if bool(getattr(edge, "execution_safe", False))
+            else _semantic_non_execution_bucket(edge)
+        ),
         raw_profit_margin=raw_profit_margin,
         fee_adjusted_profit_margin=fee_adjusted_profit_margin,
         max_gross_value_edge=max_gross_value_edge,
@@ -2626,14 +2817,22 @@ def _probe_value_classification(
     config,
     venue_a: str,
     venue_b: str,
+    execution_safe: bool,
+    same_venue_execution_eligible: bool,
+    semantic_blocker_reason: str,
     raw_profit_margin: Decimal,
     fee_adjusted_profit_margin: Decimal,
     max_gross_value_edge: Decimal,
     max_fee_adjusted_value_edge: Decimal,
 ) -> str:
     min_value_edge = Decimal(str(getattr(config, "min_value_edge", Decimal("0.015"))))
-    if fee_adjusted_profit_margin >= Decimal(str(getattr(config, "min_profit_margin", 0))):
-        return "locked_arbitrage"
+    min_profit_margin = Decimal(str(getattr(config, "min_profit_margin", 0)))
+    if fee_adjusted_profit_margin >= min_profit_margin:
+        if execution_safe:
+            return "locked_execution_safe_arbitrage"
+        if same_venue_execution_eligible:
+            return "same_venue_positive_dry_run_edge"
+        return f"positive_non_executable_semantic_edge:{semantic_blocker_reason or 'unknown'}"
     if raw_profit_margin > 0 and fee_adjusted_profit_margin <= 0:
         return "fee_or_vig_erased_edge"
     if max_gross_value_edge > 0 and max_fee_adjusted_value_edge <= 0:
@@ -2846,8 +3045,9 @@ def _record_devig_quality(
     if value_classification in {
         "sportsbook_value_edge",
         "prediction_market_value_edge",
-        "locked_arbitrage",
-    }:
+        "locked_execution_safe_arbitrage",
+        "same_venue_positive_dry_run_edge",
+    } or value_classification.startswith("positive_non_executable_semantic_edge:"):
         counters.value_samples.append((net_edge, quality))
     if value_classification == "fee_or_vig_erased_edge":
         counters.vig_erased_samples.append((gross_edge, quality))

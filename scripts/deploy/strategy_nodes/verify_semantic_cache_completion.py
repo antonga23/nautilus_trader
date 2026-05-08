@@ -56,6 +56,7 @@ class SelectionCounters:
     selections_by_provider: Counter[str]
     selections_by_sport: Counter[str]
     sports_by_provider: dict[str, set[str]]
+    providers_by_sport: dict[str, set[str]]
 
 
 @dataclass(frozen=True)
@@ -176,6 +177,56 @@ def _normalize_sport(sport: object) -> str:
     return aliases.get(normalized, normalized)
 
 
+def _load_runtime_status_payload(path: Path | None) -> dict[str, Any]:
+    if path is None or not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _runtime_semantic_cache_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    semantic_cache = payload.get("semanticCache")
+    if not isinstance(semantic_cache, dict):
+        runtime_probe = payload.get("runtimeProbe")
+        if isinstance(runtime_probe, dict):
+            semantic_cache = runtime_probe.get("semanticCache")
+    return semantic_cache if isinstance(semantic_cache, dict) else {}
+
+
+def _sparse_sports_from_provider_coverage(coverage: dict[str, Any]) -> set[str]:
+    sports = {
+        _normalize_sport(raw_sport)
+        for raw_sport in coverage.get("sparse_sports") or coverage.get("sparseSports") or ()
+    }
+    sports_payload = coverage.get("sports")
+    if isinstance(sports_payload, dict):
+        sports.update(
+            _normalize_sport(raw_sport)
+            for raw_sport, sport_payload in sports_payload.items()
+            if isinstance(sport_payload, dict) and bool(sport_payload.get("sparse"))
+        )
+    return sports
+
+
+def _load_runtime_sparse_provider_sports(path: Path | None) -> dict[str, set[str]]:
+    semantic_cache = _runtime_semantic_cache_payload(_load_runtime_status_payload(path))
+    provider_coverage = semantic_cache.get("providerCorpusCoverage")
+    if not isinstance(provider_coverage, dict):
+        return {}
+
+    sparse_by_provider: dict[str, set[str]] = defaultdict(set)
+    for raw_provider, coverage in provider_coverage.items():
+        if not isinstance(coverage, dict):
+            continue
+        sparse_by_provider[str(raw_provider).upper()].update(
+            _sparse_sports_from_provider_coverage(coverage),
+        )
+    return sparse_by_provider
+
+
 def _providers_from_support(template: dict[str, Any]) -> tuple[str, ...]:
     support = template.get("support")
     if isinstance(support, dict):
@@ -248,15 +299,20 @@ def _sport_report(
     providers: tuple[str, ...],
     min_candidates: int,
     target_candidates: int,
+    sparse_providers: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     blockers: list[str] = []
     semantic_candidate_count = event_candidate_count + coverage_proof_count
+    sparse_runtime_tolerated = False
     if selection_count == 0:
         blockers.append("no_normalized_selections")
     if semantic_candidate_count == 0:
         blockers.append("no_semantic_candidates")
     elif semantic_candidate_count < min_candidates:
-        blockers.append("below_min_candidate_count")
+        if providers and set(providers) <= set(sparse_providers):
+            sparse_runtime_tolerated = True
+        else:
+            blockers.append("below_min_candidate_count")
     return {
         "sport": sport,
         "selection_count": selection_count,
@@ -267,11 +323,13 @@ def _sport_report(
         "template_candidate_count": template_candidate_count,
         "provider_count": len(providers),
         "providers": providers,
+        "sparse_providers": sparse_providers,
         "min_candidates": min_candidates,
         "target_candidates": target_candidates,
         "blockers": tuple(blockers),
         "passed": not blockers,
         "target_reached": semantic_candidate_count >= target_candidates,
+        "sparse_runtime_tolerated": sparse_runtime_tolerated,
     }
 
 
@@ -316,10 +374,12 @@ def _load_cache_collections(cache_dir: Path) -> CacheCollections:
 
 def _selection_counters(collections: CacheCollections) -> SelectionCounters:
     sports_by_provider: dict[str, set[str]] = defaultdict(set)
+    providers_by_sport: dict[str, set[str]] = defaultdict(set)
     for record in collections.normalized_records:
         provider = str(record.get("provider", "")).upper()
         sport = _normalize_sport((record.get("selection") or {}).get("sport"))
         sports_by_provider[provider].add(sport)
+        providers_by_sport[sport].add(provider)
 
     return SelectionCounters(
         manifests_by_provider=Counter(
@@ -333,6 +393,7 @@ def _selection_counters(collections: CacheCollections) -> SelectionCounters:
             for item in collections.normalized_records
         ),
         sports_by_provider=sports_by_provider,
+        providers_by_sport=providers_by_sport,
     )
 
 
@@ -458,9 +519,11 @@ def build_completion_report(
     target_sports: tuple[str, ...],
     min_candidates: int,
     target_candidates: int,
+    runtime_status_file: Path | None = None,
 ) -> dict[str, Any]:
     required = tuple(provider.upper() for provider in required_providers)
     sports = tuple(_normalize_sport(sport) for sport in target_sports)
+    runtime_sparse_provider_sports = _load_runtime_sparse_provider_sports(runtime_status_file)
 
     collections = _load_cache_collections(cache_dir)
     selection_counts = _selection_counters(collections)
@@ -481,20 +544,33 @@ def build_completion_report(
         )
         for provider in required
     )
-    sport_reports = tuple(
-        _sport_report(
-            sport=sport,
-            selection_count=selection_counts.selections_by_sport[sport],
-            event_candidate_count=candidate_counts.event_candidates_by_sport[sport],
-            coverage_proof_count=candidate_counts.coverage_proofs_by_sport[sport],
-            coverage_hyperedge_count=candidate_counts.coverage_hyperedges_by_sport[sport],
-            template_candidate_count=candidate_counts.template_candidates_by_sport[sport],
-            providers=tuple(sorted(candidate_counts.providers_by_sport[sport])),
-            min_candidates=min_candidates,
-            target_candidates=target_candidates,
+    sport_report_items: list[dict[str, Any]] = []
+    for sport in sports:
+        providers_for_sport = set(candidate_counts.providers_by_sport[sport])
+        if not providers_for_sport:
+            providers_for_sport.update(selection_counts.providers_by_sport[sport])
+        sparse_providers = tuple(
+            sorted(
+                provider
+                for provider in providers_for_sport
+                if sport in runtime_sparse_provider_sports.get(provider, set())
+            ),
         )
-        for sport in sports
-    )
+        sport_report_items.append(
+            _sport_report(
+                sport=sport,
+                selection_count=selection_counts.selections_by_sport[sport],
+                event_candidate_count=candidate_counts.event_candidates_by_sport[sport],
+                coverage_proof_count=candidate_counts.coverage_proofs_by_sport[sport],
+                coverage_hyperedge_count=candidate_counts.coverage_hyperedges_by_sport[sport],
+                template_candidate_count=candidate_counts.template_candidates_by_sport[sport],
+                providers=tuple(sorted(providers_for_sport)),
+                min_candidates=min_candidates,
+                target_candidates=target_candidates,
+                sparse_providers=sparse_providers,
+            ),
+        )
+    sport_reports = tuple(sport_report_items)
     passed = all(item["passed"] for item in providers) and all(
         item["passed"] for item in sport_reports
     )
@@ -504,6 +580,10 @@ def build_completion_report(
         "target_sports": sports,
         "min_candidates": min_candidates,
         "target_candidates": target_candidates,
+        "runtime_sparse_provider_sports": {
+            provider: tuple(sorted(sports))
+            for provider, sports in sorted(runtime_sparse_provider_sports.items())
+        },
         "total_normalized_selections": len(collections.normalized_records),
         "total_event_candidates": sum(candidate_counts.event_candidates_by_sport.values())
         if collections.template_candidates
@@ -540,6 +620,15 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--target-sport", action="append", default=[])
     parser.add_argument("--min-candidates", type=int, default=10)
     parser.add_argument("--target-candidates", type=int, default=20)
+    parser.add_argument(
+        "--runtime-status-file",
+        default=None,
+        help=(
+            "Optional deployed node status/runtime-summary JSON. When provided, sports marked "
+            "sparse by provider corpus coverage may pass a below-min candidate gate while "
+            "still requiring normalized selections and semantic candidates."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -551,6 +640,7 @@ def main() -> int:
         target_sports=tuple(args.target_sport),
         min_candidates=args.min_candidates,
         target_candidates=args.target_candidates,
+        runtime_status_file=Path(args.runtime_status_file) if args.runtime_status_file else None,
     )
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0 if report["passed"] else 1

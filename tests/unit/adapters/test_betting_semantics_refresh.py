@@ -1023,6 +1023,60 @@ def test_polymarket_corpus_accepts_deterministic_team_futures():
     assert market_names == {"american_football.winner_binary"}
 
 
+def test_polymarket_corpus_persists_gamma_fixture_markets_through_real_parser():
+    from nautilus_trader.adapters.polymarket.common.gamma_markets import (
+        normalize_gamma_market_to_clob_format,
+    )
+    from nautilus_trader.adapters.polymarket.common.parsing import parse_polymarket_instrument
+
+    ingestor = SnapshotIngestor(RuleStore(DictCache()))
+    market = {
+        "id": "gamma-market-1",
+        "conditionId": "conditionnba1",
+        "questionID": "questionnba1",
+        "question": "Will Los Angeles Lakers beat Denver Nuggets?",
+        "description": "Resolves to Yes if Los Angeles Lakers win the scheduled NBA game.",
+        "slug": "lakers-nuggets",
+        "sport": "nba",
+        "sportsTag": "nba",
+        "clobTokenIds": json.dumps(["yes", "no"]),
+        "outcomes": json.dumps(["Yes", "No"]),
+        "outcomePrices": json.dumps(["0.52", "0.48"]),
+        "active": True,
+        "closed": False,
+        "archived": False,
+        "endDateIso": "2027-01-03T03:00:00Z",
+        "startDateIso": "2027-01-03T01:00:00Z",
+        "orderPriceMinTickSize": "0.001",
+        "orderMinSize": 5,
+        "events": [
+            {
+                "id": "event-nba-1",
+                "title": "Los Angeles Lakers vs Denver Nuggets",
+                "slug": "lakers-vs-nuggets",
+                "sport": "basketball",
+                "startDate": "2027-01-03T01:00:00Z",
+                "startDateIso": "2027-01-03T01:00:00Z",
+            },
+        ],
+    }
+
+    records, sports, event_keys, market_names = ingestor._polymarket_normalized_records(
+        discovered_markets={"gamma-market-1": market},
+        normalize_gamma_market_to_clob_format=normalize_gamma_market_to_clob_format,
+        parse_polymarket_instrument=parse_polymarket_instrument,
+        transformer=PolymarketSportsTransformer,
+    )
+
+    assert len(records) == 2
+    assert sports == {"basketball"}
+    assert event_keys == {
+        "basketball|los_angeles_lakers|denver_nuggets|2027-01-03T01:00:00Z",
+    }
+    assert market_names == {"basketball.winner"}
+    assert {record.selection.selection for record in records} == {"HOME", "AWAY"}
+
+
 def test_polymarket_team_future_preserves_subject_specific_yes_no_states():
     info = {
         "condition_id": "0xnfl-vikings",
