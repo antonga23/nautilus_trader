@@ -345,6 +345,7 @@ def aggregate_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
     rejection_bucket_counts: dict[str, int] = {}
     semantic_blocker_counts: dict[str, int] = {}
     zero_candidate_blocker_counts: dict[str, int] = {}
+    fee_impact_bucket_counts: dict[str, int] = {}
     recommended_action_counts: dict[str, int] = {}
     provider_corpus_coverage: dict[str, dict[str, Any]] = {}
     for summary in summaries:
@@ -406,6 +407,10 @@ def aggregate_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
         _merge_nested_count_mapping(
             zero_candidate_blocker_counts,
             quality.get("zeroCandidateBlockerCounts"),
+        )
+        _merge_nested_count_mapping(
+            fee_impact_bucket_counts,
+            _as_dict(quality.get("feeAdjustment")).get("impactBuckets"),
         )
         for action in summary.get("recommendedActions") or []:
             key = str(action)
@@ -483,6 +488,7 @@ def aggregate_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
         "rejectionBucketCounts": dict(sorted(rejection_bucket_counts.items())),
         "semanticBlockerCounts": dict(sorted(semantic_blocker_counts.items())),
         "zeroCandidateBlockerCounts": dict(sorted(zero_candidate_blocker_counts.items())),
+        "feeImpactBucketCounts": dict(sorted(fee_impact_bucket_counts.items())),
         "providerCorpusCoverage": provider_corpus_coverage,
         "recommendedActionCounts": dict(sorted(recommended_action_counts.items())),
     }
@@ -1055,6 +1061,11 @@ def _format_quality_lines(quality: dict[str, Any]) -> list[str]:
             f"{key}={value}" for key, value in sorted(zero_candidate_blockers.items())
         )
         lines.append(f"  zero_candidate_blockers {rendered}")
+    fee_adjustment = _as_dict(quality.get("feeAdjustment"))
+    fee_impact = _as_dict(fee_adjustment.get("impactBuckets"))
+    if fee_impact:
+        rendered = ", ".join(f"{key}={value}" for key, value in sorted(fee_impact.items()))
+        lines.append(f"  fee_impact {rendered}")
     latency = quality.get("latencyHistograms") or {}
     if isinstance(latency, dict) and latency:
         quote_age = _as_dict(latency.get("quoteAgeSeconds"))
