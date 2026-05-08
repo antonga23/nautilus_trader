@@ -93,7 +93,10 @@ class TestBettingArbitrageConfig:  # skipcq
         ensure(config.instrument_refresh_interval_secs is None)
         ensure(config.stale_quote_refresh_cooldown_secs == 60.0)
         ensure(config.venue_taker_fee_rates == {"POLYMARKET": Decimal("0.03")})
+        ensure(config.venue_maker_rebate_rates == {})
         ensure(config.venue_winning_profit_fee_rates == {})
+        ensure(config.venue_basket_rebate_rates == {})
+        ensure(config.venue_basket_boost_rates == {})
 
     def test_custom_venues(self):  # skipcq
         """
@@ -178,17 +181,25 @@ class TestBettingArbitrageConfig:  # skipcq
     def test_venue_fee_rate_validation(self):  # skipcq
         config = BettingArbitrageConfig(
             venue_taker_fee_rates={" polymarket ": "0.02", "sxbet": Decimal("0.01")},
+            venue_maker_rebate_rates={"polymarket": "0.0075"},
             venue_winning_profit_fee_rates={"cloudbet": "0.005"},
+            venue_basket_rebate_rates={"sxbet": "0.02"},
+            venue_basket_boost_rates={"cloudbet": "0.015"},
         )
 
         ensure(
             config.venue_taker_fee_rates
             == {"POLYMARKET": Decimal("0.02"), "SXBET": Decimal("0.01")},
         )
+        ensure(config.venue_maker_rebate_rates == {"POLYMARKET": Decimal("0.0075")})
         ensure(config.venue_winning_profit_fee_rates == {"CLOUDBET": Decimal("0.005")})
+        ensure(config.venue_basket_rebate_rates == {"SXBET": Decimal("0.02")})
+        ensure(config.venue_basket_boost_rates == {"CLOUDBET": Decimal("0.015")})
 
         with pytest.raises(ValueError, match="less than 1"):
             BettingArbitrageConfig(venue_taker_fee_rates={"POLYMARKET": "1.0"})
+        with pytest.raises(ValueError, match="non-negative"):
+            BettingArbitrageConfig(venue_maker_rebate_rates={"POLYMARKET": "-0.01"})
 
     def test_quote_freshness_profile_validation(self):  # skipcq
         for profile in ["pre_match", "live", "custom"]:
@@ -367,6 +378,72 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(adjusted.fee_drag > 0)
         ensure(adjusted.taker_fee_rate_a == Decimal("0.03"))
         ensure(adjusted.taker_fee_rate_b == Decimal(0))
+        ensure(adjusted.maker_rebate_rate_a == Decimal(0))
+        ensure(adjusted.maker_rebate_rate_b == Decimal(0))
+
+    def test_fee_adjusted_opportunity_uses_market_fee_metadata_over_venue_defaults(self):  # skipcq
+        """
+        Polymarket-like markets can provide per-market taker/rebate parameters.
+        """
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["POLYMARKET", "SXBET"]),
+                venue_taker_fee_rates={"POLYMARKET": "0.03"},
+                venue_maker_rebate_rates={"POLYMARKET": "0.001"},
+            ),
+        )
+        polymarket = self._sxbet_instrument(
+            event_id="event-1",
+            venue="POLYMARKET",
+            outcome="over",
+            info={
+                "taker_fee_rate": "0.01",
+                "maker_rebate_rate": "0.004",
+            },
+        )
+        sxbet = self._sxbet_instrument(event_id="event-1", venue="SXBET", outcome="under")
+        opportunity = MarketMatcher().check_arbitrage(
+            polymarket,
+            sxbet,
+            odds_a=Decimal("2.02"),
+            odds_b=Decimal("2.02"),
+        )
+
+        ensure(opportunity is not None)
+        adjusted = strategy.fee_adjusted_opportunity(opportunity)
+
+        ensure(adjusted.taker_fee_rate_a == Decimal("0.01"))
+        ensure(adjusted.maker_rebate_rate_a == Decimal("0.004"))
+        ensure(adjusted.profit_margin < adjusted.raw_profit_margin)
+        ensure(adjusted.fee_drag > 0)
+
+    def test_fee_adjusted_opportunity_applies_pair_basket_incentives(self):  # skipcq
+        """
+        Basket-level rewards can improve a covered pair without changing safety tiers.
+        """
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["CLOUDBET", "SXBET"]),
+                venue_basket_rebate_rates={"SXBET": "0.01"},
+                venue_basket_boost_rates={"SXBET": "0.02"},
+            ),
+        )
+        sxbet = self._sxbet_instrument(event_id="event-1", venue="SXBET", outcome="over")
+        cloudbet = self._sxbet_instrument(event_id="event-1", venue="CLOUDBET", outcome="under")
+        opportunity = MarketMatcher().check_arbitrage(
+            sxbet,
+            cloudbet,
+            odds_a=Decimal("2.02"),
+            odds_b=Decimal("2.02"),
+        )
+
+        ensure(opportunity is not None)
+        adjusted = strategy.fee_adjusted_opportunity(opportunity)
+
+        ensure(adjusted.basket_rebate_rate == Decimal("0.01"))
+        ensure(adjusted.basket_boost_rate == Decimal("0.02"))
+        ensure(adjusted.profit_margin > adjusted.raw_profit_margin)
+        ensure(adjusted.fee_drag < 0)
 
     def test_fee_adjusted_margin_blocks_raw_only_opportunity_candidate(self):  # skipcq
         """
@@ -447,7 +524,10 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure("semantic_quote_subscription_limit_by_venue" in stats)
         ensure("semantic_quote_subscription_limit_exceeded_by_venue" in stats)
         ensure(stats["venue_taker_fee_rates"] == {"POLYMARKET": "0.03"})
+        ensure(stats["venue_maker_rebate_rates"] == {})
         ensure(stats["venue_winning_profit_fee_rates"] == {})
+        ensure(stats["venue_basket_rebate_rates"] == {})
+        ensure(stats["venue_basket_boost_rates"] == {})
         ensure("instrument_refresh_by_venue" in stats)
         ensure("provider_quote_poll_stats" in stats)
         ensure("success_rate" in stats)

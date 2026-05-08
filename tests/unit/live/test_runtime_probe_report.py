@@ -102,7 +102,10 @@ def _runtime_status_payload() -> dict[str, object]:
             },
             "feePolicy": {
                 "venueTakerFeeRates": {"POLYMARKET": "0.03"},
+                "venueMakerRebateRates": {"POLYMARKET": "0.0075"},
                 "venueWinningProfitFeeRates": {},
+                "venueBasketRebateRates": {"SXBET": "0.01"},
+                "venueBasketBoostRates": {"CLOUDBET": "0.02"},
             },
             "graphNodes": 40,
             "graphEdges": 22,
@@ -466,6 +469,9 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
     assert summary["candidateQuality"]["feeAdjustment"]["evaluatedEdges"] == 8
     assert summary["candidateQuality"]["feeAdjustment"]["feeDragMargin"]["p95"] == 0.003
     assert summary["feePolicy"]["venueTakerFeeRates"] == {"POLYMARKET": "0.03"}
+    assert summary["feePolicy"]["venueMakerRebateRates"] == {"POLYMARKET": "0.0075"}
+    assert summary["feePolicy"]["venueBasketRebateRates"] == {"SXBET": "0.01"}
+    assert summary["feePolicy"]["venueBasketBoostRates"] == {"CLOUDBET": "0.02"}
     assert summary["candidateQuality"]["diagnosticWarnings"] == [
         "live_fetch_latency_slo_violations",
     ]
@@ -545,7 +551,11 @@ def test_runtime_probe_report_formats_execution_readiness_line():
         in rendered
     )
     assert "CLOUDBET(exec=True,dry_run=True,env=paper,base=PLAY_EUR)" in rendered
-    assert "fee_policy taker={'POLYMARKET': '0.03'} winning_profit={}" in rendered
+    assert (
+        "fee_policy taker={'POLYMARKET': '0.03'} "
+        "maker_rebate={'POLYMARKET': '0.0075'} winning_profit={} "
+        "basket_rebate={'SXBET': '0.01'} basket_boost={'CLOUDBET': '0.02'}"
+    ) in rendered
     assert "semantic_cache_execution_safe_families TOTALS + TOTALS=25" in rendered
     assert "corpus_coverage provider=SXBET mode=active_live sports=3/6 selections=842" in rendered
 

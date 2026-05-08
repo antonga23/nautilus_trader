@@ -8,6 +8,7 @@ from decimal import Decimal
 
 import pytest
 
+from nautilus_trader.adapters.betting.common.fees import fee_adjusted_basket_margin
 from nautilus_trader.adapters.betting.common.fees import fee_adjusted_odds
 from nautilus_trader.adapters.betting.common.fees import normalize_venue_fee_rates
 from nautilus_trader.adapters.betting.common.odds import calculate_arbitrage_stakes
@@ -176,6 +177,26 @@ class TestFeeAdjustedOdds:
 
         assert adjusted.effective_odds == Decimal("2.80")
         assert adjusted.effective_probability == Decimal(1) / Decimal("2.80")
+
+    def test_prediction_market_maker_rebate_increases_effective_odds(self):
+        adjusted = fee_adjusted_odds(Decimal("2.02"), maker_rebate_rate=Decimal("0.01"))
+
+        assert adjusted.effective_odds > adjusted.raw_odds
+        assert adjusted.effective_probability < adjusted.raw_probability
+        assert adjusted.maker_rebate_fraction == Decimal("0.01") * (
+            Decimal(1) - (Decimal(1) / Decimal("2.02"))
+        )
+
+    def test_basket_rebate_and_boost_improve_coverage_margin(self):
+        basket = fee_adjusted_basket_margin(
+            (Decimal("0.49"), Decimal("0.49")),
+            basket_rebate_rate=Decimal("0.01"),
+            basket_boost_rate=Decimal("0.02"),
+        )
+
+        assert basket.raw_profit_margin == (Decimal(1) / Decimal("0.98")) - Decimal(1)
+        assert basket.effective_profit_margin > basket.raw_profit_margin
+        assert basket.incentive_margin_delta > Decimal(0)
 
     def test_normalize_venue_fee_rates_uppercases_and_validates(self):
         assert normalize_venue_fee_rates({" polymarket ": "0.03"}) == {

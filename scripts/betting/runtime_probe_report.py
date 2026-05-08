@@ -898,7 +898,7 @@ def _format_text(path: Path, summary: dict[str, Any]) -> str:
     if venue_coverage_health:
         lines.append(f"  venue_coverage_health {venue_coverage_health}")
     lines.extend(
-        _format_semantic_cache_corpus_health_lines(summary.get("semanticCacheCorpusHealth"))
+        _format_semantic_cache_corpus_health_lines(summary.get("semanticCacheCorpusHealth")),
     )
     lines.extend(_format_refresh_lines(summary.get("instrumentRefresh")))
     lines.extend(_format_semantic_diagnostic_lines(summary.get("semanticDiagnostics")))
@@ -945,13 +945,19 @@ def _format_operator_health_line(value: Any) -> str:
 def _format_fee_policy_lines(value: Any) -> list[str]:
     fee_policy = value if isinstance(value, dict) else {}
     taker = _as_dict(fee_policy.get("venueTakerFeeRates"))
+    maker_rebate = _as_dict(fee_policy.get("venueMakerRebateRates"))
     winning = _as_dict(fee_policy.get("venueWinningProfitFeeRates"))
-    if not taker and not winning:
+    basket_rebate = _as_dict(fee_policy.get("venueBasketRebateRates"))
+    basket_boost = _as_dict(fee_policy.get("venueBasketBoostRates"))
+    if not taker and not maker_rebate and not winning and not basket_rebate and not basket_boost:
         return []
     return [
         "  fee_policy "
         f"taker={dict(sorted(taker.items()))} "
-        f"winning_profit={dict(sorted(winning.items()))}"
+        f"maker_rebate={dict(sorted(maker_rebate.items()))} "
+        f"winning_profit={dict(sorted(winning.items()))} "
+        f"basket_rebate={dict(sorted(basket_rebate.items()))} "
+        f"basket_boost={dict(sorted(basket_boost.items()))}",
     ]
 
 
@@ -1779,7 +1785,8 @@ def _semantic_cache_corpus_health(provider_corpus_coverage: dict[str, Any]) -> d
 
     overall = "pass"
     for provider, raw_report in sorted(
-        provider_corpus_coverage.items(), key=lambda item: str(item[0])
+        provider_corpus_coverage.items(),
+        key=lambda item: str(item[0]),
     ):
         report = _as_dict(raw_report)
         reasons: list[str] = []
@@ -2008,7 +2015,7 @@ def _float_value(value: Any) -> float:
     return 0.0
 
 
-def _ratio(numerator: int, denominator: int) -> float:
+def _ratio(numerator: float, denominator: float) -> float:
     if denominator <= 0:
         return 0.0
     return max(0.0, float(numerator) / float(denominator))

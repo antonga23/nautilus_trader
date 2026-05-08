@@ -28,6 +28,7 @@ import time
 import msgspec
 
 from nautilus_trader.adapters.betting.common.fees import DEFAULT_TAKER_FEE_RATES
+from nautilus_trader.adapters.betting.common.fees import fee_adjusted_basket_margin
 from nautilus_trader.adapters.betting.common.fees import fee_adjusted_odds
 from nautilus_trader.adapters.betting.common.fees import normalize_venue_fee_rates
 from nautilus_trader.adapters.betting.common.odds import calculate_arbitrage_stakes
@@ -142,8 +143,12 @@ class ArbitrageDiagnostics:  # skipcq
     fee_adjusted_total_probability: Decimal
     taker_fee_rate_a: Decimal
     taker_fee_rate_b: Decimal
+    maker_rebate_rate_a: Decimal
+    maker_rebate_rate_b: Decimal
     winning_profit_fee_rate_a: Decimal
     winning_profit_fee_rate_b: Decimal
+    basket_rebate_rate: Decimal
+    basket_boost_rate: Decimal
     available_size_a: Decimal
     available_size_b: Decimal
     classification: str
@@ -226,8 +231,17 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
     venue_taker_fee_rates : dict[str, Decimal], default {"POLYMARKET": Decimal("0.03")}
         Venue-level taker fee-rate parameters. Prediction-market venues use the
         protocol formula ``shares * rate * price * (1 - price)``.
+    venue_maker_rebate_rates : dict[str, Decimal], default {}
+        Venue-level maker rebate-rate parameters. These use the same
+        prediction-market curve as taker fees, but reduce effective stake cost
+        for passive fills.
     venue_winning_profit_fee_rates : dict[str, Decimal], default {}
         Venue-level fee rates applied only to winning profit.
+    venue_basket_rebate_rates : dict[str, Decimal], default {}
+        Venue-level basket reward/cashback rate applied to the covered set,
+        useful for parlay-style or temporary promotion accounting.
+    venue_basket_boost_rates : dict[str, Decimal], default {}
+        Venue-level return boost rate applied to the covered set.
 
     """
 
@@ -257,7 +271,10 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
     instrument_refresh_interval_secs: float | None = None
     stale_quote_refresh_cooldown_secs: float | None = 60.0
     venue_taker_fee_rates: dict[str, Decimal] = {}
+    venue_maker_rebate_rates: dict[str, Decimal] = {}
     venue_winning_profit_fee_rates: dict[str, Decimal] = {}
+    venue_basket_rebate_rates: dict[str, Decimal] = {}
+    venue_basket_boost_rates: dict[str, Decimal] = {}
 
     def __post_init__(self) -> None:
         """
@@ -283,8 +300,17 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
             self.venue_taker_fee_rates,
             defaults=DEFAULT_TAKER_FEE_RATES,
         )
+        venue_maker_rebate_rates = normalize_venue_fee_rates(
+            self.venue_maker_rebate_rates,
+        )
         venue_winning_profit_fee_rates = normalize_venue_fee_rates(
             self.venue_winning_profit_fee_rates,
+        )
+        venue_basket_rebate_rates = normalize_venue_fee_rates(
+            self.venue_basket_rebate_rates,
+        )
+        venue_basket_boost_rates = normalize_venue_fee_rates(
+            self.venue_basket_boost_rates,
         )
         opportunity_graph_engine = self.opportunity_graph_engine.strip().lower()
         quote_freshness_profile = self.quote_freshness_profile.strip().lower()
@@ -347,8 +373,23 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         msgspec.structs.force_setattr(self, "venue_taker_fee_rates", venue_taker_fee_rates)
         msgspec.structs.force_setattr(
             self,
+            "venue_maker_rebate_rates",
+            venue_maker_rebate_rates,
+        )
+        msgspec.structs.force_setattr(
+            self,
             "venue_winning_profit_fee_rates",
             venue_winning_profit_fee_rates,
+        )
+        msgspec.structs.force_setattr(
+            self,
+            "venue_basket_rebate_rates",
+            venue_basket_rebate_rates,
+        )
+        msgspec.structs.force_setattr(
+            self,
+            "venue_basket_boost_rates",
+            venue_basket_boost_rates,
         )
         msgspec.structs.force_setattr(self, "quote_freshness_profile", quote_freshness_profile)
         msgspec.structs.force_setattr(
@@ -2224,8 +2265,12 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             fee_adjusted_total_probability=opportunity.total_probability,
             taker_fee_rate_a=opportunity.taker_fee_rate_a,
             taker_fee_rate_b=opportunity.taker_fee_rate_b,
+            maker_rebate_rate_a=opportunity.maker_rebate_rate_a,
+            maker_rebate_rate_b=opportunity.maker_rebate_rate_b,
             winning_profit_fee_rate_a=opportunity.winning_profit_fee_rate_a,
             winning_profit_fee_rate_b=opportunity.winning_profit_fee_rate_b,
+            basket_rebate_rate=opportunity.basket_rebate_rate,
+            basket_boost_rate=opportunity.basket_boost_rate,
             available_size_a=available_size_a,
             available_size_b=available_size_b,
             classification=classification,
@@ -2453,6 +2498,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             f"selection={diagnostics.outcome_a!r} "
             f"odds={diagnostics.odds_a} "
             f"taker_fee_rate={diagnostics.taker_fee_rate_a} "
+            f"maker_rebate_rate={diagnostics.maker_rebate_rate_a} "
             f"winning_profit_fee_rate={diagnostics.winning_profit_fee_rate_a} "
             f"market_id={diagnostics.market_id_a} "
             f"available_size={diagnostics.available_size_a} "
@@ -2468,6 +2514,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             f"selection={diagnostics.outcome_b!r} "
             f"odds={diagnostics.odds_b} "
             f"taker_fee_rate={diagnostics.taker_fee_rate_b} "
+            f"maker_rebate_rate={diagnostics.maker_rebate_rate_b} "
             f"winning_profit_fee_rate={diagnostics.winning_profit_fee_rate_b} "
             f"market_id={diagnostics.market_id_b} "
             f"available_size={diagnostics.available_size_b} "
@@ -2529,6 +2576,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             f"raw_profit_margin={diagnostics.raw_profit_margin} "
             f"fee_adjusted_profit_margin={diagnostics.fee_adjusted_profit_margin} "
             f"fee_drag={diagnostics.fee_drag} "
+            f"basket_rebate_rate={diagnostics.basket_rebate_rate} "
+            f"basket_boost_rate={diagnostics.basket_boost_rate} "
             f"raw_total_probability={diagnostics.raw_total_probability} "
             f"fee_adjusted_total_probability={diagnostics.fee_adjusted_total_probability} "
             f"max_total_stake={self._config.max_total_stake}"
@@ -2645,8 +2694,12 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             fee_adjusted_total_probability=opportunity.total_probability,
             taker_fee_rate_a=opportunity.taker_fee_rate_a,
             taker_fee_rate_b=opportunity.taker_fee_rate_b,
+            maker_rebate_rate_a=opportunity.maker_rebate_rate_a,
+            maker_rebate_rate_b=opportunity.maker_rebate_rate_b,
             winning_profit_fee_rate_a=opportunity.winning_profit_fee_rate_a,
             winning_profit_fee_rate_b=opportunity.winning_profit_fee_rate_b,
+            basket_rebate_rate=opportunity.basket_rebate_rate,
+            basket_boost_rate=opportunity.basket_boost_rate,
             available_size_a=available_size_a,
             available_size_b=available_size_b,
             classification=classification,
@@ -2772,11 +2825,13 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         fee_a = fee_adjusted_odds(
             opportunity.odds_a,
             taker_fee_rate=self.venue_taker_fee_rate(opportunity.instrument_a),
+            maker_rebate_rate=self.venue_maker_rebate_rate(opportunity.instrument_a),
             winning_profit_fee_rate=self.venue_winning_profit_fee_rate(opportunity.instrument_a),
         )
         fee_b = fee_adjusted_odds(
             opportunity.odds_b,
             taker_fee_rate=self.venue_taker_fee_rate(opportunity.instrument_b),
+            maker_rebate_rate=self.venue_maker_rebate_rate(opportunity.instrument_b),
             winning_profit_fee_rate=self.venue_winning_profit_fee_rate(opportunity.instrument_b),
         )
         raw_probability_a = opportunity.raw_probability_a or (Decimal(1) / opportunity.odds_a)
@@ -2787,8 +2842,22 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         raw_profit_margin = opportunity.raw_profit_margin or (
             (Decimal(1) / raw_total_probability) - Decimal(1)
         )
-        adjusted_total_probability = fee_a.effective_probability + fee_b.effective_probability
-        adjusted_profit_margin = (Decimal(1) / adjusted_total_probability) - Decimal(1)
+        basket_rebate_rate = self.pair_basket_rebate_rate(
+            opportunity.instrument_a,
+            opportunity.instrument_b,
+        )
+        basket_boost_rate = self.pair_basket_boost_rate(
+            opportunity.instrument_a,
+            opportunity.instrument_b,
+        )
+        adjusted_basket = fee_adjusted_basket_margin(
+            (fee_a.effective_probability, fee_b.effective_probability),
+            raw_probabilities=(raw_probability_a, raw_probability_b),
+            basket_rebate_rate=basket_rebate_rate,
+            basket_boost_rate=basket_boost_rate,
+        )
+        adjusted_total_probability = adjusted_basket.effective_total_probability
+        adjusted_profit_margin = adjusted_basket.effective_profit_margin
         return replace(
             opportunity,
             probability_a=fee_a.effective_probability,
@@ -2805,24 +2874,112 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             fee_adjusted_odds_b=fee_b.effective_odds,
             taker_fee_rate_a=fee_a.taker_fee_rate,
             taker_fee_rate_b=fee_b.taker_fee_rate,
+            maker_rebate_rate_a=fee_a.maker_rebate_rate,
+            maker_rebate_rate_b=fee_b.maker_rebate_rate,
             winning_profit_fee_rate_a=fee_a.winning_profit_fee_rate,
             winning_profit_fee_rate_b=fee_b.winning_profit_fee_rate,
+            basket_rebate_rate=adjusted_basket.basket_rebate_rate,
+            basket_boost_rate=adjusted_basket.basket_boost_rate,
         )
 
     def venue_taker_fee_rate(self, instrument: Instrument) -> Decimal:
         """
-        Return the configured taker fee-rate parameter for an instrument venue.
+        Return the taker fee-rate parameter for an instrument venue or market.
         """
-        return self._config.venue_taker_fee_rates.get(str(instrument.id.venue).upper(), Decimal(0))
+        return self._instrument_fee_rate(
+            instrument,
+            keys=("taker_fee_rate", "fee_rate", "polymarket_fee_rate", "market_fee_rate"),
+            venue_rates=self._config.venue_taker_fee_rates,
+        )
+
+    def venue_maker_rebate_rate(self, instrument: Instrument) -> Decimal:
+        """
+        Return the maker rebate-rate parameter for an instrument venue or market.
+        """
+        return self._instrument_fee_rate(
+            instrument,
+            keys=("maker_rebate_rate", "rebate_rate", "polymarket_maker_rebate_rate"),
+            venue_rates=self._config.venue_maker_rebate_rates,
+        )
 
     def venue_winning_profit_fee_rate(self, instrument: Instrument) -> Decimal:
         """
-        Return the configured winning-profit commission for an instrument venue.
+        Return the winning-profit commission for an instrument venue or market.
         """
-        return self._config.venue_winning_profit_fee_rates.get(
-            str(instrument.id.venue).upper(),
-            Decimal(0),
+        return self._instrument_fee_rate(
+            instrument,
+            keys=("winning_profit_fee_rate", "commission_rate", "profit_fee_rate"),
+            venue_rates=self._config.venue_winning_profit_fee_rates,
         )
+
+    def pair_basket_rebate_rate(
+        self,
+        instrument_a: Instrument,
+        instrument_b: Instrument,
+    ) -> Decimal:
+        """
+        Return the basket-level cashback/reward rate for a covered candidate.
+        """
+        return self._pair_basket_rate(
+            instrument_a,
+            instrument_b,
+            keys=("basket_rebate_rate", "promo_rebate_rate", "reward_rebate_rate"),
+            venue_rates=self._config.venue_basket_rebate_rates,
+        )
+
+    def pair_basket_boost_rate(
+        self,
+        instrument_a: Instrument,
+        instrument_b: Instrument,
+    ) -> Decimal:
+        """
+        Return the basket-level return boost rate for a covered candidate.
+        """
+        return self._pair_basket_rate(
+            instrument_a,
+            instrument_b,
+            keys=("basket_boost_rate", "odds_boost_rate", "reward_boost_rate"),
+            venue_rates=self._config.venue_basket_boost_rates,
+        )
+
+    @classmethod
+    def _pair_basket_rate(
+        cls,
+        instrument_a: Instrument,
+        instrument_b: Instrument,
+        *,
+        keys: tuple[str, ...],
+        venue_rates: dict[str, Decimal],
+    ) -> Decimal:
+        rates = (
+            cls._instrument_fee_rate(instrument_a, keys=keys, venue_rates=venue_rates),
+            cls._instrument_fee_rate(instrument_b, keys=keys, venue_rates=venue_rates),
+        )
+        return max(rates)
+
+    @staticmethod
+    def _instrument_fee_rate(
+        instrument: Instrument,
+        *,
+        keys: tuple[str, ...],
+        venue_rates: dict[str, Decimal],
+    ) -> Decimal:
+        """
+        Return instrument-specific fee metadata before falling back to venue defaults.
+        """
+        info = getattr(instrument, "info", None) or {}
+        if isinstance(info, dict):
+            for key in keys:
+                value = info.get(key)
+                if value is not None:
+                    return normalize_venue_fee_rates({"instrument": value})["INSTRUMENT"]
+            sports_market = info.get("sports_market")
+            if isinstance(sports_market, dict):
+                for key in keys:
+                    value = sports_market.get(key)
+                    if value is not None:
+                        return normalize_venue_fee_rates({"instrument": value})["INSTRUMENT"]
+        return venue_rates.get(str(instrument.id.venue).upper(), Decimal(0))
 
     def _pair_has_configured_fee(
         self,
@@ -2833,8 +2990,12 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             (
                 self.venue_taker_fee_rate(instrument_a),
                 self.venue_taker_fee_rate(instrument_b),
+                self.venue_maker_rebate_rate(instrument_a),
+                self.venue_maker_rebate_rate(instrument_b),
                 self.venue_winning_profit_fee_rate(instrument_a),
                 self.venue_winning_profit_fee_rate(instrument_b),
+                self.pair_basket_rebate_rate(instrument_a, instrument_b),
+                self.pair_basket_boost_rate(instrument_a, instrument_b),
             ),
         )
 
@@ -3031,7 +3192,9 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 f"same_quote_cycle={diagnostics.same_quote_cycle}"
                 f" raw_profit_margin={diagnostics.raw_profit_margin} "
                 f"fee_adjusted_profit_margin={diagnostics.fee_adjusted_profit_margin} "
-                f"fee_drag={diagnostics.fee_drag}"
+                f"fee_drag={diagnostics.fee_drag} "
+                f"basket_rebate_rate={diagnostics.basket_rebate_rate} "
+                f"basket_boost_rate={diagnostics.basket_boost_rate}"
                 f"{self._manual_execution_plan(diagnostics)}"
             )
 
@@ -3192,9 +3355,21 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 venue: str(rate)
                 for venue, rate in sorted(self._config.venue_taker_fee_rates.items())
             },
+            "venue_maker_rebate_rates": {
+                venue: str(rate)
+                for venue, rate in sorted(self._config.venue_maker_rebate_rates.items())
+            },
             "venue_winning_profit_fee_rates": {
                 venue: str(rate)
                 for venue, rate in sorted(self._config.venue_winning_profit_fee_rates.items())
+            },
+            "venue_basket_rebate_rates": {
+                venue: str(rate)
+                for venue, rate in sorted(self._config.venue_basket_rebate_rates.items())
+            },
+            "venue_basket_boost_rates": {
+                venue: str(rate)
+                for venue, rate in sorted(self._config.venue_basket_boost_rates.items())
             },
             "opportunity_graph_nodes": self._opportunity_graph.node_count,
             "opportunity_graph_edges": self._opportunity_graph.edge_count,

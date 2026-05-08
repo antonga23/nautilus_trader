@@ -63,8 +63,12 @@ class ArbitrageOpportunity:
     fee_adjusted_odds_b: Decimal | None = None
     taker_fee_rate_a: Decimal = Decimal(0)
     taker_fee_rate_b: Decimal = Decimal(0)
+    maker_rebate_rate_a: Decimal = Decimal(0)
+    maker_rebate_rate_b: Decimal = Decimal(0)
     winning_profit_fee_rate_a: Decimal = Decimal(0)
     winning_profit_fee_rate_b: Decimal = Decimal(0)
+    basket_rebate_rate: Decimal = Decimal(0)
+    basket_boost_rate: Decimal = Decimal(0)
 
     @property
     def is_arbitrage(self) -> bool:

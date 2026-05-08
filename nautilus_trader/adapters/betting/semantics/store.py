@@ -93,7 +93,7 @@ class FileRuleCache:
             return {}
         try:
             payload = json.loads(self._key_index_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError, ValueError):
+        except (OSError, ValueError):
             return {}
         return {str(key): str(value) for key, value in payload.items()}
 

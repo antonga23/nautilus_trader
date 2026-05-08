@@ -984,7 +984,10 @@ def _collect_runtime_probe_payload(
         "coverageDiagnostics": stats.get("opportunity_graph_coverage_summary", {}),
         "feePolicy": {
             "venueTakerFeeRates": stats.get("venue_taker_fee_rates", {}),
+            "venueMakerRebateRates": stats.get("venue_maker_rebate_rates", {}),
             "venueWinningProfitFeeRates": stats.get("venue_winning_profit_fee_rates", {}),
+            "venueBasketRebateRates": stats.get("venue_basket_rebate_rates", {}),
+            "venueBasketBoostRates": stats.get("venue_basket_boost_rates", {}),
         },
         "semanticMatchInstruments": len(snapshot["matched_node_ids"]),
         "quotedSemanticMatchInstruments": sum(
@@ -2311,8 +2314,12 @@ def _probe_candidate_quality(
         "feeAdjustedOddsB": str(opportunity.fee_adjusted_odds_b or opportunity.odds_b),
         "takerFeeRateA": str(opportunity.taker_fee_rate_a),
         "takerFeeRateB": str(opportunity.taker_fee_rate_b),
+        "makerRebateRateA": str(opportunity.maker_rebate_rate_a),
+        "makerRebateRateB": str(opportunity.maker_rebate_rate_b),
         "winningProfitFeeRateA": str(opportunity.winning_profit_fee_rate_a),
         "winningProfitFeeRateB": str(opportunity.winning_profit_fee_rate_b),
+        "basketRebateRate": str(opportunity.basket_rebate_rate),
+        "basketBoostRate": str(opportunity.basket_boost_rate),
         "gapToZero": str(max(Decimal(0), -profit_margin)),
         "gapToMinProfitThreshold": str(max(Decimal(0), min_profit_margin - profit_margin)),
         "marginBand": _probe_margin_band(profit_margin),

@@ -3119,6 +3119,10 @@ class TestBettingArbitrageNodeRunner:
         assert quality["feeDrag"] == "0"
         assert quality["takerFeeRateA"] == "0"
         assert quality["takerFeeRateB"] == "0"
+        assert quality["makerRebateRateA"] == "0"
+        assert quality["makerRebateRateB"] == "0"
+        assert quality["basketRebateRate"] == "0"
+        assert quality["basketBoostRate"] == "0"
 
     def test_instrument_refresh_payload_includes_per_venue_counts(self):
         payload = node_runner._instrument_refresh_payload(
