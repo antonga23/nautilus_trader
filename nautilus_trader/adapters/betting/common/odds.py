@@ -23,12 +23,27 @@ Provides conversions between different odds formats:
 
 """
 
+from collections.abc import Sequence
+from dataclasses import dataclass
 from decimal import Decimal
 from math import gcd
 
 
 DECIMAL_ODDS_EVEN_THRESHOLD = Decimal(2)
 AMERICAN_ODDS_BASE = Decimal(100)
+
+
+@dataclass(frozen=True)
+class DeviggedMarket:
+    """
+    No-vig probability view of a complete market book.
+    """
+
+    implied_probabilities: tuple[Decimal, ...]
+    no_vig_probabilities: tuple[Decimal, ...]
+    overround: Decimal
+    vig: Decimal
+    method: str
 
 
 def decimal_to_probability(odds: float | Decimal) -> Decimal:
@@ -83,6 +98,43 @@ def probability_to_decimal(probability: float | Decimal) -> Decimal:
     if not 0 < probability < 1:
         raise ValueError(f"Probability must be between 0 and 1, got {probability}")
     return Decimal(1) / Decimal(str(probability))
+
+
+def devig_probabilities(
+    odds: Sequence[float | Decimal],
+    *,
+    method: str = "proportional",
+) -> DeviggedMarket:
+    """
+    Strip market overround from a complete book of decimal odds.
+
+    The proportional method divides each implied probability by the total book
+    probability. It is deterministic, N-outcome safe, and cheap enough for runtime
+    diagnostics on full books and coverage hyperedges. Execution still uses executable
+    fee-adjusted odds; this is a no-vig reference view.
+
+    """
+    normalized_method = method.strip().lower()
+    if normalized_method != "proportional":
+        msg = f"Unsupported devig method: {method}"
+        raise ValueError(msg)
+    if len(odds) < 2:
+        msg = "At least two odds values are required to devig a market"
+        raise ValueError(msg)
+
+    implied = tuple(decimal_to_probability(Decimal(str(value))) for value in odds)
+    total_probability = sum(implied, Decimal(0))
+    if total_probability <= 0:
+        msg = "Market implied probability must be positive"
+        raise ValueError(msg)
+    no_vig = tuple(probability / total_probability for probability in implied)
+    return DeviggedMarket(
+        implied_probabilities=implied,
+        no_vig_probabilities=no_vig,
+        overround=total_probability,
+        vig=total_probability - Decimal(1),
+        method=normalized_method,
+    )
 
 
 def decimal_to_american(odds: float | Decimal) -> int:
