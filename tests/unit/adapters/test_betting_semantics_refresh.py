@@ -556,6 +556,7 @@ def test_polymarket_sports_binary_transforms_into_betting_instrument():
         ts_init=0,
         info={
             "condition_id": "0xabc",
+            "feeRateBps": "75",
             "sports_market": {
                 "sport": "basketball",
                 "market_name": "basketball.moneyline",
@@ -566,6 +567,7 @@ def test_polymarket_sports_binary_transforms_into_betting_instrument():
                 "away_name": "Team B",
                 "competition_name": "NBA",
                 "price": 1.91,
+                "maker_rebate_rate": "0.0025",
                 "resolution_policy": {"tie_or_unknown": "50_50"},
             },
         },
@@ -577,6 +579,8 @@ def test_polymarket_sports_binary_transforms_into_betting_instrument():
     assert transformed is not None
     assert transformed.market_name == "basketball.moneyline"
     assert transformed.outcome == "home"
+    assert transformed.info["market_fee_rate"] == "0.0075"
+    assert transformed.info["maker_rebate_rate"] == "0.0025"
     assert normalized.market_type == CanonicalMarketType.WINNER.value
     assert normalized.selection == "HOME"
     assert dict(normalized.resolution_policy)["tie_or_unknown"] == "50_50"
