@@ -177,20 +177,42 @@ def _normalize_sport(sport: object) -> str:
     return aliases.get(normalized, normalized)
 
 
-def _load_runtime_sparse_provider_sports(path: Path | None) -> dict[str, set[str]]:  # noqa: C901
+def _load_runtime_status_payload(path: Path | None) -> dict[str, Any]:
     if path is None or not path.exists():
         return {}
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, ValueError):
+    except (OSError, ValueError):
         return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _runtime_semantic_cache_payload(payload: dict[str, Any]) -> dict[str, Any]:
     semantic_cache = payload.get("semanticCache")
     if not isinstance(semantic_cache, dict):
         runtime_probe = payload.get("runtimeProbe")
         if isinstance(runtime_probe, dict):
             semantic_cache = runtime_probe.get("semanticCache")
-    if not isinstance(semantic_cache, dict):
-        return {}
+    return semantic_cache if isinstance(semantic_cache, dict) else {}
+
+
+def _sparse_sports_from_provider_coverage(coverage: dict[str, Any]) -> set[str]:
+    sports = {
+        _normalize_sport(raw_sport)
+        for raw_sport in coverage.get("sparse_sports") or coverage.get("sparseSports") or ()
+    }
+    sports_payload = coverage.get("sports")
+    if isinstance(sports_payload, dict):
+        sports.update(
+            _normalize_sport(raw_sport)
+            for raw_sport, sport_payload in sports_payload.items()
+            if isinstance(sport_payload, dict) and bool(sport_payload.get("sparse"))
+        )
+    return sports
+
+
+def _load_runtime_sparse_provider_sports(path: Path | None) -> dict[str, set[str]]:
+    semantic_cache = _runtime_semantic_cache_payload(_load_runtime_status_payload(path))
     provider_coverage = semantic_cache.get("providerCorpusCoverage")
     if not isinstance(provider_coverage, dict):
         return {}
@@ -199,14 +221,9 @@ def _load_runtime_sparse_provider_sports(path: Path | None) -> dict[str, set[str
     for raw_provider, coverage in provider_coverage.items():
         if not isinstance(coverage, dict):
             continue
-        provider = str(raw_provider).upper()
-        for raw_sport in coverage.get("sparse_sports") or coverage.get("sparseSports") or ():
-            sparse_by_provider[provider].add(_normalize_sport(raw_sport))
-        sports_payload = coverage.get("sports")
-        if isinstance(sports_payload, dict):
-            for raw_sport, sport_payload in sports_payload.items():
-                if isinstance(sport_payload, dict) and bool(sport_payload.get("sparse")):
-                    sparse_by_provider[provider].add(_normalize_sport(raw_sport))
+        sparse_by_provider[str(raw_provider).upper()].update(
+            _sparse_sports_from_provider_coverage(coverage),
+        )
     return sparse_by_provider
 
 
