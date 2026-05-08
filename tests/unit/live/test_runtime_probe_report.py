@@ -829,6 +829,14 @@ def test_runtime_probe_report_aggregates_multiple_artifacts():
         "sportsbook_value_edge": 1,
         "vig_only_edge": 4,
     }
+    assert aggregate["coverageBookDevigSampledHyperedges"] == 3
+    assert aggregate["coverageBookDevigQuotedHyperedges"] == 2
+    assert aggregate["coverageBookDevigIncompleteHyperedges"] == 1
+    assert aggregate["coverageBookDevigMethodCounts"] == {"shin": 2}
+    assert aggregate["coverageBookDevigValueBucketCounts"] == {
+        "coverage_locked_execution_safe_arbitrage": 1,
+        "coverage_reference_book_incomplete": 1,
+    }
     assert aggregate["providerCorpusCoverage"]["SXBET"]["sportsWithSelections"] == 3
     assert aggregate["providerCorpusCoverage"]["SXBET"]["zeroSelectionSports"] == [
         "baseball",
@@ -873,6 +881,7 @@ def test_runtime_probe_report_cli_outputs_json_and_text(tmp_path, monkeypatch, c
     assert "health={'fail': 1}" in text_output
     assert "provider_poll_health={'fail': 1}" in text_output
     assert "corpus_health={'warn': 1}" in text_output
+    assert "coverage_book_devig_quoted=2" in text_output
     assert "venue_coverage_health={'warn': 1}" in text_output
     assert "top_semantic_blockers" in text_output
     assert "top_semantic_relationships" in text_output

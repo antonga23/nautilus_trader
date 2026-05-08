@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.betting.market_matcher import ArbitrageOpportunity
 from nautilus_trader.adapters.betting.semantics import CoverageBlockerReason
 from nautilus_trader.adapters.betting.semantics import MarketNormalizer
@@ -940,6 +941,8 @@ def _collect_runtime_probe_payload(
             matched_node_ids=set(),
             candidate_venue_pairs={},
         )
+        empty_profitability = _empty_candidate_quality_payload()
+        latency_diagnostics = _runtime_latency_diagnostics(stats, empty_profitability)
         return {
             "elapsedSeconds": round(elapsed_seconds, 2),
             "minProfitMargin": str(min_profit_margin),
@@ -975,6 +978,7 @@ def _collect_runtime_probe_payload(
             "candidateQuality": _empty_candidate_quality_payload(),
             "instrumentRefresh": _instrument_refresh_payload(stats),
             "strategyStats": stats,
+            "latencyDiagnostics": latency_diagnostics,
             "semanticDiagnostics": semantic_diagnostics,
             "providerQuotePollStats": stats.get("provider_quote_poll_stats", {}),
             "venueCoverage": venue_coverage,
@@ -1192,7 +1196,175 @@ def _runtime_latency_diagnostics(
     diagnostics["runtime_probe_candidate_decision"] = (
         probe_candidate_decision if isinstance(probe_candidate_decision, dict) else {}
     )
+    diagnostics["sloStatus"] = _runtime_latency_slo_status(diagnostics, profitability)
+    diagnostics["diagnosticWarnings"] = _runtime_latency_diagnostic_warnings(
+        diagnostics,
+        profitability,
+    )
     return diagnostics
+
+
+def _runtime_latency_slo_status(
+    diagnostics: dict[str, object],
+    profitability: dict[str, object],
+) -> dict[str, object]:
+    live_timing = profitability.get("live_timing_slo")
+    live_timing = live_timing if isinstance(live_timing, dict) else {}
+    histograms = profitability.get("latency_histograms")
+    histograms = histograms if isinstance(histograms, dict) else {}
+    quote_age = _runtime_slo_section_status(
+        live_timing.get("quote_age"),
+        threshold_key="threshold_secs",
+        fallback=_runtime_histogram_slo_status(
+            histograms.get("quote_age_secs"),
+            threshold_seconds=5.0,
+        ),
+    )
+    fetch_latency = _runtime_slo_section_status(
+        live_timing.get("fetch_latency"),
+        fallback=_runtime_histogram_slo_status(
+            histograms.get("fetch_latency_secs"),
+            threshold_seconds=5.0,
+        ),
+    )
+    pair_skew = _runtime_slo_section_status(
+        live_timing.get("pair_skew"),
+        fallback=_runtime_histogram_slo_status(
+            histograms.get("pair_skew_secs"),
+            threshold_seconds=1.0,
+        ),
+    )
+    stages = {
+        "quoteReceiveObserved": _latency_count(diagnostics.get("quote_event_to_strategy")) > 0
+        or _latency_count(diagnostics.get("quote_publish_to_strategy")) > 0,
+        "graphScanObserved": _latency_count(diagnostics.get("graph_scan")) > 0,
+        "candidateDecisionObserved": _latency_count(diagnostics.get("candidate_decision")) > 0,
+        "providerLatencyObserved": _latency_count(
+            (histograms.get("fetch_latency_secs") if isinstance(histograms, dict) else {}),
+        )
+        > 0,
+        "candidateDecisionSource": diagnostics.get("candidate_decision_source"),
+    }
+    statuses = [
+        str(quote_age.get("status") or "unknown"),
+        str(fetch_latency.get("status") or "unknown"),
+        str(pair_skew.get("status") or "unknown"),
+    ]
+    if any(status == "warn" for status in statuses):
+        overall = "warn"
+    elif any(status == "pass" for status in statuses):
+        overall = "pass"
+    else:
+        overall = "unknown"
+    missing_stages = [
+        label
+        for label, observed in (
+            ("quote_receive", stages["quoteReceiveObserved"]),
+            ("graph_scan", stages["graphScanObserved"]),
+            ("candidate_decision", stages["candidateDecisionObserved"]),
+            ("provider_latency", stages["providerLatencyObserved"]),
+        )
+        if not observed
+    ]
+    return {
+        "overall": overall,
+        "quoteAge": quote_age,
+        "fetchLatency": fetch_latency,
+        "pairSkew": pair_skew,
+        "strategyLatency": stages,
+        "missingStages": missing_stages,
+    }
+
+
+def _runtime_slo_section_status(
+    section: object,
+    *,
+    threshold_key: str = "max_threshold_secs",
+    fallback: dict[str, object] | None = None,
+) -> dict[str, object]:
+    payload = section if isinstance(section, dict) else {}
+    observations = int(payload.get("observations") or 0)
+    if observations <= 0 and fallback and int(fallback.get("observations") or 0) > 0:
+        return fallback
+    violations = int(payload.get("violations") or 0)
+    if observations <= 0:
+        status = "unknown"
+    elif violations > 0:
+        status = "warn"
+    else:
+        status = "pass"
+    threshold = payload.get(threshold_key)
+    return {
+        "status": status,
+        "observations": observations,
+        "violations": violations,
+        "violationRate": round((violations / observations) if observations else 0.0, 6),
+        "thresholdSeconds": threshold,
+        "minThresholdSeconds": payload.get("min_threshold_secs"),
+        "maxThresholdSeconds": payload.get("max_threshold_secs"),
+        "thresholdMode": payload.get("threshold_mode"),
+    }
+
+
+def _runtime_histogram_slo_status(
+    histogram: object,
+    *,
+    threshold_seconds: float,
+) -> dict[str, object]:
+    payload = histogram if isinstance(histogram, dict) else {}
+    observations = int(payload.get("count") or 0)
+    p95 = float(payload.get("p95") or 0.0)
+    max_value = float(payload.get("max") or 0.0)
+    violations = observations if observations > 0 and max(p95, max_value) > threshold_seconds else 0
+    status = "unknown" if observations <= 0 else "warn" if violations else "pass"
+    return {
+        "status": status,
+        "observations": observations,
+        "violations": violations,
+        "violationRate": 1.0 if violations else 0.0,
+        "thresholdSeconds": threshold_seconds,
+        "minThresholdSeconds": None,
+        "maxThresholdSeconds": None,
+        "thresholdMode": "histogram_p95_or_max",
+    }
+
+
+def _runtime_latency_diagnostic_warnings(
+    diagnostics: dict[str, object],
+    profitability: dict[str, object],
+) -> list[str]:
+    quoted_edges = int(profitability.get("quoted_edges") or 0)
+    positive = int(profitability.get("positive_execution") or 0) + int(
+        profitability.get("positive_same_venue") or 0,
+    )
+    threshold = int(profitability.get("threshold_execution") or 0) + int(
+        profitability.get("threshold_same_venue") or 0,
+    )
+    has_activity = quoted_edges > 0 or positive > 0 or threshold > 0
+    if not has_activity:
+        return []
+    warnings: list[str] = []
+    if (
+        _latency_count(diagnostics.get("quote_event_to_strategy")) == 0
+        and _latency_count(
+            diagnostics.get("quote_publish_to_strategy"),
+        )
+        == 0
+    ):
+        warnings.append("missing_quote_receive_latency")
+    if _latency_count(diagnostics.get("graph_scan")) == 0:
+        warnings.append("missing_graph_scan_latency")
+    if _latency_count(diagnostics.get("candidate_decision")) == 0:
+        warnings.append("missing_candidate_decision_latency")
+    histograms = profitability.get("latency_histograms")
+    histograms = histograms if isinstance(histograms, dict) else {}
+    if _latency_count(histograms.get("fetch_latency_secs")) == 0:
+        warnings.append("missing_provider_latency")
+    return warnings
+
+
+def _latency_count(value: object) -> int:
+    return int(value.get("count") or 0) if isinstance(value, dict) else 0
 
 
 def _runtime_probe_satisfied(
@@ -1746,6 +1918,8 @@ def _zero_pair_sample_payload(strategy, source_node, target_node) -> dict[str, o
         "instrumentIdB": str(getattr(instrument_b, "id", "")),
         "eventKeyA": _probe_event_key_no_time(source_node),
         "eventKeyB": _probe_event_key_no_time(target_node),
+        "canonicalEventKeyA": _canonical_probe_event_key_no_time(source_node),
+        "canonicalEventKeyB": _canonical_probe_event_key_no_time(target_node),
         "patternA": pattern_a,
         "patternB": pattern_b,
         "matcherSuspect": matcher_suspect,
@@ -1795,7 +1969,7 @@ def _zero_pair_blocker_hint(
 
 def _event_keys_for_venue(nodes: dict[Any, object], venue: str) -> set[str]:
     return {
-        _probe_event_key_no_time(node)
+        _canonical_probe_event_key_no_time(node)
         for node in nodes.values()
         if _probe_node_venue(node) == venue
     }
@@ -1813,7 +1987,7 @@ def _sample_probe_nodes_for_venue(
         for node in nodes.values():
             if _probe_node_venue(node) != venue:
                 continue
-            if _probe_event_key_no_time(node) not in preferred:
+            if _canonical_probe_event_key_no_time(node) not in preferred:
                 continue
             sampled.append(node)
             if len(sampled) >= limit:
@@ -1861,11 +2035,11 @@ def _sample_zero_pair_nodes_for_common_events(
 ) -> list[tuple[object, object]]:
     pairs: list[tuple[object, object]] = []
     for source_node in source_nodes:
-        source_key = _probe_event_key_no_time(source_node)
+        source_key = _canonical_probe_event_key_no_time(source_node)
         if source_key not in common_event_keys:
             continue
         for target_node in target_nodes:
-            if _probe_event_key_no_time(target_node) != source_key:
+            if _canonical_probe_event_key_no_time(target_node) != source_key:
                 continue
             pairs.append((source_node, target_node))
             if len(pairs) >= limit:
@@ -1897,6 +2071,32 @@ def _probe_event_key_no_time(node) -> str:
         except (AttributeError, TypeError, ValueError):
             pass
     return str(getattr(node, "canonical_event_key", ""))
+
+
+def _canonical_probe_event_key_no_time(node) -> str:
+    return _canonical_event_key_text(_probe_event_key_no_time(node))
+
+
+def _canonical_event_key_text(value: str) -> str:
+    raw = str(value or "")
+    if not raw:
+        return ""
+    parts = [part.strip() for part in raw.replace("|", ":").split(":") if part.strip()]
+    if not parts:
+        return ""
+    sport = CryptoBettingInstrument._normalize_event_component(parts[0].replace("_", " "))
+    team_parts: list[str] = []
+    for part in parts[1:]:
+        lowered = part.lower()
+        if "t" in lowered and lowered[:4].isdigit():
+            continue
+        if len(lowered) >= 4 and lowered[:4].isdigit():
+            continue
+        normalized = CryptoBettingInstrument._normalize_team_name(part.replace("_", " "))
+        if normalized:
+            team_parts.append(normalized)
+    teams = sorted(set(team_parts))
+    return ":".join(part for part in (sport, *teams) if part)
 
 
 def _probe_pattern_payload(node) -> dict[str, str]:
@@ -2282,15 +2482,15 @@ def _probe_coverage_book_devig_diagnostics(  # noqa: C901
         if not isinstance(hyperedge, dict):
             continue
         instrument_ids = tuple(str(item) for item in hyperedge.get("instrument_ids", ()) or ())
+        resolved_ids, missing_ids = _resolve_coverage_hyperedge_node_ids(
+            hyperedge,
+            nodes=nodes,
+            quotes=quotes,
+        )
         if len(instrument_ids) < 2 or not callable(adjuster):
             incomplete_hyperedges += 1
             value_buckets["coverage_reference_book_incomplete"] += 1
             continue
-        missing_ids = [
-            instrument_id
-            for instrument_id in instrument_ids
-            if instrument_id not in nodes or instrument_id not in quotes
-        ]
         if missing_ids:
             incomplete_hyperedges += 1
             value_buckets["coverage_reference_book_incomplete"] += 1
@@ -2301,15 +2501,14 @@ def _probe_coverage_book_devig_diagnostics(  # noqa: C901
                         "coverageProofId": str(hyperedge.get("coverage_proof_id") or ""),
                         "classification": "coverage_reference_book_incomplete",
                         "missingInstrumentIds": missing_ids[:10],
+                        "resolvedInstrumentIds": list(resolved_ids),
                     },
                 )
             continue
 
         try:
-            instruments = tuple(nodes[instrument_id].instrument for instrument_id in instrument_ids)
-            odds = tuple(
-                Decimal(str(quotes[instrument_id].odds)) for instrument_id in instrument_ids
-            )
+            instruments = tuple(nodes[instrument_id].instrument for instrument_id in resolved_ids)
+            odds = tuple(Decimal(str(quotes[instrument_id].odds)) for instrument_id in resolved_ids)
             adjusted = adjuster(instruments, odds)
         except (AttributeError, ArithmeticError, TypeError, ValueError) as exc:
             incomplete_hyperedges += 1
@@ -2348,7 +2547,8 @@ def _probe_coverage_book_devig_diagnostics(  # noqa: C901
                 {
                     "hyperedgeId": str(hyperedge.get("hyperedge_id") or ""),
                     "coverageProofId": str(hyperedge.get("coverage_proof_id") or ""),
-                    "instrumentIds": list(instrument_ids),
+                    "instrumentIds": list(resolved_ids),
+                    "semanticInstrumentIds": list(instrument_ids),
                     "providerScope": list(hyperedge.get("provider_scope") or []),
                     "safetyTier": str(hyperedge.get("safety_tier") or ""),
                     "executionSafe": execution_safe,
@@ -2375,6 +2575,112 @@ def _probe_coverage_book_devig_diagnostics(  # noqa: C901
         "feeAdjustedProfitMargin": _percentile_payload(adjusted_margin_samples),
         "samples": samples,
     }
+
+
+def _resolve_coverage_hyperedge_node_ids(
+    hyperedge: dict[str, object],
+    *,
+    nodes: dict[Any, object],
+    quotes: dict[Any, object],
+) -> tuple[tuple[str, ...], list[str]]:
+    node_by_id = {str(node_id): node for node_id, node in nodes.items()}
+    quoted_ids = {str(node_id) for node_id in quotes}
+    instrument_ids = tuple(str(item) for item in hyperedge.get("instrument_ids", ()) or ())
+    direct_ids = tuple(
+        instrument_id for instrument_id in instrument_ids if instrument_id in node_by_id
+    )
+    if len(direct_ids) == len(instrument_ids) and all(
+        node_id in quoted_ids for node_id in direct_ids
+    ):
+        return direct_ids, []
+
+    index = _coverage_runtime_node_index(nodes, quoted_ids)
+    resolved: list[str] = []
+    missing: list[str] = []
+    predicates = hyperedge.get("predicates")
+    predicate_payloads = predicates if isinstance(predicates, list) else []
+    if predicate_payloads:
+        for index_hint, predicate in enumerate(predicate_payloads):
+            if not isinstance(predicate, dict):
+                continue
+            node_id = _resolve_coverage_predicate_node_id(
+                predicate,
+                index=index,
+                used=set(resolved),
+            )
+            if node_id and node_id in quoted_ids:
+                resolved.append(node_id)
+            else:
+                missing.append(
+                    str(
+                        predicate.get("instrument_id")
+                        or predicate.get("predicate_id")
+                        or f"predicate-{index_hint}",
+                    ),
+                )
+        return tuple(resolved), missing
+
+    for instrument_id in instrument_ids:
+        if instrument_id in node_by_id and instrument_id in quoted_ids:
+            resolved.append(instrument_id)
+        else:
+            missing.append(instrument_id)
+    return tuple(resolved), missing
+
+
+def _coverage_runtime_node_index(
+    nodes: dict[Any, object],
+    quoted_ids: set[str],
+) -> dict[tuple[str, str, str, str, str, str, str], list[str]]:
+    index: dict[tuple[str, str, str, str, str, str, str], list[str]] = {}
+    for node_id, node in nodes.items():
+        provider = _probe_node_venue(node) or ""
+        pattern = _probe_pattern_payload(node)
+        key = (
+            provider,
+            _canonical_probe_event_key_no_time(node),
+            str(pattern.get("sport") or ""),
+            str(pattern.get("scope") or ""),
+            str(pattern.get("marketFamily") or ""),
+            str(pattern.get("selection") or ""),
+            str(pattern.get("paramsKey") or ""),
+        )
+        bucket = index.setdefault(key, [])
+        string_id = str(node_id)
+        if string_id in quoted_ids:
+            bucket.insert(0, string_id)
+        else:
+            bucket.append(string_id)
+    return index
+
+
+def _resolve_coverage_predicate_node_id(
+    predicate: dict[str, object],
+    *,
+    index: dict[tuple[str, str, str, str, str, str, str], list[str]],
+    used: set[str],
+) -> str | None:
+    params_key = str(predicate.get("params_key") or "")
+    if not params_key:
+        params = predicate.get("params")
+        params_key = (
+            _semantic_params_key(tuple(tuple(item) for item in params))
+            if isinstance(params, list)
+            else ""
+        )
+    key = (
+        str(predicate.get("provider") or "").upper(),
+        _canonical_event_key_text(str(predicate.get("event_key") or "")),
+        str(predicate.get("sport") or ""),
+        str(predicate.get("scope") or ""),
+        str(predicate.get("market_family") or predicate.get("marketFamily") or ""),
+        str(predicate.get("selection") or ""),
+        params_key,
+    )
+    for node_id in index.get(key, []):
+        if node_id not in used:
+            return node_id
+    return None
 
 
 def _probe_edge_profitability(

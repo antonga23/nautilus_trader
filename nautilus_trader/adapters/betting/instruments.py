@@ -409,8 +409,65 @@ class CryptoBettingInstrument(Instrument):
         normalized = cls._normalize_event_component(name)
         if not normalized:
             return ""
-        ignored_tokens = {"fc", "afc", "sc", "cf"}
-        tokens = [token for token in normalized.split() if token not in ignored_tokens]
+        ignored_tokens = {
+            "afc",
+            "cf",
+            "fc",
+            "sc",
+            "team",
+            "w",
+            "women",
+            "women" + "s",
+        }
+        alias_tokens = {
+            "ari": "arizona",
+            "atl": "atlanta",
+            "bal": "baltimore",
+            "bos": "boston",
+            "buf": "buffalo",
+            "car": "carolina",
+            "chi": "chicago",
+            "cin": "cincinnati",
+            "cle": "cleveland",
+            "col": "colorado",
+            "dal": "dallas",
+            "den": "denver",
+            "det": "detroit",
+            "gb": "green bay",
+            "hou": "houston",
+            "ind": "indianapolis",
+            "jax": "jacksonville",
+            "kc": "kansas city",
+            "la": "los angeles",
+            "lac": "los angeles",
+            "lar": "los angeles",
+            "lv": "las vegas",
+            "mia": "miami",
+            "min": "minnesota",
+            "ne": "new england",
+            "no": "new orleans",
+            "ny": "new york",
+            "nyc": "new york",
+            "nyg": "new york",
+            "nyj": "new york",
+            "oak": "oakland",
+            "phi": "philadelphia",
+            "phx": "phoenix",
+            "pit": "pittsburgh",
+            "sd": "san diego",
+            "sf": "san francisco",
+            "sea": "seattle",
+            "stl": "st louis",
+            "tb": "tampa bay",
+            "ten": "tennessee",
+            "was": "washington",
+            "wsh": "washington",
+        }
+        tokens: list[str] = []
+        for token in normalized.split():
+            if token in ignored_tokens:
+                continue
+            tokens.extend(alias_tokens.get(token, token).split())
         return " ".join(tokens)
 
     def _team_key(self) -> tuple[str, ...]:

@@ -74,18 +74,22 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
         },
     )
 
+    latency_warnings = _merged_latency_warnings(
+        latency_diagnostics,
+        _latency_diagnostic_warnings(
+            latency_diagnostics,
+            quoted_edges=_int_value(runtime.get("quotedEdges")),
+            positive_candidates=_candidate_total(positive),
+            threshold_candidates=_candidate_total(threshold),
+        ),
+    )
     latency_block = {
         **latency_diagnostics,
         "sloStatus": _latency_slo_status(
             candidate_quality=candidate_quality,
             latency=latency_diagnostics,
         ),
-        "diagnosticWarnings": _latency_diagnostic_warnings(
-            latency_diagnostics,
-            quoted_edges=_int_value(runtime.get("quotedEdges")),
-            positive_candidates=_candidate_total(positive),
-            threshold_candidates=_candidate_total(threshold),
-        ),
+        "diagnosticWarnings": latency_warnings,
     }
     candidate_warnings = diagnostic_warnings
     graph_warnings = graph_diagnostic_warnings
@@ -326,11 +330,24 @@ def _normalized_latency_diagnostics(value: Any) -> dict[str, Any]:
         "candidateDecision": candidate_decision,
         "runtimeProbeCandidateDecision": runtime_probe_candidate_decision,
         "candidateDecisionSource": str(candidate_decision_source),
+        "rawSloStatus": _as_dict(diagnostics.get("sloStatus")),
+        "rawDiagnosticWarnings": [
+            str(item) for item in diagnostics.get("diagnosticWarnings") or []
+        ],
         "orderConstruction": _as_dict(
             diagnostics.get("order_construction") or diagnostics.get("orderConstruction"),
         ),
         "orderSubmit": _as_dict(diagnostics.get("order_submit") or diagnostics.get("orderSubmit")),
     }
+
+
+def _merged_latency_warnings(
+    latency: dict[str, Any],
+    computed: list[str],
+) -> list[str]:
+    warnings = [str(item) for item in latency.get("rawDiagnosticWarnings") or []]
+    warnings.extend(computed)
+    return sorted(dict.fromkeys(warnings))
 
 
 def aggregate_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
@@ -358,6 +375,11 @@ def aggregate_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
     fee_impact_bucket_counts: dict[str, int] = {}
     devig_method_counts: dict[str, int] = {}
     devig_value_bucket_counts: dict[str, int] = {}
+    coverage_book_devig_method_counts: dict[str, int] = {}
+    coverage_book_devig_value_bucket_counts: dict[str, int] = {}
+    coverage_book_devig_sampled = 0
+    coverage_book_devig_quoted = 0
+    coverage_book_devig_incomplete = 0
     recommended_action_counts: dict[str, int] = {}
     provider_corpus_coverage: dict[str, dict[str, Any]] = {}
     for summary in summaries:
@@ -431,6 +453,20 @@ def aggregate_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
         _merge_nested_count_mapping(
             devig_value_bucket_counts,
             _as_dict(quality.get("devigDiagnostics")).get("valueBuckets"),
+        )
+        coverage_book_devig = _as_dict(quality.get("coverageBookDevigDiagnostics"))
+        coverage_book_devig_sampled += _int_value(coverage_book_devig.get("sampledHyperedges"))
+        coverage_book_devig_quoted += _int_value(coverage_book_devig.get("quotedHyperedges"))
+        coverage_book_devig_incomplete += _int_value(
+            coverage_book_devig.get("incompleteHyperedges"),
+        )
+        _merge_nested_count_mapping(
+            coverage_book_devig_method_counts,
+            coverage_book_devig.get("methodCounts"),
+        )
+        _merge_nested_count_mapping(
+            coverage_book_devig_value_bucket_counts,
+            coverage_book_devig.get("valueBuckets"),
         )
         for action in summary.get("recommendedActions") or []:
             key = str(action)
@@ -511,6 +547,13 @@ def aggregate_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
         "feeImpactBucketCounts": dict(sorted(fee_impact_bucket_counts.items())),
         "devigMethodCounts": dict(sorted(devig_method_counts.items())),
         "devigValueBucketCounts": dict(sorted(devig_value_bucket_counts.items())),
+        "coverageBookDevigSampledHyperedges": coverage_book_devig_sampled,
+        "coverageBookDevigQuotedHyperedges": coverage_book_devig_quoted,
+        "coverageBookDevigIncompleteHyperedges": coverage_book_devig_incomplete,
+        "coverageBookDevigMethodCounts": dict(sorted(coverage_book_devig_method_counts.items())),
+        "coverageBookDevigValueBucketCounts": dict(
+            sorted(coverage_book_devig_value_bucket_counts.items()),
+        ),
         "providerCorpusCoverage": provider_corpus_coverage,
         "recommendedActionCounts": dict(sorted(recommended_action_counts.items())),
     }
@@ -1398,6 +1441,8 @@ def _format_aggregate_line(aggregate: dict[str, Any]) -> str:
         f"venue_coverage_health={aggregate['venueCoverageHealthCounts']} "
         f"devig_methods={aggregate['devigMethodCounts']} "
         f"devig_values={aggregate['devigValueBucketCounts']} "
+        f"coverage_book_devig_quoted={aggregate['coverageBookDevigQuotedHyperedges']} "
+        f"coverage_book_devig_values={aggregate['coverageBookDevigValueBucketCounts']} "
         f"actions={aggregate['recommendedActionCounts']}"
     )
 
