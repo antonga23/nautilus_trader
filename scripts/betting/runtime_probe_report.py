@@ -175,6 +175,9 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
             "sameVenueDryRun": candidate_quality.get("sameVenueDryRun"),
             "feeAdjustment": candidate_quality.get("feeAdjustment"),
             "devigDiagnostics": candidate_quality.get("devigDiagnostics"),
+            "coverageBookDevigDiagnostics": candidate_quality.get(
+                "coverageBookDevigDiagnostics",
+            ),
             "topRejectionBuckets": _top_items(
                 _as_dict(candidate_quality.get("rejectionBuckets")),
                 limit=top_limit,
@@ -1086,6 +1089,7 @@ def _format_quality_lines(quality: dict[str, Any]) -> list[str]:
         rendered = ", ".join(f"{key}={value}" for key, value in sorted(fee_impact.items()))
         lines.append(f"  fee_impact {rendered}")
     lines.extend(_format_devig_quality_lines(quality.get("devigDiagnostics")))
+    lines.extend(_format_coverage_book_devig_lines(quality.get("coverageBookDevigDiagnostics")))
     latency = quality.get("latencyHistograms") or {}
     if isinstance(latency, dict) and latency:
         quote_age = _as_dict(latency.get("quoteAgeSeconds"))
@@ -1137,6 +1141,27 @@ def _format_devig_quality_lines(value: Any) -> list[str]:
     if method_counts:
         rendered = ", ".join(f"{key}={value}" for key, value in sorted(method_counts.items()))
         lines.append(f"  devig_methods {rendered}")
+    return lines
+
+
+def _format_coverage_book_devig_lines(value: Any) -> list[str]:
+    coverage_devig = _as_dict(value)
+    if not coverage_devig:
+        return []
+    sampled = _int_value(coverage_devig.get("sampledHyperedges"))
+    quoted = _int_value(coverage_devig.get("quotedHyperedges"))
+    if sampled <= 0 and quoted <= 0:
+        return []
+    lines = [
+        "  coverage_book_devig "
+        f"sampled={sampled} "
+        f"quoted={quoted} "
+        f"incomplete={coverage_devig.get('incompleteHyperedges', 0)}",
+    ]
+    value_buckets = _as_dict(coverage_devig.get("valueBuckets"))
+    if value_buckets:
+        rendered = ", ".join(f"{key}={value}" for key, value in sorted(value_buckets.items()))
+        lines.append(f"  coverage_book_value {rendered}")
     return lines
 
 

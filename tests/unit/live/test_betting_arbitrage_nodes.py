@@ -24,6 +24,7 @@ import msgspec
 import pytest
 
 from nautilus_trader.adapters.betting.common.enums import SelectionSide
+from nautilus_trader.adapters.betting.common.fees import fee_adjusted_coverage_basket
 from nautilus_trader.adapters.betting.common.odds import devig_probabilities
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.betting.semantics import FileRuleCache
@@ -2564,6 +2565,9 @@ class TestBettingArbitrageNodeRunner:
         assert zero_reports["SXBET->CLOUDBET"]["quotedEdgeCount"] == 0
         assert zero_reports["SXBET->CLOUDBET"]["candidateCount"] == 0
         assert zero_reports["SXBET->CLOUDBET"]["commonEventKeyCount"] == 1
+        assert zero_reports["SXBET->CLOUDBET"]["commonEventKeySamples"] == [
+            sxbet_instrument.event_key(include_start_time=False),
+        ]
         assert zero_reports["SXBET->CLOUDBET"]["sampleBlockerCounts"] == {}
         assert zero_reports["SXBET->CLOUDBET"]["samples"][0]["marketFamily"] == (
             "MATCH_ODDS + MATCH_ODDS"
@@ -2619,6 +2623,77 @@ class TestBettingArbitrageNodeRunner:
         assert report["commonEventKeyCount"] == 0
         assert report["sampleBlockerCounts"] == {}
         assert report["samples"] == []
+
+    def test_venue_pair_coverage_indexes_common_fixtures_beyond_sample_window(self):
+        common_sxbet = _instrument(
+            venue="SXBET",
+            market_type="match_odds",
+            outcome="home",
+            event_id="sxbet-common",
+            event_name="Shared Team A vs Shared Team B",
+            home_name="Shared Team A",
+            away_name="Shared Team B",
+        )
+        common_cloudbet = _instrument(
+            venue="CLOUDBET",
+            market_type="match_odds",
+            outcome="away",
+            event_id="cloudbet-common",
+            event_name="Shared Team A vs Shared Team B",
+            home_name="Shared Team A",
+            away_name="Shared Team B",
+        )
+        nodes: dict[str, SimpleNamespace] = {}
+        for index in range(45):
+            nodes[f"sxbet-filler-{index}"] = SimpleNamespace(
+                instrument=_instrument(
+                    venue="SXBET",
+                    market_type="match_odds",
+                    outcome="home",
+                    event_id=f"sxbet-filler-{index}",
+                    event_name=f"SXBET Home {index} vs SXBET Away {index}",
+                    home_name=f"SXBET Home {index}",
+                    away_name=f"SXBET Away {index}",
+                ),
+            )
+            nodes[f"cloudbet-filler-{index}"] = SimpleNamespace(
+                instrument=_instrument(
+                    venue="CLOUDBET",
+                    market_type="match_odds",
+                    outcome="away",
+                    event_id=f"cloudbet-filler-{index}",
+                    event_name=f"Cloudbet Home {index} vs Cloudbet Away {index}",
+                    home_name=f"Cloudbet Home {index}",
+                    away_name=f"Cloudbet Away {index}",
+                ),
+            )
+        nodes["sxbet-common"] = SimpleNamespace(instrument=common_sxbet)
+        nodes["cloudbet-common"] = SimpleNamespace(instrument=common_cloudbet)
+        strategy = SimpleNamespace(
+            _config=SimpleNamespace(enabled_venues=frozenset({"CLOUDBET", "SXBET"})),
+            _quote_subscribed_instrument_ids={common_sxbet.id, common_cloudbet.id},
+        )
+
+        coverage = node_runner._venue_pair_coverage(
+            strategy,
+            edges=[],
+            nodes=nodes,
+            quotes={},
+            matched_node_ids=set(),
+            candidate_venue_pairs={},
+        )
+
+        reports = {item["venuePair"]: item for item in coverage["zeroCandidateVenuePairs"]}
+        report = reports["SXBET->CLOUDBET"]
+        assert report["reason"] == "no_semantic_edge"
+        assert report["blockerReason"] == "no_semantic_edge"
+        assert report["commonEventKeyCount"] == 1
+        assert report["samples"][0]["eventKeyA"] == common_sxbet.event_key(
+            include_start_time=False,
+        )
+        assert report["samples"][0]["eventKeyB"] == common_cloudbet.event_key(
+            include_start_time=False,
+        )
 
     def test_venue_pair_coverage_infers_same_market_params_mismatch_from_samples(self):
         sxbet_instrument = _instrument(
@@ -3219,7 +3294,7 @@ class TestBettingArbitrageNodeRunner:
             "sportsbook_value_edge",
             "prediction_market_value_edge",
             "vig_only_edge",
-            "locked_arbitrage",
+            "locked_execution_safe_arbitrage",
         }
 
         counters = node_runner.ProbeProfitabilityCounters()
@@ -3231,6 +3306,131 @@ class TestBettingArbitrageNodeRunner:
         assert sum(payload["devig_diagnostics"]["value_buckets"].values()) == 1
         assert quality["basketRebateRate"] == "0"
         assert quality["basketBoostRate"] == "0"
+
+    def test_runtime_probe_devig_does_not_label_topology_edge_locked_arbitrage(self):
+        instrument_a = _instrument(
+            venue="CLOUDBET",
+            market_type="match_odds",
+            outcome="home",
+        )
+        instrument_b = _instrument(
+            venue="CLOUDBET",
+            market_type="match_odds",
+            outcome="away",
+        )
+        config = BettingArbitrageConfig(
+            min_profit_margin=Decimal("0.02"),
+            devig_enabled=True,
+            devig_method="proportional",
+            value_diagnostics_enabled=True,
+            value_execution_enabled=False,
+        )
+        strategy = SimpleNamespace(
+            _config=config,
+            devigged_book=lambda odds: devig_probabilities(odds, method=config.devig_method),
+            fee_adjusted_opportunity=lambda opportunity: opportunity,
+            matcher_suspect_reason=BettingArbitrageStrategy.matcher_suspect_reason,
+            semantic_fixture_suspect_reason=(
+                BettingArbitrageStrategy.semantic_fixture_suspect_reason
+            ),
+            quote_age_secs=lambda _observed_ns, _quote: 0.1,
+            quote_fetch_latency_secs=lambda _quote: 0.1,
+            quote_available_size=lambda _quote: Decimal(100),
+            quote_freshness_thresholds=lambda _instrument_a, _instrument_b: SimpleNamespace(
+                profile="pre_match",
+                max_quote_age_secs=30.0,
+                max_pair_skew_secs=5.0,
+                max_fetch_latency_secs=10.0,
+            ),
+        )
+        edge = SimpleNamespace(
+            rule_id="rule-1",
+            template_id="template-1",
+            relationship_type="EQUIVALENT_SELECTION",
+            safety_tier="TOPOLOGY_SAFE",
+            execution_safe=False,
+            same_venue_execution_eligible=False,
+            caveats=(),
+        )
+        quote_a = SimpleNamespace(
+            odds=Decimal("3.00"),
+            received_ns=10_000_000_000,
+            quote=SimpleNamespace(ts_event=9_900_000_000, size=Decimal(100)),
+        )
+        quote_b = SimpleNamespace(
+            odds=Decimal("3.10"),
+            received_ns=10_000_000_000,
+            quote=SimpleNamespace(ts_event=9_900_000_000, size=Decimal(100)),
+        )
+
+        quality = node_runner._probe_candidate_quality(
+            strategy,
+            edge=edge,
+            source_node=SimpleNamespace(
+                instrument=instrument_a,
+                market_name="match_odds",
+                outcome="home",
+            ),
+            target_node=SimpleNamespace(
+                instrument=instrument_b,
+                market_name="match_odds",
+                outcome="away",
+            ),
+            quote_a=quote_a,
+            quote_b=quote_b,
+            min_profit_margin=Decimal("0.02"),
+            allow_same_venue=False,
+        )
+
+        assert quality["rejectionBucket"] == "equivalent_selection"
+        assert (
+            quality["candidateValueClassification"]
+            == "positive_non_executable_semantic_edge:equivalent_selection"
+        )
+
+    def test_runtime_probe_coverage_book_devig_uses_quoted_hyperedges(self):
+        instrument_a = _instrument(venue="CLOUDBET", market_type="match_odds", outcome="home")
+        instrument_b = _instrument(venue="CLOUDBET", market_type="match_odds", outcome="away")
+        nodes = {
+            str(instrument_a.id): SimpleNamespace(instrument=instrument_a),
+            str(instrument_b.id): SimpleNamespace(instrument=instrument_b),
+        }
+        quotes = {
+            str(instrument_a.id): SimpleNamespace(odds=Decimal("2.20")),
+            str(instrument_b.id): SimpleNamespace(odds=Decimal("2.20")),
+        }
+        strategy = SimpleNamespace(
+            fee_adjusted_coverage_basket=lambda instruments, odds: fee_adjusted_coverage_basket(
+                odds,
+                devig_method="proportional",
+            ),
+        )
+        coverage_diagnostics = {
+            "sampleHyperedges": [
+                {
+                    "hyperedge_id": "hyperedge-1",
+                    "coverage_proof_id": "proof-1",
+                    "instrument_ids": [str(instrument_a.id), str(instrument_b.id)],
+                    "provider_scope": ["CLOUDBET"],
+                    "safety_tier": "EXECUTION_SAFE",
+                    "execution_safe": True,
+                },
+            ],
+        }
+
+        payload = node_runner._probe_coverage_book_devig_diagnostics(
+            strategy,
+            coverage_diagnostics=coverage_diagnostics,
+            nodes=nodes,
+            quotes=quotes,
+            min_profit_margin=Decimal("0.02"),
+        )
+
+        assert payload["sampledHyperedges"] == 1
+        assert payload["quotedHyperedges"] == 1
+        assert payload["methodCounts"] == {"proportional": 1}
+        assert payload["valueBuckets"] == {"coverage_locked_execution_safe_arbitrage": 1}
+        assert payload["samples"][0]["hyperedgeId"] == "hyperedge-1"
 
     def test_instrument_refresh_payload_includes_per_venue_counts(self):
         payload = node_runner._instrument_refresh_payload(

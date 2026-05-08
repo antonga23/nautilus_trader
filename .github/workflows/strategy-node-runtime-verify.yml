@@ -565,6 +565,7 @@ jobs:
             semantic_args=(
               scripts/deploy/strategy_nodes/verify_semantic_cache_completion.py
               --cache-dir "$cache_dir"
+              --runtime-status-file "$status_file"
               --min-candidates "$semantic_verify_min_candidates"
               --target-candidates "$semantic_verify_target_candidates"
             )
