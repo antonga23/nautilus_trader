@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import re
+from decimal import Decimal
 from typing import Any
 
 from nautilus_trader.adapters.betting.common.enums import SelectionSide
@@ -633,6 +634,11 @@ class PolymarketSportsTransformer:
         else:
             serialized_params = str(params)
 
+        fee_info = PolymarketSportsTransformer._fee_info(
+            instrument=instrument,
+            info=info,
+            sports_market=sports_market,
+        )
         return CryptoBettingInstrument(
             venue=Venue("POLYMARKET"),
             event_id=str(
@@ -657,10 +663,82 @@ class PolymarketSportsTransformer:
             start_time=str(sports_market.get("start_time") or ""),
             info={
                 **info,
+                **fee_info,
                 "sports_market": sports_market,
                 "resolution_policy": sports_market.get("resolution_policy", {}),
             },
         )
+
+    @staticmethod
+    def _fee_info(
+        *,
+        instrument: BinaryOption,
+        info: dict[str, Any],
+        sports_market: dict[str, Any],
+    ) -> dict[str, str]:
+        """
+        Extract normalized fee/rebate hints for downstream fee-adjusted margin
+        accounting.
+        """
+        payload: dict[str, str] = {}
+        fee_rate = PolymarketSportsTransformer._first_decimal(
+            info,
+            sports_market,
+            keys=("fee_rate", "market_fee_rate", "taker_fee_rate"),
+        )
+        fee_rate_bps = PolymarketSportsTransformer._first_decimal(
+            info,
+            sports_market,
+            keys=("fee_rate_bps", "feeRateBps"),
+        )
+        if fee_rate is None and fee_rate_bps is not None:
+            fee_rate = fee_rate_bps / Decimal(10_000)
+        if fee_rate is None:
+            taker_fee = PolymarketSportsTransformer._decimal_or_none(
+                getattr(instrument, "taker_fee", None),
+            )
+            if taker_fee is not None:
+                fee_rate = taker_fee
+        if fee_rate is not None:
+            payload["market_fee_rate"] = str(fee_rate)
+
+        maker_rebate = PolymarketSportsTransformer._first_decimal(
+            info,
+            sports_market,
+            keys=("maker_rebate_rate", "rebate_rate", "reward_rebate_rate"),
+        )
+        maker_fee = PolymarketSportsTransformer._decimal_or_none(
+            getattr(instrument, "maker_fee", None),
+        )
+        if maker_rebate is None and maker_fee is not None and maker_fee < 0:
+            maker_rebate = abs(maker_fee)
+        if maker_rebate is not None:
+            payload["maker_rebate_rate"] = str(maker_rebate)
+        return payload
+
+    @staticmethod
+    def _first_decimal(
+        info: dict[str, Any],
+        sports_market: dict[str, Any],
+        *,
+        keys: tuple[str, ...],
+    ) -> Decimal | None:
+        for source in (sports_market, info):
+            for key in keys:
+                value = source.get(key)
+                parsed = PolymarketSportsTransformer._decimal_or_none(value)
+                if parsed is not None:
+                    return parsed
+        return None
+
+    @staticmethod
+    def _decimal_or_none(value: Any) -> Decimal | None:
+        if value in (None, ""):
+            return None
+        try:
+            return Decimal(str(value))
+        except (ArithmeticError, ValueError):
+            return None
 
     @staticmethod
     def _token_price(

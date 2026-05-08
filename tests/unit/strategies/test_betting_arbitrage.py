@@ -417,6 +417,48 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(adjusted.profit_margin < adjusted.raw_profit_margin)
         ensure(adjusted.fee_drag > 0)
 
+    def test_fee_adjusted_opportunity_accepts_basis_point_market_metadata(self):  # skipcq
+        """
+        Venue feeds may expose fee and incentive parameters in basis points.
+        """
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["POLYMARKET", "SXBET"]),
+                venue_taker_fee_rates={"POLYMARKET": "0.03"},
+                venue_maker_rebate_rates={"POLYMARKET": "0.001"},
+            ),
+        )
+        polymarket = self._sxbet_instrument(
+            event_id="event-1",
+            venue="POLYMARKET",
+            outcome="over",
+            info={
+                "feeRateBps": "75",
+                "maker_rebate_rate_bps": "25",
+                "basket_rebate_rate_bps": "50",
+            },
+        )
+        sxbet = self._sxbet_instrument(
+            event_id="event-1",
+            venue="SXBET",
+            outcome="under",
+            info={"basket_boost_rate_bps": "100"},
+        )
+        opportunity = MarketMatcher().check_arbitrage(
+            polymarket,
+            sxbet,
+            odds_a=Decimal("2.02"),
+            odds_b=Decimal("2.02"),
+        )
+
+        ensure(opportunity is not None)
+        adjusted = strategy.fee_adjusted_opportunity(opportunity)
+
+        ensure(adjusted.taker_fee_rate_a == Decimal("0.0075"))
+        ensure(adjusted.maker_rebate_rate_a == Decimal("0.0025"))
+        ensure(adjusted.basket_rebate_rate == Decimal("0.005"))
+        ensure(adjusted.basket_boost_rate == Decimal("0.01"))
+
     def test_fee_adjusted_opportunity_applies_pair_basket_incentives(self):  # skipcq
         """
         Basket-level rewards can improve a covered pair without changing safety tiers.
@@ -670,7 +712,13 @@ class TestBettingArbitrageStrategy:  # skipcq
     def test_stale_quote_refresh_triggers_bounded_provider_refresh(self, monkeypatch):  # skipcq
         requested: list[tuple[str, dict[str, object]]] = []
 
-        def fake_request_instruments(self, *, venue, params=None, client_id=None) -> None:
+        def fake_request_instruments(
+            self: object,
+            *,
+            venue: Venue,
+            params: dict[str, Any] | None = None,
+            client_id: object | None = None,
+        ) -> None:
             requested.append((venue.value, dict(params or {})))
 
         monkeypatch.setattr(
@@ -758,7 +806,13 @@ class TestBettingArbitrageStrategy:  # skipcq
     def test_instrument_refresh_requests_all_enabled_venues(self, monkeypatch):  # skipcq
         requested: list[tuple[str, dict[str, bool]]] = []
 
-        def fake_request_instruments(self, *, venue, params=None, client_id=None) -> None:
+        def fake_request_instruments(
+            self: object,
+            *,
+            venue: Venue,
+            params: dict[str, Any] | None = None,
+            client_id: object | None = None,
+        ) -> None:
             requested.append((venue.value, dict(params or {})))
 
         monkeypatch.setattr(
@@ -860,7 +914,13 @@ class TestBettingArbitrageStrategy:  # skipcq
     def test_refresh_schedules_delayed_reconcile_alerts(self, monkeypatch):  # skipcq
         requested: list[tuple[str, dict[str, bool]]] = []
 
-        def fake_request_instruments(self, *, venue, params=None, client_id=None) -> None:
+        def fake_request_instruments(
+            self: object,
+            *,
+            venue: Venue,
+            params: dict[str, Any] | None = None,
+            client_id: object | None = None,
+        ) -> None:
             requested.append((venue.value, dict(params or {})))
 
         monkeypatch.setattr(
@@ -1523,7 +1583,7 @@ class TestBettingArbitrageStrategy:  # skipcq
     def test_semantic_batch_transforms_polymarket_sports_binary_options(
         self,
         tmp_path: Path,
-    ):  # skipcq
+    ) -> None:  # skipcq
         strategy = BettingArbitrageStrategy(
             config=BettingArbitrageConfig(
                 enabled_venues=frozenset(["POLYMARKET"]),
@@ -1554,7 +1614,7 @@ class TestBettingArbitrageStrategy:  # skipcq
     def test_semantic_mode_probes_unmatched_polymarket_quotes(
         self,
         tmp_path: Path,
-    ):  # skipcq
+    ) -> None:  # skipcq
         strategy = BettingArbitrageStrategy(
             config=BettingArbitrageConfig(
                 enabled_venues=frozenset(["POLYMARKET"]),
@@ -1812,6 +1872,72 @@ class TestBettingArbitrageStrategy:  # skipcq
 
         ensure(strategy.subscribe_quote_ticks.call_count == 1)
         ensure(strategy.get_stats()["quote_subscribed_instruments"] == 1)
+
+    def test_semantic_connected_quote_subscriptions_prioritize_cross_venue_edges(
+        self,
+    ) -> None:  # skipcq
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["CLOUDBET", "POLYMARKET"]),
+                semantic_quote_subscription_limit_by_venue={"CLOUDBET": 1, "POLYMARKET": 1},
+            ),
+        )
+        strategy.subscribe_quote_ticks = Mock()
+        cloudbet_same = self._sxbet_instrument(
+            event_id="same-1",
+            venue="CLOUDBET",
+            outcome="over",
+        )
+        cloudbet_same_pair = self._sxbet_instrument(
+            event_id="same-1",
+            venue="CLOUDBET",
+            outcome="under",
+        )
+        cloudbet_cross = self._sxbet_instrument(
+            event_id="cross-1",
+            venue="CLOUDBET",
+            outcome="home",
+            market_name="match_odds",
+        )
+        polymarket_cross = self._sxbet_instrument(
+            event_id="cross-1",
+            venue="POLYMARKET",
+            outcome="away",
+            market_name="match_odds",
+        )
+        graph = cast(Any, strategy._opportunity_graph)
+        graph.nodes_by_id = {
+            "cloudbet-same": SimpleNamespace(instrument=cloudbet_same),
+            "cloudbet-same-pair": SimpleNamespace(instrument=cloudbet_same_pair),
+            "cloudbet-cross": SimpleNamespace(instrument=cloudbet_cross),
+            "polymarket-cross": SimpleNamespace(instrument=polymarket_cross),
+        }
+        graph.edges_by_id = {
+            "same-edge": SimpleNamespace(
+                source_node_id="cloudbet-same",
+                target_node_id="cloudbet-same-pair",
+                execution_safe=True,
+                same_venue_execution_eligible=False,
+            ),
+            "cross-edge": SimpleNamespace(
+                source_node_id="cloudbet-cross",
+                target_node_id="polymarket-cross",
+                execution_safe=True,
+                same_venue_execution_eligible=False,
+            ),
+        }
+        graph.edge_ids_by_node_id = {
+            "cloudbet-same": {"same-edge"},
+            "cloudbet-same-pair": {"same-edge"},
+            "cloudbet-cross": {"cross-edge"},
+            "polymarket-cross": {"cross-edge"},
+        }
+
+        subscribed = strategy._subscribe_semantic_connected_quote_ticks()
+        quoted_ids = {call.args[0] for call in strategy.subscribe_quote_ticks.call_args_list}
+
+        ensure(subscribed == 2)
+        ensure(quoted_ids == {cloudbet_cross.id, polymarket_cross.id})
 
     def test_on_start_skips_subscription_when_cache_is_empty(self, default_config):  # skipcq
         strategy = BettingArbitrageStrategy(config=default_config)
