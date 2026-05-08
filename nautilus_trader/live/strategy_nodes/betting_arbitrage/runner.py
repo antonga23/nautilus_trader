@@ -79,6 +79,7 @@ class ProbeProfitabilityCounters:
     same_venue_dry_run_failure_reasons: Counter[str] = field(default_factory=Counter)
     fee_adjusted_edges: int = 0
     fee_drag_samples: list[float] = field(default_factory=list)
+    fee_impact_buckets: Counter[str] = field(default_factory=Counter)
     candidate_decision_latency_ns: list[int] = field(default_factory=list)
     samples: list[tuple[Decimal, dict[str, object]]] = field(default_factory=list)
     negative_samples: list[tuple[Decimal, dict[str, object]]] = field(default_factory=list)
@@ -159,6 +160,7 @@ class ProbeProfitabilityCounters:
             "fee_adjustment": {
                 "evaluated_edges": self.fee_adjusted_edges,
                 "fee_drag_margin": _percentile_payload(self.fee_drag_samples),
+                "impact_buckets": dict(self.fee_impact_buckets),
             },
             "candidate_decision_latency": _latency_ns_payload(
                 self.candidate_decision_latency_ns,
@@ -1071,6 +1073,7 @@ def _collect_runtime_probe_payload(
             "feeAdjustment": {
                 "evaluatedEdges": profitability["fee_adjustment"]["evaluated_edges"],
                 "feeDragMargin": profitability["fee_adjustment"]["fee_drag_margin"],
+                "impactBuckets": profitability["fee_adjustment"].get("impact_buckets", {}),
             },
             "venuePairs": profitability["venue_pairs"],
             "marketFamilies": profitability["market_families"],
@@ -2475,6 +2478,7 @@ def _record_probe_quality(
     if quality.get("feeAdjusted"):
         counters.fee_adjusted_edges += 1
         counters.fee_drag_samples.append(float(quality.get("feeDrag") or 0.0))
+        _record_fee_impact_bucket(counters, quality)
     quote_age_a_secs = float(quality.get("quoteAgeASeconds") or 0.0)
     quote_age_b_secs = float(quality.get("quoteAgeBSeconds") or 0.0)
     fetch_latency_a_secs = float(quality.get("fetchLatencyASeconds") or 0.0)
@@ -2537,6 +2541,29 @@ def _record_probe_quality(
         counters.samples.append((margin, quality))
     elif margin > Decimal("-0.05"):
         counters.negative_samples.append((margin, quality))
+
+
+def _record_fee_impact_bucket(
+    counters: ProbeProfitabilityCounters,
+    quality: dict[str, object],
+) -> None:
+    raw_margin = Decimal(str(quality.get("rawProfitMargin") or 0))
+    adjusted_margin = Decimal(str(quality.get("feeAdjustedProfitMargin") or raw_margin))
+    fee_drag = Decimal(str(quality.get("feeDrag") or 0))
+    if adjusted_margin > raw_margin:
+        counters.fee_impact_buckets["fee_or_incentive_helped"] += 1
+    elif adjusted_margin < raw_margin:
+        counters.fee_impact_buckets["fee_hurt"] += 1
+    else:
+        counters.fee_impact_buckets["fee_neutral"] += 1
+    if raw_margin > 0 and adjusted_margin <= 0:
+        counters.fee_impact_buckets["raw_positive_fee_adjusted_negative"] += 1
+    elif raw_margin <= 0 and adjusted_margin > 0:
+        counters.fee_impact_buckets["raw_negative_fee_adjusted_positive"] += 1
+    if fee_drag < 0:
+        counters.fee_impact_buckets["net_rebate_or_boost"] += 1
+    elif fee_drag > 0:
+        counters.fee_impact_buckets["net_fee_drag"] += 1
 
 
 def _record_same_venue_dry_run_quality(

@@ -284,6 +284,13 @@ def _runtime_status_payload() -> dict[str, object]:
                         "p99": 0.004,
                         "max": 0.004,
                     },
+                    "impactBuckets": {
+                        "fee_hurt": 6,
+                        "fee_or_incentive_helped": 2,
+                        "net_fee_drag": 6,
+                        "net_rebate_or_boost": 2,
+                        "raw_negative_fee_adjusted_positive": 1,
+                    },
                 },
                 "blockerSamples": {
                     "void_settlement": [
@@ -468,6 +475,13 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
     assert summary["candidateQuality"]["sameVenueDryRun"]["passes"] == 2
     assert summary["candidateQuality"]["feeAdjustment"]["evaluatedEdges"] == 8
     assert summary["candidateQuality"]["feeAdjustment"]["feeDragMargin"]["p95"] == 0.003
+    assert summary["candidateQuality"]["feeAdjustment"]["impactBuckets"] == {
+        "fee_hurt": 6,
+        "fee_or_incentive_helped": 2,
+        "net_fee_drag": 6,
+        "net_rebate_or_boost": 2,
+        "raw_negative_fee_adjusted_positive": 1,
+    }
     assert summary["feePolicy"]["venueTakerFeeRates"] == {"POLYMARKET": "0.03"}
     assert summary["feePolicy"]["venueMakerRebateRates"] == {"POLYMARKET": "0.0075"}
     assert summary["feePolicy"]["venueBasketRebateRates"] == {"SXBET": "0.01"}
@@ -724,6 +738,13 @@ def test_runtime_probe_report_aggregates_multiple_artifacts():
         "void_settlement": 2,
     }
     assert aggregate["zeroCandidateBlockerCounts"] == {"fixture_identity_mismatch": 2}
+    assert aggregate["feeImpactBucketCounts"] == {
+        "fee_hurt": 6,
+        "fee_or_incentive_helped": 2,
+        "net_fee_drag": 6,
+        "net_rebate_or_boost": 2,
+        "raw_negative_fee_adjusted_positive": 1,
+    }
     assert aggregate["providerCorpusCoverage"]["SXBET"]["sportsWithSelections"] == 3
     assert aggregate["providerCorpusCoverage"]["SXBET"]["zeroSelectionSports"] == [
         "baseball",
@@ -772,6 +793,8 @@ def test_runtime_probe_report_cli_outputs_json_and_text(tmp_path, monkeypatch, c
     assert "top_semantic_blockers" in text_output
     assert "top_semantic_relationships" in text_output
     assert "zero_candidate_blockers fixture_identity_mismatch=2" in text_output
+    assert "fee_impact fee_hurt=6" in text_output
+    assert "raw_negative_fee_adjusted_positive=1" in text_output
     assert "strategy_latency quote_event_p95=25.0ms" in text_output
     assert (
         "latency_slo overall=fail quote_age=pass fetch_latency=fail pair_skew=pass" in text_output
