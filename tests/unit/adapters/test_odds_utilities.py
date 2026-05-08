@@ -69,7 +69,8 @@ class TestArbitrageCalculations:
     Test arbitrage calculation functions.
     """
 
-    def test_calculate_arbitrage_stakes_basic(self):
+    @staticmethod
+    def test_calculate_arbitrage_stakes_basic():
         """
         Test basic arbitrage stake calculation.
         """
@@ -90,7 +91,8 @@ class TestArbitrageCalculations:
         # Profit should be positive for arbitrage
         assert profit > 0
 
-    def test_is_arbitrage_opportunity(self):
+    @staticmethod
+    def test_is_arbitrage_opportunity():
         """
         Test arbitrage opportunity detection.
         """
@@ -111,7 +113,8 @@ class TestArbitrageCalculations:
         assert is_arb is False
         assert margin == Decimal(0)
 
-    def test_devig_probabilities_strips_three_way_overround(self):
+    @staticmethod
+    def test_devig_probabilities_strips_three_way_overround():
         """
         Full-book diagnostics should expose no-vig probabilities separately.
         """
@@ -173,7 +176,8 @@ class TestArbitrageCalculations:
         assert market.no_vig_probabilities[0] < market.implied_probabilities[0]
         assert abs(sum(market.no_vig_probabilities, Decimal(0)) - Decimal(1)) < Decimal("1e-12")
 
-    def test_devig_probabilities_rejects_incomplete_book(self):
+    @staticmethod
+    def test_devig_probabilities_rejects_incomplete_book():
         with pytest.raises(ValueError, match="At least two odds"):
             devig_probabilities((Decimal("2.0"),))
 
@@ -182,7 +186,8 @@ class TestArbitrageCalculations:
         with pytest.raises(ValueError, match="Unsupported devig method"):
             devig_probabilities((Decimal("2.0"), Decimal("2.1")), method="bad")
 
-    def test_calculate_arbitrage_stakes_equal_odds(self):
+    @staticmethod
+    def test_calculate_arbitrage_stakes_equal_odds():
         """
         Test stake calculation with equal odds.
         """
@@ -198,7 +203,8 @@ class TestArbitrageCalculations:
         # No profit with equal odds
         assert profit == Decimal(0)
 
-    def test_calculate_arbitrage_stakes_profit_matches_rounded_stakes(self):
+    @staticmethod
+    def test_calculate_arbitrage_stakes_profit_matches_rounded_stakes():
         """
         Test the returned profit is computed from the executable rounded stakes.
         """
@@ -217,7 +223,8 @@ class TestArbitrageCalculations:
         assert stake_a + stake_b == total
         assert profit == realized_profit.quantize(Decimal("0.01"))
 
-    def test_calculate_arbitrage_stakes_uses_equal_return_split(self):
+    @staticmethod
+    def test_calculate_arbitrage_stakes_uses_equal_return_split():
         """
         Test asymmetric odds still split stakes to the same realized return.
         """
