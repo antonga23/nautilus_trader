@@ -148,6 +148,8 @@ class SXBetExecClientConfig(LiveExecClientConfig, frozen=True):
     base_currency : str, default "USDC"
         The base currency for trading. Only ``"USDC"`` is currently supported
         by the execution client.
+    dry_run : bool, default False
+        If True, build and sign order payloads but do not submit them to SX.bet.
 
     """
 
@@ -160,3 +162,4 @@ class SXBetExecClientConfig(LiveExecClientConfig, frozen=True):
     instrument_provider: SXBetInstrumentProviderConfig | None = None  # type: ignore[assignment]
     max_retry_attempts: int = 3
     base_currency: str = "USDC"
+    dry_run: bool = False

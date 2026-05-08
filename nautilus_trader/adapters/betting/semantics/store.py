@@ -20,12 +20,18 @@ Cache-backed storage for semantic betting corpus artifacts and rules.
 from __future__ import annotations
 
 import base64
+import atexit
 from collections.abc import Iterable
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import asdict
 import gzip
 import hashlib
 import json
+import os
 from pathlib import Path
+import tempfile
+import threading
 from typing import Any
 
 from nautilus_trader.adapters.betting.semantics.types import CorpusSnapshot
@@ -50,23 +56,62 @@ class FileRuleCache:
         self._path = Path(path)
         self._path.mkdir(parents=True, exist_ok=True)
         self._key_index_path = self._path / "keys.json"
-        if self._key_index_path.exists():
-            self._key_index = json.loads(self._key_index_path.read_text(encoding="utf-8"))
-        else:
-            self._key_index = {}
+        self._lock = threading.RLock()
+        self._key_index = self._load_key_index()
+        self._dirty_key_index_entries = 0
+        atexit.register(self.flush_key_index)
 
     def add(self, key: str, value: bytes) -> None:
         cache_path = self._cache_path(key)
-        cache_path.write_bytes(value)
-        self._key_index[key] = cache_path.name
-        self._key_index_path.write_text(
-            json.dumps(self._key_index, sort_keys=True, indent=2),
-            encoding="utf-8",
-        )
+        with self._lock:
+            self._atomic_write_bytes(cache_path, value)
+            if self._key_index.get(key) != cache_path.name:
+                self._key_index[key] = cache_path.name
+                self._dirty_key_index_entries += 1
+            if self._dirty_key_index_entries >= 500:
+                self.flush_key_index()
 
     def get(self, key: str) -> bytes | None:
         cache_path = self._cache_path(key)
         return cache_path.read_bytes() if cache_path.exists() else None
+
+    def flush_key_index(self) -> None:
+        with self._lock:
+            if self._dirty_key_index_entries <= 0:
+                return
+            if not self._path.exists():
+                self._dirty_key_index_entries = 0
+                return
+            self._atomic_write_text(
+                self._key_index_path,
+                json.dumps(self._key_index, sort_keys=True, indent=2),
+            )
+            self._dirty_key_index_entries = 0
+
+    def _load_key_index(self) -> dict[str, str]:
+        if not self._key_index_path.exists():
+            return {}
+        try:
+            payload = json.loads(self._key_index_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return {str(key): str(value) for key, value in payload.items()}
+
+    def _atomic_write_text(self, path: Path, payload: str) -> None:
+        self._atomic_write_bytes(path, payload.encode("utf-8"))
+
+    def _atomic_write_bytes(self, path: Path, payload: bytes) -> None:
+        fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=self._path)
+        temp_path = Path(temp_name)
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_path, path)
+        finally:
+            if temp_path.exists():
+                temp_path.unlink()
 
     def _cache_path(self, key: str) -> Path:
         digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
@@ -103,8 +148,31 @@ class RuleStore:
     COVERAGE_PROOF_INDEX_KEY = "betting:semantic_rules:index:coverage_proofs"
     COVERAGE_HYPEREDGE_INDEX_KEY = "betting:semantic_rules:index:coverage_hyperedges"
 
-    def __init__(self, cache) -> None:
+    def __init__(self, cache: Any) -> None:
         self._cache = cache
+        self._index_cache: dict[str, list[str]] = {}
+        self._dirty_index_keys: set[str] = set()
+        self._dirty_index_entries = 0
+        self._deferred_index_write_depth = 0
+
+    @contextmanager
+    def defer_index_writes(self) -> Iterator[RuleStore]:
+        self._deferred_index_write_depth += 1
+        try:
+            yield self
+        finally:
+            self._deferred_index_write_depth -= 1
+            if self._deferred_index_write_depth <= 0:
+                self._deferred_index_write_depth = 0
+                self.flush_indexes()
+
+    def flush_indexes(self) -> None:
+        if not self._dirty_index_keys:
+            return
+        for key in sorted(self._dirty_index_keys):
+            self._write_json(key, {"items": self._index_cache.get(key, [])})
+        self._dirty_index_keys.clear()
+        self._dirty_index_entries = 0
 
     def save_candidate(self, rule: MinedRule) -> None:
         self._write_bytes(self.candidate_key(rule.rule_id), rule.to_json_bytes())
@@ -397,15 +465,32 @@ class RuleStore:
     def _append_index_many(self, key: str, values: Iterable[str]) -> None:
         items = self._read_index(key)
         seen = set(items)
+        changed = False
         for value in values:
             if value not in seen:
                 items.append(value)
                 seen.add(value)
+                changed = True
+        if not changed:
+            return
+        self._index_cache[key] = items
+        if self._deferred_index_write_depth > 0:
+            self._dirty_index_keys.add(key)
+            self._dirty_index_entries += 1
+            if self._dirty_index_entries >= 500:
+                self.flush_indexes()
+            return
         self._write_json(key, {"items": items})
 
     def _read_index(self, key: str) -> list[str]:
+        cached = self._index_cache.get(key)
+        if cached is not None:
+            return list(cached)
         payload = self._read_json(key)
         if payload is None:
+            self._index_cache[key] = []
             return []
         items = payload.get("items", [])
-        return [str(item) for item in items]
+        parsed = [str(item) for item in items]
+        self._index_cache[key] = parsed
+        return list(parsed)

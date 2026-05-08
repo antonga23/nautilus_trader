@@ -23,6 +23,7 @@ Quote ticks only update node state and re-evaluate edges adjacent to the changed
 
 """
 
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -197,6 +198,7 @@ class OpportunityGraph:
         self._semantic_template_count = 0
         self._coverage_proof_count = 0
         self._coverage_hyperedge_count = 0
+        self._coverage_summary_payload: dict[str, object] = self._empty_coverage_summary()
         self._rust_semantic_templates_loaded = False
         self.nodes_by_id: dict[str, OpportunityNode] = {}
         self.edges_by_id: dict[str, OpportunityEdge] = {}
@@ -557,6 +559,22 @@ class OpportunityGraph:
     def coverage_hyperedge_count(self) -> int:
         return self._coverage_hyperedge_count
 
+    def semantic_coverage_summary(self) -> dict[str, object]:
+        """
+        Return coverage proof and hyperedge diagnostics loaded into the graph core.
+        """
+        if self._rust_core is not None and hasattr(
+            self._rust_core,
+            "semantic_coverage_summary_json",
+        ):
+            try:
+                payload = json.loads(self._rust_core.semantic_coverage_summary_json())
+            except (TypeError, ValueError, json.JSONDecodeError):
+                payload = {}
+            if isinstance(payload, dict):
+                return payload
+        return dict(self._coverage_summary_payload)
+
     def _sync_edges_from_rust(self) -> None:
         if self._rust_core is None:
             return
@@ -897,6 +915,10 @@ class OpportunityGraph:
             odds_b=target_quote.odds,
             is_same_venue=is_same_venue,
             match_type=match_type,
+            raw_probability_a=probability_a,
+            raw_probability_b=probability_b,
+            raw_total_probability=total_probability,
+            raw_profit_margin=profit_margin,
         )
 
     def _legacy_cross_market_candidate(
@@ -1102,6 +1124,7 @@ class OpportunityGraph:
         if rule_store is None:
             self._coverage_proof_count = 0
             self._coverage_hyperedge_count = 0
+            self._coverage_summary_payload = self._empty_coverage_summary()
             return [], []
 
         proof_payloads: list[dict[str, object]] = []
@@ -1113,8 +1136,23 @@ class OpportunityGraph:
                 proof_payloads.append(
                     {
                         "proof_id": proof.proof_id,
+                        "sport": proof.universe.sport,
+                        "scope": proof.universe.scope,
+                        "provider_scope": list(proof.coverage_set.provider_scope),
+                        "predicate_count": len(proof.predicates),
+                        "instrument_ids": [
+                            predicate.instrument_id for predicate in proof.predicates
+                        ],
+                        "complete": proof.complete,
+                        "win_covered_states": list(proof.win_covered_states),
+                        "overlapping_win_states": list(proof.overlapping_win_states),
+                        "gap_count": len(proof.gaps),
+                        "risk_count": len(proof.risks),
+                        "gaps": [gap.reason for gap in proof.gaps],
+                        "risks": [risk.reason for risk in proof.risks],
                         "safety_tier": proof.safety_tier,
                         "execution_safe": proof.execution_safe,
+                        "same_venue_execution_eligible": proof.same_venue_execution_eligible,
                         "relationship_type": proof.relationship_type,
                         "blocker_reasons": list(proof.blocker_reasons),
                     },
@@ -1131,14 +1169,112 @@ class OpportunityGraph:
                         "hyperedge_id": hyperedge.hyperedge_id,
                         "coverage_proof_id": hyperedge.coverage_proof_id,
                         "instrument_ids": list(hyperedge.instrument_ids),
+                        "provider_scope": list(hyperedge.provider_scope),
+                        "relationship_type": hyperedge.relationship_type,
                         "safety_tier": hyperedge.safety_tier,
                         "execution_safe": hyperedge.execution_safe,
+                        "caveats": list(hyperedge.caveats),
                     },
                 )
 
         self._coverage_proof_count = len(proof_payloads)
         self._coverage_hyperedge_count = len(hyperedge_payloads)
+        self._coverage_summary_payload = self._coverage_summary_from_payloads(
+            proof_payloads,
+            hyperedge_payloads,
+        )
         return proof_payloads, hyperedge_payloads
+
+    @staticmethod
+    def _empty_coverage_summary() -> dict[str, object]:
+        return {
+            "coverageProofCount": 0,
+            "coverageHyperedgeCount": 0,
+            "executionSafeCoverageProofCount": 0,
+            "executionSafeCoverageHyperedgeCount": 0,
+            "sameVenueEligibleCoverageProofCount": 0,
+            "proofSafetyTierCounts": {},
+            "hyperedgeSafetyTierCounts": {},
+            "proofRelationshipTypeCounts": {},
+            "proofBlockerReasonCounts": {},
+            "proofGapReasonCounts": {},
+            "proofRiskReasonCounts": {},
+            "sampleProofIds": [],
+            "sampleProofs": [],
+            "sampleHyperedges": [],
+        }
+
+    @classmethod
+    def _coverage_summary_from_payloads(
+        cls,
+        proof_payloads: list[dict[str, object]],
+        hyperedge_payloads: list[dict[str, object]],
+    ) -> dict[str, object]:
+        proof_tiers = Counter(
+            cls._coverage_safe_string(payload.get("safety_tier")) for payload in proof_payloads
+        )
+        proof_relationships = Counter(
+            cls._coverage_safe_string(payload.get("relationship_type"))
+            for payload in proof_payloads
+        )
+        proof_blockers = Counter(
+            cls._coverage_safe_string(reason)
+            for payload in proof_payloads
+            for reason in cls._coverage_string_sequence(payload.get("blocker_reasons"))
+        )
+        proof_gaps = Counter(
+            cls._coverage_safe_string(reason)
+            for payload in proof_payloads
+            for reason in cls._coverage_string_sequence(payload.get("gaps"))
+        )
+        proof_risks = Counter(
+            cls._coverage_safe_string(reason)
+            for payload in proof_payloads
+            for reason in cls._coverage_string_sequence(payload.get("risks"))
+        )
+        hyperedge_tiers = Counter(
+            cls._coverage_safe_string(payload.get("safety_tier")) for payload in hyperedge_payloads
+        )
+        return {
+            "coverageProofCount": len(proof_payloads),
+            "coverageHyperedgeCount": len(hyperedge_payloads),
+            "executionSafeCoverageProofCount": sum(
+                1 for payload in proof_payloads if bool(payload.get("execution_safe"))
+            ),
+            "executionSafeCoverageHyperedgeCount": sum(
+                1 for payload in hyperedge_payloads if bool(payload.get("execution_safe"))
+            ),
+            "sameVenueEligibleCoverageProofCount": sum(
+                1
+                for payload in proof_payloads
+                if bool(payload.get("same_venue_execution_eligible"))
+            ),
+            "proofSafetyTierCounts": dict(sorted(proof_tiers.items())),
+            "hyperedgeSafetyTierCounts": dict(sorted(hyperedge_tiers.items())),
+            "proofRelationshipTypeCounts": dict(sorted(proof_relationships.items())),
+            "proofBlockerReasonCounts": dict(sorted(proof_blockers.items())),
+            "proofGapReasonCounts": dict(sorted(proof_gaps.items())),
+            "proofRiskReasonCounts": dict(sorted(proof_risks.items())),
+            "sampleProofIds": [
+                cls._coverage_safe_string(payload.get("proof_id"))
+                for payload in proof_payloads[:10]
+                if payload.get("proof_id")
+            ],
+            "sampleProofs": proof_payloads[:10],
+            "sampleHyperedges": hyperedge_payloads[:10],
+        }
+
+    @staticmethod
+    def _coverage_string_sequence(value: object) -> tuple[object, ...]:
+        if value is None:
+            return ()
+        if isinstance(value, list | tuple | set):
+            return tuple(value)
+        return (value,)
+
+    @staticmethod
+    def _coverage_safe_string(value: object) -> str:
+        return str(value or "UNKNOWN")
 
     def _load_rust_semantic_coverage(
         self,

@@ -10,8 +10,10 @@
 import asyncio
 from collections import Counter
 from dataclasses import replace
+import hashlib
 import json
 from decimal import Decimal
+import os
 from pathlib import Path
 import subprocess
 from types import SimpleNamespace
@@ -24,6 +26,7 @@ import pytest
 from nautilus_trader.adapters.betting.common.enums import SelectionSide
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.betting.semantics import FileRuleCache
+from nautilus_trader.adapters.betting.semantics import CorpusSnapshot
 from nautilus_trader.adapters.betting.semantics import RuleClassifier
 from nautilus_trader.adapters.betting.semantics import RuleCorpusManifest
 from nautilus_trader.adapters.betting.semantics import RulePromotionPolicy
@@ -39,6 +42,9 @@ from nautilus_trader.live.strategy_nodes.betting_arbitrage import builder as nod
 from nautilus_trader.live.strategy_nodes.betting_arbitrage import runner as node_runner
 from nautilus_trader.live.strategy_nodes.betting_arbitrage import semantic_cache as node_cache
 from nautilus_trader.live.strategy_nodes.betting_arbitrage.builder import build_trading_node_config
+from nautilus_trader.live.strategy_nodes.betting_arbitrage.builder import (
+    manifest_execution_readiness,
+)
 from nautilus_trader.live.strategy_nodes.betting_arbitrage.config import (
     BettingArbitrageNodeManifest,
 )
@@ -185,13 +191,19 @@ def _seed_promoted_template(
     node_cache._write_semantic_cache_compatibility(cache_dir, manifest=manifest)
 
 
-def _manifest(tmp_path: Path, *, cache_dir: Path | None = None) -> BettingArbitrageNodeManifest:
+def _manifest(
+    tmp_path: Path,
+    *,
+    cache_dir: Path | None = None,
+    seed_dir: Path | None = None,
+) -> BettingArbitrageNodeManifest:
     return BettingArbitrageNodeManifest(
         node_id="sxbet-node",
         trader_id="BETARB-TEST-SEM",
         validation_mode=True,
         allow_dummy_credentials=True,
         semantic_rule_cache_dir=str(cache_dir) if cache_dir is not None else None,
+        semantic_rule_cache_seed_dir=str(seed_dir) if seed_dir is not None else None,
         rendered_config_path=str(tmp_path / "trading-node-config.json"),
         status_path=str(tmp_path / "status.json"),
         heartbeat_path=str(tmp_path / "heartbeat.json"),
@@ -265,7 +277,10 @@ class TestBettingArbitrageNodeBuilder:
             == "artifacts/semantic-rule-cache/sxbet-validation"
         )
 
-    def test_sxbet_exec_client_uses_dummy_credentials(self):
+    def test_sxbet_exec_client_uses_dummy_credentials(self, monkeypatch):
+        monkeypatch.delenv("SXBET_API_KEY", raising=False)
+        monkeypatch.delenv("SXBET_PRIVATE_KEY", raising=False)
+        monkeypatch.delenv("SXBET_WALLET_ADDRESS", raising=False)
         manifest = BettingArbitrageNodeManifest(
             node_id="sxbet-live",
             trader_id="BETARB-TEST-002",
@@ -307,8 +322,12 @@ class TestBettingArbitrageNodeBuilder:
         assert exec_client.config["api_url"] == "https://api.toronto.sx.bet"
         assert exec_client.config["ws_url"] == "wss://api.toronto.sx.bet"
         assert exec_client.config["base_currency"] == "USDC"
+        assert exec_client.config["dry_run"] is True
 
-    def test_sxbet_data_client_receives_order_book_runtime_settings(self):
+    def test_sxbet_data_client_receives_order_book_runtime_settings(self, monkeypatch):
+        monkeypatch.delenv("SXBET_API_KEY", raising=False)
+        monkeypatch.delenv("SXBET_PRIVATE_KEY", raising=False)
+        monkeypatch.delenv("SXBET_WALLET_ADDRESS", raising=False)
         manifest = BettingArbitrageNodeManifest(
             node_id="sxbet-runtime",
             trader_id="BETARB-TEST-002",
@@ -350,7 +369,8 @@ class TestBettingArbitrageNodeBuilder:
         assert data_client.config["order_book_concurrency"] == 8
         assert data_client.config["api_key_pool"] == ("dummy-sxbet-api-key",)
 
-    def test_cloudbet_data_client_receives_runtime_settings(self):
+    def test_cloudbet_data_client_receives_runtime_settings(self, monkeypatch):
+        monkeypatch.delenv("CLOUDBET_API_KEY", raising=False)
         manifest = BettingArbitrageNodeManifest(
             node_id="cloudbet-validation",
             trader_id="BETARB-TEST-CB",
@@ -368,6 +388,7 @@ class TestBettingArbitrageNodeBuilder:
                     order_book_poll_interval_secs=7.0,
                     order_book_poll_summary_interval_secs=31.0,
                     order_book_concurrency=3,
+                    order_book_missing_prune_threshold=2,
                 ),
             ],
         )
@@ -392,6 +413,11 @@ class TestBettingArbitrageNodeBuilder:
         assert data_client.config["quote_poll_interval_secs"] == 7.0
         assert data_client.config["quote_poll_summary_interval_secs"] == 31.0
         assert data_client.config["quote_poll_concurrency"] == 3
+        assert data_client.config["quote_poll_min_concurrency"] == 1
+        assert data_client.config["quote_poll_target_cycle_secs"] == 5.0
+        assert data_client.config["quote_poll_adaptive_concurrency"] is True
+        assert data_client.config["quote_poll_event_batching"] is True
+        assert data_client.config["quote_poll_missing_prune_threshold"] == 2
 
     def test_cloudbet_data_client_keeps_auto_subscribe_without_semantic_cache(self):
         manifest = BettingArbitrageNodeManifest(
@@ -433,6 +459,63 @@ class TestBettingArbitrageNodeBuilder:
         assert exec_client.config["base_currency"] == "PLAY_EUR"
         assert exec_client.config["api_key"] == "cloudbet-live-api-key"
         assert exec_client.config.get("api_url") is None
+        assert exec_client.config["dry_run"] is True
+
+        readiness = manifest_execution_readiness(manifest)
+        assert readiness["validationMode"] is False
+        assert readiness["autoExecute"] is False
+        assert readiness["semanticCacheConfigured"] is True
+        assert readiness["venues"] == [
+            {
+                "venue": "CLOUDBET",
+                "clientKey": "CLOUDBET_PRIMARY",
+                "dataEnabled": True,
+                "executionEnabled": True,
+                "executionDryRun": True,
+                "environment": "paper",
+                "baseCurrency": "PLAY_EUR",
+                "apiUrl": None,
+                "wsUrl": None,
+                "sportKeys": [
+                    "american_football",
+                    "baseball",
+                    "basketball",
+                    "ice_hockey",
+                    "soccer",
+                    "tennis",
+                ],
+                "sportIds": [],
+                "liveOnly": False,
+                "loadAllInstruments": True,
+                "instrumentLoadLimit": 40,
+                "marketDiscoveryLimit": 40,
+            },
+        ]
+
+    def test_sxbet_execution_readiness_manifest_uses_testnet_endpoints(self, monkeypatch):
+        monkeypatch.setenv("SXBET_API_KEY", "sxbet-live-api-key")
+        monkeypatch.setenv("SXBET_PRIVATE_KEY", "0x" + "a" * 64)
+        monkeypatch.setenv("SXBET_WALLET_ADDRESS", "0x" + "b" * 40)
+
+        manifest = node_builder.load_manifest(
+            Path("deploy/strategy_nodes/betting_arbitrage/sxbet-testnet-execution-readiness.json"),
+        )
+
+        config = build_trading_node_config(manifest)
+        exec_client = config.exec_clients["SXBET_PRIMARY"]
+
+        assert manifest.validation_mode is False
+        assert config.strategies[0].config["auto_execute"] is False
+        assert exec_client.config["api_url"] == node_builder.SXBET_TESTNET_API_URL
+        assert exec_client.config["ws_url"] == node_builder.SXBET_TESTNET_WS_URL
+        assert exec_client.config["dry_run"] is True
+        assert exec_client.config["base_currency"] == "USDC"
+
+        readiness = manifest_execution_readiness(manifest)
+        assert readiness["venues"][0]["environment"] == "testnet"
+        assert readiness["venues"][0]["apiUrl"] == node_builder.SXBET_TESTNET_API_URL
+        assert readiness["venues"][0]["wsUrl"] == node_builder.SXBET_TESTNET_WS_URL
+        assert readiness["venues"][0]["executionDryRun"] is True
 
     def test_cloudbet_factories_match_live_node_builder_signature(self, monkeypatch):
         from nautilus_trader.adapters.cloudbet import factories as cloudbet_factories
@@ -694,10 +777,23 @@ class TestBettingArbitrageNodeBuilder:
             "POLYMARKET",
         ]
         assert config.strategies[0].config["semantic_unmatched_quote_probe_limit_per_venue"] == 20
+        assert config.strategies[0].config["semantic_quote_subscription_limit_by_venue"] == {
+            "CLOUDBET": 80,
+            "SXBET": 120,
+        }
         assert (
             config.strategies[0].config["semantic_rule_cache_dir"]
             == "artifacts/semantic-rule-cache/multi-venue-validation"
         )
+        cloudbet_config = config.data_clients["CLOUDBET_PRIMARY"].config
+        assert cloudbet_config["quote_poll_interval_secs"] == 1.0
+        assert cloudbet_config["quote_poll_concurrency"] == 12
+        assert cloudbet_config["quote_poll_min_concurrency"] == 4
+        assert cloudbet_config["quote_poll_max_concurrency"] == 16
+        assert cloudbet_config["quote_poll_target_cycle_secs"] == 4.0
+        assert cloudbet_config["quote_poll_adaptive_concurrency"] is True
+        assert cloudbet_config["quote_poll_event_batching"] is True
+        assert cloudbet_config["quote_poll_missing_prune_threshold"] == 3
         assert (
             config.data_clients["POLYMARKET_PRIMARY"].config["instrument_provider"]["load_all"]
             is True
@@ -935,6 +1031,113 @@ class TestSemanticCacheBootstrap:
         assert status.manifest_count >= 1
         assert status.promoted_template_count >= 1
 
+    def test_seeds_missing_semantic_cache_before_bootstrap(self, tmp_path, monkeypatch):
+        cache_dir = tmp_path / "semantic-cache"
+        seed_dir = tmp_path / "seed-cache"
+        manifest = _manifest(tmp_path, cache_dir=cache_dir)
+        seed_dir.mkdir()
+        (seed_dir / "marker").write_text("seeded", encoding="utf-8")
+        monkeypatch.setenv(node_cache.SEMANTIC_CACHE_SEED_DIR_ENV, str(seed_dir))
+        statuses = {
+            (str(cache_dir), "existing"): SemanticCacheStatus(
+                path=str(cache_dir),
+                source="existing",
+                manifest_count=0,
+                promoted_template_count=0,
+                execution_safe_template_count=0,
+                same_venue_execution_eligible_template_count=0,
+            ),
+            (str(seed_dir), "existing"): SemanticCacheStatus(
+                path=str(seed_dir),
+                source="existing",
+                manifest_count=1,
+                promoted_template_count=2,
+                execution_safe_template_count=1,
+                same_venue_execution_eligible_template_count=0,
+                compatibility_version=node_cache.SEMANTIC_CACHE_COMPATIBILITY_VERSION,
+                compatible=True,
+            ),
+            (str(cache_dir), "seeded"): SemanticCacheStatus(
+                path=str(cache_dir),
+                source="seeded",
+                manifest_count=1,
+                promoted_template_count=2,
+                execution_safe_template_count=1,
+                same_venue_execution_eligible_template_count=0,
+                compatibility_version=node_cache.SEMANTIC_CACHE_COMPATIBILITY_VERSION,
+                compatible=True,
+            ),
+        }
+
+        def fake_status(path, *, source="existing", manifest=None):
+            return statuses[(str(path), source)]
+
+        monkeypatch.setattr(node_cache, "semantic_cache_status", fake_status)
+        monkeypatch.setattr(
+            "nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache._run_bootstrap",
+            lambda **_: (_ for _ in ()).throw(AssertionError("bootstrap should not run")),
+        )
+
+        status = ensure_semantic_cache_ready(manifest)
+
+        assert status.source == "seeded"
+        assert (cache_dir / "marker").read_text(encoding="utf-8") == "seeded"
+
+    def test_manifest_seed_dir_overrides_semantic_cache_seed_env(self, tmp_path, monkeypatch):
+        cache_dir = tmp_path / "semantic-cache"
+        manifest_seed_dir = tmp_path / "manifest-seed-cache"
+        env_seed_dir = tmp_path / "env-seed-cache"
+        manifest = _manifest(tmp_path, cache_dir=cache_dir, seed_dir=manifest_seed_dir)
+        manifest_seed_dir.mkdir()
+        env_seed_dir.mkdir()
+        (manifest_seed_dir / "marker").write_text("manifest-seed", encoding="utf-8")
+        (env_seed_dir / "marker").write_text("env-seed", encoding="utf-8")
+        monkeypatch.setenv(node_cache.SEMANTIC_CACHE_SEED_DIR_ENV, str(env_seed_dir))
+        statuses = {
+            (str(cache_dir), "existing"): SemanticCacheStatus(
+                path=str(cache_dir),
+                source="existing",
+                manifest_count=0,
+                promoted_template_count=0,
+                execution_safe_template_count=0,
+                same_venue_execution_eligible_template_count=0,
+            ),
+            (str(manifest_seed_dir), "existing"): SemanticCacheStatus(
+                path=str(manifest_seed_dir),
+                source="existing",
+                manifest_count=1,
+                promoted_template_count=2,
+                execution_safe_template_count=1,
+                same_venue_execution_eligible_template_count=0,
+                compatibility_version=node_cache.SEMANTIC_CACHE_COMPATIBILITY_VERSION,
+                compatible=True,
+            ),
+            (str(cache_dir), "seeded"): SemanticCacheStatus(
+                path=str(cache_dir),
+                source="seeded",
+                manifest_count=1,
+                promoted_template_count=2,
+                execution_safe_template_count=1,
+                same_venue_execution_eligible_template_count=0,
+                compatibility_version=node_cache.SEMANTIC_CACHE_COMPATIBILITY_VERSION,
+                compatible=True,
+            ),
+        }
+
+        def fake_status(path, *, source="existing", manifest=None):
+            return statuses[(str(path), source)]
+
+        monkeypatch.setattr(node_cache, "semantic_cache_status", fake_status)
+        monkeypatch.setattr(
+            "nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache._run_bootstrap",
+            lambda **_: (_ for _ in ()).throw(AssertionError("bootstrap should not run")),
+        )
+
+        status = ensure_semantic_cache_ready(manifest)
+
+        assert status.source == "seeded"
+        assert (cache_dir / "marker").read_text(encoding="utf-8") == "manifest-seed"
+
     def test_unusable_semantic_cache_fails_validation(self, tmp_path, monkeypatch):
         manifest = _manifest(tmp_path, cache_dir=tmp_path / "semantic-cache")
 
@@ -967,15 +1170,84 @@ class TestSemanticCacheBootstrap:
             def list_coverage_hyperedge_ids(self):
                 return ["hyperedge-a"]
 
+            def list_snapshot_ids(self):
+                return ["coverage-sxbet-old", "coverage-sxbet-new"]
+
+            def load_snapshot(self, snapshot_id):
+                payloads = {
+                    "coverage-sxbet-old": {
+                        "provider": "SXBET",
+                        "sports": {
+                            "soccer": {
+                                "selection_count": 0,
+                                "event_count": 0,
+                                "blocker": "old",
+                            },
+                        },
+                    },
+                    "coverage-sxbet-new": {
+                        "provider": "SXBET",
+                        "coverage_mode": "active_live",
+                        "live_only": True,
+                        "prefer_liquid_markets": True,
+                        "requested_sports": ["basketball", "baseball", "american_football"],
+                        "resolved_sports": ["basketball", "baseball"],
+                        "unresolved_requested_sports": ["american_football"],
+                        "sports": {
+                            "basketball": {
+                                "selection_count": 12,
+                                "event_count": 4,
+                                "attempts": [{"source": "active"}],
+                            },
+                            "baseball": {
+                                "selection_count": 0,
+                                "event_count": 0,
+                                "blocker": "no_active_markets_or_provider_data",
+                            },
+                        },
+                    },
+                }
+                return CorpusSnapshot(
+                    snapshot_id=snapshot_id,
+                    provider="SXBET",
+                    endpoint="/semantic/coverage/sxbet",
+                    fetched_at="2026-05-07T00:00:00Z"
+                    if snapshot_id.endswith("new")
+                    else "2026-05-06T00:00:00Z",
+                    payload=json.dumps(payloads[snapshot_id]).encode("utf-8"),
+                )
+
             def load_promoted_template(self, template_id):
                 mapping = {
                     "exec-safe": SimpleNamespace(
                         safety_tier=node_cache.SafetyTier.EXECUTION_SAFE.value,
+                        execution_safe=True,
+                        same_venue_execution_eligible=False,
+                        relationship_type="COMPLEMENTARY_COVERAGE",
+                        has_void=False,
+                        has_partial=False,
+                        has_unknown=False,
+                        support=SimpleNamespace(catalog_promotable=True),
+                        pattern_a=SimpleNamespace(market_family="TOTALS"),
+                        pattern_b=SimpleNamespace(market_family="TOTALS"),
+                        caveats=(),
+                        eligibility_reasons=("execution_safe_complementary_coverage",),
                     ),
                     "same-venue": SimpleNamespace(
                         safety_tier=(
                             node_cache.SafetyTier.EXECUTION_SAFE_SAME_VENUE_ELIGIBLE.value
                         ),
+                        execution_safe=False,
+                        same_venue_execution_eligible=True,
+                        relationship_type="COMPLEMENTARY_COVERAGE",
+                        has_void=False,
+                        has_partial=False,
+                        has_unknown=False,
+                        support=SimpleNamespace(catalog_promotable=True),
+                        pattern_a=SimpleNamespace(market_family="MATCH_ODDS"),
+                        pattern_b=SimpleNamespace(market_family="MATCH_ODDS"),
+                        caveats=(),
+                        eligibility_reasons=("same_venue_risk_engine_elevation_required",),
                     ),
                 }
                 return mapping.get(template_id)
@@ -989,8 +1261,151 @@ class TestSemanticCacheBootstrap:
         assert status.promoted_template_count == 3
         assert status.execution_safe_template_count == 1
         assert status.same_venue_execution_eligible_template_count == 1
+        assert status.promoted_safety_tier_counts == {
+            "EXECUTION_SAFE": 1,
+            "EXECUTION_SAFE_SAME_VENUE_ELIGIBLE": 1,
+        }
+        assert status.strict_execution_blocker_counts == {
+            "same_venue_risk_engine_elevation_required": 1,
+        }
+        assert status.promoted_market_family_counts == {
+            "MATCH_ODDS + MATCH_ODDS": 1,
+            "TOTALS + TOTALS": 1,
+        }
+        assert status.execution_safe_market_family_counts == {"TOTALS + TOTALS": 1}
+        assert status.same_venue_eligible_market_family_counts == {
+            "MATCH_ODDS + MATCH_ODDS": 1,
+        }
         assert status.coverage_proof_count == 2
         assert status.coverage_hyperedge_count == 1
+        assert status.summary_reused is False
+        assert status.bootstrap_phase_timings_secs == {}
+        assert status.provider_corpus_coverage["SXBET"]["sports_with_selections"] == 1
+        assert status.provider_corpus_coverage["SXBET"]["total_selection_count"] == 12
+        assert status.provider_corpus_coverage["SXBET"]["zero_selection_sports"] == ["baseball"]
+        assert status.provider_corpus_coverage["SXBET"]["coverage_mode"] == "active_live"
+        assert status.provider_corpus_coverage["SXBET"]["live_only"] is True
+        assert status.provider_corpus_coverage["SXBET"]["prefer_liquid_markets"] is True
+        assert status.provider_corpus_coverage["SXBET"]["requested_sports"] == [
+            "american_football",
+            "baseball",
+            "basketball",
+        ]
+        assert status.provider_corpus_coverage["SXBET"]["resolved_sports"] == [
+            "baseball",
+            "basketball",
+        ]
+        assert status.provider_corpus_coverage["SXBET"]["unresolved_requested_sports"] == [
+            "american_football",
+        ]
+        assert status.provider_corpus_coverage["SXBET"]["blocker_counts"] == {
+            "no_active_markets_or_provider_data": 1,
+        }
+
+    def test_semantic_cache_status_reuses_summary_without_template_scan(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        summary_path = tmp_path / node_cache.SEMANTIC_CACHE_SUMMARY_FILE
+        summary_path.write_text(
+            json.dumps(
+                {
+                    "compatibility_version": None,
+                    "compatibility_scope": None,
+                    "manifest_count": 2,
+                    "promoted_template_count": 3,
+                    "execution_safe_template_count": 1,
+                    "same_venue_execution_eligible_template_count": 1,
+                    "coverage_proof_count": 2,
+                    "coverage_hyperedge_count": 1,
+                    "manifest_index_signature": node_cache._semantic_cache_index_signature(
+                        ["manifest-a", "manifest-b"],
+                    ),
+                    "promoted_template_index_signature": node_cache._semantic_cache_index_signature(
+                        ["missing-template", "exec-safe", "same-venue"],
+                    ),
+                    "coverage_proof_index_signature": node_cache._semantic_cache_index_signature(
+                        ["proof-a", "proof-b"],
+                    ),
+                    "coverage_hyperedge_index_signature": node_cache._semantic_cache_index_signature(
+                        ["hyperedge-a"],
+                    ),
+                    "promoted_safety_tier_counts": {
+                        "EXECUTION_SAFE": 1,
+                        "EXECUTION_SAFE_SAME_VENUE_ELIGIBLE": 1,
+                    },
+                    "promoted_market_family_counts": {
+                        "MATCH_ODDS + MATCH_ODDS": 1,
+                        "TOTALS + TOTALS": 1,
+                    },
+                    "execution_safe_market_family_counts": {"TOTALS + TOTALS": 1},
+                    "same_venue_eligible_market_family_counts": {
+                        "MATCH_ODDS + MATCH_ODDS": 1,
+                    },
+                    "strict_execution_blocker_counts": {
+                        "same_venue_risk_engine_elevation_required": 1,
+                    },
+                },
+            ),
+            encoding="utf-8",
+        )
+        timings_path = tmp_path / node_cache.SEMANTIC_CACHE_BOOTSTRAP_TIMINGS_FILE
+        timings_path.write_text(
+            json.dumps(
+                {
+                    "phase_timings_secs": {
+                        "refresh_sxbet_corpus": 1.25,
+                        "mine_event_candidates": 0.5,
+                    },
+                },
+            ),
+            encoding="utf-8",
+        )
+
+        class SummaryOnlyStore:
+            def __init__(self, _cache):
+                pass
+
+            def list_manifest_ids(self):
+                return ["manifest-a", "manifest-b"]
+
+            def list_promoted_template_ids(self):
+                return ["missing-template", "exec-safe", "same-venue"]
+
+            def list_coverage_proof_ids(self):
+                return ["proof-a", "proof-b"]
+
+            def list_coverage_hyperedge_ids(self):
+                return ["hyperedge-a"]
+
+            def load_promoted_template(self, template_id):
+                raise AssertionError(f"summary cache should avoid loading {template_id}")
+
+        monkeypatch.setattr(node_cache, "RuleStore", SummaryOnlyStore)
+        monkeypatch.setattr(node_cache, "FileRuleCache", lambda path: path)
+
+        summary_status = node_cache.semantic_cache_status(tmp_path)
+
+        assert summary_status.promoted_template_count == 3
+        assert summary_status.execution_safe_template_count == 1
+        assert summary_status.same_venue_execution_eligible_template_count == 1
+        assert summary_status.strict_execution_blocker_counts == {
+            "same_venue_risk_engine_elevation_required": 1,
+        }
+        assert summary_status.promoted_market_family_counts == {
+            "MATCH_ODDS + MATCH_ODDS": 1,
+            "TOTALS + TOTALS": 1,
+        }
+        assert summary_status.execution_safe_market_family_counts == {"TOTALS + TOTALS": 1}
+        assert summary_status.same_venue_eligible_market_family_counts == {
+            "MATCH_ODDS + MATCH_ODDS": 1,
+        }
+        assert summary_status.summary_reused is True
+        assert summary_status.bootstrap_phase_timings_secs == {
+            "mine_event_candidates": 0.5,
+            "refresh_sxbet_corpus": 1.25,
+        }
 
     def test_run_bootstrap_without_running_loop_executes_async_path(self, tmp_path, monkeypatch):
         manifest = _manifest(tmp_path, cache_dir=tmp_path / "semantic-cache")
@@ -1204,6 +1619,7 @@ class TestSemanticCacheBootstrap:
 
     def test_refresh_required_sxbet_corpus_requires_api_key(self, monkeypatch):
         monkeypatch.delenv("SXBET_API_KEY", raising=False)
+        monkeypatch.setattr(node_cache, "_DEFAULT_LOCAL_ENV_FILES", ())
 
         with pytest.raises(RuntimeError, match="SXBET_API_KEY"):
             asyncio.run(
@@ -1240,6 +1656,7 @@ class TestSemanticCacheBootstrap:
                 self,
                 client,
                 *,
+                sports,
                 sport_ids,
                 from_time,
                 to_time,
@@ -1248,10 +1665,12 @@ class TestSemanticCacheBootstrap:
                 prefer_liquid_markets,
                 liquidity_probe_limit,
                 min_two_sided_markets,
+                live_only,
             ):
                 refresh_calls.append(
                     {
                         "client": client,
+                        "sports": sports,
                         "sport_ids": sport_ids,
                         "from_time": from_time,
                         "to_time": to_time,
@@ -1260,6 +1679,7 @@ class TestSemanticCacheBootstrap:
                         "prefer_liquid_markets": prefer_liquid_markets,
                         "liquidity_probe_limit": liquidity_probe_limit,
                         "min_two_sided_markets": min_two_sided_markets,
+                        "live_only": live_only,
                     },
                 )
 
@@ -1293,6 +1713,7 @@ class TestSemanticCacheBootstrap:
 
         assert len(refresh_calls) == 1
         call = refresh_calls[0]
+        assert call["sports"] is None
         assert call["sport_ids"] == [3, 77]
         assert call["from_time"] == 1_000_000 - 6 * 60 * 60
         assert call["to_time"] == 1_000_000 + 6 * 60 * 60
@@ -1301,8 +1722,63 @@ class TestSemanticCacheBootstrap:
         assert call["prefer_liquid_markets"] is True
         assert call["liquidity_probe_limit"] == 350
         assert call["min_two_sided_markets"] == 2
+        assert call["live_only"] is True
         assert call["client"].connected is True
         assert call["client"].disconnected is True
+
+    def test_sxbet_corpus_scope_uses_sport_keys_and_scales_defaults(self):
+        scope = node_cache._sxbet_corpus_scope(
+            [
+                BettingVenueManifest(
+                    venue="SXBET",
+                    sport_keys=frozenset({"soccer", "basketball", "tennis"}),
+                ),
+            ],
+        )
+
+        assert scope.sport_keys == ["basketball", "soccer", "tennis"]
+        assert scope.sport_ids is None
+        assert scope.instrument_limit == 250
+        assert scope.market_discovery_limit == 360
+
+    def test_sxbet_corpus_scope_defaults_to_six_target_sports(self):
+        scope = node_cache._sxbet_corpus_scope([BettingVenueManifest(venue="SXBET")])
+
+        assert scope.sport_keys == list(node_cache.DEFAULT_SXBET_SPORTS)
+        assert scope.sport_ids is None
+        assert scope.instrument_limit == 480
+        assert scope.market_discovery_limit == 720
+
+    def test_semantic_cache_scope_records_default_target_sports(self, tmp_path):
+        manifest = BettingArbitrageNodeManifest(
+            node_id="sxbet-node",
+            trader_id="BETARB-TEST-SEM",
+            validation_mode=True,
+            semantic_rule_cache_dir=str(tmp_path / "semantic-cache"),
+            venues=[BettingVenueManifest(venue="SXBET")],
+        )
+
+        payload = {
+            "providers": [
+                {
+                    "venue": "SXBET",
+                    "sport_keys": list(node_cache.DEFAULT_SXBET_SPORTS),
+                    "sport_ids": "all",
+                    "league_ids": "all",
+                    "live_only": False,
+                    "instrument_load_limit": None,
+                    "market_discovery_limit": None,
+                    "prefer_liquid_markets": False,
+                    "liquidity_probe_limit": 100,
+                    "min_two_sided_markets": 1,
+                },
+            ],
+        }
+        expected = hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8"),
+        ).hexdigest()[:24]
+
+        assert node_cache._semantic_cache_scope_key(manifest) == expected
 
     def test_refresh_required_sxbet_corpus_disconnects_after_failure(self, monkeypatch):
         monkeypatch.setenv("SXBET_API_KEY", "sxbet-live-key")
@@ -1439,6 +1915,7 @@ class TestSemanticCacheBootstrap:
 
     def test_refresh_cloudbet_corpus_required_without_api_key_fails(self, monkeypatch):
         monkeypatch.delenv("CLOUDBET_API_KEY", raising=False)
+        monkeypatch.setattr(node_cache, "_DEFAULT_LOCAL_ENV_FILES", ())
 
         with pytest.raises(RuntimeError, match="CLOUDBET_API_KEY"):
             asyncio.run(
@@ -1527,6 +2004,24 @@ class TestSemanticCacheBootstrap:
         assert call["max_window_seconds"] == 7 * 24 * 60 * 60
         assert call["include_recent_past_on_sparse"] is True
         assert call["include_bets"] is False
+
+    def test_semantic_cache_local_env_loader_sources_repo_local_workspace_env(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        env_file = tmp_path / ".env.cloud-workspace.local"
+        env_file.write_text("SXBET_API_KEY=file-sxbet-key\n", encoding="utf-8")
+        monkeypatch.setattr(node_cache, "_DEFAULT_LOCAL_ENV_FILES", (env_file,))
+        original = os.environ.pop("SXBET_API_KEY", None)
+        try:
+            loaded = node_cache._load_local_workspace_env()
+            assert loaded == env_file
+            assert os.environ["SXBET_API_KEY"] == "file-sxbet-key"
+        finally:
+            os.environ.pop("SXBET_API_KEY", None)
+            if original is not None:
+                os.environ["SXBET_API_KEY"] = original
 
     def test_refresh_polymarket_corpus_derives_manifest_scope(self):
         refresh_calls: list[dict[str, object]] = []
@@ -1656,6 +2151,8 @@ class TestBettingArbitrageNodeRunner:
             promoted_template_count=2,
             execution_safe_template_count=1,
             same_venue_execution_eligible_template_count=1,
+            summary_reused=True,
+            bootstrap_phase_timings_secs={"total": 12.5, "mine_event_candidates": 1.25},
         )
         monkeypatch.setattr(
             (
@@ -1673,6 +2170,11 @@ class TestBettingArbitrageNodeRunner:
         assert payload["semanticCache"]["source"] == "bootstrapped"
         assert payload["semanticCache"]["promotedTemplateCount"] == 2
         assert payload["semanticCache"]["sameVenueExecutionEligibleTemplateCount"] == 1
+        assert payload["semanticCache"]["summaryReused"] is True
+        assert payload["semanticCache"]["bootstrapPhaseTimingsSeconds"]["total"] == 12.5
+        assert payload["executionReadiness"]["validationMode"] is True
+        assert payload["executionReadiness"]["autoExecute"] is False
+        assert payload["executionReadiness"]["venues"][0]["venue"] == "SXBET"
 
     def test_validate_manifest_failure_writes_failed_status(self, tmp_path, monkeypatch):
         manifest = _manifest(tmp_path, cache_dir=tmp_path / "semantic-cache")
@@ -1703,6 +2205,7 @@ class TestBettingArbitrageNodeRunner:
         assert payload["status"] == "failed"
         assert payload["error"] == "ValueError('bad-config')"
         assert payload["semanticCache"]["ready"] is True
+        assert payload["executionReadiness"]["venues"][0]["executionEnabled"] is False
 
     def test_run_no_start_records_semantic_cache_status(self, tmp_path, monkeypatch):
         manifest = _manifest(tmp_path, cache_dir=tmp_path / "semantic-cache")
@@ -1743,6 +2246,7 @@ class TestBettingArbitrageNodeRunner:
         assert payload["status"] == "built"
         assert payload["semanticCache"]["source"] == "existing"
         assert payload["semanticCache"]["executionSafeTemplateCount"] == 1
+        assert payload["executionReadiness"]["semanticCacheConfigured"] is True
 
     def test_probe_runtime_records_runtime_probe_status(self, tmp_path, monkeypatch):
         manifest = _manifest(tmp_path, cache_dir=tmp_path / "semantic-cache")
@@ -1887,7 +2391,12 @@ class TestBettingArbitrageNodeRunner:
         assert diagnostics["normalizedNodeCount"] == 1
         assert diagnostics["normalizationErrorCount"] == 0
         assert diagnostics["supportedProviderNodeCount"] == 1
+        assert diagnostics["unsupportedProviderNodeCount"] == 0
+        assert diagnostics["supportedProviderCoverageRatio"] == 1.0
         assert diagnostics["commonPatternKeyCount"] == 1
+        assert diagnostics["unsupportedProviderPatternCount"] == 0
+        assert diagnostics["unsupportedProviderPatterns"] == []
+        assert diagnostics["unsupportedProviderPatternSamples"] == []
         assert diagnostics["nodeSports"] == [{"key": "soccer", "count": 1}]
         assert diagnostics["templateTierRelationships"] == [
             {
@@ -1900,6 +2409,54 @@ class TestBettingArbitrageNodeRunner:
         ]
         assert diagnostics["sameVenueEligibleTemplates"][0]["templateId"] == "template-total-25"
         assert diagnostics["sameVenueEligibleTemplates"][0]["patternA"]["selection"] == "OVER"
+
+    def test_semantic_probe_diagnostics_reports_unsupported_provider_patterns(self):
+        unsupported_instrument = _instrument(
+            venue="POLYMARKET",
+            market_type="totals",
+            market_name="TOTALS",
+            outcome="over",
+            params="line=3.5",
+            sport_name="soccer",
+        )
+
+        class FakeGraph:
+            nodes_by_id = {
+                "node-1": SimpleNamespace(
+                    instrument=unsupported_instrument,
+                    canonical_event_key=unsupported_instrument.event_key(include_start_time=True),
+                ),
+            }
+
+            @staticmethod
+            def _semantic_template_payloads():
+                return []
+
+        diagnostics = node_runner._semantic_probe_diagnostics(FakeGraph())
+
+        assert diagnostics["supportedProviderNodeCount"] == 0
+        assert diagnostics["unsupportedProviderNodeCount"] == 1
+        assert diagnostics["supportedProviderCoverageRatio"] == 0.0
+        assert diagnostics["unsupportedProviderPatternCount"] == 1
+        assert diagnostics["unsupportedProviderPatterns"] == [
+            {
+                "key": [
+                    "POLYMARKET",
+                    "soccer",
+                    "full_time",
+                    "TOTALS",
+                    "TOTALS",
+                    "OVER",
+                    '[["line","3.5"]]',
+                ],
+                "count": 1,
+            },
+        ]
+        assert diagnostics["unsupportedProviderPatternSamples"][0]["provider"] == "POLYMARKET"
+        assert diagnostics["unsupportedProviderPatternSamples"][0]["selection"] == "OVER"
+        assert diagnostics["unsupportedProviderPatternSamples"][0]["samples"][0][
+            "instrumentId"
+        ] == str(unsupported_instrument.id)
 
     def test_runtime_probe_venue_coverage_explains_zero_cross_venue_pairs(self):
         sxbet_instrument = _instrument(
@@ -1915,6 +2472,7 @@ class TestBettingArbitrageNodeRunner:
         strategy = SimpleNamespace(
             _config=SimpleNamespace(
                 enabled_venues=frozenset({"CLOUDBET", "POLYMARKET", "SXBET"}),
+                semantic_quote_subscription_limit_by_venue={"CLOUDBET": 80, "SXBET": 120},
             ),
             _quote_subscribed_instrument_ids={
                 sxbet_instrument.id,
@@ -1952,6 +2510,8 @@ class TestBettingArbitrageNodeRunner:
             "POLYMARKET": 0,
             "SXBET": 1,
         }
+        assert coverage["quoteSubscriptionLimits"] == {"CLOUDBET": 80, "SXBET": 120}
+        assert coverage["quoteSubscriptionLimitExceededCounts"] == {}
         assert coverage["quoteSubscriptionGapCounts"] == {
             "CLOUDBET": 1,
             "POLYMARKET": 0,
@@ -1995,7 +2555,13 @@ class TestBettingArbitrageNodeRunner:
         assert zero_reports["SXBET->CLOUDBET"]["blockerReason"] == (
             "quotes_missing_for_semantic_edges"
         )
+        assert zero_reports["SXBET->CLOUDBET"]["sourceNodeCount"] == 1
+        assert zero_reports["SXBET->CLOUDBET"]["targetNodeCount"] == 1
+        assert zero_reports["SXBET->CLOUDBET"]["edgeCount"] == 1
+        assert zero_reports["SXBET->CLOUDBET"]["quotedEdgeCount"] == 0
+        assert zero_reports["SXBET->CLOUDBET"]["candidateCount"] == 0
         assert zero_reports["SXBET->CLOUDBET"]["commonEventKeyCount"] == 1
+        assert zero_reports["SXBET->CLOUDBET"]["sampleBlockerCounts"] == {}
         assert zero_reports["SXBET->CLOUDBET"]["samples"][0]["marketFamily"] == (
             "MATCH_ODDS + MATCH_ODDS"
         )
@@ -2042,8 +2608,64 @@ class TestBettingArbitrageNodeRunner:
         report = reports["SXBET->CLOUDBET"]
         assert report["reason"] == "no_semantic_edge"
         assert report["blockerReason"] == "no_common_fixture"
+        assert report["sourceNodeCount"] == 1
+        assert report["targetNodeCount"] == 1
+        assert report["edgeCount"] == 0
+        assert report["quotedEdgeCount"] == 0
+        assert report["candidateCount"] == 0
         assert report["commonEventKeyCount"] == 0
+        assert report["sampleBlockerCounts"] == {}
         assert report["samples"] == []
+
+    def test_venue_pair_coverage_infers_same_market_params_mismatch_from_samples(self):
+        sxbet_instrument = _instrument(
+            venue="SXBET",
+            market_type="totals",
+            market_name="TOTALS",
+            outcome="over",
+            params="line=2.5",
+            event_id="event-1",
+            event_name="Team A vs Team B",
+            home_name="Team A",
+            away_name="Team B",
+            sport_name="soccer",
+        )
+        cloudbet_instrument = _instrument(
+            venue="CLOUDBET",
+            market_type="totals",
+            market_name="TOTALS",
+            outcome="under",
+            params="line=3.5",
+            event_id="event-2",
+            event_name="Team A vs Team B",
+            home_name="Team A",
+            away_name="Team B",
+            sport_name="soccer",
+        )
+        strategy = SimpleNamespace(
+            _config=SimpleNamespace(enabled_venues=frozenset({"CLOUDBET", "SXBET"})),
+            _quote_subscribed_instrument_ids={sxbet_instrument.id, cloudbet_instrument.id},
+        )
+
+        coverage = node_runner._venue_pair_coverage(
+            strategy,
+            edges=[],
+            nodes={
+                "sxbet-node": SimpleNamespace(instrument=sxbet_instrument),
+                "cloudbet-node": SimpleNamespace(instrument=cloudbet_instrument),
+            },
+            quotes={},
+            matched_node_ids=set(),
+            candidate_venue_pairs={},
+        )
+
+        reports = {item["venuePair"]: item for item in coverage["zeroCandidateVenuePairs"]}
+        report = reports["SXBET->CLOUDBET"]
+        assert report["reason"] == "no_semantic_edge"
+        assert report["blockerReason"] == "same_market_params_mismatch"
+        assert report["sampleBlockerCounts"] == {"same_market_params_mismatch": 1}
+        assert report["samples"][0]["blockerHint"] == "same_market_params_mismatch"
+        assert report["samples"][0]["matcherSuspectReason"] == "same_market_params_mismatch"
 
     def test_runtime_probe_candidate_samples_include_dry_run_provenance(self):
         instrument_a = _instrument(
@@ -2107,6 +2729,90 @@ class TestBettingArbitrageNodeRunner:
         assert payload["latency_histograms"]["fetch_latency_secs"]["max"] == 0.1
         assert payload["latency_histograms"]["pair_skew_secs"]["count"] == 1
         assert payload["live_quote_age_slo"]["observations"] == 0
+        assert payload["live_timing_slo"]["fetch_latency"]["observations"] == 0
+        assert payload["live_timing_slo"]["pair_skew"]["observations"] == 0
+        assert payload["same_venue_dry_run"] == {
+            "passes": 0,
+            "failures": 0,
+            "failure_reasons": {},
+        }
+
+    def test_runtime_probe_candidate_decision_latency_fills_strategy_gap(self):
+        counters = node_runner.ProbeProfitabilityCounters()
+        counters.candidate_decision_latency_ns.extend([1_000_000, 3_000_000])
+        profitability = counters.to_payload()
+
+        diagnostics = node_runner._runtime_latency_diagnostics(
+            {
+                "latency_diagnostics": {
+                    "candidate_decision": {
+                        "count": 0,
+                        "p50_ms": 0.0,
+                        "p95_ms": 0.0,
+                        "p99_ms": 0.0,
+                        "max_ms": 0.0,
+                    },
+                },
+            },
+            profitability,
+        )
+
+        assert diagnostics["candidate_decision"]["count"] == 2
+        assert diagnostics["candidate_decision"]["p95_ms"] == 1.0
+        assert diagnostics["candidate_decision"]["max_ms"] == 3.0
+        assert diagnostics["candidate_decision_source"] == "runtime_probe"
+        assert diagnostics["runtime_probe_candidate_decision"]["count"] == 2
+
+    def test_runtime_probe_aggregates_same_venue_dry_run_reasons(self):
+        counters = node_runner.ProbeProfitabilityCounters()
+        quality = {
+            "profitMargin": "0.05",
+            "marginBand": "positive",
+            "rejectionBucket": "positive",
+            "venuePair": "SXBET->SXBET",
+            "marketFamily": "TOTALS",
+            "venueA": "SXBET",
+            "venueB": "SXBET",
+            "freshnessProfile": "live",
+            "timingFlags": ["quote_age"],
+            "quoteAgeASeconds": 6.0,
+            "quoteAgeBSeconds": 0.5,
+            "quoteDeltaSeconds": 0.1,
+            "fetchLatencyASeconds": 0.05,
+            "fetchLatencyBSeconds": 0.1,
+            "maxPairSkewSeconds": 0.1,
+            "maxFetchLatencySeconds": 0.1,
+            "executionSafe": False,
+            "sameVenueExecutionEligible": True,
+            "wouldExecuteSameVenueDryRun": False,
+            "sameVenueRiskPolicy": {
+                "sameVenue": True,
+                "sameFixture": True,
+                "compatibleMarketFamily": True,
+                "freshQuotes": False,
+                "sufficientLiquidity": True,
+                "thresholdProfit": True,
+            },
+        }
+
+        node_runner._record_probe_quality(counters, quality)
+
+        payload = counters.to_payload()
+        assert payload["same_venue_dry_run"]["passes"] == 0
+        assert payload["same_venue_dry_run"]["failures"] == 1
+        assert payload["same_venue_dry_run"]["failure_reasons"] == {"freshQuotes": 1}
+        assert payload["live_quote_age_slo"]["observations"] == 2
+        assert payload["live_quote_age_slo"]["violations"] == 1
+        assert payload["live_timing_slo"]["quote_age"]["observations"] == 2
+        assert payload["live_timing_slo"]["quote_age"]["violations"] == 1
+        assert payload["live_timing_slo"]["fetch_latency"]["observations"] == 2
+        assert payload["live_timing_slo"]["fetch_latency"]["violations"] == 0
+        assert payload["live_timing_slo"]["fetch_latency"]["min_threshold_secs"] == 0.1
+        assert payload["live_timing_slo"]["fetch_latency"]["max_threshold_secs"] == 0.1
+        assert payload["live_timing_slo"]["pair_skew"]["observations"] == 1
+        assert payload["live_timing_slo"]["pair_skew"]["violations"] == 0
+        assert payload["live_timing_slo"]["pair_skew"]["min_threshold_secs"] == 0.1
+        assert payload["live_timing_slo"]["pair_skew"]["max_threshold_secs"] == 0.1
 
     def test_run_success_and_failure_paths_record_status_transitions(self, tmp_path, monkeypatch):
         def semantic_status(_manifest):
@@ -2188,6 +2894,8 @@ class TestBettingArbitrageNodeRunner:
             promoted_template_count=3,
             execution_safe_template_count=1,
             same_venue_execution_eligible_template_count=1,
+            promoted_safety_tier_counts={"EXECUTION_SAFE": 1},
+            strict_execution_blocker_counts={"same_venue_risk_engine_elevation_required": 1},
         )
         monkeypatch.setattr(node_runner, "ensure_semantic_cache_ready", lambda _: expected_status)
 
@@ -2201,11 +2909,21 @@ class TestBettingArbitrageNodeRunner:
             "promotedTemplateCount": 3,
             "executionSafeTemplateCount": 1,
             "sameVenueExecutionEligibleTemplateCount": 1,
+            "promotedSafetyTierCounts": {"EXECUTION_SAFE": 1},
+            "strictExecutionBlockerCounts": {
+                "same_venue_risk_engine_elevation_required": 1,
+            },
+            "promotedMarketFamilyCounts": {},
+            "executionSafeMarketFamilyCounts": {},
+            "sameVenueEligibleMarketFamilyCounts": {},
+            "providerCorpusCoverage": {},
             "coverageProofCount": 0,
             "coverageHyperedgeCount": 0,
             "compatibilityVersion": None,
             "compatibilityScope": None,
             "compatible": True,
+            "summaryReused": False,
+            "bootstrapPhaseTimingsSeconds": {},
         }
         assert node_runner._semantic_cache_payload(None) is None
 
@@ -2305,6 +3023,21 @@ class TestBettingArbitrageNodeRunner:
                 "quote_delta_secs": 6.0,
             },
         ) == ["quote_age", "pair_skew"]
+        assert (
+            node_runner._semantic_blocked_reason(
+                {"blockerReason": "void_settlement", "rejectionBucket": "topology_only"},
+            )
+            == "void_settlement"
+        )
+        assert (
+            node_runner._semantic_blocked_relationship(
+                {
+                    "safetyTier": "TOPOLOGY_SAFE",
+                    "relationshipType": "EQUIVALENT_SELECTION",
+                },
+            )
+            == "TOPOLOGY_SAFE:EQUIVALENT_SELECTION"
+        )
 
     def test_runtime_probe_same_venue_policy_uses_fixture_identity(self):
         instrument_a = _instrument(
@@ -2382,6 +3115,49 @@ class TestBettingArbitrageNodeRunner:
         assert policy["fixtureSuspectReason"] == "none"
         assert policy["diagnosticSuspect"] is True
         assert quality["wouldExecuteSameVenueDryRun"] is True
+        assert quality["rawProfitMargin"] == quality["feeAdjustedProfitMargin"]
+        assert quality["feeDrag"] == "0"
+        assert quality["takerFeeRateA"] == "0"
+        assert quality["takerFeeRateB"] == "0"
+        assert quality["makerRebateRateA"] == "0"
+        assert quality["makerRebateRateB"] == "0"
+        assert quality["basketRebateRate"] == "0"
+        assert quality["basketBoostRate"] == "0"
+
+    def test_instrument_refresh_payload_includes_per_venue_counts(self):
+        payload = node_runner._instrument_refresh_payload(
+            {
+                "instrument_refresh_requests": 3,
+                "instrument_refresh_failures": 1,
+                "instrument_refresh_added": 4,
+                "instrument_refresh_removed": 2,
+                "instrument_refresh_delisted_removed": 2,
+                "instrument_refresh_reconciles": 3,
+                "instrument_refresh_graph_rebuilds": 2,
+                "instrument_refresh_stale_triggers": 1,
+                "quote_unsubscribe_requests": 2,
+                "instrument_refresh_by_venue": {
+                    "SXBET": {
+                        "requests": 2,
+                        "failures": 1,
+                        "added": 4,
+                        "removed": 2,
+                        "delisted_removed": 2,
+                        "reconciles": 3,
+                        "graph_rebuilds": 2,
+                        "stale_triggers": 1,
+                        "quote_unsubscribe_requests": 2,
+                    },
+                },
+                "latency_diagnostics": {
+                    "instrument_refresh_reconcile": {"count": 3, "p95_ms": 1200.0},
+                },
+            },
+        )
+
+        assert payload["venues"]["SXBET"]["requests"] == 2
+        assert payload["venues"]["SXBET"]["quote_unsubscribe_requests"] == 2
+        assert payload["reconcileLatency"]["p95_ms"] == 1200.0
 
     def test_runtime_manifest_rewrite_includes_semantic_cache_dir(self):
         deploy_script = Path(
@@ -2391,6 +3167,11 @@ class TestBettingArbitrageNodeRunner:
             'data["semantic_rule_cache_dir"] = "/var/lib/nautilus-node/semantic-rule-cache"'
             in deploy_script
         )
+        assert (
+            'data["semantic_rule_cache_seed_dir"] = "/var/lib/nautilus-node/semantic-rule-cache-seed"'
+            in deploy_script
+        )
+        assert 'ensure_dir "$node_dir/semantic-rule-cache-seed"' in deploy_script
         assert 'rm -f "$node_dir/status.json" "$node_dir/heartbeat.json"' in deploy_script
 
     def test_release_workflow_validates_sxbet_manifest_with_semantic_env(self):
@@ -2405,6 +3186,7 @@ class TestBettingArbitrageNodeRunner:
         assert "--min-quoted-match-instruments 2" in workflow
         assert "--min-positive-margin-candidates 0" in workflow
         assert "--require-cross-venue-candidates-or-blockers" in workflow
+        assert "--min-quoted-node-count CLOUDBET:2" in workflow
         assert "--min-quoted-node-count POLYMARKET:2" in workflow
         assert "--min-quoted-node-count SXBET:2" in workflow
         assert "min_positive_margin_candidates=0" in workflow
@@ -2412,9 +3194,8 @@ class TestBettingArbitrageNodeRunner:
             '[ "$manifest_path" = "deploy/strategy_nodes/betting_arbitrage/multi-venue-validation.json" ]'
             in workflow
         )
-        assert "min_positive_margin_candidates=1" in workflow
         assert "require_cross_venue_candidates_or_blockers=true" in workflow
-        assert "wait_timeout_seconds=1200" in workflow
+        assert "wait_timeout_seconds=1800" in workflow
         assert "--timeout-seconds $wait_timeout_seconds" in workflow
         assert "--min-positive-margin-candidates $min_positive_margin_candidates" in workflow
         assert "--min-cross-venue-candidates $min_cross_venue_candidates" in workflow
@@ -2436,12 +3217,32 @@ class TestBettingArbitrageNodeRunner:
         assert "$remote_bundle/$name.json" in workflow
         assert "node.log" in workflow
         assert "events.jsonl" in workflow
+        assert '"executionReadiness": status.get("executionReadiness")' in workflow
+        assert "runtime_probe_summary = dict(runtime)" in workflow
+        assert "latencyDiagnostics" in workflow
+        assert "providerQuotePollStats" in workflow
         assert "zeroCandidateVenuePairSamples" in workflow
         assert "venueQuoteHealth" in workflow
+        assert "Evaluate deployed runtime report" in workflow
+        assert "scripts/betting/runtime_probe_report.py" in workflow
+        assert "--require-auto-execute-false" in workflow
+        assert "--require-validation-mode" in workflow
+        assert "--require-rust-semantic" in workflow
+        assert "--require-coverage-runtime" in workflow
+        assert "--min-quoted-semantic-instruments 2" in workflow
         assert "Upload deployed node status artifacts to transient CI storage" in workflow
 
     def test_runtime_verify_workflow_dumps_logs_on_failure(self):
         workflow = Path(".github/workflows/strategy-node-runtime-verify.yml").read_text()
+        assert "timeout-minutes: 30" in workflow
+        assert "default: '900'" in workflow
+        assert 'timeout_seconds="${INPUT_TIMEOUT_SECONDS:-900}"' in workflow
+        assert "persist_node_runtime_artifacts" in workflow
+        assert "dump_node_runtime_artifacts() {" in workflow
+        assert (
+            "persist_node_runtime_artifacts"
+            in workflow.split("dump_node_runtime_artifacts() {", maxsplit=1)[1]
+        )
         assert "dump_node_runtime_artifacts" in workflow
         assert "trap 'status=$?;" in workflow
         assert "node_log_tail" in workflow
@@ -2453,13 +3254,26 @@ class TestBettingArbitrageNodeRunner:
         assert "release.json" in workflow
         assert "coverageProofCount" in workflow
         assert "coverageHyperedgeCount" in workflow
+        assert "coverageDiagnostics" in workflow
+        assert "latencyDiagnostics" in workflow
+        assert "runtime_probe_summary = dict(runtime_probe)" in workflow
+        assert '"executionReadiness": status.get("executionReadiness")' in workflow
         assert "zeroCandidateVenuePairSamples" in workflow
         assert "semantic_verify_enabled" in workflow
         assert "semantic_verify_required_providers" in workflow
         assert "semantic_verify_target_sports" in workflow
+        assert "scripts/betting/runtime_probe_report.py" in workflow
+        assert "--require-auto-execute-false" in workflow
+        assert "--require-validation-mode" in workflow
+        assert "--require-rust-semantic" in workflow
+        assert "--require-coverage-runtime" in workflow
+        assert "--min-quoted-semantic-instruments 2" in workflow
         assert "verify_semantic_cache_completion.py" in workflow
         assert ".venv/bin/python" not in workflow
         assert "semantic-completion.json" in workflow
+        assert "semantic-completion.stderr" in workflow
+        assert "sudo -n python3" in workflow
+        assert "semantic_completion_verifier_failed_before_json_output" in workflow
 
     def test_strategy_node_maintenance_workflow_archives_before_stop(self):
         workflow = Path(".github/workflows/strategy-node-maintenance.yml").read_text()
@@ -2476,6 +3290,18 @@ class TestBettingArbitrageNodeRunner:
         assert "remove:" in workflow
         assert "docker rm" in script
         assert "node_dir_removed=true" in script
+
+    def test_runner_cleanup_preserves_target_cache_by_default(self):
+        script = Path("scripts/ci/self_hosted_runner_cleanup.sh").read_text()
+
+        assert 'prune_target_artifacts="${RUNNER_PRUNE_TARGET_ARTIFACTS:-false}"' in script
+        assert "-path '*/target/*'" in script
+        assert 'if [[ "$prune_target_artifacts" == "true" ]]; then' in script
+        default_artifact_block = script.split(
+            'if [[ "$prune_target_artifacts" == "true" ]]; then',
+            maxsplit=1,
+        )[0]
+        assert "-path '*/target/*'" not in default_artifact_block
 
     def test_wait_for_strategy_node_status_can_require_ready_semantic_cache(self, tmp_path):
         status_path = tmp_path / "status.json"

@@ -232,6 +232,13 @@ class SXBetExecutionClient(LiveExecutionClient):
             # Submit order event once the payload is signed and ready for venue submission.
             self._generate_order_submitted(order)
 
+            if getattr(self._config, "dry_run", False):
+                self._log.info(
+                    "SX.bet dry-run execution enabled; order payload was signed but not submitted",
+                )
+                self._generate_order_rejected(order=order, reason="dry_run_no_submit")
+                return
+
             # Place order via API
             result = await self._http_client.place_order(
                 market_hash=market_hash,

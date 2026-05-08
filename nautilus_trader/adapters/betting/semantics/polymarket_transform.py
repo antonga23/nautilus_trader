@@ -101,6 +101,39 @@ class PolymarketSportsTransformer:
         "ice_hockey",
         "tennis",
     }
+    NON_FIXTURE_TOKENS = (
+        "draft",
+        "award",
+        "mvp",
+        "cup winner",
+        "league winner",
+        "division winner",
+        "top scorer",
+        "ballon d",
+        "first overall",
+        "1st overall",
+    )
+    TEAM_FUTURES_TOKENS = (
+        "champion",
+        "championship",
+        "super bowl",
+        "league championship",
+        "afc championship",
+        "nfc championship",
+    )
+    PLAYER_OR_AWARD_TOKENS = (
+        "award",
+        "mvp",
+        "draft",
+        "rookie",
+        "coach",
+        "offensive player",
+        "defensive player",
+        "top scorer",
+        "ballon d",
+        "first overall",
+        "1st overall",
+    )
 
     @classmethod
     def canonical_sport(cls, raw_sport: str | None) -> str | None:
@@ -114,7 +147,11 @@ class PolymarketSportsTransformer:
         return cls.canonical_sport(raw_sport)
 
     @classmethod
-    def _infer_sports_market(cls, instrument: BinaryOption, info: dict) -> dict | None:
+    def _infer_sports_market(  # noqa: C901
+        cls,
+        instrument: BinaryOption,
+        info: dict,
+    ) -> dict | None:
         question = str(info.get("question") or getattr(instrument, "description", "")).strip()
         original = info.get("_gamma_original", {})
         event = original.get("events", [{}])[0] if isinstance(original.get("events"), list) else {}
@@ -142,6 +179,32 @@ class PolymarketSportsTransformer:
         home_name, away_name = cls._parse_event_participants(event_title)
         if not home_name or not away_name:
             home_name, away_name = cls._parse_event_participants(question)
+        if (
+            not home_name
+            and not away_name
+            and cls._is_team_futures_market(
+                question=question,
+                event_title=event_title,
+                selection_target=selection_target,
+            )
+        ):
+            return cls._team_futures_market(
+                instrument=instrument,
+                info=info,
+                original=original,
+                event=event,
+                question=question,
+                event_title=event_title,
+                sport=sport,
+                selection_target=selection_target,
+            )
+        if not cls._is_fixture_market(
+            question=question,
+            event_title=event_title,
+            home_name=home_name,
+            away_name=away_name,
+        ):
+            return None
         target_role = cls._participant_role(selection_target, home_name, away_name)
         outcome = str(getattr(instrument, "outcome", "") or "").strip().lower()
 
@@ -166,12 +229,12 @@ class PolymarketSportsTransformer:
         if line is not None:
             params["line"] = str(line)
         if is_spread_market:
-            market_family = "spread_binary"
-            market_type = f"{sport}.spread"
-            market_name = f"{sport}.{market_family}"
-            selection_role = cls._spread_selection_role(
+            market_family, market_name, market_type, selection_role = cls._spread_semantics(
+                sport=sport,
                 target_role=target_role,
                 outcome=outcome,
+                line=line,
+                params=params,
             )
         elif is_total_market:
             market_family = "totals_binary"
@@ -195,8 +258,99 @@ class PolymarketSportsTransformer:
             "event_id": str(info.get("condition_id") or instrument.id.symbol.value),
             "start_time": str(event.get("startDateIso") or event.get("startDate") or ""),
             "params": params,
-            "resolution_policy": cls._resolution_policy(question, original),
+            "resolution_policy": cls._resolution_policy(
+                question,
+                original,
+                sport=sport,
+                market_type=market_type,
+                line=line,
+            ),
         }
+
+    @classmethod
+    def _is_team_futures_market(
+        cls,
+        *,
+        question: str,
+        event_title: str,
+        selection_target: str,
+    ) -> bool:
+        combined = " ".join(part for part in (question, event_title) if part).lower()
+        if any(token in combined for token in cls.PLAYER_OR_AWARD_TOKENS):
+            return False
+        if not any(token in combined for token in cls.TEAM_FUTURES_TOKENS):
+            return False
+        if not selection_target or cls._looks_invalid_participant(selection_target):
+            return False
+        normalized_target = cls._normalize_participant(selection_target)
+        return len(normalized_target.split()) >= 2
+
+    @classmethod
+    def _team_futures_market(
+        cls,
+        *,
+        instrument: BinaryOption,
+        info: dict,
+        original: dict,
+        event: dict,
+        question: str,
+        event_title: str,
+        sport: str,
+        selection_target: str,
+    ) -> dict[str, Any]:
+        subject = cls._normalize_participant(selection_target).replace(" ", "_")
+        market_type = f"{sport}.winner"
+        return {
+            "sport": sport,
+            "market_name": f"{sport}.winner_binary",
+            "market_type": market_type,
+            "selection_role": str(getattr(instrument, "outcome", "") or "").strip().lower(),
+            "selection_target": selection_target,
+            "home_name": "",
+            "away_name": "",
+            "event_name": event_title or str(original.get("title") or question),
+            "competition_name": event_title or "Polymarket Sports Futures",
+            "event_id": str(event.get("id") or event.get("slug") or info.get("condition_id") or ""),
+            "start_time": str(event.get("startDateIso") or event.get("startDate") or ""),
+            "params": {"subject": subject},
+            "resolution_policy": cls._resolution_policy(
+                question,
+                original,
+                sport=sport,
+                market_type=market_type,
+                line=None,
+            ),
+            "event_type": "team_future",
+        }
+
+    @classmethod
+    def _is_fixture_market(
+        cls,
+        *,
+        question: str,
+        event_title: str,
+        home_name: str,
+        away_name: str,
+    ) -> bool:
+        if not home_name or not away_name:
+            return False
+        combined = " ".join(part for part in (question, event_title) if part).lower()
+        if any(token in combined for token in cls.NON_FIXTURE_TOKENS):
+            return False
+        return not (
+            cls._looks_invalid_participant(home_name) or cls._looks_invalid_participant(away_name)
+        )
+
+    @staticmethod
+    def _looks_invalid_participant(value: str) -> bool:
+        normalized = value.strip().lower()
+        if not normalized:
+            return True
+        invalid_prefixes = ("will ", "to ", "be ")
+        invalid_tokens = ("draft", "award", "championship", "title", "overall")
+        return normalized.startswith(invalid_prefixes) or any(
+            token in normalized for token in invalid_tokens
+        )
 
     @classmethod
     def _winner_market_semantics(
@@ -244,6 +398,24 @@ class PolymarketSportsTransformer:
             return "away" if target_role == "home" else "home"
         return outcome
 
+    @classmethod
+    def _spread_semantics(
+        cls,
+        *,
+        sport: str,
+        target_role: str,
+        outcome: str,
+        line: Any,
+        params: dict[str, str],
+    ) -> tuple[str, str, str, str]:
+        market_family = "spread_binary"
+        market_type = f"{sport}.spread"
+        market_name = f"{sport}.{market_family}"
+        selection_role = cls._spread_selection_role(target_role=target_role, outcome=outcome)
+        if outcome == "no" and line is not None:
+            params["line"] = cls._invert_numeric_line(line)
+        return market_family, market_name, market_type, selection_role
+
     @staticmethod
     def _total_selection_role(*, question: str, outcome: str) -> str:
         normalized = question.lower()
@@ -264,6 +436,17 @@ class PolymarketSportsTransformer:
     def _line_from_question(question: str) -> str | None:
         match = re.search(r"(?<![A-Za-z0-9])([+-]?\d+(?:\.\d+)?)(?![A-Za-z0-9])", question)
         return match.group(1) if match is not None else None
+
+    @staticmethod
+    def _invert_numeric_line(value: Any) -> str:
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return str(value)
+        inverted = -numeric
+        if inverted.is_integer():
+            return str(int(inverted))
+        return f"{inverted:g}"
 
     @staticmethod
     def _market_type_from_question(question: str) -> str:
@@ -354,7 +537,14 @@ class PolymarketSportsTransformer:
         return target_tokens <= participant_tokens or bool(target_tokens & participant_tokens)
 
     @staticmethod
-    def _resolution_policy(question: str, original: dict) -> dict:
+    def _resolution_policy(
+        question: str,
+        original: dict,
+        *,
+        sport: str,
+        market_type: str,
+        line: Any,
+    ) -> dict:
         haystacks = [
             question,
             str(original.get("description") or ""),
@@ -363,12 +553,41 @@ class PolymarketSportsTransformer:
         combined = " ".join(text for text in haystacks if text).lower()
         policy: dict[str, str] = {}
         if "50-50" in combined or "50/50" in combined:
-            policy["tie_or_unknown"] = "50_50"
+            if PolymarketSportsTransformer._deterministic_tie_policy(
+                sport=sport,
+                market_type=market_type,
+                line=line,
+            ):
+                policy["tie_or_unknown"] = "lose"
+            else:
+                policy["tie_or_unknown"] = "50_50"
         elif any(token in combined for token in ("void", "refund", "cancelled")):
             policy["tie_or_unknown"] = "void"
         else:
             policy["tie_or_unknown"] = "lose"
         return policy
+
+    @classmethod
+    def _deterministic_tie_policy(
+        cls,
+        *,
+        sport: str,
+        market_type: str,
+        line: Any,
+    ) -> bool:
+        if market_type.endswith(".winner") and sport in cls.NO_DRAW_SPORTS:
+            return True
+        return market_type.endswith((".spread", ".totals")) and cls._is_half_point_line(line)
+
+    @staticmethod
+    def _is_half_point_line(line: Any) -> bool:
+        if line in (None, ""):
+            return False
+        try:
+            numeric = float(str(line).strip())
+        except ValueError:
+            return False
+        return abs(numeric % 1) == 0.5
 
     @staticmethod
     def to_crypto_betting_instrument(instrument: BinaryOption) -> CryptoBettingInstrument | None:

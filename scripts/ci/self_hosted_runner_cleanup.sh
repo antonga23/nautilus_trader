@@ -52,7 +52,9 @@ artifact_retention_days="${RUNNER_ARTIFACT_RETENTION_DAYS:-2}"
 monitor_log_retention_days="${RUNNER_MONITOR_LOG_RETENTION_DAYS:-2}"
 monitor_log_max_mb="${RUNNER_MONITOR_LOG_MAX_MB:-1024}"
 docker_build_cache_until="${DOCKER_BUILD_CACHE_PRUNE_UNTIL:-48h}"
+prune_target_artifacts="${RUNNER_PRUNE_TARGET_ARTIFACTS:-false}"
 root_usage_prune_threshold="${ROOT_USAGE_PRUNE_THRESHOLD_PERCENT:-85}"
+root_tmp_retention_days="${ROOT_TMP_RETENTION_DAYS:-2}"
 active_container_count=0
 active_worker_count=0
 
@@ -74,8 +76,13 @@ prune_old_artifacts_and_cap_logs() {
 
   [[ -d "$root" ]] || return 0
   find "$root" -type f -mtime "+$artifact_retention_days" \
-    \( -path '*/artifacts/*' -o -path '*/target/*' -o -path '*/dist/*' \) \
+    \( -path '*/artifacts/*' -o -path '*/dist/*' \) \
     -delete 2> /dev/null || true
+  if [[ "$prune_target_artifacts" == "true" ]]; then
+    find "$root" -type f -mtime "+$artifact_retention_days" \
+      -path '*/target/*' \
+      -delete 2> /dev/null || true
+  fi
   find "$root" -type f -mtime "+$monitor_log_retention_days" \
     \( -name '*.log' -o -path '*/artifacts/monitors/*' \) \
     -delete 2> /dev/null || true
@@ -84,6 +91,34 @@ prune_old_artifacts_and_cap_logs() {
     -print 2> /dev/null | while read -r log_file; do
     cap_large_file_to_tail "$log_file" "$monitor_log_max_mb"
   done
+}
+
+prune_root_tmp_and_logs() {
+  local path
+
+  for path in /tmp /var/tmp; do
+    [[ -d "$path" ]] || continue
+    find "$path" -xdev -mindepth 1 -mtime "+$root_tmp_retention_days" -exec rm -rf {} + 2> /dev/null || true
+  done
+
+  if command -v journalctl > /dev/null 2>&1; then
+    journalctl --vacuum-time="${monitor_log_retention_days}d" --vacuum-size="${monitor_log_max_mb}M" > /dev/null 2>&1 || true
+  fi
+
+  if command -v apt-get > /dev/null 2>&1; then
+    apt-get clean > /dev/null 2>&1 || true
+  fi
+
+  if [[ -d /var/log ]]; then
+    find /var/log -xdev -type f -mtime "+$monitor_log_retention_days" \
+      \( -name '*.gz' -o -name '*.1' -o -name '*.old' -o -name '*.log.*' \) \
+      -delete 2> /dev/null || true
+    find /var/log -xdev -type f -size +"${monitor_log_max_mb}"M \
+      \( -name '*.log' -o -name 'syslog' -o -name 'kern.log' \) \
+      -print 2> /dev/null | while read -r log_file; do
+      cap_large_file_to_tail "$log_file" "$monitor_log_max_mb"
+    done
+  fi
 }
 
 if command -v docker > /dev/null 2>&1; then
@@ -100,6 +135,13 @@ fi
 root_usage_pct="$(
   df -P / | awk 'NR == 2 {gsub(/%/, "", $5); print $5}'
 )"
+
+if [[ "$root_usage_pct" -ge "$root_usage_prune_threshold" ]]; then
+  prune_root_tmp_and_logs
+  root_usage_pct="$(
+    df -P / | awk 'NR == 2 {gsub(/%/, "", $5); print $5}'
+  )"
+fi
 
 if command -v docker > /dev/null 2>&1 && [[ "$root_usage_pct" -ge "$root_usage_prune_threshold" ]]; then
   docker image prune -af --filter "until=168h" > /dev/null 2>&1 || true
@@ -171,7 +213,13 @@ if [[ -d "$control_repo_root" ]]; then
   prune_old_artifacts_and_cap_logs "$control_repo_root"
 
   find "$control_repo_root" -mindepth 1 -maxdepth 1 \
-    \( -name .cache -o -name .mypy_cache -o -name .pytest_cache -o -name .ruff_cache -o -name .venv -o -name artifacts -o -name dist -o -name target \) \
+    \( -name .cache -o -name .mypy_cache -o -name .pytest_cache -o -name .ruff_cache -o -name .venv -o -name artifacts -o -name dist \) \
     -mtime "+$control_repo_artifact_retention_days" \
     -exec rm -rf {} + 2> /dev/null || true
+  if [[ "$prune_target_artifacts" == "true" ]]; then
+    find "$control_repo_root" -mindepth 1 -maxdepth 1 \
+      -name target \
+      -mtime "+$control_repo_artifact_retention_days" \
+      -exec rm -rf {} + 2> /dev/null || true
+  fi
 fi

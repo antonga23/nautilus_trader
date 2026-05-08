@@ -13,8 +13,6 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 
-from typing import Optional
-
 from nautilus_trader.model.objects import Currency
 
 from nautilus_trader.config import InstrumentProviderConfig
@@ -40,15 +38,21 @@ class CloudbetDataClientConfig(LiveDataClientConfig, frozen=True):
 
     instrument_provider: InstrumentProviderConfig = InstrumentProviderConfig(load_all=True)
     routing: RoutingConfig = RoutingConfig()
-    api_key: Optional[str] = None
-    api_url: Optional[str] = None
-    market_filter: Optional[tuple] = None
+    api_key: str | None = None
+    api_url: str | None = None
+    market_filter: tuple | None = None
     handle_revised_bars: bool = False
     auto_subscribe_quote_ticks: bool = False
     quote_subscription_limit: PositiveInt | None = None
     quote_poll_interval_secs: PositiveFloat = 10.0
     quote_poll_summary_interval_secs: PositiveFloat = 30.0
     quote_poll_concurrency: PositiveInt = 4
+    quote_poll_min_concurrency: PositiveInt = 1
+    quote_poll_max_concurrency: PositiveInt = 16
+    quote_poll_target_cycle_secs: PositiveFloat = 5.0
+    quote_poll_adaptive_concurrency: bool = True
+    quote_poll_event_batching: bool = True
+    quote_poll_missing_prune_threshold: PositiveInt = 3
 
 
 class CloudbetInstrumentProviderConfig(InstrumentProviderConfig, frozen=True):
@@ -74,8 +78,8 @@ class CloudbetInstrumentProviderConfig(InstrumentProviderConfig, frozen=True):
         If parser warnings should be logged.
     """
 
-    api_key: Optional[str] = None
-    api_url: Optional[str] = None
+    api_key: str | None = None
+    api_url: str | None = None
     load_all = False
     load_ids = None
     filters = None
@@ -98,9 +102,12 @@ class CloudbetExecClientConfig(LiveExecClientConfig, kw_only=True, frozen=True):
         The cloudbet api key.
     api_url : str
         The cloudbet api url.
+    dry_run : bool, default False
+        If True, build Cloudbet bet requests but do not submit them to the Trading API.
     """
 
     base_currency: Currency = None
-    market_filter: Optional[dict] = None
-    api_key: Optional[str] = None
-    api_url: Optional[str] = None
+    market_filter: dict | None = None
+    api_key: str | None = None
+    api_url: str | None = None
+    dry_run: bool = False

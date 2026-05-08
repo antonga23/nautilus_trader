@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterable
+from contextlib import nullcontext
 from dataclasses import asdict
 from dataclasses import dataclass
+from dataclasses import field
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import threading
 import time
@@ -31,9 +34,13 @@ from nautilus_trader.live.strategy_nodes.betting_arbitrage.config import Betting
 
 
 DEFAULT_CLOUDBET_SPORTS = SEMANTIC_TARGET_SPORTS
+DEFAULT_SXBET_SPORTS = SEMANTIC_TARGET_SPORTS
 DEFAULT_POLYMARKET_SPORTS = SEMANTIC_TARGET_SPORTS
-SEMANTIC_CACHE_COMPATIBILITY_VERSION = "semantic-rule-cache:20260505:coverage-runtime-v1"
+SEMANTIC_CACHE_COMPATIBILITY_VERSION = "semantic-rule-cache:20260507:sxbet-six-sport-default-v2"
 SEMANTIC_CACHE_COMPATIBILITY_FILE = ".semantic-cache-version"
+SEMANTIC_CACHE_SUMMARY_FILE = ".semantic-cache-summary.json"
+SEMANTIC_CACHE_BOOTSTRAP_TIMINGS_FILE = ".semantic-cache-bootstrap-timings.json"
+SEMANTIC_CACHE_SEED_DIR_ENV = "SEMANTIC_RULE_CACHE_SEED_DIR"
 PORTABLE_POLYMARKET_MARKET_FAMILIES = frozenset(
     {
         "MATCH_ODDS",
@@ -45,6 +52,11 @@ PORTABLE_POLYMARKET_MARKET_FAMILIES = frozenset(
         "ASIAN_HANDICAP",
     },
 )
+_DEFAULT_LOCAL_ENV_FILES = (
+    Path(__file__).resolve().parents[4] / ".env.cloud-workspace.local",
+    Path(__file__).resolve().parents[4] / ".env.local",
+    Path(__file__).resolve().parents[4] / ".env",
+)
 
 
 @dataclass(frozen=True)
@@ -55,11 +67,19 @@ class SemanticCacheStatus:
     promoted_template_count: int
     execution_safe_template_count: int
     same_venue_execution_eligible_template_count: int
+    promoted_safety_tier_counts: dict[str, int] = field(default_factory=dict)
+    promoted_market_family_counts: dict[str, int] = field(default_factory=dict)
+    execution_safe_market_family_counts: dict[str, int] = field(default_factory=dict)
+    same_venue_eligible_market_family_counts: dict[str, int] = field(default_factory=dict)
+    strict_execution_blocker_counts: dict[str, int] = field(default_factory=dict)
     coverage_proof_count: int = 0
     coverage_hyperedge_count: int = 0
     compatibility_version: str | None = None
     compatibility_scope: str | None = None
     compatible: bool = True
+    summary_reused: bool = False
+    bootstrap_phase_timings_secs: dict[str, float] = field(default_factory=dict)
+    provider_corpus_coverage: dict[str, object] = field(default_factory=dict)
 
     @property
     def ready(self) -> bool:
@@ -86,6 +106,7 @@ class _SemanticCoverageCounts:
 
 @dataclass(frozen=True)
 class _SxbetCorpusScope:
+    sport_keys: list[str] | None
     sport_ids: list[int] | None
     instrument_limit: int
     market_discovery_limit: int
@@ -95,11 +116,45 @@ class _SxbetCorpusScope:
     live_only: bool
 
 
+def _parse_env_assignment(line: str) -> tuple[str, str] | None:
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#") or "=" not in stripped:
+        return None
+    key, value = stripped.split("=", 1)
+    key = key.strip()
+    if not key or not key.replace("_", "A").isalnum() or key[0].isdigit():
+        return None
+    value = value.strip()
+    if value:
+        try:
+            parsed = shlex.split(value, comments=False, posix=True)
+        except ValueError:
+            parsed = [value]
+        if len(parsed) == 1:
+            value = parsed[0]
+    return key, value
+
+
+def _load_local_workspace_env() -> Path | None:
+    for candidate in _DEFAULT_LOCAL_ENV_FILES:
+        if not candidate.is_file():
+            continue
+        for line in candidate.read_text(encoding="utf-8").splitlines():
+            parsed = _parse_env_assignment(line)
+            if parsed is None:
+                continue
+            key, value = parsed
+            os.environ.setdefault(key, value)
+        return candidate
+    return None
+
+
 def ensure_semantic_cache_ready(
     manifest: BettingArbitrageNodeManifest,
     *,
     logger: Logger | None = None,
 ) -> SemanticCacheStatus:
+    _load_local_workspace_env()
     cache_dir = manifest.semantic_rule_cache_dir
     if not cache_dir:
         return SemanticCacheStatus(
@@ -121,6 +176,10 @@ def ensure_semantic_cache_ready(
     if status.ready and not status.compatible:
         _reset_semantic_cache_dir(path)
 
+    seeded_status = _try_seed_semantic_cache(path, manifest=manifest, logger=logger)
+    if seeded_status is not None:
+        return seeded_status
+
     _run_bootstrap(manifest=manifest, cache_dir=path, logger=logger)
     _write_semantic_cache_compatibility(path, manifest=manifest)
     status = semantic_cache_status(path, source="bootstrapped", manifest=manifest)
@@ -131,6 +190,46 @@ def ensure_semantic_cache_ready(
             f"promoted_templates={status.promoted_template_count})",
         )
     return status
+
+
+def _try_seed_semantic_cache(
+    cache_dir: Path,
+    *,
+    manifest: BettingArbitrageNodeManifest,
+    logger: Logger | None,
+) -> SemanticCacheStatus | None:
+    manifest_seed = str(getattr(manifest, "semantic_rule_cache_seed_dir", "") or "").strip()
+    seed_value = manifest_seed or (os.getenv(SEMANTIC_CACHE_SEED_DIR_ENV) or "").strip()
+    if not seed_value:
+        return None
+    seed_dir = Path(seed_value).expanduser()
+    if not seed_dir.is_dir():
+        if logger is not None:
+            logger.warning(f"Semantic cache seed directory does not exist: {seed_dir}")
+        return None
+    if seed_dir.resolve() == cache_dir.resolve():
+        return None
+
+    seed_status = semantic_cache_status(seed_dir, manifest=manifest)
+    if not seed_status.ready or not seed_status.compatible:
+        if logger is not None:
+            logger.warning(
+                "Ignoring incompatible semantic cache seed: "
+                f"path={seed_dir} ready={seed_status.ready} compatible={seed_status.compatible}",
+            )
+        return None
+
+    _reset_semantic_cache_dir(cache_dir)
+    shutil.copytree(seed_dir, cache_dir, dirs_exist_ok=True)
+    status = semantic_cache_status(cache_dir, source="seeded", manifest=manifest)
+    if status.ready and status.compatible:
+        if logger is not None:
+            logger.info(
+                "Seeded semantic cache from compatible source: "
+                f"source={seed_dir} target={cache_dir}",
+            )
+        return status
+    return None
 
 
 def semantic_cache_status(
@@ -149,41 +248,140 @@ def semantic_cache_status(
         expected_scope is None or compatibility_scope == expected_scope
     )
 
-    template_counts = _semantic_template_counts(store)
-    coverage_counts = _semantic_coverage_counts(store)
+    manifest_ids = store.list_manifest_ids()
+    promoted_template_ids = store.list_promoted_template_ids()
+    proof_ids = store.list_coverage_proof_ids() if hasattr(store, "list_coverage_proof_ids") else []
+    hyperedge_ids = (
+        store.list_coverage_hyperedge_ids() if hasattr(store, "list_coverage_hyperedge_ids") else []
+    )
+    summary_signatures = {
+        "manifest_index_signature": _semantic_cache_index_signature(manifest_ids),
+        "promoted_template_index_signature": _semantic_cache_index_signature(promoted_template_ids),
+        "coverage_proof_index_signature": _semantic_cache_index_signature(proof_ids),
+        "coverage_hyperedge_index_signature": _semantic_cache_index_signature(hyperedge_ids),
+    }
+    summary_counts = _semantic_summary_counts(
+        _read_semantic_cache_summary(path),
+        compatibility_version=compatibility_version,
+        compatibility_scope=compatibility_scope,
+        manifest_count=len(manifest_ids),
+        promoted_template_count=len(promoted_template_ids),
+        coverage_proof_count=len(proof_ids),
+        coverage_hyperedge_count=len(hyperedge_ids),
+        signatures=summary_signatures,
+    )
+    summary_reused = summary_counts is not None
+    if summary_counts is None:
+        template_counts, strictness = _semantic_template_analysis(
+            store,
+            promoted_template_ids=promoted_template_ids,
+        )
+        _write_semantic_cache_summary(
+            path,
+            compatibility_version=compatibility_version,
+            compatibility_scope=compatibility_scope,
+            manifest_count=len(manifest_ids),
+            template_counts=template_counts,
+            strictness=strictness,
+            coverage_counts=_SemanticCoverageCounts(
+                proofs=len(proof_ids),
+                hyperedges=len(hyperedge_ids),
+            ),
+            signatures=summary_signatures,
+        )
+    else:
+        template_counts, strictness = summary_counts
+    bootstrap_phase_timings = _read_semantic_cache_bootstrap_timings(path)
+    provider_corpus_coverage = _semantic_provider_corpus_coverage(store)
 
     return SemanticCacheStatus(
         path=str(path),
         source=source,
-        manifest_count=len(store.list_manifest_ids()),
+        manifest_count=len(manifest_ids),
         promoted_template_count=template_counts.promoted,
         execution_safe_template_count=template_counts.execution_safe,
         same_venue_execution_eligible_template_count=template_counts.same_venue_eligible,
-        coverage_proof_count=coverage_counts.proofs,
-        coverage_hyperedge_count=coverage_counts.hyperedges,
+        promoted_safety_tier_counts=strictness["promoted_safety_tier_counts"],
+        promoted_market_family_counts=strictness["promoted_market_family_counts"],
+        execution_safe_market_family_counts=strictness["execution_safe_market_family_counts"],
+        same_venue_eligible_market_family_counts=strictness[
+            "same_venue_eligible_market_family_counts"
+        ],
+        strict_execution_blocker_counts=strictness["strict_execution_blocker_counts"],
+        coverage_proof_count=len(proof_ids),
+        coverage_hyperedge_count=len(hyperedge_ids),
         compatibility_version=compatibility_version,
         compatibility_scope=compatibility_scope,
         compatible=compatible,
+        summary_reused=summary_reused,
+        bootstrap_phase_timings_secs=bootstrap_phase_timings,
+        provider_corpus_coverage=provider_corpus_coverage,
     )
 
 
-def _semantic_template_counts(store: RuleStore) -> _SemanticTemplateCounts:
-    promoted_template_ids = store.list_promoted_template_ids()
+def _semantic_template_analysis(
+    store: RuleStore,
+    *,
+    promoted_template_ids: list[str] | None = None,
+) -> tuple[_SemanticTemplateCounts, dict[str, dict[str, int]]]:
+    promoted_template_ids = promoted_template_ids or store.list_promoted_template_ids()
     execution_safe = 0
     same_venue_eligible = 0
+    tier_counts: dict[str, int] = {}
+    market_family_counts: dict[str, int] = {}
+    execution_safe_family_counts: dict[str, int] = {}
+    same_venue_family_counts: dict[str, int] = {}
+    strict_blockers: dict[str, int] = {}
     for template_id in promoted_template_ids:
         template = store.load_promoted_template(template_id)
         if template is None:
             continue
+        family_pair = _semantic_template_family_pair(template)
+        market_family_counts[family_pair] = market_family_counts.get(family_pair, 0) + 1
         if template.safety_tier == SafetyTier.EXECUTION_SAFE.value:
             execution_safe += 1
+            execution_safe_family_counts[family_pair] = (
+                execution_safe_family_counts.get(family_pair, 0) + 1
+            )
         if template.safety_tier == SafetyTier.EXECUTION_SAFE_SAME_VENUE_ELIGIBLE.value:
             same_venue_eligible += 1
-    return _SemanticTemplateCounts(
-        promoted=len(promoted_template_ids),
-        execution_safe=execution_safe,
-        same_venue_eligible=same_venue_eligible,
+            same_venue_family_counts[family_pair] = (
+                same_venue_family_counts.get(
+                    family_pair,
+                    0,
+                )
+                + 1
+            )
+        tier_counts[template.safety_tier] = tier_counts.get(template.safety_tier, 0) + 1
+        if not template.execution_safe:
+            for blocker in _strict_execution_blockers(template):
+                strict_blockers[blocker] = strict_blockers.get(blocker, 0) + 1
+    return (
+        _SemanticTemplateCounts(
+            promoted=len(promoted_template_ids),
+            execution_safe=execution_safe,
+            same_venue_eligible=same_venue_eligible,
+        ),
+        {
+            "promoted_safety_tier_counts": dict(sorted(tier_counts.items())),
+            "promoted_market_family_counts": dict(sorted(market_family_counts.items())),
+            "execution_safe_market_family_counts": dict(
+                sorted(execution_safe_family_counts.items()),
+            ),
+            "same_venue_eligible_market_family_counts": dict(
+                sorted(same_venue_family_counts.items()),
+            ),
+            "strict_execution_blocker_counts": dict(sorted(strict_blockers.items())),
+        },
     )
+
+
+def _semantic_template_family_pair(template: SemanticRuleTemplate) -> str:
+    pattern_a = getattr(template, "pattern_a", None)
+    pattern_b = getattr(template, "pattern_b", None)
+    family_a = str(getattr(pattern_a, "market_family", "") or "UNKNOWN")
+    family_b = str(getattr(pattern_b, "market_family", "") or "UNKNOWN")
+    return " + ".join(sorted((family_a, family_b)))
 
 
 def _semantic_coverage_counts(store: RuleStore) -> _SemanticCoverageCounts:
@@ -192,6 +390,368 @@ def _semantic_coverage_counts(store: RuleStore) -> _SemanticCoverageCounts:
         store.list_coverage_hyperedge_ids() if hasattr(store, "list_coverage_hyperedge_ids") else []
     )
     return _SemanticCoverageCounts(proofs=len(proof_ids), hyperedges=len(hyperedge_ids))
+
+
+def _semantic_provider_corpus_coverage(store: RuleStore) -> dict[str, object]:
+    list_snapshot_ids = getattr(store, "list_snapshot_ids", None)
+    load_snapshot = getattr(store, "load_snapshot", None)
+    if not callable(list_snapshot_ids) or not callable(load_snapshot):
+        return {}
+
+    latest_by_provider: dict[str, tuple[str, dict[str, object]]] = {}
+    for snapshot_id in list_snapshot_ids():
+        snapshot = load_snapshot(snapshot_id)
+        if snapshot is None or not str(snapshot.endpoint).startswith("/semantic/coverage/"):
+            continue
+        try:
+            payload = json.loads(snapshot.payload.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        provider = str(payload.get("provider") or snapshot.provider or "").upper()
+        if not provider:
+            continue
+        fetched_at = str(snapshot.fetched_at or "")
+        previous = latest_by_provider.get(provider)
+        if previous is None or fetched_at >= previous[0]:
+            latest_by_provider[provider] = (fetched_at, payload)
+
+    return {
+        provider: _semantic_provider_coverage_summary(payload, fetched_at=fetched_at)
+        for provider, (fetched_at, payload) in sorted(latest_by_provider.items())
+    }
+
+
+def _semantic_provider_coverage_summary(
+    payload: dict[str, object],
+    *,
+    fetched_at: str,
+) -> dict[str, object]:
+    sports_payload = payload.get("sports")
+    sports = sports_payload if isinstance(sports_payload, dict) else {}
+    requested_sports = _semantic_coverage_str_list(payload.get("requested_sports"))
+    resolved_sports = _semantic_coverage_str_list(payload.get("resolved_sports"))
+    unresolved_requested_sports = _semantic_coverage_str_list(
+        payload.get("unresolved_requested_sports"),
+    )
+    sport_summaries: dict[str, object] = {}
+    blocker_counts: dict[str, int] = {}
+    sparse_sports: list[str] = []
+    zero_selection_sports: list[str] = []
+    total_selection_count = 0
+    total_event_count = 0
+    total_market_count = 0
+
+    for sport, raw_report in sorted(sports.items(), key=lambda item: str(item[0])):
+        if not isinstance(raw_report, dict):
+            continue
+        sport_key = str(sport)
+        selection_count = _semantic_coverage_int(raw_report.get("selection_count"))
+        event_count = _semantic_coverage_int(raw_report.get("event_count"))
+        market_count = _semantic_coverage_int(raw_report.get("market_count"))
+        attempts = raw_report.get("attempts")
+        attempt_count = len(attempts) if isinstance(attempts, list) else 0
+        blocker = raw_report.get("blocker")
+        blocker_name = str(blocker) if blocker else ""
+        sparse = bool(raw_report.get("sparse", False))
+
+        total_selection_count += selection_count
+        total_event_count += event_count
+        total_market_count += market_count
+        if blocker_name:
+            blocker_counts[blocker_name] = blocker_counts.get(blocker_name, 0) + 1
+        if sparse:
+            sparse_sports.append(sport_key)
+        if selection_count <= 0:
+            zero_selection_sports.append(sport_key)
+
+        sport_summaries[sport_key] = {
+            "selection_count": selection_count,
+            "event_count": event_count,
+            "market_count": market_count,
+            "attempt_count": attempt_count,
+            "blocker": blocker_name or None,
+            "sparse": sparse,
+        }
+
+    return {
+        "fetched_at": fetched_at,
+        "sport_count": len(sport_summaries),
+        "sports_with_selections": sum(
+            1
+            for report in sport_summaries.values()
+            if isinstance(report, dict) and int(report.get("selection_count", 0)) > 0
+        ),
+        "total_selection_count": total_selection_count,
+        "total_event_count": total_event_count,
+        "total_market_count": total_market_count,
+        "coverage_mode": str(payload.get("coverage_mode") or ""),
+        "live_only": bool(payload.get("live_only", False)),
+        "prefer_liquid_markets": bool(payload.get("prefer_liquid_markets", False)),
+        "requested_sports": requested_sports,
+        "resolved_sports": resolved_sports,
+        "unresolved_requested_sports": unresolved_requested_sports,
+        "blocker_counts": dict(sorted(blocker_counts.items())),
+        "sparse_sports": sparse_sports,
+        "zero_selection_sports": zero_selection_sports,
+        "sports": sport_summaries,
+    }
+
+
+def _semantic_coverage_int(value: object) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int | float | str):
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return 0
+    return 0
+
+
+def _semantic_coverage_str_list(value: object) -> list[str]:
+    if not isinstance(value, (list, tuple, set)):
+        return []
+    return sorted({str(item) for item in value if str(item).strip()})
+
+
+def _semantic_cache_index_signature(ids: Iterable[str]) -> str:
+    digest = hashlib.sha256()
+    for item in sorted(str(item) for item in ids):
+        digest.update(item.encode("utf-8"))
+        digest.update(b"\0")
+    return digest.hexdigest()[:24]
+
+
+def _read_semantic_cache_summary(cache_dir: Path) -> dict[str, object] | None:
+    summary_path = cache_dir / SEMANTIC_CACHE_SUMMARY_FILE
+    if not summary_path.exists():
+        return None
+    try:
+        payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _read_semantic_cache_bootstrap_timings(cache_dir: Path) -> dict[str, float]:
+    timings_path = cache_dir / SEMANTIC_CACHE_BOOTSTRAP_TIMINGS_FILE
+    if not timings_path.exists():
+        return {}
+    try:
+        payload = json.loads(timings_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, ValueError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    timings = payload.get("phase_timings_secs")
+    if not isinstance(timings, dict):
+        return {}
+    normalized: dict[str, float] = {}
+    for key, value in timings.items():
+        try:
+            normalized[str(key)] = round(max(0.0, float(value)), 6)
+        except (TypeError, ValueError):
+            continue
+    return dict(sorted(normalized.items()))
+
+
+def _write_semantic_cache_bootstrap_timings(
+    cache_dir: Path,
+    *,
+    phase_timings_secs: dict[str, float],
+) -> None:
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "phase_timings_secs": {
+            key: round(max(0.0, float(value)), 6)
+            for key, value in sorted(phase_timings_secs.items())
+        },
+        "generated_at_unix_secs": time.time(),
+    }
+    (cache_dir / SEMANTIC_CACHE_BOOTSTRAP_TIMINGS_FILE).write_text(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _semantic_summary_counts(
+    summary: dict[str, object] | None,
+    *,
+    compatibility_version: str | None,
+    compatibility_scope: str | None,
+    manifest_count: int,
+    promoted_template_count: int,
+    coverage_proof_count: int,
+    coverage_hyperedge_count: int,
+    signatures: dict[str, str],
+) -> tuple[_SemanticTemplateCounts, dict[str, dict[str, int]]] | None:
+    if summary is None:
+        return None
+    if summary.get("compatibility_version") != compatibility_version:
+        return None
+    if summary.get("compatibility_scope") != compatibility_scope:
+        return None
+    expected_counts = {
+        "manifest_count": manifest_count,
+        "promoted_template_count": promoted_template_count,
+        "coverage_proof_count": coverage_proof_count,
+        "coverage_hyperedge_count": coverage_hyperedge_count,
+    }
+    for count_key, expected_count in expected_counts.items():
+        if _semantic_summary_int(summary.get(count_key), default=-1) != expected_count:
+            return None
+    for signature_key, expected_signature in signatures.items():
+        if summary.get(signature_key) != expected_signature:
+            return None
+
+    safety_tier_counts = summary.get("promoted_safety_tier_counts")
+    market_family_counts = summary.get("promoted_market_family_counts")
+    execution_safe_family_counts = summary.get("execution_safe_market_family_counts")
+    same_venue_family_counts = summary.get("same_venue_eligible_market_family_counts")
+    strict_blocker_counts = summary.get("strict_execution_blocker_counts")
+    if (
+        not isinstance(safety_tier_counts, dict)
+        or not isinstance(market_family_counts, dict)
+        or not isinstance(execution_safe_family_counts, dict)
+        or not isinstance(same_venue_family_counts, dict)
+        or not isinstance(strict_blocker_counts, dict)
+    ):
+        return None
+
+    return (
+        _SemanticTemplateCounts(
+            promoted=promoted_template_count,
+            execution_safe=max(
+                0,
+                _semantic_summary_int(summary.get("execution_safe_template_count")),
+            ),
+            same_venue_eligible=max(
+                0,
+                _semantic_summary_int(
+                    summary.get("same_venue_execution_eligible_template_count"),
+                ),
+            ),
+        ),
+        {
+            "promoted_safety_tier_counts": {
+                str(key): int(value) for key, value in safety_tier_counts.items()
+            },
+            "promoted_market_family_counts": {
+                str(key): int(value) for key, value in market_family_counts.items()
+            },
+            "execution_safe_market_family_counts": {
+                str(key): int(value) for key, value in execution_safe_family_counts.items()
+            },
+            "same_venue_eligible_market_family_counts": {
+                str(key): int(value) for key, value in same_venue_family_counts.items()
+            },
+            "strict_execution_blocker_counts": {
+                str(key): int(value) for key, value in strict_blocker_counts.items()
+            },
+        },
+    )
+
+
+def _semantic_summary_int(value: object, *, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int | float | str):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+    return default
+
+
+def _write_semantic_cache_summary(
+    cache_dir: Path,
+    *,
+    compatibility_version: str | None,
+    compatibility_scope: str | None,
+    manifest_count: int,
+    template_counts: _SemanticTemplateCounts,
+    strictness: dict[str, dict[str, int]],
+    coverage_counts: _SemanticCoverageCounts,
+    signatures: dict[str, str],
+) -> None:
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    payload: dict[str, object] = {
+        "compatibility_version": compatibility_version,
+        "compatibility_scope": compatibility_scope,
+        "manifest_count": manifest_count,
+        "promoted_template_count": template_counts.promoted,
+        "execution_safe_template_count": template_counts.execution_safe,
+        "same_venue_execution_eligible_template_count": template_counts.same_venue_eligible,
+        "coverage_proof_count": coverage_counts.proofs,
+        "coverage_hyperedge_count": coverage_counts.hyperedges,
+        "promoted_safety_tier_counts": strictness["promoted_safety_tier_counts"],
+        "promoted_market_family_counts": strictness["promoted_market_family_counts"],
+        "execution_safe_market_family_counts": strictness["execution_safe_market_family_counts"],
+        "same_venue_eligible_market_family_counts": strictness[
+            "same_venue_eligible_market_family_counts"
+        ],
+        "strict_execution_blocker_counts": strictness["strict_execution_blocker_counts"],
+        **signatures,
+        "generated_at_unix_secs": time.time(),
+    }
+    (cache_dir / SEMANTIC_CACHE_SUMMARY_FILE).write_text(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _strict_execution_blockers(template: object) -> tuple[str, ...]:
+    blockers: list[str] = []
+    relationship_type = str(getattr(template, "relationship_type", "") or "")
+    same_venue_execution_eligible = bool(
+        getattr(template, "same_venue_execution_eligible", False),
+    )
+    has_void = bool(getattr(template, "has_void", False))
+    has_partial = bool(getattr(template, "has_partial", False))
+    has_unknown = bool(getattr(template, "has_unknown", False))
+    execution_safe = bool(getattr(template, "execution_safe", False))
+    support = getattr(template, "support", None)
+    eligibility_reasons = tuple(getattr(template, "eligibility_reasons", ()) or ())
+
+    if same_venue_execution_eligible:
+        blockers.append("same_venue_risk_engine_elevation_required")
+    if relationship_type != "COMPLEMENTARY_COVERAGE":
+        blockers.append("non_complementary_relationship")
+    if has_void:
+        blockers.append("void_states_present")
+    if has_partial:
+        blockers.append("partial_settlement_present")
+    if has_unknown:
+        blockers.append("unknown_settlement_present")
+    blockers.extend(_catalog_support_blockers(support))
+    if not blockers and not execution_safe:
+        blockers.extend(str(reason) for reason in eligibility_reasons)
+    return tuple(sorted(set(blockers)))
+
+
+def _catalog_support_blockers(support: object | None) -> tuple[str, ...]:
+    blockers: list[str] = []
+    if support is None:
+        return tuple(blockers)
+    if bool(getattr(support, "catalog_promotable", False)):
+        return tuple(blockers)
+    if not bool(getattr(support, "deterministic", True)):
+        blockers.append("nondeterministic_support")
+    if int(getattr(support, "unknown_settlement_count", 0)) > 0:
+        blockers.append("support_unknown_settlement_present")
+    if int(getattr(support, "observed_count", 0)) < 10:
+        blockers.append("observed_count_below_10")
+    if int(getattr(support, "event_count", 0)) < 3:
+        blockers.append("event_count_below_3")
+    if float(getattr(support, "mismatch_rate", 1.0)) > 0.01:
+        blockers.append("mismatch_rate_above_0_01")
+    if float(getattr(support, "confidence", 0.0)) < 0.99:
+        blockers.append("confidence_below_0_99")
+    if not blockers:
+        blockers.append("catalog_support_below_gate")
+    return tuple(sorted(set(blockers)))
 
 
 def _read_semantic_cache_compatibility(cache_dir: Path) -> dict[str, str | None]:
@@ -239,7 +799,7 @@ def _semantic_cache_scope_key(manifest: BettingArbitrageNodeManifest | None) -> 
         venues.append(
             {
                 "venue": venue.venue,
-                "sport_keys": sorted(venue.sport_keys) if venue.sport_keys else "default",
+                "sport_keys": _semantic_cache_scope_sport_keys(venue),
                 "sport_ids": sorted(venue.sport_ids) if venue.sport_ids else "all",
                 "league_ids": sorted(venue.league_ids) if venue.league_ids else "all",
                 "live_only": bool(venue.live_only),
@@ -253,6 +813,21 @@ def _semantic_cache_scope_key(manifest: BettingArbitrageNodeManifest | None) -> 
     payload = {"providers": venues}
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()[:24]
+
+
+def _semantic_cache_scope_sport_keys(venue: BettingVenueManifest) -> list[str] | str:
+    if venue.sport_keys:
+        return sorted(venue.sport_keys)
+    if venue.sport_ids:
+        return "sport_ids"
+    venue_name = venue.venue.upper()
+    if venue_name == "CLOUDBET":
+        return list(DEFAULT_CLOUDBET_SPORTS)
+    if venue_name == "SXBET":
+        return list(DEFAULT_SXBET_SPORTS)
+    if venue_name == "POLYMARKET":
+        return list(DEFAULT_POLYMARKET_SPORTS)
+    return "default"
 
 
 def _reset_semantic_cache_dir(cache_dir: Path) -> None:
@@ -314,31 +889,99 @@ async def _bootstrap_semantic_cache(
     miner = RuleMiner(store)
     promotion_policy = RulePromotionPolicy()
     venues = [venue for venue in manifest.venues if venue.enabled]
+    phase_timings_secs: dict[str, float] = {}
 
-    await _refresh_required_sxbet_corpus(venues=venues, ingestor=ingestor, logger=logger)
-    await _refresh_cloudbet_corpus(
-        manifest=manifest,
-        venues=venues,
-        ingestor=ingestor,
-        logger=logger,
-    )
-    await _refresh_polymarket_corpus(
-        venues=venues,
-        ingestor=ingestor,
-        logger=logger,
-    )
-
-    miner.mine_store(persist=True)
-    templates = miner.mine_templates_from_store(persist=True, persist_event_candidates=False)
-    miner.mine_coverage_from_store(persist=True)
-    for template in templates:
-        portable_polymarket = _is_portable_polymarket_template(template)
-        promotion_policy.promote_template(
-            store,
-            template,
-            allowlisted=portable_polymarket,
-            venue_agnostic=portable_polymarket,
+    defer_index_writes = getattr(store, "defer_index_writes", None)
+    index_context = defer_index_writes() if callable(defer_index_writes) else nullcontext()
+    total_started = time.perf_counter()
+    with index_context:
+        await _timed_async_phase(
+            "refresh_sxbet_corpus",
+            phase_timings_secs,
+            _refresh_required_sxbet_corpus(venues=venues, ingestor=ingestor, logger=logger),
         )
+        await _timed_async_phase(
+            "refresh_cloudbet_corpus",
+            phase_timings_secs,
+            _refresh_cloudbet_corpus(
+                manifest=manifest,
+                venues=venues,
+                ingestor=ingestor,
+                logger=logger,
+            ),
+        )
+        await _timed_async_phase(
+            "refresh_polymarket_corpus",
+            phase_timings_secs,
+            _refresh_polymarket_corpus(
+                venues=venues,
+                ingestor=ingestor,
+                logger=logger,
+            ),
+        )
+
+        _timed_sync_phase(
+            "mine_event_candidates",
+            phase_timings_secs,
+            miner.mine_store,
+            persist=True,
+        )
+        templates = _timed_sync_phase(
+            "generalize_templates",
+            phase_timings_secs,
+            miner.mine_templates_from_store,
+            persist=True,
+            persist_event_candidates=False,
+        )
+        _timed_sync_phase(
+            "mine_coverage",
+            phase_timings_secs,
+            miner.mine_coverage_from_store,
+            persist=True,
+        )
+
+        def _promote_templates() -> None:
+            for template in templates:
+                portable_polymarket = _is_portable_polymarket_template(template)
+                promotion_policy.promote_template(
+                    store,
+                    template,
+                    allowlisted=portable_polymarket,
+                    venue_agnostic=portable_polymarket,
+                )
+
+        _timed_sync_phase("promote_templates", phase_timings_secs, _promote_templates)
+    phase_timings_secs["total"] = time.perf_counter() - total_started
+    _write_semantic_cache_bootstrap_timings(
+        cache_dir,
+        phase_timings_secs=phase_timings_secs,
+    )
+
+
+async def _timed_async_phase(
+    name: str,
+    phase_timings_secs: dict[str, float],
+    awaitable,
+):
+    started = time.perf_counter()
+    try:
+        return await awaitable
+    finally:
+        phase_timings_secs[name] = time.perf_counter() - started
+
+
+def _timed_sync_phase(
+    name: str,
+    phase_timings_secs: dict[str, float],
+    func,
+    *args,
+    **kwargs,
+):
+    started = time.perf_counter()
+    try:
+        return func(*args, **kwargs)
+    finally:
+        phase_timings_secs[name] = time.perf_counter() - started
 
 
 def _is_portable_polymarket_template(template: object) -> bool:
@@ -397,6 +1040,7 @@ async def _refresh_required_sxbet_corpus(
     try:
         await ingestor.refresh_sxbet(
             client,
+            sports=scope.sport_keys,
             sport_ids=scope.sport_ids,
             from_time=from_time,
             to_time=to_time,
@@ -405,12 +1049,14 @@ async def _refresh_required_sxbet_corpus(
             prefer_liquid_markets=scope.prefer_liquid_markets,
             liquidity_probe_limit=scope.liquidity_probe_limit,
             min_two_sided_markets=scope.min_two_sided_markets,
+            live_only=scope.live_only,
         )
     finally:
         await client.disconnect()
 
 
 def _sxbet_corpus_scope(sxbet_venues: Iterable[BettingVenueManifest]) -> _SxbetCorpusScope:
+    sport_keys: set[str] = set()
     sport_ids: set[int] = set()
     instrument_limit = 250
     market_discovery_limit = 250
@@ -419,6 +1065,8 @@ def _sxbet_corpus_scope(sxbet_venues: Iterable[BettingVenueManifest]) -> _SxbetC
     min_two_sided_markets = 1
     live_only = False
     for venue in sxbet_venues:
+        if venue.sport_keys:
+            sport_keys.update(key.strip().lower() for key in venue.sport_keys if key.strip())
         if venue.sport_ids:
             sport_ids.update(int(value) for value in venue.sport_ids)
         if venue.instrument_load_limit is not None:
@@ -430,7 +1078,15 @@ def _sxbet_corpus_scope(sxbet_venues: Iterable[BettingVenueManifest]) -> _SxbetC
         min_two_sided_markets = max(min_two_sided_markets, int(venue.min_two_sided_markets))
         live_only = live_only or venue.live_only
 
+    resolved_sport_keys = (
+        sorted(sport_keys) if sport_keys else (None if sport_ids else list(DEFAULT_SXBET_SPORTS))
+    )
+    target_sport_count = max(len(sport_ids), len(resolved_sport_keys or ()), 1)
+    instrument_limit = max(instrument_limit, target_sport_count * 80)
+    market_discovery_limit = max(market_discovery_limit, target_sport_count * 120)
+
     return _SxbetCorpusScope(
+        sport_keys=resolved_sport_keys,
         sport_ids=sorted(sport_ids) or None,
         instrument_limit=instrument_limit,
         market_discovery_limit=market_discovery_limit,

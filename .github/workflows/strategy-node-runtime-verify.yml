@@ -21,7 +21,7 @@ on:
       timeout_seconds:
         description: Status wait timeout in seconds
         required: false
-        default: '180'
+        default: '900'
       heartbeat_updates_required:
         description: Number of heartbeat timestamp changes required after verification starts
         required: false
@@ -58,7 +58,7 @@ on:
 jobs:
   verify-runtime:
     name: verify-runtime
-    timeout-minutes: 10
+    timeout-minutes: 30
     runs-on: [self-hosted, linux, x64, ec2, deploy, trading]
     steps:
       - name: Repair self-hosted workspace
@@ -133,7 +133,7 @@ jobs:
           container_name="${INPUT_CONTAINER_NAME:-betting-arbitrage-node-sxbet}"
           root_dir="${INPUT_ROOT_DIR:-/opt/cloudbet/strategy-nodes}"
           expected_session_id="${INPUT_EXPECTED_SESSION_ID:-}"
-          timeout_seconds="${INPUT_TIMEOUT_SECONDS:-180}"
+          timeout_seconds="${INPUT_TIMEOUT_SECONDS:-900}"
           heartbeat_updates_required="${INPUT_HEARTBEAT_UPDATES_REQUIRED:-2}"
           min_cross_venue_candidates="${INPUT_MIN_CROSS_VENUE_CANDIDATES:-0}"
           min_quoted_node_counts="${INPUT_MIN_QUOTED_NODE_COUNTS:-}"
@@ -148,7 +148,99 @@ jobs:
           heartbeat_file="$node_dir/heartbeat.json"
           current_session_file="$node_dir/current-session.json"
 
+          persist_node_runtime_artifacts() {
+            set +e
+            artifact_dir="artifacts/strategy-node-runtime-verify/$container_name"
+            mkdir -p "$artifact_dir"
+            for source_target in \
+              "$status_file:$artifact_dir/status.json" \
+              "$heartbeat_file:$artifact_dir/heartbeat.json" \
+              "$current_session_file:$artifact_dir/current-session.json" \
+              "$node_dir/manifest.runtime.json:$artifact_dir/manifest.runtime.json" \
+              "$node_dir/release.json:$artifact_dir/release.json"; do
+              source_path="${source_target%%:*}"
+              target_path="${source_target#*:}"
+              if [ -f "$source_path" ]; then
+                cp "$source_path" "$target_path"
+              fi
+            done
+
+            current_log_path=""
+            current_event_log_path=""
+            if [ -f "$current_session_file" ]; then
+              current_log_path="$(python3 - "$current_session_file" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          payload = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          print(payload.get("logPath") or "")
+          PY
+              )"
+              current_event_log_path="$(python3 - "$current_session_file" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          payload = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          print(payload.get("eventLogPath") or "")
+          PY
+              )"
+            fi
+            if [ -n "$current_log_path" ] && [ -f "$current_log_path" ]; then
+              cp "$current_log_path" "$artifact_dir/node.log"
+            fi
+            if [ -n "$current_event_log_path" ] && [ -f "$current_event_log_path" ]; then
+              cp "$current_event_log_path" "$artifact_dir/events.jsonl"
+            fi
+            if [ -f "$status_file" ]; then
+              python3 - "$status_file" "$artifact_dir/runtime-summary.json" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          status = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          runtime_probe = status.get("runtimeProbe") or {}
+          candidate_quality = runtime_probe.get("candidateQuality") or {}
+          runtime_probe_summary = dict(runtime_probe) if isinstance(runtime_probe, dict) else {}
+          if isinstance(candidate_quality, dict):
+              runtime_probe_summary["candidateQuality"] = dict(candidate_quality)
+              for key in (
+                  "blockerSamples",
+                  "latencyHistograms",
+                  "liveTimingSlo",
+                  "semanticBlockedRelationships",
+                  "topNegativeNearMisses",
+                  "topPositiveCandidates",
+                  "venueQuoteHealth",
+                  "zeroCandidateBlockerCounts",
+                  "zeroCandidateVenuePairSamples",
+              ):
+                  runtime_probe_summary["candidateQuality"][key] = candidate_quality.get(key)
+          for key in (
+              "coverageDiagnostics",
+              "latencyDiagnostics",
+              "providerQuotePollStats",
+              "instrumentRefresh",
+              "semanticDiagnostics",
+          ):
+              runtime_probe_summary[key] = runtime_probe.get(key)
+          summary = {
+              "nodeId": status.get("nodeId"),
+              "status": status.get("status"),
+              "semanticCache": status.get("semanticCache"),
+              "executionReadiness": status.get("executionReadiness"),
+              "runtimeProbe": runtime_probe_summary,
+          }
+          pathlib.Path(sys.argv[2]).write_text(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+            fi
+            set -e
+          }
+
           dump_node_runtime_artifacts() {
+            set +e
+            persist_node_runtime_artifacts
             set +e
             echo
             echo "runtime_diagnostics<<EOF"
@@ -252,6 +344,19 @@ jobs:
             --min-positive-margin-candidates 0 \
             --min-cross-venue-candidates "$min_cross_venue_candidates" \
             "${quoted_node_args[@]}"
+
+          report_args=(
+            --format text
+            --require-auto-execute-false
+            --require-validation-mode
+            --require-rust-semantic
+            --require-coverage-runtime
+            --min-quoted-semantic-instruments 2
+          )
+          if [ "$min_cross_venue_candidates" -gt 0 ]; then
+            report_args+=(--min-cross-venue-candidates "$min_cross_venue_candidates")
+          fi
+          python3 scripts/betting/runtime_probe_report.py "$status_file" "${report_args[@]}"
 
           docker_state="$(docker inspect --format '{{.State.Status}}' "$container_name")"
           docker_running="$(docker inspect --format '{{.State.Running}}' "$container_name")"
@@ -453,70 +558,7 @@ jobs:
           echo "EOF"
 
           artifact_dir="artifacts/strategy-node-runtime-verify/$container_name"
-          mkdir -p "$artifact_dir"
-          cp "$status_file" "$artifact_dir/status.json"
-          cp "$heartbeat_file" "$artifact_dir/heartbeat.json"
-          cp "$current_session_file" "$artifact_dir/current-session.json"
-          if [ -f "$node_dir/manifest.runtime.json" ]; then
-            cp "$node_dir/manifest.runtime.json" "$artifact_dir/manifest.runtime.json"
-          fi
-          if [ -f "$node_dir/release.json" ]; then
-            cp "$node_dir/release.json" "$artifact_dir/release.json"
-          fi
-          cp "$current_log_path" "$artifact_dir/node.log"
-          cp "$current_event_log_path" "$artifact_dir/events.jsonl"
-          python3 - "$status_file" "$artifact_dir/runtime-summary.json" <<'PY'
-          import json
-          import pathlib
-          import sys
-
-          status = json.loads(pathlib.Path(sys.argv[1]).read_text())
-          runtime_probe = status.get("runtimeProbe") or {}
-          candidate_quality = runtime_probe.get("candidateQuality") or {}
-          summary = {
-              "nodeId": status.get("nodeId"),
-              "status": status.get("status"),
-              "semanticCache": status.get("semanticCache"),
-              "runtimeProbe": {
-                  "graphEngine": runtime_probe.get("graphEngine"),
-                  "topologySource": runtime_probe.get("topologySource"),
-                  "semanticTemplateCount": runtime_probe.get("semanticTemplateCount"),
-                  "coverageProofCount": runtime_probe.get("coverageProofCount"),
-                  "coverageHyperedgeCount": runtime_probe.get("coverageHyperedgeCount"),
-                  "graphNodes": runtime_probe.get("graphNodes"),
-                  "graphEdges": runtime_probe.get("graphEdges"),
-                  "quotedSemanticMatchInstruments": runtime_probe.get(
-                      "quotedSemanticMatchInstruments",
-                  ),
-                  "quotedEdges": runtime_probe.get("quotedEdges"),
-                  "positiveMarginCandidates": runtime_probe.get("positiveMarginCandidates"),
-                  "thresholdMarginCandidates": runtime_probe.get("thresholdMarginCandidates"),
-                  "venueCoverage": runtime_probe.get("venueCoverage"),
-                  "candidateQuality": {
-                      "rejectionBuckets": candidate_quality.get("rejectionBuckets"),
-                      "timingFlags": candidate_quality.get("timingFlags"),
-                      "freshnessProfiles": candidate_quality.get("freshnessProfiles"),
-                      "semanticBlockedReasons": candidate_quality.get(
-                          "semanticBlockedReasons",
-                      ),
-                      "blockerSamples": candidate_quality.get("blockerSamples"),
-                      "venueQuoteHealth": candidate_quality.get("venueQuoteHealth"),
-                      "venuePairs": candidate_quality.get("venuePairs"),
-                      "marketFamilies": candidate_quality.get("marketFamilies"),
-                      "zeroCandidateVenuePairSamples": candidate_quality.get(
-                          "zeroCandidateVenuePairSamples",
-                      ),
-                      "topPositiveCandidates": candidate_quality.get(
-                          "topPositiveCandidates",
-                      ),
-                      "topNegativeNearMisses": candidate_quality.get(
-                          "topNegativeNearMisses",
-                      ),
-                  },
-              },
-          }
-          pathlib.Path(sys.argv[2]).write_text(json.dumps(summary, indent=2, sort_keys=True))
-          PY
+          persist_node_runtime_artifacts
 
           if [[ "${semantic_verify_enabled,,}" == "true" ]]; then
             cache_dir="$node_dir/semantic-rule-cache"
@@ -544,11 +586,52 @@ jobs:
                 fi
               done
             fi
-            python3 "${semantic_args[@]}" > "$artifact_dir/semantic-completion.json"
+            semantic_completion_stderr="$artifact_dir/semantic-completion.stderr"
+            semantic_python=(python3)
+            if command -v sudo >/dev/null 2>&1; then
+              semantic_python=(sudo -n python3)
+            fi
+            set +e
+            "${semantic_python[@]}" "${semantic_args[@]}" \
+              > "$artifact_dir/semantic-completion.json" \
+              2> "$semantic_completion_stderr"
+            semantic_completion_rc=$?
+            set -e
+            if [[ ! -s "$artifact_dir/semantic-completion.json" ]]; then
+              python3 - \
+                "$semantic_completion_rc" \
+                "$semantic_completion_stderr" \
+                "$artifact_dir/semantic-completion.json" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          return_code = int(sys.argv[1])
+          stderr_path = pathlib.Path(sys.argv[2])
+          output_path = pathlib.Path(sys.argv[3])
+          stderr_text = stderr_path.read_text(encoding="utf-8", errors="replace") if stderr_path.exists() else ""
+          output_path.write_text(
+              json.dumps(
+                  {
+                      "passed": False,
+                      "error": "semantic_completion_verifier_failed_before_json_output",
+                      "return_code": return_code,
+                      "stderr_tail": stderr_text[-4000:],
+                  },
+                  indent=2,
+                  sort_keys=True,
+              ),
+              encoding="utf-8",
+          )
+          PY
+            fi
             echo
             echo "semantic_completion_summary<<EOF"
             cat "$artifact_dir/semantic-completion.json"
             echo "EOF"
+            if [[ "$semantic_completion_rc" -ne 0 ]]; then
+              exit "$semantic_completion_rc"
+            fi
           fi
 
       - name: Upload runtime verification artifacts

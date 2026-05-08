@@ -13,6 +13,7 @@ Strategy regression tests for the betting arbitrage fast-path integration.
 
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from typing import cast
 from unittest.mock import Mock
@@ -24,6 +25,8 @@ from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.betting.market_matcher import MarketMatcher
 from nautilus_trader.adapters.betting.runtime_cache import active_venue_instrument_index_key
 from nautilus_trader.adapters.betting.runtime_cache import encode_active_venue_instrument_index
+from nautilus_trader.adapters.betting.runtime_cache import encode_venue_quote_poll_stats
+from nautilus_trader.adapters.betting.runtime_cache import venue_quote_poll_stats_key
 from nautilus_trader.adapters.betting.semantics import FileRuleCache
 from nautilus_trader.adapters.betting.semantics import RuleStore
 from nautilus_trader.adapters.cloudbet.client.schema import (
@@ -81,12 +84,19 @@ class TestBettingArbitrageConfig:  # skipcq
         ensure(config.opportunity_log_manual_instructions is True)
         ensure(config.graph_rebuild_on_new_instrument is True)
         ensure(config.opportunity_graph_engine == "auto")
+        ensure(config.semantic_quote_subscription_limit_by_venue == {})
         ensure(config.semantic_unmatched_quote_probe_venues == frozenset({"POLYMARKET"}))
         ensure(config.semantic_unmatched_quote_probe_limit_per_venue == 20)
         ensure(config.quote_freshness_profile == "pre_match")
         ensure(config.quote_max_pair_skew_secs is None)
         ensure(config.quote_max_fetch_latency_secs is None)
         ensure(config.instrument_refresh_interval_secs is None)
+        ensure(config.stale_quote_refresh_cooldown_secs == 60.0)
+        ensure(config.venue_taker_fee_rates == {"POLYMARKET": Decimal("0.03")})
+        ensure(config.venue_maker_rebate_rates == {})
+        ensure(config.venue_winning_profit_fee_rates == {})
+        ensure(config.venue_basket_rebate_rates == {})
+        ensure(config.venue_basket_boost_rates == {})
 
     def test_custom_venues(self):  # skipcq
         """
@@ -140,12 +150,56 @@ class TestBettingArbitrageConfig:  # skipcq
         with pytest.raises(ValueError, match="semantic_unmatched_quote_probe_limit"):
             BettingArbitrageConfig(semantic_unmatched_quote_probe_limit_per_venue=-1)
 
+    def test_semantic_quote_subscription_limit_validation(self):  # skipcq
+        config = BettingArbitrageConfig(
+            semantic_quote_subscription_limit_by_venue={" cloudbet ": 80, "sxbet": 120},
+        )
+
+        ensure(
+            config.semantic_quote_subscription_limit_by_venue == {"CLOUDBET": 80, "SXBET": 120},
+        )
+
+        with pytest.raises(ValueError, match="semantic_quote_subscription_limit_by_venue"):
+            BettingArbitrageConfig(
+                semantic_quote_subscription_limit_by_venue={"CLOUDBET": -1},
+            )
+
     def test_instrument_refresh_interval_validation(self):  # skipcq
         config = BettingArbitrageConfig(instrument_refresh_interval_secs=300.0)
         ensure(config.instrument_refresh_interval_secs == 300.0)
 
         with pytest.raises(ValueError, match="instrument_refresh_interval_secs"):
             BettingArbitrageConfig(instrument_refresh_interval_secs=0.0)
+
+    def test_stale_quote_refresh_cooldown_validation(self):  # skipcq
+        config = BettingArbitrageConfig(stale_quote_refresh_cooldown_secs=None)
+        ensure(config.stale_quote_refresh_cooldown_secs is None)
+
+        with pytest.raises(ValueError, match="stale_quote_refresh_cooldown_secs"):
+            BettingArbitrageConfig(stale_quote_refresh_cooldown_secs=0.0)
+
+    def test_venue_fee_rate_validation(self):  # skipcq
+        config = BettingArbitrageConfig(
+            venue_taker_fee_rates={" polymarket ": "0.02", "sxbet": Decimal("0.01")},
+            venue_maker_rebate_rates={"polymarket": "0.0075"},
+            venue_winning_profit_fee_rates={"cloudbet": "0.005"},
+            venue_basket_rebate_rates={"sxbet": "0.02"},
+            venue_basket_boost_rates={"cloudbet": "0.015"},
+        )
+
+        ensure(
+            config.venue_taker_fee_rates
+            == {"POLYMARKET": Decimal("0.02"), "SXBET": Decimal("0.01")},
+        )
+        ensure(config.venue_maker_rebate_rates == {"POLYMARKET": Decimal("0.0075")})
+        ensure(config.venue_winning_profit_fee_rates == {"CLOUDBET": Decimal("0.005")})
+        ensure(config.venue_basket_rebate_rates == {"SXBET": Decimal("0.02")})
+        ensure(config.venue_basket_boost_rates == {"CLOUDBET": Decimal("0.015")})
+
+        with pytest.raises(ValueError, match="less than 1"):
+            BettingArbitrageConfig(venue_taker_fee_rates={"POLYMARKET": "1.0"})
+        with pytest.raises(ValueError, match="non-negative"):
+            BettingArbitrageConfig(venue_maker_rebate_rates={"POLYMARKET": "-0.01"})
 
     def test_quote_freshness_profile_validation(self):  # skipcq
         for profile in ["pre_match", "live", "custom"]:
@@ -295,6 +349,140 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(strategy._raw_arbitrage_detections == 0)
         ensure(strategy._executable_candidates == 0)
 
+    def test_fee_adjusted_opportunity_preserves_raw_margin_and_applies_venue_fees(self):  # skipcq
+        """
+        Fee-aware decisions should use net margin while preserving raw vig diagnostics.
+        """
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(enabled_venues=frozenset(["POLYMARKET", "SXBET"])),
+        )
+        polymarket = self._sxbet_instrument(
+            event_id="event-1",
+            venue="POLYMARKET",
+            outcome="over",
+        )
+        sxbet = self._sxbet_instrument(event_id="event-1", venue="SXBET", outcome="under")
+        opportunity = MarketMatcher().check_arbitrage(
+            polymarket,
+            sxbet,
+            odds_a=Decimal("2.02"),
+            odds_b=Decimal("2.02"),
+        )
+
+        ensure(opportunity is not None)
+        adjusted = strategy.fee_adjusted_opportunity(opportunity)
+
+        ensure(adjusted.fee_adjusted is True)
+        ensure(adjusted.raw_profit_margin == Decimal("0.01"))
+        ensure(adjusted.profit_margin < adjusted.raw_profit_margin)
+        ensure(adjusted.fee_drag > 0)
+        ensure(adjusted.taker_fee_rate_a == Decimal("0.03"))
+        ensure(adjusted.taker_fee_rate_b == Decimal(0))
+        ensure(adjusted.maker_rebate_rate_a == Decimal(0))
+        ensure(adjusted.maker_rebate_rate_b == Decimal(0))
+
+    def test_fee_adjusted_opportunity_uses_market_fee_metadata_over_venue_defaults(self):  # skipcq
+        """
+        Polymarket-like markets can provide per-market taker/rebate parameters.
+        """
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["POLYMARKET", "SXBET"]),
+                venue_taker_fee_rates={"POLYMARKET": "0.03"},
+                venue_maker_rebate_rates={"POLYMARKET": "0.001"},
+            ),
+        )
+        polymarket = self._sxbet_instrument(
+            event_id="event-1",
+            venue="POLYMARKET",
+            outcome="over",
+            info={
+                "taker_fee_rate": "0.01",
+                "maker_rebate_rate": "0.004",
+            },
+        )
+        sxbet = self._sxbet_instrument(event_id="event-1", venue="SXBET", outcome="under")
+        opportunity = MarketMatcher().check_arbitrage(
+            polymarket,
+            sxbet,
+            odds_a=Decimal("2.02"),
+            odds_b=Decimal("2.02"),
+        )
+
+        ensure(opportunity is not None)
+        adjusted = strategy.fee_adjusted_opportunity(opportunity)
+
+        ensure(adjusted.taker_fee_rate_a == Decimal("0.01"))
+        ensure(adjusted.maker_rebate_rate_a == Decimal("0.004"))
+        ensure(adjusted.profit_margin < adjusted.raw_profit_margin)
+        ensure(adjusted.fee_drag > 0)
+
+    def test_fee_adjusted_opportunity_applies_pair_basket_incentives(self):  # skipcq
+        """
+        Basket-level rewards can improve a covered pair without changing safety tiers.
+        """
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["CLOUDBET", "SXBET"]),
+                venue_basket_rebate_rates={"SXBET": "0.01"},
+                venue_basket_boost_rates={"SXBET": "0.02"},
+            ),
+        )
+        sxbet = self._sxbet_instrument(event_id="event-1", venue="SXBET", outcome="over")
+        cloudbet = self._sxbet_instrument(event_id="event-1", venue="CLOUDBET", outcome="under")
+        opportunity = MarketMatcher().check_arbitrage(
+            sxbet,
+            cloudbet,
+            odds_a=Decimal("2.02"),
+            odds_b=Decimal("2.02"),
+        )
+
+        ensure(opportunity is not None)
+        adjusted = strategy.fee_adjusted_opportunity(opportunity)
+
+        ensure(adjusted.basket_rebate_rate == Decimal("0.01"))
+        ensure(adjusted.basket_boost_rate == Decimal("0.02"))
+        ensure(adjusted.profit_margin > adjusted.raw_profit_margin)
+        ensure(adjusted.fee_drag < 0)
+
+    def test_fee_adjusted_margin_blocks_raw_only_opportunity_candidate(self):  # skipcq
+        """
+        Raw overround edge is not enough when configured fees erase the margin.
+        """
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                min_profit_margin=Decimal("0.005"),
+                enabled_venues=frozenset(["POLYMARKET", "SXBET"]),
+            ),
+        )
+        strategy._handle_arbitrage_opportunity = Mock()
+        polymarket = self._sxbet_instrument(
+            event_id="event-1",
+            venue="POLYMARKET",
+            outcome="over",
+        )
+        sxbet = self._sxbet_instrument(event_id="event-1", venue="SXBET", outcome="under")
+        opportunity = MarketMatcher().check_arbitrage(
+            polymarket,
+            sxbet,
+            odds_a=Decimal("2.02"),
+            odds_b=Decimal("2.02"),
+        )
+        ensure(opportunity is not None)
+        candidate = SimpleNamespace(
+            opportunity=opportunity,
+            edge=SimpleNamespace(hedge_type="same_market", confidence=1.0),
+            quote_a=None,
+            quote_b=None,
+        )
+
+        strategy._handle_opportunity_candidate(candidate, 10_000_000_000)
+
+        ensure(strategy._raw_arbitrage_detections == 1)
+        ensure(strategy._opportunities_found == 0)
+        ensure(strategy._executable_candidates == 0)
+        strategy._handle_arbitrage_opportunity.assert_not_called()
+
     def test_get_stats(self, default_config):  # skipcq
         """
         Test get_stats returns correct structure.
@@ -307,12 +495,16 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure("opportunities_found" in stats)
         ensure("opportunities_executed" in stats)
         ensure("raw_arbitrage_detections" in stats)
+        ensure("unique_opportunity_pairs" in stats)
+        ensure("active_opportunity_pairs" in stats)
+        ensure("duplicate_suppression_cooldown_secs" in stats)
         ensure("opportunity_graph_nodes" in stats)
         ensure("opportunity_graph_edges" in stats)
         ensure("opportunity_graph_quote_states" in stats)
         ensure("opportunity_graph_rust_enabled" in stats)
         ensure("opportunity_graph_topology_source" in stats)
         ensure("opportunity_graph_semantic_template_count" in stats)
+        ensure("opportunity_graph_coverage_summary" in stats)
         ensure("duplicate_opportunities_suppressed" in stats)
         ensure("stale_quote_suppressions" in stats)
         ensure("matcher_suspect_suppressions" in stats)
@@ -324,8 +516,20 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure("instrument_refresh_added" in stats)
         ensure("instrument_refresh_removed" in stats)
         ensure("instrument_refresh_delisted_removed" in stats)
+        ensure("instrument_refresh_reconciles" in stats)
         ensure("instrument_refresh_graph_rebuilds" in stats)
+        ensure("instrument_refresh_stale_triggers" in stats)
         ensure("quote_unsubscribe_requests" in stats)
+        ensure("quote_subscription_counts_by_venue" in stats)
+        ensure("semantic_quote_subscription_limit_by_venue" in stats)
+        ensure("semantic_quote_subscription_limit_exceeded_by_venue" in stats)
+        ensure(stats["venue_taker_fee_rates"] == {"POLYMARKET": "0.03"})
+        ensure(stats["venue_maker_rebate_rates"] == {})
+        ensure(stats["venue_winning_profit_fee_rates"] == {})
+        ensure(stats["venue_basket_rebate_rates"] == {})
+        ensure(stats["venue_basket_boost_rates"] == {})
+        ensure("instrument_refresh_by_venue" in stats)
+        ensure("provider_quote_poll_stats" in stats)
         ensure("success_rate" in stats)
         ensure(stats["subscribed_instruments"] == 0)
         ensure(stats["opportunity_graph_nodes"] == 0)
@@ -338,9 +542,218 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(stats["instrument_refresh_added"] == 0)
         ensure(stats["instrument_refresh_removed"] == 0)
         ensure(stats["instrument_refresh_delisted_removed"] == 0)
+        ensure(stats["instrument_refresh_reconciles"] == 0)
         ensure(stats["instrument_refresh_graph_rebuilds"] == 0)
+        ensure(stats["instrument_refresh_stale_triggers"] == 0)
         ensure(stats["quote_unsubscribe_requests"] == 0)
+        ensure(stats["quote_subscription_counts_by_venue"] == {})
+        ensure(stats["semantic_quote_subscription_limit_by_venue"] == {})
+        ensure(stats["semantic_quote_subscription_limit_exceeded_by_venue"] == {})
+        ensure(stats["instrument_refresh_by_venue"] == {})
+        ensure(stats["provider_quote_poll_stats"] == {})
         ensure(stats["success_rate"] == 0)
+
+    def test_get_stats_reads_provider_quote_poll_stats(self):  # skipcq
+        cache = TestComponentStubs.cache()
+        cache.add(
+            venue_quote_poll_stats_key("SXBET"),
+            encode_venue_quote_poll_stats(
+                venue="SXBET",
+                updated_at_ns=123,
+                cycle_id=4,
+                source="rest_order_book_poll",
+                subscribed_instrument_count=12,
+                market_count=6,
+                quote_count=9,
+                request_count=5,
+                event_request_count=4,
+                line_request_count=1,
+                pruned_subscription_count=2,
+                refilled_subscription_count=1,
+                order_count=20,
+                empty_market_count=1,
+                one_sided_market_count=2,
+                two_sided_market_count=3,
+                concurrency=4,
+                backlog_count=2,
+                cycle_elapsed_secs=1.25,
+                max_fetch_latency_secs=0.4,
+                fetch_latency_p50_secs=0.12,
+                fetch_latency_p95_secs=0.32,
+                fetch_latency_p99_secs=0.4,
+                poll_interval_secs=3.0,
+                poll_target_cycle_secs=4.0,
+                next_poll_sleep_secs=1.0,
+                min_concurrency=2,
+                max_concurrency=16,
+                adaptive_concurrency=True,
+                quote_event_timestamp_source="request_started",
+                quote_init_timestamp_source="response_received",
+                failure_count=2,
+                rate_limit_count=1,
+                backoff_secs=1.5,
+                last_error="429 rate limit",
+            ),
+        )
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(enabled_venues=frozenset({"SXBET"})),
+        )
+        strategy.register(
+            trader_id=TraderId("TESTER-POLL-STATS"),
+            portfolio=TestComponentStubs.portfolio(),
+            msgbus=TestComponentStubs.msgbus(),
+            cache=cache,
+            clock=TestComponentStubs.clock(),
+        )
+
+        stats = strategy.get_stats()["provider_quote_poll_stats"]
+
+        ensure(stats["SXBET"]["cycle_id"] == 4)
+        ensure(stats["SXBET"]["source"] == "rest_order_book_poll")
+        ensure(stats["SXBET"]["market_count"] == 6)
+        ensure(stats["SXBET"]["quote_count"] == 9)
+        ensure(stats["SXBET"]["request_count"] == 5)
+        ensure(stats["SXBET"]["event_request_count"] == 4)
+        ensure(stats["SXBET"]["line_request_count"] == 1)
+        ensure(stats["SXBET"]["pruned_subscription_count"] == 2)
+        ensure(stats["SXBET"]["refilled_subscription_count"] == 1)
+        ensure(stats["SXBET"]["backlog_count"] == 2)
+        ensure(stats["SXBET"]["max_fetch_latency_secs"] == 0.4)
+        ensure(stats["SXBET"]["fetch_latency_p50_secs"] == 0.12)
+        ensure(stats["SXBET"]["fetch_latency_p95_secs"] == 0.32)
+        ensure(stats["SXBET"]["fetch_latency_p99_secs"] == 0.4)
+        ensure(stats["SXBET"]["poll_target_cycle_secs"] == 4.0)
+        ensure(stats["SXBET"]["next_poll_sleep_secs"] == 1.0)
+        ensure(stats["SXBET"]["min_concurrency"] == 2)
+        ensure(stats["SXBET"]["max_concurrency"] == 16)
+        ensure(stats["SXBET"]["adaptive_concurrency"] is True)
+        ensure(stats["SXBET"]["quote_event_timestamp_source"] == "request_started")
+        ensure(stats["SXBET"]["quote_init_timestamp_source"] == "response_received")
+        ensure(stats["SXBET"]["failure_count"] == 2)
+        ensure(stats["SXBET"]["rate_limit_count"] == 1)
+        ensure(stats["SXBET"]["backoff_secs"] == 1.5)
+        ensure(stats["SXBET"]["last_error"] == "429 rate limit")
+
+    def test_get_stats_reports_instrument_refresh_by_venue(self):  # skipcq
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(enabled_venues=frozenset({"CLOUDBET", "SXBET"})),
+        )
+        strategy.register(
+            trader_id=TraderId("TESTER-REFRESH-STATS"),
+            portfolio=TestComponentStubs.portfolio(),
+            msgbus=TestComponentStubs.msgbus(),
+            cache=TestComponentStubs.cache(),
+            clock=TestComponentStubs.clock(),
+        )
+        strategy._instrument_refresh_requests_by_venue["SXBET"] = 2
+        strategy._instrument_refresh_failures_by_venue["SXBET"] = 1
+        strategy._instrument_refresh_added_by_venue["SXBET"] = 3
+        strategy._instrument_refresh_removed_by_venue["SXBET"] = 1
+        strategy._instrument_refresh_delisted_removed_by_venue["SXBET"] = 1
+        strategy._instrument_refresh_reconciles_by_venue["SXBET"] = 2
+        strategy._instrument_refresh_graph_rebuilds_by_venue["SXBET"] = 2
+        strategy._instrument_refresh_stale_triggers_by_venue["SXBET"] = 1
+        strategy._quote_unsubscribe_requests_by_venue["SXBET"] = 1
+
+        payload = strategy.get_stats()["instrument_refresh_by_venue"]
+
+        ensure(payload["SXBET"]["requests"] == 2)
+        ensure(payload["SXBET"]["failures"] == 1)
+        ensure(payload["SXBET"]["added"] == 3)
+        ensure(payload["SXBET"]["removed"] == 1)
+        ensure(payload["SXBET"]["delisted_removed"] == 1)
+        ensure(payload["SXBET"]["reconciles"] == 2)
+        ensure(payload["SXBET"]["graph_rebuilds"] == 2)
+        ensure(payload["SXBET"]["stale_triggers"] == 1)
+        ensure(payload["SXBET"]["quote_unsubscribe_requests"] == 1)
+
+    def test_stale_quote_refresh_triggers_bounded_provider_refresh(self, monkeypatch):  # skipcq
+        requested: list[tuple[str, dict[str, object]]] = []
+
+        def fake_request_instruments(self, *, venue, params=None, client_id=None) -> None:
+            requested.append((venue.value, dict(params or {})))
+
+        monkeypatch.setattr(
+            BettingArbitrageStrategy,
+            "request_instruments",
+            fake_request_instruments,
+        )
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset({"SXBET", "CLOUDBET"}),
+                stale_quote_refresh_cooldown_secs=60.0,
+            ),
+        )
+        strategy.register(
+            trader_id=TraderId("TESTER-STALE-REFRESH"),
+            portfolio=TestComponentStubs.portfolio(),
+            msgbus=TestComponentStubs.msgbus(),
+            cache=TestComponentStubs.cache(),
+            clock=TestComponentStubs.clock(),
+        )
+        sxbet = CryptoBettingInstrument(
+            venue=Venue("SXBET"),
+            event_id="event-1",
+            event_name="Team A vs Team B",
+            home_name="Team A",
+            away_name="Team B",
+            sport_name="Soccer",
+            competition_name="Test League",
+            market_name="Match Odds",
+            market_type="match_odds",
+            outcome="home",
+            side=SelectionSide.BACK,
+            price=2.0,
+            currency=Currency.from_str("USDC"),
+            params="",
+        )
+        cloudbet = CryptoBettingInstrument(
+            venue=Venue("CLOUDBET"),
+            event_id="event-1",
+            event_name="Team A vs Team B",
+            home_name="Team A",
+            away_name="Team B",
+            sport_name="Soccer",
+            competition_name="Test League",
+            market_name="Match Odds",
+            market_type="match_odds",
+            outcome="away",
+            side=SelectionSide.BACK,
+            price=2.0,
+            currency=Currency.from_str("USDC"),
+            params="",
+        )
+        now_ns = strategy.clock.timestamp_ns()
+
+        strategy._maybe_trigger_stale_quote_refresh(
+            sxbet,
+            cloudbet,
+            reason="stale_quote",
+            now_ns=now_ns,
+        )
+        strategy._maybe_trigger_stale_quote_refresh(
+            sxbet,
+            cloudbet,
+            reason="stale_quote",
+            now_ns=now_ns + 1,
+        )
+
+        ensure(
+            requested
+            == [
+                (
+                    "CLOUDBET",
+                    {"semantic_refresh": True, "only_last": True, "trigger": "stale_quote"},
+                ),
+                (
+                    "SXBET",
+                    {"semantic_refresh": True, "only_last": True, "trigger": "stale_quote"},
+                ),
+            ],
+        )
+        stats = strategy.get_stats()
+        ensure(stats["instrument_refresh_stale_triggers"] == 2)
+        ensure(stats["instrument_refresh_requests"] == 2)
 
     def test_instrument_refresh_requests_all_enabled_venues(self, monkeypatch):  # skipcq
         requested: list[tuple[str, dict[str, bool]]] = []
@@ -441,6 +854,7 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(stats["instrument_refresh_added"] == 1)
         ensure(stats["instrument_refresh_removed"] == 1)
         ensure(stats["instrument_refresh_delisted_removed"] == 1)
+        ensure(stats["instrument_refresh_reconciles"] == 1)
         ensure(stats["quote_unsubscribe_requests"] == 1)
 
     def test_refresh_schedules_delayed_reconcile_alerts(self, monkeypatch):  # skipcq
@@ -970,6 +1384,46 @@ class TestBettingArbitrageStrategy:  # skipcq
 
         ensure(strategy._quote_odds(quote) == Decimal("2.25"))
 
+    def test_quote_odds_converts_polymarket_probability_price(self, default_config):  # skipcq
+        strategy = BettingArbitrageStrategy(config=default_config)
+        instrument = self._sxbet_instrument(
+            event_id="pm-evt-1",
+            venue="POLYMARKET",
+            outcome="home",
+            market_name="basketball.moneyline",
+        )
+        quote = TestDataStubs.quote_tick(
+            instrument=instrument,
+            bid_price=0.42,
+            ask_price=0.43,
+            bid_size=500,
+            ask_size=400,
+        )
+
+        ensure(strategy._quote_odds(quote) == Decimal(1) / Decimal("0.43"))
+        ensure(strategy._quote_available_size(quote) == Decimal("172.0"))
+
+    def test_order_price_converts_polymarket_decimal_odds_back_to_probability(self):  # skipcq
+        polymarket = self._sxbet_instrument(
+            event_id="pm-evt-1",
+            venue="POLYMARKET",
+            outcome="home",
+            market_name="basketball.moneyline",
+        )
+        sxbet = self._sxbet_instrument(event_id="event-1", venue="SXBET", outcome="home")
+
+        ensure(
+            BettingArbitrageStrategy._order_price_for_instrument(
+                polymarket,
+                Decimal("2.50"),
+            )
+            == Decimal("0.4"),
+        )
+        ensure(
+            BettingArbitrageStrategy._order_price_for_instrument(sxbet, Decimal("2.50"))
+            == Decimal("2.50"),
+        )
+
     def test_on_start_subscribes_cached_matching_instruments(self, default_config):  # skipcq
         strategy = BettingArbitrageStrategy(config=default_config)
         cache = TestComponentStubs.cache()
@@ -1301,6 +1755,64 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(quoted_ids == {over.id, under.id})
         ensure(strategy.get_stats()["quote_subscribed_instruments"] == 2)
 
+    def test_semantic_connected_quote_subscriptions_respect_venue_limit(
+        self,
+        tmp_path: Path,
+    ) -> None:  # skipcq
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["CLOUDBET"]),
+                opportunity_graph_engine="python",
+                semantic_quote_subscription_limit_by_venue={"CLOUDBET": 1},
+            ),
+        )
+        strategy._matcher.set_rule_store(RuleStore(FileRuleCache(tmp_path / "rules")))
+        strategy.subscribe_quote_ticks = Mock()
+
+        over = LegacyCryptoBettingInstrument(
+            home_name="Team A",
+            away_name="Team B",
+            sport_name="Basketball",
+            competition_name="Test League",
+            price=2.0,
+            currency=Currency.from_str("USDT"),
+            event_name="Team A vs Team B",
+            market_name="basketball.total_points",
+            venue=Venue("CLOUDBET"),
+            live=False,
+            enabled=True,
+            outcome="over",
+            side=CloudbetSelectionSide.BACK,
+            params="line=2.5",
+            market_type="basketball.total_points",
+            start_time="2026-03-13T18:00:00Z",
+            event_id=1,
+        )
+        under = LegacyCryptoBettingInstrument(
+            home_name="Team A",
+            away_name="Team B",
+            sport_name="Basketball",
+            competition_name="Test League",
+            price=2.0,
+            currency=Currency.from_str("USDT"),
+            event_name="Team A vs Team B",
+            market_name="basketball.total_points",
+            venue=Venue("CLOUDBET"),
+            live=False,
+            enabled=True,
+            outcome="under",
+            side=CloudbetSelectionSide.BACK,
+            params="line=2.5",
+            market_type="basketball.total_points",
+            start_time="2026-03-13T18:00:00Z",
+            event_id=1,
+        )
+
+        strategy.subscribe_instruments([over, under])
+
+        ensure(strategy.subscribe_quote_ticks.call_count == 1)
+        ensure(strategy.get_stats()["quote_subscribed_instruments"] == 1)
+
     def test_on_start_skips_subscription_when_cache_is_empty(self, default_config):  # skipcq
         strategy = BettingArbitrageStrategy(config=default_config)
         strategy.register(
@@ -1454,6 +1966,11 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(live.max_quote_age_secs == 3.0)
         ensure(live.max_pair_skew_secs == 1.0)
         ensure(live.max_fetch_latency_secs == 2.0)
+        ensure(live_strategy.live_quote_age_slo_secs == 5.0)
+
+    def test_live_quote_age_slo_must_be_positive(self):  # skipcq
+        with pytest.raises(ValueError, match="live_quote_age_slo_secs must be positive"):
+            BettingArbitrageConfig(live_quote_age_slo_secs=0.0)
 
     def test_latency_summary_reports_percentiles(self):  # skipcq
         samples: list[int] = []
@@ -1467,6 +1984,20 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(summary["p50_ms"] == 2.0)
         ensure(summary["p95_ms"] == 2.0)
         ensure(summary["max_ms"] == 3.0)
+
+    def test_quote_receive_latency_records_event_and_publish_stages(self):  # skipcq
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(enabled_venues=frozenset(["SXBET"])),
+        )
+
+        strategy._record_quote_receive_latency(
+            Mock(ts_event=1_000_000_000, ts_init=1_200_000_000),
+            1_500_000_000,
+        )
+
+        stats = strategy.get_stats()
+        ensure(stats["latency_diagnostics"]["quote_event_to_strategy"]["p50_ms"] == 500.0)
+        ensure(stats["latency_diagnostics"]["quote_publish_to_strategy"]["p50_ms"] == 300.0)
 
     def test_arbitrage_diagnostics_flags_fetch_latency(self):  # skipcq
         strategy = BettingArbitrageStrategy(
@@ -1986,6 +2517,34 @@ class TestBettingArbitrageStrategy:  # skipcq
         )
         ensure("pair-a" in strategy._seen_opportunity_pairs)
         ensure("pair-a" not in strategy._active_opportunity_pairs)
+
+    def test_changed_price_pair_can_reenter_after_cooldown_while_active(self):  # skipcq
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["SXBET"]),
+                duplicate_suppression_cooldown_secs=1.0,
+            ),
+        )
+
+        strategy._record_opportunity_pair("pair-a", "pair-a|same_market|2.1:2.2", 1_000_000_000)
+
+        ensure(
+            strategy._is_duplicate_opportunity_pair(
+                "pair-a",
+                "pair-a|same_market|2.2:2.3",
+                1_500_000_000,
+            )
+            is True,
+        )
+        ensure(
+            strategy._is_duplicate_opportunity_pair(
+                "pair-a",
+                "pair-a|same_market|2.2:2.3",
+                2_200_000_000,
+            )
+            is False,
+        )
+        ensure("pair-a" in strategy._active_opportunity_pairs)
 
     def test_fast_graph_batch_suppresses_stale_quotes_from_snapshot_before_context(self):  # skipcq
         strategy = BettingArbitrageStrategy(

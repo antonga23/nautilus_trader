@@ -199,6 +199,91 @@ async def test_submit_order_rejects_signing_import_error(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_submit_order_dry_run_signs_but_does_not_place_order(monkeypatch):
+    config = SimpleNamespace(
+        api_key="api-key",
+        wallet_address="0x" + "12" * 20,
+        private_key="0x" + "34" * 32,
+        base_currency="USDC",
+        dry_run=True,
+    )
+    instrument_provider = SXBetInstrumentProvider(
+        http_client=Mock(),
+        config=SXBetInstrumentProviderConfig(),
+        logger=Mock(),
+    )
+    http_client = Mock()
+    http_client.place_order = AsyncMock()
+    client = SXBetExecutionClient(
+        loop=get_event_loop(),
+        http_client=http_client,
+        instrument_provider=instrument_provider,
+        msgbus=TestComponentStubs.msgbus(),
+        cache=TestComponentStubs.cache(),
+        clock=TestComponentStubs.clock(),
+        logger=Logger(name="test-sxbet-execution"),
+        config=config,
+    )
+
+    rejected: dict[str, str] = {}
+    client._generate_order_submitted = Mock()
+    client._generate_order_accepted = Mock()
+    client._generate_order_rejected = lambda **kwargs: rejected.update({"reason": kwargs["reason"]})
+
+    instrument = CryptoBettingInstrument(
+        venue=SXBET_VENUE,
+        event_id="fixture-1",
+        event_name="Team A vs Team B",
+        home_name="Team A",
+        away_name="Team B",
+        sport_name="Soccer",
+        competition_name="League",
+        market_name="Match Odds",
+        market_type="match_odds",
+        outcome="home",
+        side=SelectionSide.BACK,
+        price=2.0,
+        currency=Currency.from_str("USDC"),
+        params="",
+        market_id="0x" + "ab" * 32,
+        info={"outcome_one": True},
+    )
+    instrument_provider.find = Mock(return_value=instrument)
+
+    order = SimpleNamespace(
+        instrument_id=instrument.id,
+        order_type=OrderType.LIMIT,
+        price=Decimal("2.10"),
+        quantity=Decimal("0.29"),
+        client_order_id=ClientOrderId("order-dry-run"),
+    )
+    command = SimpleNamespace(order=order)
+
+    signed_payloads: list[dict] = []
+    monkeypatch.setattr(
+        "nautilus_trader.adapters.sxbet.execution.sign_eip712_order",
+        lambda **kwargs: signed_payloads.append(kwargs["order"]) or "0xsig",
+    )
+    monkeypatch.setattr(
+        "nautilus_trader.adapters.sxbet.execution.generate_salt",
+        lambda: 12345,
+    )
+    monkeypatch.setattr(
+        "nautilus_trader.adapters.sxbet.execution.get_expiry",
+        _fixed_expiry,
+    )
+
+    await client._submit_order(command)
+
+    assert signed_payloads
+    assert signed_payloads[0]["marketHash"] == instrument.market_id
+    client._generate_order_submitted.assert_called_once_with(order)
+    client._generate_order_accepted.assert_not_called()
+    http_client.place_order.assert_not_awaited()
+    assert rejected["reason"] == "dry_run_no_submit"
+
+
+@pytest.mark.asyncio
 async def test_generate_order_status_report_uses_command_and_cached_venue_id():
     config = SimpleNamespace(
         api_key="api-key",

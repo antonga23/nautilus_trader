@@ -37,6 +37,7 @@ from nautilus_trader.adapters.betting.semantics.types import CoverageHyperedge
 from nautilus_trader.adapters.betting.semantics.types import CoverageProof
 from nautilus_trader.adapters.betting.semantics.types import MinedRule
 from nautilus_trader.adapters.betting.semantics.types import NormalizedSelectionRecord
+from nautilus_trader.adapters.betting.semantics.types import PayoffVector
 from nautilus_trader.adapters.betting.semantics.types import SemanticRuleTemplate
 from nautilus_trader.adapters.betting.semantics.types import TemplateSupportStats
 
@@ -56,6 +57,13 @@ class _TemplateAccumulator:
     caveats: set[str]
     unknown_settlement_count: int
     confidence: float
+
+
+@dataclass(frozen=True)
+class _PreparedRecord:
+    record: NormalizedSelectionRecord
+    vector: PayoffVector
+    result_states: tuple[str, ...]
 
 
 class RuleMiner:
@@ -119,12 +127,24 @@ class RuleMiner:
 
         discovered: list[MinedRule] = []
         for bucket in grouped.values():
-            for left, right in combinations(bucket, 2):
-                rule = self._classifier.classify(left.selection, right.selection)
-                if rule is None:
-                    continue
-                rule = self._with_evidence(rule, left, right)
-                discovered.append(rule)
+            prepared = self._prepare_bucket(bucket)
+            grouped_by_result_states: dict[tuple[str, ...], list[_PreparedRecord]] = defaultdict(
+                list,
+            )
+            for item in prepared:
+                grouped_by_result_states[item.result_states].append(item)
+            for prepared_bucket in grouped_by_result_states.values():
+                for left, right in combinations(prepared_bucket, 2):
+                    rule = self._classifier.classify_precomputed(
+                        left.record.selection,
+                        right.record.selection,
+                        left.vector,
+                        right.vector,
+                    )
+                    if rule is None:
+                        continue
+                    rule = self._with_evidence(rule, left.record, right.record)
+                    discovered.append(rule)
 
         if persist:
             self._store.save_candidates(discovered)
@@ -203,6 +223,24 @@ class RuleMiner:
     ) -> tuple[list[CoverageProof], list[CoverageHyperedge]]:
         records = self.load_records(provider=provider, manifest_id=manifest_id)
         return self.mine_coverage(records, persist=persist)
+
+    def _prepare_bucket(
+        self,
+        bucket: list[NormalizedSelectionRecord],
+    ) -> list[_PreparedRecord]:
+        prepared: list[_PreparedRecord] = []
+        for record in bucket:
+            vector = self._classifier.build_payoff_vector(record.selection)
+            if vector.has_unknown:
+                continue
+            prepared.append(
+                _PreparedRecord(
+                    record=record,
+                    vector=vector,
+                    result_states=vector.result_states,
+                ),
+            )
+        return prepared
 
     def generalize(
         self,

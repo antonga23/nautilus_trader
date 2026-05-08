@@ -110,8 +110,8 @@ jobs:
           POLICY_REASON: ${{ steps.policy.outputs.reason }}
         run: |
           set -euo pipefail
-          before_sha="$BEFORE_SHA"
-          after_sha="$AFTER_SHA"
+          before_sha="${BEFORE_SHA:-}"
+          after_sha="${AFTER_SHA:-}"
           if [[ -z "$before_sha" || -z "$after_sha" ]]; then
             echo "Missing before/after SHAs for revert" >&2
             exit 1
@@ -144,7 +144,7 @@ jobs:
           BEFORE_SHA: ${{ steps.policy.outputs.before }}
         run: |
           set -euo pipefail
-          before_sha="$BEFORE_SHA"
+          before_sha="${BEFORE_SHA:-}"
           if [[ -z "$before_sha" ]]; then
             echo "Missing previous develop SHA for forced-push restore" >&2
             exit 1

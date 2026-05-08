@@ -1,4 +1,5 @@
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import patch, AsyncMock, MagicMock
 
 import pytest
@@ -8,8 +9,17 @@ from nautilus_trader.data.messages import SubscribeInstruments
 
 from nautilus_trader.adapters.cloudbet.client.core import CloudbetClient
 from nautilus_trader.adapters.cloudbet.client.schema import (
+    CompetitionWithCategory,
+    EventStatus,
+    GetEventResponse,
     GetLatestOddsResponse,
+    Identifier,
+    MarketModel,
+    SelectionModel,
+    SelectionSide,
     SelectionStatus,
+    SubmarketModel,
+    TeamIdentifier,
 )
 from nautilus_trader.adapters.cloudbet.common import CLOUDBET_VENUE
 from nautilus_trader.adapters.cloudbet.providers import CloudbetInstrumentProvider
@@ -194,7 +204,7 @@ class TestCloudbetDataClient:
         assert data_client._update_instruments_task is None
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 1)], indirect=["instruments"])
+    @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 2)], indirect=["instruments"])
     @patch.object(CloudbetClient, "get_latest_odds", new_callable=AsyncMock)
     async def test_poll_quote_ticks_publishes_latest_cloudbet_price(
         self,
@@ -230,6 +240,211 @@ class TestCloudbetDataClient:
         assert quote.bid_price.as_decimal() == 0
         assert quote.ts_init >= quote.ts_event
         mock_get_latest_odds.assert_called_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 2)], indirect=["instruments"])
+    @patch.object(CloudbetClient, "get_latest_odds", new_callable=AsyncMock)
+    @patch.object(CloudbetClient, "get_event", new_callable=AsyncMock)
+    async def test_poll_quote_ticks_uses_event_batch_before_line_fallback(
+        self,
+        mock_get_event,
+        mock_get_latest_odds,
+        data_client,
+        instruments,
+        monkeypatch,
+    ):
+        instrument = instruments[0]
+        data_client.instrument_provider.add(instrument)
+        data_client._subscribed_quote_instruments.add(instrument.id)
+        handled = []
+        monkeypatch.setattr(data_client, "_handle_data", handled.append)
+        submarket_key = data_client._preferred_submarket_key(instrument) or "period=ft"
+        mock_get_event.return_value = GetEventResponse(
+            sequence="1",
+            id=int(instrument.event_id),
+            sport=Identifier(name=instrument.sport_name, key="sport"),
+            competition=CompetitionWithCategory(
+                category=Identifier(name="category", key="category"),
+                key="competition",
+                name=instrument.competition_name,
+            ),
+            home=TeamIdentifier(
+                abbreviation="H",
+                key="home",
+                name=instrument.home_name,
+                nationality="",
+            ),
+            away=TeamIdentifier(
+                abbreviation="A",
+                key="away",
+                name=instrument.away_name,
+                nationality="",
+            ),
+            status=EventStatus.TRADING,
+            markets={
+                instrument.market_name: MarketModel(
+                    submarkets={
+                        submarket_key: SubmarketModel(
+                            sequence="1",
+                            selections=[
+                                SelectionModel(
+                                    outcome=instrument.outcome,
+                                    params=instrument.params,
+                                    price=2.72,
+                                    minStake=1,
+                                    maxStake=321,
+                                    probability=0.36,
+                                    status=SelectionStatus.ENABLED.value,
+                                    side=SelectionSide.BACK.value,
+                                ),
+                            ],
+                        ),
+                    },
+                ),
+            },
+            name=instrument.event_name,
+            key="event",
+            cutoff_time="2026-05-07T12:00:00Z",
+            type="EVENT",
+            end_time="2026-05-07T14:00:00Z",
+            grading_duration=None,
+        )
+
+        published, requested = await data_client._poll_quote_ticks_once()
+
+        assert requested == 1
+        assert published == 1
+        assert len(handled) == 1
+        assert handled[0].instrument_id == instrument.id
+        assert handled[0].ask_price.as_decimal() > 0
+        mock_get_event.assert_called_once_with(int(instrument.event_id))
+        mock_get_latest_odds.assert_not_called()
+        stats = data_client._cache.get("betting:venue_quote_poll_stats:CLOUDBET")
+        assert b'"request_count":1' in stats
+        assert b'"event_request_count":1' in stats
+        assert b'"line_request_count":0' in stats
+        assert b'"fetch_latency_p95_secs"' in stats
+        assert b'"pruned_subscription_count":0' in stats
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 2)], indirect=["instruments"])
+    @patch.object(CloudbetClient, "get_latest_odds", new_callable=AsyncMock)
+    @patch.object(CloudbetClient, "get_event", new_callable=AsyncMock)
+    async def test_poll_quote_ticks_prunes_consecutive_missing_cloudbet_selection(
+        self,
+        mock_get_event,
+        mock_get_latest_odds,
+        data_client,
+        instruments,
+    ):
+        instrument = instruments[0]
+        replacement = instruments[1]
+        data_client.instrument_provider.add(instrument)
+        data_client.instrument_provider.add(replacement)
+        data_client._subscribed_quote_instruments.add(instrument.id)
+        data_client._quote_poll_missing_prune_threshold = 1
+        mock_get_event.return_value = GetEventResponse(
+            sequence="1",
+            id=int(instrument.event_id),
+            sport=Identifier(name=instrument.sport_name, key="sport"),
+            competition=CompetitionWithCategory(
+                category=Identifier(name="category", key="category"),
+                key="competition",
+                name=instrument.competition_name,
+            ),
+            home=TeamIdentifier(
+                abbreviation="H",
+                key="home",
+                name=instrument.home_name,
+                nationality="",
+            ),
+            away=TeamIdentifier(
+                abbreviation="A",
+                key="away",
+                name=instrument.away_name,
+                nationality="",
+            ),
+            status=EventStatus.TRADING,
+            markets={},
+            name=instrument.event_name,
+            key="event",
+            cutoff_time="2026-05-07T12:00:00Z",
+            type="EVENT",
+            end_time="2026-05-07T14:00:00Z",
+            grading_duration=None,
+        )
+        mock_get_latest_odds.return_value = GetLatestOddsResponse(
+            max_stake=0,
+            min_stake=0,
+            price=0,
+            status=SelectionStatus.DISABLED,
+            outcome=instrument.outcome,
+            params=instrument.params,
+            probability=0,
+            side=SelectionSide.UNDEFINED,
+        )
+
+        published, requested = await data_client._poll_quote_ticks_once()
+
+        assert requested == 1
+        assert published == 0
+        assert instrument.id not in data_client._subscribed_quote_instruments
+        assert len(data_client._subscribed_quote_instruments) == 1
+        stats = data_client._cache.get("betting:venue_quote_poll_stats:CLOUDBET")
+        assert b'"pruned_subscription_count":1' in stats
+        assert b'"refilled_subscription_count":1' in stats
+        assert b'"event_request_count":1' in stats
+        assert b'"line_request_count":1' in stats
+        mock_get_latest_odds.assert_called_once()
+
+    def test_quote_poll_schedule_adapts_cloudbet_concurrency(self, data_client):
+        data_client._quote_poll_concurrency = 4
+        data_client._quote_poll_max_concurrency = 16
+        data_client._quote_poll_target_cycle_secs = 5.0
+
+        data_client._adapt_quote_poll_schedule(
+            instrument_count=80,
+            cycle_elapsed=8.0,
+            rate_limit_count=0,
+            failure_count=0,
+        )
+
+        assert data_client._quote_poll_concurrency > 4
+        assert data_client._next_quote_poll_sleep_secs == 0.25
+
+        data_client._adapt_quote_poll_schedule(
+            instrument_count=80,
+            cycle_elapsed=8.0,
+            rate_limit_count=1,
+            failure_count=1,
+        )
+
+        assert data_client._quote_poll_concurrency >= data_client._quote_poll_min_concurrency
+
+    @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 2)], indirect=["instruments"])
+    def test_auto_subscribe_prioritizes_enabled_liquid_cloudbet_instruments(
+        self,
+        data_client,
+        instruments,
+        monkeypatch,
+    ):
+        disabled_instrument, enabled_instrument = instruments
+        disabled_instrument.enabled = False
+        disabled_instrument.max_size = 9999
+        enabled_instrument.enabled = True
+        enabled_instrument.max_size = 10
+        data_client.instrument_provider._instruments.clear()
+        data_client.instrument_provider.add(disabled_instrument)
+        data_client.instrument_provider.add(enabled_instrument)
+        data_client._quote_polling_enabled = True
+        data_client._config = SimpleNamespace(quote_subscription_limit=1)
+        monkeypatch.setattr(data_client, "_start_quote_polling", lambda: None)
+
+        selected = data_client._auto_subscribe_loaded_instruments()
+
+        assert selected == 1
+        assert enabled_instrument.id in data_client._subscribed_quote_instruments
+        assert disabled_instrument.id not in data_client._subscribed_quote_instruments
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 1)], indirect=["instruments"])

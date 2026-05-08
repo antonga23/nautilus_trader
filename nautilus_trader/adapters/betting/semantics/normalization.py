@@ -208,7 +208,10 @@ class MarketNormalizer:
             raw_market_type=raw_market_type,
             params=params,
         )
-        rules_flags = cls._rules_flags(scope=scope, raw_text=f"{raw_market_name} {raw_market_type}")
+        rules_flags = cls._rules_flags(
+            scope=scope,
+            raw_text=f"{raw_market_name} {raw_market_type} {params}",
+        )
         market_type = cls._canonical_market_type(
             raw_market_name=raw_market_name,
             raw_market_type=raw_market_type,
@@ -532,6 +535,8 @@ class MarketNormalizer:
             numeric_market_id = raw_market_id
         from_numeric_id = cls._canonical_market_type_from_numeric_id(
             numeric_market_id,
+            raw_market_name=raw_market_name,
+            raw_market_type=raw_market_type,
             params=params,
             info=info,
         )
@@ -549,9 +554,17 @@ class MarketNormalizer:
         cls,
         numeric_market_id: Any,
         *,
+        raw_market_name: str,
+        raw_market_type: str,
         params: dict[str, str],
         info: dict[str, Any],
     ) -> CanonicalMarketType | None:
+        if cls._is_sxbet_market(info):
+            return cls._sxbet_market_type_from_numeric_id(
+                numeric_market_id,
+                params=params,
+                info=info,
+            )
         if numeric_market_id in {0, 52, 226}:
             return (
                 CanonicalMarketType.WINNER
@@ -569,6 +582,35 @@ class MarketNormalizer:
             return CanonicalMarketType.DRAW_NO_BET
         if numeric_market_id == 4:
             return CanonicalMarketType.BOTH_TEAMS_TO_SCORE
+        if numeric_market_id == 88:
+            return CanonicalMarketType.WINNER
+        return None
+
+    @staticmethod
+    def _is_sxbet_market(info: dict[str, Any]) -> bool:
+        return "sxbet_market_hash" in info or "sxbet_event_id_source" in info
+
+    @classmethod
+    def _sxbet_market_type_from_numeric_id(
+        cls,
+        numeric_market_id: Any,
+        *,
+        params: dict[str, str],
+        info: dict[str, Any],
+    ) -> CanonicalMarketType | None:
+        if numeric_market_id in {0, 1, 52, 63, 202, 203, 204, 226}:
+            return (
+                CanonicalMarketType.WINNER
+                if info.get("is_two_way_market") is True
+                else CanonicalMarketType.MATCH_ODDS
+            )
+        if numeric_market_id in {2, 21, 28, 45, 46, 77, 165, 166, 835}:
+            return CanonicalMarketType.TOTALS
+        if numeric_market_id in {3, 53, 64, 65, 66, 201, 342}:
+            line = params.get("line")
+            if line and cls._to_decimal(line.split("|", 1)[0]) not in (None, Decimal(0)):
+                return CanonicalMarketType.ASIAN_HANDICAP
+            return CanonicalMarketType.DRAW_NO_BET
         if numeric_market_id == 88:
             return CanonicalMarketType.WINNER
         return None
@@ -606,6 +648,19 @@ class MarketNormalizer:
 
     @staticmethod
     def _winner_market_type_from_text(normalized: str) -> CanonicalMarketType | None:
+        if any(
+            token in normalized
+            for token in (
+                "any_set_to_nil",
+                "any_team_to_lead_by_points",
+                "team_clean_sheet",
+                "team_to_lead_by_points",
+                "team_win_to_nil",
+                "team_to_win_a_set",
+                "with_extra_inning",
+            )
+        ):
+            return CanonicalMarketType.WINNER
         if any(token in normalized for token in WINNER_TEXT_TOKENS):
             return CanonicalMarketType.WINNER
         return None
@@ -630,6 +685,19 @@ class MarketNormalizer:
     @staticmethod
     def _totals_market_type_from_text(normalized: str) -> CanonicalMarketType | None:
         if "total_goals" in normalized or "totals" in normalized:
+            return CanonicalMarketType.TOTALS
+        if normalized.startswith("total_") or "_total_" in normalized:
+            return CanonicalMarketType.TOTALS
+        if any(
+            token in normalized
+            for token in (
+                "total_games",
+                "total_sets",
+                "total_period",
+                "games_total",
+                "sets_total",
+            )
+        ):
             return CanonicalMarketType.TOTALS
         if normalized.endswith(("_total", "_totals")):
             return CanonicalMarketType.TOTALS
@@ -673,7 +741,14 @@ class MarketNormalizer:
         if outcome != Outcome.OTHER:
             return outcome.value.upper()
 
-        raw = raw_selection.strip().lower()
+        raw = parse.unquote(raw_selection.strip()).lower()
+        if raw.startswith("outcome="):
+            raw = raw.split("=", 1)[1].strip()
+        raw = raw.replace("{{home}}", "home").replace("{{away}}", "away")
+        if market_type == CanonicalMarketType.OTHER:
+            parts = raw.split("_")
+            if len(parts) == 2 and all(part in {"home", "draw", "away"} for part in parts):
+                return raw.upper()
         aliases = {
             "1": "HOME",
             "x": "DRAW",
@@ -692,6 +767,7 @@ class MarketNormalizer:
             return aliases[raw]
         if raw.startswith("score="):
             return raw.replace(":", "_").replace("=", "_").upper()
+        raw = raw.replace("+", "_plus")
         return NON_WORD_PATTERN.sub("_", raw).strip("_").upper() or "OTHER"
 
     @classmethod
@@ -705,34 +781,128 @@ class MarketNormalizer:
         periods = params.get("period", "").split("|") if params.get("period") else []
         normalized_periods = {period.strip().lower() for period in periods if period.strip()}
         text = cls._normalize_text(" ".join([raw_market_name, raw_market_type, str(params)]))
-        if normalized_periods in ({"ft", "ot"}, {"ot", "ft"}):
-            return "full_time_including_overtime"
-        if "wo" in normalized_periods:
-            return "winner_only"
-        if "ot" in normalized_periods:
-            return "overtime"
-        if "ft" in normalized_periods or "period_ft" in text:
-            return "full_time"
-        if "1h" in normalized_periods or "first_half" in text:
-            return "first_half"
-        if "2h" in normalized_periods or "second_half" in text:
-            return "second_half"
-        quarter = next((item for item in normalized_periods if item.startswith("q")), None)
-        if quarter:
-            return f"quarter_{quarter[1:]}"
-        set_period = next((item for item in normalized_periods if item.startswith("set")), None)
-        if set_period:
-            return set_period
+        explicit_scope = cls._explicit_scope_from_periods(
+            normalized_periods=normalized_periods,
+            text=text,
+            params=params,
+        )
+        if explicit_scope is not None:
+            return explicit_scope
         team = params.get("team")
         if team:
             return f"team_{team.lower()}"
         return "full_time"
 
     @staticmethod
+    def _explicit_scope_from_periods(  # noqa: C901
+        *,
+        normalized_periods: set[str],
+        text: str,
+        params: dict[str, str],
+    ) -> str | None:
+        direct_scope = MarketNormalizer._direct_period_scope(
+            normalized_periods=normalized_periods,
+            text=text,
+        )
+        if direct_scope is not None:
+            return direct_scope
+        quarter_periods = sorted(
+            item for item in normalized_periods if item.startswith("q") and item[1:].isdigit()
+        )
+        if len(quarter_periods) == 1:
+            return f"quarter_{quarter_periods[0][1:]}"
+        if len(quarter_periods) > 1:
+            return "full_time_including_overtime" if "ot" in normalized_periods else "full_time"
+        quarter = next(
+            (item for item in normalized_periods if item.startswith("q")),
+            None,
+        )
+        if quarter is not None:
+            return f"quarter_{quarter[1:]}"
+        single_period_scope = MarketNormalizer._single_period_scope(normalized_periods)
+        if single_period_scope is not None:
+            return single_period_scope
+        set_or_inning_scope = MarketNormalizer._set_or_inning_scope(
+            normalized_periods=normalized_periods,
+            params=params,
+        )
+        if set_or_inning_scope is not None:
+            return set_or_inning_scope
+        if "wo" in normalized_periods and normalized_periods.issubset({"wo", "default"}):
+            return "winner_only"
+        if "ot" in normalized_periods:
+            return "overtime"
+        if "default" in normalized_periods:
+            return "full_time"
+        set_period = next((item for item in normalized_periods if item.startswith("set")), None)
+        if set_period:
+            return set_period
+        return None
+
+    @staticmethod
+    def _single_period_scope(normalized_periods: set[str]) -> str | None:
+        period = next(
+            (item for item in normalized_periods if item.startswith("p") and item[1:].isdigit()),
+            None,
+        )
+        if period is None:
+            return None
+        return f"period_{period[1:]}"
+
+    @staticmethod
+    def _direct_period_scope(*, normalized_periods: set[str], text: str) -> str | None:
+        if "team_to_win_a_set" in text:
+            return "winner_only"
+        if "first_half" in text or ("1h" in normalized_periods and "2h" not in normalized_periods):
+            return "first_half"
+        if "second_half" in text or "2h" in normalized_periods:
+            return "second_half"
+        if normalized_periods in ({"ft", "ot"}, {"ot", "ft"}):
+            return "full_time_including_overtime"
+        if "ft" in normalized_periods or "period_ft" in text:
+            return "full_time"
+        return None
+
+    @staticmethod
+    def _set_or_inning_scope(
+        *,
+        normalized_periods: set[str],
+        params: dict[str, str],
+    ) -> str | None:
+        set_value = params.get("set", "").strip().lower()
+        if set_value.isdigit():
+            return f"set{set_value}"
+        set_periods = sorted(
+            item for item in normalized_periods if item.startswith("set") and item[3:].isdigit()
+        )
+        if len(set_periods) == 1:
+            return set_periods[0]
+        inning_value = params.get("inning", "").strip().lower()
+        if inning_value.isdigit():
+            return f"inning_{inning_value}"
+        inning_period = next(
+            (
+                item
+                for item in normalized_periods
+                if item.startswith("inning") and item[6:].isdigit()
+            ),
+            None,
+        )
+        if inning_period:
+            return f"inning_{inning_period[6:]}"
+        return None
+
+    @staticmethod
     def _rules_flags(scope: str, raw_text: str) -> tuple[str, ...]:
         flags: set[str] = set()
         normalized = MarketNormalizer._normalize_text(raw_text)
-        if "including_overtime" in scope or "overtime" in scope or "period_ot" in normalized:
+        tokens = {token for token in normalized.split("_") if token}
+        if (
+            "including_overtime" in scope
+            or "overtime" in scope
+            or "period_ot" in normalized
+            or "ot" in tokens
+        ):
             flags.add("includes_overtime")
         if scope == "winner_only":
             flags.add("winner_only_scope")

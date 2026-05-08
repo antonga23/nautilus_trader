@@ -184,6 +184,50 @@ async def test_sxbet_provider_uses_fixture_event_id_and_keeps_market_hash_as_mar
 
 
 @pytest.mark.asyncio
+async def test_sxbet_provider_scoped_match_winner_market_sets_period_params():
+    provider = SXBetInstrumentProvider(
+        http_client=object(),
+        config=SXBetInstrumentProviderConfig(),
+    )
+
+    await provider._process_market(
+        {
+            "marketHash": "market-q1",
+            "teamOneName": "Team A",
+            "teamTwoName": "Team B",
+            "sportId": 1,
+            "leagueName": "Premier League",
+            "type": 202,
+            "outcomeOneName": "Team A (1st Quarter)",
+            "outcomeTwoName": "Team B (1st Quarter)",
+        },
+    )
+    await provider._process_market(
+        {
+            "marketHash": "market-set1",
+            "teamOneName": "Player A",
+            "teamTwoName": "Player B",
+            "sportId": 6,
+            "leagueName": "ATP",
+            "type": 202,
+            "outcomeOneName": "Player A (1st Set)",
+            "outcomeTwoName": "Player B (1st Set)",
+        },
+    )
+
+    instruments = list(provider.get_all().values())
+    basketball = [inst for inst in instruments if inst.market_id == "market-q1"]
+    tennis = [inst for inst in instruments if inst.market_id == "market-set1"]
+
+    assert len(basketball) == TWO_INSTRUMENTS
+    assert len(tennis) == TWO_INSTRUMENTS
+    assert all(instrument.market_type == "match_odds" for instrument in basketball)
+    assert all(instrument.params == "period=q1" for instrument in basketball)
+    assert all(instrument.market_type == "match_odds" for instrument in tennis)
+    assert all(instrument.params == "set=1,period=set1" for instrument in tennis)
+
+
+@pytest.mark.asyncio
 async def test_sxbet_provider_refreshes_sport_labels_from_active_sports():
     class RecordingHttpClient:
         @staticmethod

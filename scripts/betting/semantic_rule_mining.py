@@ -14,9 +14,11 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import sys
 import time
 from typing import Any
+from typing import TypedDict
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -42,6 +44,80 @@ from nautilus_trader.common.clock import LiveClock
 from nautilus_trader.common.logging import Logger
 
 
+_DEFAULT_LOCAL_ENV_FILES = (
+    REPO_ROOT / ".env.cloud-workspace.local",
+    REPO_ROOT / ".env.local",
+    REPO_ROOT / ".env",
+)
+
+
+class _BreakdownBucket(TypedDict):
+    promoted_template_count: int
+    execution_safe_template_count: int
+    same_venue_execution_eligible_template_count: int
+    safety_tier_counts: Counter[str]
+    strict_execution_blocker_counts: Counter[str]
+    strict_execution_caveat_counts: Counter[str]
+    coverage_proof_count: int
+    coverage_hyperedge_count: int
+    coverage_blocker_counts: Counter[str]
+    coverage_blocker_samples: dict[str, list[dict[str, object]]]
+
+
+def _parse_env_assignment(line: str) -> tuple[str, str] | None:
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#") or "=" not in stripped:
+        return None
+    key, value = stripped.split("=", 1)
+    key = key.strip()
+    if not key or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+        return None
+    value = value.strip()
+    if value:
+        try:
+            parsed = shlex.split(value, comments=False, posix=True)
+        except ValueError:
+            parsed = [value]
+        if len(parsed) == 1:
+            value = parsed[0]
+    return key, value
+
+
+def _load_local_workspace_env() -> Path | None:
+    for candidate in _DEFAULT_LOCAL_ENV_FILES:
+        if not candidate.is_file():
+            continue
+        for line in candidate.read_text(encoding="utf-8").splitlines():
+            parsed = _parse_env_assignment(line)
+            if parsed is None:
+                continue
+            key, value = parsed
+            os.environ.setdefault(key, value)
+        return candidate
+    return None
+
+
+def _require_provider_credentials(provider: str) -> None:
+    required_keys = {
+        "cloudbet": ("CLOUDBET_API_KEY",),
+        "sxbet": ("SXBET_API_KEY",),
+        "polymarket": (
+            "POLYMARKET_API_KEY",
+            "POLYMARKET_API_SECRET",
+            "POLYMARKET_PASSPHRASE",
+            "POLYMARKET_PK",
+            "POLYMARKET_FUNDER",
+        ),
+    }[provider]
+    missing = [key for key in required_keys if not os.getenv(key)]
+    if missing:
+        joined = ", ".join(missing)
+        raise RuntimeError(
+            f"Missing required credentials for provider '{provider}': {joined}. "
+            "Load the repo-local workspace env or export the variables explicitly.",
+        )
+
+
 def _build_cache(persist_cache: bool, cache_dir: str | None = None) -> Any:
     if cache_dir:
         return FileRuleCache(cache_dir)
@@ -50,6 +126,20 @@ def _build_cache(persist_cache: bool, cache_dir: str | None = None) -> Any:
     ):
         return Cache(database=CachePostgresAdapter())
     return Cache()
+
+
+def _emit_phase_marker(phase: str, **payload: object) -> None:
+    print(
+        json.dumps(
+            {
+                "phase": phase,
+                **payload,
+            },
+            sort_keys=True,
+        ),
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 def _serialize_manifest(manifest: RuleCorpusManifest) -> dict[str, object]:
@@ -98,6 +188,7 @@ def _maybe_linear_comment(body: str) -> None:
 
 
 async def _refresh_corpus(args: argparse.Namespace) -> None:
+    env_path = _load_local_workspace_env()
     cache = _build_cache(args.persist_cache, args.cache_dir)
     store = RuleStore(cache)
     ingestor = SnapshotIngestor(store)
@@ -108,6 +199,8 @@ async def _refresh_corpus(args: argparse.Namespace) -> None:
     manifests: list[RuleCorpusManifest] = []
 
     if args.provider in {"cloudbet", "all"}:
+        _emit_phase_marker("refresh_corpus_provider_start", provider="CLOUDBET")
+        _require_provider_credentials("cloudbet")
         client = CloudbetClient(
             asyncio.get_running_loop(),
             logger,
@@ -138,8 +231,11 @@ async def _refresh_corpus(args: argparse.Namespace) -> None:
             )
         finally:
             await client.disconnect()
+        _emit_phase_marker("refresh_corpus_provider_done", provider="CLOUDBET")
 
     if args.provider in {"sxbet", "all"}:
+        _emit_phase_marker("refresh_corpus_provider_start", provider="SXBET")
+        _require_provider_credentials("sxbet")
         from_timestamp = args.from_timestamp
         to_timestamp = args.to_timestamp
         sxbet_client = SXBetHttpClient(api_key=os.getenv("SXBET_API_KEY"))
@@ -148,23 +244,32 @@ async def _refresh_corpus(args: argparse.Namespace) -> None:
             manifests.append(
                 await ingestor.refresh_sxbet(
                     sxbet_client,
+                    sports=args.sports or None,
                     sport_ids=args.sport_ids or None,
                     from_time=args.from_timestamp,
                     to_time=args.to_timestamp,
                     instrument_limit=args.instrument_limit,
                     market_discovery_limit=args.market_discovery_limit,
+                    prefer_liquid_markets=args.prefer_liquid_markets,
+                    liquidity_probe_limit=args.liquidity_probe_limit,
+                    min_two_sided_markets=args.min_two_sided_markets,
+                    live_only=args.live_only,
                 ),
             )
         finally:
             await sxbet_client.disconnect()
+        _emit_phase_marker("refresh_corpus_provider_done", provider="SXBET")
 
     if args.provider in {"polymarket", "all"}:
+        _emit_phase_marker("refresh_corpus_provider_start", provider="POLYMARKET")
+        _require_provider_credentials("polymarket")
         manifests.append(
             await ingestor.refresh_polymarket(
                 sports=args.sports or None,
                 limit=args.limit,
             ),
         )
+        _emit_phase_marker("refresh_corpus_provider_done", provider="POLYMARKET")
 
     if fixture_dir is not None:
         for manifest in manifests:
@@ -172,6 +277,7 @@ async def _refresh_corpus(args: argparse.Namespace) -> None:
 
     _maybe_linear_comment(
         "Semantic corpus refresh completed:\n\n"
+        + (f"- env: `{env_path.name}`\n" if env_path is not None else "")
         + "\n".join(
             f"- `{manifest.provider}` `{manifest.manifest_id}` selections={manifest.selection_count}"
             for manifest in manifests
@@ -181,6 +287,7 @@ async def _refresh_corpus(args: argparse.Namespace) -> None:
 
 
 def _mine_candidates(args: argparse.Namespace) -> None:
+    _emit_phase_marker("mine_candidates_start", provider=args.provider or "ALL")
     cache = _build_cache(args.persist_cache, args.cache_dir)
     store = RuleStore(cache)
     miner = RuleMiner(store)
@@ -206,9 +313,11 @@ def _mine_candidates(args: argparse.Namespace) -> None:
         f"- manifest: `{args.manifest_id or 'ALL'}`\n"
         f"- candidates: `{len(rules)}`",
     )
+    _emit_phase_marker("mine_candidates_done", provider=provider or "ALL", count=len(rules))
 
 
 def _generalize_templates(args: argparse.Namespace) -> None:
+    _emit_phase_marker("generalize_templates_start", provider=args.provider or "ALL")
     cache = _build_cache(args.persist_cache, args.cache_dir)
     store = RuleStore(cache)
     miner = RuleMiner(store)
@@ -253,9 +362,16 @@ def _generalize_templates(args: argparse.Namespace) -> None:
         f"- templates: `{len(templates)}`\n"
         f"- catalog-promotable: `{promotable}`",
     )
+    _emit_phase_marker(
+        "generalize_templates_done",
+        provider=provider or "ALL",
+        count=len(templates),
+        execution_safe=execution_safe,
+    )
 
 
 def _mine_coverage(args: argparse.Namespace) -> None:
+    _emit_phase_marker("mine_coverage_start", provider=args.provider or "ALL")
     cache = _build_cache(args.persist_cache, args.cache_dir)
     store = RuleStore(cache)
     miner = RuleMiner(store)
@@ -290,6 +406,12 @@ def _mine_coverage(args: argparse.Namespace) -> None:
         f"- coverage proofs: `{len(proofs)}`\n"
         f"- hyperedges: `{len(hyperedges)}`\n"
         f"- execution-safe proofs: `{payload['execution_safe_coverage_count']}`",
+    )
+    _emit_phase_marker(
+        "mine_coverage_done",
+        provider=provider or "ALL",
+        proof_count=len(proofs),
+        hyperedge_count=len(hyperedges),
     )
 
 
@@ -495,9 +617,26 @@ def _report_coverage(args: argparse.Namespace) -> None:
         "promoted_safety_tier_counts": dict(
             sorted(Counter(template.safety_tier for template in promoted_templates).items()),
         ),
+        "provider_template_breakdown": _provider_template_breakdown(
+            promoted_templates,
+            coverage_proofs,
+            coverage_hyperedges,
+        ),
+        "sport_template_breakdown": _sport_template_breakdown(
+            promoted_templates,
+            coverage_proofs,
+            coverage_hyperedges,
+        ),
+        "provider_sport_template_breakdown": _provider_sport_template_breakdown(
+            promoted_templates,
+            coverage_proofs,
+            coverage_hyperedges,
+        ),
+        "promoted_template_strictness": _promoted_template_strictness(promoted_templates),
         "normalized_market_coverage": _normalized_market_coverage(normalized_records),
         "template_coverage": _template_coverage(candidate_templates, promoted_templates),
         "provider_coverage": provider_coverage,
+        "provider_coverage_summary": _provider_coverage_summary(provider_coverage),
         "providers": [provider.__dict__ for provider in completion.providers],
         "sports": [sport.__dict__ for sport in completion.sports],
         "promotion_blockers": dict(completion.promotion_blockers),
@@ -532,6 +671,79 @@ def _normalized_market_coverage(records: list[Any]) -> dict[str, int]:
     return dict(sorted(counts.items()))
 
 
+def _provider_coverage_summary(provider_coverage: dict[str, object]) -> dict[str, object]:
+    summary: dict[str, object] = {}
+    for payload in provider_coverage.values():
+        if not isinstance(payload, dict):
+            continue
+        provider = str(payload.get("provider") or "").upper()
+        if not provider:
+            continue
+        sports = payload.get("sports")
+        sports_payload = sports if isinstance(sports, dict) else {}
+        blocker_counts: Counter[str] = Counter()
+        zero_selection_sports: list[str] = []
+        sparse_sports: list[str] = []
+        total_selection_count = 0
+        total_event_count = 0
+        total_market_count = 0
+        for sport, raw_report in sorted(sports_payload.items(), key=lambda item: str(item[0])):
+            if not isinstance(raw_report, dict):
+                continue
+            selection_count = _coverage_report_int(raw_report.get("selection_count"))
+            total_selection_count += selection_count
+            total_event_count += _coverage_report_int(raw_report.get("event_count"))
+            total_market_count += _coverage_report_int(raw_report.get("market_count"))
+            blocker = raw_report.get("blocker")
+            if blocker:
+                blocker_counts[str(blocker)] += 1
+            if bool(raw_report.get("sparse", False)):
+                sparse_sports.append(str(sport))
+            if selection_count <= 0:
+                zero_selection_sports.append(str(sport))
+        summary[provider] = {
+            "coverage_mode": str(payload.get("coverage_mode") or ""),
+            "live_only": bool(payload.get("live_only", False)),
+            "prefer_liquid_markets": bool(payload.get("prefer_liquid_markets", False)),
+            "sport_count": len(sports_payload),
+            "sports_with_selections": sum(
+                1
+                for raw_report in sports_payload.values()
+                if isinstance(raw_report, dict)
+                and _coverage_report_int(raw_report.get("selection_count")) > 0
+            ),
+            "total_selection_count": total_selection_count,
+            "total_event_count": total_event_count,
+            "total_market_count": total_market_count,
+            "requested_sports": _coverage_report_str_list(payload.get("requested_sports")),
+            "resolved_sports": _coverage_report_str_list(payload.get("resolved_sports")),
+            "unresolved_requested_sports": _coverage_report_str_list(
+                payload.get("unresolved_requested_sports"),
+            ),
+            "zero_selection_sports": sorted(zero_selection_sports),
+            "sparse_sports": sorted(sparse_sports),
+            "blocker_counts": dict(sorted(blocker_counts.items())),
+        }
+    return dict(sorted(summary.items()))
+
+
+def _coverage_report_int(value: Any) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int | float | str):
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return 0
+    return 0
+
+
+def _coverage_report_str_list(value: Any) -> list[str]:
+    if not isinstance(value, (list, tuple, set)):
+        return []
+    return sorted({str(item) for item in value if str(item).strip()})
+
+
 def _template_coverage(
     candidate_templates: list[Any],
     promoted_templates: list[Any],
@@ -561,6 +773,192 @@ def _template_coverage(
     }
 
 
+def _breakdown_bucket(
+    breakdown: dict[str, _BreakdownBucket],
+    key: str,
+) -> _BreakdownBucket:
+    return breakdown.setdefault(
+        key,
+        {
+            "promoted_template_count": 0,
+            "execution_safe_template_count": 0,
+            "same_venue_execution_eligible_template_count": 0,
+            "safety_tier_counts": Counter(),
+            "strict_execution_blocker_counts": Counter(),
+            "strict_execution_caveat_counts": Counter(),
+            "coverage_proof_count": 0,
+            "coverage_hyperedge_count": 0,
+            "coverage_blocker_counts": Counter(),
+            "coverage_blocker_samples": {},
+        },
+    )
+
+
+def _finalize_breakdown(
+    breakdown: dict[str, _BreakdownBucket],
+) -> dict[str, dict[str, object]]:
+    return {
+        key: {
+            **{
+                field: value
+                for field, value in payload.items()
+                if field
+                not in {
+                    "safety_tier_counts",
+                    "strict_execution_blocker_counts",
+                    "strict_execution_caveat_counts",
+                    "coverage_blocker_counts",
+                    "coverage_blocker_samples",
+                }
+            },
+            "safety_tier_counts": dict(sorted(payload["safety_tier_counts"].items())),
+            "strict_execution_blocker_counts": dict(
+                sorted(payload["strict_execution_blocker_counts"].items()),
+            ),
+            "strict_execution_caveat_counts": dict(
+                sorted(payload["strict_execution_caveat_counts"].items()),
+            ),
+            "coverage_blocker_counts": dict(sorted(payload["coverage_blocker_counts"].items())),
+            "coverage_blocker_samples": dict(sorted(payload["coverage_blocker_samples"].items())),
+        }
+        for key, payload in sorted(breakdown.items())
+    }
+
+
+def _report_sport_key(sport: str) -> str:
+    normalized = str(sport).strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "soccer/football": "soccer",
+        "soccer_football": "soccer",
+        "football": "american_football",
+        "hockey": "ice_hockey",
+    }
+    return aliases.get(normalized, normalized)
+
+
+def _accumulate_template_breakdown(
+    bucket: _BreakdownBucket,
+    template: Any,
+) -> None:
+    bucket["promoted_template_count"] += 1
+    if template.execution_safe:
+        bucket["execution_safe_template_count"] += 1
+    if template.same_venue_execution_eligible:
+        bucket["same_venue_execution_eligible_template_count"] += 1
+    bucket["safety_tier_counts"][str(template.safety_tier)] += 1
+    for blocker in _strict_execution_blockers(template):
+        bucket["strict_execution_blocker_counts"][str(blocker)] += 1
+    for caveat in getattr(template, "caveats", ()) or ():
+        bucket["strict_execution_caveat_counts"][str(caveat)] += 1
+
+
+def _accumulate_proof_breakdown(
+    bucket: _BreakdownBucket,
+    proof: Any,
+    *,
+    sample_limit_per_reason: int = 3,
+) -> None:
+    bucket["coverage_proof_count"] += 1
+    sample = _coverage_proof_sample(proof)
+    for blocker in proof.blocker_reasons:
+        bucket["coverage_blocker_counts"][str(blocker)] += 1
+        samples = bucket["coverage_blocker_samples"].setdefault(str(blocker), [])
+        if len(samples) < sample_limit_per_reason:
+            samples.append(sample)
+
+
+def _provider_template_breakdown(
+    promoted_templates: list[Any],
+    coverage_proofs: list[Any],
+    coverage_hyperedges: list[Any],
+) -> dict[str, dict[str, object]]:
+    breakdown: dict[str, _BreakdownBucket] = {}
+
+    for template in promoted_templates:
+        providers = tuple(str(provider).upper() for provider in template.support.providers)
+        for provider in providers:
+            _accumulate_template_breakdown(_breakdown_bucket(breakdown, provider), template)
+
+    for proof in coverage_proofs:
+        for provider in proof.coverage_set.provider_scope:
+            _accumulate_proof_breakdown(_breakdown_bucket(breakdown, str(provider).upper()), proof)
+
+    for hyperedge in coverage_hyperedges:
+        for provider in hyperedge.provider_scope:
+            bucket = _breakdown_bucket(breakdown, str(provider).upper())
+            bucket["coverage_hyperedge_count"] += 1
+
+    return _finalize_breakdown(breakdown)
+
+
+def _sport_template_breakdown(
+    promoted_templates: list[Any],
+    coverage_proofs: list[Any],
+    coverage_hyperedges: list[Any],
+) -> dict[str, dict[str, object]]:
+    breakdown: dict[str, _BreakdownBucket] = {}
+    proof_sports = {
+        str(proof.proof_id): _report_sport_key(str(proof.universe.sport))
+        for proof in coverage_proofs
+    }
+
+    for template in promoted_templates:
+        _accumulate_template_breakdown(
+            _breakdown_bucket(breakdown, _report_sport_key(str(template.sport))),
+            template,
+        )
+
+    for proof in coverage_proofs:
+        _accumulate_proof_breakdown(
+            _breakdown_bucket(breakdown, _report_sport_key(str(proof.universe.sport))),
+            proof,
+        )
+
+    for hyperedge in coverage_hyperedges:
+        sport = proof_sports.get(str(hyperedge.coverage_proof_id), "unknown")
+        bucket = _breakdown_bucket(breakdown, sport)
+        bucket["coverage_hyperedge_count"] += 1
+
+    return _finalize_breakdown(breakdown)
+
+
+def _provider_sport_template_breakdown(
+    promoted_templates: list[Any],
+    coverage_proofs: list[Any],
+    coverage_hyperedges: list[Any],
+) -> dict[str, dict[str, object]]:
+    breakdown: dict[str, _BreakdownBucket] = {}
+    proof_sports = {
+        str(proof.proof_id): _report_sport_key(str(proof.universe.sport))
+        for proof in coverage_proofs
+    }
+
+    for template in promoted_templates:
+        sport = _report_sport_key(str(template.sport))
+        providers = tuple(str(provider).upper() for provider in template.support.providers)
+        for provider in providers:
+            _accumulate_template_breakdown(
+                _breakdown_bucket(breakdown, f"{provider}|{sport}"),
+                template,
+            )
+
+    for proof in coverage_proofs:
+        sport = _report_sport_key(str(proof.universe.sport))
+        for provider in proof.coverage_set.provider_scope:
+            _accumulate_proof_breakdown(
+                _breakdown_bucket(breakdown, f"{str(provider).upper()}|{sport}"),
+                proof,
+            )
+
+    for hyperedge in coverage_hyperedges:
+        sport = proof_sports.get(str(hyperedge.coverage_proof_id), "unknown")
+        for provider in hyperedge.provider_scope:
+            bucket = _breakdown_bucket(breakdown, f"{str(provider).upper()}|{sport}")
+            bucket["coverage_hyperedge_count"] += 1
+
+    return _finalize_breakdown(breakdown)
+
+
 def _template_blocker_reasons(template: Any) -> tuple[str, ...]:
     blockers: list[str] = []
     if template.relationship_type == "DANGEROUS_NON_EQUIVALENT":
@@ -573,8 +971,7 @@ def _template_blocker_reasons(template: Any) -> tuple[str, ...]:
         blockers.append("void_settlement")
     if template.has_partial:
         blockers.append("partial_settlement")
-    if not template.support.catalog_promotable:
-        blockers.append("catalog_support_below_gate")
+    blockers.extend(_catalog_support_blockers(template.support))
     return tuple(blockers)
 
 
@@ -616,6 +1013,81 @@ def _template_coverage_key(template: Any) -> str:
             str(template.safety_tier),
         ],
     )
+
+
+def _promoted_template_strictness(promoted_templates: list[Any]) -> dict[str, object]:
+    by_family_tier: Counter[str] = Counter()
+    strict_blockers: Counter[str] = Counter()
+    blocker_samples: dict[str, list[dict[str, object]]] = {}
+    same_venue_breakdown: Counter[str] = Counter()
+    execution_safe_breakdown: Counter[str] = Counter()
+    caveat_counts: Counter[str] = Counter()
+
+    for template in promoted_templates:
+        breakdown_key = _template_coverage_key(template)
+        by_family_tier[breakdown_key] += 1
+        for caveat in getattr(template, "caveats", ()) or ():
+            caveat_counts[str(caveat)] += 1
+        if template.execution_safe:
+            execution_safe_breakdown[breakdown_key] += 1
+            continue
+        if template.same_venue_execution_eligible:
+            same_venue_breakdown[breakdown_key] += 1
+        for blocker in _strict_execution_blockers(template):
+            strict_blockers[blocker] += 1
+            samples = blocker_samples.setdefault(blocker, [])
+            if len(samples) < 3:
+                samples.append(_template_blocker_sample(template))
+
+    return {
+        "by_family_tier": dict(sorted(by_family_tier.items())),
+        "strict_execution_blocker_counts": dict(sorted(strict_blockers.items())),
+        "strict_execution_blocker_samples": dict(sorted(blocker_samples.items())),
+        "same_venue_eligible_breakdown": dict(sorted(same_venue_breakdown.items())),
+        "execution_safe_breakdown": dict(sorted(execution_safe_breakdown.items())),
+        "caveat_counts": dict(sorted(caveat_counts.items())),
+    }
+
+
+def _strict_execution_blockers(template: Any) -> tuple[str, ...]:
+    blockers: list[str] = []
+    if template.same_venue_execution_eligible:
+        blockers.append("same_venue_risk_engine_elevation_required")
+    if template.relationship_type != "COMPLEMENTARY_COVERAGE":
+        blockers.append("non_complementary_relationship")
+    if template.has_void:
+        blockers.append("void_states_present")
+    if template.has_partial:
+        blockers.append("partial_settlement_present")
+    if template.has_unknown:
+        blockers.append("unknown_settlement_present")
+    blockers.extend(_catalog_support_blockers(template.support))
+    if not blockers and not template.execution_safe:
+        blockers.extend(str(reason) for reason in getattr(template, "eligibility_reasons", ()))
+    return tuple(sorted(set(blockers)))
+
+
+def _catalog_support_blockers(support: Any) -> tuple[str, ...]:
+    blockers: list[str] = []
+    if support is None:
+        return tuple(blockers)
+    if getattr(support, "catalog_promotable", False):
+        return tuple(blockers)
+    if not getattr(support, "deterministic", True):
+        blockers.append("nondeterministic_support")
+    if getattr(support, "unknown_settlement_count", 0) > 0:
+        blockers.append("support_unknown_settlement_present")
+    if getattr(support, "observed_count", 0) < 10:
+        blockers.append("observed_count_below_10")
+    if getattr(support, "event_count", 0) < 3:
+        blockers.append("event_count_below_3")
+    if getattr(support, "mismatch_rate", 1.0) > 0.01:
+        blockers.append("mismatch_rate_above_0_01")
+    if getattr(support, "confidence", 0.0) < 0.99:
+        blockers.append("confidence_below_0_99")
+    if not blockers:
+        blockers.append("catalog_support_below_gate")
+    return tuple(sorted(set(blockers)))
 
 
 def _coverage_blocker_counts(proofs: list[Any]) -> dict[str, int]:
@@ -770,8 +1242,12 @@ def _parse_args() -> argparse.Namespace:
     refresh.add_argument("--min-events-per-sport", type=int, default=1)
     refresh.add_argument("--include-past-on-sparse", action="store_true")
     refresh.add_argument("--limit", type=int, default=20)
-    refresh.add_argument("--instrument-limit", type=int, default=250)
-    refresh.add_argument("--market-discovery-limit", type=int, default=250)
+    refresh.add_argument("--instrument-limit", type=int, default=1000)
+    refresh.add_argument("--market-discovery-limit", type=int, default=1000)
+    refresh.add_argument("--prefer-liquid-markets", action="store_true")
+    refresh.add_argument("--liquidity-probe-limit", type=int, default=100)
+    refresh.add_argument("--min-two-sided-markets", type=int, default=1)
+    refresh.add_argument("--live-only", action="store_true")
     refresh.add_argument("--include-bets", action="store_true")
     refresh.add_argument("--skip-bets", action="store_true")
     refresh.add_argument("--bet-page-size", type=int, default=50)

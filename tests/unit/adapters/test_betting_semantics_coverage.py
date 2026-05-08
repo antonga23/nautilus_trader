@@ -285,6 +285,198 @@ def test_set_score_full_book_uses_same_coverage_model():
     assert proof.same_venue_execution_eligible is True
 
 
+def test_correct_score_records_mine_bucket_coverage_from_realized_selection_labels(tmp_path):
+    records = [
+        NormalizedSelectionRecord(
+            record_id=f"record-{selection.lower()}",
+            provider="CLOUDBET",
+            selection=_selection(
+                instrument_id=f"score-{selection.lower()}",
+                market_type=CanonicalMarketType.CORRECT_SCORE.value,
+                selection=selection,
+            ),
+        )
+        for selection in ("SCORE_1_0", "SCORE_2_0", "ANY_OTHER_HOME_WIN")
+    ]
+
+    proofs, hyperedges = RuleMiner(RuleStore(FileRuleCache(tmp_path))).mine_coverage(
+        records,
+        persist=False,
+    )
+
+    assert any(proof.complete for proof in proofs)
+    assert len(hyperedges) == 1
+
+
+def test_other_bucket_market_records_mine_full_book_coverage(tmp_path):
+    records = [
+        NormalizedSelectionRecord(
+            record_id=f"record-{selection.lower()}",
+            provider="CLOUDBET",
+            selection=NormalizedSelection(
+                venue="CLOUDBET",
+                instrument_id=f"inning-{selection.lower()}",
+                sport="baseball",
+                event_key="baseball-event-1",
+                period="overtime",
+                scope="overtime",
+                market_type=CanonicalMarketType.OTHER.value,
+                market_family=CanonicalMarketType.OTHER.value,
+                selection=selection,
+                params=(("period", "ft|ot|innings1|inning2|inning3"),),
+                raw_market_name="baseball.highest_scoring_inning",
+                raw_market_type="baseball.highest_scoring_inning",
+                raw_outcome=selection.lower(),
+                outcome_key=selection.lower(),
+            ),
+        )
+        for selection in ("1ST_INNING", "2ND_INNING", "3RD_INNING")
+    ]
+
+    proofs, hyperedges = RuleMiner(RuleStore(FileRuleCache(tmp_path))).mine_coverage(
+        records,
+        persist=False,
+    )
+
+    assert any(proof.complete for proof in proofs)
+    assert len(hyperedges) == 1
+
+
+def test_other_bucket_markets_do_not_merge_across_distinct_raw_market_keys(tmp_path):
+    records: list[NormalizedSelectionRecord] = []
+    for market_name in (
+        "baseball.highest_scoring_inning",
+        "baseball.exact_goals",
+    ):
+        for selection in ("1ST_INNING", "2ND_INNING"):
+            records.append(
+                NormalizedSelectionRecord(
+                    record_id=f"{market_name}-{selection.lower()}",
+                    provider="CLOUDBET",
+                    selection=NormalizedSelection(
+                        venue="CLOUDBET",
+                        instrument_id=f"{market_name}-{selection.lower()}",
+                        sport="baseball",
+                        event_key="baseball-event-2",
+                        period="full_time",
+                        scope="full_time",
+                        market_type=CanonicalMarketType.OTHER.value,
+                        market_family=CanonicalMarketType.OTHER.value,
+                        selection=selection,
+                        params=(),
+                        raw_market_name=market_name,
+                        raw_market_type=market_name,
+                        raw_outcome=selection.lower(),
+                        outcome_key=selection.lower(),
+                    ),
+                ),
+            )
+
+    proofs, _ = RuleMiner(RuleStore(FileRuleCache(tmp_path))).mine_coverage(
+        records,
+        persist=False,
+    )
+
+    complete_two_leg = [proof for proof in proofs if proof.complete and len(proof.predicates) == 2]
+
+    assert len(complete_two_leg) == 2
+    assert {
+        tuple(sorted(predicate.instrument_id for predicate in proof.predicates))
+        for proof in complete_two_leg
+    } == {
+        (
+            "baseball.exact_goals-1st_inning",
+            "baseball.exact_goals-2nd_inning",
+        ),
+        (
+            "baseball.highest_scoring_inning-1st_inning",
+            "baseball.highest_scoring_inning-2nd_inning",
+        ),
+    }
+
+
+def test_halftime_fulltime_bucket_market_mines_complete_hyperedge(tmp_path):
+    records = [
+        NormalizedSelectionRecord(
+            record_id=f"record-{selection.lower()}",
+            provider="CLOUDBET",
+            selection=NormalizedSelection(
+                venue="CLOUDBET",
+                instrument_id=f"htft-{selection.lower()}",
+                sport="soccer",
+                event_key="soccer-event-htft-1",
+                period="full_time",
+                scope="full_time",
+                market_type=CanonicalMarketType.OTHER.value,
+                market_family=CanonicalMarketType.OTHER.value,
+                selection=selection,
+                params=(("period", "ft|1h"),),
+                raw_market_name="soccer.halftime_fulltime_result",
+                raw_market_type="soccer.halftime_fulltime_result",
+                raw_outcome=selection.lower(),
+                outcome_key=selection.lower(),
+            ),
+        )
+        for selection in (
+            "HOME_HOME",
+            "DRAW_HOME",
+            "AWAY_HOME",
+            "HOME_DRAW",
+            "DRAW_DRAW",
+            "AWAY_DRAW",
+            "HOME_AWAY",
+            "DRAW_AWAY",
+            "AWAY_AWAY",
+        )
+    ]
+
+    proofs, hyperedges = RuleMiner(RuleStore(FileRuleCache(tmp_path))).mine_coverage(
+        records,
+        persist=False,
+    )
+
+    assert any(proof.complete and len(proof.predicates) == 9 for proof in proofs)
+    assert len(hyperedges) == 1
+
+
+def test_winning_margin_bucket_market_mines_complete_hyperedge(tmp_path):
+    records = [
+        NormalizedSelectionRecord(
+            record_id=f"record-{selection.lower()}",
+            provider="CLOUDBET",
+            selection=NormalizedSelection(
+                venue="CLOUDBET",
+                instrument_id=f"margin-{selection.lower()}",
+                sport="basketball",
+                event_key="basketball-event-margin-1",
+                period="overtime",
+                scope="overtime",
+                market_type=CanonicalMarketType.OTHER.value,
+                market_family=CanonicalMarketType.OTHER.value,
+                selection=selection,
+                params=(("period", "ot"),),
+                raw_market_name="basketball.winning_margin",
+                raw_market_type="basketball.winning_margin",
+                raw_outcome=selection.lower(),
+                outcome_key=selection.lower(),
+            ),
+        )
+        for selection in (
+            "HOME_BY_6_PLUS",
+            "OTHER",
+            "AWAY_BY_6_PLUS",
+        )
+    ]
+
+    proofs, hyperedges = RuleMiner(RuleStore(FileRuleCache(tmp_path))).mine_coverage(
+        records,
+        persist=False,
+    )
+
+    assert any(proof.complete and len(proof.predicates) == 3 for proof in proofs)
+    assert len(hyperedges) == 1
+
+
 def test_coverage_proofs_round_trip_through_rule_store(tmp_path):
     home = SelectionPredicateBuilder.from_selection(
         _selection(

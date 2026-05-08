@@ -142,6 +142,42 @@ def build_trading_node_config(manifest: BettingArbitrageNodeManifest) -> Trading
     )
 
 
+def manifest_execution_readiness(
+    manifest: BettingArbitrageNodeManifest,
+) -> dict[str, object]:
+    enabled_venues = [venue for venue in manifest.venues if venue.enabled]
+    venue_payloads: list[dict[str, object]] = []
+    for index, venue in enumerate(enabled_venues, start=1):
+        client_key = _client_key(venue, index)
+        api_url, ws_url = _resolve_venue_endpoints(venue)
+        venue_payloads.append(
+            {
+                "venue": venue.venue,
+                "clientKey": client_key,
+                "dataEnabled": venue.data_enabled,
+                "executionEnabled": venue.execution_enabled,
+                "executionDryRun": venue.execution_dry_run,
+                "environment": venue.environment or "prod",
+                "baseCurrency": _resolve_base_currency(venue),
+                "apiUrl": api_url,
+                "wsUrl": ws_url,
+                "sportKeys": sorted(venue.sport_keys) if venue.sport_keys else [],
+                "sportIds": sorted(venue.sport_ids) if venue.sport_ids else [],
+                "liveOnly": venue.live_only,
+                "loadAllInstruments": venue.load_all_instruments,
+                "instrumentLoadLimit": venue.instrument_load_limit,
+                "marketDiscoveryLimit": venue.market_discovery_limit,
+            },
+        )
+
+    return {
+        "validationMode": manifest.validation_mode,
+        "autoExecute": manifest.strategy.auto_execute,
+        "semanticCacheConfigured": bool(manifest.semantic_rule_cache_dir),
+        "venues": venue_payloads,
+    }
+
+
 def _add_venue_clients(
     *,
     venue: BettingVenueManifest,
@@ -174,6 +210,13 @@ def _build_strategy_importable_config(
 ) -> ImportableStrategyConfig:
     strategy_config: dict[str, Any] = dict(manifest.strategy.json_primitives() or {})
     strategy_config["enabled_venues"] = sorted({venue.venue for venue in enabled_venues})
+    semantic_quote_limits = {
+        venue.venue: int(venue.quote_subscription_limit)
+        for venue in enabled_venues
+        if venue.quote_subscription_limit is not None
+    }
+    if semantic_quote_limits:
+        strategy_config["semantic_quote_subscription_limit_by_venue"] = semantic_quote_limits
     if manifest.semantic_rule_cache_dir:
         strategy_config["semantic_rule_cache_dir"] = manifest.semantic_rule_cache_dir
     if manifest.validation_mode:
@@ -269,6 +312,7 @@ def _build_sxbet_exec_importable(
         "instrument_provider": provider_config,
         "max_retry_attempts": 3,
         "base_currency": _resolve_base_currency(venue),
+        "dry_run": venue.execution_dry_run,
         "routing": {"venues": [venue.venue]},
     }
     return ImportableConfig(
@@ -303,6 +347,12 @@ def _build_cloudbet_data_importable(
         "quote_poll_interval_secs": venue.order_book_poll_interval_secs,
         "quote_poll_summary_interval_secs": venue.order_book_poll_summary_interval_secs,
         "quote_poll_concurrency": venue.order_book_concurrency,
+        "quote_poll_min_concurrency": venue.order_book_min_concurrency,
+        "quote_poll_max_concurrency": venue.order_book_max_concurrency,
+        "quote_poll_target_cycle_secs": venue.order_book_target_cycle_secs,
+        "quote_poll_adaptive_concurrency": venue.order_book_adaptive_concurrency,
+        "quote_poll_event_batching": venue.order_book_event_batching,
+        "quote_poll_missing_prune_threshold": venue.order_book_missing_prune_threshold,
         "routing": {"venues": [venue.venue]},
     }
     return ImportableConfig(
@@ -324,6 +374,7 @@ def _build_cloudbet_exec_importable(
         "api_url": api_url,
         "base_currency": _resolve_base_currency(venue),
         "market_filter": dict(filters) if filters else None,
+        "dry_run": venue.execution_dry_run,
         "routing": {"venues": [venue.venue]},
     }
     return ImportableConfig(
@@ -523,6 +574,7 @@ __all__ = [
     "build_trading_node_config",
     "default_render_paths",
     "load_manifest",
+    "manifest_execution_readiness",
     "manifest_to_json",
     "render_trading_node_config_json",
     "write_manifest_snapshot",

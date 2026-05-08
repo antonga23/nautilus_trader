@@ -24,6 +24,9 @@ from nautilus_trader.adapters.betting.common.enums import Outcome
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.betting.runtime_cache import active_venue_instrument_index_key
 from nautilus_trader.adapters.betting.runtime_cache import encode_active_venue_instrument_index
+from nautilus_trader.adapters.betting.runtime_cache import encode_venue_quote_poll_stats
+from nautilus_trader.adapters.betting.runtime_cache import latency_percentiles
+from nautilus_trader.adapters.betting.runtime_cache import venue_quote_poll_stats_key
 from nautilus_trader.adapters.sxbet.config import SXBetDataClientConfig
 from nautilus_trader.adapters.sxbet.constants import SXBET_TOKENS
 from nautilus_trader.adapters.sxbet.constants import SXBET_VENUE
@@ -87,6 +90,7 @@ class SXBetDataClient(LiveMarketDataClient):
         self._last_poll_summary_at = 0.0
         self._running = False
         self._logger = logger
+        self._quote_poll_cycle_id = 0
 
     async def _connect(self) -> None:
         """
@@ -199,10 +203,29 @@ class SXBetDataClient(LiveMarketDataClient):
         one_sided_count = 0
         two_sided_count = 0
         max_latency = 0.0
-        for published, orders, has_outcome_one, has_outcome_two, elapsed in results:
+        fetch_latencies_secs: list[float] = []
+        failure_count = 0
+        rate_limit_count = 0
+        last_error: str | None = None
+        for (
+            published,
+            orders,
+            has_outcome_one,
+            has_outcome_two,
+            elapsed,
+            failed,
+            rate_limited,
+            error,
+        ) in results:
             quote_count += published
             order_count += orders
             max_latency = max(max_latency, elapsed)
+            fetch_latencies_secs.append(max(0.0, elapsed))
+            if failed:
+                failure_count += 1
+                last_error = error
+            if rate_limited:
+                rate_limit_count += 1
             if orders == 0:
                 empty_count += 1
             elif has_outcome_one and has_outcome_two:
@@ -210,6 +233,22 @@ class SXBetDataClient(LiveMarketDataClient):
             elif has_outcome_one or has_outcome_two:
                 one_sided_count += 1
 
+        cycle_elapsed = time.perf_counter() - cycle_started_at
+        self._record_quote_poll_stats(
+            market_count=len(market_hashes),
+            order_count=order_count,
+            quote_count=quote_count,
+            empty_count=empty_count,
+            one_sided_count=one_sided_count,
+            two_sided_count=two_sided_count,
+            max_latency=max_latency,
+            fetch_latency_percentiles=latency_percentiles(fetch_latencies_secs),
+            cycle_elapsed=cycle_elapsed,
+            failure_count=failure_count,
+            rate_limit_count=rate_limit_count,
+            backoff_secs=float(rate_limit_count),
+            last_error=last_error,
+        )
         self._log_poll_summary(
             market_count=len(market_hashes),
             order_count=order_count,
@@ -218,7 +257,7 @@ class SXBetDataClient(LiveMarketDataClient):
             one_sided_count=one_sided_count,
             two_sided_count=two_sided_count,
             max_latency=max_latency,
-            cycle_elapsed=time.perf_counter() - cycle_started_at,
+            cycle_elapsed=cycle_elapsed,
         )
 
     def _subscribed_market_hashes(self) -> set[str]:
@@ -232,10 +271,12 @@ class SXBetDataClient(LiveMarketDataClient):
     async def _fetch_order_book_results(
         self,
         market_hashes: set[str],
-    ) -> list[tuple[int, int, bool, bool, float]]:
+    ) -> list[tuple[int, int, bool, bool, float, bool, bool, str | None]]:
         semaphore = asyncio.Semaphore(max(1, self._order_book_concurrency))
 
-        async def _fetch(market_hash: str) -> tuple[int, int, bool, bool, float]:
+        async def _fetch(
+            market_hash: str,
+        ) -> tuple[int, int, bool, bool, float, bool, bool, str | None]:
             async with semaphore:
                 return await self._fetch_and_publish_quote_stats(market_hash)
 
@@ -288,6 +329,7 @@ class SXBetDataClient(LiveMarketDataClient):
         one_sided_count: int,
         two_sided_count: int,
         max_latency: float,
+        fetch_latency_percentiles: tuple[float, float, float] = (0.0, 0.0, 0.0),
         cycle_elapsed: float,
     ) -> None:
         now = time.monotonic()
@@ -302,6 +344,56 @@ class SXBetDataClient(LiveMarketDataClient):
             f"subscribed_instruments={len(self._subscribed_instruments)} "
             f"concurrency={self._order_book_concurrency} "
             f"max_latency={max_latency:.2f}s cycle_elapsed={cycle_elapsed:.2f}s",
+        )
+
+    def _record_quote_poll_stats(
+        self,
+        *,
+        market_count: int,
+        order_count: int,
+        quote_count: int,
+        empty_count: int,
+        one_sided_count: int,
+        two_sided_count: int,
+        max_latency: float,
+        fetch_latency_percentiles: tuple[float, float, float],
+        cycle_elapsed: float,
+        failure_count: int = 0,
+        rate_limit_count: int = 0,
+        backoff_secs: float = 0.0,
+        last_error: str | None = None,
+    ) -> None:
+        self._quote_poll_cycle_id += 1
+        backlog_count = max(0, market_count - max(1, self._order_book_concurrency))
+        self._cache.add(
+            venue_quote_poll_stats_key(SXBET_VENUE.value),
+            encode_venue_quote_poll_stats(
+                venue=SXBET_VENUE.value,
+                updated_at_ns=self._clock.timestamp_ns(),
+                cycle_id=self._quote_poll_cycle_id,
+                source="rest_order_book_poll",
+                subscribed_instrument_count=len(self._subscribed_instruments),
+                market_count=market_count,
+                quote_count=quote_count,
+                order_count=order_count,
+                empty_market_count=empty_count,
+                one_sided_market_count=one_sided_count,
+                two_sided_market_count=two_sided_count,
+                concurrency=self._order_book_concurrency,
+                backlog_count=backlog_count,
+                cycle_elapsed_secs=cycle_elapsed,
+                max_fetch_latency_secs=max_latency,
+                poll_interval_secs=self._polling_interval,
+                fetch_latency_p50_secs=fetch_latency_percentiles[0],
+                fetch_latency_p95_secs=fetch_latency_percentiles[1],
+                fetch_latency_p99_secs=fetch_latency_percentiles[2],
+                quote_event_timestamp_source="request_started",
+                quote_init_timestamp_source="response_received",
+                failure_count=failure_count,
+                rate_limit_count=rate_limit_count,
+                backoff_secs=backoff_secs,
+                last_error=last_error,
+            ),
         )
 
     async def _fetch_and_publish_best_odds(self, market_hashes: set[str]) -> None:
@@ -382,13 +474,16 @@ class SXBetDataClient(LiveMarketDataClient):
             _has_outcome_one,
             _has_outcome_two,
             _elapsed,
+            _failed,
+            _rate_limited,
+            _error,
         ) = await self._fetch_and_publish_quote_stats(market_hash)
         return published, orders
 
     async def _fetch_and_publish_quote_stats(
         self,
         market_hash: str,
-    ) -> tuple[int, int, bool, bool, float]:
+    ) -> tuple[int, int, bool, bool, float, bool, bool, str | None]:
         """
         Fetch and publish quotes for a market with liquidity statistics.
         """
@@ -444,12 +539,25 @@ class SXBetDataClient(LiveMarketDataClient):
                 has_outcome_one,
                 has_outcome_two,
                 time.perf_counter() - started_at,
+                False,
+                False,
+                None,
             )
 
         except (ValueError, TypeError, KeyError, SXBetHttpClientError) as e:
             msg = f"Failed to fetch quotes for {market_hash}: {e}"
             self._log.warning(msg)
-            return 0, 0, False, False, time.perf_counter() - started_at
+            rate_limited = isinstance(e, SXBetHttpClientError) and e.status_code == 429
+            return (
+                0,
+                0,
+                False,
+                False,
+                time.perf_counter() - started_at,
+                True,
+                rate_limited,
+                str(e),
+            )
 
     @staticmethod
     def _instrument_is_outcome_one(instrument: CryptoBettingInstrument) -> bool:
