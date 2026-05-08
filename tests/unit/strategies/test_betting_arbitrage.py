@@ -97,6 +97,12 @@ class TestBettingArbitrageConfig:  # skipcq
         ensure(config.venue_winning_profit_fee_rates == {})
         ensure(config.venue_basket_rebate_rates == {})
         ensure(config.venue_basket_boost_rates == {})
+        ensure(config.devig_enabled is True)
+        ensure(config.devig_method == "auto")
+        ensure(config.devig_reference_venues is None)
+        ensure(config.value_diagnostics_enabled is True)
+        ensure(config.value_execution_enabled is False)
+        ensure(config.min_value_edge == Decimal("0.015"))
 
     def test_custom_venues(self):  # skipcq
         """
@@ -200,6 +206,27 @@ class TestBettingArbitrageConfig:  # skipcq
             BettingArbitrageConfig(venue_taker_fee_rates={"POLYMARKET": "1.0"})
         with pytest.raises(ValueError, match="non-negative"):
             BettingArbitrageConfig(venue_maker_rebate_rates={"POLYMARKET": "-0.01"})
+
+    def test_devig_and_value_diagnostics_validation(self):  # skipcq
+        config = BettingArbitrageConfig(
+            devig_method="SHIN",
+            devig_reference_venues=frozenset({" polymarket ", "sxbet"}),
+            min_value_edge=Decimal("0.02"),
+        )
+
+        ensure(config.devig_method == "shin")
+        ensure(config.devig_reference_venues == frozenset({"POLYMARKET", "SXBET"}))
+        ensure(config.min_value_edge == Decimal("0.02"))
+
+        with pytest.raises(ValueError, match="Invalid devig_method"):
+            BettingArbitrageConfig(devig_method="bad")
+        with pytest.raises(ValueError, match="min_value_edge"):
+            BettingArbitrageConfig(min_value_edge=Decimal("-0.01"))
+        with pytest.raises(ValueError, match="value_execution_enabled"):
+            BettingArbitrageConfig(
+                value_diagnostics_enabled=False,
+                value_execution_enabled=True,
+            )
 
     def test_quote_freshness_profile_validation(self):  # skipcq
         for profile in ["pre_match", "live", "custom"]:
@@ -523,7 +550,20 @@ class TestBettingArbitrageStrategy:  # skipcq
         )
         ensure(adjusted.vig == adjusted.overround - Decimal(1))
         ensure(abs(sum(adjusted.no_vig_probabilities, Decimal(0)) - Decimal(1)) < Decimal("1e-12"))
+        ensure(adjusted.devig_method == "proportional")
+        ensure(adjusted.devig_convergence_status == "not_required")
         ensure(adjusted.basket.effective_profit_margin > adjusted.basket.raw_profit_margin)
+
+    def test_devigged_book_uses_strategy_devig_method_without_changing_execution(self):  # skipcq
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(devig_method="shin"),
+        )
+
+        devigged = strategy.devigged_book((Decimal("1.75"), Decimal("2.20")))
+
+        ensure(devigged is not None)
+        ensure(devigged.method == "shin")
+        ensure(strategy.value_execution_enabled is False)
 
     def test_fee_adjusted_coverage_basket_rejects_shape_mismatch(self):  # skipcq
         """

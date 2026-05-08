@@ -174,6 +174,7 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
             "liveTimingSlo": candidate_quality.get("liveTimingSlo"),
             "sameVenueDryRun": candidate_quality.get("sameVenueDryRun"),
             "feeAdjustment": candidate_quality.get("feeAdjustment"),
+            "devigDiagnostics": candidate_quality.get("devigDiagnostics"),
             "topRejectionBuckets": _top_items(
                 _as_dict(candidate_quality.get("rejectionBuckets")),
                 limit=top_limit,
@@ -206,6 +207,12 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
                 :top_limit
             ],
             "topNegativeNearMisses": (candidate_quality.get("topNegativeNearMisses") or [])[
+                :top_limit
+            ],
+            "topValueEdgeCandidates": (candidate_quality.get("topValueEdgeCandidates") or [])[
+                :top_limit
+            ],
+            "topVigErasedCandidates": (candidate_quality.get("topVigErasedCandidates") or [])[
                 :top_limit
             ],
         },
@@ -346,6 +353,8 @@ def aggregate_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
     semantic_blocker_counts: dict[str, int] = {}
     zero_candidate_blocker_counts: dict[str, int] = {}
     fee_impact_bucket_counts: dict[str, int] = {}
+    devig_method_counts: dict[str, int] = {}
+    devig_value_bucket_counts: dict[str, int] = {}
     recommended_action_counts: dict[str, int] = {}
     provider_corpus_coverage: dict[str, dict[str, Any]] = {}
     for summary in summaries:
@@ -411,6 +420,14 @@ def aggregate_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
         _merge_nested_count_mapping(
             fee_impact_bucket_counts,
             _as_dict(quality.get("feeAdjustment")).get("impactBuckets"),
+        )
+        _merge_nested_count_mapping(
+            devig_method_counts,
+            _as_dict(quality.get("devigDiagnostics")).get("methodCounts"),
+        )
+        _merge_nested_count_mapping(
+            devig_value_bucket_counts,
+            _as_dict(quality.get("devigDiagnostics")).get("valueBuckets"),
         )
         for action in summary.get("recommendedActions") or []:
             key = str(action)
@@ -489,6 +506,8 @@ def aggregate_summaries(summaries: list[dict[str, Any]]) -> dict[str, Any]:
         "semanticBlockerCounts": dict(sorted(semantic_blocker_counts.items())),
         "zeroCandidateBlockerCounts": dict(sorted(zero_candidate_blocker_counts.items())),
         "feeImpactBucketCounts": dict(sorted(fee_impact_bucket_counts.items())),
+        "devigMethodCounts": dict(sorted(devig_method_counts.items())),
+        "devigValueBucketCounts": dict(sorted(devig_value_bucket_counts.items())),
         "providerCorpusCoverage": provider_corpus_coverage,
         "recommendedActionCounts": dict(sorted(recommended_action_counts.items())),
     }
@@ -1066,6 +1085,7 @@ def _format_quality_lines(quality: dict[str, Any]) -> list[str]:
     if fee_impact:
         rendered = ", ".join(f"{key}={value}" for key, value in sorted(fee_impact.items()))
         lines.append(f"  fee_impact {rendered}")
+    lines.extend(_format_devig_quality_lines(quality.get("devigDiagnostics")))
     latency = quality.get("latencyHistograms") or {}
     if isinstance(latency, dict) and latency:
         quote_age = _as_dict(latency.get("quoteAgeSeconds"))
@@ -1101,6 +1121,22 @@ def _format_quality_lines(quality: dict[str, Any]) -> list[str]:
                 f"fetch_latency={fetch_latency.get('violations', 0)}/{fetch_latency.get('observations', 0)} "
                 f"pair_skew={pair_skew.get('violations', 0)}/{pair_skew.get('observations', 0)}",
             )
+    return lines
+
+
+def _format_devig_quality_lines(value: Any) -> list[str]:
+    devig = _as_dict(value)
+    if not devig:
+        return []
+    lines: list[str] = []
+    value_buckets = _as_dict(devig.get("valueBuckets"))
+    if value_buckets:
+        rendered = ", ".join(f"{key}={value}" for key, value in sorted(value_buckets.items()))
+        lines.append(f"  devig_value {rendered}")
+    method_counts = _as_dict(devig.get("methodCounts"))
+    if method_counts:
+        rendered = ", ".join(f"{key}={value}" for key, value in sorted(method_counts.items()))
+        lines.append(f"  devig_methods {rendered}")
     return lines
 
 
@@ -1335,6 +1371,8 @@ def _format_aggregate_line(aggregate: dict[str, Any]) -> str:
         f"provider_poll_health={aggregate['providerPollHealthCounts']} "
         f"corpus_health={aggregate['semanticCacheCorpusHealthCounts']} "
         f"venue_coverage_health={aggregate['venueCoverageHealthCounts']} "
+        f"devig_methods={aggregate['devigMethodCounts']} "
+        f"devig_values={aggregate['devigValueBucketCounts']} "
         f"actions={aggregate['recommendedActionCounts']}"
     )
 

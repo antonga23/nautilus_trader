@@ -33,8 +33,18 @@ DECIMAL_ODDS_EVEN_THRESHOLD = Decimal(2)
 AMERICAN_ODDS_BASE = Decimal(100)
 
 
+VALID_DEVIG_METHODS = frozenset({"auto", "proportional", "shin", "logarithmic"})
+DEVIG_CONVERGENCE_THRESHOLD = Decimal("1e-12")
+DEVIG_MAX_ITERATIONS = 1_000
+DEVIG_EXTREME_LOW_ODDS = Decimal("1.10")
+DEVIG_EXTREME_HIGH_ODDS = Decimal("10.0")
+DEVIG_BALANCED_MIN_ODDS = Decimal("1.60")
+DEVIG_BALANCED_MAX_ODDS = Decimal("2.50")
+DEVIG_BALANCED_MAX_ABS_VIG = Decimal("0.05")
+
+
 @dataclass(frozen=True)
-class DeviggedMarket:
+class DeviggedBook:
     """
     No-vig probability view of a complete market book.
     """
@@ -44,6 +54,28 @@ class DeviggedMarket:
     overround: Decimal
     vig: Decimal
     method: str
+    method_reason: str = "configured"
+    convergence_status: str = "not_required"
+    iterations: int = 0
+    delta: Decimal = Decimal(0)
+    z: Decimal | None = None
+
+    @property
+    def fair_probabilities(self) -> tuple[Decimal, ...]:
+        """
+        Alias used by runtime diagnostics and value-edge code.
+        """
+        return self.no_vig_probabilities
+
+    @property
+    def converged(self) -> bool:
+        """
+        Whether iterative devigging converged or did not require optimisation.
+        """
+        return self.convergence_status in {"converged", "not_required", "analytic"}
+
+
+DeviggedMarket = DeviggedBook
 
 
 def decimal_to_probability(odds: float | Decimal) -> Decimal:
@@ -101,40 +133,231 @@ def probability_to_decimal(probability: float | Decimal) -> Decimal:
 
 
 def devig_probabilities(
-    odds: Sequence[float | Decimal],
+    odds: Sequence[float | Decimal | str],
     *,
-    method: str = "proportional",
-) -> DeviggedMarket:
+    method: str = "auto",
+) -> DeviggedBook:
     """
     Strip market overround from a complete book of decimal odds.
 
-    The proportional method divides each implied probability by the total book
-    probability. It is deterministic, N-outcome safe, and cheap enough for runtime
-    diagnostics on full books and coverage hyperedges. Execution still uses executable
-    fee-adjusted odds; this is a no-vig reference view.
+    Devigging is a no-vig reference view for complete books. It is intentionally
+    separate from executable arbitrage proof, which still uses executable fee-adjusted
+    odds.
 
     """
     normalized_method = method.strip().lower()
-    if normalized_method != "proportional":
+    if normalized_method not in VALID_DEVIG_METHODS:
         msg = f"Unsupported devig method: {method}"
         raise ValueError(msg)
     if len(odds) < 2:
         msg = "At least two odds values are required to devig a market"
         raise ValueError(msg)
 
-    implied = tuple(decimal_to_probability(Decimal(str(value))) for value in odds)
+    decimal_odds = tuple(Decimal(str(value)) for value in odds)
+    if any(value <= 1 for value in decimal_odds):
+        msg = f"Decimal odds must all be greater than 1, got {decimal_odds}"
+        raise ValueError(msg)
+
+    implied = tuple(decimal_to_probability(value) for value in decimal_odds)
     total_probability = sum(implied, Decimal(0))
     if total_probability <= 0:
         msg = "Market implied probability must be positive"
         raise ValueError(msg)
-    no_vig = tuple(probability / total_probability for probability in implied)
-    return DeviggedMarket(
+
+    selected_method, method_reason = _select_devig_method(
+        decimal_odds,
+        total_probability=total_probability,
+        requested_method=normalized_method,
+    )
+    if selected_method == "proportional":
+        no_vig, convergence_status, iterations, delta, z = (
+            _proportional_devig(implied),
+            "not_required",
+            0,
+            Decimal(0),
+            None,
+        )
+    elif selected_method == "shin":
+        try:
+            no_vig, convergence_status, iterations, delta, z = _shin_devig(implied)
+        except ArithmeticError:
+            no_vig, convergence_status, iterations, delta, z = (
+                _proportional_devig(implied),
+                "fallback_proportional",
+                0,
+                Decimal(0),
+                None,
+            )
+            selected_method = "proportional"
+            method_reason = "shin_failed_fallback"
+    else:
+        no_vig, convergence_status, iterations, delta, z = _logarithmic_devig(implied)
+
+    return DeviggedBook(
         implied_probabilities=implied,
-        no_vig_probabilities=no_vig,
+        no_vig_probabilities=_normalize_probabilities(no_vig),
         overround=total_probability,
         vig=total_probability - Decimal(1),
-        method=normalized_method,
+        method=selected_method,
+        method_reason=method_reason,
+        convergence_status=convergence_status,
+        iterations=iterations,
+        delta=delta,
+        z=z,
     )
+
+
+def _select_devig_method(
+    decimal_odds: tuple[Decimal, ...],
+    *,
+    total_probability: Decimal,
+    requested_method: str,
+) -> tuple[str, str]:
+    if requested_method != "auto":
+        return requested_method, "configured"
+    if total_probability <= Decimal(1):
+        return "proportional", "underround_or_fair_book"
+    if min(decimal_odds) <= DEVIG_EXTREME_LOW_ODDS or max(decimal_odds) >= DEVIG_EXTREME_HIGH_ODDS:
+        return "logarithmic", "extreme_odds"
+    if (
+        len(decimal_odds) == 2
+        and all(
+            DEVIG_BALANCED_MIN_ODDS <= value <= DEVIG_BALANCED_MAX_ODDS for value in decimal_odds
+        )
+        and abs(total_probability - Decimal(1)) <= DEVIG_BALANCED_MAX_ABS_VIG
+    ):
+        return "proportional", "balanced_two_way"
+    return "shin", "default_shin"
+
+
+def _proportional_devig(implied: tuple[Decimal, ...]) -> tuple[Decimal, ...]:
+    total_probability = sum(implied, Decimal(0))
+    if total_probability <= 0:
+        msg = "Market implied probability must be positive"
+        raise ArithmeticError(msg)
+    return tuple(probability / total_probability for probability in implied)
+
+
+def _shin_devig(
+    implied: tuple[Decimal, ...],
+) -> tuple[tuple[Decimal, ...], str, int, Decimal, Decimal]:
+    total_probability = sum(implied, Decimal(0))
+    if total_probability <= 0:
+        msg = "Market implied probability must be positive"
+        raise ArithmeticError(msg)
+    if total_probability <= Decimal(1):
+        return _proportional_devig(implied), "not_required", 0, Decimal(0), Decimal(0)
+    if len(implied) == 2:
+        z = _shin_two_way_z(implied, total_probability)
+        return (
+            _shin_probabilities(implied, total_probability=total_probability, z=z),
+            "analytic",
+            0,
+            Decimal(0),
+            z,
+        )
+
+    z = Decimal(0)
+    delta = Decimal("Infinity")
+    iterations = 0
+    while delta > DEVIG_CONVERGENCE_THRESHOLD and iterations < DEVIG_MAX_ITERATIONS:
+        previous_z = z
+        z = (
+            sum(
+                (
+                    (z * z)
+                    + (
+                        Decimal(4)
+                        * (Decimal(1) - z)
+                        * probability
+                        * probability
+                        / total_probability
+                    )
+                ).sqrt()
+                for probability in implied
+            )
+            - Decimal(2)
+        ) / Decimal(len(implied) - 2)
+        delta = abs(z - previous_z)
+        iterations += 1
+    convergence_status = "converged" if delta <= DEVIG_CONVERGENCE_THRESHOLD else "failed"
+    if convergence_status == "failed":
+        msg = f"Shin devig failed to converge after {iterations} iterations"
+        raise ArithmeticError(msg)
+    return (
+        _shin_probabilities(implied, total_probability=total_probability, z=z),
+        convergence_status,
+        iterations,
+        delta,
+        z,
+    )
+
+
+def _shin_two_way_z(implied: tuple[Decimal, ...], total_probability: Decimal) -> Decimal:
+    diff = implied[0] - implied[1]
+    numerator = (total_probability - Decimal(1)) * ((diff * diff) - total_probability)
+    denominator = total_probability * ((diff * diff) - Decimal(1))
+    if denominator == 0:
+        msg = "Shin two-way denominator is zero"
+        raise ArithmeticError(msg)
+    return numerator / denominator
+
+
+def _shin_probabilities(
+    implied: tuple[Decimal, ...],
+    *,
+    total_probability: Decimal,
+    z: Decimal,
+) -> tuple[Decimal, ...]:
+    if z >= Decimal(1):
+        msg = f"Shin insider parameter must be less than 1, got {z}"
+        raise ArithmeticError(msg)
+    return tuple(
+        (
+            (
+                (z * z)
+                + (Decimal(4) * (Decimal(1) - z) * probability * probability / total_probability)
+            ).sqrt()
+            - z
+        )
+        / (Decimal(2) * (Decimal(1) - z))
+        for probability in implied
+    )
+
+
+def _logarithmic_devig(
+    implied: tuple[Decimal, ...],
+) -> tuple[tuple[Decimal, ...], str, int, Decimal, None]:
+    float_probs = [float(probability) for probability in implied]
+    if any(probability <= 0 or probability >= 1 for probability in float_probs):
+        msg = f"Logarithmic devig requires probabilities in (0, 1), got {implied}"
+        raise ArithmeticError(msg)
+    low = 0.000001
+    high = 100.0
+    iterations = 0
+    previous = 0.0
+    while iterations < DEVIG_MAX_ITERATIONS:
+        iterations += 1
+        middle = (low + high) / 2
+        total = sum(probability**middle for probability in float_probs)
+        previous = middle
+        if abs(total - 1.0) <= 1e-12:
+            break
+        if total > 1.0:
+            low = middle
+        else:
+            high = middle
+    power = (low + high) / 2
+    no_vig = tuple(Decimal(str(probability**power)) for probability in float_probs)
+    return no_vig, "converged", iterations, Decimal(str(abs(power - previous))), None
+
+
+def _normalize_probabilities(probabilities: tuple[Decimal, ...]) -> tuple[Decimal, ...]:
+    total = sum(probabilities, Decimal(0))
+    if total <= 0:
+        msg = "Devigged probabilities must sum to a positive value"
+        raise ArithmeticError(msg)
+    return tuple(probability / total for probability in probabilities)
 
 
 def decimal_to_american(odds: float | Decimal) -> int:

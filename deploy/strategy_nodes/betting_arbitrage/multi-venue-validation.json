@@ -22,6 +22,15 @@
       "POLYMARKET"
     ],
     "semantic_unmatched_quote_probe_limit_per_venue": 20,
+    "devig_enabled": true,
+    "devig_method": "auto",
+    "devig_reference_venues": [
+      "CLOUDBET",
+      "SXBET"
+    ],
+    "value_diagnostics_enabled": true,
+    "value_execution_enabled": false,
+    "min_value_edge": "0.015",
     "auto_execute": false
   },
   "venues": [

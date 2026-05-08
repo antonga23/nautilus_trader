@@ -24,6 +24,7 @@ import msgspec
 import pytest
 
 from nautilus_trader.adapters.betting.common.enums import SelectionSide
+from nautilus_trader.adapters.betting.common.odds import devig_probabilities
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.betting.semantics import FileRuleCache
 from nautilus_trader.adapters.betting.semantics import CorpusSnapshot
@@ -255,6 +256,7 @@ class TestBettingArbitrageNodeBuilder:
                 min_profit_margin=Decimal("0.02"),
                 max_total_stake=Decimal(100),
                 auto_execute=True,
+                value_execution_enabled=True,
             ),
             venues=[
                 BettingVenueManifest(
@@ -270,6 +272,7 @@ class TestBettingArbitrageNodeBuilder:
         assert len(config.exec_clients) == 0
         assert len(config.strategies) == 1
         assert config.strategies[0].config["auto_execute"] is False
+        assert config.strategies[0].config["value_execution_enabled"] is False
         assert config.strategies[0].config["enabled_venues"] == ["SXBET"]
         assert config.strategies[0].config["opportunity_graph_engine"] == "auto"
         assert (
@@ -3117,10 +3120,115 @@ class TestBettingArbitrageNodeRunner:
         assert quality["wouldExecuteSameVenueDryRun"] is True
         assert quality["rawProfitMargin"] == quality["feeAdjustedProfitMargin"]
         assert quality["feeDrag"] == "0"
+        assert quality["devig"] == {
+            "enabled": False,
+            "bookStatus": "disabled",
+            "valueClassification": "devig_disabled",
+        }
+        assert quality["candidateValueClassification"] == "devig_disabled"
         assert quality["takerFeeRateA"] == "0"
         assert quality["takerFeeRateB"] == "0"
         assert quality["makerRebateRateA"] == "0"
         assert quality["makerRebateRateB"] == "0"
+
+    def test_runtime_probe_devig_diagnostics_classifies_value_without_execution(self):
+        instrument_a = _instrument(
+            venue="CLOUDBET",
+            market_type="match_odds",
+            outcome="home",
+        )
+        instrument_b = _instrument(
+            venue="POLYMARKET",
+            market_type="match_odds",
+            outcome="away",
+        )
+        config = BettingArbitrageConfig(
+            min_profit_margin=Decimal("0.02"),
+            devig_enabled=True,
+            devig_method="shin",
+            devig_reference_venues=("CLOUDBET",),
+            value_diagnostics_enabled=True,
+            value_execution_enabled=False,
+            min_value_edge=Decimal("0.005"),
+        )
+        strategy = SimpleNamespace(
+            _config=config,
+            devigged_book=lambda odds: devig_probabilities(odds, method=config.devig_method),
+            fee_adjusted_opportunity=lambda opportunity: opportunity,
+            matcher_suspect_reason=BettingArbitrageStrategy.matcher_suspect_reason,
+            semantic_fixture_suspect_reason=(
+                BettingArbitrageStrategy.semantic_fixture_suspect_reason
+            ),
+            quote_age_secs=lambda _observed_ns, _quote: 0.1,
+            quote_fetch_latency_secs=lambda _quote: 0.1,
+            quote_available_size=lambda _quote: Decimal(100),
+            quote_freshness_thresholds=lambda _instrument_a, _instrument_b: SimpleNamespace(
+                profile="pre_match",
+                max_quote_age_secs=30.0,
+                max_pair_skew_secs=5.0,
+                max_fetch_latency_secs=10.0,
+            ),
+        )
+        edge = SimpleNamespace(
+            rule_id="rule-1",
+            template_id="template-1",
+            relationship_type="COMPLEMENTARY_COVERAGE",
+            safety_tier="EXECUTION_SAFE",
+            execution_safe=True,
+            same_venue_execution_eligible=False,
+        )
+        quote_a = SimpleNamespace(
+            odds=Decimal("1.75"),
+            received_ns=10_000_000_000,
+            quote=SimpleNamespace(ts_event=9_900_000_000, size=Decimal(100)),
+        )
+        quote_b = SimpleNamespace(
+            odds=Decimal("2.20"),
+            received_ns=10_000_000_000,
+            quote=SimpleNamespace(ts_event=9_900_000_000, size=Decimal(100)),
+        )
+
+        quality = node_runner._probe_candidate_quality(
+            strategy,
+            edge=edge,
+            source_node=SimpleNamespace(
+                instrument=instrument_a,
+                market_name="match_odds",
+                outcome="home",
+            ),
+            target_node=SimpleNamespace(
+                instrument=instrument_b,
+                market_name="match_odds",
+                outcome="away",
+            ),
+            quote_a=quote_a,
+            quote_b=quote_b,
+            min_profit_margin=Decimal("0.02"),
+            allow_same_venue=False,
+        )
+
+        devig = quality["devig"]
+        assert devig["enabled"] is True
+        assert devig["bookStatus"] == "synthetic_cross_venue_pair"
+        assert devig["referenceVenue"] == "mixed:CLOUDBET+POLYMARKET"
+        assert devig["devigMethod"] == "shin"
+        assert devig["valueExecutionEnabled"] is False
+        assert devig["valueExecutionBlockedReason"] == "value_execution_disabled"
+        assert Decimal(devig["bookVig"]) > 0
+        assert quality["candidateValueClassification"] in {
+            "sportsbook_value_edge",
+            "prediction_market_value_edge",
+            "vig_only_edge",
+            "locked_arbitrage",
+        }
+
+        counters = node_runner.ProbeProfitabilityCounters()
+        node_runner._record_probe_quality(counters, quality)
+        payload = counters.to_payload()
+        assert payload["devig_diagnostics"]["evaluated_edges"] == 1
+        assert payload["devig_diagnostics"]["complete_books"] == 1
+        assert payload["devig_diagnostics"]["method_counts"] == {"shin": 1}
+        assert sum(payload["devig_diagnostics"]["value_buckets"].values()) == 1
         assert quality["basketRebateRate"] == "0"
         assert quality["basketBoostRate"] == "0"
 

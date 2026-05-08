@@ -292,6 +292,36 @@ def _runtime_status_payload() -> dict[str, object]:
                         "raw_negative_fee_adjusted_positive": 1,
                     },
                 },
+                "devigDiagnostics": {
+                    "evaluatedEdges": 8,
+                    "completeBooks": 7,
+                    "incompleteBooks": 1,
+                    "methodCounts": {"shin": 5, "proportional": 3},
+                    "methodReasonCounts": {"default_shin": 5, "balanced_two_way": 3},
+                    "convergenceCounts": {"analytic": 3, "converged": 5},
+                    "valueBuckets": {
+                        "locked_arbitrage": 2,
+                        "sportsbook_value_edge": 1,
+                        "fee_or_vig_erased_edge": 1,
+                        "vig_only_edge": 4,
+                    },
+                    "overround": {"count": 8, "p50": 1.02, "p95": 1.04, "p99": 1.05, "max": 1.05},
+                    "vig": {"count": 8, "p50": 0.02, "p95": 0.04, "p99": 0.05, "max": 0.05},
+                    "grossValueEdge": {
+                        "count": 8,
+                        "p50": 0.002,
+                        "p95": 0.018,
+                        "p99": 0.02,
+                        "max": 0.02,
+                    },
+                    "feeAdjustedValueEdge": {
+                        "count": 8,
+                        "p50": 0.001,
+                        "p95": 0.015,
+                        "p99": 0.018,
+                        "max": 0.018,
+                    },
+                },
                 "blockerSamples": {
                     "void_settlement": [
                         {"instrumentIdA": "a", "instrumentIdB": "b"},
@@ -301,6 +331,8 @@ def _runtime_status_payload() -> dict[str, object]:
                 "zeroCandidateBlockerCounts": {"fixture_identity_mismatch": 2},
                 "topPositiveCandidates": [{"instrumentIdA": "a"}],
                 "topNegativeNearMisses": [{"instrumentIdA": "x"}],
+                "topValueEdgeCandidates": [{"instrumentIdA": "v"}],
+                "topVigErasedCandidates": [{"instrumentIdA": "e"}],
             },
             "latencyDiagnostics": {
                 "quote_event_to_strategy": {
@@ -482,6 +514,19 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
         "net_rebate_or_boost": 2,
         "raw_negative_fee_adjusted_positive": 1,
     }
+    assert summary["candidateQuality"]["devigDiagnostics"]["evaluatedEdges"] == 8
+    assert summary["candidateQuality"]["devigDiagnostics"]["methodCounts"] == {
+        "shin": 5,
+        "proportional": 3,
+    }
+    assert summary["candidateQuality"]["devigDiagnostics"]["valueBuckets"] == {
+        "locked_arbitrage": 2,
+        "sportsbook_value_edge": 1,
+        "fee_or_vig_erased_edge": 1,
+        "vig_only_edge": 4,
+    }
+    assert summary["candidateQuality"]["topValueEdgeCandidates"] == [{"instrumentIdA": "v"}]
+    assert summary["candidateQuality"]["topVigErasedCandidates"] == [{"instrumentIdA": "e"}]
     assert summary["feePolicy"]["venueTakerFeeRates"] == {"POLYMARKET": "0.03"}
     assert summary["feePolicy"]["venueMakerRebateRates"] == {"POLYMARKET": "0.0075"}
     assert summary["feePolicy"]["venueBasketRebateRates"] == {"SXBET": "0.01"}
@@ -744,6 +789,13 @@ def test_runtime_probe_report_aggregates_multiple_artifacts():
         "net_fee_drag": 6,
         "net_rebate_or_boost": 2,
         "raw_negative_fee_adjusted_positive": 1,
+    }
+    assert aggregate["devigMethodCounts"] == {"proportional": 3, "shin": 5}
+    assert aggregate["devigValueBucketCounts"] == {
+        "fee_or_vig_erased_edge": 1,
+        "locked_arbitrage": 2,
+        "sportsbook_value_edge": 1,
+        "vig_only_edge": 4,
     }
     assert aggregate["providerCorpusCoverage"]["SXBET"]["sportsWithSelections"] == 3
     assert aggregate["providerCorpusCoverage"]["SXBET"]["zeroSelectionSports"] == [

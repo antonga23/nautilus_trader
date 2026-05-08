@@ -25,15 +25,19 @@ from nautilus_trader.adapters.betting.common.fees import FeeAdjustedOdds
 from nautilus_trader.adapters.betting.common.fees import fee_adjusted_basket_margin
 from nautilus_trader.adapters.betting.common.fees import fee_adjusted_odds
 from nautilus_trader.adapters.betting.common.fees import normalize_venue_fee_rates
+from nautilus_trader.adapters.betting.common.odds import DeviggedBook
+from nautilus_trader.adapters.betting.common.odds import devig_probabilities
 
 
 __all__ = [
     "DEFAULT_TAKER_FEE_RATES",
     "BettingMode",
+    "DeviggedBook",
     "FeeAdjustedBasket",
     "FeeAdjustedOdds",
     "MarketType",
     "SelectionSide",
+    "devig_probabilities",
     "fee_adjusted_basket_margin",
     "fee_adjusted_odds",
     "normalize_venue_fee_rates",
