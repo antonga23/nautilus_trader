@@ -30,6 +30,20 @@ fi
 
 export DEBIAN_FRONTEND=noninteractive
 
+prefer_https_ubuntu_sources() {
+  local source_file
+  shopt -s nullglob
+  for source_file in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+    if [[ -f "$source_file" ]]; then
+      sed -i \
+        -e 's#http://archive.ubuntu.com/ubuntu#https://archive.ubuntu.com/ubuntu#g' \
+        -e 's#http://security.ubuntu.com/ubuntu#https://security.ubuntu.com/ubuntu#g' \
+        "$source_file"
+    fi
+  done
+  shopt -u nullglob
+}
+
 apt_with_retry() {
   local description="$1"
   shift
@@ -52,6 +66,7 @@ apt_with_retry() {
   done
 }
 
+prefer_https_ubuntu_sources
 apt_with_retry "apt-get update" apt-get update -o Acquire::Retries=5
 apt_with_retry "apt-get install" \
   apt-get install -y --no-install-recommends \

@@ -572,6 +572,12 @@ class OpportunityGraph:
             except (TypeError, ValueError, json.JSONDecodeError):
                 payload = {}
             if isinstance(payload, dict):
+                # Rust owns the hot-path counts, while Python retains predicate metadata
+                # needed by runtime diagnostics to map semantic cache legs back to nodes.
+                python_payload = dict(self._coverage_summary_payload)
+                for sample_key in ("sampleProofIds", "sampleProofs", "sampleHyperedges"):
+                    if python_payload.get(sample_key):
+                        payload[sample_key] = python_payload[sample_key]
                 return payload
         return dict(self._coverage_summary_payload)
 
@@ -1128,11 +1134,13 @@ class OpportunityGraph:
             return [], []
 
         proof_payloads: list[dict[str, object]] = []
+        proofs_by_id: dict[str, Any] = {}
         if hasattr(rule_store, "list_coverage_proof_ids"):
             for proof_id in rule_store.list_coverage_proof_ids():
                 proof = rule_store.load_coverage_proof(proof_id)
                 if proof is None:
                     continue
+                proofs_by_id[proof.proof_id] = proof
                 proof_payloads.append(
                     {
                         "proof_id": proof.proof_id,
@@ -1155,6 +1163,10 @@ class OpportunityGraph:
                         "same_venue_execution_eligible": proof.same_venue_execution_eligible,
                         "relationship_type": proof.relationship_type,
                         "blocker_reasons": list(proof.blocker_reasons),
+                        "predicates": [
+                            self._coverage_predicate_payload(predicate)
+                            for predicate in proof.predicates
+                        ],
                     },
                 )
 
@@ -1164,6 +1176,7 @@ class OpportunityGraph:
                 hyperedge = rule_store.load_coverage_hyperedge(hyperedge_id)
                 if hyperedge is None:
                     continue
+                proof = proofs_by_id.get(hyperedge.coverage_proof_id)
                 hyperedge_payloads.append(
                     {
                         "hyperedge_id": hyperedge.hyperedge_id,
@@ -1174,6 +1187,14 @@ class OpportunityGraph:
                         "safety_tier": hyperedge.safety_tier,
                         "execution_safe": hyperedge.execution_safe,
                         "caveats": list(hyperedge.caveats),
+                        "predicates": (
+                            [
+                                self._coverage_predicate_payload(predicate)
+                                for predicate in proof.predicates
+                            ]
+                            if proof is not None
+                            else []
+                        ),
                     },
                 )
 
@@ -1275,6 +1296,30 @@ class OpportunityGraph:
     @staticmethod
     def _coverage_safe_string(value: object) -> str:
         return str(value or "UNKNOWN")
+
+    @classmethod
+    def _coverage_predicate_payload(cls, predicate: object) -> dict[str, object]:
+        params = getattr(predicate, "params", ())
+        return {
+            "predicate_id": cls._coverage_safe_string(getattr(predicate, "predicate_id", "")),
+            "instrument_id": cls._coverage_safe_string(getattr(predicate, "instrument_id", "")),
+            "provider": cls._coverage_safe_string(getattr(predicate, "provider", "")),
+            "event_key": cls._coverage_safe_string(getattr(predicate, "event_key", "")),
+            "sport": cls._coverage_safe_string(getattr(predicate, "sport", "")),
+            "scope": cls._coverage_safe_string(getattr(predicate, "scope", "")),
+            "market_type": cls._coverage_safe_string(getattr(predicate, "market_type", "")),
+            "market_family": cls._coverage_safe_string(getattr(predicate, "market_family", "")),
+            "selection": cls._coverage_safe_string(getattr(predicate, "selection", "")),
+            "params": list(params) if isinstance(params, tuple | list) else [],
+            "params_key": cls._params_key(params),
+            "result_states": list(getattr(predicate, "result_states", ()) or ()),
+            "win_states": list(getattr(predicate, "win_states", ()) or ()),
+            "void_states": list(getattr(predicate, "void_states", ()) or ()),
+            "partial_states": list(getattr(predicate, "partial_states", ()) or ()),
+            "unknown_states": list(getattr(predicate, "unknown_states", ()) or ()),
+            "provider_rule_flags": list(getattr(predicate, "provider_rule_flags", ()) or ()),
+            "caveats": list(getattr(predicate, "caveats", ()) or ()),
+        }
 
     def _load_rust_semantic_coverage(
         self,

@@ -2624,6 +2624,60 @@ class TestBettingArbitrageNodeRunner:
         assert report["sampleBlockerCounts"] == {}
         assert report["samples"] == []
 
+    def test_venue_pair_coverage_canonicalizes_provider_fixture_aliases(self):
+        sxbet_instrument = _instrument(
+            venue="SXBET",
+            market_type="match_odds",
+            outcome="home",
+            event_id="sxbet-cle-min",
+            event_name="CLE Cavaliers vs MIN Timberwolves",
+            home_name="CLE Cavaliers",
+            away_name="MIN Timberwolves",
+            sport_name="basketball",
+        )
+        cloudbet_instrument = _instrument(
+            venue="CLOUDBET",
+            market_type="match_odds",
+            outcome="away",
+            event_id="cloudbet-cle-min",
+            event_name="Cleveland Cavaliers vs Minnesota Timberwolves",
+            home_name="Cleveland Cavaliers",
+            away_name="Minnesota Timberwolves",
+            sport_name="basketball",
+        )
+        strategy = SimpleNamespace(
+            _config=SimpleNamespace(enabled_venues=frozenset({"CLOUDBET", "SXBET"})),
+            _quote_subscribed_instrument_ids={sxbet_instrument.id, cloudbet_instrument.id},
+        )
+
+        coverage = node_runner._venue_pair_coverage(
+            strategy,
+            edges=[],
+            nodes={
+                "sxbet-node": SimpleNamespace(instrument=sxbet_instrument),
+                "cloudbet-node": SimpleNamespace(instrument=cloudbet_instrument),
+            },
+            quotes={},
+            matched_node_ids=set(),
+            candidate_venue_pairs={},
+        )
+
+        report = {item["venuePair"]: item for item in coverage["zeroCandidateVenuePairs"]}[
+            "SXBET->CLOUDBET"
+        ]
+        assert report["reason"] == "no_semantic_edge"
+        assert report["blockerReason"] == "no_semantic_edge"
+        assert report["commonEventKeyCount"] == 1
+        assert report["commonEventKeySamples"] == [
+            "basketball:cleveland cavaliers:minnesota timberwolves",
+        ]
+        assert report["samples"][0]["canonicalEventKeyA"] == (
+            "basketball:cleveland cavaliers:minnesota timberwolves"
+        )
+        assert report["samples"][0]["canonicalEventKeyB"] == (
+            "basketball:cleveland cavaliers:minnesota timberwolves"
+        )
+
     def test_venue_pair_coverage_indexes_common_fixtures_beyond_sample_window(self):
         common_sxbet = _instrument(
             venue="SXBET",
@@ -2840,6 +2894,105 @@ class TestBettingArbitrageNodeRunner:
         assert diagnostics["candidate_decision"]["max_ms"] == 3.0
         assert diagnostics["candidate_decision_source"] == "runtime_probe"
         assert diagnostics["runtime_probe_candidate_decision"]["count"] == 2
+        assert diagnostics["sloStatus"]["overall"] == "unknown"
+
+    def test_runtime_latency_diagnostics_reports_slo_pass_warn_and_missing_stages(self):
+        complete = node_runner._runtime_latency_diagnostics(
+            {
+                "latency_diagnostics": {
+                    "quote_event_to_strategy": {"count": 3},
+                    "graph_scan": {"count": 3},
+                    "candidate_decision": {"count": 3},
+                },
+            },
+            {
+                "quoted_edges": 3,
+                "positive_execution": 1,
+                "positive_same_venue": 0,
+                "threshold_execution": 1,
+                "threshold_same_venue": 0,
+                "live_timing_slo": {
+                    "quote_age": {
+                        "threshold_secs": 5.0,
+                        "observations": 6,
+                        "violations": 0,
+                    },
+                    "fetch_latency": {
+                        "threshold_mode": "per_candidate",
+                        "max_threshold_secs": 2.0,
+                        "observations": 6,
+                        "violations": 0,
+                    },
+                    "pair_skew": {
+                        "threshold_mode": "per_candidate",
+                        "max_threshold_secs": 1.0,
+                        "observations": 3,
+                        "violations": 0,
+                    },
+                },
+                "latency_histograms": {"fetch_latency_secs": {"count": 6}},
+                "candidate_decision_latency": {},
+            },
+        )
+        assert complete["sloStatus"]["overall"] == "pass"
+        assert complete["diagnosticWarnings"] == []
+
+        stale = node_runner._runtime_latency_diagnostics(
+            {
+                "latency_diagnostics": {
+                    "quote_event_to_strategy": {"count": 3},
+                    "graph_scan": {"count": 3},
+                    "candidate_decision": {"count": 3},
+                },
+            },
+            {
+                "quoted_edges": 3,
+                "positive_execution": 0,
+                "positive_same_venue": 0,
+                "threshold_execution": 0,
+                "threshold_same_venue": 0,
+                "live_timing_slo": {
+                    "quote_age": {
+                        "threshold_secs": 5.0,
+                        "observations": 6,
+                        "violations": 2,
+                    },
+                    "fetch_latency": {"observations": 0, "violations": 0},
+                    "pair_skew": {"observations": 0, "violations": 0},
+                },
+                "latency_histograms": {"fetch_latency_secs": {"count": 6}},
+                "candidate_decision_latency": {},
+            },
+        )
+        assert stale["sloStatus"]["overall"] == "warn"
+        assert stale["sloStatus"]["quoteAge"]["status"] == "warn"
+
+        missing = node_runner._runtime_latency_diagnostics(
+            {"latency_diagnostics": {}},
+            {
+                "quoted_edges": 2,
+                "positive_execution": 0,
+                "positive_same_venue": 0,
+                "threshold_execution": 0,
+                "threshold_same_venue": 0,
+                "live_timing_slo": {},
+                "latency_histograms": {},
+                "candidate_decision_latency": {},
+            },
+        )
+        assert missing["sloStatus"]["overall"] == "unknown"
+        assert missing["sloStatus"]["missingStages"] == [
+            "quote_receive",
+            "graph_scan",
+            "candidate_decision",
+            "provider_latency",
+        ]
+        assert missing["diagnosticWarnings"] == [
+            "missing_quote_receive_latency",
+            "missing_graph_scan_latency",
+            "missing_candidate_decision_latency",
+            "missing_provider_latency",
+        ]
 
     def test_runtime_probe_aggregates_same_venue_dry_run_reasons(self):
         counters = node_runner.ProbeProfitabilityCounters()
@@ -3431,6 +3584,142 @@ class TestBettingArbitrageNodeRunner:
         assert payload["methodCounts"] == {"proportional": 1}
         assert payload["valueBuckets"] == {"coverage_locked_execution_safe_arbitrage": 1}
         assert payload["samples"][0]["hyperedgeId"] == "hyperedge-1"
+
+    def test_runtime_probe_coverage_book_devig_bridges_semantic_predicates_to_runtime_nodes(self):
+        instrument_a = _instrument(
+            venue="CLOUDBET",
+            market_type="match_odds",
+            outcome="home",
+            event_name="CLE Cavaliers vs MIN Timberwolves",
+            home_name="CLE Cavaliers",
+            away_name="MIN Timberwolves",
+            sport_name="basketball",
+        )
+        instrument_b = _instrument(
+            venue="CLOUDBET",
+            market_type="match_odds",
+            outcome="away",
+            event_name="Cleveland Cavaliers vs Minnesota Timberwolves",
+            home_name="Cleveland Cavaliers",
+            away_name="Minnesota Timberwolves",
+            sport_name="basketball",
+        )
+        nodes = {
+            str(instrument_a.id): SimpleNamespace(instrument=instrument_a),
+            str(instrument_b.id): SimpleNamespace(instrument=instrument_b),
+        }
+        quotes = {
+            str(instrument_a.id): SimpleNamespace(odds=Decimal("2.20")),
+            str(instrument_b.id): SimpleNamespace(odds=Decimal("2.20")),
+        }
+        strategy = SimpleNamespace(
+            fee_adjusted_coverage_basket=lambda instruments, odds: fee_adjusted_coverage_basket(
+                odds,
+                devig_method="proportional",
+            ),
+        )
+        coverage_diagnostics = {
+            "sampleHyperedges": [
+                {
+                    "hyperedge_id": "hyperedge-semantic",
+                    "coverage_proof_id": "proof-semantic",
+                    "instrument_ids": ["semantic-home", "semantic-away"],
+                    "provider_scope": ["CLOUDBET"],
+                    "safety_tier": "EXECUTION_SAFE",
+                    "execution_safe": True,
+                    "predicates": [
+                        {
+                            "instrument_id": "semantic-home",
+                            "provider": "CLOUDBET",
+                            "event_key": "basketball|cle_cavaliers|min_timberwolves",
+                            "sport": "basketball",
+                            "scope": "full_time",
+                            "market_family": "MATCH_ODDS",
+                            "selection": "HOME",
+                            "params_key": "[]",
+                        },
+                        {
+                            "instrument_id": "semantic-away",
+                            "provider": "CLOUDBET",
+                            "event_key": "basketball|cle_cavaliers|min_timberwolves",
+                            "sport": "basketball",
+                            "scope": "full_time",
+                            "market_family": "MATCH_ODDS",
+                            "selection": "AWAY",
+                            "params_key": "[]",
+                        },
+                    ],
+                },
+            ],
+        }
+
+        payload = node_runner._probe_coverage_book_devig_diagnostics(
+            strategy,
+            coverage_diagnostics=coverage_diagnostics,
+            nodes=nodes,
+            quotes=quotes,
+            min_profit_margin=Decimal("0.02"),
+        )
+
+        assert payload["quotedHyperedges"] == 1
+        assert payload["incompleteHyperedges"] == 0
+        assert payload["samples"][0]["instrumentIds"] == [
+            str(instrument_a.id),
+            str(instrument_b.id),
+        ]
+        assert payload["samples"][0]["semanticInstrumentIds"] == [
+            "semantic-home",
+            "semantic-away",
+        ]
+
+    def test_runtime_probe_coverage_book_devig_reports_missing_semantic_legs(self):
+        instrument_a = _instrument(
+            venue="CLOUDBET",
+            market_type="match_odds",
+            outcome="home",
+            sport_name="basketball",
+        )
+        nodes = {str(instrument_a.id): SimpleNamespace(instrument=instrument_a)}
+        quotes = {str(instrument_a.id): SimpleNamespace(odds=Decimal("2.20"))}
+        strategy = SimpleNamespace(
+            fee_adjusted_coverage_basket=lambda instruments, odds: fee_adjusted_coverage_basket(
+                odds,
+                devig_method="proportional",
+            ),
+        )
+
+        payload = node_runner._probe_coverage_book_devig_diagnostics(
+            strategy,
+            coverage_diagnostics={
+                "sampleHyperedges": [
+                    {
+                        "hyperedge_id": "hyperedge-missing",
+                        "coverage_proof_id": "proof-missing",
+                        "instrument_ids": ["semantic-home", "semantic-away"],
+                        "predicates": [
+                            {
+                                "instrument_id": "semantic-away",
+                                "provider": "CLOUDBET",
+                                "event_key": "basketball|missing_home|missing_away",
+                                "sport": "basketball",
+                                "scope": "full_time",
+                                "market_family": "MATCH_ODDS",
+                                "selection": "AWAY",
+                                "params_key": "[]",
+                            },
+                        ],
+                    },
+                ],
+            },
+            nodes=nodes,
+            quotes=quotes,
+            min_profit_margin=Decimal("0.02"),
+        )
+
+        assert payload["quotedHyperedges"] == 0
+        assert payload["incompleteHyperedges"] == 1
+        assert payload["valueBuckets"] == {"coverage_reference_book_incomplete": 1}
+        assert payload["samples"][0]["missingInstrumentIds"] == ["semantic-away"]
 
     def test_instrument_refresh_payload_includes_per_venue_counts(self):
         payload = node_runner._instrument_refresh_payload(
