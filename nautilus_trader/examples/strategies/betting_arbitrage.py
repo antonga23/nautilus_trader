@@ -1059,10 +1059,11 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         """
         Return semantically connected nodes in quote-subscription priority order.
 
-        Multi-venue validation can have thousands of same-venue edges and only a
-        handful of cross-venue edges. Venue quote limits should therefore spend
-        their first slots on instruments needed to quote cross-venue topology,
-        then strict execution-safe edges, then the broader topology set.
+        Multi-venue validation can have thousands of same-venue edges and only a handful
+        of cross-venue edges. Venue quote limits should therefore spend their first
+        slots on instruments needed to quote cross-venue topology, then strict
+        execution-safe edges, then the broader topology set.
+
         """
         ranked: list[tuple[tuple[int, int, int, int, str], Any]] = []
         for node_id, edge_ids in self._opportunity_graph.edge_ids_by_node_id.items():
@@ -1100,7 +1101,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 if getattr(edge, "source_node_id", None) == node_id
                 else getattr(edge, "source_node_id", None)
             )
-            other_venue = self._node_venue_value(nodes.get(other_node_id))
+            other_node = nodes.get(str(other_node_id)) if other_node_id is not None else None
+            other_venue = self._node_venue_value(other_node)
             if node_venue and other_venue and node_venue != other_venue:
                 cross_venue_edges += 1
         return (

@@ -2536,20 +2536,27 @@ def test_refresh_cloudbet_backfills_recent_past_for_sparse_sports():  # noqa: C9
                 ],
             )
 
-        async def get_sport(self, sport_key: str):
+        async def get_sport(self, sport_key: str) -> dict[str, str]:
             return {"sport": sport_key}
 
-        async def get_events_for_sport(self, *, sport_key, from_timestamp, to_timestamp, limit):
+        async def get_events_for_sport(
+            self,
+            *,
+            sport_key: str,
+            from_timestamp: int,
+            to_timestamp: int,
+            limit: int,
+        ) -> FakeEventsResponse:
             if to_timestamp <= 1_000:
                 return past_response
             return future_response
 
-        def event_to_selection(self, response):
+        def event_to_selection(self, response: FakeEventsResponse) -> list[SimpleNamespace]:
             if response is past_response:
                 return list(past_selections)
             return list(future_selections)
 
-        async def get_event(self, event_id):
+        async def get_event(self, event_id: str) -> None:
             return None
 
     manifest = asyncio.run(
@@ -2624,24 +2631,31 @@ def test_refresh_cloudbet_uses_historical_backfill_when_recent_past_stays_sparse
                 sports=[FakeSport(name="American Football", key="american-football")],
             )
 
-        async def get_sport(self, sport_key: str):
+        async def get_sport(self, sport_key: str) -> dict[str, str]:
             return {"sport": sport_key}
 
-        async def get_events_for_sport(self, *, sport_key, from_timestamp, to_timestamp, limit):
+        async def get_events_for_sport(
+            self,
+            *,
+            sport_key: str,
+            from_timestamp: int,
+            to_timestamp: int,
+            limit: int,
+        ) -> FakeEventsResponse:
             if from_timestamp <= -10_000_000:
                 return historical_response
             if to_timestamp <= 1_000:
                 return recent_past_response
             return future_response
 
-        def event_to_selection(self, response):
+        def event_to_selection(self, response: FakeEventsResponse) -> list[SimpleNamespace]:
             if response is historical_response:
                 return list(historical_selections)
             if response is recent_past_response:
                 return []
             return list(future_selections)
 
-        async def get_event(self, event_id):
+        async def get_event(self, event_id: str) -> None:
             return None
 
     manifest = asyncio.run(

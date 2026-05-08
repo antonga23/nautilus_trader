@@ -677,7 +677,8 @@ class PolymarketSportsTransformer:
         sports_market: dict[str, Any],
     ) -> dict[str, str]:
         """
-        Extract normalized fee/rebate hints for downstream fee-adjusted margin accounting.
+        Extract normalized fee/rebate hints for downstream fee-adjusted margin
+        accounting.
         """
         payload: dict[str, str] = {}
         fee_rate = PolymarketSportsTransformer._first_decimal(
