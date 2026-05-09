@@ -617,6 +617,42 @@ async def test_generate_fill_and_position_reports_are_empty_startup_noops():
 
 
 @pytest.mark.asyncio
+async def test_generate_mass_status_registers_account_for_reconciliation_conversion():
+    config = SimpleNamespace(
+        api_key="api-key",
+        wallet_address="0x" + "12" * 20,
+        private_key="0x" + "34" * 32,
+        base_currency="USDC",
+    )
+    instrument_provider = SXBetInstrumentProvider(
+        http_client=Mock(),
+        config=SXBetInstrumentProviderConfig(),
+        logger=Mock(),
+    )
+    http_client = Mock()
+    http_client.get_user_orders = AsyncMock()
+    clock = TestComponentStubs.clock()
+    client = SXBetExecutionClient(
+        loop=get_event_loop(),
+        http_client=http_client,
+        instrument_provider=instrument_provider,
+        msgbus=TestComponentStubs.msgbus(),
+        cache=TestComponentStubs.cache(),
+        clock=clock,
+        logger=Logger(name="test-sxbet-execution"),
+        config=config,
+    )
+
+    mass_status = await client.generate_mass_status(lookback_mins=60)
+
+    assert mass_status is not None
+    assert str(mass_status.account_id).startswith("SXBET-")
+    assert mass_status.to_dict()["account_id"] == mass_status.account_id.value
+    mass_status.to_pyo3()
+    http_client.get_user_orders.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_cancel_all_orders_cancels_tracked_sxbet_maker_orders():
     config = SimpleNamespace(
         api_key="api-key",

@@ -157,7 +157,7 @@ class SXBetExecutionClient(LiveExecutionClient):
         self._validate_config(config)
         self._wallet_address = self._normalize_wallet_address(config.wallet_address)
         self._private_key = self._normalize_private_key(config.private_key)
-        self._account_id = AccountId(f"{SXBET_VENUE.value}-{self._wallet_address[:10]}")
+        self._set_account_id(AccountId(f"{SXBET_VENUE.value}-{self._wallet_address[:10]}"))
         self._base_token = self._resolve_base_token(config.base_currency)
         # Order tracking
         self._orders: dict[ClientOrderId, dict] = {}
@@ -473,16 +473,23 @@ class SXBetExecutionClient(LiveExecutionClient):
             params = str(params)
         return "outcome_one=True" in params
 
+    def _resolved_account_id(self) -> AccountId:
+        account_id = self.account_id
+        if account_id is None:  # pragma: no cover - constructor sets this defensively
+            raise RuntimeError("SX.bet execution account_id is not initialized")
+        return account_id
+
     def _generate_order_submitted(self, order: Order) -> None:
         """
         Generate and send order submitted event.
         """
+        account_id = self._resolved_account_id()
         event = OrderSubmitted(
             trader_id=order.trader_id,
             strategy_id=order.strategy_id,
             instrument_id=order.instrument_id,
             client_order_id=order.client_order_id,
-            account_id=self._account_id,
+            account_id=account_id,
             ts_event=self._clock.timestamp_ns(),
             ts_init=self._clock.timestamp_ns(),
         )
@@ -496,13 +503,14 @@ class SXBetExecutionClient(LiveExecutionClient):
         """
         Generate and send order accepted event.
         """
+        account_id = self._resolved_account_id()
         event = OrderAccepted(
             trader_id=order.trader_id,
             strategy_id=order.strategy_id,
             instrument_id=order.instrument_id,
             client_order_id=order.client_order_id,
             venue_order_id=venue_order_id,
-            account_id=self._account_id,
+            account_id=account_id,
             ts_event=self._clock.timestamp_ns(),
             ts_init=self._clock.timestamp_ns(),
         )
@@ -516,12 +524,13 @@ class SXBetExecutionClient(LiveExecutionClient):
         """
         Generate and send order rejected event.
         """
+        account_id = self._resolved_account_id()
         event = OrderRejected(
             trader_id=order.trader_id,
             strategy_id=order.strategy_id,
             instrument_id=order.instrument_id,
             client_order_id=order.client_order_id,
-            account_id=self._account_id,
+            account_id=account_id,
             reason=reason,
             ts_event=self._clock.timestamp_ns(),
             ts_init=self._clock.timestamp_ns(),
@@ -536,13 +545,14 @@ class SXBetExecutionClient(LiveExecutionClient):
         """
         Generate and send order canceled event.
         """
+        account_id = self._resolved_account_id()
         event = OrderCanceled(
             trader_id=order.trader_id,
             strategy_id=order.strategy_id,
             instrument_id=order.instrument_id,
             client_order_id=order.client_order_id,
             venue_order_id=venue_order_id,
-            account_id=self._account_id,
+            account_id=account_id,
             ts_event=self._clock.timestamp_ns(),
             ts_init=self._clock.timestamp_ns(),
         )
@@ -674,7 +684,7 @@ class SXBetExecutionClient(LiveExecutionClient):
                     continue
 
                 return OrderStatusReport(
-                    account_id=self._account_id,
+                    account_id=self._resolved_account_id(),
                     instrument_id=instrument_id,
                     venue_order_id=venue_order_id,
                     client_order_id=command.client_order_id,
