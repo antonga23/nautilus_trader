@@ -121,6 +121,11 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
         "executionReadiness": {
             "validationMode": execution_readiness.get("validationMode"),
             "autoExecute": execution_readiness.get("autoExecute"),
+            "liveExecutionArmed": execution_readiness.get("liveExecutionArmed"),
+            "liveExecutionEnvArmed": execution_readiness.get("liveExecutionEnvArmed"),
+            "allowCrossCurrencyLiveExecution": execution_readiness.get(
+                "allowCrossCurrencyLiveExecution",
+            ),
             "semanticCacheConfigured": execution_readiness.get("semanticCacheConfigured"),
             "venues": execution_readiness.get("venues"),
         },
@@ -906,8 +911,13 @@ def _execution_safety_health(execution_readiness: dict[str, Any]) -> dict[str, A
     reasons: list[str] = []
     validation_mode = bool(execution_readiness.get("validationMode"))
     auto_execute = bool(execution_readiness.get("autoExecute"))
+    live_execution_armed = bool(execution_readiness.get("liveExecutionArmed"))
+    live_execution_env_armed = bool(execution_readiness.get("liveExecutionEnvArmed"))
     if auto_execute:
-        reasons.append("auto_execute_enabled")
+        if live_execution_armed and not live_execution_env_armed:
+            reasons.append("auto_execute_env_gate_unarmed")
+        else:
+            reasons.append("auto_execute_enabled")
     venues = execution_readiness.get("venues") or []
     if isinstance(venues, list):
         for venue in venues:
@@ -919,12 +929,23 @@ def _execution_safety_health(execution_readiness: dict[str, Any]) -> dict[str, A
                 and not bool(venue.get("executionDryRun"))
             ):
                 reasons.append(f"{venue.get('venue')}:validation_execution_not_dry_run")
-    overall = "fail" if auto_execute else "warn" if reasons else "pass"
+    auto_execute_blocked_by_env_gate = (
+        auto_execute and live_execution_armed and not live_execution_env_armed
+    )
+    overall = (
+        "fail"
+        if auto_execute and not auto_execute_blocked_by_env_gate
+        else "warn"
+        if reasons
+        else "pass"
+    )
     return {
         "overall": overall,
         "reasons": reasons,
         "validationMode": validation_mode,
         "autoExecute": auto_execute,
+        "liveExecutionArmed": live_execution_armed,
+        "liveExecutionEnvArmed": live_execution_env_armed,
     }
 
 
@@ -1545,6 +1566,16 @@ def _parse_args() -> argparse.Namespace:
         help="Return non-zero if any artifact is not running in validation mode",
     )
     parser.add_argument(
+        "--require-live-execution-env-unarmed",
+        action="store_true",
+        help="Return non-zero if any artifact has the live execution environment gate armed",
+    )
+    parser.add_argument(
+        "--require-cross-currency-live-blocked",
+        action="store_true",
+        help="Return non-zero if any artifact permits cross-currency live execution",
+    )
+    parser.add_argument(
         "--require-rust-semantic",
         action="store_true",
         help="Return non-zero unless every artifact uses rust/rust_semantic topology",
@@ -1650,6 +1681,16 @@ def _gate_exit_code(
         ),
         (7, args.require_auto_execute_false, _has_auto_execute_enabled(summaries)),
         (8, args.require_validation_mode, _has_non_validation_mode(summaries)),
+        (
+            14,
+            args.require_live_execution_env_unarmed,
+            _has_live_execution_env_armed(summaries),
+        ),
+        (
+            15,
+            args.require_cross_currency_live_blocked,
+            _has_cross_currency_live_execution_enabled(summaries),
+        ),
         (9, args.require_rust_semantic, _has_non_rust_semantic_topology(summaries)),
         (10, args.require_coverage_runtime, _has_missing_runtime_coverage(summaries)),
         (
@@ -1716,6 +1757,24 @@ def _has_auto_execute_enabled(summaries: list[dict[str, Any]]) -> bool:
 def _has_non_validation_mode(summaries: list[dict[str, Any]]) -> bool:
     return any(
         not bool(_as_dict(item.get("executionReadiness")).get("validationMode"))
+        for item in summaries
+    )
+
+
+def _has_live_execution_env_armed(summaries: list[dict[str, Any]]) -> bool:
+    return any(
+        bool(_as_dict(item.get("executionReadiness")).get("liveExecutionEnvArmed"))
+        for item in summaries
+    )
+
+
+def _has_cross_currency_live_execution_enabled(summaries: list[dict[str, Any]]) -> bool:
+    return any(
+        bool(
+            _as_dict(item.get("executionReadiness")).get(
+                "allowCrossCurrencyLiveExecution",
+            ),
+        )
         for item in summaries
     )
 
