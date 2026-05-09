@@ -24,7 +24,9 @@ from nautilus_trader.adapters.sxbet.providers import SXBetInstrumentProvider
 from nautilus_trader.common.component import Logger
 from nautilus_trader.common.functions import get_event_loop
 from nautilus_trader.core.uuid import UUID4
+from nautilus_trader.execution.messages import GenerateFillReports
 from nautilus_trader.execution.messages import GenerateOrderStatusReports
+from nautilus_trader.execution.messages import GeneratePositionStatusReports
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.enums import OrderType
 from nautilus_trader.model.identifiers import ClientOrderId
@@ -562,6 +564,56 @@ async def test_generate_order_status_reports_without_filters_is_empty_startup_no
 
     assert reports == []
     http_client.get_user_orders.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_generate_fill_and_position_reports_are_empty_startup_noops():
+    config = SimpleNamespace(
+        api_key="api-key",
+        wallet_address="0x" + "12" * 20,
+        private_key="0x" + "34" * 32,
+        base_currency="USDC",
+    )
+    instrument_provider = SXBetInstrumentProvider(
+        http_client=Mock(),
+        config=SXBetInstrumentProviderConfig(),
+        logger=Mock(),
+    )
+    http_client = Mock()
+    clock = TestComponentStubs.clock()
+    client = SXBetExecutionClient(
+        loop=get_event_loop(),
+        http_client=http_client,
+        instrument_provider=instrument_provider,
+        msgbus=TestComponentStubs.msgbus(),
+        cache=TestComponentStubs.cache(),
+        clock=clock,
+        logger=Logger(name="test-sxbet-execution"),
+        config=config,
+    )
+
+    fill_reports = await client.generate_fill_reports(
+        GenerateFillReports(
+            instrument_id=None,
+            venue_order_id=None,
+            start=None,
+            end=None,
+            command_id=UUID4(),
+            ts_init=clock.timestamp_ns(),
+        ),
+    )
+    position_reports = await client.generate_position_status_reports(
+        GeneratePositionStatusReports(
+            instrument_id=None,
+            start=None,
+            end=None,
+            command_id=UUID4(),
+            ts_init=clock.timestamp_ns(),
+        ),
+    )
+
+    assert fill_reports == []
+    assert position_reports == []
 
 
 @pytest.mark.asyncio

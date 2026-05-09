@@ -41,11 +41,15 @@ from nautilus_trader.common.component import MessageBus
 from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.execution.messages import CancelAllOrders
 from nautilus_trader.execution.messages import CancelOrder
+from nautilus_trader.execution.messages import GenerateFillReports
 from nautilus_trader.execution.messages import GenerateOrderStatusReport
 from nautilus_trader.execution.messages import GenerateOrderStatusReports
+from nautilus_trader.execution.messages import GeneratePositionStatusReports
 from nautilus_trader.execution.messages import ModifyOrder
 from nautilus_trader.execution.messages import SubmitOrder
+from nautilus_trader.execution.reports import FillReport
 from nautilus_trader.execution.reports import OrderStatusReport
+from nautilus_trader.execution.reports import PositionStatusReport
 from nautilus_trader.live.execution_client import LiveExecutionClient
 from nautilus_trader.model.enums import AccountType
 from nautilus_trader.model.enums import OmsType
@@ -759,3 +763,39 @@ class SXBetExecutionClient(LiveExecutionClient):
             reports.append(report)
 
         return reports
+
+    async def generate_fill_reports(
+        self,
+        command: GenerateFillReports,
+    ) -> list[FillReport]:
+        """
+        Generate SX.bet fill reports for locally tracked fills.
+
+        Startup reconciliation may request a partial lookback range before this process
+        has submitted any orders. SX.bet fill history is not available through the
+        public REST path used here, so the safe startup result is an empty report list.
+
+        """
+        self._log.debug(
+            "SX.bet fill report reconciliation is local-only; returning no reports "
+            f"(instrument_id={command.instrument_id}, venue_order_id={command.venue_order_id})",
+        )
+        return []
+
+    async def generate_position_status_reports(
+        self,
+        command: GeneratePositionStatusReports,
+    ) -> list[PositionStatusReport]:
+        """
+        Generate SX.bet position status reports.
+
+        The live arbitrage pilot does not reconstruct SX.bet positions from account
+        history during startup. Orders submitted by this process are tracked via order
+        status reports and order lifecycle events.
+
+        """
+        self._log.debug(
+            "SX.bet position status reconciliation is local-only; returning no reports "
+            f"(instrument_id={command.instrument_id})",
+        )
+        return []

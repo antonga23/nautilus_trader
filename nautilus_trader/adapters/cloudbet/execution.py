@@ -513,7 +513,7 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
         self._log.info(f"Generating OrderStatusReports for {self.id}...")
         report_list: List[OrderStatusReport] = []
         if (start is None) != (end is None):
-            self._log.warning(
+            self._log.debug(
                 "Cannot generate Cloudbet order status reports with a partial time range",
             )
             return report_list
@@ -694,14 +694,18 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
         ------
             A Trade corresponds to an order that has a final result (WIN, LOSS, etc )or has been processed by the exchange. (ACCEPTED)
         """
-        # either specify a time range or an instrument_id or a venue order id
-        assert (
-            instrument_id is not None
-            or venue_order_id is not None
-            or (start is not None and end is not None)
-        )
         self._log.info(f"Generating TradeReports for {self.id}...")
         report_list: List[TradeReport] = []
+        if (start is None) != (end is None):
+            self._log.debug(
+                "Cannot generate Cloudbet trade reports with a partial time range",
+            )
+            return report_list
+
+        if instrument_id is None and venue_order_id is None and start is None and end is None:
+            self._log.debug("No Cloudbet trade report filters supplied; returning no reports")
+            return report_list
+
         # if a time-range is specified, we explicitly rely on the venue bet_history endpoint
         if start and end:
             start_date: str = datetime_to_cloudbet_timestamp(start)
@@ -956,10 +960,20 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
             start = command.start
             end = command.end
 
-        # either specify a time range or an instrument_id or a venue order id
-        assert instrument_id is not None or (start is not None and end is not None)
         self._log.info(f"Generating PositionStatusReport for {self.id}...")
         report_list: List[PositionStatusReport] = []
+        if (start is None) != (end is None):
+            self._log.debug(
+                "Cannot generate Cloudbet position status reports with a partial time range",
+            )
+            return report_list
+
+        if instrument_id is None and start is None and end is None:
+            self._log.debug(
+                "No Cloudbet position status filters supplied; returning no reports",
+            )
+            return report_list
+
         # if a time-range is specified, we explicitly rely on the venue bet_history endpoint
         if start and end:
             start_date: str = datetime_to_cloudbet_timestamp(start)

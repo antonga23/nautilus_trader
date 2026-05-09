@@ -1685,8 +1685,10 @@ class TestCloudbetExecutionReports:
                 False,
                 0,
             ),
-            # Case 8: Neither instrument ID nor time range provided
-            (None, AssertionError, None, None, None, False, None),
+            # Case 8: Neither instrument ID nor time range provided.
+            # Startup reconciliation may request this broad shape before any local
+            # orders exist; the adapter should return an empty no-op report list.
+            (None, None, None, None, None, False, 0),
         ],
     )
     @patch.object(CloudbetClient, "get_bet_history", new_callable=AsyncMock)
