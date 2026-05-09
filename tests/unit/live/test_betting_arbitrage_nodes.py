@@ -521,6 +521,49 @@ class TestBettingArbitrageNodeBuilder:
         assert readiness["venues"][0]["wsUrl"] == node_builder.SXBET_TESTNET_WS_URL
         assert readiness["venues"][0]["executionDryRun"] is True
 
+    def test_cloudbet_sxbet_live_pilot_manifest_builds_live_exec_clients(self, monkeypatch):
+        monkeypatch.setenv("CLOUDBET_API_KEY", "cloudbet-live-api-key")
+        monkeypatch.setenv("SXBET_API_KEY", "sxbet-live-api-key")
+        monkeypatch.setenv("SXBET_PRIVATE_KEY", "0x" + "a" * 64)
+        monkeypatch.setenv("SXBET_WALLET_ADDRESS", "0x" + "b" * 40)
+        monkeypatch.delenv("BETTING_LIVE_EXECUTION_ARMED", raising=False)
+
+        manifest = node_builder.load_manifest(
+            Path(
+                "deploy/strategy_nodes/betting_arbitrage/"
+                "cloudbet-sxbet-cross-venue-live-pilot.json",
+            ),
+        )
+        config = build_trading_node_config(manifest)
+
+        assert manifest.validation_mode is False
+        assert config.strategies[0].config["auto_execute"] is True
+        assert config.strategies[0].config["live_execution_armed"] is True
+        assert config.strategies[0].config["allow_cross_currency_live_execution"] is False
+        assert config.strategies[0].config["max_total_stake"] == "25"
+        assert config.strategies[0].config["max_leg_stake"] == "15"
+        assert set(config.exec_clients) == {"CLOUDBET_PRIMARY", "SXBET_PRIMARY"}
+        cloudbet_exec = config.exec_clients["CLOUDBET_PRIMARY"]
+        sxbet_exec = config.exec_clients["SXBET_PRIMARY"]
+        assert cloudbet_exec.config["dry_run"] is False
+        assert cloudbet_exec.config["accept_price_change"] == "BETTER"
+        assert cloudbet_exec.config["pending_acceptance_poll_attempts"] == 3
+        assert cloudbet_exec.config["pending_acceptance_poll_interval_secs"] == 0.5
+        assert sxbet_exec.config["dry_run"] is False
+        assert sxbet_exec.config["execution_mode"] == "taker_fill"
+        assert sxbet_exec.config["odds_slippage"] == 5
+
+        readiness = manifest_execution_readiness(manifest)
+        assert readiness["autoExecute"] is True
+        assert readiness["liveExecutionArmed"] is True
+        assert readiness["liveExecutionEnvArmed"] is False
+        assert readiness["allowCrossCurrencyLiveExecution"] is False
+        assert readiness["riskCaps"] == {
+            "maxLegStake": "15",
+            "maxDailyNotional": "100",
+            "maxDailyLoss": "25",
+        }
+
     def test_cloudbet_factories_match_live_node_builder_signature(self, monkeypatch):
         from nautilus_trader.adapters.cloudbet import factories as cloudbet_factories
         from nautilus_trader.adapters.cloudbet.config import CloudbetDataClientConfig

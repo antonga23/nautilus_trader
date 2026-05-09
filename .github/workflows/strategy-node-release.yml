@@ -33,6 +33,10 @@ on:
         description: Rebuild the strategy-node image archive even when an R2 archive already exists
         required: false
         default: 'false'
+      live_execution_armed:
+        description: Explicitly arm live execution for manifests that also opt in
+        required: false
+        default: 'false'
 
 permissions:
   contents: read
@@ -597,6 +601,7 @@ jobs:
       POLYMARKET_PASSPHRASE: ${{ secrets.POLYMARKET_PASSPHRASE }}
       STRATEGY_NODE_CONTAINER_NAME: ${{ github.event.inputs.container_name }}
       STRATEGY_NODE_IMAGE_TRANSPORT: ${{ github.event.inputs.image_transport }}
+      BETTING_LIVE_EXECUTION_ARMED_INPUT: ${{ github.event.inputs.live_execution_armed }}
     steps:
       - uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
         with:
@@ -773,6 +778,9 @@ jobs:
           install -m 600 /dev/null strategy-node.env
           if [ -n "$STRATEGY_NODE_ENV_FILE" ]; then
             printf '%s\n' "$STRATEGY_NODE_ENV_FILE" >> strategy-node.env
+          fi
+          if [ "${BETTING_LIVE_EXECUTION_ARMED_INPUT:-false}" = "true" ]; then
+            printf '%s\n' "BETTING_LIVE_EXECUTION_ARMED=1" >> strategy-node.env
           fi
 
           append_env_secret() {

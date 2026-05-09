@@ -173,6 +173,24 @@ def manifest_execution_readiness(
     return {
         "validationMode": manifest.validation_mode,
         "autoExecute": manifest.strategy.auto_execute,
+        "liveExecutionArmed": getattr(manifest.strategy, "live_execution_armed", False),
+        "liveExecutionEnvArmed": os.getenv("BETTING_LIVE_EXECUTION_ARMED", "").strip().lower()
+        in {"1", "true", "yes", "armed"},
+        "allowSameVenueLiveExecution": getattr(
+            manifest.strategy,
+            "allow_same_venue_live_execution",
+            False,
+        ),
+        "allowCrossCurrencyLiveExecution": getattr(
+            manifest.strategy,
+            "allow_cross_currency_live_execution",
+            False,
+        ),
+        "riskCaps": {
+            "maxLegStake": str(getattr(manifest.strategy, "max_leg_stake", "0")),
+            "maxDailyNotional": str(getattr(manifest.strategy, "max_daily_notional", "0")),
+            "maxDailyLoss": str(getattr(manifest.strategy, "max_daily_loss", "0")),
+        },
         "semanticCacheConfigured": bool(manifest.semantic_rule_cache_dir),
         "venues": venue_payloads,
     }
@@ -314,6 +332,8 @@ def _build_sxbet_exec_importable(
         "max_retry_attempts": 3,
         "base_currency": _resolve_base_currency(venue),
         "dry_run": venue.execution_dry_run,
+        "execution_mode": str((venue.metadata or {}).get("execution_mode") or "taker_fill"),
+        "odds_slippage": int((venue.metadata or {}).get("odds_slippage") or 5),
         "routing": {"venues": [venue.venue]},
     }
     return ImportableConfig(
@@ -376,6 +396,17 @@ def _build_cloudbet_exec_importable(
         "base_currency": _resolve_base_currency(venue),
         "market_filter": dict(filters) if filters else None,
         "dry_run": venue.execution_dry_run,
+        "accept_price_change": str(
+            (venue.metadata or {}).get("accept_price_change")
+            or manifest.strategy.execution_price_change_policy
+            or "better",
+        ),
+        "pending_acceptance_poll_attempts": int(
+            (venue.metadata or {}).get("pending_acceptance_poll_attempts") or 3,
+        ),
+        "pending_acceptance_poll_interval_secs": float(
+            (venue.metadata or {}).get("pending_acceptance_poll_interval_secs") or 0.5,
+        ),
         "routing": {"venues": [venue.venue]},
     }
     return ImportableConfig(

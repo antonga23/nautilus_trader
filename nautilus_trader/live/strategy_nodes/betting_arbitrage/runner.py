@@ -1040,6 +1040,7 @@ def _collect_runtime_probe_payload(
             "valueExecutionEnabled": stats.get("value_execution_enabled", False),
             "minValueEdge": stats.get("min_value_edge", "0"),
         },
+        "liveExecution": stats.get("live_execution", {}),
         "semanticMatchInstruments": len(snapshot["matched_node_ids"]),
         "quotedSemanticMatchInstruments": sum(
             1 for node_id in snapshot["matched_node_ids"] if node_id in snapshot["quotes"]

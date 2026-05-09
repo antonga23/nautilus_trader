@@ -511,7 +511,10 @@ class OpportunityGraph:
         return True, [
             snapshot
             for snapshot in snapshots
-            if ((edge := self.edges_by_id.get(snapshot[0])) is not None and edge.execution_safe)
+            if (
+                (edge := self.edges_by_id.get(snapshot[0])) is not None
+                and (edge.execution_safe or edge.same_venue_execution_eligible)
+            )
         ]
 
     def connected_edge_count(self, node_id: str) -> int:
@@ -680,7 +683,7 @@ class OpportunityGraph:
         candidates: list[OpportunityCandidate] = []
         for edge_id, source_node_id, target_node_id, _, _, _ in snapshots:
             edge = self.edges_by_id.get(edge_id)
-            if edge is None or not edge.execution_safe:
+            if edge is None or not (edge.execution_safe or edge.same_venue_execution_eligible):
                 continue
             source_quote = self.quotes_by_node_id.get(source_node_id)
             target_quote = self.quotes_by_node_id.get(target_node_id)

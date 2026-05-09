@@ -1,4 +1,6 @@
+# ruff: noqa: C901, D213, D401, D406, D407, D409, D410, D411, F401, F541, F841, PIE790, RUF010, UP006, UP007, UP035, UP045
 import asyncio
+import uuid
 from typing import Optional, Any, List, Union, Set
 
 import pandas as pd
@@ -38,6 +40,7 @@ from nautilus_trader.msgbus.bus import MessageBus
 from nautilus_trader.adapters.cloudbet.client.core import CloudbetClient
 from nautilus_trader.adapters.cloudbet.client.exceptions import CloudbetAPIError
 from nautilus_trader.adapters.cloudbet.client.schema import (
+    AcceptPriceChange,
     GetAccountCurrencies,
     GetAccountBalance,
     SelectionSide,
@@ -1142,12 +1145,20 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
                     ts_event=self._clock.timestamp_ns(),
                 )
                 return
+            accept_price_change = self._accept_price_change_policy()
+            reference_id = str(uuid.uuid4())
             place_bet_response: GetBetResponse = await self._client.place_bets(
                 event_id=instrument.event_id,
                 market_url=market_url,
                 price=price,  # assumes Order has price eg. Limit Order
                 side=side,
                 stake=stake,
+                reference_id=reference_id,
+                accept_price_change=accept_price_change,
+            )
+            place_bet_response = await self._resolve_pending_acceptance(
+                reference_id,
+                place_bet_response,
             )
         except Exception as e:
             # if isinstance(CloudbetAPIError):
@@ -1225,3 +1236,39 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
         #     self._handle_status_message(update=update)
         # else:
         #     raise RuntimeError
+
+    def _accept_price_change_policy(self) -> AcceptPriceChange:
+        raw_policy = getattr(self._config, "accept_price_change", "BETTER")
+        normalized = str(raw_policy or "BETTER").strip().upper()
+        try:
+            return AcceptPriceChange(normalized)
+        except ValueError:
+            self._log.warning(
+                f"Invalid Cloudbet accept_price_change={raw_policy!r}; using BETTER",
+            )
+            return AcceptPriceChange.BETTER
+
+    async def _resolve_pending_acceptance(
+        self,
+        reference_id: str,
+        response: GetBetResponse,
+    ) -> GetBetResponse:
+        if response.status is not BetStatus.PENDING_ACCEPTANCE:
+            return response
+        attempts = max(0, int(getattr(self._config, "pending_acceptance_poll_attempts", 3)))
+        interval_secs = max(
+            0.0,
+            float(getattr(self._config, "pending_acceptance_poll_interval_secs", 0.5)),
+        )
+        resolved = response
+        for _ in range(attempts):
+            if interval_secs:
+                await asyncio.sleep(interval_secs)
+            try:
+                resolved = await self._client.get_bet_status(reference_id)
+            except Exception as e:
+                self._log.warning(f"Cloudbet pending acceptance polling failed: {e!r}")
+                break
+            if resolved.status is not BetStatus.PENDING_ACCEPTANCE:
+                break
+        return resolved
