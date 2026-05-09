@@ -620,6 +620,34 @@ def test_init_rejects_non_usdc_base_currency():
         )
 
 
+def test_init_accepts_unprefixed_hex_wallet_credentials():
+    config = SimpleNamespace(
+        api_key="api-key",
+        wallet_address="12" * 20,
+        private_key="34" * 32,
+        base_currency="USDC",
+    )
+    instrument_provider = SXBetInstrumentProvider(
+        http_client=Mock(),
+        config=SXBetInstrumentProviderConfig(),
+        logger=Mock(),
+    )
+
+    client = SXBetExecutionClient(
+        loop=get_event_loop(),
+        http_client=Mock(),
+        instrument_provider=instrument_provider,
+        msgbus=TestComponentStubs.msgbus(),
+        cache=TestComponentStubs.cache(),
+        clock=TestComponentStubs.clock(),
+        logger=Logger(name="test-sxbet-execution"),
+        config=config,
+    )
+
+    assert client._wallet_address == "0x" + "12" * 20
+    assert client._private_key == "0x" + "34" * 32
+
+
 @pytest.mark.parametrize(
     ("field_name", "field_value", "message"),
     [

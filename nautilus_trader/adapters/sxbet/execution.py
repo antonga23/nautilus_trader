@@ -17,6 +17,7 @@ SX.bet execution client.
 """
 
 import asyncio
+import re
 from decimal import Decimal
 
 from nautilus_trader.adapters.betting.common.enums import Outcome
@@ -149,7 +150,9 @@ class SXBetExecutionClient(LiveExecutionClient):
         self._instrument_provider = instrument_provider
         self._logger = logger
         self._validate_config(config)
-        self._account_id = AccountId(f"{SXBET_VENUE.value}-{config.wallet_address[:10]}")
+        self._wallet_address = self._normalize_wallet_address(config.wallet_address)
+        self._private_key = self._normalize_private_key(config.private_key)
+        self._account_id = AccountId(f"{SXBET_VENUE.value}-{self._wallet_address[:10]}")
         self._base_token = self._resolve_base_token(config.base_currency)
         # Order tracking
         self._orders: dict[ClientOrderId, dict] = {}
@@ -165,7 +168,7 @@ class SXBetExecutionClient(LiveExecutionClient):
         # Get balance
         try:
             balance = await self._http_client.get_balance(
-                self._config.wallet_address,
+                self._wallet_address,
                 self._base_token,
             )
             if balance:
@@ -232,7 +235,7 @@ class SXBetExecutionClient(LiveExecutionClient):
 
         order_data = {
             "marketHash": market_hash,
-            "maker": self._config.wallet_address,
+            "maker": self._wallet_address,
             "totalBetSize": stake_wei,
             "percentageOdds": percentage_odds,
             "expiry": expiry,
@@ -247,7 +250,7 @@ class SXBetExecutionClient(LiveExecutionClient):
             # Sign the order
             signature = sign_eip712_order(
                 order=order_data,
-                private_key=self._config.private_key,
+                private_key=self._private_key,
             )
 
             # Submit order event once the payload is signed and ready for venue submission.
@@ -320,7 +323,7 @@ class SXBetExecutionClient(LiveExecutionClient):
 
         fill_data = {
             "market": market,
-            "taker": self._config.wallet_address,
+            "taker": self._wallet_address,
             "baseToken": self._base_token,
             "isTakerBettingOutcomeOne": is_taker_betting_outcome_one,
             "stakeWei": stake_wei,
@@ -335,7 +338,7 @@ class SXBetExecutionClient(LiveExecutionClient):
         try:
             taker_sig = sign_eip712_fill_order(
                 fill=fill_data,
-                private_key=self._config.private_key,
+                private_key=self._private_key,
             )
             self._generate_order_submitted(order)
 
@@ -349,7 +352,7 @@ class SXBetExecutionClient(LiveExecutionClient):
 
             result = await self._http_client.fill_order(
                 market=market,
-                taker=self._config.wallet_address,
+                taker=self._wallet_address,
                 base_token=self._base_token,
                 is_taker_betting_outcome_one=is_taker_betting_outcome_one,
                 stake_wei=stake_wei,
@@ -391,19 +394,8 @@ class SXBetExecutionClient(LiveExecutionClient):
             if not isinstance(value, str) or not value.strip():
                 raise SXBetInvalidConfigError(field_name, "must be a non-empty string")
 
-        wallet_address = config.wallet_address.strip()
-        if not wallet_address.startswith("0x") or len(wallet_address) != 42:
-            raise SXBetInvalidConfigError(
-                "wallet_address",
-                "must be a 42-character 0x-prefixed address",
-            )
-
-        private_key = config.private_key.strip()
-        if not private_key.startswith("0x") or len(private_key) != 66:
-            raise SXBetInvalidConfigError(
-                "private_key",
-                "must be a 66-character 0x-prefixed private key",
-            )
+        SXBetExecutionClient._normalize_wallet_address(config.wallet_address)
+        SXBetExecutionClient._normalize_private_key(config.private_key)
         execution_mode = getattr(config, "execution_mode", "maker_post")
         if execution_mode not in {"taker_fill", "maker_post"}:
             raise SXBetInvalidConfigError(
@@ -416,6 +408,34 @@ class SXBetExecutionClient(LiveExecutionClient):
                 "odds_slippage",
                 "must be between 0 and 100",
             )
+
+    @staticmethod
+    def _normalize_wallet_address(wallet_address: str) -> str:
+        normalized = wallet_address.strip()
+        if normalized.startswith("0X"):
+            normalized = f"0x{normalized[2:]}"
+        if not normalized.startswith("0x") and re.fullmatch(r"[0-9a-fA-F]{40}", normalized):
+            normalized = f"0x{normalized}"
+        if not re.fullmatch(r"0x[0-9a-fA-F]{40}", normalized):
+            raise SXBetInvalidConfigError(
+                "wallet_address",
+                "must be a 42-character 0x-prefixed address",
+            )
+        return normalized
+
+    @staticmethod
+    def _normalize_private_key(private_key: str) -> str:
+        normalized = private_key.strip()
+        if normalized.startswith("0X"):
+            normalized = f"0x{normalized[2:]}"
+        if not normalized.startswith("0x") and re.fullmatch(r"[0-9a-fA-F]{64}", normalized):
+            normalized = f"0x{normalized}"
+        if not re.fullmatch(r"0x[0-9a-fA-F]{64}", normalized):
+            raise SXBetInvalidConfigError(
+                "private_key",
+                "must be a 66-character 0x-prefixed private key",
+            )
+        return normalized
 
     @staticmethod
     def _extract_order_hash(result: dict) -> str:
@@ -641,7 +661,7 @@ class SXBetExecutionClient(LiveExecutionClient):
 
         try:
             orders = await self._http_client.get_user_orders(
-                self._config.wallet_address,
+                self._wallet_address,
             )
 
             for order_data in orders.get("data", {}).get("orders", []):

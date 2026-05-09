@@ -524,7 +524,7 @@ class TestBettingArbitrageNodeBuilder:
     def test_cloudbet_sxbet_live_pilot_manifest_builds_live_exec_clients(self, monkeypatch):
         monkeypatch.setenv("CLOUDBET_API_KEY", "cloudbet-live-api-key")
         monkeypatch.setenv("SXBET_API_KEY", "sxbet-live-api-key")
-        monkeypatch.setenv("SXBET_PRIVATE_KEY", "0x" + "a" * 64)
+        monkeypatch.setenv("SXBET_PRIVATE_KEY", "a" * 64)
         monkeypatch.setenv("SXBET_WALLET_ADDRESS", "0x" + "b" * 40)
         monkeypatch.delenv("BETTING_LIVE_EXECUTION_ARMED", raising=False)
 
@@ -552,6 +552,7 @@ class TestBettingArbitrageNodeBuilder:
         assert sxbet_exec.config["dry_run"] is False
         assert sxbet_exec.config["execution_mode"] == "taker_fill"
         assert sxbet_exec.config["odds_slippage"] == 5
+        assert sxbet_exec.config["private_key"] == "0x" + "a" * 64
 
         readiness = manifest_execution_readiness(manifest)
         assert readiness["autoExecute"] is True
