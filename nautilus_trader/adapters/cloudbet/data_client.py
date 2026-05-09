@@ -390,7 +390,7 @@ class CloudbetDataClient(LiveMarketDataClient):
             self._quote_polling_running = False
 
     async def _unsubscribe_instrument(self, instrument_id: InstrumentId) -> None:
-        if instrument_id in self.subscribed_instruments:
+        if instrument_id in self.subscribed_instruments():
             self._remove_subscription_instrument(instrument_id)
             self.subscribed_market_names.pop(instrument_id, None)
             self.subscribed_event_ids.pop(instrument_id, None)
@@ -1031,7 +1031,7 @@ class CloudbetDataClient(LiveMarketDataClient):
                     f"{self._update_instrument_interval}s.",
                 )
                 await asyncio.sleep(self._update_instrument_interval)
-                await self._instrument_provider.load_ids_async(self.subscribed_instruments)
+                await self._instrument_provider.load_ids_async(self.subscribed_instruments())
                 # send to Data Engine for processing => add to cache and propagate to subscriptions
                 self._send_all_instruments_to_data_engine()
                 # Signal completion of the update cycle

@@ -106,6 +106,8 @@ class TestCloudbetDataClient:
 
         # Assertions related to the mocked calls
         assert mocked_load_ids.call_count == iterations
+        for call in mocked_load_ids.await_args_list:
+            assert isinstance(call.args[0], list)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 552)], indirect=["instruments"])
