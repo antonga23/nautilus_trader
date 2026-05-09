@@ -578,7 +578,7 @@ jobs:
 
   deploy-strategy-node:
     name: deploy-strategy-node
-    timeout-minutes: 30
+    timeout-minutes: 45
     needs: [build-strategy-node-image]
     if: github.event_name == 'workflow_dispatch' && github.event.inputs.deploy_enabled == 'true'
     runs-on: [self-hosted, linux, x64, cloudbet-market-maker, ci, gcp, ubuntu24]
