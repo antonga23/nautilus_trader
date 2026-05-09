@@ -212,6 +212,53 @@ def build_order_typed_data(
     }
 
 
+def build_fill_order_typed_data(
+    fill: dict[str, Any],
+    chain_id: int | None = None,
+) -> dict[str, Any]:
+    """
+    Build EIP712 typed data structure for SX.bet taker fill signing.
+    """
+    if chain_id is None:
+        chain_id = _default_chain_id()
+
+    canonical_fill = {
+        **fill,
+        "stakeWei": _normalize_uint256(fill["stakeWei"]),
+        "desiredOdds": _normalize_uint256(fill["desiredOdds"]),
+        "oddsSlippage": _normalize_uint256(fill["oddsSlippage"]),
+        "fillSalt": _normalize_uint256(fill["fillSalt"]),
+    }
+
+    return {
+        "types": {
+            "EIP712Domain": [
+                {"name": "name", "type": "string"},
+                {"name": "version", "type": "string"},
+                {"name": "chainId", "type": "uint256"},
+            ],
+            "FillOrder": [
+                {"name": "market", "type": "string"},
+                {"name": "taker", "type": "address"},
+                {"name": "baseToken", "type": "address"},
+                {"name": "isTakerBettingOutcomeOne", "type": "bool"},
+                {"name": "stakeWei", "type": "uint256"},
+                {"name": "desiredOdds", "type": "uint256"},
+                {"name": "oddsSlippage", "type": "uint256"},
+                {"name": "fillSalt", "type": "uint256"},
+                {"name": "message", "type": "string"},
+            ],
+        },
+        "primaryType": "FillOrder",
+        "domain": {
+            "name": SXBET_EIP712_DOMAIN["name"],
+            "version": SXBET_EIP712_DOMAIN["version"],
+            "chainId": chain_id,
+        },
+        "message": canonical_fill,
+    }
+
+
 def sign_order_hash(order_hash: bytes, private_key: str) -> str:
     """
     Sign an order hash with a private key.
@@ -283,6 +330,38 @@ def sign_eip712_order(
             chain_id = _default_chain_id()
 
         typed_data = build_order_typed_data(order, chain_id)
+        signed = Account.sign_message(
+            encode_typed_data(
+                domain_data=typed_data["domain"],
+                message_types=typed_data["types"],
+                message_data=typed_data["message"],
+            ),
+            private_key=private_key,
+        )
+        return signed.signature.hex()
+    except ImportError:
+        raise ImportError(
+            "eth-account library required for EIP712 signing. "
+            "Install with: pip install eth-account",
+        )
+
+
+def sign_eip712_fill_order(
+    fill: dict[str, Any],
+    private_key: str,
+    chain_id: int | None = None,
+) -> str:
+    """
+    Sign a taker fill payload using EIP712 typed data signing.
+    """
+    try:
+        from eth_account import Account
+        from eth_account.messages import encode_typed_data
+
+        if chain_id is None:
+            chain_id = _default_chain_id()
+
+        typed_data = build_fill_order_typed_data(fill, chain_id)
         signed = Account.sign_message(
             encode_typed_data(
                 domain_data=typed_data["domain"],

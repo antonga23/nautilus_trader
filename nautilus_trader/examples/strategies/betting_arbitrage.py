@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal
+import os
 import time
 from typing import Any
 
@@ -70,6 +71,7 @@ from nautilus_trader.trading.strategy import Strategy
 VALID_MARKET_TIMINGS = frozenset({"all", "pre_market", "live"})
 VALID_QUOTE_FRESHNESS_PROFILES = frozenset({"pre_match", "live", "custom"})
 VALID_DEVIG_METHODS = frozenset({"auto", "proportional", "shin", "logarithmic"})
+VALID_EXECUTION_PRICE_CHANGE_POLICIES = frozenset({"none", "better", "all"})
 DEFAULT_ENABLED_VENUES = frozenset({"CLOUDBET", "SXBET", "10BET"})
 NANOSECONDS_PER_SECOND = 1_000_000_000
 INSTRUMENT_REFRESH_TIMER_NAME = "betting-arbitrage-instrument-refresh"
@@ -263,6 +265,26 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         validation deployments unless explicitly approved.
     min_value_edge : Decimal, default Decimal("0.015")
         Minimum net value edge used for dry-run value diagnostics.
+    live_execution_armed : bool, default False
+        Manifest-level live execution arming flag. The environment gate
+        ``BETTING_LIVE_EXECUTION_ARMED`` must also be truthy before order submission.
+    max_leg_stake : Decimal, default Decimal("15")
+        Maximum stake for any single live execution leg.
+    max_daily_notional : Decimal, default Decimal("100")
+        Maximum live execution notional allowed for the process lifetime.
+    max_daily_loss : Decimal, default Decimal("25")
+        Daily realized loss guardrail reported in runtime status. This slice
+        blocks new live execution when externally updated realized loss reaches the cap.
+    allow_same_venue_live_execution : bool, default True
+        Permit same-venue execution only after strict same-venue risk checks pass.
+    execution_price_change_policy : str, default "better"
+        Venue price-change policy for live execution.
+    execution_max_retry_count : int, default 1
+        Maximum retry attempts for live execution recovery paths.
+    execution_retry_slippage_bps : int, default 25
+        Slippage tolerance for venue retry payloads.
+    live_execution_kill_switch_path : str | None, default None
+        Optional file path which halts live execution when present.
 
     """
 
@@ -302,6 +324,15 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
     value_diagnostics_enabled: bool = True
     value_execution_enabled: bool = False
     min_value_edge: Decimal = Decimal("0.015")
+    live_execution_armed: bool = False
+    max_leg_stake: Decimal = Decimal(15)
+    max_daily_notional: Decimal = Decimal(100)
+    max_daily_loss: Decimal = Decimal(25)
+    allow_same_venue_live_execution: bool = True
+    execution_price_change_policy: str = "better"
+    execution_max_retry_count: int = 1
+    execution_retry_slippage_bps: int = 25
+    live_execution_kill_switch_path: str | None = None
 
     def __post_init__(self) -> None:
         """
@@ -312,6 +343,11 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         market_timing_filter = self.market_timing_filter if not self.exclude_live else "pre_market"
         semantic_rule_cache_dir = (
             self.semantic_rule_cache_dir.strip() if self.semantic_rule_cache_dir else None
+        )
+        live_execution_kill_switch_path = (
+            self.live_execution_kill_switch_path.strip()
+            if self.live_execution_kill_switch_path
+            else None
         )
         semantic_unmatched_quote_probe_venues = frozenset(
             str(venue).strip().upper()
@@ -342,52 +378,28 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         opportunity_graph_engine = self.opportunity_graph_engine.strip().lower()
         quote_freshness_profile = self.quote_freshness_profile.strip().lower()
         devig_method, devig_reference_venues = self._normalize_devig_config()
+        execution_price_change_policy = self.execution_price_change_policy.strip().lower()
 
-        if market_timing_filter not in VALID_MARKET_TIMINGS:
-            msg = (
-                f"Invalid market_timing_filter: {market_timing_filter}. "
-                f"Must be one of {VALID_MARKET_TIMINGS}"
-            )
-            raise ValueError(msg)
-        if quote_freshness_profile not in VALID_QUOTE_FRESHNESS_PROFILES:
-            msg = (
-                f"Invalid quote_freshness_profile: {quote_freshness_profile}. "
-                f"Must be one of {VALID_QUOTE_FRESHNESS_PROFILES}"
-            )
-            raise ValueError(msg)
-        if opportunity_graph_engine not in {"auto", "python", "rust", "semantic_rust"}:
-            msg = (
-                f"Invalid opportunity_graph_engine: {opportunity_graph_engine}. "
-                "Must be one of {'auto', 'python', 'rust', 'semantic_rust'}"
-            )
-            raise ValueError(msg)
-        if self.duplicate_suppression_cooldown_secs < 0:
-            msg = "duplicate_suppression_cooldown_secs must be non-negative"
-            raise ValueError(msg)
-        if self.live_quote_age_slo_secs <= 0:
-            msg = "live_quote_age_slo_secs must be positive"
-            raise ValueError(msg)
-        if self.semantic_unmatched_quote_probe_limit_per_venue < 0:
-            msg = "semantic_unmatched_quote_probe_limit_per_venue must be non-negative"
-            raise ValueError(msg)
-        if (
-            self.instrument_refresh_interval_secs is not None
-            and self.instrument_refresh_interval_secs <= 0
-        ):
-            msg = "instrument_refresh_interval_secs must be positive when set"
-            raise ValueError(msg)
-        if (
-            self.stale_quote_refresh_cooldown_secs is not None
-            and self.stale_quote_refresh_cooldown_secs <= 0
-        ):
-            msg = "stale_quote_refresh_cooldown_secs must be positive when set"
-            raise ValueError(msg)
+        self._validate_filter_config(
+            market_timing_filter=market_timing_filter,
+            quote_freshness_profile=quote_freshness_profile,
+            opportunity_graph_engine=opportunity_graph_engine,
+        )
+        self._validate_live_execution_config(
+            execution_price_change_policy=execution_price_change_policy,
+        )
+        self._validate_refresh_config()
 
         msgspec.structs.force_setattr(self, "enabled_venues", enabled_venues)
         msgspec.structs.force_setattr(self, "sport_filter", normalized_sport_filter)
         msgspec.structs.force_setattr(self, "market_timing_filter", market_timing_filter)
         msgspec.structs.force_setattr(self, "opportunity_graph_engine", opportunity_graph_engine)
         msgspec.structs.force_setattr(self, "semantic_rule_cache_dir", semantic_rule_cache_dir)
+        msgspec.structs.force_setattr(
+            self,
+            "live_execution_kill_switch_path",
+            live_execution_kill_switch_path,
+        )
         msgspec.structs.force_setattr(
             self,
             "semantic_unmatched_quote_probe_venues",
@@ -424,6 +436,11 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         msgspec.structs.force_setattr(self, "devig_reference_venues", devig_reference_venues)
         msgspec.structs.force_setattr(
             self,
+            "execution_price_change_policy",
+            execution_price_change_policy,
+        )
+        msgspec.structs.force_setattr(
+            self,
             "live_quote_age_slo_secs",
             float(self.live_quote_age_slo_secs),
         )
@@ -433,6 +450,78 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
                 "stale_quote_refresh_cooldown_secs",
                 float(self.stale_quote_refresh_cooldown_secs),
             )
+
+    def _validate_filter_config(
+        self,
+        *,
+        market_timing_filter: str,
+        quote_freshness_profile: str,
+        opportunity_graph_engine: str,
+    ) -> None:
+        if market_timing_filter not in VALID_MARKET_TIMINGS:
+            msg = (
+                f"Invalid market_timing_filter: {market_timing_filter}. "
+                f"Must be one of {VALID_MARKET_TIMINGS}"
+            )
+            raise ValueError(msg)
+        if quote_freshness_profile not in VALID_QUOTE_FRESHNESS_PROFILES:
+            msg = (
+                f"Invalid quote_freshness_profile: {quote_freshness_profile}. "
+                f"Must be one of {VALID_QUOTE_FRESHNESS_PROFILES}"
+            )
+            raise ValueError(msg)
+        if opportunity_graph_engine not in {"auto", "python", "rust", "semantic_rust"}:
+            msg = (
+                f"Invalid opportunity_graph_engine: {opportunity_graph_engine}. "
+                "Must be one of {'auto', 'python', 'rust', 'semantic_rust'}"
+            )
+            raise ValueError(msg)
+        if self.duplicate_suppression_cooldown_secs < 0:
+            msg = "duplicate_suppression_cooldown_secs must be non-negative"
+            raise ValueError(msg)
+        if self.live_quote_age_slo_secs <= 0:
+            msg = "live_quote_age_slo_secs must be positive"
+            raise ValueError(msg)
+        if self.semantic_unmatched_quote_probe_limit_per_venue < 0:
+            msg = "semantic_unmatched_quote_probe_limit_per_venue must be non-negative"
+            raise ValueError(msg)
+
+    def _validate_live_execution_config(self, *, execution_price_change_policy: str) -> None:
+        if execution_price_change_policy not in VALID_EXECUTION_PRICE_CHANGE_POLICIES:
+            msg = (
+                f"Invalid execution_price_change_policy: {execution_price_change_policy}. "
+                f"Must be one of {VALID_EXECUTION_PRICE_CHANGE_POLICIES}"
+            )
+            raise ValueError(msg)
+        if self.max_leg_stake <= 0:
+            msg = "max_leg_stake must be positive"
+            raise ValueError(msg)
+        if self.max_daily_notional <= 0:
+            msg = "max_daily_notional must be positive"
+            raise ValueError(msg)
+        if self.max_daily_loss < 0:
+            msg = "max_daily_loss must be non-negative"
+            raise ValueError(msg)
+        if self.execution_max_retry_count < 0:
+            msg = "execution_max_retry_count must be non-negative"
+            raise ValueError(msg)
+        if self.execution_retry_slippage_bps < 0:
+            msg = "execution_retry_slippage_bps must be non-negative"
+            raise ValueError(msg)
+
+    def _validate_refresh_config(self) -> None:
+        if (
+            self.instrument_refresh_interval_secs is not None
+            and self.instrument_refresh_interval_secs <= 0
+        ):
+            msg = "instrument_refresh_interval_secs must be positive when set"
+            raise ValueError(msg)
+        if (
+            self.stale_quote_refresh_cooldown_secs is not None
+            and self.stale_quote_refresh_cooldown_secs <= 0
+        ):
+            msg = "stale_quote_refresh_cooldown_secs must be positive when set"
+            raise ValueError(msg)
 
     def _normalize_devig_config(self) -> tuple[str, frozenset[str] | None]:
         devig_method = self.devig_method.strip().lower()
@@ -525,6 +614,16 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._liquidity_suppressions = 0
         self._manual_review_suppressions = 0
         self._executable_candidates = 0
+        self._live_execution_attempts = 0
+        self._live_execution_blocks = 0
+        self._live_execution_submissions = 0
+        self._live_execution_unhedged_exposures = 0
+        self._live_execution_halt_reason: str | None = None
+        self._live_execution_notional_used = Decimal(0)
+        self._live_execution_realized_loss = Decimal(0)
+        self._live_execution_block_reasons: Counter[str] = Counter()
+        self._live_execution_submissions_by_venue: Counter[str] = Counter()
+        self._order_lifecycle_counts_by_venue: dict[str, Counter[str]] = {}
         self._instrument_refresh_requests = 0
         self._instrument_refresh_failures = 0
         self._instrument_refresh_added = 0
@@ -605,6 +704,12 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             f"value_diagnostics_enabled={self._config.value_diagnostics_enabled} "
             f"value_execution_enabled={self._config.value_execution_enabled} "
             f"min_value_edge={self._config.min_value_edge} "
+            f"live_execution_armed={self._config.live_execution_armed} "
+            f"live_execution_env_armed={self._live_execution_env_armed()} "
+            f"max_leg_stake={self._config.max_leg_stake} "
+            f"max_daily_notional={self._config.max_daily_notional} "
+            f"max_daily_loss={self._config.max_daily_loss} "
+            f"allow_same_venue_live_execution={self._config.allow_same_venue_live_execution} "
             "semantic_unmatched_quote_probe_venues="
             f"{sorted(self._config.semantic_unmatched_quote_probe_venues)} "
             "semantic_unmatched_quote_probe_limit_per_venue="
@@ -3479,11 +3584,12 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self.log.info(msg)
 
         if self._config.auto_execute:
-            self._execute_arbitrage(opportunity)
+            self._execute_arbitrage(opportunity, diagnostics=diagnostics)
 
     def _execute_arbitrage(
         self,
         opportunity: ArbitrageOpportunity,
+        diagnostics: ArbitrageDiagnostics | None = None,
     ) -> None:
         """
         Execute an arbitrage opportunity.
@@ -3497,8 +3603,21 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         ----------
         opportunity : ArbitrageOpportunity
             The arbitrage opportunity to execute.
+        diagnostics : ArbitrageDiagnostics, optional
+            Final runtime quality diagnostics used by live risk gates.
 
         """
+        if self._config.live_execution_armed:
+            opportunity, refresh_reasons = self._live_execution_refresh_opportunity(opportunity)
+            if refresh_reasons:
+                self._record_live_execution_block(refresh_reasons)
+                self.log.warning(
+                    "Live arbitrage execution blocked before final quote check: "
+                    f"reasons={','.join(refresh_reasons)} "
+                    f"instrument_a={opportunity.instrument_a.id} "
+                    f"instrument_b={opportunity.instrument_b.id}",
+                )
+                return
         opportunity = self.fee_adjusted_opportunity(opportunity)
         # Calculate optimal stakes
         stake_odds_a, stake_odds_b = self._stake_pricing_odds(opportunity)
@@ -3507,6 +3626,22 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             odds_b=stake_odds_b,
             total_stake=self._config.max_total_stake,
         )
+        risk_reasons = self._live_execution_block_reasons_for(
+            opportunity=opportunity,
+            stake_a=stake_a,
+            stake_b=stake_b,
+            diagnostics=diagnostics,
+        )
+        if risk_reasons:
+            self._record_live_execution_block(risk_reasons)
+            self.log.warning(
+                "Live arbitrage execution blocked: "
+                f"reasons={','.join(risk_reasons)} "
+                f"instrument_a={opportunity.instrument_a.id} "
+                f"instrument_b={opportunity.instrument_b.id} "
+                f"stake_a={stake_a} stake_b={stake_b}",
+            )
+            return
 
         msg = f"Executing arbitrage: stake_a={stake_a}, stake_b={stake_b}, profit={profit}"
         self.log.info(msg)
@@ -3545,32 +3680,306 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         # Note: In practice, you'd want to submit these with minimal delay
         # and handle cases where one fills but the other doesn't
         submit_started_ns = time.perf_counter_ns()
-        self.submit_order(order_a)
-        self.submit_order(order_b)
+        self._live_execution_attempts += 1
+        submitted_count = 0
+        for order in (order_a, order_b):
+            venue = str(order.instrument_id.venue).upper()
+            try:
+                self.submit_order(order)
+                submitted_count += 1
+                self._live_execution_submissions_by_venue[venue] += 1
+            except Exception as e:  # pragma: no cover - submit_order is normally non-throwing
+                self._live_execution_halt_reason = "submit_order_exception"
+                self._live_execution_block_reasons["submit_order_exception"] += 1
+                self.log.error(f"Live order submission raised for {order.instrument_id}: {e}")
         self._record_latency_sample(
             self._order_submit_latency_ns,
             time.perf_counter_ns() - submit_started_ns,
         )
 
+        if submitted_count == 1:
+            self._live_execution_unhedged_exposures += 1
+            self._live_execution_halt_reason = "partial_submit_unhedged_exposure"
+        if submitted_count != 2:
+            return
+
         self._opportunities_executed += 1
+        self._live_execution_submissions += 1
+        self._live_execution_notional_used += stake_a + stake_b
 
         order_ids = f"{order_a.client_order_id}, {order_b.client_order_id}"
         msg = f"Arbitrage orders submitted: {order_ids}"
         self.log.info(msg)
 
+    def _live_execution_block_reasons_for(
+        self,
+        *,
+        opportunity: ArbitrageOpportunity,
+        stake_a: Decimal,
+        stake_b: Decimal,
+        diagnostics: ArbitrageDiagnostics | None,
+    ) -> list[str]:
+        reasons: list[str] = []
+        reasons.extend(self._live_execution_arming_block_reasons())
+        reasons.extend(self._live_execution_cap_block_reasons(opportunity, stake_a, stake_b))
+        reasons.extend(self._live_execution_semantic_block_reasons(opportunity))
+        reasons.extend(self._live_execution_diagnostic_block_reasons(diagnostics))
+        return sorted(set(reasons))
+
+    def _live_execution_refresh_opportunity(
+        self,
+        opportunity: ArbitrageOpportunity,
+    ) -> tuple[ArbitrageOpportunity, list[str]]:
+        quote_a = self._latest_quotes.get(str(opportunity.instrument_a.id))
+        quote_b = self._latest_quotes.get(str(opportunity.instrument_b.id))
+        if quote_a is None or quote_b is None:
+            return opportunity, ["missing_final_quote"]
+
+        odds_a = self._quote_odds(quote_a)
+        odds_b = self._quote_odds(quote_b)
+        if odds_a is None or odds_b is None or odds_a <= 1 or odds_b <= 1:
+            return opportunity, ["missing_final_executable_odds"]
+
+        probability_a = Decimal(1) / odds_a
+        probability_b = Decimal(1) / odds_b
+        total_probability = probability_a + probability_b
+        refreshed = replace(
+            opportunity,
+            probability_a=probability_a,
+            probability_b=probability_b,
+            total_probability=total_probability,
+            profit_margin=(Decimal(1) / total_probability) - Decimal(1),
+            odds_a=odds_a,
+            odds_b=odds_b,
+        )
+        return refreshed, self._live_execution_final_quote_block_reasons(
+            refreshed,
+            quote_a,
+            quote_b,
+        )
+
+    def _live_execution_final_quote_block_reasons(
+        self,
+        opportunity: ArbitrageOpportunity,
+        quote_a: QuoteTick,
+        quote_b: QuoteTick,
+    ) -> list[str]:
+        freshness = self._quote_freshness_thresholds(
+            opportunity.instrument_a,
+            opportunity.instrument_b,
+        )
+        now_ns = self.clock.timestamp_ns()
+        quote_age_a_secs = self._quote_age_secs(now_ns, quote_a)
+        quote_age_b_secs = self._quote_age_secs(now_ns, quote_b)
+        quote_delta_secs = (
+            abs(int(quote_a.ts_event) - int(quote_b.ts_event)) / NANOSECONDS_PER_SECOND
+        )
+        fetch_latency_a_secs = self._quote_fetch_latency_secs(quote_a)
+        fetch_latency_b_secs = self._quote_fetch_latency_secs(quote_b)
+        stake_odds_a, stake_odds_b = self._stake_pricing_odds(opportunity)
+        stake_a, stake_b, _expected_profit = calculate_arbitrage_stakes(
+            odds_a=stake_odds_a,
+            odds_b=stake_odds_b,
+            total_stake=self._config.max_total_stake,
+        )
+
+        reasons: list[str] = []
+        if (
+            quote_age_a_secs > freshness.max_quote_age_secs
+            or quote_age_b_secs > freshness.max_quote_age_secs
+        ):
+            reasons.append("final_quote_stale")
+        if quote_delta_secs > freshness.max_pair_skew_secs:
+            reasons.append("final_quote_cross_cycle")
+        if (
+            fetch_latency_a_secs > freshness.max_fetch_latency_secs
+            or fetch_latency_b_secs > freshness.max_fetch_latency_secs
+        ):
+            reasons.append("final_fetch_latency")
+        if stake_a > self._quote_available_size(quote_a) or stake_b > self._quote_available_size(
+            quote_b,
+        ):
+            reasons.append("final_liquidity_insufficient")
+        if opportunity.profit_margin < self._config.min_profit_margin:
+            reasons.append("final_below_min_profit_margin")
+        return reasons
+
+    def _live_execution_arming_block_reasons(self) -> list[str]:
+        reasons: list[str] = []
+        if not self._config.live_execution_armed:
+            reasons.append("manifest_not_live_armed")
+        if not self._live_execution_env_armed():
+            reasons.append("env_not_live_armed")
+        if self._live_execution_kill_switch_active():
+            reasons.append("kill_switch_active")
+        if self._live_execution_halt_reason:
+            reasons.append(f"halted:{self._live_execution_halt_reason}")
+        return reasons
+
+    def _live_execution_cap_block_reasons(
+        self,
+        opportunity: ArbitrageOpportunity,
+        stake_a: Decimal,
+        stake_b: Decimal,
+    ) -> list[str]:
+        reasons: list[str] = []
+        if stake_a > self._config.max_leg_stake or stake_b > self._config.max_leg_stake:
+            reasons.append("max_leg_stake_exceeded")
+        if self._live_execution_notional_used + stake_a + stake_b > self._config.max_daily_notional:
+            reasons.append("max_daily_notional_exceeded")
+        if self._live_execution_realized_loss >= self._config.max_daily_loss:
+            reasons.append("max_daily_loss_exceeded")
+        if opportunity.profit_margin < self._config.min_profit_margin:
+            reasons.append("below_min_profit_margin")
+        return reasons
+
+    def _live_execution_semantic_block_reasons(
+        self,
+        opportunity: ArbitrageOpportunity,
+    ) -> list[str]:
+        edge = self._opportunity_edge_for(opportunity.instrument_a, opportunity.instrument_b)
+        if edge is None:
+            return ["no_semantic_edge"]
+        if not self._live_execution_semantic_policy_allows(opportunity, edge):
+            return ["semantic_execution_policy_blocked"]
+        return []
+
+    @staticmethod
+    def _live_execution_diagnostic_block_reasons(
+        diagnostics: ArbitrageDiagnostics | None,
+    ) -> list[str]:
+        if diagnostics is None:
+            return []
+        reasons: list[str] = []
+        if diagnostics.stale:
+            reasons.append("stale_quote")
+        if diagnostics.fetch_latency_stale:
+            reasons.append("fetch_latency")
+        if diagnostics.matcher_suspect:
+            reasons.append(f"matcher_suspect:{diagnostics.suspect_reason}")
+        if not diagnostics.same_quote_cycle:
+            reasons.append("cross_cycle_quotes")
+        if (
+            diagnostics.suggested_stake_a > diagnostics.available_size_a
+            or diagnostics.suggested_stake_b > diagnostics.available_size_b
+        ):
+            reasons.append("liquidity_insufficient")
+        return reasons
+
+    def _live_execution_semantic_policy_allows(
+        self,
+        opportunity: ArbitrageOpportunity,
+        edge: object,
+    ) -> bool:
+        if bool(getattr(edge, "execution_safe", False)) and not opportunity.is_same_venue:
+            return True
+        if not opportunity.is_same_venue:
+            return False
+        if not self._config.allow_same_venue_live_execution:
+            return False
+        if not self._same_venue_runtime_identity_allows(opportunity):
+            return False
+        if not (
+            bool(getattr(edge, "same_venue_execution_eligible", False))
+            or bool(getattr(edge, "execution_safe", False))
+        ):
+            return False
+        dangerous_caveats = {
+            "unknown_settlement",
+            "void_states_present",
+            "partial_states_present",
+            "push_states_present",
+            "unresolved_provider_rule",
+            "ambiguous_resolution",
+            "price_correlation_not_proof",
+        }
+        caveats = {str(caveat) for caveat in getattr(edge, "caveats", ())}
+        return not caveats.intersection(dangerous_caveats)
+
+    @staticmethod
+    def _same_venue_runtime_identity_allows(opportunity: ArbitrageOpportunity) -> bool:
+        instrument_a = opportunity.instrument_a
+        instrument_b = opportunity.instrument_b
+        if str(instrument_a.id.venue).upper() != str(instrument_b.id.venue).upper():
+            return False
+        if str(instrument_a.event_id or "") != str(instrument_b.event_id or ""):
+            return False
+        return (
+            str(instrument_a.sport_name or "").lower()
+            == str(
+                instrument_b.sport_name or "",
+            ).lower()
+        )
+
+    def _opportunity_edge_for(
+        self,
+        instrument_a: CryptoBettingInstrument,
+        instrument_b: CryptoBettingInstrument,
+    ) -> object | None:
+        edge_id = self._canonical_pair_id(instrument_a, instrument_b)
+        return self._opportunity_graph.edges_by_id.get(edge_id)
+
+    def _record_live_execution_block(self, reasons: Sequence[str]) -> None:
+        self._live_execution_blocks += 1
+        for reason in reasons:
+            self._live_execution_block_reasons[reason] += 1
+
+    @staticmethod
+    def _live_execution_env_armed() -> bool:
+        return os.getenv("BETTING_LIVE_EXECUTION_ARMED", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "armed",
+        }
+
+    def _live_execution_kill_switch_active(self) -> bool:
+        if os.getenv("BETTING_LIVE_EXECUTION_KILL_SWITCH", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "halt",
+        }:
+            return True
+        path = self._config.live_execution_kill_switch_path
+        return bool(path and os.path.exists(path))
+
     def on_order_filled(self, event: Event) -> None:
         """
         Handle order filled events.
         """
+        self._record_order_lifecycle_event(event, "filled")
         msg = f"Order filled: {event}"
+        self.log.info(msg)
+
+    def on_order_accepted(self, event: Event) -> None:
+        """
+        Handle order accepted events.
+        """
+        self._record_order_lifecycle_event(event, "accepted")
+        msg = f"Order accepted: {event}"
+        self.log.info(msg)
+
+    def on_order_submitted(self, event: Event) -> None:
+        """
+        Handle order submitted events.
+        """
+        self._record_order_lifecycle_event(event, "submitted")
+        msg = f"Order submitted: {event}"
         self.log.info(msg)
 
     def on_order_rejected(self, event: Event) -> None:
         """
         Handle order rejected events.
         """
+        self._record_order_lifecycle_event(event, "rejected")
         msg = f"Order rejected: {event}"
         self.log.warning(msg)
+
+    def _record_order_lifecycle_event(self, event: Event, lifecycle: str) -> None:
+        instrument_id = getattr(event, "instrument_id", None)
+        venue = str(getattr(instrument_id, "venue", "") or "UNKNOWN").upper()
+        self._order_lifecycle_counts_by_venue.setdefault(venue, Counter())[lifecycle] += 1
 
     @staticmethod
     def _record_latency_sample(samples: list[int], elapsed_ns: int) -> None:
@@ -3683,6 +4092,31 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             "liquidity_suppressions": self._liquidity_suppressions,
             "manual_review_suppressions": self._manual_review_suppressions,
             "executable_candidates": self._executable_candidates,
+            "live_execution": {
+                "auto_execute": self._config.auto_execute,
+                "manifest_armed": self._config.live_execution_armed,
+                "env_armed": self._live_execution_env_armed(),
+                "kill_switch_active": self._live_execution_kill_switch_active(),
+                "halt_reason": self._live_execution_halt_reason,
+                "allow_same_venue_live_execution": (self._config.allow_same_venue_live_execution),
+                "max_leg_stake": str(self._config.max_leg_stake),
+                "max_daily_notional": str(self._config.max_daily_notional),
+                "max_daily_loss": str(self._config.max_daily_loss),
+                "notional_used": str(self._live_execution_notional_used),
+                "realized_loss": str(self._live_execution_realized_loss),
+                "attempts": self._live_execution_attempts,
+                "blocks": self._live_execution_blocks,
+                "block_reasons": dict(sorted(self._live_execution_block_reasons.items())),
+                "submissions": self._live_execution_submissions,
+                "submissions_by_venue": dict(
+                    sorted(self._live_execution_submissions_by_venue.items()),
+                ),
+                "unhedged_exposures": self._live_execution_unhedged_exposures,
+                "order_lifecycle_counts_by_venue": {
+                    venue: dict(sorted(counts.items()))
+                    for venue, counts in sorted(self._order_lifecycle_counts_by_venue.items())
+                },
+            },
             "instrument_refresh_requests": self._instrument_refresh_requests,
             "instrument_refresh_failures": self._instrument_refresh_failures,
             "instrument_refresh_added": self._instrument_refresh_added,

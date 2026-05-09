@@ -41,7 +41,9 @@ SXBET_ENDPOINTS = {
     "order_book": "/orders",
     # Trading (API key required)
     "place_order": "/orders/new",
+    "fill_order": "/orders/fill/v2",
     "cancel_order": "/orders/cancel",
+    "cancel_all_orders": "/orders/cancel/all",
     "user_orders": "/orders",
     "user_trades": "/trades",
 }

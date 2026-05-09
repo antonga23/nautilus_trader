@@ -104,6 +104,12 @@ class CloudbetExecClientConfig(LiveExecClientConfig, kw_only=True, frozen=True):
         The cloudbet api url.
     dry_run : bool, default False
         If True, build Cloudbet bet requests but do not submit them to the Trading API.
+    accept_price_change : str, default "BETTER"
+        Cloudbet price-change policy for live pilot betting.
+    pending_acceptance_poll_attempts : int, default 3
+        Number of status checks for Cloudbet bets that remain pending after submit.
+    pending_acceptance_poll_interval_secs : float, default 0.5
+        Delay between pending-acceptance status checks.
     """
 
     base_currency: Currency = None
@@ -111,3 +117,6 @@ class CloudbetExecClientConfig(LiveExecClientConfig, kw_only=True, frozen=True):
     api_key: str | None = None
     api_url: str | None = None
     dry_run: bool = False
+    accept_price_change: str = "BETTER"
+    pending_acceptance_poll_attempts: int = 3
+    pending_acceptance_poll_interval_secs: float = 0.5

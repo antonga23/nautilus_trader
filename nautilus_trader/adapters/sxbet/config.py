@@ -150,6 +150,11 @@ class SXBetExecClientConfig(LiveExecClientConfig, frozen=True):
         by the execution client.
     dry_run : bool, default False
         If True, build and sign order payloads but do not submit them to SX.bet.
+    execution_mode : str, default "taker_fill"
+        Execution path for live orders. ``"taker_fill"`` fills displayed liquidity,
+        while ``"maker_post"`` posts a maker order to the SX.bet order book.
+    odds_slippage : int, default 5
+        Slippage tolerance sent to the SX.bet taker fill endpoint.
 
     """
 
@@ -163,3 +168,5 @@ class SXBetExecClientConfig(LiveExecClientConfig, frozen=True):
     max_retry_attempts: int = 3
     base_currency: str = "USDC"
     dry_run: bool = False
+    execution_mode: str = "taker_fill"
+    odds_slippage: int = 5

@@ -662,6 +662,45 @@ class SXBetHttpClient:
         data = {"orderHash": order_hash}
         return await self._request("POST", SXBET_ENDPOINTS["cancel_order"], data=data)
 
+    async def fill_order(  # pylint: disable=too-many-arguments
+        self,
+        *,
+        market: str,
+        taker: str,
+        base_token: str,
+        is_taker_betting_outcome_one: bool,
+        stake_wei: int,
+        desired_odds: int,
+        odds_slippage: int,
+        taker_sig: str,
+        fill_salt: int,
+        message: str,
+    ) -> dict[str, Any]:
+        """
+        Fill existing SX.bet order-book liquidity as a taker.
+        """
+        self._require_api_key("filling orders")
+        data = {
+            "market": market,
+            "taker": taker,
+            "baseToken": base_token,
+            "isTakerBettingOutcomeOne": is_taker_betting_outcome_one,
+            "stakeWei": str(stake_wei),
+            "desiredOdds": str(desired_odds),
+            "oddsSlippage": int(odds_slippage),
+            "takerSig": taker_sig,
+            "fillSalt": str(fill_salt),
+            "message": message,
+        }
+        return await self._request("POST", SXBET_ENDPOINTS["fill_order"], data=data)
+
+    async def cancel_all_orders(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """
+        Cancel all maker orders using a pre-signed SX.bet cancellation payload.
+        """
+        self._require_api_key("cancelling all orders")
+        return await self._request("POST", SXBET_ENDPOINTS["cancel_all_orders"], data=payload)
+
     async def get_user_orders(self, wallet_address: str) -> dict[str, Any]:
         """
         Get orders for a specific wallet.
