@@ -3174,6 +3174,67 @@ class TestBettingArbitrageNodeRunner:
         assert failure_payload["error"] == "RuntimeError('node-run-failed')"
         assert FailingTradingNode.instances[-1].disposed is True
 
+    def test_live_run_starts_runtime_probe_status_writer(self, tmp_path, monkeypatch):
+        def semantic_status(_manifest):
+            return SemanticCacheStatus(
+                path=str(tmp_path / "semantic-cache"),
+                source="existing",
+                manifest_count=1,
+                promoted_template_count=1,
+                execution_safe_template_count=1,
+                same_venue_execution_eligible_template_count=0,
+            )
+
+        monkeypatch.setattr(node_runner, "ensure_semantic_cache_ready", semantic_status)
+        monkeypatch.setattr(node_runner.HeartbeatWriter, "start", lambda self: None)
+        monkeypatch.setattr(
+            node_runner,
+            "_resolve_betting_strategy",
+            lambda _node: object(),
+        )
+
+        observed_writer: dict[str, object] = {}
+
+        class FakeRuntimeProbeStatusWriter:
+            def __init__(self, **kwargs):
+                observed_writer["kwargs"] = kwargs
+
+            def start(self):
+                observed_writer["started"] = True
+
+        monkeypatch.setattr(
+            node_runner,
+            "RuntimeProbeStatusWriter",
+            FakeRuntimeProbeStatusWriter,
+        )
+
+        class LiveTradingNode:
+            def __init__(self, config):
+                self.config = config
+                self.trader = object()
+
+            def build(self):
+                return None
+
+            def run(self):
+                return None
+
+            def dispose(self):
+                return None
+
+        monkeypatch.setattr("nautilus_trader.live.node.TradingNode", LiveTradingNode)
+        manifest = _manifest(tmp_path, cache_dir=tmp_path / "semantic-cache")
+        msgspec.structs.force_setattr(manifest, "validation_mode", False)
+        manifest_path = tmp_path / "manifest-live.json"
+        manifest_path.write_bytes(manifest.json())
+
+        assert runner_main(["run", "--manifest", str(manifest_path)]) == 0
+
+        assert observed_writer["started"] is True
+        writer_kwargs = observed_writer["kwargs"]
+        assert writer_kwargs["manifest"].validation_mode is False
+        assert writer_kwargs["semantic_cache"]["ready"] is True
+
     def test_semantic_cache_payload_helpers(self, tmp_path, monkeypatch):
         expected_status = SemanticCacheStatus(
             path=str(tmp_path / "semantic-cache"),

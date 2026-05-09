@@ -634,7 +634,7 @@ def _run_node(node, context: RunnerContext) -> int:
     )
     runtime_probe_stop: threading.Event | None = None
     runtime_probe_writer: RuntimeProbeStatusWriter | None = None
-    if context.manifest.validation_mode and hasattr(node, "trader"):
+    if hasattr(node, "trader"):
         runtime_probe_stop = threading.Event()
         runtime_probe_writer = RuntimeProbeStatusWriter(
             status_path=context.status_path,
