@@ -21,6 +21,8 @@ from nautilus_trader.adapters.cloudbet.execution import CloudbetLiveExecutionCli
 from nautilus_trader.adapters.cloudbet.providers import CloudbetInstrumentProvider
 from nautilus_trader.common.component import Logger
 from nautilus_trader.common.functions import get_event_loop
+from nautilus_trader.core.uuid import UUID4
+from nautilus_trader.execution.messages import GenerateOrderStatusReports
 from nautilus_trader.model.identifiers import ClientOrderId
 from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.objects import Currency
@@ -33,6 +35,44 @@ class _Value:
 
     def as_double(self) -> float:
         return self._value
+
+
+@pytest.mark.asyncio
+async def test_generate_order_status_reports_without_filters_is_empty_startup_noop():
+    cache = TestComponentStubs.cache()
+    clock = TestComponentStubs.clock()
+    venue_client = Mock()
+    venue_client.get_bet_history = AsyncMock()
+    venue_client.connected = False
+    provider = CloudbetInstrumentProvider(
+        client=venue_client,
+        logger=Logger(name="test-cloudbet-provider"),
+    )
+    client = CloudbetLiveExecutionClient(
+        loop=get_event_loop(),
+        client=venue_client,
+        base_currency=None,
+        msgbus=TestComponentStubs.msgbus(),
+        cache=cache,
+        clock=clock,
+        logger=Logger(name="test-cloudbet-execution"),
+        market_filter={},
+        instrument_provider=provider,
+        config=CloudbetExecClientConfig(dry_run=True),
+    )
+    command = GenerateOrderStatusReports(
+        instrument_id=None,
+        start=None,
+        end=None,
+        open_only=False,
+        command_id=UUID4(),
+        ts_init=clock.timestamp_ns(),
+    )
+
+    reports = await client.generate_order_status_reports(command)
+
+    assert reports == []
+    venue_client.get_bet_history.assert_not_awaited()
 
 
 @pytest.mark.asyncio

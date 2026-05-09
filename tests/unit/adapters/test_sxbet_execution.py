@@ -23,6 +23,8 @@ from nautilus_trader.adapters.sxbet.execution import SXBetExecutionClient
 from nautilus_trader.adapters.sxbet.providers import SXBetInstrumentProvider
 from nautilus_trader.common.component import Logger
 from nautilus_trader.common.functions import get_event_loop
+from nautilus_trader.core.uuid import UUID4
+from nautilus_trader.execution.messages import GenerateOrderStatusReports
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.enums import OrderType
 from nautilus_trader.model.identifiers import ClientOrderId
@@ -519,6 +521,47 @@ async def test_generate_order_status_report_uses_command_and_cached_venue_id():
     assert str(report.venue_order_id) == "0xorderhash"
     assert report.instrument_id == instrument.id
     assert report.order_side == OrderSide.BUY
+
+
+@pytest.mark.asyncio
+async def test_generate_order_status_reports_without_filters_is_empty_startup_noop():
+    config = SimpleNamespace(
+        api_key="api-key",
+        wallet_address="0x" + "12" * 20,
+        private_key="0x" + "34" * 32,
+        base_currency="USDC",
+    )
+    instrument_provider = SXBetInstrumentProvider(
+        http_client=Mock(),
+        config=SXBetInstrumentProviderConfig(),
+        logger=Mock(),
+    )
+    http_client = Mock()
+    http_client.get_user_orders = AsyncMock()
+    clock = TestComponentStubs.clock()
+    client = SXBetExecutionClient(
+        loop=get_event_loop(),
+        http_client=http_client,
+        instrument_provider=instrument_provider,
+        msgbus=TestComponentStubs.msgbus(),
+        cache=TestComponentStubs.cache(),
+        clock=clock,
+        logger=Logger(name="test-sxbet-execution"),
+        config=config,
+    )
+    command = GenerateOrderStatusReports(
+        instrument_id=None,
+        start=None,
+        end=None,
+        open_only=False,
+        command_id=UUID4(),
+        ts_init=clock.timestamp_ns(),
+    )
+
+    reports = await client.generate_order_status_reports(command)
+
+    assert reports == []
+    http_client.get_user_orders.assert_not_awaited()
 
 
 @pytest.mark.asyncio

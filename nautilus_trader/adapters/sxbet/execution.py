@@ -42,6 +42,7 @@ from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.execution.messages import CancelAllOrders
 from nautilus_trader.execution.messages import CancelOrder
 from nautilus_trader.execution.messages import GenerateOrderStatusReport
+from nautilus_trader.execution.messages import GenerateOrderStatusReports
 from nautilus_trader.execution.messages import ModifyOrder
 from nautilus_trader.execution.messages import SubmitOrder
 from nautilus_trader.execution.reports import OrderStatusReport
@@ -690,3 +691,71 @@ class SXBetExecutionClient(LiveExecutionClient):
             self._log.error(msg)
 
         return None
+
+    async def generate_order_status_reports(
+        self,
+        command: GenerateOrderStatusReports,
+    ) -> list[OrderStatusReport]:
+        """
+        Generate order status reports for locally tracked SX.bet orders.
+
+        Nautilus calls this during startup reconciliation before this client has
+        necessarily submitted any orders in the current process. SX.bet does not expose
+        a safe unbounded "all order statuses for this account" query for our startup
+        path, so an empty local order set is a valid no-op.
+
+        """
+        instrument_id = command.instrument_id
+        if command.start is not None or command.end is not None:
+            self._log.debug(
+                "SX.bet bulk order status reconciliation ignores time range filters "
+                "and reports locally tracked orders only",
+            )
+
+        if instrument_id is not None:
+            client_order_ids = list(
+                self._cache.client_order_ids(venue=SXBET_VENUE, instrument_id=instrument_id),
+            )
+        else:
+            client_order_ids = list(self._venue_order_ids)
+
+        if not client_order_ids:
+            self._log.debug(
+                "No locally tracked SX.bet orders available for bulk status reconciliation",
+            )
+            return []
+
+        reports: list[OrderStatusReport] = []
+        for client_order_id in client_order_ids:
+            cached_order = self._cache.order(client_order_id)
+            venue_order_id = self._venue_order_ids.get(client_order_id)
+            if venue_order_id is None and cached_order is not None:
+                venue_order_id = cached_order.venue_order_id
+            if venue_order_id is None:
+                self._log.warning(
+                    "Cannot query SX.bet order status without a venue order id "
+                    f"(client_order_id={client_order_id})",
+                )
+                continue
+
+            report = await self.generate_order_status_report(
+                GenerateOrderStatusReport(
+                    instrument_id=instrument_id
+                    or (cached_order.instrument_id if cached_order is not None else None),
+                    client_order_id=client_order_id,
+                    venue_order_id=venue_order_id,
+                    command_id=UUID4(),
+                    ts_init=self._clock.timestamp_ns(),
+                    params=command.params,
+                ),
+            )
+            if report is None:
+                continue
+            if command.open_only and report.order_status not in {
+                OrderStatus.SUBMITTED,
+                OrderStatus.ACCEPTED,
+            }:
+                continue
+            reports.append(report)
+
+        return reports
