@@ -320,11 +320,17 @@ def _build_sxbet_exec_importable(
     config = {
         "api_key": api_key,
         "api_key_pool": api_key_pool,
-        "private_key": _resolve_secret(prefix, "PRIVATE_KEY", manifest.allow_dummy_credentials),
-        "wallet_address": _resolve_secret(
-            prefix,
-            "WALLET_ADDRESS",
-            manifest.allow_dummy_credentials,
+        "private_key": _normalize_prefixed_hex_secret(
+            _resolve_secret(prefix, "PRIVATE_KEY", manifest.allow_dummy_credentials),
+            expected_nibbles=64,
+        ),
+        "wallet_address": _normalize_prefixed_hex_secret(
+            _resolve_secret(
+                prefix,
+                "WALLET_ADDRESS",
+                manifest.allow_dummy_credentials,
+            ),
+            expected_nibbles=40,
         ),
         "api_url": api_url,
         "ws_url": ws_url,
@@ -568,6 +574,18 @@ def _resolve_secret_pool(
         if dummy_value is not None:
             return (dummy_value,)
     return None
+
+
+def _normalize_prefixed_hex_secret(value: str, *, expected_nibbles: int) -> str:
+    normalized = value.strip()
+    if normalized.startswith("0X"):
+        normalized = f"0x{normalized[2:]}"
+    if not normalized.startswith("0x") and re.fullmatch(
+        rf"[0-9a-fA-F]{{{expected_nibbles}}}",
+        normalized,
+    ):
+        return f"0x{normalized}"
+    return normalized
 
 
 def _client_key(venue: BettingVenueManifest, index: int) -> str:
