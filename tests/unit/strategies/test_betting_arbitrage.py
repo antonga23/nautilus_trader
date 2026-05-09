@@ -2896,6 +2896,25 @@ class TestBettingArbitrageStrategy:  # skipcq
         strategy.on_order_filled(Mock())
         strategy.on_order_rejected(Mock())
 
+    def test_live_execution_rejection_halts_further_submission(self):  # skipcq
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["CLOUDBET", "SXBET"]),
+                auto_execute=True,
+                live_execution_armed=True,
+            ),
+        )
+        rejected_event = SimpleNamespace(
+            instrument_id=SimpleNamespace(venue=Venue("SXBET")),
+        )
+
+        strategy.on_order_rejected(rejected_event)
+
+        stats = strategy.get_stats()["live_execution"]
+        ensure(stats["halt_reason"] == "order_rejected")
+        ensure(stats["unhedged_exposures"] == 1)
+        ensure(stats["block_reasons"]["order_rejected"] == 1)
+
     def test_live_execution_blocks_without_manifest_and_env_arming(self):  # skipcq
         strategy = BettingArbitrageStrategy(
             config=BettingArbitrageConfig(

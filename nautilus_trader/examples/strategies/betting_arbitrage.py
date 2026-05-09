@@ -3973,6 +3973,10 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         Handle order rejected events.
         """
         self._record_order_lifecycle_event(event, "rejected")
+        if self._config.live_execution_armed:
+            self._live_execution_halt_reason = "order_rejected"
+            self._live_execution_unhedged_exposures += 1
+            self._live_execution_block_reasons["order_rejected"] += 1
         msg = f"Order rejected: {event}"
         self.log.warning(msg)
 
