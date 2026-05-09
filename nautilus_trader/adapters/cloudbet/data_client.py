@@ -238,7 +238,7 @@ class CloudbetDataClient(LiveMarketDataClient):
         # TODO: create and then remove data_client specific cache
         # await self._remove_all_instruments_from_data_engine()
 
-    async def _dispose(self) -> None:
+    def _dispose(self) -> None:
         if self.is_connected:
             self._log.error("Cannot dispose a connected data client.")
             return

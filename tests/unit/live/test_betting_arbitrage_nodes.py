@@ -564,6 +564,19 @@ class TestBettingArbitrageNodeBuilder:
             "maxDailyLoss": "25",
         }
 
+    def test_live_exec_factory_name_handles_importable_factory_instances(self):
+        from nautilus_trader.adapters.cloudbet.factories import CloudbetLiveExecClientFactory
+        from nautilus_trader.live import node_builder as live_node_builder
+
+        factory = CloudbetLiveExecClientFactory()
+
+        assert not hasattr(factory, "__name__")
+        assert live_node_builder._factory_name(factory) == "CloudbetLiveExecClientFactory"
+        assert (
+            live_node_builder._factory_name(CloudbetLiveExecClientFactory)
+            == "CloudbetLiveExecClientFactory"
+        )
+
     def test_cloudbet_factories_match_live_node_builder_signature(self, monkeypatch):
         from nautilus_trader.adapters.cloudbet import factories as cloudbet_factories
         from nautilus_trader.adapters.cloudbet.config import CloudbetDataClientConfig

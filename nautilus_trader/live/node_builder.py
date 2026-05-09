@@ -243,7 +243,9 @@ class TradingNodeBuilder:
                 "clock": self._clock,
             }
 
-            if factory.__name__ == "SandboxLiveExecClientFactory":
+            factory_name = _factory_name(factory)
+
+            if factory_name == "SandboxLiveExecClientFactory":
                 factory_kws["portfolio"] = self._portfolio
 
             client = factory.create(**factory_kws)
@@ -263,6 +265,10 @@ class TradingNodeBuilder:
                 self._exec_engine.register_venue_routing(client, venue)
 
             # Temporary handling for setting specific 'venue' for portfolio
-            if factory.__name__ == "InteractiveBrokersLiveExecClientFactory":
+            if factory_name == "InteractiveBrokersLiveExecClientFactory":
                 # We initialize a new IB venue to avoid importing from the adapter subpackage
                 self._cache.set_specific_venue(Venue("INTERACTIVE_BROKERS"))
+
+
+def _factory_name(factory: type[LiveExecClientFactory] | LiveExecClientFactory) -> str:
+    return getattr(factory, "__name__", type(factory).__name__)

@@ -234,14 +234,21 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
         await self._client.disconnect()
 
     def reset(self) -> None:
-        # TODO: implement some clean up logic, eg reset/recalculate states
-        # pass
-        raise NotImplementedError("method not currently implemented")  # pragma: no cover
+        self.venue_order_id_to_client_order_id.clear()
 
     def dispose(self) -> None:
-        # TODO: implement some clean up logic, eg release resources like stream client
-        # pass
-        raise NotImplementedError("method not currently implemented")  # pragma: no cover
+        async def close_resources() -> None:
+            await self._disconnect()
+
+        try:
+            if self._loop.is_closed():
+                return
+            if self._loop.is_running():
+                self._loop.create_task(close_resources())
+            else:
+                self._loop.run_until_complete(close_resources())
+        except Exception as e:  # pragma: no cover - defensive shutdown path
+            self._log.warning(f"Error disposing Cloudbet execution resources: {e}")
 
     async def watch_stream(self) -> None:
         """Ensure socket stream is connected"""
