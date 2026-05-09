@@ -98,25 +98,21 @@ Real live execution for this track requires:
 - `SXBET_API_KEYS` for multiple realtime/WebSocket API keys, comma- or newline-separated
 - `SXBET_PRIVATE_KEY`
 - `SXBET_WALLET_ADDRESS`
-- `STRATEGY_NODE_HOST`
-- `STRATEGY_NODE_SSH_USER`
-- `STRATEGY_NODE_SSH_KEY`
 - `STRATEGY_NODE_ENV_FILE`
 - `STRATEGY_NODE_GHCR_USERNAME`
 - `STRATEGY_NODE_GHCR_TOKEN`
 
-After the control-plane request is approved, the EC2 deploy step uses:
+After the control-plane request is approved, the EC2 deploy step runs on the EC2
+host and uses the same local deploy script as `strategy-node-release`:
 
 ```sh
-ssh -i ./ec2-dev-betting-project.pem ubuntu@13.51.235.85 \
-  'chmod +x /tmp/deploy_betting_strategy_node.sh && \
-   /tmp/deploy_betting_strategy_node.sh \
-     --manifest /tmp/strategy-node-manifest.json \
-     --image ghcr.io/antonga23/cloudbet-market-maker/betting-arbitrage-node:<tag> \
-     --name betting-arbitrage-node \
-     --env-file /tmp/strategy-node.env \
-     --registry-user <ghcr-username> \
-     --registry-token-file /tmp/strategy-node-ghcr-token'
+scripts/deploy/strategy_nodes/deploy_betting_strategy_node.sh \
+  --manifest /tmp/strategy-node-manifest.json \
+  --image ghcr.io/antonga23/cloudbet-market-maker/betting-arbitrage-node:<tag> \
+  --name betting-arbitrage-node \
+  --env-file /tmp/strategy-node.env \
+  --registry-user <ghcr-username> \
+  --registry-token-file /tmp/strategy-node-ghcr-token
 ```
 
 The node writes status and heartbeat files to:
@@ -212,7 +208,7 @@ Use `--cache-dir` for local or VM operator runs when Postgres cache envs are not
 Runner split for this workflow:
 
 - GCP self-hosted runner: validation, wheel build, image build, release orchestration
-- EC2 deploy/trading host: strategy-node runtime host and SSH deployment target
+- EC2 deploy/trading host: strategy-node runtime host and local deployment runner
 
 Container image build:
 
@@ -273,9 +269,6 @@ for the control-plane log viewer and survive container removal/redeployment.
 
 GitHub deploy workflow secrets:
 
-- `STRATEGY_NODE_HOST`
-- `STRATEGY_NODE_SSH_USER`
-- `STRATEGY_NODE_SSH_KEY`
 - `STRATEGY_NODE_ENV_FILE`
 - `STRATEGY_NODE_GHCR_USERNAME`
 - `STRATEGY_NODE_GHCR_TOKEN`
@@ -408,4 +401,4 @@ These endpoints list repo manifests and persist deployment requests for later UI
 
 The `Strategy Deployments` panel in the control plane surfaces those same endpoints and shows per-manifest required secrets, dummy fallback keys, and the recommended worker/auth flow.
 
-The worker auth flow is only required when the control plane will start a remote Codex worker on EC2 for `validate_only` or operator-driven execution. The GitHub Actions strategy-node release workflow deploys over SSH using `STRATEGY_NODE_*` secrets and does not consume Codex worker auth.
+The worker auth flow is only required when the control plane will start a remote Codex worker on EC2 for `validate_only` or operator-driven execution. The GitHub Actions strategy-node release workflow deploys from the EC2 deploy runner using local repo scripts and does not consume Codex worker auth.
