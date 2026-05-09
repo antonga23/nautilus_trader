@@ -181,6 +181,11 @@ def manifest_execution_readiness(
             "allow_same_venue_live_execution",
             False,
         ),
+        "allowCrossCurrencyLiveExecution": getattr(
+            manifest.strategy,
+            "allow_cross_currency_live_execution",
+            False,
+        ),
         "riskCaps": {
             "maxLegStake": str(getattr(manifest.strategy, "max_leg_stake", "0")),
             "maxDailyNotional": str(getattr(manifest.strategy, "max_daily_notional", "0")),

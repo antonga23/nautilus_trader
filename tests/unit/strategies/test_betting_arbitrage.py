@@ -109,6 +109,7 @@ class TestBettingArbitrageConfig:  # skipcq
         ensure(config.max_daily_notional == Decimal(100))
         ensure(config.max_daily_loss == Decimal(25))
         ensure(config.allow_same_venue_live_execution is True)
+        ensure(config.allow_cross_currency_live_execution is False)
         ensure(config.execution_price_change_policy == "better")
         ensure(config.execution_max_retry_count == 1)
         ensure(config.execution_retry_slippage_bps == 25)
@@ -3003,6 +3004,58 @@ class TestBettingArbitrageStrategy:  # skipcq
 
         ensure(reasons == [])
 
+    def test_live_execution_blocks_cross_currency_without_explicit_policy(
+        self,
+        monkeypatch,
+    ):  # skipcq
+        monkeypatch.setenv("BETTING_LIVE_EXECUTION_ARMED", "1")
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["CLOUDBET", "SXBET"]),
+                auto_execute=True,
+                live_execution_armed=True,
+            ),
+        )
+        cloudbet = self._sxbet_instrument(
+            event_id="event-1",
+            venue="CLOUDBET",
+            outcome="over",
+            currency="PLAY_EUR",
+        )
+        sxbet = self._sxbet_instrument(
+            event_id="event-1",
+            venue="SXBET",
+            outcome="under",
+            currency="USDC",
+        )
+        edge_id = strategy._canonical_pair_id(cloudbet, sxbet)
+        strategy.opportunity_graph.edges_by_id[edge_id] = SimpleNamespace(
+            execution_safe=True,
+            same_venue_execution_eligible=False,
+            caveats=(),
+        )
+        opportunity = ArbitrageOpportunity(
+            instrument_a=cloudbet,
+            instrument_b=sxbet,
+            probability_a=Decimal("0.45"),
+            probability_b=Decimal("0.45"),
+            total_probability=Decimal("0.90"),
+            profit_margin=Decimal("0.11"),
+            odds_a=Decimal("2.20"),
+            odds_b=Decimal("2.20"),
+            is_same_venue=False,
+            match_type="cross_venue",
+        )
+
+        reasons = strategy._live_execution_block_reasons_for(
+            opportunity=opportunity,
+            stake_a=Decimal(5),
+            stake_b=Decimal(5),
+            diagnostics=None,
+        )
+
+        ensure("cross_currency_live_execution_blocked" in reasons)
+
     def test_live_execution_allows_same_venue_only_with_policy_edge(self, monkeypatch):  # skipcq
         monkeypatch.setenv("BETTING_LIVE_EXECUTION_ARMED", "1")
         strategy = BettingArbitrageStrategy(
@@ -3669,6 +3722,7 @@ class TestBettingArbitrageStrategy:  # skipcq
         sport_name: str = "Soccer",
         live: bool = False,
         venue: str = "SXBET",
+        currency: str = "USDC",
     ) -> CryptoBettingInstrument:
         return CryptoBettingInstrument(
             venue=Venue(venue),
@@ -3683,7 +3737,7 @@ class TestBettingArbitrageStrategy:  # skipcq
             outcome=outcome,
             side=SelectionSide.BACK,
             price=2.0,
-            currency=Currency.from_str("USDC"),
+            currency=Currency.from_str(currency),
             params=params,
             start_time=start_time,
             info=info or {},

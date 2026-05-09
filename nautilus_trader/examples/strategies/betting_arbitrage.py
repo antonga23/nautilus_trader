@@ -277,6 +277,10 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         blocks new live execution when externally updated realized loss reaches the cap.
     allow_same_venue_live_execution : bool, default True
         Permit same-venue execution only after strict same-venue risk checks pass.
+    allow_cross_currency_live_execution : bool, default False
+        Permit cross-venue execution when settlement currencies differ. Disabled
+        by default because locked payout math is not currency-neutral without an
+        explicit FX/currency-risk policy.
     execution_price_change_policy : str, default "better"
         Venue price-change policy for live execution.
     execution_max_retry_count : int, default 1
@@ -329,6 +333,7 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
     max_daily_notional: Decimal = Decimal(100)
     max_daily_loss: Decimal = Decimal(25)
     allow_same_venue_live_execution: bool = True
+    allow_cross_currency_live_execution: bool = False
     execution_price_change_policy: str = "better"
     execution_max_retry_count: int = 1
     execution_retry_slippage_bps: int = 25
@@ -710,6 +715,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             f"max_daily_notional={self._config.max_daily_notional} "
             f"max_daily_loss={self._config.max_daily_loss} "
             f"allow_same_venue_live_execution={self._config.allow_same_venue_live_execution} "
+            "allow_cross_currency_live_execution="
+            f"{self._config.allow_cross_currency_live_execution} "
             "semantic_unmatched_quote_probe_venues="
             f"{sorted(self._config.semantic_unmatched_quote_probe_venues)} "
             "semantic_unmatched_quote_probe_limit_per_venue="
@@ -3722,6 +3729,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         reasons: list[str] = []
         reasons.extend(self._live_execution_arming_block_reasons())
         reasons.extend(self._live_execution_cap_block_reasons(opportunity, stake_a, stake_b))
+        reasons.extend(self._live_execution_currency_block_reasons(opportunity))
         reasons.extend(self._live_execution_semantic_block_reasons(opportunity))
         reasons.extend(self._live_execution_diagnostic_block_reasons(diagnostics))
         return sorted(set(reasons))
@@ -3832,6 +3840,30 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         if opportunity.profit_margin < self._config.min_profit_margin:
             reasons.append("below_min_profit_margin")
         return reasons
+
+    def _live_execution_currency_block_reasons(
+        self,
+        opportunity: ArbitrageOpportunity,
+    ) -> list[str]:
+        if opportunity.is_same_venue or self._config.allow_cross_currency_live_execution:
+            return []
+        currency_a = self._instrument_currency_code(opportunity.instrument_a)
+        currency_b = self._instrument_currency_code(opportunity.instrument_b)
+        if not currency_a or not currency_b:
+            return ["unknown_settlement_currency"]
+        if currency_a != currency_b:
+            return ["cross_currency_live_execution_blocked"]
+        return []
+
+    @staticmethod
+    def _instrument_currency_code(instrument: Instrument) -> str:
+        currency = getattr(instrument, "quote_currency", None) or getattr(
+            instrument,
+            "currency",
+            None,
+        )
+        code = getattr(currency, "code", None)
+        return str(code or currency or "").strip().upper()
 
     def _live_execution_semantic_block_reasons(
         self,
@@ -4103,6 +4135,9 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 "kill_switch_active": self._live_execution_kill_switch_active(),
                 "halt_reason": self._live_execution_halt_reason,
                 "allow_same_venue_live_execution": (self._config.allow_same_venue_live_execution),
+                "allow_cross_currency_live_execution": (
+                    self._config.allow_cross_currency_live_execution
+                ),
                 "max_leg_stake": str(self._config.max_leg_stake),
                 "max_daily_notional": str(self._config.max_daily_notional),
                 "max_daily_loss": str(self._config.max_daily_loss),

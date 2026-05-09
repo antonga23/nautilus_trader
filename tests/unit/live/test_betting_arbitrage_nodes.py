@@ -539,6 +539,7 @@ class TestBettingArbitrageNodeBuilder:
         assert manifest.validation_mode is False
         assert config.strategies[0].config["auto_execute"] is True
         assert config.strategies[0].config["live_execution_armed"] is True
+        assert config.strategies[0].config["allow_cross_currency_live_execution"] is False
         assert config.strategies[0].config["max_total_stake"] == "25"
         assert config.strategies[0].config["max_leg_stake"] == "15"
         assert set(config.exec_clients) == {"CLOUDBET_PRIMARY", "SXBET_PRIMARY"}
@@ -556,6 +557,7 @@ class TestBettingArbitrageNodeBuilder:
         assert readiness["autoExecute"] is True
         assert readiness["liveExecutionArmed"] is True
         assert readiness["liveExecutionEnvArmed"] is False
+        assert readiness["allowCrossCurrencyLiveExecution"] is False
         assert readiness["riskCaps"] == {
             "maxLegStake": "15",
             "maxDailyNotional": "100",

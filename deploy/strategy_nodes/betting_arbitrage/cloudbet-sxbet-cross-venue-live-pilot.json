@@ -17,6 +17,7 @@
     "max_daily_loss": "25",
     "live_execution_armed": true,
     "allow_same_venue_live_execution": true,
+    "allow_cross_currency_live_execution": false,
     "execution_price_change_policy": "better",
     "execution_max_retry_count": 1,
     "execution_retry_slippage_bps": 25,
