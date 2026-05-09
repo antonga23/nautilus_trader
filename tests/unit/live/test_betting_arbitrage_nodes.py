@@ -3850,10 +3850,10 @@ class TestBettingArbitrageNodeRunner:
         )
         assert "require_cross_venue_candidates_or_blockers=true" in workflow
         assert "wait_timeout_seconds=1800" in workflow
-        assert "--timeout-seconds $wait_timeout_seconds" in workflow
-        assert "--min-positive-margin-candidates $min_positive_margin_candidates" in workflow
-        assert "--min-cross-venue-candidates $min_cross_venue_candidates" in workflow
-        assert "${cross_venue_args[*]}" in workflow
+        assert '--timeout-seconds "$wait_timeout_seconds"' in workflow
+        assert '--min-positive-margin-candidates "$min_positive_margin_candidates"' in workflow
+        assert '--min-cross-venue-candidates "$min_cross_venue_candidates"' in workflow
+        assert '"${cross_venue_args[@]}"' in workflow
         assert "--require-rust-semantic-topology" in workflow
         assert "Wait for deployed node status and semantic cache" in workflow
         assert "--require-runtime-probe" in workflow
@@ -3865,10 +3865,13 @@ class TestBettingArbitrageNodeRunner:
         assert "Validate selected dispatch manifest" in workflow
         assert "INPUT_MANIFEST_PATH: ${{ github.event.inputs.manifest_path }}" in workflow
         assert "append_env_secret CLOUDBET_API_KEY" in workflow
-        assert "--env-file /tmp/strategy-node.env" in workflow
+        assert "runs-on: [self-hosted, linux, x64, ec2, deploy, trading]" in workflow
+        assert "Prepare local deploy assets" in workflow
+        assert "Load strategy-node image archive" in workflow
+        assert '--env-file "$LOCAL_DEPLOY_ENV_FILE"' in workflow
         assert "current-session.json" in workflow
         assert "manifest.runtime release current-session" in workflow
-        assert "$remote_bundle/$name.json" in workflow
+        assert "$artifact_dir/$name.json" in workflow
         assert "node.log" in workflow
         assert "events.jsonl" in workflow
         assert '"executionReadiness": status.get("executionReadiness")' in workflow

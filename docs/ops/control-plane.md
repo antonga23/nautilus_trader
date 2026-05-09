@@ -40,9 +40,6 @@ Provider-specific keys are optional until those providers are enabled:
 
 Strategy-node deployment envs and secrets:
 
-- `STRATEGY_NODE_HOST`
-- `STRATEGY_NODE_SSH_USER`
-- `STRATEGY_NODE_SSH_KEY`
 - `STRATEGY_NODE_ENV_FILE`
 - `STRATEGY_NODE_GHCR_USERNAME`
 - `STRATEGY_NODE_GHCR_TOKEN`
@@ -115,7 +112,7 @@ The installer:
 
 The recommended worker for mixed-venue validation is `codex-a`.
 
-This auth flow is only required when the control plane will start a remote Codex worker on EC2. The GitHub Actions strategy-node release workflow does not use Codex worker auth; it deploys over SSH with `STRATEGY_NODE_*` secrets.
+This auth flow is only required when the control plane will start a remote Codex worker on EC2. The GitHub Actions strategy-node release workflow does not use Codex worker auth; its deploy job runs on the EC2 deploy runner and uses the repo deployment scripts locally.
 
 Operator flow:
 
