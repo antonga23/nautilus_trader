@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
@@ -22,7 +24,9 @@ from nautilus_trader.adapters.cloudbet.providers import CloudbetInstrumentProvid
 from nautilus_trader.common.component import Logger
 from nautilus_trader.common.functions import get_event_loop
 from nautilus_trader.core.uuid import UUID4
+from nautilus_trader.execution.messages import GenerateFillReports
 from nautilus_trader.execution.messages import GenerateOrderStatusReports
+from nautilus_trader.execution.messages import GeneratePositionStatusReports
 from nautilus_trader.model.identifiers import ClientOrderId
 from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.objects import Currency
@@ -70,8 +74,69 @@ async def test_generate_order_status_reports_without_filters_is_empty_startup_no
     )
 
     reports = await client.generate_order_status_reports(command)
+    partial_reports = await client.generate_order_status_reports(
+        GenerateOrderStatusReports(
+            instrument_id=None,
+            start=datetime.now(UTC),
+            end=None,
+            open_only=False,
+            command_id=UUID4(),
+            ts_init=clock.timestamp_ns(),
+        ),
+    )
 
     assert reports == []
+    assert partial_reports == []
+    venue_client.get_bet_history.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_generate_fill_and_position_reports_partial_range_are_empty_startup_noops():
+    cache = TestComponentStubs.cache()
+    clock = TestComponentStubs.clock()
+    venue_client = Mock()
+    venue_client.get_bet_history = AsyncMock()
+    venue_client.connected = False
+    provider = CloudbetInstrumentProvider(
+        client=venue_client,
+        logger=Logger(name="test-cloudbet-provider"),
+    )
+    client = CloudbetLiveExecutionClient(
+        loop=get_event_loop(),
+        client=venue_client,
+        base_currency=None,
+        msgbus=TestComponentStubs.msgbus(),
+        cache=cache,
+        clock=clock,
+        logger=Logger(name="test-cloudbet-execution"),
+        market_filter={},
+        instrument_provider=provider,
+        config=CloudbetExecClientConfig(dry_run=True),
+    )
+    start = datetime.now(UTC)
+
+    fill_reports = await client.generate_fill_reports(
+        GenerateFillReports(
+            instrument_id=None,
+            venue_order_id=None,
+            start=start,
+            end=None,
+            command_id=UUID4(),
+            ts_init=clock.timestamp_ns(),
+        ),
+    )
+    position_reports = await client.generate_position_status_reports(
+        GeneratePositionStatusReports(
+            instrument_id=None,
+            start=start,
+            end=None,
+            command_id=UUID4(),
+            ts_init=clock.timestamp_ns(),
+        ),
+    )
+
+    assert fill_reports == []
+    assert position_reports == []
     venue_client.get_bet_history.assert_not_awaited()
 
 
