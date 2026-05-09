@@ -892,12 +892,19 @@ jobs:
           require_cross_venue_candidates_or_blockers=false
           wait_timeout_seconds=900
           quoted_node_args=()
+          live_pilot_manifest="deploy/strategy_nodes/betting_arbitrage/cloudbet-sxbet-cross-venue-live-pilot.json"
           if [ "$manifest_path" = "deploy/strategy_nodes/betting_arbitrage/multi-venue-validation.json" ]; then
             require_cross_venue_candidates_or_blockers=true
             wait_timeout_seconds=1800
             quoted_node_args+=(--min-quoted-node-count CLOUDBET:2)
             quoted_node_args+=(--min-quoted-node-count SXBET:2)
             quoted_node_args+=(--min-quoted-node-count POLYMARKET:2)
+          fi
+          if [ "$manifest_path" = "$live_pilot_manifest" ]; then
+            require_cross_venue_candidates_or_blockers=true
+            wait_timeout_seconds=2400
+            quoted_node_args+=(--min-quoted-node-count CLOUDBET:2)
+            quoted_node_args+=(--min-quoted-node-count SXBET:2)
           fi
           echo "min_positive_margin_candidates=$min_positive_margin_candidates"
           echo "min_cross_venue_candidates=$min_cross_venue_candidates"
@@ -1059,12 +1066,18 @@ jobs:
           fi
           report_args=(
             --format text
-            --require-auto-execute-false
-            --require-validation-mode
             --require-rust-semantic
             --require-coverage-runtime
             --min-quoted-semantic-instruments 2
           )
+          live_pilot_manifest="deploy/strategy_nodes/betting_arbitrage/cloudbet-sxbet-cross-venue-live-pilot.json"
+          if [ "$MANIFEST_PATH" = "$live_pilot_manifest" ]; then
+            report_args+=(--require-live-execution-env-unarmed)
+            report_args+=(--require-cross-currency-live-blocked)
+          else
+            report_args+=(--require-auto-execute-false)
+            report_args+=(--require-validation-mode)
+          fi
           if [ "$MANIFEST_PATH" = "deploy/strategy_nodes/betting_arbitrage/multi-venue-validation.json" ]; then
             report_args+=(--min-cross-venue-candidates 1)
           fi

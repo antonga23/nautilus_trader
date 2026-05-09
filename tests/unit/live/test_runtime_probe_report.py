@@ -1167,6 +1167,27 @@ def test_runtime_probe_report_flags_execution_safety_regression():
     assert "disable_auto_execute_until_approved" in summary["recommendedActions"]
 
 
+def test_runtime_probe_report_treats_unarmed_live_pilot_as_warn_not_fail():
+    module = _load_module()
+    payload = _runtime_status_payload()
+    payload["runtimeProbe"]["candidateQuality"]["liveTimingSlo"]["fetchLatency"]["violations"] = 0
+    payload["executionReadiness"].update(
+        {
+            "validationMode": False,
+            "autoExecute": True,
+            "liveExecutionArmed": True,
+            "liveExecutionEnvArmed": False,
+            "allowCrossCurrencyLiveExecution": False,
+        },
+    )
+
+    summary = module.summarize_payload(payload)
+
+    assert summary["executionSafety"]["overall"] == "warn"
+    assert "auto_execute_env_gate_unarmed" in summary["executionSafety"]["reasons"]
+    assert summary["operatorHealth"]["overall"] == "warn"
+
+
 def test_runtime_probe_report_cli_can_fail_on_incomplete_diagnostics(
     tmp_path,
     monkeypatch,
@@ -1334,6 +1355,78 @@ def test_runtime_probe_report_cli_fails_auto_execute_gate(
 
     assert module.main() == 7
     assert json.loads(capsys.readouterr().out)[0]["executionSafety"]["overall"] == "fail"
+
+
+def test_runtime_probe_report_cli_enforces_live_pilot_env_and_currency_gates(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    module = _load_module()
+    payload = _runtime_status_payload()
+    payload["executionReadiness"].update(
+        {
+            "validationMode": False,
+            "autoExecute": True,
+            "liveExecutionArmed": True,
+            "liveExecutionEnvArmed": False,
+            "allowCrossCurrencyLiveExecution": False,
+        },
+    )
+    status_path = tmp_path / "status.json"
+    status_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(SCRIPT_PATH),
+            str(status_path),
+            "--require-live-execution-env-unarmed",
+            "--require-cross-currency-live-blocked",
+        ],
+    )
+
+    assert module.main() == 0
+    assert json.loads(capsys.readouterr().out)[0]["executionSafety"]["overall"] == "warn"
+
+
+def test_runtime_probe_report_cli_fails_when_live_pilot_env_armed(
+    tmp_path,
+    monkeypatch,
+):
+    module = _load_module()
+    payload = _runtime_status_payload()
+    payload["executionReadiness"]["liveExecutionEnvArmed"] = True
+    status_path = tmp_path / "status.json"
+    status_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [str(SCRIPT_PATH), str(status_path), "--require-live-execution-env-unarmed"],
+    )
+
+    assert module.main() == 14
+
+
+def test_runtime_probe_report_cli_fails_when_cross_currency_live_enabled(
+    tmp_path,
+    monkeypatch,
+):
+    module = _load_module()
+    payload = _runtime_status_payload()
+    payload["executionReadiness"]["allowCrossCurrencyLiveExecution"] = True
+    status_path = tmp_path / "status.json"
+    status_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [str(SCRIPT_PATH), str(status_path), "--require-cross-currency-live-blocked"],
+    )
+
+    assert module.main() == 15
 
 
 def test_runtime_probe_report_cli_fails_rust_semantic_gate(
