@@ -511,9 +511,19 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
             open_only = command.open_only
 
         self._log.info(f"Generating OrderStatusReports for {self.id}...")
-        # assert instrument_id is not None or (start is not None and end is not None)
-        assert instrument_id is not None or (start is not None and end is not None)
         report_list: List[OrderStatusReport] = []
+        if (start is None) != (end is None):
+            self._log.warning(
+                "Cannot generate Cloudbet order status reports with a partial time range",
+            )
+            return report_list
+
+        if instrument_id is None and start is None and end is None:
+            self._log.debug(
+                "No Cloudbet order status filters supplied; returning no reports",
+            )
+            return report_list
+
         # if a time-range is specified, we explicitly rely on the venue bet_history endpoint
         if start and end:
             start_date: str = datetime_to_cloudbet_timestamp(start)
@@ -525,7 +535,7 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
                 self._log.info(f"Received bet history: {bet_history}")
             except Exception as e:  # TODO: handle exceptions gracefully
                 self._log.error(f"Could not fetch bet history from Cloudbet: {e}")
-                return None
+                return report_list
             for bet in bet_history.bets:
                 report: Optional[OrderStatusReport] = None
                 self._log.info(f"Processing bet: {bet}")
@@ -540,16 +550,26 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
                     cached_order: Order = self._cache.order(
                         client_order_id
                     )  # no need to assert not None, an Order must have a client_order_id on init
+                    if cached_order is None:
+                        self._log.warning(
+                            f"Attempting to query order that does not exist in the cache, Client Order ID: {client_order_id}",
+                        )
+                        continue
                     instrument_id: InstrumentId = cached_order.instrument_id
 
                 if open_only is False:  # we don't care about the order status
-                    report = self.generate_order_status_report(
+                    report = await self.generate_order_status_report(
                         instrument_id=instrument_id,
                         client_order_id=client_order_id,
                         venue_order_id=venue_order_id,
                     )
                 else:
                     cached_order: Order = self._cache.order(client_order_id)
+                    if cached_order is None:
+                        self._log.warning(
+                            f"Attempting to query order that does not exist in the cache, Client Order ID: {client_order_id}",
+                        )
+                        continue
                     if cached_order.is_open or bet.status == bet.status.PENDING_ACCEPTANCE:
                         report = cb_bet_to_order_status_report(
                             order=cached_order,
@@ -574,7 +594,17 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
             report: Optional[OrderStatusReport] = None
             for client_order_id in unique_client_ids:
                 cached_order: Order = self._cache.order(client_order_id)
+                if cached_order is None:
+                    self._log.warning(
+                        f"Attempting to query order that does not exist in the cache, Client Order ID: {client_order_id}",
+                    )
+                    continue
                 venue_order_id: VenueOrderId = cached_order.venue_order_id
+                if venue_order_id is None:
+                    self._log.warning(
+                        f"Unable to generate a Cloudbet report for order without a valid VenueOrderId, Client Order ID: {client_order_id}",
+                    )
+                    continue
                 # use the venue_order_id to query the bet_status endpoint
                 try:
                     bet_status: GetBetResponse = await self._client.get_bet_status(
@@ -616,8 +646,8 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
                         venue_order_id=venue_order_id,
                         report_id=UUID4(),
                     )
-        if report is not None:
-            report_list.append(report)
+                if report is not None:
+                    report_list.append(report)
         return report_list
 
     async def generate_fill_reports(
