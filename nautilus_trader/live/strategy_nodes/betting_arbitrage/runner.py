@@ -2136,6 +2136,8 @@ def _zero_pair_sample_payload(strategy, source_node, target_node) -> dict[str, o
     instrument_a = source_node.instrument
     instrument_b = target_node.instrument
     fixture_proof = DEFAULT_FIXTURE_IDENTITY_RESOLVER.resolve(instrument_a, instrument_b)
+    fixture_start_time_a = DEFAULT_FIXTURE_IDENTITY_RESOLVER.parsed_start_time(instrument_a)
+    fixture_start_time_b = DEFAULT_FIXTURE_IDENTITY_RESOLVER.parsed_start_time(instrument_b)
     pattern_a = _probe_pattern_payload(source_node)
     pattern_b = _probe_pattern_payload(target_node)
     matcher_suspect, suspect_reason = _strategy_matcher_suspect_reason(
@@ -2162,6 +2164,8 @@ def _zero_pair_sample_payload(strategy, source_node, target_node) -> dict[str, o
         "eventKeyB": _probe_event_key_no_time(target_node),
         "canonicalEventKeyA": _canonical_probe_event_key_no_time(source_node),
         "canonicalEventKeyB": _canonical_probe_event_key_no_time(target_node),
+        "fixtureStartTimeA": _isoformat_utc(fixture_start_time_a),
+        "fixtureStartTimeB": _isoformat_utc(fixture_start_time_b),
         "patternA": pattern_a,
         "patternB": pattern_b,
         "matcherSuspect": matcher_suspect,
@@ -2180,6 +2184,12 @@ def _zero_pair_sample_payload(strategy, source_node, target_node) -> dict[str, o
         },
         "blockerHint": blocker_hint,
     }
+
+
+def _isoformat_utc(timestamp) -> str | None:
+    if timestamp is None:
+        return None
+    return timestamp.isoformat().replace("+00:00", "Z")
 
 
 def _strategy_matcher_suspect_reason(strategy, instrument_a, instrument_b) -> tuple[bool, str]:
