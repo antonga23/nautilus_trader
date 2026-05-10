@@ -1,22 +1,26 @@
 ---
 name: continuous-experimentation
 description:
-  Use when continuing after a completed task into the next logical experimental
-  implementation branch, especially for strategy, adapter, semantic mining,
-  arbitrage, trading-node, or runtime validation work where the user wants
-  autonomous follow-through until CI/release evidence is available.
+  Use when continuing into the next logical experimental implementation branch,
+  including while a CI, release, deploy, or runtime watcher is running, especially
+  for strategy, adapter, semantic mining, arbitrage, trading-node, or runtime
+  validation work where the user wants autonomous follow-through until evidence
+  is available.
 ---
 
 # Continuous Experimentation
 
-Use this skill only after the current assigned task is implemented, verified,
-committed, pushed, and updated in Linear.
+Use this skill after the current assigned task is at a safe boundary, or while a
+background watcher is active and waiting. It may start bounded side work before
+the primary task is landed, provided the side work is isolated and immediately
+pausable.
 
 ## Purpose
 
 Turn the next highest-value idea into a bounded experimental branch without
-waiting for a new human prompt. This is for follow-on engineering work, not for
-changing the acceptance criteria of the current task.
+waiting for a new human prompt. During long waits, use it to keep useful work
+moving without changing the acceptance criteria or release surface of the
+watched task.
 
 ## Hard Safety Boundaries
 
@@ -52,6 +56,25 @@ changing the acceptance criteria of the current task.
    - rollback plan.
 4. Branch from the current target base, normally `origin/develop`, with a
    clearly experimental branch name.
+
+## Starting Before The Primary Task Lands
+
+This mode is allowed when a primary CI, release, deploy, or runtime watcher is
+already running or the primary task is otherwise blocked on external completion.
+
+Requirements:
+
+1. Record the primary watcher run id or command, branch, terminal condition, and
+   durable log path before starting side work.
+2. Create a separate worktree from the appropriate base branch. Do not mutate
+   the watched branch, deployed runtime, or release artifacts.
+3. Pick work that is independent of the watched gate and can be stopped after a
+   single command or patch if the watcher fires.
+4. Do not merge, arm live execution, dispatch a conflicting deploy, or mark the
+   side task complete while the primary gate is unresolved.
+5. When the watcher exits, pause side work immediately at the next clean
+   boundary, inspect the watcher result, and resume the primary task before
+   continuing experimentation.
 
 ## Implementation Loop
 
