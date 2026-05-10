@@ -657,9 +657,10 @@ class PolymarketInstrumentProvider(InstrumentProvider):
         *,
         sports_filter: set[str],
         max_results: int | None,
-        now: datetime,
-        horizon: timedelta | None,
+        now: datetime | None = None,
+        horizon: timedelta | None = None,
     ) -> list[dict[str, Any]]:
+        now = now or datetime.now(tz=UTC)
         sports_metadata = await self._gamma_get_json("/sports")
         if not isinstance(sports_metadata, list):
             return []
@@ -739,9 +740,10 @@ class PolymarketInstrumentProvider(InstrumentProvider):
         filters: dict[str, Any],
         sports_filter: set[str],
         max_results: int | None,
-        now: datetime,
-        horizon: timedelta | None,
+        now: datetime | None = None,
+        horizon: timedelta | None = None,
     ) -> list[dict[str, Any]]:
+        now = now or datetime.now(tz=UTC)
         sports_metadata = await self._gamma_get_json("/sports")
         if not isinstance(sports_metadata, list):
             return []
