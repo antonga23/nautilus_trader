@@ -177,51 +177,96 @@ def placement_recommendations(
     now = time.time_ns() if now_ns is None else now_ns
     data_age_secs = max((now - generated_at_ns) / 1_000_000_000, 0.0)
     data_fresh = data_age_secs <= max_data_age_secs
-    recommendations: dict[str, dict[str, object]] = {}
-    for strategy, venues in (strategy_venues or DEFAULT_STRATEGY_VENUES).items():
-        venue_payloads = {
-            venue: summary_by_venue.get(venue, {})
-            for venue in venues
-            if summary_by_venue.get(venue) is not None
-        }
-        missing_venues = [venue for venue in venues if venue not in venue_payloads]
-        total_p95 = {
-            venue: _summary_percentile_ms(summary, "total_ms", "p95")
-            for venue, summary in venue_payloads.items()
-        }
-        first_byte_p95 = {
-            venue: _summary_percentile_ms(summary, "first_byte_ms", "p95")
-            for venue, summary in venue_payloads.items()
-        }
-        error_rates = {
-            venue: _summary_float(summary, "errorRate") for venue, summary in venue_payloads.items()
-        }
-        worst_total = max(total_p95.values()) if total_p95 else 0.0
-        worst_first_byte = max(first_byte_p95.values()) if first_byte_p95 else 0.0
-        worst_error_rate = max(error_rates.values()) if error_rates else 1.0
-        blockers: list[str] = []
-        if missing_venues:
-            blockers.append("missing_venue_samples")
-        if not data_fresh:
-            blockers.append("stale_probe_data")
-        if worst_error_rate > 0.05:
-            blockers.append("high_error_rate")
-        recommendations[strategy] = {
-            "region": region,
-            "venues": list(venues),
-            "missingVenues": missing_venues,
-            "dataAgeSecs": round(data_age_secs, 3),
-            "dataFresh": data_fresh,
-            "worstLegTotalP95Ms": worst_total,
-            "worstLegFirstByteP95Ms": worst_first_byte,
-            "worstLegErrorRate": worst_error_rate,
-            "venueTotalP95Ms": total_p95,
-            "venueFirstByteP95Ms": first_byte_p95,
-            "venueErrorRates": error_rates,
-            "blockers": blockers,
-            "eligibleForPlacementComparison": not blockers,
-        }
-    return recommendations
+    return {
+        strategy: _strategy_placement_recommendation(
+            summary_by_venue,
+            region=region,
+            venues=venues,
+            data_age_secs=data_age_secs,
+            data_fresh=data_fresh,
+        )
+        for strategy, venues in (strategy_venues or DEFAULT_STRATEGY_VENUES).items()
+    }
+
+
+def _strategy_placement_recommendation(
+    summary_by_venue: dict[str, dict[str, object]],
+    *,
+    region: str,
+    venues: tuple[str, ...],
+    data_age_secs: float,
+    data_fresh: bool,
+) -> dict[str, object]:
+    venue_payloads = _venue_payloads(summary_by_venue, venues)
+    missing_venues = [venue for venue in venues if venue not in venue_payloads]
+    total_p95 = _venue_percentiles_ms(venue_payloads, "total_ms")
+    first_byte_p95 = _venue_percentiles_ms(venue_payloads, "first_byte_ms")
+    error_rates = _venue_error_rates(venue_payloads)
+    worst_error_rate = max(error_rates.values()) if error_rates else 1.0
+    blockers = _placement_blockers(
+        missing_venues=missing_venues,
+        data_fresh=data_fresh,
+        worst_error_rate=worst_error_rate,
+    )
+    return {
+        "region": region,
+        "venues": list(venues),
+        "missingVenues": missing_venues,
+        "dataAgeSecs": round(data_age_secs, 3),
+        "dataFresh": data_fresh,
+        "worstLegTotalP95Ms": max(total_p95.values()) if total_p95 else 0.0,
+        "worstLegFirstByteP95Ms": max(first_byte_p95.values()) if first_byte_p95 else 0.0,
+        "worstLegErrorRate": worst_error_rate,
+        "venueTotalP95Ms": total_p95,
+        "venueFirstByteP95Ms": first_byte_p95,
+        "venueErrorRates": error_rates,
+        "blockers": blockers,
+        "eligibleForPlacementComparison": not blockers,
+    }
+
+
+def _venue_payloads(
+    summary_by_venue: dict[str, dict[str, object]],
+    venues: tuple[str, ...],
+) -> dict[str, dict[str, object]]:
+    return {
+        venue: payload
+        for venue in venues
+        if (payload := summary_by_venue.get(venue)) is not None
+    }
+
+
+def _venue_percentiles_ms(
+    venue_payloads: dict[str, dict[str, object]],
+    metric: str,
+) -> dict[str, float]:
+    return {
+        venue: _summary_percentile_ms(summary, metric, "p95")
+        for venue, summary in venue_payloads.items()
+    }
+
+
+def _venue_error_rates(venue_payloads: dict[str, dict[str, object]]) -> dict[str, float]:
+    return {
+        venue: _summary_float(summary, "errorRate")
+        for venue, summary in venue_payloads.items()
+    }
+
+
+def _placement_blockers(
+    *,
+    missing_venues: list[str],
+    data_fresh: bool,
+    worst_error_rate: float,
+) -> list[str]:
+    blockers: list[str] = []
+    if missing_venues:
+        blockers.append("missing_venue_samples")
+    if not data_fresh:
+        blockers.append("stale_probe_data")
+    if worst_error_rate > 0.05:
+        blockers.append("high_error_rate")
+    return blockers
 
 
 def _summary_percentile_ms(
