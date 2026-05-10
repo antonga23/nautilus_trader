@@ -209,6 +209,16 @@ def _runtime_status_payload() -> dict[str, object]:
                 "candidateCounts": {"CLOUDBET->SXBET": 2, "SXBET->SXBET": 1},
                 "crossVenuePairsWithCandidates": ["CLOUDBET->SXBET"],
                 "zeroCandidateBlockerCounts": {"fixture_identity_mismatch": 2},
+                "zeroCandidateVenuePairs": [
+                    {
+                        "venuePair": "POLYMARKET->SXBET",
+                        "fixtureProofBlockerCounts": {"start_time_mismatch": 2},
+                    },
+                    {
+                        "venuePair": "SXBET->POLYMARKET",
+                        "fixtureProofBlockerCounts": {"ambiguous_fixture": 1},
+                    },
+                ],
             },
             "candidateQuality": {
                 "marginBands": {"positive": 3, "< -5%": 5},
@@ -536,6 +546,10 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
     ]
     assert summary["candidateQuality"]["zeroCandidateBlockerCounts"] == {
         "fixture_identity_mismatch": 2,
+    }
+    assert summary["candidateQuality"]["zeroCandidateFixtureProofBlockerCounts"] == {
+        "ambiguous_fixture": 1,
+        "start_time_mismatch": 2,
     }
     assert summary["candidateQuality"]["latencyHistograms"]["quoteAgeSeconds"]["p95"] == 1.2
     assert summary["candidateQuality"]["liveQuoteAgeSlo"]["violations"] == 0
@@ -927,6 +941,8 @@ def test_runtime_probe_report_cli_outputs_json_and_text(tmp_path, monkeypatch, c
     assert "top_semantic_blockers" in text_output
     assert "top_semantic_relationships" in text_output
     assert "zero_candidate_blockers fixture_identity_mismatch=2" in text_output
+    assert "zero_candidate_fixture_proof_blockers" in text_output
+    assert "start_time_mismatch=2" in text_output
     assert "fee_impact fee_hurt=6" in text_output
     assert "raw_negative_fee_adjusted_positive=1" in text_output
     assert "strategy_latency quote_event_p95=25.0ms" in text_output

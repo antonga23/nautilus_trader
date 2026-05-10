@@ -848,6 +848,74 @@ class TestBettingArbitrageNodeBuilder:
         assert event_limits == [("11", 2), ("22", 2)]
         assert Counter(market["sport"] for market in markets) == {"soccer": 2, "tennis": 2}
 
+    def test_polymarket_tag_market_discovery_finds_match_level_tennis(
+        self,
+        monkeypatch,
+    ):
+        class Clock:
+            @staticmethod
+            def timestamp_ns() -> int:
+                return 123
+
+        provider = polymarket_providers.PolymarketInstrumentProvider(
+            client=Mock(),
+            clock=Clock(),
+            config=InstrumentProviderConfig(),
+        )
+        list_calls: list[dict[str, object]] = []
+
+        async def fake_gamma_get_json(endpoint, params=None):
+            assert endpoint == "/sports"
+            return [
+                {"sport": "atp", "tags": "1,864,100639,101232"},
+                {"sport": "wta", "tags": "1,864,100639,102123"},
+            ]
+
+        async def fake_list_markets(*, http_client, filters, max_results=None, **kwargs):
+            del http_client, kwargs
+            list_calls.append({"filters": dict(filters), "max_results": max_results})
+            if str(filters.get("tag_id")) != "864":
+                return []
+            return [
+                {
+                    "id": "market-1",
+                    "conditionId": "condition-1",
+                    "question": "Internazionali BNL d'Italia: Frances Tiafoe vs Ignacio Buse",
+                    "slug": "atp-tiafoe-buse-2026-05-10",
+                    "active": True,
+                    "closed": False,
+                    "archived": False,
+                    "outcomes": '["Yes", "No"]',
+                    "outcomePrices": '["0.38", "0.62"]',
+                    "clobTokenIds": '["yes-token", "no-token"]',
+                    "events": [
+                        {
+                            "title": "Frances Tiafoe vs Ignacio Buse",
+                            "slug": "tiafoe-buse",
+                        },
+                    ],
+                },
+            ]
+
+        provider._gamma_get_json = fake_gamma_get_json
+        monkeypatch.setattr(polymarket_providers, "list_markets", fake_list_markets)
+
+        markets = asyncio.run(
+            provider._load_sport_tag_markets_using_gamma(
+                filters={"is_active": True},
+                sports_filter={"tennis"},
+                max_results=4,
+            ),
+        )
+
+        assert len(markets) == 1
+        assert markets[0]["sport"] == "tennis"
+        assert markets[0]["sportsTag"] == "atp"
+        assert markets[0]["sportsTagIds"] == ("864", "101232", "102123")
+        assert markets[0]["events"][0]["sport"] == "tennis"
+        assert any(call["filters"]["tag_id"] == "864" for call in list_calls)
+        assert all(call["filters"]["order"] == "volume24hr" for call in list_calls)
+
     def test_polymarket_provider_preserves_selected_token_metadata(self):
         class Clock:
             @staticmethod

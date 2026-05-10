@@ -215,6 +215,9 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
                 candidate_quality.get("zeroCandidateVenuePairSamples") or []
             )[:top_limit],
             "zeroCandidateBlockerCounts": candidate_quality.get("zeroCandidateBlockerCounts"),
+            "zeroCandidateFixtureProofBlockerCounts": _zero_fixture_proof_blocker_counts(
+                venue_coverage.get("zeroCandidateVenuePairs"),
+            ),
             "topPositiveCandidates": (candidate_quality.get("topPositiveCandidates") or [])[
                 :top_limit
             ],
@@ -295,6 +298,19 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
     }
     summary["recommendedActions"] = _recommended_actions(summary)
     return summary
+
+
+def _zero_fixture_proof_blocker_counts(value: Any) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    if not isinstance(value, list):
+        return counts
+    for report in value:
+        if not isinstance(report, dict):
+            continue
+        for reason, count in _as_dict(report.get("fixtureProofBlockerCounts")).items():
+            key = str(reason)
+            counts[key] = counts.get(key, 0) + _int_value(count)
+    return dict(sorted(counts.items()))
 
 
 def _normalized_latency_diagnostics(value: Any) -> dict[str, Any]:
@@ -1214,6 +1230,7 @@ def _format_quality_lines(quality: dict[str, Any]) -> list[str]:
             f"{key}={value}" for key, value in sorted(zero_candidate_blockers.items())
         )
         lines.append(f"  zero_candidate_blockers {rendered}")
+    lines.extend(_format_zero_fixture_proof_blocker_lines(quality))
     fee_adjustment = _as_dict(quality.get("feeAdjustment"))
     fee_impact = _as_dict(fee_adjustment.get("impactBuckets"))
     if fee_impact:
@@ -1257,6 +1274,14 @@ def _format_quality_lines(quality: dict[str, Any]) -> list[str]:
                 f"pair_skew={pair_skew.get('violations', 0)}/{pair_skew.get('observations', 0)}",
             )
     return lines
+
+
+def _format_zero_fixture_proof_blocker_lines(quality: dict[str, Any]) -> list[str]:
+    zero_fixture_blockers = quality.get("zeroCandidateFixtureProofBlockerCounts") or {}
+    if not isinstance(zero_fixture_blockers, dict) or not zero_fixture_blockers:
+        return []
+    rendered = ", ".join(f"{key}={value}" for key, value in sorted(zero_fixture_blockers.items()))
+    return [f"  zero_candidate_fixture_proof_blockers {rendered}"]
 
 
 def _format_devig_quality_lines(value: Any) -> list[str]:
