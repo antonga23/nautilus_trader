@@ -3036,6 +3036,58 @@ class TestBettingArbitrageNodeRunner:
         assert report["samples"][0]["blockerHint"] == "same_market_params_mismatch"
         assert report["samples"][0]["matcherSuspectReason"] == "same_market_params_mismatch"
 
+    def test_venue_pair_coverage_reports_polymarket_corners_as_provider_scope_mismatch(self):
+        polymarket_instrument = _instrument(
+            venue="POLYMARKET",
+            market_type="soccer.totals",
+            market_name="soccer.totals_binary",
+            outcome="over",
+            params="line=12.5&subject=corners",
+            event_id="poly-arsenal-west-ham-corners",
+            event_name="Arsenal Total Corners vs West Ham United",
+            home_name="Arsenal Total Corners",
+            away_name="West Ham United",
+            sport_name="soccer",
+        )
+        sxbet_instrument = _instrument(
+            venue="SXBET",
+            market_type="totals",
+            market_name="TOTALS",
+            outcome="under",
+            params="line=2.5",
+            event_id="sxbet-arsenal-west-ham-goals",
+            event_name="Arsenal vs West Ham United",
+            home_name="Arsenal",
+            away_name="West Ham United",
+            sport_name="soccer",
+        )
+        strategy = SimpleNamespace(
+            _config=SimpleNamespace(enabled_venues=frozenset({"POLYMARKET", "SXBET"})),
+            _quote_subscribed_instrument_ids={polymarket_instrument.id, sxbet_instrument.id},
+        )
+
+        coverage = node_runner._venue_pair_coverage(
+            strategy,
+            edges=[],
+            nodes={
+                "poly-node": SimpleNamespace(instrument=polymarket_instrument),
+                "sxbet-node": SimpleNamespace(instrument=sxbet_instrument),
+            },
+            quotes={},
+            matched_node_ids=set(),
+            candidate_venue_pairs={},
+        )
+
+        report = {item["venuePair"]: item for item in coverage["zeroCandidateVenuePairs"]}[
+            "POLYMARKET->SXBET"
+        ]
+        assert report["reason"] == "no_semantic_edge"
+        assert report["blockerReason"] == "provider_scope_mismatch"
+        assert "soccer:arsenal:west ham united" in report["commonEventKeySamples"]
+        assert report["sampleBlockerCounts"] == {"provider_scope_mismatch": 1}
+        assert report["samples"][0]["blockerHint"] == "provider_scope_mismatch"
+        assert report["samples"][0]["fixtureIdentityProof"]["sameFixture"] is True
+
     def test_resolution_horizon_payload_counts_near_term_quoted_edges(self):
         inside_start = (datetime.now(tz=UTC) + timedelta(hours=1)).isoformat()
         outside_start = (datetime.now(tz=UTC) + timedelta(days=10)).isoformat()
@@ -3305,6 +3357,39 @@ class TestBettingArbitrageNodeRunner:
             "missing_candidate_decision_latency",
             "missing_provider_latency",
         ]
+
+        quote_only_provider_latency = node_runner._runtime_latency_diagnostics(
+            {
+                "latency_diagnostics": {
+                    "quote_event_to_strategy": {"count": 3},
+                    "graph_scan": {"count": 3},
+                    "candidate_decision": {"count": 3},
+                    "quote_fetch_latency": {
+                        "count": 3,
+                        "p50_ms": 500.0,
+                        "p95_ms": 700.0,
+                        "p99_ms": 800.0,
+                        "max_ms": 900.0,
+                    },
+                },
+            },
+            {
+                "quoted_edges": 2,
+                "positive_execution": 0,
+                "positive_same_venue": 0,
+                "threshold_execution": 0,
+                "threshold_same_venue": 0,
+                "live_timing_slo": {},
+                "latency_histograms": {},
+                "candidate_decision_latency": {},
+            },
+        )
+        assert quote_only_provider_latency["sloStatus"]["fetchLatency"]["status"] == "pass"
+        assert quote_only_provider_latency["sloStatus"]["strategyLatency"][
+            "providerLatencyObserved"
+        ]
+        assert "provider_latency" not in quote_only_provider_latency["sloStatus"]["missingStages"]
+        assert "missing_provider_latency" not in quote_only_provider_latency["diagnosticWarnings"]
 
     def test_runtime_probe_aggregates_same_venue_dry_run_reasons(self):
         counters = node_runner.ProbeProfitabilityCounters()

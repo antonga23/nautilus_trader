@@ -729,6 +729,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._order_submit_latency_ns: list[int] = []
         self._quote_event_to_strategy_latency_ns: list[int] = []
         self._quote_publish_to_strategy_latency_ns: list[int] = []
+        self._quote_fetch_latency_ns: list[int] = []
         self._instrument_refresh_reconcile_latency_ns: list[int] = []
         self._last_arbitrage_summary_at_ns = 0
 
@@ -1629,6 +1630,11 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             self._record_latency_sample(
                 self._quote_publish_to_strategy_latency_ns,
                 max(0, strategy_received_ns - int(tick.ts_init)),
+            )
+        if tick.ts_event > 0 and tick.ts_init > 0:
+            self._record_latency_sample(
+                self._quote_fetch_latency_ns,
+                max(0, int(tick.ts_init) - int(tick.ts_event)),
             )
 
     @staticmethod
@@ -4442,6 +4448,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 "quote_publish_to_strategy": self._latency_summary(
                     self._quote_publish_to_strategy_latency_ns,
                 ),
+                "quote_fetch_latency": self._latency_summary(self._quote_fetch_latency_ns),
                 "instrument_refresh_reconcile": self._latency_summary(
                     self._instrument_refresh_reconcile_latency_ns,
                 ),

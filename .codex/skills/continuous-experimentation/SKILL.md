@@ -104,6 +104,10 @@ If a CI, release, deploy, or runtime watcher is active for the current task:
    short productive-wait note before switching contexts: watched run, durable
    log path, selected side task, files/worktree involved, and the condition
    that interrupts side work.
+7. Side work started before the primary gate lands must remain independently
+   reversible: no shared generated artifacts, no mutation of the watched
+   branch, and no deployment or workflow dispatch against the same runtime
+   surface until the watcher has completed.
 
 ## Required Validation
 

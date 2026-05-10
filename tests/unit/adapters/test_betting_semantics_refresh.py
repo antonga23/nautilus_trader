@@ -906,6 +906,49 @@ def test_polymarket_totals_binary_maps_over_under_and_extracts_line():
     assert rule.relationship_type == RelationshipType.EQUIVALENT_SELECTION.value
 
 
+def test_polymarket_corner_totals_keep_subject_axis_separate_from_goals():
+    question = "Will Arsenal vs West Ham United go over 12.5 total corners?"
+    info = {
+        "condition_id": "0xsoccer-corners",
+        "question": question,
+        "tokens": [
+            {"token_id": "corners-yes", "outcome": "Yes", "price": 0.47},
+            {"token_id": "corners-no", "outcome": "No", "price": 0.53},
+        ],
+        "selected_token_id": "corners-yes",
+        "selected_outcome": "Yes",
+        "_gamma_original": {
+            "sport": "soccer",
+            "sportsMarketType": "total_corners",
+            "description": "This resolves to Yes if the match has over 12.5 total corners.",
+            "events": [
+                {
+                    "title": "Arsenal Total Corners vs West Ham United",
+                    "sport": "soccer",
+                    "startDateIso": "2026-05-10T16:00:00Z",
+                },
+            ],
+        },
+    }
+
+    transformed = PolymarketSportsTransformer.to_crypto_betting_instrument(
+        polymarket_binary_option(
+            symbol="corners-yes",
+            outcome="Yes",
+            question=question,
+            info=info,
+        ),
+    )
+
+    assert transformed is not None
+    assert transformed.event_key(include_start_time=False) == "soccer:arsenal:west ham united"
+    normalized = MarketNormalizer().normalize(transformed)
+    assert normalized.market_type == CanonicalMarketType.TOTALS.value
+    assert normalized.selection == "OVER"
+    assert normalized.param("line") == "12.5"
+    assert normalized.param("subject") == "corners"
+
+
 def test_polymarket_half_point_lines_override_generic_50_50_tie_language():
     question = "Will the Lakers vs Nuggets game go over 224.5 total points?"
     info = {

@@ -245,6 +245,9 @@ class PolymarketSportsTransformer:
                 question=question,
                 outcome=outcome,
             )
+            subject = cls._total_subject_from_text(question, sports_market_type)
+            if subject:
+                params["subject"] = subject
 
         return {
             "sport": sport,
@@ -455,9 +458,22 @@ class PolymarketSportsTransformer:
         if "cover the spread" in normalized or re.search(r"\bspread\b", normalized):
             return "spread"
         if (re.search(r"\bover\b", normalized) or re.search(r"\bunder\b", normalized)) and (
-            " total" in normalized or " points" in normalized or " goals" in normalized
+            " total" in normalized
+            or " points" in normalized
+            or " goals" in normalized
+            or " corners" in normalized
+            or " cards" in normalized
         ):
             return "total"
+        return ""
+
+    @staticmethod
+    def _total_subject_from_text(question: str, sports_market_type: str) -> str:
+        normalized = f"{question} {sports_market_type}".lower()
+        if "corner" in normalized:
+            return "corners"
+        if "card" in normalized:
+            return "cards"
         return ""
 
     @staticmethod
