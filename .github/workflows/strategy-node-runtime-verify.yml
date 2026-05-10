@@ -34,6 +34,14 @@ on:
         description: Comma-separated VENUE:COUNT requirements for runtimeProbe.venueCoverage.quotedNodeCounts
         required: false
         default: ''
+      runtime_expectation:
+        description: Runtime safety expectation to enforce in runtime probe report gates
+        required: false
+        default: validation
+        type: choice
+        options:
+          - validation
+          - live_unarmed
       semantic_verify_enabled:
         description: Run semantic completion verification against the deployed file-backed cache
         required: false
@@ -122,6 +130,7 @@ jobs:
           INPUT_HEARTBEAT_UPDATES_REQUIRED: ${{ github.event.inputs.heartbeat_updates_required }}
           INPUT_MIN_CROSS_VENUE_CANDIDATES: ${{ github.event.inputs.min_cross_venue_candidates }}
           INPUT_MIN_QUOTED_NODE_COUNTS: ${{ github.event.inputs.min_quoted_node_counts }}
+          INPUT_RUNTIME_EXPECTATION: ${{ github.event.inputs.runtime_expectation }}
           INPUT_SEMANTIC_VERIFY_ENABLED: ${{ github.event.inputs.semantic_verify_enabled }}
           INPUT_SEMANTIC_VERIFY_REQUIRED_PROVIDERS: ${{ github.event.inputs.semantic_verify_required_providers }}
           INPUT_SEMANTIC_VERIFY_TARGET_SPORTS: ${{ github.event.inputs.semantic_verify_target_sports }}
@@ -137,6 +146,7 @@ jobs:
           heartbeat_updates_required="${INPUT_HEARTBEAT_UPDATES_REQUIRED:-2}"
           min_cross_venue_candidates="${INPUT_MIN_CROSS_VENUE_CANDIDATES:-0}"
           min_quoted_node_counts="${INPUT_MIN_QUOTED_NODE_COUNTS:-}"
+          runtime_expectation="${INPUT_RUNTIME_EXPECTATION:-validation}"
           semantic_verify_enabled="${INPUT_SEMANTIC_VERIFY_ENABLED:-false}"
           semantic_verify_required_providers="${INPUT_SEMANTIC_VERIFY_REQUIRED_PROVIDERS:-}"
           semantic_verify_target_sports="${INPUT_SEMANTIC_VERIFY_TARGET_SPORTS:-}"
@@ -347,12 +357,25 @@ jobs:
 
           report_args=(
             --format text
-            --require-auto-execute-false
-            --require-validation-mode
             --require-rust-semantic
             --require-coverage-runtime
             --min-quoted-semantic-instruments 2
           )
+          case "$runtime_expectation" in
+            validation)
+              report_args+=(--require-auto-execute-false --require-validation-mode)
+              ;;
+            live_unarmed)
+              report_args+=(
+                --require-live-execution-env-unarmed
+                --require-cross-currency-live-blocked
+              )
+              ;;
+            *)
+              echo "Unsupported runtime_expectation=$runtime_expectation" >&2
+              exit 2
+              ;;
+          esac
           if [ "$min_cross_venue_candidates" -gt 0 ]; then
             report_args+=(--min-cross-venue-candidates "$min_cross_venue_candidates")
           fi
