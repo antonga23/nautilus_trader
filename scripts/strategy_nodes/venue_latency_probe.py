@@ -230,9 +230,7 @@ def _venue_payloads(
     venues: tuple[str, ...],
 ) -> dict[str, dict[str, object]]:
     return {
-        venue: payload
-        for venue in venues
-        if (payload := summary_by_venue.get(venue)) is not None
+        venue: payload for venue in venues if (payload := summary_by_venue.get(venue)) is not None
     }
 
 
@@ -248,8 +246,7 @@ def _venue_percentiles_ms(
 
 def _venue_error_rates(venue_payloads: dict[str, dict[str, object]]) -> dict[str, float]:
     return {
-        venue: _summary_float(summary, "errorRate")
-        for venue, summary in venue_payloads.items()
+        venue: _summary_float(summary, "errorRate") for venue, summary in venue_payloads.items()
     }
 
 
