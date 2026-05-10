@@ -1758,6 +1758,7 @@ def _venue_pair_coverage(
             pair,
             strategy=strategy,
             nodes=nodes,
+            quotes=quotes,
             node_counts=node_counts,
             edge_counts=edge_counts,
             quoted_edge_counts=quoted_edge_counts,
@@ -1932,6 +1933,7 @@ def _zero_venue_pair_report(
     *,
     strategy,
     nodes: dict[Any, object],
+    quotes: dict[Any, object],
     node_counts: Counter[str],
     edge_counts: Counter[str],
     quoted_edge_counts: Counter[str],
@@ -1959,6 +1961,13 @@ def _zero_venue_pair_report(
     source_event_keys = _event_keys_for_venue(nodes, source)
     target_event_keys = _event_keys_for_venue(nodes, target)
     common_event_keys = sorted((source_event_keys & target_event_keys) - {""})
+    common_quote_coverage = _common_event_quote_coverage(
+        source=source,
+        target=target,
+        nodes=nodes,
+        quotes=quotes,
+        common_event_keys=set(common_event_keys),
+    )
     if reason == "no_semantic_edge":
         report["blockerReason"] = (
             CoverageBlockerReason.NO_COMMON_FIXTURE.value
@@ -1971,6 +1980,7 @@ def _zero_venue_pair_report(
         report["blockerReason"] = "pricing_or_threshold"
     report["commonEventKeyCount"] = len(common_event_keys)
     report["commonEventKeySamples"] = common_event_keys[:5]
+    report.update(common_quote_coverage)
     report["sourceEventKeySamples"] = sorted(source_event_keys - {""})[:5]
     report["targetEventKeySamples"] = sorted(target_event_keys - {""})[:5]
     report["sourceEventSportCounts"] = dict(sorted(_event_sport_counts(source_event_keys).items()))
@@ -2015,6 +2025,49 @@ def _zero_venue_pair_report(
     if reason == "no_semantic_edge" and samples:
         report["blockerReason"] = _zero_pair_sample_blocker(samples, report["blockerReason"])
     return report
+
+
+def _common_event_quote_coverage(
+    *,
+    source: str,
+    target: str,
+    nodes: dict[Any, object],
+    quotes: dict[Any, object],
+    common_event_keys: set[str],
+) -> dict[str, object]:
+    source_quoted_keys = _quoted_event_keys_for_venue(nodes, quotes, source)
+    target_quoted_keys = _quoted_event_keys_for_venue(nodes, quotes, target)
+    fully_quoted_keys = common_event_keys & source_quoted_keys & target_quoted_keys
+    source_missing_keys = common_event_keys - source_quoted_keys
+    target_missing_keys = common_event_keys - target_quoted_keys
+    samples: list[dict[str, object]] = []
+    for event_key in sorted((source_missing_keys | target_missing_keys) - {""})[:5]:
+        samples.append(
+            {
+                "eventKey": event_key,
+                "sourceQuoted": event_key in source_quoted_keys,
+                "targetQuoted": event_key in target_quoted_keys,
+            },
+        )
+    return {
+        "fullyQuotedCommonEventKeyCount": len(fully_quoted_keys),
+        "sourceQuotedCommonEventKeyCount": len(common_event_keys & source_quoted_keys),
+        "targetQuotedCommonEventKeyCount": len(common_event_keys & target_quoted_keys),
+        "unquotedCommonEventKeySamples": samples,
+    }
+
+
+def _quoted_event_keys_for_venue(
+    nodes: dict[Any, object],
+    quotes: dict[Any, object],
+    venue: str,
+) -> set[str]:
+    keys: set[str] = set()
+    for node_id, node in nodes.items():
+        if node_id not in quotes or _probe_node_venue(node) != venue:
+            continue
+        keys.update(_probe_event_keys_no_time(node))
+    return keys
 
 
 def _zero_pair_sample_blocker(samples: list[dict[str, object]], fallback: object) -> str:
@@ -2259,7 +2312,7 @@ def _probe_event_keys_no_time(node) -> set[str]:
             raw_aliases = event_alias_keys(include_start_time=False)
         except (AttributeError, TypeError, ValueError):
             raw_aliases = ()
-        if isinstance(raw_aliases, (str, bytes)):
+        if isinstance(raw_aliases, str | bytes):
             raw_aliases = (raw_aliases,)
         for alias in raw_aliases or ():
             keys.add(_canonical_event_key_text(str(alias)))
