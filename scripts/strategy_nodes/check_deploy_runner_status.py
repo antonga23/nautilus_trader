@@ -15,13 +15,10 @@ from collections.abc import Iterable
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 from typing import Any
-from urllib.error import HTTPError
-from urllib.error import URLError
-from urllib.request import Request
-from urllib.request import urlopen
 
 
 DEFAULT_REQUIRED_LABELS = ("self-hosted", "Linux", "X64", "ec2", "deploy", "trading")
@@ -56,11 +53,22 @@ def _payload_from_json(raw: str) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
-def _fetch_runner_payload_with_gh(repo: str) -> dict[str, Any]:
+def _gh_executable() -> str:
+    gh_path = shutil.which("gh")
+    if not gh_path:
+        raise RuntimeError("gh executable not found in PATH")
+    return gh_path
+
+
+def _fetch_runner_payload_with_gh(repo: str, *, token: str | None = None) -> dict[str, Any]:
+    env = os.environ.copy()
+    if token:
+        env.setdefault("GH_TOKEN", token)
     completed = subprocess.run(  # noqa: S603 - fixed gh API arguments.
-        ["gh", "api", f"repos/{repo}/actions/runners", "--paginate"],  # noqa: S607
+        [_gh_executable(), "api", f"repos/{repo}/actions/runners", "--paginate"],
         capture_output=True,
         check=False,
+        env=env,
         text=True,
         timeout=30,
     )
@@ -71,29 +79,7 @@ def _fetch_runner_payload_with_gh(repo: str) -> dict[str, Any]:
 
 
 def _fetch_runner_payload(repo: str, *, token: str | None) -> dict[str, Any]:
-    url = f"https://api.github.com/repos/{repo}/actions/runners?per_page=100"
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "User-Agent": "cloudbet-market-maker-runner-diagnostics",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    request = Request(url, headers=headers)  # noqa: S310 - fixed GitHub API URL.
-    try:
-        with urlopen(request, timeout=20) as response:  # noqa: S310 - fixed GitHub API URL.
-            raw = response.read().decode("utf-8")
-    except HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"GitHub runner API failed: HTTP {exc.code}: {detail}") from exc
-    except URLError as exc:
-        try:
-            return _fetch_runner_payload_with_gh(repo)
-        except RuntimeError as fallback_exc:
-            raise RuntimeError(
-                f"GitHub runner API failed: {exc.reason}; {fallback_exc}",
-            ) from exc
-    return _payload_from_json(raw)
+    return _fetch_runner_payload_with_gh(repo, token=token)
 
 
 def _runner_summary(runner: dict[str, Any], required_labels: set[str]) -> dict[str, Any]:

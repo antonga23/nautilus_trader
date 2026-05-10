@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
-from urllib.error import URLError
 
 import pytest
 
@@ -19,35 +18,32 @@ def _load_module():
     return module
 
 
-def test_fetch_runner_payload_reports_url_errors_without_traceback(monkeypatch):
+def test_fetch_runner_payload_reports_missing_gh_without_traceback(monkeypatch):
     module = _load_module()
 
-    def fail_urlopen(*args, **kwargs):
-        raise URLError("certificate verify failed")
+    monkeypatch.setattr(module.shutil, "which", lambda name: None)
 
-    def fail_fallback(*args, **kwargs):
-        raise RuntimeError("gh unavailable")
-
-    monkeypatch.setattr(module, "urlopen", fail_urlopen)
-    monkeypatch.setattr(module, "_fetch_runner_payload_with_gh", fail_fallback)
-
-    with pytest.raises(RuntimeError, match=r"certificate verify failed.*gh unavailable"):
+    with pytest.raises(RuntimeError, match="gh executable not found"):
         module._fetch_runner_payload("owner/repo", token=None)
 
 
-def test_fetch_runner_payload_falls_back_to_gh_on_url_error(monkeypatch):
+def test_fetch_runner_payload_uses_absolute_gh_path(monkeypatch):
     module = _load_module()
+    captured: dict[str, object] = {}
 
-    def fail_urlopen(*args, **kwargs):
-        raise URLError("certificate verify failed")
+    class Completed:
+        returncode = 0
+        stderr = ""
+        stdout = '{"runners": [{"name": "ec2"}]}'
 
-    monkeypatch.setattr(module, "urlopen", fail_urlopen)
-    monkeypatch.setattr(
-        module,
-        "_fetch_runner_payload_with_gh",
-        lambda repo: {"runners": [{"name": "ec2"}]},
-    )
+    def fake_run(args, **kwargs):
+        captured["args"] = args
+        captured["env"] = kwargs.get("env")
+        return Completed()
 
+    monkeypatch.setattr(module.shutil, "which", lambda name: "/usr/local/bin/gh")
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
     assert module._fetch_runner_payload("owner/repo", token=None) == {
         "runners": [{"name": "ec2"}],
     }
+    assert captured["args"][:2] == ["/usr/local/bin/gh", "api"]
