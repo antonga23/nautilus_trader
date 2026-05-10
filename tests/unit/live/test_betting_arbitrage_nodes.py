@@ -2666,10 +2666,17 @@ class TestBettingArbitrageNodeRunner:
         assert zero_reports["SXBET->CLOUDBET"]["quotedEdgeCount"] == 0
         assert zero_reports["SXBET->CLOUDBET"]["candidateCount"] == 0
         assert zero_reports["SXBET->CLOUDBET"]["commonEventKeyCount"] >= 1
+        assert zero_reports["SXBET->CLOUDBET"]["fullyQuotedCommonEventKeyCount"] == 0
+        assert zero_reports["SXBET->CLOUDBET"]["sourceQuotedCommonEventKeyCount"] >= 1
+        assert zero_reports["SXBET->CLOUDBET"]["targetQuotedCommonEventKeyCount"] == 0
         assert (
             sxbet_instrument.event_key(include_start_time=False)
             in zero_reports["SXBET->CLOUDBET"]["commonEventKeySamples"]
         )
+        assert zero_reports["SXBET->CLOUDBET"]["unquotedCommonEventKeySamples"][0]["sourceQuoted"]
+        assert not zero_reports["SXBET->CLOUDBET"]["unquotedCommonEventKeySamples"][0][
+            "targetQuoted"
+        ]
         assert zero_reports["SXBET->CLOUDBET"]["sampleBlockerCounts"] == {}
         assert zero_reports["SXBET->CLOUDBET"]["samples"][0]["marketFamily"] == (
             "MATCH_ODDS + MATCH_ODDS"
@@ -2723,6 +2730,10 @@ class TestBettingArbitrageNodeRunner:
         assert report["quotedEdgeCount"] == 0
         assert report["candidateCount"] == 0
         assert report["commonEventKeyCount"] == 0
+        assert report["fullyQuotedCommonEventKeyCount"] == 0
+        assert report["sourceQuotedCommonEventKeyCount"] == 0
+        assert report["targetQuotedCommonEventKeyCount"] == 0
+        assert report["unquotedCommonEventKeySamples"] == []
         assert report["discoveryGapReason"] == "no_common_fixture_loaded"
         assert report["sourceEventSportCounts"] == {"soccer": 1}
         assert report["targetEventSportCounts"] == {"basketball": 1}
