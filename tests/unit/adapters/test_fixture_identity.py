@@ -4,6 +4,7 @@ from decimal import Decimal
 
 from nautilus_trader.adapters.betting.common.enums import SelectionSide
 from nautilus_trader.adapters.betting.fixture_identity import FixtureIdentityResolver
+from nautilus_trader.adapters.betting.fx import FxMarketQuote
 from nautilus_trader.adapters.betting.fx import PortfolioCurrencyPolicy
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.model.identifiers import Venue
@@ -229,3 +230,71 @@ def test_portfolio_policy_blocks_play_currency_for_live_settlement():
 
     assert not conversion.is_available
     assert conversion.blocker_reason == "sandbox_currency_not_live_settlement"
+
+
+def test_portfolio_policy_uses_fresh_conservative_fx_ask_for_live_cost():
+    policy = PortfolioCurrencyPolicy(
+        stablecoin_haircut_bps=0,
+        fx_quote_max_age_secs=10,
+        fx_quotes={
+            "EUR/USD": FxMarketQuote(
+                pair="EUR/USD",
+                rate=Decimal("1.0800"),
+                bid=Decimal("1.0790"),
+                ask=Decimal("1.0810"),
+                source="hyperliquid",
+                age_secs=2.0,
+            ),
+        },
+    )
+
+    conversion = policy.convert(Decimal(25), "EUR")
+
+    assert conversion.is_available
+    assert conversion.rate == Decimal("1.0810")
+    assert conversion.source == "hyperliquid"
+    assert conversion.age_secs == 2.0
+    assert conversion.converted_amount == Decimal("27.0250")
+
+
+def test_portfolio_policy_blocks_stale_live_fx_quote():
+    policy = PortfolioCurrencyPolicy(
+        fx_quote_max_age_secs=10,
+        fx_quotes={
+            "EUR/USD": FxMarketQuote(
+                pair="EUR/USD",
+                rate=Decimal("1.0800"),
+                source="pyth_hermes",
+                age_secs=11.0,
+            ),
+        },
+    )
+
+    conversion = policy.convert(Decimal(25), "EUR")
+
+    assert not conversion.is_available
+    assert conversion.blocker_reason == "stale_fx_rate"
+    assert conversion.source == "pyth_hermes"
+    assert conversion.age_secs == 11.0
+
+
+def test_portfolio_policy_uses_inverse_bid_for_conservative_fx_cost():
+    policy = PortfolioCurrencyPolicy(
+        stablecoin_haircut_bps=0,
+        fx_quotes={
+            "USD/EUR": FxMarketQuote(
+                pair="USD/EUR",
+                rate=Decimal("0.9250"),
+                bid=Decimal("0.9240"),
+                ask=Decimal("0.9260"),
+                source="binance",
+                age_secs=1.0,
+            ),
+        },
+    )
+
+    conversion = policy.convert(Decimal(10), "EUR")
+
+    assert conversion.is_available
+    assert conversion.rate == Decimal(1) / Decimal("0.9240")
+    assert conversion.converted_amount == Decimal(10) / Decimal("0.9240")

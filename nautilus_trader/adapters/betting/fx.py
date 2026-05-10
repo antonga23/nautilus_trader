@@ -18,8 +18,10 @@ USD-equivalent portfolio accounting helpers for live betting execution.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
+from typing import Any
 
 
 USD_EQUIVALENT_CURRENCIES = frozenset({"USD", "USDC", "USDT"})
@@ -48,6 +50,20 @@ class FxConversion:
 
 
 @dataclass(frozen=True)
+class FxMarketQuote:
+    """
+    One FX quote for conservative live portfolio conversion.
+    """
+
+    pair: str
+    rate: Decimal
+    source: str
+    age_secs: float
+    bid: Decimal | None = None
+    ask: Decimal | None = None
+
+
+@dataclass(frozen=True)
 class PortfolioCurrencyPolicy:
     """
     Convert venue stakes into one conservative portfolio base currency.
@@ -58,6 +74,7 @@ class PortfolioCurrencyPolicy:
     stablecoin_haircut_bps: int = 10
     fx_quote_max_age_secs: float = 30.0
     static_fx_rates: dict[str, Decimal] | None = None
+    fx_quotes: Mapping[str, FxMarketQuote | Any] | None = None
     static_fx_source: str = "configured_static_fx"
     sandbox_currencies: frozenset[str] = SANDBOX_CURRENCIES
 
@@ -114,7 +131,26 @@ class PortfolioCurrencyPolicy:
                 age_secs=0.0,
                 haircut_bps=self.stablecoin_haircut_bps,
             )
-        rate = self._configured_rate(source_currency, target_currency)
+        rate: Decimal | None
+        quote = self._find_quote(source_currency, target_currency)
+        if quote is not None:
+            rate, quote_source, quote_age = quote
+            if quote_age > self.fx_quote_max_age_secs:
+                return FxConversion(
+                    source_currency=source_currency,
+                    target_currency=target_currency,
+                    source_amount=amount,
+                    converted_amount=None,
+                    rate=rate,
+                    source=quote_source,
+                    age_secs=quote_age,
+                    haircut_bps=0,
+                    blocker_reason="stale_fx_rate",
+                )
+        else:
+            rate = self._configured_rate(source_currency, target_currency)
+            quote_source = self.static_fx_source
+            quote_age = 0.0
         if rate is None:
             return FxConversion(
                 source_currency=source_currency,
@@ -134,10 +170,32 @@ class PortfolioCurrencyPolicy:
             source_amount=amount,
             converted_amount=amount * rate * (Decimal(1) + haircut),
             rate=rate,
-            source=self.static_fx_source,
-            age_secs=0.0,
+            source=quote_source,
+            age_secs=quote_age,
             haircut_bps=self.stablecoin_haircut_bps,
         )
+
+    def _find_quote(
+        self,
+        source_currency: str,
+        target_currency: str,
+    ) -> tuple[Decimal, str, float] | None:
+        quotes = self.fx_quotes or {}
+        direct_key = f"{source_currency}/{target_currency}"
+        inverse_key = f"{target_currency}/{source_currency}"
+        if direct_key in quotes:
+            quote = _coerce_quote(direct_key, quotes[direct_key])
+            rate = quote.ask or quote.rate
+            if rate <= 0:
+                return None
+            return rate, quote.source, quote.age_secs
+        if inverse_key in quotes:
+            quote = _coerce_quote(inverse_key, quotes[inverse_key])
+            inverse_rate = quote.bid or quote.rate
+            if inverse_rate <= 0:
+                return None
+            return Decimal(1) / inverse_rate, quote.source, quote.age_secs
+        return None
 
     def _configured_rate(self, source_currency: str, target_currency: str) -> Decimal | None:
         rates = self.static_fx_rates or {}
@@ -150,6 +208,24 @@ class PortfolioCurrencyPolicy:
             if inverse > 0:
                 return Decimal(1) / inverse
         return None
+
+
+def _coerce_quote(pair: str, value: FxMarketQuote | Any) -> FxMarketQuote:
+    if isinstance(value, FxMarketQuote):
+        return value
+    rate = Decimal(str(value.rate))
+    source = str(getattr(value, "source", "fx_quote"))
+    age_secs = float(getattr(value, "age_secs", 0.0))
+    bid = getattr(value, "bid", None)
+    ask = getattr(value, "ask", None)
+    return FxMarketQuote(
+        pair=pair,
+        rate=rate,
+        source=source,
+        age_secs=age_secs,
+        bid=Decimal(str(bid)) if bid is not None else None,
+        ask=Decimal(str(ask)) if ask is not None else None,
+    )
 
 
 def _currency_code(value: object) -> str:

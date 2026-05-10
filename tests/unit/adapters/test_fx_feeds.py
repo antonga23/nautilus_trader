@@ -49,3 +49,33 @@ def test_fetch_eur_usd_rate_falls_back_to_binance(monkeypatch):
     assert quote.source == "binance"
     assert quote.rate == Decimal("1.0815")
     assert len(calls) == 2
+
+
+def test_fetch_eur_usd_rate_uses_pyth_when_hyperliquid_has_no_pair(monkeypatch):
+    calls: list[str] = []
+
+    def fake_urlopen(req, timeout=None, **_kwargs):
+        url = getattr(req, "full_url", req)
+        calls.append(str(url))
+        if "hyperliquid" in str(url):
+            return _Response({})
+        return _Response(
+            {
+                "parsed": [
+                    {
+                        "price": {
+                            "price": "108375000",
+                            "expo": -8,
+                        },
+                    },
+                ],
+            },
+        )
+
+    monkeypatch.setattr(fx_feeds.request, "urlopen", fake_urlopen)
+
+    quote = fx_feeds.fetch_eur_usd_rate(pyth_price_id="0xeurusd", timeout_secs=0.1)
+
+    assert quote.source == "pyth_hermes"
+    assert quote.rate == Decimal("1.08375000")
+    assert len(calls) == 2
