@@ -3167,6 +3167,8 @@ class TestBettingArbitrageNodeRunner:
         assert report["samples"][0]["fixtureIdentityProof"]["reason"] == "start_time_mismatch"
         assert report["samples"][0]["fixtureStartTimeA"] == "2026-03-13T18:00:00Z"
         assert report["samples"][0]["fixtureStartTimeB"] == "2026-03-26T08:00:00Z"
+        assert "soccer:leeds united:tottenham hotspur" in report["samples"][0]["eventAliasKeysA"]
+        assert "soccer:leeds united:tottenham hotspur" in report["samples"][0]["eventAliasKeysB"]
 
     def test_venue_pair_coverage_uses_fixture_aliases_for_noisy_polymarket_names(self):
         polymarket_instrument = _instrument(

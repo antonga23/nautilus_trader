@@ -2162,6 +2162,8 @@ def _zero_pair_sample_payload(strategy, source_node, target_node) -> dict[str, o
         "instrumentIdB": str(getattr(instrument_b, "id", "")),
         "eventKeyA": _probe_event_key_no_time(source_node),
         "eventKeyB": _probe_event_key_no_time(target_node),
+        "eventAliasKeysA": sorted(_probe_event_keys_no_time(source_node))[:5],
+        "eventAliasKeysB": sorted(_probe_event_keys_no_time(target_node))[:5],
         "canonicalEventKeyA": _canonical_probe_event_key_no_time(source_node),
         "canonicalEventKeyB": _canonical_probe_event_key_no_time(target_node),
         "fixtureStartTimeA": _isoformat_utc(fixture_start_time_a),
