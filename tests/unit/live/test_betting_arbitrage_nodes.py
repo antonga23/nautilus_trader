@@ -3010,6 +3010,35 @@ class TestBettingArbitrageNodeRunner:
             "failure_reasons": {},
         }
 
+    def test_runtime_probe_respects_execution_venue_mode(self):
+        strategy = SimpleNamespace(
+            _config=SimpleNamespace(execution_venue_mode="cross_venue"),
+        )
+        sxbet_a = SimpleNamespace(
+            instrument=SimpleNamespace(id=SimpleNamespace(venue="SXBET")),
+        )
+        sxbet_b = SimpleNamespace(
+            instrument=SimpleNamespace(id=SimpleNamespace(venue="SXBET")),
+        )
+        polymarket = SimpleNamespace(
+            instrument=SimpleNamespace(id=SimpleNamespace(venue="POLYMARKET")),
+        )
+
+        assert not node_runner._probe_edge_matches_execution_venue_mode(
+            strategy,
+            sxbet_a,
+            sxbet_b,
+        )
+        assert node_runner._probe_edge_matches_execution_venue_mode(strategy, sxbet_a, polymarket)
+
+        strategy._config.execution_venue_mode = "same_venue"
+        assert node_runner._probe_edge_matches_execution_venue_mode(strategy, sxbet_a, sxbet_b)
+        assert not node_runner._probe_edge_matches_execution_venue_mode(
+            strategy,
+            sxbet_a,
+            polymarket,
+        )
+
     def test_runtime_probe_candidate_decision_latency_fills_strategy_gap(self):
         counters = node_runner.ProbeProfitabilityCounters()
         counters.candidate_decision_latency_ns.extend([1_000_000, 3_000_000])
