@@ -14,6 +14,9 @@
 # -------------------------------------------------------------------------------------------------
 
 import asyncio
+from datetime import UTC
+from datetime import datetime
+from datetime import timedelta
 from typing import Any
 
 import msgspec
@@ -145,6 +148,89 @@ def _market_has_event_metadata(market: dict[str, Any]) -> bool:
     )
 
 
+def _parse_gamma_datetime(value: Any) -> datetime | None:
+    if value in (None, ""):
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _market_event_or_resolution_times(market: dict[str, Any]) -> list[datetime]:
+    times: list[datetime] = []
+    events = market.get("events")
+    if isinstance(events, list):
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            for key in ("startDate", "startDateIso", "gameStartTime", "endDate", "endDateIso"):
+                parsed = _parse_gamma_datetime(event.get(key))
+                if parsed is not None:
+                    times.append(parsed)
+    for key in ("startDate", "startDateIso", "gameStartTime", "endDate", "endDateIso"):
+        parsed = _parse_gamma_datetime(market.get(key))
+        if parsed is not None:
+            times.append(parsed)
+    return times
+
+
+def _market_horizon_sort_key(
+    market: dict[str, Any],
+    *,
+    now: datetime,
+    horizon: timedelta | None,
+) -> tuple[int, float, str]:
+    if horizon is None:
+        return (0, 0.0, _market_unique_id(market))
+
+    stale_grace = timedelta(hours=6)
+    times = _market_event_or_resolution_times(market)
+    if not times:
+        return (2, float("inf"), _market_unique_id(market))
+
+    deltas = [(timestamp - now).total_seconds() for timestamp in times]
+    horizon_secs = horizon.total_seconds()
+    stale_grace_secs = stale_grace.total_seconds()
+    inside = [abs(delta) for delta in deltas if -stale_grace_secs <= delta <= horizon_secs]
+    if inside:
+        return (0, min(inside), _market_unique_id(market))
+
+    future = [delta for delta in deltas if delta > horizon_secs]
+    if future:
+        return (1, min(future), _market_unique_id(market))
+
+    return (3, abs(max(deltas)), _market_unique_id(market))
+
+
+def _rank_markets_by_horizon(
+    markets: list[dict[str, Any]],
+    *,
+    now: datetime,
+    horizon: timedelta | None,
+) -> list[dict[str, Any]]:
+    if horizon is None:
+        return markets
+    return sorted(
+        markets,
+        key=lambda market: _market_horizon_sort_key(market, now=now, horizon=horizon),
+    )
+
+
+def _horizon_fetch_limit(limit: int | None, horizon: timedelta | None) -> int | None:
+    if limit is None or horizon is None:
+        return limit
+    return min(max(limit * 3, limit + 25), 500)
+
+
 def _selected_sports_tag_groups(
     sports_metadata: list[Any],
     sports_filter: set[str],
@@ -256,8 +342,18 @@ def _add_balanced_sport_markets(
     overflow_markets: dict[str, dict[str, Any]],
     sport_markets: dict[str, dict[str, Any]],
     sport_quota: int,
+    now: datetime,
+    horizon: timedelta | None,
 ) -> None:
-    for index, (market_id, market) in enumerate(sport_markets.items()):
+    ranked_markets = _rank_markets_by_horizon(
+        list(sport_markets.values()),
+        now=now,
+        horizon=horizon,
+    )
+    for index, market in enumerate(ranked_markets):
+        market_id = _market_unique_id(market)
+        if not market_id:
+            continue
         if index < sport_quota:
             discovered_markets.setdefault(market_id, market)
         else:
@@ -391,10 +487,14 @@ class PolymarketInstrumentProvider(InstrumentProvider):
         }
         max_results = filters.pop("max_results", None)
         max_results = int(max_results) if max_results is not None else None
+        horizon_hours = filters.pop("max_resolution_horizon_hours", None)
+        horizon = timedelta(hours=float(horizon_hours)) if horizon_hours not in (None, "") else None
+        now = datetime.fromtimestamp(self._clock.timestamp_ns() / 1_000_000_000, tz=UTC)
 
         self._log.info(
             "Loading Polymarket instruments using Gamma discovery "
-            f"filters={filters} sports={sorted(sports_filter)} max_results={max_results}",
+            f"filters={filters} sports={sorted(sports_filter)} max_results={max_results} "
+            f"max_resolution_horizon_hours={horizon_hours}",
         )
         loaded_condition_ids: set[str] = set()
         loaded_markets = await self._load_filtered_sport_tag_gamma_markets(
@@ -402,6 +502,8 @@ class PolymarketInstrumentProvider(InstrumentProvider):
             sports_filter=sports_filter,
             max_results=max_results,
             loaded_condition_ids=loaded_condition_ids,
+            now=now,
+            horizon=horizon,
         )
 
         remaining_results = None
@@ -411,6 +513,8 @@ class PolymarketInstrumentProvider(InstrumentProvider):
             sports_filter=sports_filter,
             max_results=remaining_results if remaining_results is not None else max_results,
             loaded_condition_ids=loaded_condition_ids,
+            now=now,
+            horizon=horizon,
         )
         if max_results is not None:
             remaining_results = max(max_results - loaded_markets, 0)
@@ -419,6 +523,8 @@ class PolymarketInstrumentProvider(InstrumentProvider):
             sports_filter=sports_filter,
             max_results=remaining_results if remaining_results is not None else max_results,
             loaded_condition_ids=loaded_condition_ids,
+            now=now,
+            horizon=horizon,
         )
         self._log.info(f"Loaded Polymarket sports markets using Gamma API: {loaded_markets}")
 
@@ -428,12 +534,16 @@ class PolymarketInstrumentProvider(InstrumentProvider):
         sports_filter: set[str],
         max_results: int | None,
         loaded_condition_ids: set[str],
+        now: datetime,
+        horizon: timedelta | None,
     ) -> int:
         if not sports_filter:
             return 0
         event_markets = await self._load_sports_event_markets_using_gamma(
             sports_filter=sports_filter,
             max_results=max_results,
+            now=now,
+            horizon=horizon,
         )
         self._log.info(
             "Loaded "
@@ -459,6 +569,8 @@ class PolymarketInstrumentProvider(InstrumentProvider):
         sports_filter: set[str],
         max_results: int | None,
         loaded_condition_ids: set[str],
+        now: datetime,
+        horizon: timedelta | None,
     ) -> int:
         if max_results == 0:
             markets: list[dict[str, Any]] = []
@@ -466,8 +578,9 @@ class PolymarketInstrumentProvider(InstrumentProvider):
             markets = await list_markets(
                 http_client=self._http_client,
                 filters=filters,
-                max_results=max_results,
+                max_results=_horizon_fetch_limit(max_results, horizon),
             )
+            markets = _rank_markets_by_horizon(markets, now=now, horizon=horizon)
         self._log.info(f"Loaded {len(markets)} candidate Polymarket markets using Gamma API")
         loaded_markets = 0
         for market in markets:
@@ -490,6 +603,8 @@ class PolymarketInstrumentProvider(InstrumentProvider):
         sports_filter: set[str],
         max_results: int | None,
         loaded_condition_ids: set[str],
+        now: datetime,
+        horizon: timedelta | None,
     ) -> int:
         if not sports_filter or max_results == 0:
             return 0
@@ -498,6 +613,8 @@ class PolymarketInstrumentProvider(InstrumentProvider):
             filters=filters,
             sports_filter=sports_filter,
             max_results=max_results,
+            now=now,
+            horizon=horizon,
         )
         self._log.info(
             f"Loaded {len(tag_markets)} candidate Polymarket sport-tag markets using Gamma API",
@@ -540,7 +657,10 @@ class PolymarketInstrumentProvider(InstrumentProvider):
         *,
         sports_filter: set[str],
         max_results: int | None,
+        now: datetime | None = None,
+        horizon: timedelta | None = None,
     ) -> list[dict[str, Any]]:
+        now = now or datetime.now(tz=UTC)
         sports_metadata = await self._gamma_get_json("/sports")
         if not isinstance(sports_metadata, list):
             return []
@@ -557,12 +677,15 @@ class PolymarketInstrumentProvider(InstrumentProvider):
                 sport_metadata=sport_metadata,
                 per_sport_limit=per_sport_limit,
                 max_results=max_results,
+                horizon=horizon,
             )
             _add_balanced_sport_markets(
                 discovered_markets=discovered_markets,
                 overflow_markets=overflow_markets,
                 sport_markets=sport_markets,
                 sport_quota=per_sport_limit or len(sport_markets),
+                now=now,
+                horizon=horizon,
             )
         if max_results is not None:
             for market_id, market in overflow_markets.items():
@@ -577,6 +700,7 @@ class PolymarketInstrumentProvider(InstrumentProvider):
         sport_metadata: dict[str, Any],
         per_sport_limit: int | None,
         max_results: int | None,
+        horizon: timedelta | None,
     ) -> dict[str, dict[str, Any]]:
         sport_code = str(sport_metadata.get("sport") or "")
         canonical_sport = _canonical_polymarket_sport(sport_code)
@@ -591,7 +715,10 @@ class PolymarketInstrumentProvider(InstrumentProvider):
                     "active": "true",
                     "closed": "false",
                     "archived": "false",
-                    "limit": per_sport_limit or max_results or 100,
+                    "limit": _horizon_fetch_limit(
+                        per_sport_limit or max_results or 100,
+                        horizon,
+                    ),
                     "order": "volume",
                     "ascending": "false",
                 },
@@ -613,7 +740,10 @@ class PolymarketInstrumentProvider(InstrumentProvider):
         filters: dict[str, Any],
         sports_filter: set[str],
         max_results: int | None,
+        now: datetime | None = None,
+        horizon: timedelta | None = None,
     ) -> list[dict[str, Any]]:
+        now = now or datetime.now(tz=UTC)
         sports_metadata = await self._gamma_get_json("/sports")
         if not isinstance(sports_metadata, list):
             return []
@@ -633,12 +763,15 @@ class PolymarketInstrumentProvider(InstrumentProvider):
                 selected_tags=list(tag_group["tag_ids"]),
                 per_sport_limit=per_sport_limit,
                 max_results=max_results,
+                horizon=horizon,
             )
             _add_balanced_sport_markets(
                 discovered_markets=discovered_markets,
                 overflow_markets=overflow_markets,
                 sport_markets=sport_markets,
                 sport_quota=per_sport_limit or len(sport_markets),
+                now=now,
+                horizon=horizon,
             )
         if max_results is not None:
             for market_id, market in overflow_markets.items():
@@ -656,6 +789,7 @@ class PolymarketInstrumentProvider(InstrumentProvider):
         selected_tags: list[str],
         per_sport_limit: int | None,
         max_results: int | None,
+        horizon: timedelta | None,
     ) -> dict[str, dict[str, Any]]:
         sport_markets: dict[str, dict[str, Any]] = {}
         sport_code = sport_codes[0] if sport_codes else canonical_sport
@@ -673,7 +807,7 @@ class PolymarketInstrumentProvider(InstrumentProvider):
             markets = await list_markets(
                 http_client=self._http_client,
                 filters=tag_filters,
-                max_results=per_sport_limit or max_results,
+                max_results=_horizon_fetch_limit(per_sport_limit or max_results, horizon),
             )
             for market in markets:
                 market_id = _market_unique_id(market)
