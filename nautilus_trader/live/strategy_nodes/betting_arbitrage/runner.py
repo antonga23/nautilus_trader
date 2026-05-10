@@ -1812,6 +1812,13 @@ def _venue_pair_coverage(
     return {
         "enabledVenues": venues,
         "nodeCounts": {venue: node_counts.get(venue, 0) for venue in venues},
+        "eventKeyCounts": {
+            venue: len(_event_keys_for_venue(nodes, venue) - {""}) for venue in venues
+        },
+        "eventSportCounts": {
+            venue: dict(sorted(_event_sport_counts(_event_keys_for_venue(nodes, venue)).items()))
+            for venue in venues
+        },
         "quoteSubscriptionCounts": {
             venue: quote_subscription_counts.get(venue, 0) for venue in venues
         },
@@ -1966,7 +1973,10 @@ def _zero_venue_pair_report(
     report["commonEventKeySamples"] = common_event_keys[:5]
     report["sourceEventKeySamples"] = sorted(source_event_keys - {""})[:5]
     report["targetEventKeySamples"] = sorted(target_event_keys - {""})[:5]
+    report["sourceEventSportCounts"] = dict(sorted(_event_sport_counts(source_event_keys).items()))
+    report["targetEventSportCounts"] = dict(sorted(_event_sport_counts(target_event_keys).items()))
     if reason == "no_semantic_edge" and not common_event_keys:
+        report["discoveryGapReason"] = "no_common_fixture_loaded"
         report["marketFamilyPairs"] = {}
         report["sampleBlockerCounts"] = {}
         report["samples"] = []
@@ -2125,6 +2135,17 @@ def _event_keys_for_venue(nodes: dict[Any, object], venue: str) -> set[str]:
             continue
         keys.update(_probe_event_keys_no_time(node))
     return keys
+
+
+def _event_sport_counts(event_keys: set[str]) -> Counter[str]:
+    counts: Counter[str] = Counter()
+    for event_key in event_keys:
+        if not event_key:
+            continue
+        sport = event_key.split(":", maxsplit=1)[0].strip()
+        if sport:
+            counts[sport] += 1
+    return counts
 
 
 def _sample_probe_nodes_for_venue(

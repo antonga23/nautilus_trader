@@ -51,6 +51,9 @@ class SXBetInstrumentProviderConfig(InstrumentProviderConfig, frozen=True):
         Maximum markets to probe while searching for liquid markets.
     min_two_sided_markets : PositiveInt, default 1
         Minimum desired count of markets with active orders on both outcomes.
+    max_resolution_horizon_hours : PositiveFloat, optional
+        Prefer markets whose fixture starts within this many hours when applying
+        discovery and liquidity-selection budgets.
     api_key_pool : tuple[str, ...], optional
         SX.bet API keys for realtime/WebSocket-capable surfaces.
     log_warnings : bool, default True
@@ -69,6 +72,7 @@ class SXBetInstrumentProviderConfig(InstrumentProviderConfig, frozen=True):
     prefer_liquid_markets: bool = False
     liquidity_probe_limit: PositiveInt = 100
     min_two_sided_markets: PositiveInt = 1
+    max_resolution_horizon_hours: PositiveFloat | None = None
     api_key_pool: tuple[str, ...] | None = None
     log_warnings: bool = True
 

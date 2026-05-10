@@ -280,6 +280,7 @@ def _build_sxbet_data_importable(
         "prefer_liquid_markets": venue.prefer_liquid_markets,
         "liquidity_probe_limit": venue.liquidity_probe_limit,
         "min_two_sided_markets": venue.min_two_sided_markets,
+        "max_resolution_horizon_hours": manifest.strategy.max_resolution_horizon_hours,
     }
     config = {
         "api_key": api_key,
@@ -328,6 +329,7 @@ def _build_sxbet_exec_importable(
         "prefer_liquid_markets": venue.prefer_liquid_markets,
         "liquidity_probe_limit": venue.liquidity_probe_limit,
         "min_two_sided_markets": venue.min_two_sided_markets,
+        "max_resolution_horizon_hours": manifest.strategy.max_resolution_horizon_hours,
     }
     config = {
         "api_key": api_key,

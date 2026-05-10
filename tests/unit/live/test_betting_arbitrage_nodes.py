@@ -2604,6 +2604,12 @@ class TestBettingArbitrageNodeRunner:
 
         assert coverage["enabledVenues"] == ["CLOUDBET", "POLYMARKET", "SXBET"]
         assert coverage["nodeCounts"] == {"CLOUDBET": 1, "POLYMARKET": 0, "SXBET": 1}
+        assert coverage["eventKeyCounts"] == {"CLOUDBET": 1, "POLYMARKET": 0, "SXBET": 1}
+        assert coverage["eventSportCounts"] == {
+            "CLOUDBET": {"soccer": 1},
+            "POLYMARKET": {},
+            "SXBET": {"soccer": 1},
+        }
         assert coverage["quoteSubscriptionCounts"] == {
             "CLOUDBET": 1,
             "POLYMARKET": 0,
@@ -2717,6 +2723,9 @@ class TestBettingArbitrageNodeRunner:
         assert report["quotedEdgeCount"] == 0
         assert report["candidateCount"] == 0
         assert report["commonEventKeyCount"] == 0
+        assert report["discoveryGapReason"] == "no_common_fixture_loaded"
+        assert report["sourceEventSportCounts"] == {"soccer": 1}
+        assert report["targetEventSportCounts"] == {"basketball": 1}
         assert report["sampleBlockerCounts"] == {}
         assert report["samples"] == []
 

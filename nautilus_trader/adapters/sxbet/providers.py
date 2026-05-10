@@ -18,7 +18,9 @@ SX.bet Instrument Provider.
 
 from datetime import UTC
 from datetime import datetime
+from datetime import timedelta
 import hashlib
+from math import ceil
 import re
 import time
 from typing import Any
@@ -172,11 +174,16 @@ class SXBetInstrumentProvider(InstrumentProvider):
         league_filters: tuple[int | None, ...] = (
             tuple(sorted(league_ids)) if league_ids else (None,)
         )
+        per_sport_limit = self._per_sport_discovery_limit(
+            sport_filters,
+            market_discovery_limit,
+        )
 
         for sport_id in sport_filters:
             for league_id in league_filters:
                 pagination_key: str | None = None
                 page_count = 0
+                sport_market_count = 0
                 while True:
                     page_started_at = time.perf_counter()
                     markets_data = await self._http_client.get_markets(
@@ -188,7 +195,14 @@ class SXBetInstrumentProvider(InstrumentProvider):
                     )
                     page_count += 1
                     previous_count = len(markets_by_hash)
-                    self._merge_markets(markets_by_hash, markets_data)
+                    added_market_hashes = self._merge_markets(markets_by_hash, markets_data)
+                    sport_market_count += len(
+                        [
+                            market_hash
+                            for market_hash in added_market_hashes
+                            if self._market_sport_key(markets_by_hash[market_hash]) == sport_id
+                        ],
+                    )
                     pagination_key = markets_data.get("data", {}).get("nextKey")
                     self._log.info(
                         "SX.bet market page loaded: "
@@ -199,6 +213,7 @@ class SXBetInstrumentProvider(InstrumentProvider):
                     )
                     if (
                         market_discovery_limit is not None
+                        and per_sport_limit is None
                         and len(markets_by_hash) >= market_discovery_limit
                     ):
                         self._log.info(
@@ -206,10 +221,126 @@ class SXBetInstrumentProvider(InstrumentProvider):
                             f"market_discovery_limit={market_discovery_limit}",
                         )
                         return list(markets_by_hash.values())[:market_discovery_limit]
+                    if per_sport_limit is not None and sport_market_count >= per_sport_limit:
+                        self._log.info(
+                            "SX.bet per-sport market discovery cap reached: "
+                            f"sport_id={sport_id or 'all'} "
+                            f"per_sport_limit={per_sport_limit} "
+                            f"market_discovery_limit={market_discovery_limit}",
+                        )
+                        break
                     if not pagination_key:
                         break
 
-        return list(markets_by_hash.values())
+        markets = list(markets_by_hash.values())
+        if per_sport_limit is not None:
+            markets = self._balanced_market_sequence(
+                markets,
+                sport_order=sport_filters,
+                limit=market_discovery_limit,
+            )
+            self._log.info(
+                "SX.bet balanced multi-sport market discovery completed: "
+                f"sports={len(sport_filters)} markets={len(markets)} "
+                f"market_discovery_limit={market_discovery_limit}",
+            )
+        elif market_discovery_limit is not None:
+            markets = markets[:market_discovery_limit]
+        return markets
+
+    @staticmethod
+    def _per_sport_discovery_limit(
+        sport_filters: tuple[int | None, ...],
+        market_discovery_limit: int | None,
+    ) -> int | None:
+        if market_discovery_limit is None:
+            return None
+        concrete_sports = [sport_id for sport_id in sport_filters if sport_id is not None]
+        if len(concrete_sports) <= 1:
+            return None
+        return max(1, ceil(int(market_discovery_limit) / len(concrete_sports)))
+
+    def _balanced_market_sequence(
+        self,
+        markets: list[dict[str, Any]],
+        *,
+        sport_order: tuple[int | None, ...],
+        limit: int | None,
+    ) -> list[dict[str, Any]]:
+        grouped: dict[int | None, list[tuple[tuple[int, float, int], dict[str, Any]]]] = {}
+        for index, market in enumerate(markets):
+            sport_id = self._market_sport_key(market)
+            grouped.setdefault(sport_id, []).append(
+                (
+                    (
+                        self._market_resolution_priority(market),
+                        self._market_start_timestamp(market) or float("inf"),
+                        index,
+                    ),
+                    market,
+                ),
+            )
+        for bucket in grouped.values():
+            bucket.sort(key=lambda item: item[0])
+
+        ordered_sports = [sport_id for sport_id in sport_order if sport_id in grouped]
+        ordered_sports.extend(
+            sport_id
+            for sport_id in sorted(grouped, key=lambda value: value or -1)
+            if sport_id not in ordered_sports
+        )
+        offsets = dict.fromkeys(ordered_sports, 0)
+        selected: list[dict[str, Any]] = []
+        while True:
+            added = False
+            for sport_id in ordered_sports:
+                offset = offsets[sport_id]
+                bucket = grouped.get(sport_id, [])
+                if offset >= len(bucket):
+                    continue
+                selected.append(bucket[offset][1])
+                offsets[sport_id] = offset + 1
+                added = True
+                if limit is not None and len(selected) >= limit:
+                    return selected
+            if not added:
+                return selected
+
+    @classmethod
+    def _market_sport_key(cls, market: dict[str, Any]) -> int | None:
+        return cls._parse_sport_id(market.get("sportId"))
+
+    def _market_resolution_priority(self, market: dict[str, Any]) -> int:
+        horizon_hours = self._sxbet_config.max_resolution_horizon_hours
+        if horizon_hours is None:
+            return 0
+        start_time = self._market_start_datetime(market)
+        if start_time is None:
+            return 1
+        now = datetime.now(UTC)
+        if start_time <= now:
+            return 0
+        if start_time <= now + timedelta(hours=float(horizon_hours)):
+            return 0
+        return 2
+
+    @classmethod
+    def _market_start_timestamp(cls, market: dict[str, Any]) -> float | None:
+        start_time = cls._market_start_datetime(market)
+        return start_time.timestamp() if start_time is not None else None
+
+    @classmethod
+    def _market_start_datetime(cls, market: dict[str, Any]) -> datetime | None:
+        normalized = cls._parse_start_time(market.get("gameTime"))
+        if not normalized:
+            return None
+        try:
+            parsed = datetime.fromisoformat(normalized)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC)
 
     async def _select_markets_for_processing(
         self,
@@ -331,11 +462,15 @@ class SXBetInstrumentProvider(InstrumentProvider):
     def _merge_markets(
         markets_by_hash: dict[str, dict[str, Any]],
         markets_data: dict[str, Any],
-    ) -> None:
+    ) -> list[str]:
+        added_market_hashes: list[str] = []
         for market in markets_data.get("data", {}).get("markets", []):
             market_hash = market.get("marketHash")
-            if market_hash:
+            if isinstance(market_hash, str) and market_hash:
+                if market_hash not in markets_by_hash:
+                    added_market_hashes.append(market_hash)
                 markets_by_hash[market_hash] = market
+        return added_market_hashes
 
     async def _process_market(self, market: dict[str, Any]) -> None:
         """
