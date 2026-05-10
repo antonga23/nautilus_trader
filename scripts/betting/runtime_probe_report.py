@@ -327,6 +327,9 @@ def _normalized_latency_diagnostics(value: Any) -> dict[str, Any]:
             diagnostics.get("quote_publish_to_strategy")
             or diagnostics.get("quotePublishToStrategy"),
         ),
+        "quoteFetchLatency": _as_dict(
+            diagnostics.get("quote_fetch_latency") or diagnostics.get("quoteFetchLatency"),
+        ),
         "instrumentRefreshReconcile": _as_dict(
             diagnostics.get("instrument_refresh_reconcile")
             or diagnostics.get("instrumentRefreshReconcile"),
@@ -836,6 +839,7 @@ def _latency_slo_status(
         fallback=_histogram_slo_status(
             _as_dict(histograms.get("fetchLatencySeconds")),
             threshold_seconds=5.0,
+            ms_histogram=_as_dict(latency.get("quoteFetchLatency")),
         ),
     )
     pair_skew = _slo_section_status(
@@ -855,6 +859,10 @@ def _latency_slo_status(
         "quoteReceiveObserved": (
             _int_value(_as_dict(latency.get("quoteEventToStrategy")).get("count")) > 0
             or _int_value(_as_dict(latency.get("quotePublishToStrategy")).get("count")) > 0
+        ),
+        "providerLatencyObserved": (
+            _int_value(_as_dict(histograms.get("fetchLatencySeconds")).get("count")) > 0
+            or _int_value(_as_dict(latency.get("quoteFetchLatency")).get("count")) > 0
         ),
     }
     statuses = [
@@ -949,10 +957,19 @@ def _execution_safety_health(execution_readiness: dict[str, Any]) -> dict[str, A
     }
 
 
-def _histogram_slo_status(histogram: dict[str, Any], *, threshold_seconds: float) -> dict[str, Any]:
+def _histogram_slo_status(
+    histogram: dict[str, Any],
+    *,
+    threshold_seconds: float,
+    ms_histogram: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     observations = _int_value(histogram.get("count"))
     p95 = _float_value(histogram.get("p95"))
     max_value = _float_value(histogram.get("max"))
+    if observations <= 0 and ms_histogram:
+        observations = _int_value(ms_histogram.get("count"))
+        p95 = _float_value(ms_histogram.get("p95_ms")) / 1000.0
+        max_value = _float_value(ms_histogram.get("max_ms")) / 1000.0
     violations = observations if observations > 0 and max(p95, max_value) > threshold_seconds else 0
     return {
         "status": "fail" if violations else "pass" if observations else "no_observations",
@@ -1288,6 +1305,7 @@ def _format_latency_lines(value: Any) -> list[str]:
     for label, payload in (
         ("quote_event", _as_dict(latency.get("quoteEventToStrategy"))),
         ("quote_publish", _as_dict(latency.get("quotePublishToStrategy"))),
+        ("quote_fetch", _as_dict(latency.get("quoteFetchLatency"))),
         ("graph_scan", _as_dict(latency.get("graphScan"))),
         ("candidate_decision", _as_dict(latency.get("candidateDecision"))),
         ("order_construction", _as_dict(latency.get("orderConstruction"))),
