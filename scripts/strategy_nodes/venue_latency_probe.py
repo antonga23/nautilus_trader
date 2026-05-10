@@ -189,6 +189,91 @@ def placement_recommendations(
     }
 
 
+def compare_region_reports(reports: list[dict[str, object]]) -> dict[str, object]:
+    regions: dict[str, dict[str, object]] = {}
+    candidates_by_strategy: dict[str, list[dict[str, object]]] = {}
+    blockers_by_region: dict[str, dict[str, list[str]]] = {}
+
+    for report in reports:
+        region = str(report.get("region") or "unknown")
+        recommendations = report.get("placementRecommendations")
+        if not isinstance(recommendations, dict):
+            continue
+        regions[region] = {
+            "generatedAtNs": report.get("generatedAtNs"),
+            "targets": report.get("targets") if isinstance(report.get("targets"), dict) else {},
+        }
+        for strategy, raw_recommendation in recommendations.items():
+            if not isinstance(raw_recommendation, dict):
+                continue
+            recommendation = dict(raw_recommendation)
+            recommendation["region"] = region
+            blockers = [
+                str(blocker)
+                for blocker in recommendation.get("blockers", [])
+                if isinstance(blocker, str)
+            ]
+            if blockers:
+                blockers_by_region.setdefault(region, {})[str(strategy)] = blockers
+            candidates_by_strategy.setdefault(str(strategy), []).append(recommendation)
+
+    best_by_strategy = {
+        strategy: _best_strategy_region(candidates)
+        for strategy, candidates in sorted(candidates_by_strategy.items())
+    }
+    return {
+        "regions": regions,
+        "bestRegionByStrategy": best_by_strategy,
+        "blockersByRegion": blockers_by_region,
+    }
+
+
+def _best_strategy_region(candidates: list[dict[str, object]]) -> dict[str, object]:
+    eligible = [
+        candidate
+        for candidate in candidates
+        if bool(candidate.get("eligibleForPlacementComparison"))
+    ]
+    if not eligible:
+        return {
+            "region": None,
+            "eligibleForPlacementComparison": False,
+            "blockers": _aggregate_candidate_blockers(candidates),
+        }
+    best = min(
+        eligible,
+        key=lambda item: (
+            _payload_float(item, "worstLegTotalP95Ms"),
+            _payload_float(item, "venueTotalP95SkewMs"),
+            _payload_float(item, "worstLegErrorRate"),
+        ),
+    )
+    return {
+        "region": best.get("region"),
+        "eligibleForPlacementComparison": True,
+        "worstLegTotalP95Ms": _payload_float(best, "worstLegTotalP95Ms"),
+        "venueTotalP95SkewMs": _payload_float(best, "venueTotalP95SkewMs"),
+        "worstLegFirstByteP95Ms": _payload_float(best, "worstLegFirstByteP95Ms"),
+        "venueFirstByteP95SkewMs": _payload_float(best, "venueFirstByteP95SkewMs"),
+        "worstLegErrorRate": _payload_float(best, "worstLegErrorRate"),
+        "venues": best.get("venues") if isinstance(best.get("venues"), list) else [],
+    }
+
+
+def _aggregate_candidate_blockers(candidates: list[dict[str, object]]) -> dict[str, list[str]]:
+    return {
+        str(candidate.get("region") or "unknown"): _blocker_list(candidate)
+        for candidate in candidates
+    }
+
+
+def _blocker_list(payload: dict[str, object]) -> list[str]:
+    blockers = payload.get("blockers")
+    if not isinstance(blockers, list):
+        return []
+    return [str(blocker) for blocker in blockers if isinstance(blocker, str)]
+
+
 def _strategy_placement_recommendation(
     summary_by_venue: dict[str, dict[str, object]],
     *,
@@ -300,6 +385,16 @@ def _summary_float(summary: dict[str, object], field: str) -> float:
         return 0.0
 
 
+def _payload_float(payload: dict[str, object], field: str) -> float:
+    value = payload.get(field)
+    if not isinstance(value, int | float | str):
+        return 0.0
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--venue", action="append", choices=sorted(DEFAULT_URLS), default=[])
@@ -308,8 +403,25 @@ def main() -> int:
     parser.add_argument("--timeout-secs", type=float, default=5.0)
     parser.add_argument("--region", default="local")
     parser.add_argument("--max-data-age-secs", type=float, default=3600.0)
+    parser.add_argument("--compare-json", action="append", default=[])
     parser.add_argument("--output-json", default="")
     args = parser.parse_args()
+
+    if args.compare_json:
+        reports = []
+        for path in args.compare_json:
+            with open(path, encoding="utf-8") as report_file:
+                loaded = json.load(report_file)
+            if isinstance(loaded, dict):
+                reports.append(loaded)
+        payload = compare_region_reports(reports)
+        text = json.dumps(payload, indent=2, sort_keys=True)
+        if args.output_json:
+            with open(args.output_json, "w", encoding="utf-8") as output:
+                output.write(text)
+                output.write("\n")
+        print(text)
+        return 0
 
     targets = {venue: DEFAULT_URLS[venue] for venue in (args.venue or DEFAULT_URLS)}
     for custom in args.url:
