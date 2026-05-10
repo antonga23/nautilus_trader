@@ -795,6 +795,59 @@ class TestBettingArbitrageNodeBuilder:
             {"basketball"},
         )
 
+    def test_polymarket_gamma_sports_discovery_balances_requested_sports(self):
+        class Clock:
+            @staticmethod
+            def timestamp_ns() -> int:
+                return 123
+
+        provider = polymarket_providers.PolymarketInstrumentProvider(
+            client=Mock(),
+            clock=Clock(),
+            config=InstrumentProviderConfig(),
+        )
+        event_limits: list[tuple[str, int]] = []
+
+        def market_event(sport: str, index: int) -> dict[str, object]:
+            return {
+                "id": f"{sport}-event-{index}",
+                "title": f"{sport.title()} Team {index} vs Other",
+                "slug": f"{sport}-event-{index}",
+                "startDate": "2026-05-10T18:00:00Z",
+                "markets": [
+                    {
+                        "id": f"{sport}-market-{index}",
+                        "conditionId": f"{sport}-condition-{index}",
+                        "question": f"Will {sport} team {index} win?",
+                    },
+                ],
+            }
+
+        async def fake_gamma_get_json(endpoint, params=None):
+            if endpoint == "/sports":
+                return [
+                    {"sport": "soccer", "tags": "11"},
+                    {"sport": "tennis", "tags": "22"},
+                ]
+            assert endpoint == "/events"
+            assert params is not None
+            tag_id = str(params["tag_id"])
+            event_limits.append((tag_id, int(params["limit"])))
+            sport = "soccer" if tag_id == "11" else "tennis"
+            return [market_event(sport, index) for index in range(4)]
+
+        provider._gamma_get_json = fake_gamma_get_json
+
+        markets = asyncio.run(
+            provider._load_sports_event_markets_using_gamma(
+                sports_filter={"soccer", "tennis"},
+                max_results=4,
+            ),
+        )
+
+        assert event_limits == [("11", 2), ("22", 2)]
+        assert Counter(market["sport"] for market in markets) == {"soccer": 2, "tennis": 2}
+
     def test_polymarket_provider_preserves_selected_token_metadata(self):
         class Clock:
             @staticmethod
@@ -2866,6 +2919,58 @@ class TestBettingArbitrageNodeRunner:
             include_start_time=False,
         )
 
+    def test_venue_pair_coverage_does_not_treat_same_name_different_start_as_common_fixture(self):
+        polymarket_instrument = _instrument(
+            venue="POLYMARKET",
+            market_type="totals",
+            outcome="under",
+            event_id="poly-leeds-spurs",
+            event_name="Leeds United vs Tottenham Hotspur",
+            home_name="Leeds United",
+            away_name="Tottenham Hotspur",
+            sport_name="soccer",
+            start_time="2026-03-13T18:00:00Z",
+        )
+        sxbet_instrument = _instrument(
+            venue="SXBET",
+            market_type="totals",
+            outcome="over",
+            event_id="sxbet-leeds-spurs",
+            event_name="Leeds United vs Tottenham Hotspur",
+            home_name="Leeds United",
+            away_name="Tottenham Hotspur",
+            sport_name="soccer",
+            start_time="2026-03-26T08:00:00Z",
+        )
+        strategy = SimpleNamespace(
+            _config=SimpleNamespace(enabled_venues=frozenset({"POLYMARKET", "SXBET"})),
+            _quote_subscribed_instrument_ids={polymarket_instrument.id, sxbet_instrument.id},
+        )
+
+        coverage = node_runner._venue_pair_coverage(
+            strategy,
+            edges=[],
+            nodes={
+                "poly-node": SimpleNamespace(instrument=polymarket_instrument),
+                "sxbet-node": SimpleNamespace(instrument=sxbet_instrument),
+            },
+            quotes={"poly-node": object(), "sxbet-node": object()},
+            matched_node_ids=set(),
+            candidate_venue_pairs={},
+        )
+
+        report = {item["venuePair"]: item for item in coverage["zeroCandidateVenuePairs"]}[
+            "POLYMARKET->SXBET"
+        ]
+        assert report["commonEventKeyCount"] >= 1
+        assert report["fullyQuotedCommonEventKeyCount"] >= 1
+        assert report["verifiedCommonFixtureSampleCount"] == 0
+        assert report["fixtureProofBlockerCounts"] == {"start_time_mismatch": 1}
+        assert report["blockerReason"] == "fixture_identity_mismatch"
+        assert report["discoveryGapReason"] == "common_event_aliases_failed_fixture_proof"
+        assert report["samples"][0]["fixtureIdentityProof"]["sameFixture"] is False
+        assert report["samples"][0]["fixtureIdentityProof"]["reason"] == "start_time_mismatch"
+
     def test_venue_pair_coverage_uses_fixture_aliases_for_noisy_polymarket_names(self):
         polymarket_instrument = _instrument(
             venue="POLYMARKET",
@@ -4321,8 +4426,12 @@ class TestBettingArbitrageNodeRunner:
         assert "semantic_verify_required_providers" in workflow
         assert "semantic_verify_target_sports" in workflow
         assert "scripts/betting/runtime_probe_report.py" in workflow
+        assert "runtime_expectation" in workflow
         assert "--require-auto-execute-false" in workflow
         assert "--require-validation-mode" in workflow
+        assert "--require-live-execution-env-unarmed" in workflow
+        assert "--require-cross-currency-live-blocked" in workflow
+        assert "Unsupported runtime_expectation=$runtime_expectation" in workflow
         assert "--require-rust-semantic" in workflow
         assert "--require-coverage-runtime" in workflow
         assert "--min-quoted-semantic-instruments 2" in workflow

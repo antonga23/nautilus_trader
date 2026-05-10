@@ -2013,14 +2013,22 @@ def _zero_venue_pair_report(
         target,
         preferred_event_keys=set(common_event_keys),
     )
-    market_family_pairs: Counter[str] = Counter()
-    sample_blocker_counts: Counter[str] = Counter()
-    samples: list[dict[str, object]] = []
-    for source_node, target_node in _sample_zero_pair_nodes(
+    sample_pairs = _sample_zero_pair_nodes(
         source_nodes=source_nodes,
         target_nodes=target_nodes,
         common_event_keys=set(common_event_keys),
-    ):
+    )
+    verified_pairs, fixture_blocker_counts = _verified_fixture_sample_pairs(sample_pairs)
+    diagnostic_pairs = verified_pairs or sample_pairs
+    report["verifiedCommonFixtureSampleCount"] = len(verified_pairs)
+    report["fixtureProofBlockerCounts"] = dict(sorted(fixture_blocker_counts.items()))
+    if reason == "no_semantic_edge" and common_event_keys and not verified_pairs:
+        report["blockerReason"] = CoverageBlockerReason.FIXTURE_IDENTITY_MISMATCH.value
+        report["discoveryGapReason"] = "common_event_aliases_failed_fixture_proof"
+    market_family_pairs: Counter[str] = Counter()
+    sample_blocker_counts: Counter[str] = Counter()
+    samples: list[dict[str, object]] = []
+    for source_node, target_node in diagnostic_pairs:
         family = _probe_market_family(source_node, target_node)
         market_family_pairs[family] += 1
         sample = _zero_pair_sample_payload(strategy, source_node, target_node)
@@ -2036,6 +2044,23 @@ def _zero_venue_pair_report(
     if reason == "no_semantic_edge" and samples:
         report["blockerReason"] = _zero_pair_sample_blocker(samples, report["blockerReason"])
     return report
+
+
+def _verified_fixture_sample_pairs(
+    pairs: list[tuple[object, object]],
+) -> tuple[list[tuple[object, object]], Counter[str]]:
+    verified: list[tuple[object, object]] = []
+    blocker_counts: Counter[str] = Counter()
+    for source_node, target_node in pairs:
+        proof = DEFAULT_FIXTURE_IDENTITY_RESOLVER.resolve(
+            source_node.instrument,
+            target_node.instrument,
+        )
+        if proof.same_fixture:
+            verified.append((source_node, target_node))
+        else:
+            blocker_counts[proof.blocker_reason or proof.reason or "fixture_identity_mismatch"] += 1
+    return verified, blocker_counts
 
 
 def _common_event_quote_coverage(
