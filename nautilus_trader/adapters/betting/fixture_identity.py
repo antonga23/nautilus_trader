@@ -138,6 +138,7 @@ class FixtureIdentityResolver:
             "san",
             "st",
             "tampa",
+            "west",
         },
     )
     PHRASE_ALIASES = {
@@ -154,6 +155,20 @@ class FixtureIdentityResolver:
         "man utd": "manchester united",
         "man united": "manchester united",
     }
+    MARKET_GROUP_SUFFIXES = (
+        " exact score",
+        " correct score",
+        " more markets",
+        " alternate lines",
+        " alt lines",
+        " match odds",
+        " moneyline",
+        " winner",
+        " total goals",
+        " team total",
+        " player props",
+        " props",
+    )
     SPORT_ALIASES = {
         "american football": "american_football",
         "football": "soccer",
@@ -180,6 +195,7 @@ class FixtureIdentityResolver:
         normalized = self.normalize_event_component(name)
         if not normalized:
             return ""
+        normalized = self._strip_market_group_suffix(normalized)
         normalized = self.PHRASE_ALIASES.get(normalized, normalized)
         tokens: list[str] = []
         alias_hits: list[str] = []
@@ -192,6 +208,27 @@ class FixtureIdentityResolver:
             tokens.extend(replacement.split())
         canonical = " ".join(tokens)
         return self.PHRASE_ALIASES.get(canonical, canonical)
+
+    def _strip_market_group_suffix(self, normalized: str) -> str:
+        """
+        Remove provider UI suffixes accidentally appended to fixture participants.
+
+        Polymarket/Gamma event titles sometimes expose market collection labels like
+        "Arsenal Exact Score v West Ham United" or "Arsenal More Markets v West Ham
+        United". Those labels are not team identity and should not split cross-venue
+        fixture matching.
+
+        """
+        cleaned = normalized
+        changed = True
+        while changed:
+            changed = False
+            for suffix in self.MARKET_GROUP_SUFFIXES:
+                if cleaned.endswith(suffix):
+                    cleaned = cleaned[: -len(suffix)].strip()
+                    changed = True
+                    break
+        return cleaned
 
     def team_key(self, instrument: Any) -> tuple[str, ...]:
         home_name = str(getattr(instrument, "home_name", "") or "")

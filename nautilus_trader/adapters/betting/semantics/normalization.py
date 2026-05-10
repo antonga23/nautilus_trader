@@ -33,6 +33,7 @@ from typing import Any
 from urllib import parse
 
 from nautilus_trader.adapters.betting.common.enums import Outcome
+from nautilus_trader.adapters.betting.fixture_identity import DEFAULT_FIXTURE_IDENTITY_RESOLVER
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.betting.semantics.polymarket_transform import (
     PolymarketSportsTransformer,
@@ -383,10 +384,16 @@ class MarketNormalizer:
         sport: str = "",
     ) -> str:
         normalized_time = MarketNormalizer._normalize_timestamp(cutoff_time)
-        normalized_home = MarketNormalizer._normalize_text(home_name)
-        normalized_away = MarketNormalizer._normalize_text(away_name)
+        normalized_home = MarketNormalizer._normalize_text(
+            DEFAULT_FIXTURE_IDENTITY_RESOLVER.normalize_team_name(home_name),
+        )
+        normalized_away = MarketNormalizer._normalize_text(
+            DEFAULT_FIXTURE_IDENTITY_RESOLVER.normalize_team_name(away_name),
+        )
         normalized_event = MarketNormalizer._normalize_text(event_name)
-        normalized_sport = MarketNormalizer._normalize_text(sport)
+        normalized_sport = MarketNormalizer._normalize_text(
+            DEFAULT_FIXTURE_IDENTITY_RESOLVER.normalize_sport(sport),
+        )
 
         if normalized_home and normalized_away:
             parts = [

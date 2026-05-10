@@ -162,6 +162,31 @@ def test_fixture_identity_allows_harmless_suffix_drift_with_start_time_evidence(
     assert "basketball:cleveland:minnesota" in sxbet.event_alias_keys()
 
 
+def test_fixture_identity_strips_provider_market_group_suffix_noise():
+    resolver = FixtureIdentityResolver()
+    polymarket = _instrument(
+        venue="POLYMARKET",
+        event_name="Arsenal Exact Score v West Ham United",
+        home_name="Arsenal Exact Score",
+        away_name="West Ham United",
+        sport_name="soccer",
+    )
+    sxbet = _instrument(
+        venue="SXBET",
+        event_name="Arsenal vs West Ham United",
+        home_name="Arsenal",
+        away_name="West Ham United",
+        sport_name="soccer",
+    )
+
+    proof = resolver.resolve(polymarket, sxbet)
+
+    assert proof.same_fixture is True
+    assert proof.blocker_reason is None
+    assert proof.canonical_event_key_a == "soccer:arsenal:west ham united"
+    assert proof.canonical_event_key_a == proof.canonical_event_key_b
+
+
 def test_portfolio_policy_treats_stablecoins_as_usd_with_haircut():
     policy = PortfolioCurrencyPolicy(stablecoin_haircut_bps=25)
 

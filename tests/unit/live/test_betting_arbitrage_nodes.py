@@ -2659,10 +2659,11 @@ class TestBettingArbitrageNodeRunner:
         assert zero_reports["SXBET->CLOUDBET"]["edgeCount"] == 1
         assert zero_reports["SXBET->CLOUDBET"]["quotedEdgeCount"] == 0
         assert zero_reports["SXBET->CLOUDBET"]["candidateCount"] == 0
-        assert zero_reports["SXBET->CLOUDBET"]["commonEventKeyCount"] == 1
-        assert zero_reports["SXBET->CLOUDBET"]["commonEventKeySamples"] == [
-            sxbet_instrument.event_key(include_start_time=False),
-        ]
+        assert zero_reports["SXBET->CLOUDBET"]["commonEventKeyCount"] >= 1
+        assert (
+            sxbet_instrument.event_key(include_start_time=False)
+            in zero_reports["SXBET->CLOUDBET"]["commonEventKeySamples"]
+        )
         assert zero_reports["SXBET->CLOUDBET"]["sampleBlockerCounts"] == {}
         assert zero_reports["SXBET->CLOUDBET"]["samples"][0]["marketFamily"] == (
             "MATCH_ODDS + MATCH_ODDS"
@@ -2762,10 +2763,11 @@ class TestBettingArbitrageNodeRunner:
         ]
         assert report["reason"] == "no_semantic_edge"
         assert report["blockerReason"] == "no_semantic_edge"
-        assert report["commonEventKeyCount"] == 1
-        assert report["commonEventKeySamples"] == [
-            "basketball:cleveland cavaliers:minnesota timberwolves",
-        ]
+        assert report["commonEventKeyCount"] >= 1
+        assert (
+            "basketball:cleveland cavaliers:minnesota timberwolves"
+            in report["commonEventKeySamples"]
+        )
         assert report["samples"][0]["canonicalEventKeyA"] == (
             "basketball:cleveland cavaliers:minnesota timberwolves"
         )
@@ -2836,13 +2838,59 @@ class TestBettingArbitrageNodeRunner:
         report = reports["SXBET->CLOUDBET"]
         assert report["reason"] == "no_semantic_edge"
         assert report["blockerReason"] == "no_semantic_edge"
-        assert report["commonEventKeyCount"] == 1
+        assert report["commonEventKeyCount"] >= 1
         assert report["samples"][0]["eventKeyA"] == common_sxbet.event_key(
             include_start_time=False,
         )
         assert report["samples"][0]["eventKeyB"] == common_cloudbet.event_key(
             include_start_time=False,
         )
+
+    def test_venue_pair_coverage_uses_fixture_aliases_for_noisy_polymarket_names(self):
+        polymarket_instrument = _instrument(
+            venue="POLYMARKET",
+            market_type="match_odds",
+            outcome="home",
+            event_id="poly-arsenal-west-ham",
+            event_name="Arsenal Exact Score vs West Ham United",
+            home_name="Arsenal Exact Score",
+            away_name="West Ham United",
+            sport_name="soccer",
+        )
+        sxbet_instrument = _instrument(
+            venue="SXBET",
+            market_type="match_odds",
+            outcome="away",
+            event_id="sxbet-arsenal-west-ham",
+            event_name="Arsenal vs West Ham United",
+            home_name="Arsenal",
+            away_name="West Ham United",
+            sport_name="soccer",
+        )
+        strategy = SimpleNamespace(
+            _config=SimpleNamespace(enabled_venues=frozenset({"POLYMARKET", "SXBET"})),
+            _quote_subscribed_instrument_ids={polymarket_instrument.id, sxbet_instrument.id},
+        )
+
+        coverage = node_runner._venue_pair_coverage(
+            strategy,
+            edges=[],
+            nodes={
+                "poly-node": SimpleNamespace(instrument=polymarket_instrument),
+                "sxbet-node": SimpleNamespace(instrument=sxbet_instrument),
+            },
+            quotes={},
+            matched_node_ids=set(),
+            candidate_venue_pairs={},
+        )
+
+        report = {item["venuePair"]: item for item in coverage["zeroCandidateVenuePairs"]}[
+            "POLYMARKET->SXBET"
+        ]
+        assert report["blockerReason"] == "no_semantic_edge"
+        assert "soccer:arsenal:west ham united" in report["commonEventKeySamples"]
+        assert report["samples"][0]["canonicalEventKeyA"] == ("soccer:arsenal:west ham united")
+        assert report["samples"][0]["canonicalEventKeyB"] == ("soccer:arsenal:west ham united")
 
     def test_venue_pair_coverage_infers_same_market_params_mismatch_from_samples(self):
         sxbet_instrument = _instrument(

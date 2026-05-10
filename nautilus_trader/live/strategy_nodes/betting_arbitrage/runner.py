@@ -2103,11 +2103,12 @@ def _zero_pair_blocker_hint(
 
 
 def _event_keys_for_venue(nodes: dict[Any, object], venue: str) -> set[str]:
-    return {
-        _canonical_probe_event_key_no_time(node)
-        for node in nodes.values()
-        if _probe_node_venue(node) == venue
-    }
+    keys: set[str] = set()
+    for node in nodes.values():
+        if _probe_node_venue(node) != venue:
+            continue
+        keys.update(_probe_event_keys_no_time(node))
+    return keys
 
 
 def _sample_probe_nodes_for_venue(
@@ -2122,7 +2123,7 @@ def _sample_probe_nodes_for_venue(
         for node in nodes.values():
             if _probe_node_venue(node) != venue:
                 continue
-            if _canonical_probe_event_key_no_time(node) not in preferred:
+            if not (_probe_event_keys_no_time(node) & preferred):
                 continue
             sampled.append(node)
             if len(sampled) >= limit:
@@ -2170,11 +2171,11 @@ def _sample_zero_pair_nodes_for_common_events(
 ) -> list[tuple[object, object]]:
     pairs: list[tuple[object, object]] = []
     for source_node in source_nodes:
-        source_key = _canonical_probe_event_key_no_time(source_node)
-        if source_key not in common_event_keys:
+        source_keys = _probe_event_keys_no_time(source_node) & common_event_keys
+        if not source_keys:
             continue
         for target_node in target_nodes:
-            if _canonical_probe_event_key_no_time(target_node) != source_key:
+            if not (_probe_event_keys_no_time(target_node) & source_keys):
                 continue
             pairs.append((source_node, target_node))
             if len(pairs) >= limit:
@@ -2210,6 +2211,22 @@ def _probe_event_key_no_time(node) -> str:
 
 def _canonical_probe_event_key_no_time(node) -> str:
     return _canonical_event_key_text(_probe_event_key_no_time(node))
+
+
+def _probe_event_keys_no_time(node) -> set[str]:
+    keys = {_canonical_probe_event_key_no_time(node)}
+    instrument = getattr(node, "instrument", None)
+    event_alias_keys = getattr(instrument, "event_alias_keys", None)
+    if callable(event_alias_keys):
+        try:
+            raw_aliases = event_alias_keys(include_start_time=False)
+        except (AttributeError, TypeError, ValueError):
+            raw_aliases = ()
+        if isinstance(raw_aliases, (str, bytes)):
+            raw_aliases = (raw_aliases,)
+        for alias in raw_aliases or ():
+            keys.add(_canonical_event_key_text(str(alias)))
+    return {key for key in keys if key}
 
 
 def _canonical_event_key_text(value: str) -> str:

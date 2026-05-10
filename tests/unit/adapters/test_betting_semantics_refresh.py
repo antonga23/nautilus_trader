@@ -75,6 +75,9 @@ def betting_instrument(
     market_name: str,
     market_type: str,
     outcome: str,
+    event_name: str = "Team A vs Team B",
+    home_name: str = "Team A",
+    away_name: str = "Team B",
     params: str = "",
     venue: str = "SXBET",
     price: float = 2.1,
@@ -84,9 +87,9 @@ def betting_instrument(
     return CryptoBettingInstrument(
         venue=Venue(venue),
         event_id="event-1",
-        event_name="Team A vs Team B",
-        home_name="Team A",
-        away_name="Team B",
+        event_name=event_name,
+        home_name=home_name,
+        away_name=away_name,
         sport_name=sport,
         competition_name="Test League",
         market_name=market_name,
@@ -508,6 +511,39 @@ def test_cross_provider_event_key_is_provider_agnostic():
     )
 
     assert cloudbet.event_key == sxbet.event_key
+
+
+def test_event_key_strips_provider_market_group_suffix_noise():
+    normalizer = MarketNormalizer()
+    polymarket = normalizer.normalize(
+        betting_instrument(
+            venue="POLYMARKET",
+            sport="soccer",
+            market_name="match_odds",
+            market_type="match_odds",
+            outcome="home",
+            event_name="Arsenal Exact Score vs West Ham United",
+            home_name="Arsenal Exact Score",
+            away_name="West Ham United",
+            info={"outcome_label": "Home"},
+        ),
+    )
+    sxbet = normalizer.normalize(
+        betting_instrument(
+            venue="SXBET",
+            sport="soccer",
+            market_name="match_odds",
+            market_type="match_odds",
+            outcome="home",
+            event_name="Arsenal vs West Ham United",
+            home_name="Arsenal",
+            away_name="West Ham United",
+            info={"outcome_label": "Home"},
+        ),
+    )
+
+    assert polymarket.event_key == sxbet.event_key
+    assert "exact_score" not in polymarket.event_key
 
 
 def test_sxbet_negative_three_quarter_handicap_is_supported():
