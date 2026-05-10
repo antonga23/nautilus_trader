@@ -14,6 +14,10 @@
 
 ## Health checks
 
+- Discover the current host if SSH aliases are stale:
+  `AWS_PROFILE=betting-project aws ec2 describe-instances --region eu-north-1 --instance-ids i-0eef782e072ab1b81 --query 'Reservations[0].Instances[0].{State:State.Name,PublicIp:PublicIpAddress,PrivateIp:PrivateIpAddress}' --output table`
+- Check AWS status before assuming a runner bug:
+  `AWS_PROFILE=betting-project aws ec2 describe-instance-status --region eu-north-1 --instance-ids i-0eef782e072ab1b81 --include-all-instances --query 'InstanceStatuses[0].{State:InstanceState.Name,System:SystemStatus.Status,Instance:InstanceStatus.Status}' --output table`
 - `df -hT /`
 - `docker ps -a`
 - `du -sh /home/ubuntu/actions-runner/_diag`
@@ -41,6 +45,18 @@ The health script keeps the summary short and reports:
 4. Run hygiene cleanup if disk pressure or stale logs are present.
 
 ## Restart the runner
+
+If the EC2 status check reports `Instance=impaired` or SSH/HTTPS time out while
+the security group already allows the operator IP, reboot the instance first:
+
+```sh
+AWS_PROFILE=betting-project aws ec2 reboot-instances \
+  --region eu-north-1 \
+  --instance-ids i-0eef782e072ab1b81
+AWS_PROFILE=betting-project aws ec2 wait instance-status-ok \
+  --region eu-north-1 \
+  --instance-ids i-0eef782e072ab1b81
+```
 
 1. Start the runner service: `sudo systemctl start actions.runner.antonga23-cloudbet-market-maker.ip-172-31-21-124-cloudbet-market-maker.service`
 2. Confirm it is online in GitHub repository runner settings.
