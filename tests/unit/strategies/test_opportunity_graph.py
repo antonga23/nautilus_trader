@@ -646,6 +646,33 @@ def test_node_payload_fallbacks_cover_missing_helper_methods() -> None:  # skipc
     ensure(payload["start_time_ns"] is None)
 
 
+def test_node_payload_ignores_non_iterable_alias_helper_return() -> None:  # skipcq
+    template = _instrument()
+
+    class MockLikeInstrument:
+        def __init__(self) -> None:
+            self.id = template.id
+            self.event_id = template.event_id
+            self.event_name = template.event_name
+            self.market_name = template.market_name
+            self.market_type = template.market_type
+            self.outcome = template.outcome
+            self.params = template.params
+            self.handicap = template.handicap
+
+        def event_key(self, *, include_start_time: bool = True) -> str:
+            return "soccer:minnesota timberwolves:san antonio spurs"
+
+        def event_alias_keys(self, *, include_start_time: bool = True) -> object:
+            return object()
+
+    instrument = cast(Any, MockLikeInstrument())
+    node = OpportunityGraph._node_from_instrument(instrument)
+    payload = OpportunityGraph._node_payload_from_node(node, instrument)
+
+    ensure(payload["event_alias_keys"] == ("soccer:minnesota timberwolves:san antonio spurs",))
+
+
 def test_rust_scan_filters_unprofitable_edges_before_decimal_validation() -> None:  # skipcq
     instruments = [
         _instrument(venue=f"VENUE{index}", event_id=f"event-{index}", outcome=outcome)

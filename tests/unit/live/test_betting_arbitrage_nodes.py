@@ -10,6 +10,9 @@
 import asyncio
 from collections import Counter
 from dataclasses import replace
+from datetime import UTC
+from datetime import datetime
+from datetime import timedelta
 import hashlib
 import json
 from decimal import Decimal
@@ -76,6 +79,7 @@ def _instrument(
     home_name: str = "Team A",
     away_name: str = "Team B",
     sport_name: str = "soccer",
+    start_time: str = "2026-03-13T18:00:00Z",
 ) -> CryptoBettingInstrument:
     return CryptoBettingInstrument(
         venue=Venue(venue),
@@ -93,7 +97,7 @@ def _instrument(
         currency=Currency.from_str("USDC"),
         params=params,
         handicap=handicap,
-        start_time="2026-03-13T18:00:00Z",
+        start_time=start_time,
     )
 
 
@@ -539,6 +543,9 @@ class TestBettingArbitrageNodeBuilder:
         assert manifest.validation_mode is False
         assert config.strategies[0].config["auto_execute"] is True
         assert config.strategies[0].config["live_execution_armed"] is True
+        assert config.strategies[0].config["execution_venue_mode"] == "cross_venue"
+        assert config.strategies[0].config["max_resolution_horizon_hours"] == 48.0
+        assert config.strategies[0].config["portfolio_base_currency"] == "USD"
         assert config.strategies[0].config["allow_cross_currency_live_execution"] is False
         assert config.strategies[0].config["max_total_stake"] == "25"
         assert config.strategies[0].config["max_leg_stake"] == "15"
@@ -559,11 +566,42 @@ class TestBettingArbitrageNodeBuilder:
         assert readiness["liveExecutionArmed"] is True
         assert readiness["liveExecutionEnvArmed"] is False
         assert readiness["allowCrossCurrencyLiveExecution"] is False
+        assert readiness["executionVenueMode"] == "cross_venue"
+        assert readiness["maxResolutionHorizonHours"] == 48.0
+        assert readiness["portfolioBaseCurrency"] == "USD"
         assert readiness["riskCaps"] == {
             "maxLegStake": "15",
             "maxDailyNotional": "100",
             "maxDailyLoss": "25",
         }
+
+    def test_polymarket_sxbet_cross_venue_pilot_manifest_is_unarmed_by_env(self, monkeypatch):
+        monkeypatch.setenv("POLYMARKET_API_KEY", "pm-key")
+        monkeypatch.setenv("POLYMARKET_API_SECRET", "test-value")
+        monkeypatch.setenv("POLYMARKET_PASSPHRASE", "test-value")
+        monkeypatch.setenv("POLYMARKET_PRIVATE_KEY", "0x" + "a" * 64)
+        monkeypatch.setenv("POLYMARKET_FUNDER", "0x" + "b" * 40)
+        monkeypatch.setenv("SXBET_API_KEY", "sxbet-live-api-key")
+        monkeypatch.setenv("SXBET_PRIVATE_KEY", "a" * 64)
+        monkeypatch.setenv("SXBET_WALLET_ADDRESS", "0x" + "b" * 40)
+        monkeypatch.delenv("BETTING_LIVE_EXECUTION_ARMED", raising=False)
+
+        manifest = node_builder.load_manifest(
+            Path(
+                "deploy/strategy_nodes/betting_arbitrage/"
+                "polymarket-sxbet-cross-venue-live-pilot.json",
+            ),
+        )
+        config = build_trading_node_config(manifest)
+
+        assert manifest.validation_mode is False
+        assert config.strategies[0].config["execution_venue_mode"] == "cross_venue"
+        assert config.strategies[0].config["allow_same_venue_live_execution"] is False
+        assert config.strategies[0].config["max_resolution_horizon_hours"] == 48.0
+        assert set(config.exec_clients) == {"POLYMARKET_PRIMARY", "SXBET_PRIMARY"}
+        readiness = manifest_execution_readiness(manifest)
+        assert readiness["liveExecutionArmed"] is True
+        assert readiness["liveExecutionEnvArmed"] is False
 
     def test_live_exec_factory_name_handles_importable_factory_instances(self):
         from nautilus_trader.adapters.cloudbet.factories import CloudbetLiveExecClientFactory
@@ -2855,6 +2893,52 @@ class TestBettingArbitrageNodeRunner:
         assert report["sampleBlockerCounts"] == {"same_market_params_mismatch": 1}
         assert report["samples"][0]["blockerHint"] == "same_market_params_mismatch"
         assert report["samples"][0]["matcherSuspectReason"] == "same_market_params_mismatch"
+
+    def test_resolution_horizon_payload_counts_near_term_quoted_edges(self):
+        inside_start = (datetime.now(tz=UTC) + timedelta(hours=1)).isoformat()
+        outside_start = (datetime.now(tz=UTC) + timedelta(days=10)).isoformat()
+        inside = _instrument(
+            venue="SXBET",
+            market_type="match_odds",
+            outcome="home",
+            event_id="inside-a",
+            start_time=inside_start,
+        )
+        inside_other = _instrument(
+            venue="CLOUDBET",
+            market_type="match_odds",
+            outcome="away",
+            event_id="inside-b",
+            start_time=inside_start,
+        )
+        outside = _instrument(
+            venue="POLYMARKET",
+            market_type="match_odds",
+            outcome="away",
+            event_id="outside",
+            start_time=outside_start,
+        )
+        nodes = {
+            "a": SimpleNamespace(instrument=inside),
+            "b": SimpleNamespace(instrument=inside_other),
+            "c": SimpleNamespace(instrument=outside),
+        }
+
+        payload = node_runner._resolution_horizon_payload(
+            {"max_resolution_horizon_hours": 48.0},
+            nodes=nodes,
+            quotes={"a": object(), "b": object(), "c": object()},
+            edges=[
+                SimpleNamespace(source_node_id="a", target_node_id="b"),
+                SimpleNamespace(source_node_id="a", target_node_id="c"),
+            ],
+        )
+
+        assert payload["enabled"] is True
+        assert payload["eventsInsideHorizon"] == 1
+        assert payload["eventsOutsideHorizon"] == 1
+        assert payload["quotedCandidatesInsideHorizon"] == 1
+        assert payload["blockedCandidatesDueHorizon"] == 1
 
     def test_runtime_probe_candidate_samples_include_dry_run_provenance(self):
         instrument_a = _instrument(

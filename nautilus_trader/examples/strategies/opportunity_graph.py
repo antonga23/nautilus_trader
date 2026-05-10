@@ -1029,6 +1029,17 @@ class OpportunityGraph:
             event_key_no_time = str(event_key_func(include_start_time=False))
         else:
             event_key_no_time = node.canonical_event_key
+        event_alias_keys_func = cls._safe_attr(instrument, "event_alias_keys", None)
+        if callable(event_alias_keys_func):
+            try:
+                raw_event_alias_keys = event_alias_keys_func(include_start_time=False)
+            except (AttributeError, TypeError, ValueError):
+                raw_event_alias_keys = ()
+            event_alias_keys = cls._event_alias_keys_payload(raw_event_alias_keys)
+            if not event_alias_keys:
+                event_alias_keys = (event_key_no_time,)
+        else:
+            event_alias_keys = (event_key_no_time,)
 
         selection_key_func = cls._safe_attr(instrument, "selection_key", None)
         if callable(selection_key_func):
@@ -1045,6 +1056,7 @@ class OpportunityGraph:
             "venue": node.venue,
             "event_id": node.event_id,
             "event_key_no_time": event_key_no_time,
+            "event_alias_keys": event_alias_keys,
             "market_name": node.market_name,
             "market_type": market_type,
             "outcome": Outcome.from_string(node.outcome).value,
@@ -1055,6 +1067,12 @@ class OpportunityGraph:
             "two_way_market": node.two_way_market,
             **semantic_payload,
         }
+
+    @staticmethod
+    def _event_alias_keys_payload(value: object) -> tuple[str, ...]:
+        if not isinstance(value, (list, tuple, set, frozenset)):
+            return ()
+        return tuple(str(key) for key in value if str(key))
 
     @classmethod
     def _semantic_node_payload(cls, instrument: CryptoBettingInstrument) -> dict[str, object]:

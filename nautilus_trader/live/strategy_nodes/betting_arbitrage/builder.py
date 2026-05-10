@@ -186,6 +186,18 @@ def manifest_execution_readiness(
             "allow_cross_currency_live_execution",
             False,
         ),
+        "executionVenueMode": getattr(manifest.strategy, "execution_venue_mode", "all"),
+        "maxResolutionHorizonHours": getattr(
+            manifest.strategy,
+            "max_resolution_horizon_hours",
+            None,
+        ),
+        "portfolioBaseCurrency": getattr(manifest.strategy, "portfolio_base_currency", "USD"),
+        "stablecoinCurrencies": sorted(
+            getattr(manifest.strategy, "stablecoin_currencies", frozenset({"USD", "USDC", "USDT"})),
+        ),
+        "stablecoinHaircutBps": getattr(manifest.strategy, "stablecoin_haircut_bps", 0),
+        "fxQuoteMaxAgeSecs": getattr(manifest.strategy, "fx_quote_max_age_secs", 0),
         "riskCaps": {
             "maxLegStake": str(getattr(manifest.strategy, "max_leg_stake", "0")),
             "maxDailyNotional": str(getattr(manifest.strategy, "max_daily_notional", "0")),

@@ -3043,6 +3043,7 @@ def test_semantic_rule_mining_refresh_corpus_passes_sports_to_sxbet(tmp_path, mo
         sport_ids=[],
         from_timestamp=111,
         to_timestamp=222,
+        max_resolution_horizon_hours=None,
         instrument_limit=333,
         market_discovery_limit=444,
         prefer_liquid_markets=True,
@@ -3080,6 +3081,25 @@ def test_semantic_rule_mining_refresh_corpus_passes_sports_to_sxbet(tmp_path, mo
     assert call["liquidity_probe_limit"] == 55
     assert call["min_two_sided_markets"] == 2
     assert call["live_only"] is True
+
+
+def test_semantic_rule_mining_refresh_corpus_applies_resolution_horizon():
+    repo_root = Path(__file__).resolve().parents[3]
+    script = repo_root / "scripts" / "betting" / "semantic_rule_mining.py"
+    spec = importlib.util.spec_from_file_location("semantic_rule_mining_script_window", script)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    args = SimpleNamespace(
+        from_timestamp=1000,
+        to_timestamp=None,
+        initial_window_seconds=7 * 24 * 60 * 60,
+        max_resolution_horizon_hours=48,
+    )
+
+    assert module._refresh_corpus_time_window(args) == (1000, 1000 + 48 * 60 * 60)
 
 
 def test_semantic_rule_mining_provider_coverage_summary_reports_unresolved_targets():

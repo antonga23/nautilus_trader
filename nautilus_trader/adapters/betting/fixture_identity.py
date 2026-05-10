@@ -1,0 +1,440 @@
+# -------------------------------------------------------------------------------------------------
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
+#  https://nautechsystems.io
+#
+#  Licensed under the GNU Lesser General Public License Version 3.0 (the "License");
+#  You may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at https://www.gnu.org/licenses/lgpl-3.0.en.html
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
+# -------------------------------------------------------------------------------------------------
+"""
+Venue-agnostic fixture identity resolution for betting instruments.
+
+Cross-venue matching cannot rely on provider event identifiers: Cloudbet, SXBET,
+and Polymarket all assign independent IDs and their display names drift. This
+module centralizes the conservative name/alias/start-time proof used by runtime
+matching, graph topology, and diagnostics.
+
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import UTC
+from datetime import datetime
+import re
+from typing import Any
+
+
+DEFAULT_START_TIME_TOLERANCE_SECS = 2 * 60 * 60
+
+
+@dataclass(frozen=True)
+class FixtureIdentityProof:
+    """
+    Auditable proof for deciding whether two instruments represent one fixture.
+    """
+
+    same_fixture: bool
+    reason: str
+    confidence: float
+    canonical_event_key_a: str
+    canonical_event_key_b: str
+    alias_hits: tuple[str, ...] = ()
+    matched_fields: tuple[str, ...] = ()
+    start_time_delta_secs: float | None = None
+    ambiguous: bool = False
+    blocker_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class ParticipantMatch:
+    matched: bool
+    confidence: float
+    alias_hits: tuple[str, ...] = ()
+    reason: str = "participant_match"
+
+
+class FixtureIdentityResolver:
+    """
+    Resolve fixture identity across venues without provider event-ID equality.
+    """
+
+    IGNORED_TEAM_TOKENS = frozenset(
+        {
+            "afc",
+            "cf",
+            "club",
+            "fc",
+            "sc",
+            "team",
+            "the",
+            "s",
+            "w",
+            "women",
+        },
+    )
+    TOKEN_ALIASES = {
+        "ari": "arizona",
+        "atl": "atlanta",
+        "bal": "baltimore",
+        "bos": "boston",
+        "buf": "buffalo",
+        "car": "carolina",
+        "chi": "chicago",
+        "cin": "cincinnati",
+        "cle": "cleveland",
+        "col": "colorado",
+        "dal": "dallas",
+        "den": "denver",
+        "det": "detroit",
+        "gb": "green bay",
+        "gs": "golden state",
+        "gsw": "golden state",
+        "hou": "houston",
+        "ind": "indianapolis",
+        "jax": "jacksonville",
+        "kc": "kansas city",
+        "la": "los angeles",
+        "lac": "los angeles",
+        "lar": "los angeles",
+        "lv": "las vegas",
+        "mia": "miami",
+        "min": "minnesota",
+        "ne": "new england",
+        "no": "new orleans",
+        "ny": "new york",
+        "nyc": "new york",
+        "nyg": "new york",
+        "nyj": "new york",
+        "oak": "oakland",
+        "phi": "philadelphia",
+        "phx": "phoenix",
+        "pit": "pittsburgh",
+        "sa": "san antonio",
+        "sas": "san antonio",
+        "sd": "san diego",
+        "sf": "san francisco",
+        "sea": "seattle",
+        "stl": "st louis",
+        "tb": "tampa bay",
+        "ten": "tennessee",
+        "utd": "united",
+        "was": "washington",
+        "wsh": "washington",
+    }
+    GEOGRAPHIC_PREFIX_TOKENS = frozenset(
+        {
+            "golden",
+            "green",
+            "las",
+            "los",
+            "new",
+            "san",
+            "st",
+            "tampa",
+        },
+    )
+    PHRASE_ALIASES = {
+        "cle cavaliers": "cleveland cavaliers",
+        "cle cavs": "cleveland cavaliers",
+        "min timberwolves": "minnesota timberwolves",
+        "mn timberwolves": "minnesota timberwolves",
+        "ny knicks": "new york knicks",
+        "ny liberty": "new york liberty",
+        "sa spurs": "san antonio spurs",
+        "sas spurs": "san antonio spurs",
+        "s a spurs": "san antonio spurs",
+        "man city": "manchester city",
+        "man utd": "manchester united",
+        "man united": "manchester united",
+    }
+    SPORT_ALIASES = {
+        "american football": "american_football",
+        "football": "soccer",
+        "ice hockey": "ice_hockey",
+        "hockey": "ice_hockey",
+    }
+    EVENT_SPLIT_PATTERN = re.compile(r"\s+(?:v|vs|versus|@)\s+", re.IGNORECASE)
+
+    def __init__(self, start_time_tolerance_secs: int = DEFAULT_START_TIME_TOLERANCE_SECS) -> None:
+        self.start_time_tolerance_secs = start_time_tolerance_secs
+
+    @staticmethod
+    def normalize_event_component(value: str | None) -> str:
+        if not value:
+            return ""
+        normalized = re.sub(r"[^a-z0-9]+", " ", value.lower())
+        return " ".join(normalized.split())
+
+    def normalize_sport(self, sport: str | None) -> str:
+        normalized = self.normalize_event_component(sport).replace(" ", "_")
+        return self.SPORT_ALIASES.get(normalized.replace("_", " "), normalized)
+
+    def normalize_team_name(self, name: str | None) -> str:
+        normalized = self.normalize_event_component(name)
+        if not normalized:
+            return ""
+        normalized = self.PHRASE_ALIASES.get(normalized, normalized)
+        tokens: list[str] = []
+        alias_hits: list[str] = []
+        for token in normalized.split():
+            if token in self.IGNORED_TEAM_TOKENS:
+                continue
+            replacement = self.TOKEN_ALIASES.get(token, token)
+            if replacement != token:
+                alias_hits.append(f"{token}->{replacement}")
+            tokens.extend(replacement.split())
+        canonical = " ".join(tokens)
+        return self.PHRASE_ALIASES.get(canonical, canonical)
+
+    def team_key(self, instrument: Any) -> tuple[str, ...]:
+        home_name = str(getattr(instrument, "home_name", "") or "")
+        away_name = str(getattr(instrument, "away_name", "") or "")
+        participants = sorted(
+            {
+                self.normalize_team_name(home_name),
+                self.normalize_team_name(away_name),
+            }
+            - {""},
+        )
+        if participants:
+            return tuple(participants)
+        event_name = str(getattr(instrument, "event_name", "") or "")
+        split_names = [
+            self.normalize_team_name(part)
+            for part in self.EVENT_SPLIT_PATTERN.split(event_name, maxsplit=1)
+        ]
+        split_participants = sorted(set(split_names) - {""})
+        if len(split_participants) >= 2:
+            return tuple(split_participants[:2])
+        normalized_event = self.normalize_event_component(event_name)
+        return (normalized_event,) if normalized_event else ()
+
+    def team_aliases(self, name: str | None) -> tuple[str, ...]:
+        canonical = self.normalize_team_name(name)
+        if not canonical:
+            return ()
+        aliases = {canonical}
+        prefix = self._participant_prefix_alias(canonical)
+        if prefix:
+            aliases.add(prefix)
+        return tuple(sorted(aliases))
+
+    def event_alias_keys(
+        self,
+        instrument: Any,
+        *,
+        include_start_time: bool = False,
+    ) -> tuple[str, ...]:
+        sport = self.normalize_sport(str(getattr(instrument, "sport_name", "") or ""))
+        home_aliases = self.team_aliases(str(getattr(instrument, "home_name", "") or ""))
+        away_aliases = self.team_aliases(str(getattr(instrument, "away_name", "") or ""))
+        if not sport or not home_aliases or not away_aliases:
+            key = self.event_key(instrument, include_start_time=include_start_time)
+            return (key,) if key else ()
+
+        suffix = ""
+        if include_start_time:
+            start_time = self.parsed_start_time(instrument)
+            if start_time is not None:
+                suffix = f":{start_time.strftime('%Y-%m-%dT%H')}"
+        keys: set[str] = set()
+        for home_alias in home_aliases:
+            for away_alias in away_aliases:
+                participants = sorted({home_alias, away_alias})
+                if len(participants) >= 2:
+                    keys.add(f"{sport}:{participants[0]}:{participants[1]}{suffix}")
+        exact = self.event_key(instrument, include_start_time=include_start_time)
+        if exact:
+            keys.add(exact)
+        return tuple(sorted(keys))
+
+    def event_key(self, instrument: Any, *, include_start_time: bool = True) -> str:
+        parts = [self.normalize_sport(str(getattr(instrument, "sport_name", "") or ""))]
+        parts.extend(self.team_key(instrument))
+        start_time = self.parsed_start_time(instrument)
+        if include_start_time and start_time is not None:
+            parts.append(start_time.strftime("%Y-%m-%dT%H"))
+        return ":".join(part for part in parts if part)
+
+    @staticmethod
+    def parsed_start_time(instrument: Any) -> datetime | None:
+        start = getattr(instrument, "start_time", None)
+        if not start:
+            return None
+        start_text = str(start).replace("Z", "+00:00")
+        try:
+            parsed = datetime.fromisoformat(start_text)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC)
+
+    def resolve(self, instrument_a: Any, instrument_b: Any) -> FixtureIdentityProof:
+        key_a = self.event_key(instrument_a, include_start_time=False)
+        key_b = self.event_key(instrument_b, include_start_time=False)
+        venue_a = str(getattr(getattr(instrument_a, "venue_name", ""), "value", "") or "")
+        venue_b = str(getattr(getattr(instrument_b, "venue_name", ""), "value", "") or "")
+        event_id_a = str(getattr(instrument_a, "event_id", "") or "")
+        event_id_b = str(getattr(instrument_b, "event_id", "") or "")
+
+        if venue_a and venue_a == venue_b and event_id_a and event_id_a == event_id_b:
+            return FixtureIdentityProof(
+                same_fixture=True,
+                reason="provider_event_id_match",
+                confidence=1.0,
+                canonical_event_key_a=key_a,
+                canonical_event_key_b=key_b,
+                matched_fields=("venue", "event_id"),
+            )
+
+        sport_a = self.normalize_sport(str(getattr(instrument_a, "sport_name", "") or ""))
+        sport_b = self.normalize_sport(str(getattr(instrument_b, "sport_name", "") or ""))
+        if sport_a != sport_b:
+            return FixtureIdentityProof(
+                same_fixture=False,
+                reason="sport_mismatch",
+                confidence=0.0,
+                canonical_event_key_a=key_a,
+                canonical_event_key_b=key_b,
+                blocker_reason="sport_mismatch",
+            )
+
+        participant_match = self._participants_match(
+            self.team_key(instrument_a),
+            self.team_key(instrument_b),
+        )
+        if not participant_match.matched:
+            return FixtureIdentityProof(
+                same_fixture=False,
+                reason=participant_match.reason,
+                confidence=participant_match.confidence,
+                canonical_event_key_a=key_a,
+                canonical_event_key_b=key_b,
+                alias_hits=participant_match.alias_hits,
+                blocker_reason="participant_mismatch",
+            )
+
+        start_a = self.parsed_start_time(instrument_a)
+        start_b = self.parsed_start_time(instrument_b)
+        start_delta = (
+            abs((start_a - start_b).total_seconds())
+            if start_a is not None and start_b is not None
+            else None
+        )
+        if start_delta is not None and start_delta > self.start_time_tolerance_secs:
+            return FixtureIdentityProof(
+                same_fixture=False,
+                reason="start_time_mismatch",
+                confidence=min(participant_match.confidence, 0.35),
+                canonical_event_key_a=key_a,
+                canonical_event_key_b=key_b,
+                alias_hits=participant_match.alias_hits,
+                start_time_delta_secs=start_delta,
+                blocker_reason="start_time_mismatch",
+            )
+
+        matched_fields = ["sport", "participants"]
+        confidence = participant_match.confidence
+        reason = "canonical_fixture_match"
+        if start_delta is not None:
+            matched_fields.append("start_time")
+            confidence = min(0.98, confidence + 0.04)
+        else:
+            reason = "canonical_fixture_match_missing_start_time"
+            confidence = min(confidence, 0.86)
+        competition_a = self.normalize_event_component(
+            str(getattr(instrument_a, "competition_name", "") or ""),
+        )
+        competition_b = self.normalize_event_component(
+            str(getattr(instrument_b, "competition_name", "") or ""),
+        )
+        if competition_a and competition_b and competition_a == competition_b:
+            matched_fields.append("competition")
+            confidence = min(0.99, confidence + 0.01)
+
+        return FixtureIdentityProof(
+            same_fixture=True,
+            reason=reason,
+            confidence=confidence,
+            canonical_event_key_a=key_a,
+            canonical_event_key_b=key_b,
+            alias_hits=participant_match.alias_hits,
+            matched_fields=tuple(matched_fields),
+            start_time_delta_secs=start_delta,
+        )
+
+    def _participants_match(
+        self,
+        participants_a: tuple[str, ...],
+        participants_b: tuple[str, ...],
+    ) -> ParticipantMatch:
+        if participants_a == participants_b and len(participants_a) >= 2:
+            return ParticipantMatch(True, 0.95, reason="exact_participants")
+        if len(participants_a) != len(participants_b) or len(participants_a) < 2:
+            return ParticipantMatch(False, 0.0, reason="participant_count_mismatch")
+
+        remaining = list(participants_b)
+        alias_hits: list[str] = []
+        confidences: list[float] = []
+        for participant in participants_a:
+            best_index = -1
+            best_confidence = 0.0
+            best_alias = ""
+            for index, candidate in enumerate(remaining):
+                confidence, alias = self._participant_similarity(participant, candidate)
+                if confidence > best_confidence:
+                    best_index = index
+                    best_confidence = confidence
+                    best_alias = alias
+            if best_index < 0 or best_confidence < 0.72:
+                return ParticipantMatch(
+                    False,
+                    best_confidence,
+                    tuple(alias_hits),
+                    reason="participant_mismatch",
+                )
+            matched = remaining.pop(best_index)
+            confidences.append(best_confidence)
+            if best_alias:
+                alias_hits.append(f"{participant}<->{matched}:{best_alias}")
+        return ParticipantMatch(
+            True,
+            min(confidences) if confidences else 0.0,
+            tuple(alias_hits),
+            reason="compatible_participants",
+        )
+
+    @staticmethod
+    def _participant_similarity(left: str, right: str) -> tuple[float, str]:
+        if left == right:
+            return 0.95, ""
+        if not left or not right:
+            return 0.0, ""
+        if left.startswith(f"{right} ") or right.startswith(f"{left} "):
+            return 0.86, "prefix"
+        left_tokens = set(left.split())
+        right_tokens = set(right.split())
+        overlap = left_tokens & right_tokens
+        if len(overlap) >= 2:
+            denominator = max(len(left_tokens), len(right_tokens), 1)
+            return max(0.74, len(overlap) / denominator), "token_overlap"
+        return 0.0, ""
+
+    def _participant_prefix_alias(self, canonical: str) -> str:
+        tokens = canonical.split()
+        if len(tokens) < 2:
+            return ""
+        if tokens[0] in self.GEOGRAPHIC_PREFIX_TOKENS and len(tokens) >= 2:
+            return " ".join(tokens[:2])
+        return tokens[0]
+
+
+DEFAULT_FIXTURE_IDENTITY_RESOLVER = FixtureIdentityResolver()

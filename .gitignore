@@ -12,6 +12,7 @@
 # Logs and patches
 *.log
 *.patch
+artifacts/
 log/
 logs/
 
