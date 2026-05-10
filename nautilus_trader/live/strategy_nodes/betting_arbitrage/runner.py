@@ -2835,6 +2835,8 @@ def _probe_edge_profitability(
         if quoted_edge is None:
             continue
         source_node, target_node, quote_a, quote_b = quoted_edge
+        if not _probe_edge_matches_execution_venue_mode(strategy, source_node, target_node):
+            continue
 
         counters.quoted_edges += 1
         decision_started_ns = time.perf_counter_ns()
@@ -2880,6 +2882,23 @@ def _probe_edge_profitability(
             )
 
     return counters.to_payload()
+
+
+def _probe_edge_matches_execution_venue_mode(strategy, source_node, target_node) -> bool:
+    config = getattr(strategy, "_config", None)
+    mode = str(getattr(config, "execution_venue_mode", "all") or "all").strip().lower()
+    if mode == "all":
+        return True
+    source_venue = _probe_node_venue(source_node)
+    target_venue = _probe_node_venue(target_node)
+    if not source_venue or not target_venue:
+        return True
+    same_venue = source_venue == target_venue
+    if mode == "cross_venue":
+        return not same_venue
+    if mode == "same_venue":
+        return same_venue
+    return True
 
 
 def _probe_candidate_quality(
