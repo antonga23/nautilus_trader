@@ -1746,7 +1746,12 @@ def _venue_pair_coverage(
         if _quoted_probe_edge(edge, nodes, quotes) is not None:
             quoted_edge_counts[pair] += 1
 
-    all_pairs = [f"{source}->{target}" for source in venues for target in venues]
+    all_pairs = [
+        pair
+        for source in venues
+        for target in venues
+        if _venue_pair_matches_execution_venue_mode(strategy, pair := f"{source}->{target}")
+    ]
     candidate_counts = _venue_pair_candidate_counts(candidate_venue_pairs)
     zero_pairs = [
         _zero_venue_pair_report(
@@ -1864,6 +1869,17 @@ def _venue_pair_candidate_counts(candidate_venue_pairs: Any) -> dict[str, int]:
         for pair, buckets in candidate_venue_pairs.items()
         if isinstance(buckets, dict)
     }
+
+
+def _venue_pair_matches_execution_venue_mode(strategy, pair: str) -> bool:
+    source, target = pair.split("->", maxsplit=1)
+    config = getattr(strategy, "_config", None)
+    mode = str(getattr(config, "execution_venue_mode", "all") or "all").strip().lower()
+    if mode == "cross_venue":
+        return source != target
+    if mode == "same_venue":
+        return source == target
+    return True
 
 
 def _enabled_probe_venues(strategy, nodes: dict[Any, object]) -> list[str]:
