@@ -30,6 +30,13 @@ DEFAULT_URLS = {
     "binance": "https://api.binance.com/api/v3/ticker/price?symbol=EURUSDT",
 }
 
+DEFAULT_STRATEGY_VENUES = {
+    "cloudbet_single_venue": ("cloudbet",),
+    "sxbet_single_venue": ("sxbet",),
+    "polymarket_sxbet": ("polymarket", "sxbet"),
+    "cloudbet_sxbet": ("cloudbet", "sxbet"),
+}
+
 
 @dataclass(frozen=True)
 class ProbeSample:
@@ -158,6 +165,65 @@ def _recommendation(summary_by_venue: dict[str, dict[str, object]]) -> dict[str,
     }
 
 
+def placement_recommendations(
+    summary_by_venue: dict[str, dict[str, object]],
+    *,
+    region: str,
+    generated_at_ns: int,
+    now_ns: int | None = None,
+    max_data_age_secs: float = 3600.0,
+    strategy_venues: dict[str, tuple[str, ...]] | None = None,
+) -> dict[str, dict[str, object]]:
+    now = time.time_ns() if now_ns is None else now_ns
+    data_age_secs = max((now - generated_at_ns) / 1_000_000_000, 0.0)
+    data_fresh = data_age_secs <= max_data_age_secs
+    recommendations: dict[str, dict[str, object]] = {}
+    for strategy, venues in (strategy_venues or DEFAULT_STRATEGY_VENUES).items():
+        venue_payloads = {
+            venue: summary_by_venue.get(venue, {})
+            for venue in venues
+            if summary_by_venue.get(venue) is not None
+        }
+        missing_venues = [venue for venue in venues if venue not in venue_payloads]
+        total_p95 = {
+            venue: _summary_percentile_ms(summary, "total_ms", "p95")
+            for venue, summary in venue_payloads.items()
+        }
+        first_byte_p95 = {
+            venue: _summary_percentile_ms(summary, "first_byte_ms", "p95")
+            for venue, summary in venue_payloads.items()
+        }
+        error_rates = {
+            venue: _summary_float(summary, "errorRate") for venue, summary in venue_payloads.items()
+        }
+        worst_total = max(total_p95.values()) if total_p95 else 0.0
+        worst_first_byte = max(first_byte_p95.values()) if first_byte_p95 else 0.0
+        worst_error_rate = max(error_rates.values()) if error_rates else 1.0
+        blockers: list[str] = []
+        if missing_venues:
+            blockers.append("missing_venue_samples")
+        if not data_fresh:
+            blockers.append("stale_probe_data")
+        if worst_error_rate > 0.05:
+            blockers.append("high_error_rate")
+        recommendations[strategy] = {
+            "region": region,
+            "venues": list(venues),
+            "missingVenues": missing_venues,
+            "dataAgeSecs": round(data_age_secs, 3),
+            "dataFresh": data_fresh,
+            "worstLegTotalP95Ms": worst_total,
+            "worstLegFirstByteP95Ms": worst_first_byte,
+            "worstLegErrorRate": worst_error_rate,
+            "venueTotalP95Ms": total_p95,
+            "venueFirstByteP95Ms": first_byte_p95,
+            "venueErrorRates": error_rates,
+            "blockers": blockers,
+            "eligibleForPlacementComparison": not blockers,
+        }
+    return recommendations
+
+
 def _summary_percentile_ms(
     summary: dict[str, object],
     metric: str,
@@ -173,12 +239,24 @@ def _summary_percentile_ms(
         return 0.0
 
 
+def _summary_float(summary: dict[str, object], field: str) -> float:
+    value = summary.get(field)
+    if not isinstance(value, int | float | str):
+        return 0.0
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--venue", action="append", choices=sorted(DEFAULT_URLS), default=[])
     parser.add_argument("--url", action="append", default=[])
     parser.add_argument("--samples", type=int, default=5)
     parser.add_argument("--timeout-secs", type=float, default=5.0)
+    parser.add_argument("--region", default="local")
+    parser.add_argument("--max-data-age-secs", type=float, default=3600.0)
     parser.add_argument("--output-json", default="")
     args = parser.parse_args()
 
@@ -195,11 +273,19 @@ def main() -> int:
         summaries[venue] = summarize_samples(samples)
         raw_samples[venue] = [asdict(sample) for sample in samples]
 
+    generated_at_ns = time.time_ns()
     payload = {
-        "generatedAtNs": time.time_ns(),
+        "generatedAtNs": generated_at_ns,
+        "region": args.region,
         "targets": targets,
         "summaries": summaries,
         "recommendation": _recommendation(summaries),
+        "placementRecommendations": placement_recommendations(
+            summaries,
+            region=args.region,
+            generated_at_ns=generated_at_ns,
+            max_data_age_secs=args.max_data_age_secs,
+        ),
         "samples": raw_samples,
     }
     text = json.dumps(payload, indent=2, sort_keys=True)
