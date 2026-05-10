@@ -216,6 +216,8 @@ def _strategy_placement_recommendation(
         "dataFresh": data_fresh,
         "worstLegTotalP95Ms": max(total_p95.values()) if total_p95 else 0.0,
         "worstLegFirstByteP95Ms": max(first_byte_p95.values()) if first_byte_p95 else 0.0,
+        "venueTotalP95SkewMs": _metric_skew_ms(total_p95),
+        "venueFirstByteP95SkewMs": _metric_skew_ms(first_byte_p95),
         "worstLegErrorRate": worst_error_rate,
         "venueTotalP95Ms": total_p95,
         "venueFirstByteP95Ms": first_byte_p95,
@@ -248,6 +250,13 @@ def _venue_error_rates(venue_payloads: dict[str, dict[str, object]]) -> dict[str
     return {
         venue: _summary_float(summary, "errorRate") for venue, summary in venue_payloads.items()
     }
+
+
+def _metric_skew_ms(values_by_venue: dict[str, float]) -> float:
+    values = list(values_by_venue.values())
+    if len(values) < 2:
+        return 0.0
+    return round(max(values) - min(values), 3)
 
 
 def _placement_blockers(

@@ -58,6 +58,8 @@ def test_latency_probe_recommends_strategy_placement_by_worst_leg():
     assert cloudbet_sxbet["region"] == "tokyo"
     assert cloudbet_sxbet["venues"] == ["cloudbet", "sxbet"]
     assert cloudbet_sxbet["worstLegTotalP95Ms"] == 90.0
+    assert cloudbet_sxbet["venueTotalP95SkewMs"] == 45.0
+    assert cloudbet_sxbet["venueFirstByteP95SkewMs"] == 12.0
     assert cloudbet_sxbet["venueTotalP95Ms"] == {"cloudbet": 45.0, "sxbet": 90.0}
     assert cloudbet_sxbet["eligibleForPlacementComparison"] is True
     assert cloudbet_sxbet["blockers"] == []
