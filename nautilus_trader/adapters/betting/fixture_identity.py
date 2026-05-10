@@ -269,6 +269,30 @@ class FixtureIdentityResolver:
             aliases.add(prefix)
         return tuple(sorted(aliases))
 
+    def participant_alias_sets(self, instrument: Any) -> tuple[tuple[str, ...], ...]:
+        """
+        Return participant aliases from explicit home/away fields or event title.
+
+        Some provider payloads expose reliable participant names only in the event
+        title. We still need the same alias expansion there so "CLE Cavaliers @ MIN
+        Timberwolves" can match a venue that sends full home/away fields.
+
+        """
+        home_aliases = self.team_aliases(str(getattr(instrument, "home_name", "") or ""))
+        away_aliases = self.team_aliases(str(getattr(instrument, "away_name", "") or ""))
+        if home_aliases and away_aliases:
+            return (home_aliases, away_aliases)
+
+        event_name = str(getattr(instrument, "event_name", "") or "")
+        split_names = [
+            self.team_aliases(part)
+            for part in self.EVENT_SPLIT_PATTERN.split(event_name, maxsplit=1)
+        ]
+        split_aliases = tuple(alias_set for alias_set in split_names if alias_set)
+        if len(split_aliases) >= 2:
+            return split_aliases[:2]
+        return ()
+
     def event_alias_keys(
         self,
         instrument: Any,
@@ -276,11 +300,11 @@ class FixtureIdentityResolver:
         include_start_time: bool = False,
     ) -> tuple[str, ...]:
         sport = self.normalize_sport(str(getattr(instrument, "sport_name", "") or ""))
-        home_aliases = self.team_aliases(str(getattr(instrument, "home_name", "") or ""))
-        away_aliases = self.team_aliases(str(getattr(instrument, "away_name", "") or ""))
-        if not sport or not home_aliases or not away_aliases:
+        participant_aliases = self.participant_alias_sets(instrument)
+        if not sport or len(participant_aliases) < 2:
             key = self.event_key(instrument, include_start_time=include_start_time)
             return (key,) if key else ()
+        home_aliases, away_aliases = participant_aliases[:2]
 
         suffix = ""
         if include_start_time:

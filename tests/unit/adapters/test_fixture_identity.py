@@ -213,6 +213,31 @@ def test_fixture_identity_strips_polymarket_corners_group_without_losing_fixture
     assert proof.canonical_event_key_a == proof.canonical_event_key_b
 
 
+def test_fixture_identity_expands_aliases_from_event_title_when_team_fields_missing():
+    resolver = FixtureIdentityResolver()
+    sxbet = _instrument(
+        venue="SXBET",
+        event_name="CLE Cavaliers @ MIN Timberwolves",
+        home_name="",
+        away_name="",
+        sport_name="basketball",
+    )
+    cloudbet = _instrument(
+        venue="CLOUDBET",
+        event_name="Cleveland Cavaliers vs Minnesota Timberwolves",
+        home_name="Cleveland Cavaliers",
+        away_name="Minnesota Timberwolves",
+        sport_name="basketball",
+    )
+
+    proof = resolver.resolve(sxbet, cloudbet)
+
+    assert proof.same_fixture is True
+    assert proof.blocker_reason is None
+    assert "basketball:cleveland cavaliers:minnesota timberwolves" in sxbet.event_alias_keys()
+    assert "basketball:cleveland:minnesota" in sxbet.event_alias_keys()
+
+
 def test_portfolio_policy_treats_stablecoins_as_usd_with_haircut():
     policy = PortfolioCurrencyPolicy(stablecoin_haircut_bps=25)
 
