@@ -376,6 +376,13 @@ def _runtime_status_payload() -> dict[str, object]:
                     "p99_ms": 13.0,
                     "max_ms": 15.0,
                 },
+                "quote_fetch_latency": {
+                    "count": 8,
+                    "p50_ms": 90.0,
+                    "p95_ms": 180.0,
+                    "p99_ms": 190.0,
+                    "max_ms": 200.0,
+                },
                 "instrument_refresh_reconcile": {
                     "count": 2,
                     "p50_ms": 100.0,
@@ -469,6 +476,7 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
     assert summary["candidates"]["thresholdTotal"] == 2
     assert summary["candidates"]["crossVenueCandidateCount"] == 2
     assert summary["latencyDiagnostics"]["quoteEventToStrategy"]["p95_ms"] == 25.0
+    assert summary["latencyDiagnostics"]["quoteFetchLatency"]["p95_ms"] == 180.0
     assert summary["latencyDiagnostics"]["graphScan"]["p95_ms"] == 3.1
     assert summary["latencyDiagnostics"]["instrumentRefreshReconcile"]["max_ms"] == 125.0
     assert summary["latencyDiagnostics"]["runtimeProbeCandidateDecision"]["count"] == 8
@@ -510,6 +518,7 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
             "candidateDecisionObserved": True,
             "candidateDecisionSource": "strategy",
             "quoteReceiveObserved": True,
+            "providerLatencyObserved": True,
         },
     }
     assert summary["latencyDiagnostics"]["diagnosticWarnings"] == []
@@ -726,6 +735,38 @@ def test_runtime_probe_report_uses_latency_histograms_when_live_slo_missing():
     assert slo["pairSkew"]["status"] == "pass"
 
 
+def test_runtime_probe_report_uses_quote_fetch_latency_when_candidate_histogram_missing():
+    module = _load_module()
+
+    summary = module.summarize_payload(
+        {
+            "runtimeProbe": {
+                "quotedEdges": 4,
+                "candidateQuality": {
+                    "latencyHistograms": {
+                        "quoteAgeSeconds": {"count": 8, "p95": 1.0, "max": 1.2},
+                        "pairSkewSeconds": {"count": 8, "p95": 0.2, "max": 0.4},
+                    },
+                },
+                "latencyDiagnostics": {
+                    "graph_scan": {"count": 4},
+                    "quote_event_to_strategy": {"count": 4},
+                    "quote_fetch_latency": {
+                        "count": 4,
+                        "p95_ms": 450.0,
+                        "max_ms": 600.0,
+                    },
+                },
+            },
+        },
+    )
+
+    slo = summary["latencyDiagnostics"]["sloStatus"]
+    assert slo["fetchLatency"]["status"] == "pass"
+    assert slo["fetchLatency"]["observations"] == 4
+    assert slo["strategyLatency"]["providerLatencyObserved"] is True
+
+
 def test_runtime_probe_report_aggregates_multiple_artifacts():
     module = _load_module()
     first = module.summarize_payload(_runtime_status_payload())
@@ -889,6 +930,7 @@ def test_runtime_probe_report_cli_outputs_json_and_text(tmp_path, monkeypatch, c
     assert "fee_impact fee_hurt=6" in text_output
     assert "raw_negative_fee_adjusted_positive=1" in text_output
     assert "strategy_latency quote_event_p95=25.0ms" in text_output
+    assert "quote_fetch_p95=180.0ms" in text_output
     assert (
         "latency_slo overall=fail quote_age=pass fetch_latency=fail pair_skew=pass" in text_output
     )
