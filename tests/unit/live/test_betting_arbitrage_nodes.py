@@ -598,6 +598,8 @@ class TestBettingArbitrageNodeBuilder:
         assert config.strategies[0].config["execution_venue_mode"] == "cross_venue"
         assert config.strategies[0].config["allow_same_venue_live_execution"] is False
         assert config.strategies[0].config["max_resolution_horizon_hours"] == 48.0
+        provider_config = config.data_clients["POLYMARKET_PRIMARY"].config["instrument_provider"]
+        assert provider_config["filters"]["max_resolution_horizon_hours"] == 48.0
         assert set(config.exec_clients) == {"POLYMARKET_PRIMARY", "SXBET_PRIMARY"}
         readiness = manifest_execution_readiness(manifest)
         assert readiness["liveExecutionArmed"] is True
@@ -956,6 +958,86 @@ class TestBettingArbitrageNodeBuilder:
         )
 
         assert calls == [("tag", 10), ("event", 6), ("fallback", 0)]
+
+    def test_polymarket_gamma_discovery_prefers_near_term_tag_markets(self, monkeypatch):
+        class Clock:
+            @staticmethod
+            def timestamp_ns() -> int:
+                return int(datetime(2026, 5, 10, 12, tzinfo=UTC).timestamp() * 1_000_000_000)
+
+        provider = polymarket_providers.PolymarketInstrumentProvider(
+            client=Mock(),
+            clock=Clock(),
+            config=InstrumentProviderConfig(),
+        )
+        list_limits: list[int | None] = []
+
+        def market(condition_id: str, title: str, start_date: str) -> dict[str, object]:
+            return {
+                "id": condition_id,
+                "conditionId": condition_id,
+                "question": f"Will {title} happen?",
+                "slug": title.lower().replace(" ", "-"),
+                "active": True,
+                "closed": False,
+                "archived": False,
+                "outcomes": '["Yes", "No"]',
+                "outcomePrices": '["0.50", "0.50"]',
+                "clobTokenIds": f'["{condition_id}yes", "{condition_id}no"]',
+                "orderPriceMinTickSize": 0.001,
+                "orderMinSize": 5,
+                "events": [
+                    {
+                        "title": title,
+                        "slug": title.lower().replace(" ", "-"),
+                        "startDate": start_date,
+                    },
+                ],
+            }
+
+        async def fake_gamma_get_json(endpoint, params=None):
+            if endpoint == "/sports":
+                return [{"sport": "tennis", "tags": "864"}]
+            if endpoint == "/events":
+                return []
+            raise AssertionError(endpoint)
+
+        async def fake_list_markets(*, http_client, filters, max_results=None, **kwargs):
+            del http_client, filters, kwargs
+            list_limits.append(max_results)
+            return [
+                market(
+                    "futurecondition",
+                    "Frances Tiafoe vs Ignacio Buse 2027",
+                    "2027-05-10T18:00:00Z",
+                ),
+                market(
+                    "nearcondition",
+                    "Frances Tiafoe vs Ignacio Buse",
+                    "2026-05-10T18:00:00Z",
+                ),
+            ]
+
+        provider._gamma_get_json = fake_gamma_get_json
+        monkeypatch.setattr(polymarket_providers, "list_markets", fake_list_markets)
+
+        asyncio.run(
+            provider._load_markets_using_gamma(
+                {
+                    "is_active": True,
+                    "max_results": 1,
+                    "max_resolution_horizon_hours": 48.0,
+                    "sports": ["tennis"],
+                },
+            ),
+        )
+
+        assert list_limits == [26]
+        instruments = provider.list_all()
+        assert len(instruments) == 2
+        assert {
+            instrument.info["_gamma_original"]["events"][0]["title"] for instrument in instruments
+        } == {"Frances Tiafoe vs Ignacio Buse"}
 
     def test_polymarket_provider_preserves_selected_token_metadata(self):
         class Clock:

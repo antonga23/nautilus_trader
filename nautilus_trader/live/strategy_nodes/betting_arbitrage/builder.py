@@ -491,7 +491,7 @@ def _build_polymarket_data_importable(
         "passphrase": _resolve_secret(prefix, "PASSPHRASE", manifest.allow_dummy_credentials),
         "base_url_http": venue.api_url,
         "base_url_ws": venue.ws_url,
-        "instrument_provider": _polymarket_instrument_provider_dict(venue),
+        "instrument_provider": _polymarket_instrument_provider_dict(venue, manifest),
         "compute_effective_deltas": False,
         "drop_quotes_missing_side": True,
         "routing": {"venues": [venue.venue]},
@@ -517,7 +517,7 @@ def _build_polymarket_exec_importable(
         "passphrase": _resolve_secret(prefix, "PASSPHRASE", manifest.allow_dummy_credentials),
         "base_url_http": venue.api_url,
         "base_url_ws": venue.ws_url,
-        "instrument_provider": _polymarket_instrument_provider_dict(venue),
+        "instrument_provider": _polymarket_instrument_provider_dict(venue, manifest),
         "generate_order_history_from_trades": False,
         "use_data_api": venue.use_data_api,
         "routing": {"venues": [venue.venue]},
@@ -529,17 +529,27 @@ def _build_polymarket_exec_importable(
     )
 
 
-def _polymarket_instrument_provider_dict(venue: BettingVenueManifest) -> dict[str, Any]:
+def _polymarket_instrument_provider_dict(
+    venue: BettingVenueManifest,
+    manifest: BettingArbitrageNodeManifest,
+) -> dict[str, Any]:
     filters: dict[str, Any] = {}
     if venue.sport_keys:
         filters["sports"] = sorted(venue.sport_keys)
     if venue.instrument_load_limit is not None:
         filters["limit"] = min(int(venue.instrument_load_limit), 500)
         filters["max_results"] = int(venue.instrument_load_limit)
+    max_resolution_horizon_hours = manifest.strategy.max_resolution_horizon_hours
     if venue.load_all_instruments:
         return {
             "load_all": True,
-            "filters": {"is_active": True, **filters},
+            "filters": _drop_none(
+                {
+                    "is_active": True,
+                    "max_resolution_horizon_hours": max_resolution_horizon_hours,
+                    **filters,
+                },
+            ),
             "use_gamma_markets": True,
         }
     provider_config: dict[str, Any] = {
