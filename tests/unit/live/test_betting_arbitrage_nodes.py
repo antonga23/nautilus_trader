@@ -2892,6 +2892,80 @@ class TestBettingArbitrageNodeRunner:
         assert report["samples"][0]["canonicalEventKeyA"] == ("soccer:arsenal:west ham united")
         assert report["samples"][0]["canonicalEventKeyB"] == ("soccer:arsenal:west ham united")
 
+    def test_venue_pair_coverage_respects_execution_venue_mode(self):
+        sxbet_home = _instrument(
+            venue="SXBET",
+            market_type="match_odds",
+            outcome="home",
+            event_id="sxbet-home",
+            event_name="Team A vs Team B",
+            home_name="Team A",
+            away_name="Team B",
+        )
+        sxbet_away = _instrument(
+            venue="SXBET",
+            market_type="match_odds",
+            outcome="away",
+            event_id="sxbet-away",
+            event_name="Team A vs Team B",
+            home_name="Team A",
+            away_name="Team B",
+        )
+        polymarket_home = _instrument(
+            venue="POLYMARKET",
+            market_type="match_odds",
+            outcome="home",
+            event_id="poly-home",
+            event_name="Team A vs Team B",
+            home_name="Team A",
+            away_name="Team B",
+        )
+        strategy = SimpleNamespace(
+            _config=SimpleNamespace(
+                enabled_venues=frozenset({"POLYMARKET", "SXBET"}),
+                execution_venue_mode="cross_venue",
+            ),
+            _quote_subscribed_instrument_ids={sxbet_home.id, sxbet_away.id, polymarket_home.id},
+        )
+
+        coverage = node_runner._venue_pair_coverage(
+            strategy,
+            edges=[],
+            nodes={
+                "sxbet-home": SimpleNamespace(instrument=sxbet_home),
+                "sxbet-away": SimpleNamespace(instrument=sxbet_away),
+                "poly-home": SimpleNamespace(instrument=polymarket_home),
+            },
+            quotes={},
+            matched_node_ids=set(),
+            candidate_venue_pairs={},
+        )
+
+        assert set(coverage["edgeCounts"]) == {"POLYMARKET->SXBET", "SXBET->POLYMARKET"}
+        assert {item["venuePair"] for item in coverage["zeroCandidateVenuePairs"]} == {
+            "POLYMARKET->SXBET",
+            "SXBET->POLYMARKET",
+        }
+
+        strategy._config.execution_venue_mode = "same_venue"
+        same_venue_coverage = node_runner._venue_pair_coverage(
+            strategy,
+            edges=[],
+            nodes={
+                "sxbet-home": SimpleNamespace(instrument=sxbet_home),
+                "sxbet-away": SimpleNamespace(instrument=sxbet_away),
+                "poly-home": SimpleNamespace(instrument=polymarket_home),
+            },
+            quotes={},
+            matched_node_ids=set(),
+            candidate_venue_pairs={},
+        )
+
+        assert set(same_venue_coverage["edgeCounts"]) == {
+            "POLYMARKET->POLYMARKET",
+            "SXBET->SXBET",
+        }
+
     def test_venue_pair_coverage_infers_same_market_params_mismatch_from_samples(self):
         sxbet_instrument = _instrument(
             venue="SXBET",
