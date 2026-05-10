@@ -916,6 +916,47 @@ class TestBettingArbitrageNodeBuilder:
         assert any(call["filters"]["tag_id"] == "864" for call in list_calls)
         assert all(call["filters"]["order"] == "volume24hr" for call in list_calls)
 
+    def test_polymarket_gamma_discovery_prioritizes_tag_markets_before_events(self):
+        class Clock:
+            @staticmethod
+            def timestamp_ns() -> int:
+                return 123
+
+        provider = polymarket_providers.PolymarketInstrumentProvider(
+            client=Mock(),
+            clock=Clock(),
+            config=InstrumentProviderConfig(),
+        )
+        calls: list[tuple[str, int | None]] = []
+
+        async def fake_tag_markets(**kwargs):
+            calls.append(("tag", kwargs["max_results"]))
+            return 4
+
+        async def fake_event_markets(**kwargs):
+            calls.append(("event", kwargs["max_results"]))
+            return int(kwargs["max_results"] or 0)
+
+        async def fake_gamma_markets(**kwargs):
+            calls.append(("fallback", kwargs["max_results"]))
+            return 0
+
+        provider._load_filtered_sport_tag_gamma_markets = fake_tag_markets
+        provider._load_filtered_sports_event_markets = fake_event_markets
+        provider._load_filtered_gamma_markets = fake_gamma_markets
+
+        asyncio.run(
+            provider._load_markets_using_gamma(
+                {
+                    "is_active": True,
+                    "max_results": 10,
+                    "sports": ["soccer", "tennis"],
+                },
+            ),
+        )
+
+        assert calls == [("tag", 10), ("event", 6), ("fallback", 0)]
+
     def test_polymarket_provider_preserves_selected_token_metadata(self):
         class Clock:
             @staticmethod

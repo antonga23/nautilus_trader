@@ -132,6 +132,19 @@ def _market_unique_id(market: dict[str, Any]) -> str:
     return str(market.get("conditionId") or market.get("id") or market.get("slug") or "")
 
 
+def _market_has_event_metadata(market: dict[str, Any]) -> bool:
+    events = market.get("events")
+    if isinstance(events, list):
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            if event.get("title") or event.get("slug") or event.get("startDate"):
+                return True
+    return bool(
+        market.get("startDate") or market.get("startDateIso") or market.get("gameStartTime"),
+    )
+
+
 def _selected_sports_tag_groups(
     sports_metadata: list[Any],
     sports_filter: set[str],
@@ -384,7 +397,8 @@ class PolymarketInstrumentProvider(InstrumentProvider):
             f"filters={filters} sports={sorted(sports_filter)} max_results={max_results}",
         )
         loaded_condition_ids: set[str] = set()
-        loaded_markets = await self._load_filtered_sports_event_markets(
+        loaded_markets = await self._load_filtered_sport_tag_gamma_markets(
+            filters=filters,
             sports_filter=sports_filter,
             max_results=max_results,
             loaded_condition_ids=loaded_condition_ids,
@@ -393,8 +407,7 @@ class PolymarketInstrumentProvider(InstrumentProvider):
         remaining_results = None
         if max_results is not None:
             remaining_results = max(max_results - loaded_markets, 0)
-        loaded_markets += await self._load_filtered_sport_tag_gamma_markets(
-            filters=filters,
+        loaded_markets += await self._load_filtered_sports_event_markets(
             sports_filter=sports_filter,
             max_results=remaining_results if remaining_results is not None else max_results,
             loaded_condition_ids=loaded_condition_ids,
@@ -672,6 +685,8 @@ class PolymarketInstrumentProvider(InstrumentProvider):
                     sport_code=sport_code,
                     selected_tags=selected_tags,
                 )
+                if not _market_has_event_metadata(enriched_market):
+                    continue
                 if not _market_matches_sports_filter(enriched_market, {canonical_sport}):
                     continue
                 sport_markets.setdefault(market_id, enriched_market)
