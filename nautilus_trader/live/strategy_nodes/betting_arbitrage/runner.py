@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass
 from dataclasses import field
 from dataclasses import replace
@@ -1349,6 +1350,7 @@ def _runtime_latency_slo_status(
         fallback=_runtime_histogram_slo_status(
             histograms.get("fetch_latency_secs"),
             threshold_seconds=5.0,
+            ms_histogram=diagnostics.get("quote_fetch_latency"),
         ),
     )
     pair_skew = _runtime_slo_section_status(
@@ -1366,7 +1368,8 @@ def _runtime_latency_slo_status(
         "providerLatencyObserved": _latency_count(
             (histograms.get("fetch_latency_secs") if isinstance(histograms, dict) else {}),
         )
-        > 0,
+        > 0
+        or _latency_count(diagnostics.get("quote_fetch_latency")) > 0,
         "candidateDecisionSource": diagnostics.get("candidate_decision_source"),
     }
     statuses = [
@@ -1434,11 +1437,16 @@ def _runtime_histogram_slo_status(
     histogram: object,
     *,
     threshold_seconds: float,
+    ms_histogram: object | None = None,
 ) -> dict[str, object]:
     payload = histogram if isinstance(histogram, dict) else {}
     observations = int(payload.get("count") or 0)
     p95 = float(payload.get("p95") or 0.0)
     max_value = float(payload.get("max") or 0.0)
+    if observations <= 0 and isinstance(ms_histogram, dict):
+        observations = int(ms_histogram.get("count") or 0)
+        p95 = float(ms_histogram.get("p95_ms") or 0.0) / 1000.0
+        max_value = float(ms_histogram.get("max_ms") or 0.0) / 1000.0
     violations = observations if observations > 0 and max(p95, max_value) > threshold_seconds else 0
     status = "unknown" if observations <= 0 else "warn" if violations else "pass"
     return {
@@ -1482,7 +1490,10 @@ def _runtime_latency_diagnostic_warnings(
         warnings.append("missing_candidate_decision_latency")
     histograms = profitability.get("latency_histograms")
     histograms = histograms if isinstance(histograms, dict) else {}
-    if _latency_count(histograms.get("fetch_latency_secs")) == 0:
+    if (
+        _latency_count(histograms.get("fetch_latency_secs")) == 0
+        and _latency_count(diagnostics.get("quote_fetch_latency")) == 0
+    ):
         warnings.append("missing_provider_latency")
     return warnings
 
@@ -2085,6 +2096,8 @@ def _zero_pair_sample_blocker(samples: list[dict[str, object]], fallback: object
             continue
         if pattern_a.get("scope") != pattern_b.get("scope"):
             return CoverageBlockerReason.SCOPE_MISMATCH.value
+        if _semantic_pattern_subject(pattern_a) != _semantic_pattern_subject(pattern_b):
+            return CoverageBlockerReason.PROVIDER_SCOPE_MISMATCH.value
         if pattern_a.get("marketFamily") == pattern_b.get("marketFamily") and pattern_a.get(
             "paramsKey",
         ) != pattern_b.get("paramsKey"):
@@ -2171,14 +2184,52 @@ def _zero_pair_blocker_hint(
     }:
         return CoverageBlockerReason.FIXTURE_IDENTITY_MISMATCH.value
     if suspect_reason == "same_market_params_mismatch":
+        if _semantic_pattern_subject(pattern_a) != _semantic_pattern_subject(pattern_b):
+            return CoverageBlockerReason.PROVIDER_SCOPE_MISMATCH.value
         return CoverageBlockerReason.SAME_MARKET_PARAMS_MISMATCH.value
     if pattern_a.get("scope") != pattern_b.get("scope"):
         return CoverageBlockerReason.SCOPE_MISMATCH.value
+    if _semantic_pattern_subject(pattern_a) != _semantic_pattern_subject(pattern_b):
+        return CoverageBlockerReason.PROVIDER_SCOPE_MISMATCH.value
     if pattern_a.get("marketFamily") == pattern_b.get("marketFamily") and pattern_a.get(
         "paramsKey",
     ) != pattern_b.get("paramsKey"):
         return CoverageBlockerReason.SAME_MARKET_PARAMS_MISMATCH.value
     return ""
+
+
+def _semantic_pattern_subject(pattern: dict[str, object]) -> str:
+    params = _semantic_params_from_key(str(pattern.get("paramsKey") or ""))
+    explicit = str(params.get("subject") or params.get("market_subject") or "").strip().lower()
+    if explicit:
+        return explicit
+    raw_text = " ".join(
+        str(pattern.get(key) or "")
+        for key in ("rawMarketName", "rawMarketType", "marketType", "marketFamily")
+    ).lower()
+    if "corner" in raw_text:
+        return "corners"
+    if "card" in raw_text:
+        return "cards"
+    return ""
+
+
+def _semantic_params_from_key(params_key: str) -> dict[str, str]:
+    if not params_key or params_key == "[]":
+        return {}
+    try:
+        raw = json.loads(params_key)
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(raw, list):
+        return {}
+    params: dict[str, str] = {}
+    for item in raw:
+        if type(item) in {str, bytes} or not isinstance(item, Sequence) or len(item) != 2:
+            continue
+        key, value = item
+        params[str(key)] = str(value)
+    return params
 
 
 def _event_keys_for_venue(nodes: dict[Any, object], venue: str) -> set[str]:
