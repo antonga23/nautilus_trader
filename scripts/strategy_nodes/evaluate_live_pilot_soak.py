@@ -308,31 +308,10 @@ def _movement_summary(snapshots: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _latency_summary(snapshots: list[dict[str, Any]]) -> dict[str, Any]:
-    quote_age = []
-    pair_skew = []
-    for item in snapshots:
-        quote_age_p95 = _as_dict(_as_dict(item.get("latency")).get("quoteAge")).get("p95")
-        pair_skew_p95 = _as_dict(_as_dict(item.get("latency")).get("pairSkew")).get("p95")
-        if isinstance(quote_age_p95, int | float):
-            quote_age.append(float(quote_age_p95) * 1000)
-        if isinstance(pair_skew_p95, int | float):
-            pair_skew.append(float(pair_skew_p95) * 1000)
-    graph_scan = [
-        float(value)
-        for item in snapshots
-        if isinstance(
-            value := _as_dict(_as_dict(item.get("latency")).get("graphScan")).get("p95_ms"),
-            int | float,
-        )
-    ]
-    decision = [
-        float(value)
-        for item in snapshots
-        if isinstance(
-            value := _as_dict(_as_dict(item.get("latency")).get("candidateDecision")).get("p95_ms"),
-            int | float,
-        )
-    ]
+    quote_age = _latency_metric_series(snapshots, "quoteAge", "p95", scale=1000.0)
+    pair_skew = _latency_metric_series(snapshots, "pairSkew", "p95", scale=1000.0)
+    graph_scan = _latency_metric_series(snapshots, "graphScan", "p95_ms")
+    decision = _latency_metric_series(snapshots, "candidateDecision", "p95_ms")
     return {
         "quoteAgeP95": {
             **_series_stats(quote_age),
@@ -355,6 +334,21 @@ def _latency_summary(snapshots: list[dict[str, Any]]) -> dict[str, Any]:
             "status": "pass" if decision and max(decision) <= 250.0 else "unknown_or_fail",
         },
     }
+
+
+def _latency_metric_series(
+    snapshots: list[dict[str, Any]],
+    metric: str,
+    field: str,
+    *,
+    scale: float = 1.0,
+) -> list[float]:
+    values: list[float] = []
+    for item in snapshots:
+        value = _as_dict(_as_dict(item.get("latency")).get(metric)).get(field)
+        if isinstance(value, int | float):
+            values.append(float(value) * scale)
+    return values
 
 
 def _load_snapshots(paths: list[Path], *, top_limit: int) -> list[dict[str, Any]]:
