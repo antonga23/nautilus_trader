@@ -39,6 +39,7 @@ on:
         default: 'false'
 
 permissions:
+  actions: read
   contents: read
 
 env:
@@ -375,10 +376,83 @@ jobs:
               put artifacts/strategy-nodes diagnostics/strategy-nodes
           fi
 
+  check-deploy-runner:
+    name: check-ec2-deploy-runner
+    timeout-minutes: 5
+    needs: [validate-manifests]
+    runs-on: [self-hosted, linux, x64, cloudbet-market-maker, ci, gcp, ubuntu24]
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
+        with:
+          egress-policy: audit
+          allowed-endpoints: |
+            api.github.com:443
+
+      - name: Check EC2 deploy runner availability
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEPLOY_ENABLED: ${{ github.event.inputs.deploy_enabled || '' }}
+        run: |
+          set -euo pipefail
+
+          deploy_requested="false"
+          if [[ "${GITHUB_EVENT_NAME}" == "push" || "${DEPLOY_ENABLED}" == "true" ]]; then
+            deploy_requested="true"
+          fi
+
+          if [[ "$deploy_requested" != "true" ]]; then
+            echo "Deploy was not requested; EC2 runner availability is informational."
+            exit 0
+          fi
+
+          response="$(
+            curl -fsSL \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/runners?per_page=100"
+          )"
+          RUNNER_RESPONSE="$response" python3 - <<'PY'
+          import json
+          import os
+          import sys
+
+          payload = json.loads(os.environ["RUNNER_RESPONSE"])
+          required = {"self-hosted", "Linux", "X64", "ec2", "deploy", "trading"}
+          matching = []
+          for runner in payload.get("runners", []):
+              labels = {label.get("name") for label in runner.get("labels", [])}
+              if required.issubset(labels):
+                  matching.append(
+                      {
+                          "name": runner.get("name"),
+                          "status": runner.get("status"),
+                          "busy": runner.get("busy"),
+                      },
+                  )
+
+          if not matching:
+              print("No EC2 deploy runner with required labels was found.", file=sys.stderr)
+              sys.exit(1)
+
+          online = [runner for runner in matching if runner.get("status") == "online"]
+          print(f"matching_ec2_deploy_runners={matching}")
+          if not online:
+              print(
+                  "All EC2 deploy runners are offline; failing before image build to avoid "
+                  "a queued deploy job.",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+          PY
+
   build-strategy-node-image:
     name: build-strategy-node-image
     timeout-minutes: 45
-    needs: [validate-manifests]
+    needs: [validate-manifests, check-deploy-runner]
     runs-on: [self-hosted, linux, x64, cloudbet-market-maker, ci, gcp, ubuntu24]
     env:
       STRATEGY_NODE_GHCR_USERNAME: ${{ secrets.STRATEGY_NODE_GHCR_USERNAME }}
