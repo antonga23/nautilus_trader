@@ -17,7 +17,16 @@ def _load_module():
     return module
 
 
-def _write_status(tmp_path: Path, name: str, *, positive: int, near_band: int, near_margin: float):
+def _write_status(
+    tmp_path: Path,
+    name: str,
+    *,
+    positive: int,
+    near_band: int,
+    near_margin: float,
+    cross_venue: int = 0,
+    near_term_quoted: int = 0,
+):
     path = tmp_path / name
     path.write_text(
         json.dumps(
@@ -29,6 +38,20 @@ def _write_status(tmp_path: Path, name: str, *, positive: int, near_band: int, n
                     "positiveMarginCandidates": {"executionSafe": positive, "total": positive},
                     "thresholdMarginCandidates": {"executionSafe": positive, "total": positive},
                     "latencyDiagnostics": {"sloStatus": {"overall": "pass"}},
+                    "resolutionHorizon": {
+                        "eventsInsideHorizon": 3,
+                        "eventsOutsideHorizon": 1,
+                        "eventsUnknownResolution": 2,
+                        "quotedCandidatesInsideHorizon": near_term_quoted,
+                    },
+                    "venueCoverage": {
+                        "candidateCounts": {"POLYMARKET->SXBET": cross_venue},
+                        "crossVenueCandidateCount": cross_venue,
+                        "zeroPairBlockerCounts": {
+                            "fixture_identity_mismatch": 2,
+                            "no_semantic_edge": 1,
+                        },
+                    },
                     "candidateQuality": {
                         "marginBands": {
                             "positive": positive,
@@ -62,6 +85,43 @@ def test_runtime_margin_movement_report_detects_activity_and_movement(tmp_path: 
     ]
     assert summary["positiveCandidateSeries"] == [0, 1]
     assert summary["bestNearMissMarginSeries"] == [-0.031, -0.004]
+
+
+def test_runtime_margin_movement_report_tracks_cross_venue_and_horizon_movement(tmp_path: Path):
+    module = _load_module()
+    first = _write_status(
+        tmp_path,
+        "first.json",
+        positive=0,
+        near_band=0,
+        near_margin=-0.04,
+        cross_venue=0,
+        near_term_quoted=2,
+    )
+    second = _write_status(
+        tmp_path,
+        "second.json",
+        positive=0,
+        near_band=0,
+        near_margin=-0.04,
+        cross_venue=3,
+        near_term_quoted=5,
+    )
+
+    summary = module.summarize_snapshots([first, second])
+
+    assert summary["activityObserved"] is True
+    assert summary["movementReasons"] == [
+        "cross_venue_candidate_movement",
+        "near_term_candidate_movement",
+    ]
+    assert summary["crossVenueCandidateSeries"] == [0, 3]
+    assert summary["nearTermQuotedCandidateSeries"] == [2, 5]
+    assert summary["latestVenuePairCandidates"] == {"POLYMARKET->SXBET": 3}
+    assert summary["latestZeroCandidateBlockers"] == {
+        "fixture_identity_mismatch": 2,
+        "no_semantic_edge": 1,
+    }
 
 
 def test_runtime_margin_movement_report_can_fail_without_movement(tmp_path: Path):

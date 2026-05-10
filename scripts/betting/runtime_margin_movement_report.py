@@ -50,6 +50,37 @@ def _candidate_total(value: Any) -> int:
     return sum(_int(item) for item in payload.values())
 
 
+def _counter_payload(value: Any) -> dict[str, int]:
+    return {str(key): _int(item) for key, item in _as_dict(value).items()}
+
+
+def _venue_pair_candidate_counts(
+    runtime: dict[str, Any],
+    quality: dict[str, Any],
+) -> dict[str, int]:
+    coverage = _as_dict(runtime.get("venueCoverage"))
+    counts = _counter_payload(coverage.get("candidateCounts"))
+    if counts:
+        return counts
+    venue_pairs = _as_dict(quality.get("venuePairs"))
+    return {
+        str(pair): sum(_int(count) for count in _as_dict(bucket_counts).values())
+        for pair, bucket_counts in venue_pairs.items()
+    }
+
+
+def _cross_venue_candidate_count(runtime: dict[str, Any], quality: dict[str, Any]) -> int:
+    coverage = _as_dict(runtime.get("venueCoverage"))
+    value = coverage.get("crossVenueCandidateCount")
+    if isinstance(value, int):
+        return value
+    return sum(
+        count
+        for pair, count in _venue_pair_candidate_counts(runtime, quality).items()
+        if "->" in pair and pair.split("->", maxsplit=1)[0] != pair.split("->", maxsplit=1)[1]
+    )
+
+
 def _margin_value(candidate: dict[str, Any]) -> float | None:
     for key in (
         "profitMargin",
@@ -74,6 +105,8 @@ def _margin_value(candidate: dict[str, Any]) -> float | None:
 def _snapshot_summary(payload: dict[str, Any], *, source: str) -> dict[str, Any]:
     runtime = _as_dict(payload.get("runtimeProbe"))
     quality = _as_dict(runtime.get("candidateQuality"))
+    coverage = _as_dict(runtime.get("venueCoverage"))
+    horizon = _as_dict(runtime.get("resolutionHorizon"))
     margin_bands = _as_dict(quality.get("marginBands"))
     near_misses = [
         item for item in quality.get("topNegativeNearMisses") or [] if isinstance(item, dict)
@@ -91,6 +124,13 @@ def _snapshot_summary(payload: dict[str, Any], *, source: str) -> dict[str, Any]
         "quotedSemanticMatchInstruments": _int(runtime.get("quotedSemanticMatchInstruments")),
         "positiveCandidates": _candidate_total(runtime.get("positiveMarginCandidates")),
         "thresholdCandidates": _candidate_total(runtime.get("thresholdMarginCandidates")),
+        "crossVenueCandidates": _cross_venue_candidate_count(runtime, quality),
+        "venuePairCandidates": _venue_pair_candidate_counts(runtime, quality),
+        "zeroCandidateBlockers": _counter_payload(coverage.get("zeroPairBlockerCounts")),
+        "nearTermQuotedCandidates": _int(horizon.get("quotedCandidatesInsideHorizon")),
+        "insideHorizonEvents": _int(horizon.get("eventsInsideHorizon")),
+        "outsideHorizonEvents": _int(horizon.get("eventsOutsideHorizon")),
+        "unknownResolutionEvents": _int(horizon.get("eventsUnknownResolution")),
         "marginBands": {key: _int(margin_bands.get(key)) for key in ("positive", *NEAR_MISS_BANDS)},
         "nearMissCount": len(near_misses),
         "bestNearMissMargin": max(near_miss_margins) if near_miss_margins else None,
@@ -110,6 +150,10 @@ def summarize_snapshots(paths: list[Path]) -> dict[str, Any]:
     margin_band_series = [snapshot["marginBands"] for snapshot in snapshots]
     positive_series = [snapshot["positiveCandidates"] for snapshot in snapshots]
     threshold_series = [snapshot["thresholdCandidates"] for snapshot in snapshots]
+    cross_venue_candidate_series = [snapshot["crossVenueCandidates"] for snapshot in snapshots]
+    near_term_quoted_candidate_series = [
+        snapshot["nearTermQuotedCandidates"] for snapshot in snapshots
+    ]
     best_near_miss_series = [
         snapshot["bestNearMissMargin"]
         for snapshot in snapshots
@@ -119,12 +163,16 @@ def summarize_snapshots(paths: list[Path]) -> dict[str, Any]:
         len({json.dumps(item, sort_keys=True) for item in margin_band_series}) > 1
     )
     candidate_movement = len(set(positive_series)) > 1 or len(set(threshold_series)) > 1
+    cross_venue_candidate_movement = len(set(cross_venue_candidate_series)) > 1
+    near_term_candidate_movement = len(set(near_term_quoted_candidate_series)) > 1
     near_miss_movement = len(set(best_near_miss_series)) > 1
     any_activity = any(
         snapshot["quotedEdges"] > 0
         or snapshot["quotedSemanticMatchInstruments"] > 0
         or snapshot["positiveCandidates"] > 0
         or snapshot["thresholdCandidates"] > 0
+        or snapshot["crossVenueCandidates"] > 0
+        or snapshot["nearTermQuotedCandidates"] > 0
         or snapshot["nearMissCount"] > 0
         for snapshot in snapshots
     )
@@ -134,19 +182,33 @@ def summarize_snapshots(paths: list[Path]) -> dict[str, Any]:
         "firstSource": snapshots[0]["source"] if snapshots else None,
         "lastSource": snapshots[-1]["source"] if snapshots else None,
         "activityObserved": any_activity,
-        "movementDetected": margin_band_movement or candidate_movement or near_miss_movement,
+        "movementDetected": (
+            margin_band_movement
+            or candidate_movement
+            or cross_venue_candidate_movement
+            or near_term_candidate_movement
+            or near_miss_movement
+        ),
         "movementReasons": [
             reason
             for reason, present in (
                 ("margin_band_movement", margin_band_movement),
                 ("candidate_count_movement", candidate_movement),
+                ("cross_venue_candidate_movement", cross_venue_candidate_movement),
+                ("near_term_candidate_movement", near_term_candidate_movement),
                 ("near_miss_margin_movement", near_miss_movement),
             )
             if present
         ],
         "positiveCandidateSeries": positive_series,
         "thresholdCandidateSeries": threshold_series,
+        "crossVenueCandidateSeries": cross_venue_candidate_series,
+        "nearTermQuotedCandidateSeries": near_term_quoted_candidate_series,
         "bestNearMissMarginSeries": best_near_miss_series,
+        "latestZeroCandidateBlockers": (
+            snapshots[-1]["zeroCandidateBlockers"] if snapshots else {}
+        ),
+        "latestVenuePairCandidates": snapshots[-1]["venuePairCandidates"] if snapshots else {},
         "snapshots": snapshots,
     }
 
@@ -159,7 +221,11 @@ def format_summary(summary: dict[str, Any]) -> str:
         f"  movement_reasons={summary['movementReasons']}",
         f"  positive_series={summary['positiveCandidateSeries']}",
         f"  threshold_series={summary['thresholdCandidateSeries']}",
+        f"  cross_venue_series={summary['crossVenueCandidateSeries']}",
+        f"  near_term_quoted_series={summary['nearTermQuotedCandidateSeries']}",
         f"  best_near_miss_margin_series={summary['bestNearMissMarginSeries']}",
+        f"  latest_zero_candidate_blockers={summary['latestZeroCandidateBlockers']}",
+        f"  latest_venue_pair_candidates={summary['latestVenuePairCandidates']}",
     ]
     for snapshot in summary["snapshots"]:
         lines.append(
@@ -167,6 +233,8 @@ def format_summary(summary: dict[str, Any]) -> str:
             f"source={snapshot['source']} quoted_edges={snapshot['quotedEdges']} "
             f"quoted_semantic={snapshot['quotedSemanticMatchInstruments']} "
             f"positive={snapshot['positiveCandidates']} threshold={snapshot['thresholdCandidates']} "
+            f"cross_venue={snapshot['crossVenueCandidates']} "
+            f"near_term_quoted={snapshot['nearTermQuotedCandidates']} "
             f"near_misses={snapshot['nearMissCount']} bands={snapshot['marginBands']}",
         )
     return "\n".join(lines)
