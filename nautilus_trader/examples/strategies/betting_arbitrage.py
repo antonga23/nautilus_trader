@@ -22,6 +22,8 @@ from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 from dataclasses import replace
+from datetime import UTC
+from datetime import datetime
 from datetime import timedelta
 from decimal import Decimal
 import os
@@ -39,6 +41,8 @@ from nautilus_trader.adapters.betting.common.fees import normalize_venue_fee_rat
 from nautilus_trader.adapters.betting.common.odds import DeviggedBook
 from nautilus_trader.adapters.betting.common.odds import calculate_arbitrage_stakes
 from nautilus_trader.adapters.betting.common.odds import devig_probabilities
+from nautilus_trader.adapters.betting.fx import FxConversion
+from nautilus_trader.adapters.betting.fx import PortfolioCurrencyPolicy
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.betting.market_matcher import ArbitrageOpportunity
 from nautilus_trader.adapters.betting.market_matcher import MarketMatcher
@@ -72,6 +76,7 @@ VALID_MARKET_TIMINGS = frozenset({"all", "pre_market", "live"})
 VALID_QUOTE_FRESHNESS_PROFILES = frozenset({"pre_match", "live", "custom"})
 VALID_DEVIG_METHODS = frozenset({"auto", "proportional", "shin", "logarithmic"})
 VALID_EXECUTION_PRICE_CHANGE_POLICIES = frozenset({"none", "better", "all"})
+VALID_EXECUTION_VENUE_MODES = frozenset({"all", "cross_venue", "same_venue"})
 DEFAULT_ENABLED_VENUES = frozenset({"CLOUDBET", "SXBET", "10BET"})
 NANOSECONDS_PER_SECOND = 1_000_000_000
 INSTRUMENT_REFRESH_TIMER_NAME = "betting-arbitrage-instrument-refresh"
@@ -315,6 +320,7 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
     quote_max_pair_skew_secs: float | None = None
     quote_max_fetch_latency_secs: float | None = None
     live_quote_age_slo_secs: float = 5.0
+    max_resolution_horizon_hours: float | None = None
     instrument_refresh_interval_secs: float | None = None
     stale_quote_refresh_cooldown_secs: float | None = 60.0
     venue_taker_fee_rates: dict[str, Decimal] = {}
@@ -334,6 +340,12 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
     max_daily_loss: Decimal = Decimal(25)
     allow_same_venue_live_execution: bool = True
     allow_cross_currency_live_execution: bool = False
+    execution_venue_mode: str = "all"
+    portfolio_base_currency: str = "USD"
+    stablecoin_currencies: frozenset[str] = frozenset({"USD", "USDC", "USDT"})
+    stablecoin_haircut_bps: int = 10
+    fx_quote_max_age_secs: float = 30.0
+    configured_fx_rates: dict[str, Decimal] = {}
     execution_price_change_policy: str = "better"
     execution_max_retry_count: int = 1
     execution_retry_slippage_bps: int = 25
@@ -383,7 +395,19 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         opportunity_graph_engine = self.opportunity_graph_engine.strip().lower()
         quote_freshness_profile = self.quote_freshness_profile.strip().lower()
         devig_method, devig_reference_venues = self._normalize_devig_config()
+        execution_venue_mode = self.execution_venue_mode.strip().lower()
         execution_price_change_policy = self.execution_price_change_policy.strip().lower()
+        portfolio_base_currency = self.portfolio_base_currency.strip().upper() or "USD"
+        stablecoin_currencies = frozenset(
+            str(currency).strip().upper()
+            for currency in self.stablecoin_currencies
+            if str(currency).strip()
+        )
+        configured_fx_rates = {
+            str(pair).strip().upper(): Decimal(str(rate))
+            for pair, rate in self.configured_fx_rates.items()
+            if str(pair).strip()
+        }
 
         self._validate_filter_config(
             market_timing_filter=market_timing_filter,
@@ -391,7 +415,9 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
             opportunity_graph_engine=opportunity_graph_engine,
         )
         self._validate_live_execution_config(
+            execution_venue_mode=execution_venue_mode,
             execution_price_change_policy=execution_price_change_policy,
+            stablecoin_currencies=stablecoin_currencies,
         )
         self._validate_refresh_config()
 
@@ -444,10 +470,25 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
             "execution_price_change_policy",
             execution_price_change_policy,
         )
+        msgspec.structs.force_setattr(self, "execution_venue_mode", execution_venue_mode)
+        msgspec.structs.force_setattr(self, "portfolio_base_currency", portfolio_base_currency)
+        msgspec.structs.force_setattr(self, "stablecoin_currencies", stablecoin_currencies)
+        msgspec.structs.force_setattr(self, "configured_fx_rates", configured_fx_rates)
         msgspec.structs.force_setattr(
             self,
             "live_quote_age_slo_secs",
             float(self.live_quote_age_slo_secs),
+        )
+        if self.max_resolution_horizon_hours is not None:
+            msgspec.structs.force_setattr(
+                self,
+                "max_resolution_horizon_hours",
+                float(self.max_resolution_horizon_hours),
+            )
+        msgspec.structs.force_setattr(
+            self,
+            "fx_quote_max_age_secs",
+            float(self.fx_quote_max_age_secs),
         )
         if self.stale_quote_refresh_cooldown_secs is not None:
             msgspec.structs.force_setattr(
@@ -487,11 +528,26 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         if self.live_quote_age_slo_secs <= 0:
             msg = "live_quote_age_slo_secs must be positive"
             raise ValueError(msg)
+        if self.max_resolution_horizon_hours is not None and self.max_resolution_horizon_hours <= 0:
+            msg = "max_resolution_horizon_hours must be positive when set"
+            raise ValueError(msg)
         if self.semantic_unmatched_quote_probe_limit_per_venue < 0:
             msg = "semantic_unmatched_quote_probe_limit_per_venue must be non-negative"
             raise ValueError(msg)
 
-    def _validate_live_execution_config(self, *, execution_price_change_policy: str) -> None:
+    def _validate_live_execution_config(
+        self,
+        *,
+        execution_venue_mode: str,
+        execution_price_change_policy: str,
+        stablecoin_currencies: frozenset[str],
+    ) -> None:
+        if execution_venue_mode not in VALID_EXECUTION_VENUE_MODES:
+            msg = (
+                f"Invalid execution_venue_mode: {execution_venue_mode}. "
+                f"Must be one of {VALID_EXECUTION_VENUE_MODES}"
+            )
+            raise ValueError(msg)
         if execution_price_change_policy not in VALID_EXECUTION_PRICE_CHANGE_POLICIES:
             msg = (
                 f"Invalid execution_price_change_policy: {execution_price_change_policy}. "
@@ -512,6 +568,21 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
             raise ValueError(msg)
         if self.execution_retry_slippage_bps < 0:
             msg = "execution_retry_slippage_bps must be non-negative"
+            raise ValueError(msg)
+        self._validate_portfolio_currency_config(stablecoin_currencies)
+
+    def _validate_portfolio_currency_config(
+        self,
+        stablecoin_currencies: frozenset[str],
+    ) -> None:
+        if self.stablecoin_haircut_bps < 0:
+            msg = "stablecoin_haircut_bps must be non-negative"
+            raise ValueError(msg)
+        if self.fx_quote_max_age_secs <= 0:
+            msg = "fx_quote_max_age_secs must be positive"
+            raise ValueError(msg)
+        if not stablecoin_currencies:
+            msg = "stablecoin_currencies must not be empty"
             raise ValueError(msg)
 
     def _validate_refresh_config(self) -> None:
@@ -709,8 +780,12 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             f"value_diagnostics_enabled={self._config.value_diagnostics_enabled} "
             f"value_execution_enabled={self._config.value_execution_enabled} "
             f"min_value_edge={self._config.min_value_edge} "
+            f"max_resolution_horizon_hours={self._config.max_resolution_horizon_hours} "
             f"live_execution_armed={self._config.live_execution_armed} "
             f"live_execution_env_armed={self._live_execution_env_armed()} "
+            f"execution_venue_mode={self._config.execution_venue_mode} "
+            f"portfolio_base_currency={self._config.portfolio_base_currency} "
+            f"stablecoin_currencies={sorted(self._config.stablecoin_currencies)} "
             f"max_leg_stake={self._config.max_leg_stake} "
             f"max_daily_notional={self._config.max_daily_notional} "
             f"max_daily_loss={self._config.max_daily_loss} "
@@ -1233,7 +1308,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         execution-safe edges, then the broader topology set.
 
         """
-        ranked: list[tuple[tuple[int, int, int, int, str], Any]] = []
+        ranked: list[tuple[tuple[int, int, int, int, int, str], Any]] = []
         for node_id, edge_ids in self._opportunity_graph.edge_ids_by_node_id.items():
             if not edge_ids:
                 continue
@@ -1248,7 +1323,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self,
         node_id: str,
         edge_ids: set[str],
-    ) -> tuple[int, int, int, int, str]:
+    ) -> tuple[int, int, int, int, int, str]:
         nodes = self._opportunity_graph.nodes_by_id
         edges = self._opportunity_graph.edges_by_id
         node = nodes.get(node_id)
@@ -1275,11 +1350,28 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 cross_venue_edges += 1
         return (
             -cross_venue_edges,
+            self._resolution_horizon_priority(node),
             -execution_safe_edges,
             -same_venue_eligible_edges,
             -len(edge_ids),
             str(getattr(getattr(node, "instrument", None), "id", "")),
         )
+
+    def _resolution_horizon_priority(self, node: object | None) -> int:
+        horizon_hours = self._config.max_resolution_horizon_hours
+        if horizon_hours is None:
+            return 0
+        instrument = getattr(node, "instrument", None)
+        if instrument is None:
+            return 1
+        start_time = getattr(instrument, "parsed_start_time", lambda: None)()
+        if start_time is None:
+            return 1
+        now = datetime.now(tz=UTC)
+        if start_time < now:
+            return 0
+        horizon = now + timedelta(hours=float(horizon_hours))
+        return -1 if start_time <= horizon else 2
 
     @staticmethod
     def _node_venue_value(node: object | None) -> str:
@@ -1714,6 +1806,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
 
         source_node = self._opportunity_graph.nodes_by_id.get(source_node_id)
         target_node = self._opportunity_graph.nodes_by_id.get(target_node_id)
+        if not self._node_pair_matches_execution_venue_mode(source_node, target_node):
+            return False
 
         if not self._config.auto_execute and not self._config.opportunity_log_manual_instructions:
             log_profit_margin = profit_margin_raw
@@ -1771,6 +1865,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             odds_b_raw=odds_b_raw,
             match_type=match_type,
         )
+        if not self._candidate_matches_execution_venue_mode(opportunity):
+            return False
         if opportunity.profit_margin < self._config.min_profit_margin:
             return False
 
@@ -1907,6 +2003,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             odds_b_raw=odds_b_raw,
             match_type=match_type,
         )
+        if not self._candidate_matches_execution_venue_mode(opportunity):
+            return False
         if opportunity.profit_margin < self._config.min_profit_margin:
             return False
 
@@ -2266,6 +2364,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 opportunity = self.fee_adjusted_opportunity(opportunity)
 
             if opportunity and opportunity.profit_margin >= self._config.min_profit_margin:
+                if not self._candidate_matches_execution_venue_mode(opportunity):
+                    continue
                 self._raw_arbitrage_detections += 1
                 now_ns = self.clock.timestamp_ns()
                 diagnostics = self._build_arbitrage_diagnostics(
@@ -2298,6 +2398,12 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         decision_started_ns = time.perf_counter_ns()
         self._raw_arbitrage_detections += 1
         opportunity = self.fee_adjusted_opportunity(candidate.opportunity)
+        if not self._candidate_matches_execution_venue_mode(opportunity):
+            self._record_latency_sample(
+                self._candidate_decision_latency_ns,
+                time.perf_counter_ns() - decision_started_ns,
+            )
+            return
         if opportunity.profit_margin < self._config.min_profit_margin:
             self._record_latency_sample(
                 self._candidate_decision_latency_ns,
@@ -2807,11 +2913,56 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             f"raw_profit_margin={diagnostics.raw_profit_margin} "
             f"fee_adjusted_profit_margin={diagnostics.fee_adjusted_profit_margin} "
             f"fee_drag={diagnostics.fee_drag} "
+            f"{self._live_execution_fx_breakdown_text(diagnostics)} "
             f"basket_rebate_rate={diagnostics.basket_rebate_rate} "
             f"basket_boost_rate={diagnostics.basket_boost_rate} "
             f"raw_total_probability={diagnostics.raw_total_probability} "
             f"fee_adjusted_total_probability={diagnostics.fee_adjusted_total_probability} "
             f"max_total_stake={self._config.max_total_stake}"
+        )
+
+    def _live_execution_fx_breakdown_text(self, diagnostics: ArbitrageDiagnostics) -> str:
+        opportunity = ArbitrageOpportunity(
+            instrument_a=diagnostics.instrument_a,
+            instrument_b=diagnostics.instrument_b,
+            probability_a=Decimal(0),
+            probability_b=Decimal(0),
+            total_probability=Decimal(0),
+            profit_margin=diagnostics.fee_adjusted_profit_margin,
+            odds_a=diagnostics.odds_a,
+            odds_b=diagnostics.odds_b,
+            is_same_venue=diagnostics.venue_a == diagnostics.venue_b,
+            match_type=diagnostics.match_type,
+        )
+        conversion_a, conversion_b = self._live_execution_stake_conversions(
+            opportunity,
+            diagnostics.suggested_stake_a,
+            diagnostics.suggested_stake_b,
+        )
+        usd_a = conversion_a.converted_amount
+        usd_b = conversion_b.converted_amount
+        blockers = sorted(
+            {
+                str(conversion.blocker_reason)
+                for conversion in (conversion_a, conversion_b)
+                if conversion.blocker_reason
+            },
+        )
+        usd_total = usd_a + usd_b if usd_a is not None and usd_b is not None else None
+        fx_cost = (
+            usd_total - diagnostics.suggested_stake_a - diagnostics.suggested_stake_b
+            if usd_total is not None
+            else None
+        )
+        return (
+            f"fx_source_a={conversion_a.source} "
+            f"fx_source_b={conversion_b.source} "
+            f"fx_rate_a={conversion_a.rate} "
+            f"fx_rate_b={conversion_b.rate} "
+            f"fx_haircut_bps={max(conversion_a.haircut_bps, conversion_b.haircut_bps)} "
+            f"usd_equivalent_stake={usd_total} "
+            f"fx_cost={fx_cost} "
+            f"fx_blockers={blockers}"
         )
 
     # skipcq: PYL-R0913, PYL-R0914
@@ -3577,6 +3728,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 f" raw_profit_margin={diagnostics.raw_profit_margin} "
                 f"fee_adjusted_profit_margin={diagnostics.fee_adjusted_profit_margin} "
                 f"fee_drag={diagnostics.fee_drag} "
+                f"{self._live_execution_fx_breakdown_text(diagnostics)} "
                 f"basket_rebate_rate={diagnostics.basket_rebate_rate} "
                 f"basket_boost_rate={diagnostics.basket_boost_rate}"
                 f"{self._manual_execution_plan(diagnostics)}"
@@ -3712,7 +3864,11 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
 
         self._opportunities_executed += 1
         self._live_execution_submissions += 1
-        self._live_execution_notional_used += stake_a + stake_b
+        self._live_execution_notional_used += self._usd_equivalent_notional(
+            opportunity,
+            stake_a,
+            stake_b,
+        )
 
         order_ids = f"{order_a.client_order_id}, {order_b.client_order_id}"
         msg = f"Arbitrage orders submitted: {order_ids}"
@@ -3728,6 +3884,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
     ) -> list[str]:
         reasons: list[str] = []
         reasons.extend(self._live_execution_arming_block_reasons())
+        reasons.extend(self._live_execution_venue_mode_block_reasons(opportunity))
         reasons.extend(self._live_execution_cap_block_reasons(opportunity, stake_a, stake_b))
         reasons.extend(self._live_execution_currency_block_reasons(opportunity))
         reasons.extend(self._live_execution_semantic_block_reasons(opportunity))
@@ -3824,6 +3981,37 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             reasons.append(f"halted:{self._live_execution_halt_reason}")
         return reasons
 
+    def _live_execution_venue_mode_block_reasons(
+        self,
+        opportunity: ArbitrageOpportunity,
+    ) -> list[str]:
+        mode = self._config.execution_venue_mode
+        if mode == "cross_venue" and opportunity.is_same_venue:
+            return ["cross_venue_execution_only"]
+        if mode == "same_venue" and not opportunity.is_same_venue:
+            return ["same_venue_execution_only"]
+        return []
+
+    def _candidate_matches_execution_venue_mode(self, opportunity: ArbitrageOpportunity) -> bool:
+        return not self._live_execution_venue_mode_block_reasons(opportunity)
+
+    def _node_pair_matches_execution_venue_mode(
+        self,
+        source_node: object | None,
+        target_node: object | None,
+    ) -> bool:
+        mode = self._config.execution_venue_mode
+        if mode == "all" or source_node is None or target_node is None:
+            return True
+        source_venue = self._node_venue_value(source_node)
+        target_venue = self._node_venue_value(target_node)
+        if not source_venue or not target_venue:
+            return True
+        is_same_venue = source_venue == target_venue
+        return (mode == "same_venue" and is_same_venue) or (
+            mode == "cross_venue" and not is_same_venue
+        )
+
     def _live_execution_cap_block_reasons(
         self,
         opportunity: ArbitrageOpportunity,
@@ -3831,9 +4019,22 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         stake_b: Decimal,
     ) -> list[str]:
         reasons: list[str] = []
-        if stake_a > self._config.max_leg_stake or stake_b > self._config.max_leg_stake:
+        conversion_a, conversion_b = self._live_execution_stake_conversions(
+            opportunity,
+            stake_a,
+            stake_b,
+        )
+        conversion_blockers = [
+            conversion.blocker_reason
+            for conversion in (conversion_a, conversion_b)
+            if conversion.blocker_reason
+        ]
+        reasons.extend(str(blocker) for blocker in conversion_blockers)
+        leg_a = conversion_a.converted_amount or stake_a
+        leg_b = conversion_b.converted_amount or stake_b
+        if leg_a > self._config.max_leg_stake or leg_b > self._config.max_leg_stake:
             reasons.append("max_leg_stake_exceeded")
-        if self._live_execution_notional_used + stake_a + stake_b > self._config.max_daily_notional:
+        if self._live_execution_notional_used + leg_a + leg_b > self._config.max_daily_notional:
             reasons.append("max_daily_notional_exceeded")
         if self._live_execution_realized_loss >= self._config.max_daily_loss:
             reasons.append("max_daily_loss_exceeded")
@@ -3845,15 +4046,62 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self,
         opportunity: ArbitrageOpportunity,
     ) -> list[str]:
-        if opportunity.is_same_venue or self._config.allow_cross_currency_live_execution:
-            return []
         currency_a = self._instrument_currency_code(opportunity.instrument_a)
         currency_b = self._instrument_currency_code(opportunity.instrument_b)
         if not currency_a or not currency_b:
             return ["unknown_settlement_currency"]
+        if "PLAY_" in currency_a or "PLAY_" in currency_b:
+            return ["sandbox_currency_not_live_settlement"]
+        policy = self._portfolio_currency_policy()
+        stablecoins = policy.stablecoin_currencies
+        if currency_a in stablecoins and currency_b in stablecoins:
+            return []
+        if opportunity.is_same_venue or self._config.allow_cross_currency_live_execution:
+            return []
+        if (
+            policy.convert(Decimal(1), currency_a).is_available
+            and policy.convert(Decimal(1), currency_b).is_available
+        ):
+            return []
         if currency_a != currency_b:
             return ["cross_currency_live_execution_blocked"]
         return []
+
+    def _usd_equivalent_notional(
+        self,
+        opportunity: ArbitrageOpportunity,
+        stake_a: Decimal,
+        stake_b: Decimal,
+    ) -> Decimal:
+        conversion_a, conversion_b = self._live_execution_stake_conversions(
+            opportunity,
+            stake_a,
+            stake_b,
+        )
+        if conversion_a.converted_amount is None or conversion_b.converted_amount is None:
+            return stake_a + stake_b
+        return conversion_a.converted_amount + conversion_b.converted_amount
+
+    def _live_execution_stake_conversions(
+        self,
+        opportunity: ArbitrageOpportunity,
+        stake_a: Decimal,
+        stake_b: Decimal,
+    ) -> tuple[FxConversion, FxConversion]:
+        policy = self._portfolio_currency_policy()
+        return (
+            policy.convert(stake_a, self._instrument_currency_code(opportunity.instrument_a)),
+            policy.convert(stake_b, self._instrument_currency_code(opportunity.instrument_b)),
+        )
+
+    def _portfolio_currency_policy(self) -> PortfolioCurrencyPolicy:
+        return PortfolioCurrencyPolicy(
+            base_currency=self._config.portfolio_base_currency,
+            stablecoin_currencies=self._config.stablecoin_currencies,
+            stablecoin_haircut_bps=self._config.stablecoin_haircut_bps,
+            fx_quote_max_age_secs=self._config.fx_quote_max_age_secs,
+            static_fx_rates=self._config.configured_fx_rates,
+        )
 
     @staticmethod
     def _instrument_currency_code(instrument: Instrument) -> str:
@@ -4098,6 +4346,21 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             "value_diagnostics_enabled": self._config.value_diagnostics_enabled,
             "value_execution_enabled": self._config.value_execution_enabled,
             "min_value_edge": str(self._config.min_value_edge),
+            "max_resolution_horizon_hours": self._config.max_resolution_horizon_hours,
+            "execution_venue_mode": self._config.execution_venue_mode,
+            "portfolio_base_currency": self._config.portfolio_base_currency,
+            "stablecoin_currencies": sorted(self._config.stablecoin_currencies),
+            "stablecoin_haircut_bps": self._config.stablecoin_haircut_bps,
+            "fx_quote_max_age_secs": self._config.fx_quote_max_age_secs,
+            "configured_fx_rate_pairs": sorted(self._config.configured_fx_rates),
+            "fx_policy": {
+                "baseCurrency": self._config.portfolio_base_currency,
+                "stablecoinCurrencies": sorted(self._config.stablecoin_currencies),
+                "stablecoinHaircutBps": self._config.stablecoin_haircut_bps,
+                "maxAgeSeconds": self._config.fx_quote_max_age_secs,
+                "sourcePriority": ["hyperliquid", "pyth_hermes", "binance", "ecb_reference"],
+                "configuredFxRatePairs": sorted(self._config.configured_fx_rates),
+            },
             "opportunity_graph_nodes": self._opportunity_graph.node_count,
             "opportunity_graph_edges": self._opportunity_graph.edge_count,
             "opportunity_graph_quote_states": self._opportunity_graph.quote_state_count,
@@ -4138,6 +4401,11 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 "allow_cross_currency_live_execution": (
                     self._config.allow_cross_currency_live_execution
                 ),
+                "execution_venue_mode": self._config.execution_venue_mode,
+                "portfolio_base_currency": self._config.portfolio_base_currency,
+                "stablecoin_currencies": sorted(self._config.stablecoin_currencies),
+                "stablecoin_haircut_bps": self._config.stablecoin_haircut_bps,
+                "fx_quote_max_age_secs": self._config.fx_quote_max_age_secs,
                 "max_leg_stake": str(self._config.max_leg_stake),
                 "max_daily_notional": str(self._config.max_daily_notional),
                 "max_daily_loss": str(self._config.max_daily_loss),

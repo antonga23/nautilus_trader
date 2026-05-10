@@ -17,7 +17,6 @@ CryptoBettingInstrument - Instrument type for crypto sports betting markets.
 """
 
 import hashlib
-import re
 import time
 from datetime import UTC
 from datetime import datetime
@@ -28,6 +27,7 @@ from nautilus_trader.adapters.betting.common.constants import DEFAULT_PRICE_PREC
 from nautilus_trader.adapters.betting.common.constants import DEFAULT_SIZE_PRECISION
 from nautilus_trader.adapters.betting.common.enums import Outcome
 from nautilus_trader.adapters.betting.common.enums import SelectionSide
+from nautilus_trader.adapters.betting.fixture_identity import DEFAULT_FIXTURE_IDENTITY_RESOLVER
 from nautilus_trader.core.correctness import PyCondition
 from nautilus_trader.model.enums import AssetClass
 from nautilus_trader.model.enums import InstrumentClass
@@ -399,90 +399,14 @@ class CryptoBettingInstrument(Instrument):
 
     @staticmethod
     def _normalize_event_component(value: str | None) -> str:
-        if not value:
-            return ""
-        normalized = re.sub(r"[^a-z0-9]+", " ", value.lower())
-        return " ".join(normalized.split())
+        return DEFAULT_FIXTURE_IDENTITY_RESOLVER.normalize_event_component(value)
 
     @classmethod
     def _normalize_team_name(cls, name: str | None) -> str:
-        normalized = cls._normalize_event_component(name)
-        if not normalized:
-            return ""
-        ignored_tokens = {
-            "afc",
-            "cf",
-            "fc",
-            "sc",
-            "team",
-            "w",
-            "women",
-            "women" + "s",
-        }
-        alias_tokens = {
-            "ari": "arizona",
-            "atl": "atlanta",
-            "bal": "baltimore",
-            "bos": "boston",
-            "buf": "buffalo",
-            "car": "carolina",
-            "chi": "chicago",
-            "cin": "cincinnati",
-            "cle": "cleveland",
-            "col": "colorado",
-            "dal": "dallas",
-            "den": "denver",
-            "det": "detroit",
-            "gb": "green bay",
-            "hou": "houston",
-            "ind": "indianapolis",
-            "jax": "jacksonville",
-            "kc": "kansas city",
-            "la": "los angeles",
-            "lac": "los angeles",
-            "lar": "los angeles",
-            "lv": "las vegas",
-            "mia": "miami",
-            "min": "minnesota",
-            "ne": "new england",
-            "no": "new orleans",
-            "ny": "new york",
-            "nyc": "new york",
-            "nyg": "new york",
-            "nyj": "new york",
-            "oak": "oakland",
-            "phi": "philadelphia",
-            "phx": "phoenix",
-            "pit": "pittsburgh",
-            "sd": "san diego",
-            "sf": "san francisco",
-            "sea": "seattle",
-            "stl": "st louis",
-            "tb": "tampa bay",
-            "ten": "tennessee",
-            "was": "washington",
-            "wsh": "washington",
-        }
-        tokens: list[str] = []
-        for token in normalized.split():
-            if token in ignored_tokens:
-                continue
-            tokens.extend(alias_tokens.get(token, token).split())
-        return " ".join(tokens)
+        return DEFAULT_FIXTURE_IDENTITY_RESOLVER.normalize_team_name(name)
 
     def _team_key(self) -> tuple[str, ...]:
-        participants = sorted(
-            {
-                self._normalize_team_name(self.home_name),
-                self._normalize_team_name(self.away_name),
-            }
-            - {""},
-        )
-        if participants:
-            return tuple(participants)
-
-        normalized_event = self._normalize_event_component(self.event_name)
-        return (normalized_event,) if normalized_event else ()
+        return DEFAULT_FIXTURE_IDENTITY_RESOLVER.team_key(self)
 
     def _parsed_start_time(self) -> datetime | None:
         if not self.start_time:
@@ -505,11 +429,16 @@ class CryptoBettingInstrument(Instrument):
         return self._parsed_start_time()
 
     def event_key(self, include_start_time: bool = True) -> str:
-        parts = [self._normalize_event_component(self.sport_name), *self._team_key()]
-        start_time = self.parsed_start_time()
-        if include_start_time and start_time is not None:
-            parts.append(start_time.strftime("%Y-%m-%dT%H"))
-        return ":".join(part for part in parts if part)
+        return DEFAULT_FIXTURE_IDENTITY_RESOLVER.event_key(
+            self,
+            include_start_time=include_start_time,
+        )
+
+    def event_alias_keys(self, include_start_time: bool = False) -> tuple[str, ...]:
+        return DEFAULT_FIXTURE_IDENTITY_RESOLVER.event_alias_keys(
+            self,
+            include_start_time=include_start_time,
+        )
 
     def selection_key(self) -> str:
         outcome = Outcome.from_string(self.outcome)
@@ -536,23 +465,7 @@ class CryptoBettingInstrument(Instrument):
             True if both instruments are for the same event.
 
         """
-        if self.venue_name == other.venue_name and self.event_id == other.event_id:
-            return True
-
-        if self._normalize_event_component(self.sport_name) != self._normalize_event_component(
-            other.sport_name,
-        ):
-            return False
-
-        if self._team_key() != other._team_key():
-            return False
-
-        self_start = self.parsed_start_time()
-        other_start = other.parsed_start_time()
-        if self_start is None or other_start is None:
-            return True
-
-        return abs((self_start - other_start).total_seconds()) <= 6 * 60 * 60
+        return DEFAULT_FIXTURE_IDENTITY_RESOLVER.resolve(self, other).same_fixture
 
     def matches_market(self, other: "CryptoBettingInstrument") -> bool:
         """

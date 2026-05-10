@@ -5,6 +5,9 @@ from collections import Counter
 from dataclasses import dataclass
 from dataclasses import field
 from dataclasses import replace
+from datetime import UTC
+from datetime import datetime
+from datetime import timedelta
 from decimal import Decimal
 import json
 import threading
@@ -12,6 +15,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from nautilus_trader.adapters.betting.fixture_identity import DEFAULT_FIXTURE_IDENTITY_RESOLVER
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.betting.market_matcher import ArbitrageOpportunity
 from nautilus_trader.adapters.betting.semantics import CoverageBlockerReason
@@ -981,7 +985,14 @@ def _collect_runtime_probe_payload(
             "latencyDiagnostics": latency_diagnostics,
             "semanticDiagnostics": semantic_diagnostics,
             "providerQuotePollStats": stats.get("provider_quote_poll_stats", {}),
+            "fxPolicy": stats.get("fx_policy", {}),
             "venueCoverage": venue_coverage,
+            "resolutionHorizon": _resolution_horizon_payload(
+                stats,
+                nodes={},
+                quotes={},
+                edges=[],
+            ),
             "sampleCandidates": [],
             "negativeNearMisses": [],
         }
@@ -1155,7 +1166,14 @@ def _collect_runtime_probe_payload(
         "latencyDiagnostics": latency_diagnostics,
         "providerQuotePollStats": stats.get("provider_quote_poll_stats", {}),
         "semanticDiagnostics": semantic_diagnostics,
+        "fxPolicy": stats.get("fx_policy", {}),
         "venueCoverage": venue_coverage,
+        "resolutionHorizon": _resolution_horizon_payload(
+            stats,
+            nodes=snapshot["nodes"],
+            quotes=snapshot["quotes"],
+            edges=snapshot["edges"],
+        ),
         "sampleCandidates": profitability["sample_candidates"],
         "negativeNearMisses": profitability["negative_near_misses"],
     }
@@ -1178,6 +1196,111 @@ def _instrument_refresh_payload(stats: dict[str, object]) -> dict[str, object]:
         "venues": stats.get("instrument_refresh_by_venue", {}),
         "reconcileLatency": latency_diagnostics.get("instrument_refresh_reconcile", {}),
     }
+
+
+def _resolution_horizon_payload(
+    stats: dict[str, object],
+    *,
+    nodes: dict[Any, object],
+    quotes: dict[Any, object],
+    edges: list[object],
+) -> dict[str, object]:
+    horizon_hours = stats.get("max_resolution_horizon_hours")
+    if horizon_hours is None:
+        return _empty_resolution_horizon_payload()
+    try:
+        horizon = timedelta(hours=float(horizon_hours))
+    except (TypeError, ValueError):
+        horizon = timedelta(hours=48)
+    now = datetime.now(tz=UTC)
+    state_by_node: dict[Any, str] = {}
+    samples: dict[str, list[str]] = {"inside": [], "outside": [], "unknown": []}
+    event_keys_by_state: dict[str, set[str]] = {
+        "inside": set(),
+        "outside": set(),
+        "unknown": set(),
+    }
+    for node_id, node in nodes.items():
+        instrument = getattr(node, "instrument", None)
+        state = _resolution_horizon_state(instrument, now=now, horizon=horizon)
+        state_by_node[node_id] = state
+        event_key = _canonical_probe_event_key_no_time(node)
+        if event_key:
+            event_keys_by_state[state].add(event_key)
+            if len(samples[state]) < 5:
+                samples[state].append(event_key)
+    quoted_candidates_inside = 0
+    blocked_due_horizon = 0
+    for edge in edges:
+        source = getattr(edge, "source_node_id", None)
+        target = getattr(edge, "target_node_id", None)
+        if source not in quotes or target not in quotes:
+            continue
+        states = {state_by_node.get(source, "unknown"), state_by_node.get(target, "unknown")}
+        if states == {"inside"}:
+            quoted_candidates_inside += 1
+        elif "outside" in states:
+            blocked_due_horizon += 1
+    return {
+        "enabled": True,
+        "maxResolutionHorizonHours": float(horizon_hours),
+        "eventsInsideHorizon": len(event_keys_by_state["inside"]),
+        "eventsOutsideHorizon": len(event_keys_by_state["outside"]),
+        "unknownResolutionEvents": len(event_keys_by_state["unknown"]),
+        "quotedCandidatesInsideHorizon": quoted_candidates_inside,
+        "blockedCandidatesDueHorizon": blocked_due_horizon,
+        "insideHorizonEventSamples": samples["inside"],
+        "outsideHorizonEventSamples": samples["outside"],
+        "unknownResolutionEventSamples": samples["unknown"],
+    }
+
+
+def _empty_resolution_horizon_payload() -> dict[str, object]:
+    return {
+        "enabled": False,
+        "maxResolutionHorizonHours": None,
+        "eventsInsideHorizon": 0,
+        "eventsOutsideHorizon": 0,
+        "unknownResolutionEvents": 0,
+        "quotedCandidatesInsideHorizon": 0,
+        "blockedCandidatesDueHorizon": 0,
+        "insideHorizonEventSamples": [],
+        "outsideHorizonEventSamples": [],
+        "unknownResolutionEventSamples": [],
+    }
+
+
+def _resolution_horizon_state(
+    instrument: object | None,
+    *,
+    now: datetime,
+    horizon: timedelta,
+) -> str:
+    start_time = _probe_parsed_start_time(instrument)
+    if start_time is None:
+        return "unknown"
+    return "inside" if start_time <= now + horizon else "outside"
+
+
+def _probe_parsed_start_time(instrument: object | None) -> datetime | None:
+    parser = getattr(instrument, "parsed_start_time", None)
+    if callable(parser):
+        try:
+            parsed = parser()
+        except (AttributeError, TypeError, ValueError):
+            parsed = None
+        if isinstance(parsed, datetime):
+            return (
+                parsed.astimezone(UTC) if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+            )
+    start_time = getattr(instrument, "start_time", None)
+    if not start_time:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(start_time))
+    except ValueError:
+        return None
+    return parsed.astimezone(UTC) if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
 def _runtime_latency_diagnostics(
@@ -1895,6 +2018,7 @@ def _zero_pair_sample_blocker(samples: list[dict[str, object]], fallback: object
 def _zero_pair_sample_payload(strategy, source_node, target_node) -> dict[str, object]:
     instrument_a = source_node.instrument
     instrument_b = target_node.instrument
+    fixture_proof = DEFAULT_FIXTURE_IDENTITY_RESOLVER.resolve(instrument_a, instrument_b)
     pattern_a = _probe_pattern_payload(source_node)
     pattern_b = _probe_pattern_payload(target_node)
     matcher_suspect, suspect_reason = _strategy_matcher_suspect_reason(
@@ -1927,6 +2051,16 @@ def _zero_pair_sample_payload(strategy, source_node, target_node) -> dict[str, o
         "matcherSuspectReason": suspect_reason,
         "fixtureSuspect": fixture_suspect,
         "fixtureSuspectReason": fixture_suspect_reason,
+        "fixtureIdentityProof": {
+            "sameFixture": fixture_proof.same_fixture,
+            "reason": fixture_proof.reason,
+            "confidence": fixture_proof.confidence,
+            "aliasHits": list(fixture_proof.alias_hits),
+            "matchedFields": list(fixture_proof.matched_fields),
+            "startTimeDeltaSeconds": fixture_proof.start_time_delta_secs,
+            "ambiguous": fixture_proof.ambiguous,
+            "blockerReason": fixture_proof.blocker_reason,
+        },
         "blockerHint": blocker_hint,
     }
 

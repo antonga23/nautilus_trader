@@ -208,8 +208,7 @@ async def _refresh_corpus(args: argparse.Namespace) -> None:
         )
         await client.connect()
         try:
-            from_timestamp = args.from_timestamp or int(time.time())
-            to_timestamp = args.to_timestamp or from_timestamp + args.initial_window_seconds
+            from_timestamp, to_timestamp = _refresh_corpus_time_window(args)
             manifests.append(
                 await ingestor.refresh_cloudbet(
                     client,
@@ -236,8 +235,7 @@ async def _refresh_corpus(args: argparse.Namespace) -> None:
     if args.provider in {"sxbet", "all"}:
         _emit_phase_marker("refresh_corpus_provider_start", provider="SXBET")
         _require_provider_credentials("sxbet")
-        from_timestamp = args.from_timestamp
-        to_timestamp = args.to_timestamp
+        from_timestamp, to_timestamp = _refresh_corpus_time_window(args)
         sxbet_client = SXBetHttpClient(api_key=os.getenv("SXBET_API_KEY"))
         await sxbet_client.connect()
         try:
@@ -246,8 +244,8 @@ async def _refresh_corpus(args: argparse.Namespace) -> None:
                     sxbet_client,
                     sports=args.sports or None,
                     sport_ids=args.sport_ids or None,
-                    from_time=args.from_timestamp,
-                    to_time=args.to_timestamp,
+                    from_time=from_timestamp,
+                    to_time=to_timestamp,
                     instrument_limit=args.instrument_limit,
                     market_discovery_limit=args.market_discovery_limit,
                     prefer_liquid_markets=args.prefer_liquid_markets,
@@ -284,6 +282,17 @@ async def _refresh_corpus(args: argparse.Namespace) -> None:
         ),
     )
     print(json.dumps([_serialize_manifest(manifest) for manifest in manifests], indent=2))
+
+
+def _refresh_corpus_time_window(args: argparse.Namespace) -> tuple[int, int]:
+    from_timestamp = args.from_timestamp or int(time.time())
+    if args.to_timestamp is not None:
+        return from_timestamp, args.to_timestamp
+    window_seconds = args.initial_window_seconds
+    if args.max_resolution_horizon_hours is not None:
+        horizon_seconds = int(float(args.max_resolution_horizon_hours) * 60 * 60)
+        window_seconds = min(window_seconds, horizon_seconds)
+    return from_timestamp, from_timestamp + window_seconds
 
 
 def _mine_candidates(args: argparse.Namespace) -> None:
@@ -739,7 +748,7 @@ def _coverage_report_int(value: Any) -> int:
 
 
 def _coverage_report_str_list(value: Any) -> list[str]:
-    if not isinstance(value, (list, tuple, set)):
+    if not isinstance(value, list | tuple | set):
         return []
     return sorted({str(item) for item in value if str(item).strip()})
 
@@ -1237,6 +1246,7 @@ def _parse_args() -> argparse.Namespace:
     refresh.add_argument("--from-timestamp", type=int)
     refresh.add_argument("--to-timestamp", type=int)
     refresh.add_argument("--initial-window-seconds", type=int, default=24 * 60 * 60)
+    refresh.add_argument("--max-resolution-horizon-hours", type=float)
     refresh.add_argument("--no-adaptive-cloudbet-window", action="store_true")
     refresh.add_argument("--max-window-days", type=int, default=7)
     refresh.add_argument("--min-events-per-sport", type=int, default=1)

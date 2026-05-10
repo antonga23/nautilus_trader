@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 
 const HANDICAP_TOLERANCE: f64 = 0.01;
 const PROFIT_MARGIN_EPSILON: f64 = 1e-12;
-const SIX_HOURS_NS: i64 = 6 * 60 * 60 * 1_000_000_000;
+const EVENT_START_TOLERANCE_NS: i64 = 2 * 60 * 60 * 1_000_000_000;
 
 type CandidateSnapshot = (String, String, String, f64, i64, i64);
 type FastCandidateSnapshot = (
@@ -58,6 +58,7 @@ struct NodeSnapshot {
     venue: String,
     event_id: String,
     event_key_no_time: String,
+    event_alias_keys: Vec<String>,
     market_name: String,
     market_type: String,
     outcome: String,
@@ -80,11 +81,19 @@ impl NodeSnapshot {
         let market_type = get_string(dict, "market_type")?;
         let outcome = get_string(dict, "outcome")?;
         let params = get_string(dict, "params")?;
+        let event_key_no_time = get_string(dict, "event_key_no_time")?;
+        let mut event_alias_keys = get_string_vec(dict, "event_alias_keys")?;
+        if event_alias_keys.is_empty() {
+            event_alias_keys.push(event_key_no_time.clone());
+        }
+        event_alias_keys.sort_unstable();
+        event_alias_keys.dedup();
         Ok(Self {
             node_id: get_string(dict, "node_id")?,
             venue: get_string(dict, "venue")?,
             event_id: get_string(dict, "event_id")?,
-            event_key_no_time: get_string(dict, "event_key_no_time")?,
+            event_key_no_time,
+            event_alias_keys,
             market_name: get_string(dict, "market_name")?,
             market_type: market_type.clone(),
             outcome: outcome.clone(),
@@ -705,10 +714,12 @@ impl OpportunityGraphCore {
         let mut node_id = String::default();
         node_id.clone_from(&node.node_id);
         self.edge_ids_by_node_id.entry(node_id.clone()).or_default();
-        self.event_buckets
-            .entry(node.event_key_no_time.clone())
-            .or_default()
-            .push(node_id.clone());
+        for event_key in event_bucket_keys_for_node(&node) {
+            self.event_buckets
+                .entry(event_key)
+                .or_default()
+                .push(node_id.clone());
+        }
         self.venue_event_buckets
             .entry(format!("{}|{}", node.venue, node.event_id))
             .or_default()
@@ -757,12 +768,12 @@ impl OpportunityGraphCore {
         let Some(node) = self.nodes_by_id.get(node_id) else {
             return;
         };
-        let mut event_key_no_time = String::default();
-        event_key_no_time.clone_from(&node.event_key_no_time);
         let venue_event_key = format!("{}|{}", node.venue, node.event_id);
 
-        if let Some(bucket) = self.event_buckets.get(&event_key_no_time).cloned() {
-            self.connect_node_to_bucket(node_id, &bucket, &mut visited_pairs);
+        for event_key in event_bucket_keys_for_node(node) {
+            if let Some(bucket) = self.event_buckets.get(&event_key).cloned() {
+                self.connect_node_to_bucket(node_id, &bucket, &mut visited_pairs);
+            }
         }
         if let Some(bucket) = self.venue_event_buckets.get(&venue_event_key).cloned() {
             self.connect_node_to_bucket(node_id, &bucket, &mut visited_pairs);
@@ -774,12 +785,12 @@ impl OpportunityGraphCore {
         let Some(node) = self.nodes_by_id.get(node_id) else {
             return;
         };
-        let mut event_key_no_time = String::default();
-        event_key_no_time.clone_from(&node.event_key_no_time);
         let venue_event_key = format!("{}|{}", node.venue, node.event_id);
 
-        if let Some(bucket) = self.event_buckets.get(&event_key_no_time).cloned() {
-            self.connect_node_to_semantic_bucket(node_id, &bucket, &mut visited_pairs);
+        for event_key in event_bucket_keys_for_node(node) {
+            if let Some(bucket) = self.event_buckets.get(&event_key).cloned() {
+                self.connect_node_to_semantic_bucket(node_id, &bucket, &mut visited_pairs);
+            }
         }
         if let Some(bucket) = self.venue_event_buckets.get(&venue_event_key).cloned() {
             self.connect_node_to_semantic_bucket(node_id, &bucket, &mut visited_pairs);
@@ -1126,12 +1137,12 @@ impl OpportunityGraphCore {
             }
             return is_trusted_same_venue_event_id_mismatch(source, target);
         }
-        if source.event_key_no_time != target.event_key_no_time {
+        if !event_aliases_overlap(source, target) {
             return false;
         }
         match (source.start_time_ns, target.start_time_ns) {
             (Some(source_start), Some(target_start)) => {
-                (source_start - target_start).abs() <= SIX_HOURS_NS
+                (source_start - target_start).abs() <= EVENT_START_TOLERANCE_NS
             }
             _ => self.start_time_cluster_count_for_pair(source, target) == 1,
         }
@@ -1142,7 +1153,10 @@ impl OpportunityGraphCore {
         source: &NodeSnapshot,
         target: &NodeSnapshot,
     ) -> usize {
-        let Some(bucket) = self.event_buckets.get(&source.event_key_no_time) else {
+        let Some(shared_event_key) = shared_event_alias_key(source, target) else {
+            return 0;
+        };
+        let Some(bucket) = self.event_buckets.get(shared_event_key) else {
             return 0;
         };
         let mut starts: Vec<i64> = bucket
@@ -1163,7 +1177,7 @@ impl OpportunityGraphCore {
 
         let mut clusters = 1;
         for start in starts.into_iter().skip(1) {
-            if start - cluster_anchor > SIX_HOURS_NS {
+            if start - cluster_anchor > EVENT_START_TOLERANCE_NS {
                 clusters += 1;
                 cluster_anchor = start;
             }
@@ -1434,7 +1448,7 @@ fn is_trusted_same_venue_event_id_mismatch(source: &NodeSnapshot, target: &NodeS
     if source.venue != target.venue || source.venue != "SXBET" {
         return false;
     }
-    if source.event_key_no_time != target.event_key_no_time {
+    if !event_aliases_overlap(source, target) {
         return false;
     }
     if source.market_name != target.market_name || source.params != target.params {
@@ -1447,6 +1461,40 @@ fn is_trusted_same_venue_event_id_mismatch(source: &NodeSnapshot, target: &NodeS
         return false;
     }
     is_opposite_outcome(source, target)
+}
+
+fn event_bucket_keys_for_node(node: &NodeSnapshot) -> Vec<String> {
+    let mut keys = node.event_alias_keys.clone();
+    keys.push(node.event_key_no_time.clone());
+    keys.retain(|key| !key.is_empty());
+    keys.sort_unstable();
+    keys.dedup();
+    keys
+}
+
+fn event_aliases_overlap(source: &NodeSnapshot, target: &NodeSnapshot) -> bool {
+    shared_event_alias_key(source, target).is_some()
+}
+
+fn shared_event_alias_key<'a>(
+    source: &'a NodeSnapshot,
+    target: &'a NodeSnapshot,
+) -> Option<&'a str> {
+    if source.event_key_no_time == target.event_key_no_time {
+        return Some(source.event_key_no_time.as_str());
+    }
+    let target_aliases: HashSet<&str> = target
+        .event_alias_keys
+        .iter()
+        .map(String::as_str)
+        .chain(std::iter::once(target.event_key_no_time.as_str()))
+        .collect();
+    source
+        .event_alias_keys
+        .iter()
+        .map(String::as_str)
+        .chain(std::iter::once(source.event_key_no_time.as_str()))
+        .find(|key| target_aliases.contains(key))
 }
 
 fn is_opposite_outcome(source: &NodeSnapshot, target: &NodeSnapshot) -> bool {
@@ -1597,6 +1645,7 @@ mod tests {
             venue: venue.to_string(),
             event_id: event_id.to_string(),
             event_key_no_time: "soccer:team a:team b".to_string(),
+            event_alias_keys: vec!["soccer:team a:team b".to_string()],
             market_name: market_name.to_string(),
             market_type: market_type.to_string(),
             outcome: outcome.to_string(),
@@ -1620,6 +1669,8 @@ mod tests {
         dict.set_item("venue", &node.venue).unwrap();
         dict.set_item("event_id", &node.event_id).unwrap();
         dict.set_item("event_key_no_time", &node.event_key_no_time)
+            .unwrap();
+        dict.set_item("event_alias_keys", &node.event_alias_keys)
             .unwrap();
         dict.set_item("market_name", &node.market_name).unwrap();
         dict.set_item("market_type", &node.market_type).unwrap();
@@ -2244,7 +2295,7 @@ mod tests {
         early.start_time_ns = Some(1_000);
         let mut late = node("late", "under");
         late.event_id = "event-2".to_string();
-        late.start_time_ns = Some(SIX_HOURS_NS + 2_000);
+        late.start_time_ns = Some(EVENT_START_TOLERANCE_NS + 2_000);
         let mut missing = node_with(
             "missing",
             "BLACKBET",
@@ -2270,6 +2321,40 @@ mod tests {
     }
 
     #[rstest]
+    fn event_matching_uses_alias_keys_for_cross_venue_name_drift() {
+        let mut source = node_with(
+            "cloudbet",
+            "CLOUDBET",
+            "event-1",
+            "Moneyline",
+            "match_odds",
+            "home",
+        );
+        source.event_key_no_time = "basketball:cleveland:minnesota".to_string();
+        source.event_alias_keys = vec![source.event_key_no_time.clone()];
+        source.semantic_sport = "basketball".to_string();
+
+        let mut target = node_with(
+            "sxbet",
+            "SXBET",
+            "event-2",
+            "Moneyline",
+            "match_odds",
+            "away",
+        );
+        target.event_key_no_time = "basketball:cleveland bears:minnesota wolves".to_string();
+        target.event_alias_keys = vec![
+            target.event_key_no_time.clone(),
+            "basketball:cleveland:minnesota".to_string(),
+        ];
+        target.semantic_sport = "basketball".to_string();
+
+        let core = OpportunityGraphCore::new(true, 0.5);
+
+        assert!(core.is_event_match(&source, &target));
+    }
+
+    #[rstest]
     fn event_matching_rejects_distinct_keys_and_empty_start_clusters() {
         let mut core = OpportunityGraphCore::new(true, 0.5);
         let source = node("a", "over");
@@ -2282,6 +2367,7 @@ mod tests {
             "under",
         );
         target.event_key_no_time = "soccer:team c:team d".to_string();
+        target.event_alias_keys = vec![target.event_key_no_time.clone()];
 
         assert!(!core.is_event_match(&source, &target));
         assert_eq!(core.start_time_cluster_count_for_pair(&source, &target), 0);
@@ -2289,6 +2375,7 @@ mod tests {
         target
             .event_key_no_time
             .clone_from(&source.event_key_no_time);
+        target.event_alias_keys = vec![target.event_key_no_time.clone()];
         target.start_time_ns = None;
         let mut missing_source = source.clone();
         missing_source.start_time_ns = None;
