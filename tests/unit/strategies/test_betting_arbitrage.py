@@ -12,6 +12,9 @@ Strategy regression tests for the betting arbitrage fast-path integration.
 """
 
 from decimal import Decimal
+from datetime import UTC
+from datetime import datetime
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -2100,6 +2103,23 @@ class TestBettingArbitrageStrategy:  # skipcq
 
         ensure(subscribed == 2)
         ensure(quoted_ids == {cloudbet_cross.id, polymarket_cross.id})
+
+    def test_resolution_horizon_priority_demotes_stale_past_fixtures(self) -> None:  # skipcq
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(max_resolution_horizon_hours=48.0),
+        )
+        now = datetime.now(tz=UTC)
+
+        def node_for(start_time):
+            return SimpleNamespace(
+                instrument=SimpleNamespace(parsed_start_time=lambda: start_time),
+            )
+
+        ensure(strategy._resolution_horizon_priority(node_for(now + timedelta(hours=2))) == -1)
+        ensure(strategy._resolution_horizon_priority(node_for(now - timedelta(hours=1))) == 0)
+        ensure(strategy._resolution_horizon_priority(node_for(None)) == 1)
+        ensure(strategy._resolution_horizon_priority(node_for(now + timedelta(days=5))) == 2)
+        ensure(strategy._resolution_horizon_priority(node_for(now - timedelta(days=2))) == 3)
 
     def test_on_start_skips_subscription_when_cache_is_empty(self, default_config):  # skipcq
         strategy = BettingArbitrageStrategy(config=default_config)
