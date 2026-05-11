@@ -24,6 +24,7 @@ Quote ticks only update node state and re-evaluate edges adjacent to the changed
 """
 
 from collections import Counter
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -1246,36 +1247,35 @@ class OpportunityGraph:
             "sampleHyperedges": [],
         }
 
-    @classmethod
     def _coverage_summary_from_payloads(
-        cls,
+        self,
         proof_payloads: list[dict[str, object]],
         hyperedge_payloads: list[dict[str, object]],
     ) -> dict[str, object]:
         proof_tiers = Counter(
-            cls._coverage_safe_string(payload.get("safety_tier")) for payload in proof_payloads
+            self._coverage_safe_string(payload.get("safety_tier")) for payload in proof_payloads
         )
         proof_relationships = Counter(
-            cls._coverage_safe_string(payload.get("relationship_type"))
+            self._coverage_safe_string(payload.get("relationship_type"))
             for payload in proof_payloads
         )
         proof_blockers = Counter(
-            cls._coverage_safe_string(reason)
+            self._coverage_safe_string(reason)
             for payload in proof_payloads
-            for reason in cls._coverage_string_sequence(payload.get("blocker_reasons"))
+            for reason in self._coverage_string_sequence(payload.get("blocker_reasons"))
         )
         proof_gaps = Counter(
-            cls._coverage_safe_string(reason)
+            self._coverage_safe_string(reason)
             for payload in proof_payloads
-            for reason in cls._coverage_string_sequence(payload.get("gaps"))
+            for reason in self._coverage_string_sequence(payload.get("gaps"))
         )
         proof_risks = Counter(
-            cls._coverage_safe_string(reason)
+            self._coverage_safe_string(reason)
             for payload in proof_payloads
-            for reason in cls._coverage_string_sequence(payload.get("risks"))
+            for reason in self._coverage_string_sequence(payload.get("risks"))
         )
         hyperedge_tiers = Counter(
-            cls._coverage_safe_string(payload.get("safety_tier")) for payload in hyperedge_payloads
+            self._coverage_safe_string(payload.get("safety_tier")) for payload in hyperedge_payloads
         )
         return {
             "coverageProofCount": len(proof_payloads),
@@ -1298,13 +1298,118 @@ class OpportunityGraph:
             "proofGapReasonCounts": dict(sorted(proof_gaps.items())),
             "proofRiskReasonCounts": dict(sorted(proof_risks.items())),
             "sampleProofIds": [
-                cls._coverage_safe_string(payload.get("proof_id"))
+                self._coverage_safe_string(payload.get("proof_id"))
                 for payload in proof_payloads[:10]
                 if payload.get("proof_id")
             ],
             "sampleProofs": proof_payloads[:10],
-            "sampleHyperedges": hyperedge_payloads[:10],
+            "sampleHyperedges": self._coverage_sample_hyperedges(hyperedge_payloads),
         }
+
+    def _coverage_sample_hyperedges(
+        self,
+        hyperedge_payloads: list[dict[str, object]],
+        *,
+        limit: int = 10,
+    ) -> list[dict[str, object]]:
+        if len(hyperedge_payloads) <= limit:
+            return hyperedge_payloads
+
+        active_providers = {node.venue.upper() for node in self.nodes_by_id.values()}
+        active_event_keys = self._coverage_active_event_keys()
+        if not active_providers and not active_event_keys:
+            return hyperedge_payloads[:limit]
+
+        scored: list[tuple[int, int, dict[str, object]]] = []
+        for index, payload in enumerate(hyperedge_payloads):
+            score = self._coverage_hyperedge_sample_score(
+                payload,
+                active_providers=active_providers,
+                active_event_keys=active_event_keys,
+            )
+            scored.append((score, index, payload))
+        relevant = [item for item in scored if item[0] > 0]
+        if not relevant:
+            return hyperedge_payloads[:limit]
+        return [
+            payload
+            for _, _, payload in sorted(relevant, key=lambda item: (-item[0], item[1]))[:limit]
+        ]
+
+    def _coverage_hyperedge_sample_score(
+        self,
+        payload: dict[str, object],
+        *,
+        active_providers: set[str],
+        active_event_keys: set[str],
+    ) -> int:
+        provider_scope = {
+            str(provider).upper()
+            for provider in self._coverage_string_sequence(payload.get("provider_scope"))
+            if provider
+        }
+        predicates = payload.get("predicates")
+        predicate_payloads = predicates if isinstance(predicates, list) else []
+        predicate_providers = {
+            str(predicate.get("provider") or "").upper()
+            for predicate in predicate_payloads
+            if isinstance(predicate, dict)
+        }
+        predicate_event_keys = {
+            self._coverage_event_key_no_time(str(predicate.get("event_key") or ""))
+            for predicate in predicate_payloads
+            if isinstance(predicate, dict)
+        }
+        score = 0
+        if provider_scope & active_providers:
+            score += 4
+        if predicate_providers & active_providers:
+            score += 2
+        if predicate_event_keys & active_event_keys:
+            score += 4
+        if bool(payload.get("execution_safe")):
+            score += 1
+        return score
+
+    def _coverage_active_event_keys(self) -> set[str]:
+        keys: set[str] = set()
+        for node in self.nodes_by_id.values():
+            keys.add(self._coverage_event_key_no_time(node.canonical_event_key))
+            event_key = self._safe_attr(node.instrument, "event_key", None)
+            if callable(event_key):
+                with suppress(AttributeError, TypeError, ValueError):
+                    keys.add(
+                        self._coverage_event_key_no_time(str(event_key(include_start_time=False))),
+                    )
+            event_alias_keys = self._safe_attr(node.instrument, "event_alias_keys", None)
+            if callable(event_alias_keys):
+                try:
+                    aliases = event_alias_keys(include_start_time=False)
+                except (AttributeError, TypeError, ValueError):
+                    aliases = ()
+                if isinstance(aliases, str | bytes):
+                    aliases = (aliases,)
+                for alias in aliases or ():
+                    keys.add(self._coverage_event_key_no_time(str(alias)))
+        return {key for key in keys if key}
+
+    @staticmethod
+    def _coverage_event_key_no_time(value: str) -> str:
+        raw = str(value or "")
+        if not raw:
+            return ""
+        parts = [part.strip() for part in raw.replace("|", ":").split(":") if part.strip()]
+        normalized_parts: list[str] = []
+        for part in parts:
+            lowered = part.lower()
+            if "t" in lowered and lowered[:4].isdigit():
+                continue
+            if len(lowered) >= 4 and lowered[:4].isdigit():
+                continue
+            normalized = part.replace("_", " ").strip().lower()
+            if normalized:
+                normalized_parts.append(normalized)
+        return ":".join(normalized_parts)
 
     @staticmethod
     def _coverage_string_sequence(value: object) -> tuple[object, ...]:
