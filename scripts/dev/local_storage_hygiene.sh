@@ -10,6 +10,7 @@ monitor_total_max_mb="${MONITOR_TOTAL_MAX_MB:-1024}"
 monitor_file_max_mb="${MONITOR_FILE_MAX_MB:-256}"
 monitor_active_grace_minutes="${MONITOR_ACTIVE_GRACE_MINUTES:-30}"
 cache_retention_days="${CACHE_RETENTION_DAYS:-3}"
+worktree_retention_hours="${WORKTREE_RETENTION_HOURS:-48}"
 apply=false
 stat_flavor=""
 
@@ -31,6 +32,7 @@ Environment overrides:
   MONITOR_FILE_MAX_MB
   MONITOR_ACTIVE_GRACE_MINUTES
   CACHE_RETENTION_DAYS
+  WORKTREE_RETENTION_HOURS
 EOF
 }
 
@@ -224,6 +226,15 @@ status_is_artifact_only() {
   return 0
 }
 
+has_recent_worktree_activity() {
+  local worktree="$1"
+  local retention_minutes=$((worktree_retention_hours * 60))
+
+  find "$worktree" \
+    \( -path '*/.git' -o -path '*/.venv' -o -path '*/node_modules' -o -path '*/target' \) -prune -o \
+    -type f -mmin "-$retention_minutes" -print -quit 2> /dev/null | grep -q .
+}
+
 branch_is_merged() {
   local branch="$1"
   git -C "$repo_root" show-ref --verify --quiet "refs/heads/$branch" || return 1
@@ -248,6 +259,8 @@ cleanup_worktrees() {
       if [[ -n "$worktree" && -d "$worktree" && "$worktree" == "$worktree_root"* ]]; then
         if [[ "$worktree" == "$repo_root" ]]; then
           :
+        elif has_recent_worktree_activity "$worktree"; then
+          log "skip recent_worktree $worktree"
         elif ! status_is_artifact_only "$worktree"; then
           log "skip dirty_worktree $worktree"
         else
