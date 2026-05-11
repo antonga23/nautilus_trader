@@ -206,8 +206,10 @@ class PolymarketSportsTransformer:
             away_name=away_name,
         ):
             return None
-        target_role = cls._participant_role(selection_target, home_name, away_name)
         outcome = str(getattr(instrument, "outcome", "") or "").strip().lower()
+        target_role = cls._participant_role(selection_target, home_name, away_name)
+        if not target_role and outcome not in {"yes", "no"}:
+            target_role = cls._participant_role(outcome, home_name, away_name)
 
         sports_market_type = (
             str(
@@ -371,6 +373,12 @@ class PolymarketSportsTransformer:
         if target_role not in {"home", "away"}:
             return market_family, market_name, market_type, selection_role
 
+        if outcome not in {"yes", "no"}:
+            selection_role = target_role
+            if sport == "soccer":
+                return market_family, f"{sport}.match_odds", f"{sport}.1x2", selection_role
+            return market_family, f"{sport}.winner", f"{sport}.winner", selection_role
+
         if outcome == "yes":
             selection_role = target_role
             if sport == "soccer":
@@ -396,6 +404,8 @@ class PolymarketSportsTransformer:
     def _spread_selection_role(*, target_role: str, outcome: str) -> str:
         if target_role not in {"home", "away"}:
             return outcome
+        if outcome not in {"yes", "no"}:
+            return target_role
         if outcome == "yes":
             return target_role
         if outcome == "no":
@@ -506,24 +516,60 @@ class PolymarketSportsTransformer:
         for separator in (" vs. ", " vs ", " v. ", " v "):
             if separator in title.lower():
                 parts = re.split(re.escape(separator), title, maxsplit=1, flags=re.IGNORECASE)
-                return parts[0].strip(), parts[1].strip()
+                return (
+                    PolymarketSportsTransformer._clean_parsed_participant(parts[0]),
+                    PolymarketSportsTransformer._clean_parsed_participant(parts[1]),
+                )
         for separator in (" @ ", " at "):
             if separator in title.lower():
                 parts = re.split(re.escape(separator), title, maxsplit=1, flags=re.IGNORECASE)
-                away, home = parts[0].strip(), parts[1].strip()
+                away = PolymarketSportsTransformer._clean_parsed_participant(parts[0])
+                home = PolymarketSportsTransformer._clean_parsed_participant(parts[1])
                 return home, away
         return "", ""
+
+    @staticmethod
+    def _clean_parsed_participant(value: str) -> str:
+        cleaned = value.strip()
+        if ":" in cleaned:
+            cleaned = cleaned.rsplit(":", maxsplit=1)[-1].strip()
+        cleaned = re.sub(
+            r"\s+-\s+(?:more markets|total (?:corners|goals|points|sets)|"
+            r"(?:game|match|set) (?:winner|spread|handicap)|"
+            r"(?:winner|spread|handicap|moneyline|odds))\b.*$",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        return cleaned.strip()
 
     @staticmethod
     def _participant_role(target: str, home_name: str, away_name: str) -> str:
         normalized_target = PolymarketSportsTransformer._normalize_participant(target)
         if not normalized_target:
             return ""
-        if PolymarketSportsTransformer._participant_matches(normalized_target, home_name):
-            if PolymarketSportsTransformer._participant_matches(normalized_target, away_name):
+        target_tokens = set(normalized_target.split())
+        home_tokens = set(PolymarketSportsTransformer._normalize_participant(home_name).split())
+        away_tokens = set(PolymarketSportsTransformer._normalize_participant(away_name).split())
+        home_unique_hits = target_tokens & (home_tokens - away_tokens)
+        away_unique_hits = target_tokens & (away_tokens - home_tokens)
+        if home_unique_hits and not away_unique_hits:
+            return "home"
+        if away_unique_hits and not home_unique_hits:
+            return "away"
+        home_matches = PolymarketSportsTransformer._participant_matches(
+            normalized_target,
+            home_name,
+        )
+        away_matches = PolymarketSportsTransformer._participant_matches(
+            normalized_target,
+            away_name,
+        )
+        if home_matches:
+            if away_matches:
                 return ""
             return "home"
-        if PolymarketSportsTransformer._participant_matches(normalized_target, away_name):
+        if away_matches:
             return "away"
         return ""
 
@@ -533,7 +579,7 @@ class PolymarketSportsTransformer:
         tokens = [
             token
             for token in normalized.split()
-            if token not in {"the", "fc", "afc", "sc", "cf", "club"}
+            if token not in {"the", "fc", "afc", "sc", "cf", "fk", "sk", "jk", "club"}
         ]
         return " ".join(tokens)
 

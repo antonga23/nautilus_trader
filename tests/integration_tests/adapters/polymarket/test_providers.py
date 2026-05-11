@@ -549,4 +549,4 @@ async def test_gamma_load_all_prefers_sports_event_markets(mock_clob_client, liv
         instrument.info["_gamma_original"]["events"][0]["title"] == "Arsenal vs Chelsea"
         for instrument in instruments
     )
-    mock_list_markets.assert_called()
+    mock_list_markets.assert_not_called()
