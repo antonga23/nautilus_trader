@@ -1132,10 +1132,25 @@ def _load_json(path: Path) -> dict[str, Any]:
 
 
 def _format_text(path: Path, summary: dict[str, Any]) -> str:
+    lines = _format_text_header_lines(path, summary)
+    lines.extend(_format_text_graph_lines(summary))
+    lines.extend(_format_quality_lines(summary["candidateQuality"]))
+    lines.extend(
+        _format_fixture_overlap_lines(summary["candidateQuality"].get("fixtureOverlapDiagnostics")),
+    )
+    lines.extend(_format_latency_lines(summary.get("latencyDiagnostics")))
+    lines.extend(_format_text_runtime_health_lines(summary))
+    lines.extend(_format_refresh_lines(summary.get("instrumentRefresh")))
+    lines.extend(_format_semantic_diagnostic_lines(summary.get("semanticDiagnostics")))
+    lines.extend(_format_provider_corpus_coverage_lines(summary.get("semanticCache")))
+    lines.extend(_format_text_footer_lines(summary))
+    return "\n".join(lines)
+
+
+def _format_text_header_lines(path: Path, summary: dict[str, Any]) -> list[str]:
     graph = summary["graph"]
     candidates = summary["candidates"]
-    quality = summary["candidateQuality"]
-    lines = [
+    return [
         f"{path}:",
         f"  status={summary.get('status')} node={summary.get('nodeId')}",
         _format_operator_health_line(summary.get("operatorHealth")),
@@ -1153,15 +1168,22 @@ def _format_text(path: Path, summary: dict[str, Any]) -> str:
         f"threshold={candidates.get('thresholdTotal')} "
         f"cross_venue={candidates.get('crossVenueCandidateCount')}",
     ]
+
+
+def _format_text_graph_lines(summary: dict[str, Any]) -> list[str]:
+    graph = summary["graph"]
+    lines: list[str] = []
     execution_safety = _format_execution_safety_line(summary.get("executionSafety"))
     if execution_safety:
         lines.append(execution_safety)
     lines.extend(_format_fee_policy_lines(summary.get("feePolicy")))
     lines.extend(_format_semantic_cache_family_lines(summary.get("semanticCache")))
     lines.extend(_format_coverage_lines(graph))
-    lines.extend(_format_quality_lines(quality))
-    lines.extend(_format_fixture_overlap_lines(quality.get("fixtureOverlapDiagnostics")))
-    lines.extend(_format_latency_lines(summary.get("latencyDiagnostics")))
+    return lines
+
+
+def _format_text_runtime_health_lines(summary: dict[str, Any]) -> list[str]:
+    lines: list[str] = []
     provider_poll = _format_provider_poll_stats(summary.get("providerQuotePollStats"))
     if provider_poll:
         lines.append(f"  provider_poll {provider_poll}")
@@ -1174,9 +1196,13 @@ def _format_text(path: Path, summary: dict[str, Any]) -> str:
     lines.extend(
         _format_semantic_cache_corpus_health_lines(summary.get("semanticCacheCorpusHealth")),
     )
-    lines.extend(_format_refresh_lines(summary.get("instrumentRefresh")))
-    lines.extend(_format_semantic_diagnostic_lines(summary.get("semanticDiagnostics")))
-    lines.extend(_format_provider_corpus_coverage_lines(summary.get("semanticCache")))
+    return lines
+
+
+def _format_text_footer_lines(summary: dict[str, Any]) -> list[str]:
+    quality = summary["candidateQuality"]
+    graph = summary["graph"]
+    lines: list[str] = []
     same_venue_dry_run = quality.get("sameVenueDryRun") or {}
     if isinstance(same_venue_dry_run, dict) and (
         same_venue_dry_run.get("passes") or same_venue_dry_run.get("failures")
@@ -1201,7 +1227,7 @@ def _format_text(path: Path, summary: dict[str, Any]) -> str:
         lines.append(
             "  recommended_actions " + ", ".join(str(action) for action in recommended_actions),
         )
-    return "\n".join(lines)
+    return lines
 
 
 def _format_operator_health_line(value: Any) -> str:
@@ -1310,69 +1336,98 @@ def _format_coverage_lines(graph: dict[str, Any]) -> list[str]:
 
 
 def _format_quality_lines(quality: dict[str, Any]) -> list[str]:
-    lines: list[str] = []
-    top_rejections = quality.get("topRejectionBuckets") or []
-    if top_rejections:
-        rendered = ", ".join(f"{item['key']}={item['value']}" for item in top_rejections)
-        lines.append(f"  top_rejections {rendered}")
-    top_blockers = quality.get("topSemanticBlockedReasons") or []
-    if top_blockers:
-        rendered = ", ".join(f"{item['key']}={item['value']}" for item in top_blockers)
-        lines.append(f"  top_semantic_blockers {rendered}")
-    top_blocker_relationships = quality.get("topSemanticBlockedRelationships") or []
-    if top_blocker_relationships:
-        rendered = ", ".join(f"{item['key']}={item['value']}" for item in top_blocker_relationships)
-        lines.append(f"  top_semantic_relationships {rendered}")
-    zero_candidate_blockers = quality.get("zeroCandidateBlockerCounts") or {}
-    if isinstance(zero_candidate_blockers, dict) and zero_candidate_blockers:
-        rendered = ", ".join(
-            f"{key}={value}" for key, value in sorted(zero_candidate_blockers.items())
-        )
-        lines.append(f"  zero_candidate_blockers {rendered}")
-    lines.extend(_format_zero_fixture_proof_blocker_lines(quality))
-    fee_adjustment = _as_dict(quality.get("feeAdjustment"))
-    fee_impact = _as_dict(fee_adjustment.get("impactBuckets"))
-    if fee_impact:
-        rendered = ", ".join(f"{key}={value}" for key, value in sorted(fee_impact.items()))
-        lines.append(f"  fee_impact {rendered}")
-    lines.extend(_format_devig_quality_lines(quality.get("devigDiagnostics")))
-    lines.extend(_format_coverage_book_devig_lines(quality.get("coverageBookDevigDiagnostics")))
-    latency = quality.get("latencyHistograms") or {}
-    if isinstance(latency, dict) and latency:
-        quote_age = _as_dict(latency.get("quoteAgeSeconds"))
-        fetch_latency = _as_dict(latency.get("fetchLatencySeconds"))
-        pair_skew = _as_dict(latency.get("pairSkewSeconds"))
-        lines.append(
-            "  latency "
-            f"quote_age_p95={quote_age.get('p95', 0)}s "
-            f"fetch_p95={fetch_latency.get('p95', 0)}s "
-            f"pair_skew_p95={pair_skew.get('p95', 0)}s",
-        )
-    live_slo = quality.get("liveQuoteAgeSlo") or {}
-    if isinstance(live_slo, dict) and live_slo.get("observations"):
-        lines.append(
-            "  live_quote_age_slo "
-            f"observations={live_slo.get('observations')} "
-            f"violations={live_slo.get('violations')} "
-            f"max={live_slo.get('maxQuoteAgeSeconds')}s",
-        )
-    live_timing_slo = quality.get("liveTimingSlo") or {}
-    if isinstance(live_timing_slo, dict) and live_timing_slo:
-        quote_age = _as_dict(live_timing_slo.get("quoteAge"))
-        fetch_latency = _as_dict(live_timing_slo.get("fetchLatency"))
-        pair_skew = _as_dict(live_timing_slo.get("pairSkew"))
-        if any(
-            _int_value(item.get("observations"))
-            for item in (quote_age, fetch_latency, pair_skew)
-            if isinstance(item, dict)
-        ):
-            lines.append(
-                "  live_timing_slo "
-                f"quote_age={quote_age.get('violations', 0)}/{quote_age.get('observations', 0)} "
-                f"fetch_latency={fetch_latency.get('violations', 0)}/{fetch_latency.get('observations', 0)} "
-                f"pair_skew={pair_skew.get('violations', 0)}/{pair_skew.get('observations', 0)}",
-            )
-    return lines
+    return [
+        *filter(
+            None,
+            (
+                _format_top_item_line("top_rejections", quality.get("topRejectionBuckets")),
+                _format_top_item_line(
+                    "top_semantic_blockers",
+                    quality.get("topSemanticBlockedReasons"),
+                ),
+                _format_top_item_line(
+                    "top_semantic_relationships",
+                    quality.get("topSemanticBlockedRelationships"),
+                ),
+                _format_mapping_line(
+                    "zero_candidate_blockers",
+                    quality.get("zeroCandidateBlockerCounts"),
+                ),
+                _format_mapping_line(
+                    "fee_impact",
+                    _as_dict(_as_dict(quality.get("feeAdjustment")).get("impactBuckets")),
+                ),
+                _format_latency_histogram_line(quality.get("latencyHistograms")),
+                _format_live_quote_age_slo_line(quality.get("liveQuoteAgeSlo")),
+                _format_live_timing_slo_line(quality.get("liveTimingSlo")),
+            ),
+        ),
+        *_format_zero_fixture_proof_blocker_lines(quality),
+        *_format_devig_quality_lines(quality.get("devigDiagnostics")),
+        *_format_coverage_book_devig_lines(quality.get("coverageBookDevigDiagnostics")),
+    ]
+
+
+def _format_top_item_line(label: str, value: Any) -> str:
+    items = value if isinstance(value, list) else []
+    if not items:
+        return ""
+    rendered = ", ".join(f"{item['key']}={item['value']}" for item in items)
+    return f"  {label} {rendered}"
+
+
+def _format_mapping_line(label: str, value: Any) -> str:
+    mapping = _as_dict(value)
+    if not mapping:
+        return ""
+    rendered = ", ".join(f"{key}={value}" for key, value in sorted(mapping.items()))
+    return f"  {label} {rendered}"
+
+
+def _format_latency_histogram_line(value: Any) -> str:
+    latency = _as_dict(value)
+    if not latency:
+        return ""
+    quote_age = _as_dict(latency.get("quoteAgeSeconds"))
+    fetch_latency = _as_dict(latency.get("fetchLatencySeconds"))
+    pair_skew = _as_dict(latency.get("pairSkewSeconds"))
+    return (
+        "  latency "
+        f"quote_age_p95={quote_age.get('p95', 0)}s "
+        f"fetch_p95={fetch_latency.get('p95', 0)}s "
+        f"pair_skew_p95={pair_skew.get('p95', 0)}s"
+    )
+
+
+def _format_live_quote_age_slo_line(value: Any) -> str:
+    live_slo = _as_dict(value)
+    if not live_slo.get("observations"):
+        return ""
+    return (
+        "  live_quote_age_slo "
+        f"observations={live_slo.get('observations')} "
+        f"violations={live_slo.get('violations')} "
+        f"max={live_slo.get('maxQuoteAgeSeconds')}s"
+    )
+
+
+def _format_live_timing_slo_line(value: Any) -> str:
+    live_timing_slo = _as_dict(value)
+    if not live_timing_slo:
+        return ""
+    quote_age = _as_dict(live_timing_slo.get("quoteAge"))
+    fetch_latency = _as_dict(live_timing_slo.get("fetchLatency"))
+    pair_skew = _as_dict(live_timing_slo.get("pairSkew"))
+    if not any(
+        _int_value(item.get("observations")) for item in (quote_age, fetch_latency, pair_skew)
+    ):
+        return ""
+    return (
+        "  live_timing_slo "
+        f"quote_age={quote_age.get('violations', 0)}/{quote_age.get('observations', 0)} "
+        f"fetch_latency={fetch_latency.get('violations', 0)}/{fetch_latency.get('observations', 0)} "
+        f"pair_skew={pair_skew.get('violations', 0)}/{pair_skew.get('observations', 0)}"
+    )
 
 
 def _format_zero_fixture_proof_blocker_lines(quality: dict[str, Any]) -> list[str]:
