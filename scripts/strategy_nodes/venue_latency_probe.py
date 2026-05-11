@@ -105,10 +105,10 @@ def probe_url(url: str, *, timeout_secs: float = 5.0) -> ProbeSample:
             sock = _ssl_context().wrap_socket(sock, server_hostname=host)
             tls_ms = (time.perf_counter() - tls_started) * 1000
 
-        connection_cls = (
-            http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
-        )
-        connection = connection_cls(host, port, timeout=timeout_secs)
+        # The socket above already captures TCP and optional TLS timing. Use a
+        # plain HTTPConnection over that prepared socket to avoid a second TLS
+        # wrap inside HTTPSConnection.
+        connection = http.client.HTTPConnection(host, port, timeout=timeout_secs)
         connection.sock = sock
         request_started = time.perf_counter()
         connection.request(
