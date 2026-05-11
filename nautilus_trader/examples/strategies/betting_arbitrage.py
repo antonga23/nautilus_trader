@@ -82,6 +82,7 @@ NANOSECONDS_PER_SECOND = 1_000_000_000
 INSTRUMENT_REFRESH_TIMER_NAME = "betting-arbitrage-instrument-refresh"
 INSTRUMENT_RECONCILE_TIMER_PREFIX = "betting-arbitrage-instrument-reconcile"
 INSTRUMENT_RECONCILE_DELAY_SECS = 5.0
+RESOLUTION_HORIZON_STALE_GRACE_HOURS = 6.0
 LATENCY_SAMPLE_LIMIT = 2_000
 BettingInstrument = CryptoBettingInstrument | LegacyCryptoBettingInstrument
 BETTING_INSTRUMENT_TYPES = (CryptoBettingInstrument, LegacyCryptoBettingInstrument)
@@ -1369,6 +1370,9 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         if start_time is None:
             return 1
         now = datetime.now(tz=UTC)
+        stale_grace = timedelta(hours=RESOLUTION_HORIZON_STALE_GRACE_HOURS)
+        if start_time < now - stale_grace:
+            return 3
         if start_time < now:
             return 0
         horizon = now + timedelta(hours=float(horizon_hours))
