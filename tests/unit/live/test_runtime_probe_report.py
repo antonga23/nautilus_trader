@@ -107,6 +107,14 @@ def _runtime_status_payload() -> dict[str, object]:
                 "venueBasketRebateRates": {"SXBET": "0.01"},
                 "venueBasketBoostRates": {"CLOUDBET": "0.02"},
             },
+            "fxPolicy": {
+                "baseCurrency": "USD",
+                "stablecoinCurrencies": ["USD", "USDC", "USDT"],
+                "stablecoinHaircutBps": 10,
+                "maxAgeSeconds": 30.0,
+                "sourcePriority": ["hyperliquid", "pyth_hermes", "binance", "ecb_reference"],
+                "configuredFxRatePairs": ["EUR/USD"],
+            },
             "graphNodes": 40,
             "graphEdges": 22,
             "graphQuoteStates": 15,
@@ -650,6 +658,15 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
     assert summary["feePolicy"]["venueMakerRebateRates"] == {"POLYMARKET": "0.0075"}
     assert summary["feePolicy"]["venueBasketRebateRates"] == {"SXBET": "0.01"}
     assert summary["feePolicy"]["venueBasketBoostRates"] == {"CLOUDBET": "0.02"}
+    assert summary["fxPolicy"] == {
+        "baseCurrency": "USD",
+        "stablecoinCurrencies": ["USD", "USDC", "USDT"],
+        "stablecoinHaircutBps": 10,
+        "maxAgeSeconds": 30.0,
+        "sourcePriority": ["hyperliquid", "pyth_hermes", "binance", "ecb_reference"],
+        "configuredFxRatePairs": ["EUR/USD"],
+        "requiresLiveFxForNonStablePairs": True,
+    }
     assert summary["candidateQuality"]["diagnosticWarnings"] == [
         "live_fetch_latency_slo_violations",
     ]
@@ -1021,6 +1038,8 @@ def test_runtime_probe_report_cli_outputs_json_and_text(tmp_path, monkeypatch, c
     assert "coverage proofs=5367 hyperedges=482" in text_output
     assert "semantic_cache_execution_safe_families TOTALS + TOTALS=25" in text_output
     assert "coverage_blockers void_settlement=3" in text_output
+    assert "fx_policy base=USD stablecoins=USD,USDC,USDT" in text_output
+    assert "sources=hyperliquid,pyth_hermes,binance,ecb_reference" in text_output
     assert "candidates positive=3 threshold=2 cross_venue=2" in text_output
     assert "aggregate: artifacts=1 positive=3 threshold=2 cross_venue=2" in text_output
     assert "quoted_semantic=14" in text_output

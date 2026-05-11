@@ -53,6 +53,7 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
     execution_readiness = _as_dict(payload.get("executionReadiness"))
     candidate_quality = _as_dict(runtime.get("candidateQuality"))
     venue_coverage = _as_dict(runtime.get("venueCoverage"))
+    fx_policy = _as_dict(runtime.get("fxPolicy"))
     provider_quote_poll_stats = _as_dict(runtime.get("providerQuotePollStats"))
     instrument_refresh = _as_dict(runtime.get("instrumentRefresh"))
     coverage_diagnostics = _as_dict(runtime.get("coverageDiagnostics"))
@@ -169,6 +170,7 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
             "crossVenueCandidateCount": venue_coverage.get("crossVenueCandidateCount"),
         },
         "feePolicy": _as_dict(runtime.get("feePolicy")),
+        "fxPolicy": _fx_policy_summary(fx_policy),
         "latencyDiagnostics": latency_block,
         "candidateQuality": {
             "diagnosticWarnings": diagnostic_warnings,
@@ -316,6 +318,21 @@ def _zero_fixture_proof_blocker_counts(value: Any) -> dict[str, int]:
             key = str(reason)
             counts[key] = counts.get(key, 0) + _int_value(count)
     return dict(sorted(counts.items()))
+
+
+def _fx_policy_summary(value: dict[str, Any]) -> dict[str, Any]:
+    source_priority = [str(item) for item in value.get("sourcePriority") or [] if item]
+    stablecoins = [str(item).upper() for item in value.get("stablecoinCurrencies") or [] if item]
+    configured_pairs = [str(item).upper() for item in value.get("configuredFxRatePairs") or []]
+    return {
+        "baseCurrency": str(value.get("baseCurrency") or "USD").upper(),
+        "stablecoinCurrencies": sorted(stablecoins),
+        "stablecoinHaircutBps": _int_value(value.get("stablecoinHaircutBps")),
+        "maxAgeSeconds": _float_value(value.get("maxAgeSeconds")),
+        "sourcePriority": source_priority,
+        "configuredFxRatePairs": sorted(configured_pairs),
+        "requiresLiveFxForNonStablePairs": bool(source_priority or configured_pairs),
+    }
 
 
 def _fixture_overlap_diagnostics(value: Any, *, top_limit: int) -> list[dict[str, Any]]:
@@ -1265,6 +1282,7 @@ def _format_text_graph_lines(summary: dict[str, Any]) -> list[str]:
     if execution_safety:
         lines.append(execution_safety)
     lines.extend(_format_fee_policy_lines(summary.get("feePolicy")))
+    lines.extend(_format_fx_policy_lines(summary.get("fxPolicy")))
     lines.extend(_format_semantic_cache_family_lines(summary.get("semanticCache")))
     lines.extend(_format_coverage_lines(graph))
     return lines
@@ -1351,6 +1369,24 @@ def _format_fee_policy_lines(value: Any) -> list[str]:
         f"winning_profit={dict(sorted(winning.items()))} "
         f"basket_rebate={dict(sorted(basket_rebate.items()))} "
         f"basket_boost={dict(sorted(basket_boost.items()))}",
+    ]
+
+
+def _format_fx_policy_lines(value: Any) -> list[str]:
+    policy = value if isinstance(value, dict) else {}
+    if not policy:
+        return []
+    sources = ",".join(str(item) for item in policy.get("sourcePriority") or [])
+    stablecoins = ",".join(str(item) for item in policy.get("stablecoinCurrencies") or [])
+    configured_pairs = ",".join(str(item) for item in policy.get("configuredFxRatePairs") or [])
+    return [
+        "  fx_policy "
+        f"base={policy.get('baseCurrency')} "
+        f"stablecoins={stablecoins} "
+        f"haircut_bps={policy.get('stablecoinHaircutBps')} "
+        f"max_age={policy.get('maxAgeSeconds')}s "
+        f"sources={sources} "
+        f"configured_pairs={configured_pairs}",
     ]
 
 
