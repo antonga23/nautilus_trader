@@ -197,6 +197,15 @@ class FixtureIdentityResolver:
         "ice hockey": "ice_hockey",
         "hockey": "ice_hockey",
     }
+    LETTER_SPACED_ALIASES = {
+        "l a": "la",
+        "n e": "ne",
+        "n o": "no",
+        "n y": "ny",
+        "s a": "sa",
+        "s d": "sd",
+        "s f": "sf",
+    }
     EVENT_SPLIT_PATTERN = re.compile(r"\s+(?:v|vs|versus|@)\s+", re.IGNORECASE)
 
     def __init__(self, start_time_tolerance_secs: int = DEFAULT_START_TIME_TOLERANCE_SECS) -> None:
@@ -218,6 +227,7 @@ class FixtureIdentityResolver:
         if not normalized:
             return ""
         normalized = self._strip_market_group_suffix(normalized)
+        normalized = self._compact_letter_spaced_aliases(normalized)
         normalized = self.PHRASE_ALIASES.get(normalized, normalized)
         tokens: list[str] = []
         alias_hits: list[str] = []
@@ -230,6 +240,23 @@ class FixtureIdentityResolver:
             tokens.extend(replacement.split())
         canonical = " ".join(tokens)
         return self.PHRASE_ALIASES.get(canonical, canonical)
+
+    def _compact_letter_spaced_aliases(self, normalized: str) -> str:
+        """
+        Recover dotted or spaced city abbreviations before token alias expansion.
+
+        Provider names like "L.A. Clippers" normalize to "l a clippers".
+        Without this pass they miss the existing ``la -> los angeles`` alias.
+
+        """
+        compacted = normalized
+        for alias, replacement in self.LETTER_SPACED_ALIASES.items():
+            compacted = re.sub(
+                rf"(?<!\w){re.escape(alias)}(?!\w)",
+                replacement,
+                compacted,
+            )
+        return " ".join(compacted.split())
 
     def _strip_market_group_suffix(self, normalized: str) -> str:
         """
