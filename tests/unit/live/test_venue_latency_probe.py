@@ -133,6 +133,8 @@ def test_latency_probe_compares_regions_by_worst_leg_then_skew():
                 "venueTotalP95SkewMs": 35.0,
                 "worstLegFirstByteP95Ms": 50.0,
                 "venueFirstByteP95SkewMs": 20.0,
+                "worstLegReadP95Ms": 12.0,
+                "venueReadP95SkewMs": 9.0,
                 "worstLegErrorRate": 0.0,
                 "blockers": [],
             },
@@ -151,6 +153,8 @@ def test_latency_probe_compares_regions_by_worst_leg_then_skew():
                 "venueTotalP95SkewMs": 12.0,
                 "worstLegFirstByteP95Ms": 44.0,
                 "venueFirstByteP95SkewMs": 8.0,
+                "worstLegReadP95Ms": 10.0,
+                "venueReadP95SkewMs": 4.0,
                 "worstLegErrorRate": 0.0,
                 "blockers": [],
             },
@@ -163,6 +167,8 @@ def test_latency_probe_compares_regions_by_worst_leg_then_skew():
     assert best["region"] == "virginia"
     assert best["worstLegTotalP95Ms"] == 80.0
     assert best["venueTotalP95SkewMs"] == 12.0
+    assert best["worstLegReadP95Ms"] == 10.0
+    assert best["venueReadP95SkewMs"] == 4.0
     assert comparison["regions"]["tokyo"]["generatedAtNs"] == 100
 
 
