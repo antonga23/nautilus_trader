@@ -52,9 +52,24 @@ class RuleClassifier:
     ) -> MinedRule | None:
         selection_a = self._coerce_selection(a)
         selection_b = self._coerce_selection(b)
-        vector_a = self._vector_builder.build(selection_a)
-        vector_b = self._vector_builder.build(selection_b)
+        vector_a = self.build_payoff_vector(selection_a)
+        vector_b = self.build_payoff_vector(selection_b)
+        return self.classify_precomputed(selection_a, selection_b, vector_a, vector_b)
 
+    def build_payoff_vector(
+        self,
+        item: CryptoBettingInstrument | NormalizedSelection | object,
+    ) -> PayoffVector:
+        selection = self._coerce_selection(item)
+        return self._vector_builder.build(selection)
+
+    def classify_precomputed(
+        self,
+        selection_a: NormalizedSelection,
+        selection_b: NormalizedSelection,
+        vector_a: PayoffVector,
+        vector_b: PayoffVector,
+    ) -> MinedRule | None:
         relationship_type = self._relationship_type(selection_a, selection_b, vector_a, vector_b)
         if relationship_type is None:
             return None

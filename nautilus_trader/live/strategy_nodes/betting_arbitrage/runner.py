@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass
 from dataclasses import field
 from dataclasses import replace
+from datetime import UTC
+from datetime import datetime
+from datetime import timedelta
 from decimal import Decimal
 import json
 import threading
@@ -12,11 +16,17 @@ import time
 from pathlib import Path
 from typing import Any
 
+from nautilus_trader.adapters.betting.fixture_identity import DEFAULT_FIXTURE_IDENTITY_RESOLVER
+from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
+from nautilus_trader.adapters.betting.market_matcher import ArbitrageOpportunity
 from nautilus_trader.adapters.betting.semantics import CoverageBlockerReason
 from nautilus_trader.adapters.betting.semantics import MarketNormalizer
 from nautilus_trader.live.strategy_nodes.betting_arbitrage.builder import build_trading_node_config
 from nautilus_trader.live.strategy_nodes.betting_arbitrage.builder import default_render_paths
 from nautilus_trader.live.strategy_nodes.betting_arbitrage.builder import load_manifest
+from nautilus_trader.live.strategy_nodes.betting_arbitrage.builder import (
+    manifest_execution_readiness,
+)
 from nautilus_trader.live.strategy_nodes.betting_arbitrage.builder import write_manifest_snapshot
 from nautilus_trader.live.strategy_nodes.betting_arbitrage.builder import write_rendered_node_config
 from nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache import (
@@ -49,18 +59,55 @@ class ProbeProfitabilityCounters:
     timing_flags: Counter[str] = field(default_factory=Counter)
     freshness_profiles: Counter[str] = field(default_factory=Counter)
     semantic_blocked_reasons: Counter[str] = field(default_factory=Counter)
+    semantic_blocked_relationships: Counter[str] = field(default_factory=Counter)
     venue_pairs: dict[str, Counter[str]] = field(default_factory=dict)
     market_families: dict[str, Counter[str]] = field(default_factory=dict)
     blocker_samples: dict[str, list[dict[str, object]]] = field(default_factory=dict)
     venue_quote_counts: Counter[str] = field(default_factory=Counter)
     venue_max_quote_age_secs: dict[str, float] = field(default_factory=dict)
     venue_max_fetch_latency_secs: dict[str, float] = field(default_factory=dict)
+    quote_age_samples_secs: list[float] = field(default_factory=list)
+    fetch_latency_samples_secs: list[float] = field(default_factory=list)
+    pair_skew_samples_secs: list[float] = field(default_factory=list)
+    live_quote_age_slo_secs: float = 5.0
+    live_quote_age_observations: int = 0
+    live_quote_age_violations: int = 0
+    live_fetch_latency_observations: int = 0
+    live_fetch_latency_violations: int = 0
+    live_fetch_latency_threshold_min_secs: float | None = None
+    live_fetch_latency_threshold_max_secs: float | None = None
+    live_pair_skew_observations: int = 0
+    live_pair_skew_violations: int = 0
+    live_pair_skew_threshold_min_secs: float | None = None
+    live_pair_skew_threshold_max_secs: float | None = None
+    same_venue_dry_run_passes: int = 0
+    same_venue_dry_run_failures: int = 0
+    same_venue_dry_run_failure_reasons: Counter[str] = field(default_factory=Counter)
+    fee_adjusted_edges: int = 0
+    fee_drag_samples: list[float] = field(default_factory=list)
+    fee_impact_buckets: Counter[str] = field(default_factory=Counter)
+    devig_evaluated_edges: int = 0
+    devig_complete_books: int = 0
+    devig_incomplete_books: int = 0
+    devig_method_counts: Counter[str] = field(default_factory=Counter)
+    devig_method_reason_counts: Counter[str] = field(default_factory=Counter)
+    devig_convergence_counts: Counter[str] = field(default_factory=Counter)
+    devig_value_buckets: Counter[str] = field(default_factory=Counter)
+    overround_samples: list[float] = field(default_factory=list)
+    vig_samples: list[float] = field(default_factory=list)
+    gross_value_edge_samples: list[float] = field(default_factory=list)
+    fee_adjusted_value_edge_samples: list[float] = field(default_factory=list)
+    candidate_decision_latency_ns: list[int] = field(default_factory=list)
     samples: list[tuple[Decimal, dict[str, object]]] = field(default_factory=list)
     negative_samples: list[tuple[Decimal, dict[str, object]]] = field(default_factory=list)
+    value_samples: list[tuple[Decimal, dict[str, object]]] = field(default_factory=list)
+    vig_erased_samples: list[tuple[Decimal, dict[str, object]]] = field(default_factory=list)
 
     def to_payload(self) -> dict[str, object]:
         self.samples.sort(key=lambda item: item[0], reverse=True)
         self.negative_samples.sort(key=lambda item: item[0], reverse=True)
+        self.value_samples.sort(key=lambda item: item[0], reverse=True)
+        self.vig_erased_samples.sort(key=lambda item: item[0], reverse=True)
         return {
             "quoted_edges": self.quoted_edges,
             "positive_execution": self.positive_execution,
@@ -72,6 +119,7 @@ class ProbeProfitabilityCounters:
             "timing_flags": dict(self.timing_flags),
             "freshness_profiles": dict(self.freshness_profiles),
             "semantic_blocked_reasons": dict(self.semantic_blocked_reasons),
+            "semantic_blocked_relationships": dict(self.semantic_blocked_relationships),
             "venue_quote_health": {
                 venue: {
                     "quoted_observations": self.venue_quote_counts.get(venue, 0),
@@ -86,6 +134,73 @@ class ProbeProfitabilityCounters:
                 }
                 for venue in sorted(self.venue_quote_counts)
             },
+            "latency_histograms": {
+                "quote_age_secs": _percentile_payload(self.quote_age_samples_secs),
+                "fetch_latency_secs": _percentile_payload(self.fetch_latency_samples_secs),
+                "pair_skew_secs": _percentile_payload(self.pair_skew_samples_secs),
+            },
+            "live_quote_age_slo": {
+                "max_quote_age_secs": self.live_quote_age_slo_secs,
+                "observations": self.live_quote_age_observations,
+                "violations": self.live_quote_age_violations,
+            },
+            "live_timing_slo": {
+                "quote_age": {
+                    "threshold_secs": self.live_quote_age_slo_secs,
+                    "observations": self.live_quote_age_observations,
+                    "violations": self.live_quote_age_violations,
+                },
+                "fetch_latency": {
+                    "threshold_mode": "per_candidate",
+                    "min_threshold_secs": _rounded_or_none(
+                        self.live_fetch_latency_threshold_min_secs,
+                    ),
+                    "max_threshold_secs": _rounded_or_none(
+                        self.live_fetch_latency_threshold_max_secs,
+                    ),
+                    "observations": self.live_fetch_latency_observations,
+                    "violations": self.live_fetch_latency_violations,
+                },
+                "pair_skew": {
+                    "threshold_mode": "per_candidate",
+                    "min_threshold_secs": _rounded_or_none(
+                        self.live_pair_skew_threshold_min_secs,
+                    ),
+                    "max_threshold_secs": _rounded_or_none(
+                        self.live_pair_skew_threshold_max_secs,
+                    ),
+                    "observations": self.live_pair_skew_observations,
+                    "violations": self.live_pair_skew_violations,
+                },
+            },
+            "same_venue_dry_run": {
+                "passes": self.same_venue_dry_run_passes,
+                "failures": self.same_venue_dry_run_failures,
+                "failure_reasons": dict(self.same_venue_dry_run_failure_reasons),
+            },
+            "fee_adjustment": {
+                "evaluated_edges": self.fee_adjusted_edges,
+                "fee_drag_margin": _percentile_payload(self.fee_drag_samples),
+                "impact_buckets": dict(self.fee_impact_buckets),
+            },
+            "devig_diagnostics": {
+                "evaluated_edges": self.devig_evaluated_edges,
+                "complete_books": self.devig_complete_books,
+                "incomplete_books": self.devig_incomplete_books,
+                "method_counts": dict(self.devig_method_counts),
+                "method_reason_counts": dict(self.devig_method_reason_counts),
+                "convergence_counts": dict(self.devig_convergence_counts),
+                "value_buckets": dict(self.devig_value_buckets),
+                "overround": _percentile_payload(self.overround_samples),
+                "vig": _percentile_payload(self.vig_samples),
+                "gross_value_edge": _percentile_payload(self.gross_value_edge_samples),
+                "fee_adjusted_value_edge": _percentile_payload(
+                    self.fee_adjusted_value_edge_samples,
+                ),
+            },
+            "candidate_decision_latency": _latency_ns_payload(
+                self.candidate_decision_latency_ns,
+            ),
             "venue_pairs": {
                 key: dict(counter)
                 for key, counter in sorted(self.venue_pairs.items(), key=lambda item: item[0])
@@ -100,7 +215,102 @@ class ProbeProfitabilityCounters:
             },
             "sample_candidates": [payload for _, payload in self.samples[:10]],
             "negative_near_misses": [payload for _, payload in self.negative_samples[:10]],
+            "value_edge_candidates": [payload for _, payload in self.value_samples[:10]],
+            "vig_erased_candidates": [payload for _, payload in self.vig_erased_samples[:10]],
         }
+
+
+def _percentile_payload(samples: list[float]) -> dict[str, float | int]:
+    if not samples:
+        return {"count": 0, "p50": 0.0, "p95": 0.0, "p99": 0.0, "max": 0.0}
+    ordered = sorted(samples)
+    return {
+        "count": len(ordered),
+        "p50": round(_percentile(ordered, 0.50), 6),
+        "p95": round(_percentile(ordered, 0.95), 6),
+        "p99": round(_percentile(ordered, 0.99), 6),
+        "max": round(ordered[-1], 6),
+    }
+
+
+def _latency_ns_payload(samples: list[int]) -> dict[str, float | int]:
+    if not samples:
+        return {"count": 0, "p50_ms": 0.0, "p95_ms": 0.0, "p99_ms": 0.0, "max_ms": 0.0}
+    ordered_ms = sorted(sample / 1_000_000 for sample in samples)
+    return {
+        "count": len(ordered_ms),
+        "p50_ms": round(_percentile(ordered_ms, 0.50), 6),
+        "p95_ms": round(_percentile(ordered_ms, 0.95), 6),
+        "p99_ms": round(_percentile(ordered_ms, 0.99), 6),
+        "max_ms": round(ordered_ms[-1], 6),
+    }
+
+
+def _percentile(ordered_samples: list[float], percentile: float) -> float:
+    index = max(0, min(len(ordered_samples) - 1, int((len(ordered_samples) - 1) * percentile)))
+    return ordered_samples[index]
+
+
+def _rounded_or_none(value: float | None) -> float | None:
+    return None if value is None else round(value, 6)
+
+
+def _min_threshold(current: float | None, candidate: float) -> float | None:
+    if candidate <= 0:
+        return current
+    if current is None:
+        return candidate
+    return min(current, candidate)
+
+
+def _max_threshold(current: float | None, candidate: float) -> float | None:
+    if candidate <= 0:
+        return current
+    if current is None:
+        return candidate
+    return max(current, candidate)
+
+
+def _record_live_timing_slo(
+    counters: ProbeProfitabilityCounters,
+    *,
+    quote_age_a_secs: float,
+    quote_age_b_secs: float,
+    fetch_latency_a_secs: float,
+    fetch_latency_b_secs: float,
+    quote_delta_secs: float,
+    max_fetch_latency_secs: float,
+    max_pair_skew_secs: float,
+) -> None:
+    counters.live_quote_age_observations += 2
+    if quote_age_a_secs > counters.live_quote_age_slo_secs:
+        counters.live_quote_age_violations += 1
+    if quote_age_b_secs > counters.live_quote_age_slo_secs:
+        counters.live_quote_age_violations += 1
+    counters.live_fetch_latency_observations += 2
+    if max_fetch_latency_secs > 0 and fetch_latency_a_secs > max_fetch_latency_secs:
+        counters.live_fetch_latency_violations += 1
+    if max_fetch_latency_secs > 0 and fetch_latency_b_secs > max_fetch_latency_secs:
+        counters.live_fetch_latency_violations += 1
+    counters.live_pair_skew_observations += 1
+    if max_pair_skew_secs > 0 and quote_delta_secs > max_pair_skew_secs:
+        counters.live_pair_skew_violations += 1
+    counters.live_fetch_latency_threshold_min_secs = _min_threshold(
+        counters.live_fetch_latency_threshold_min_secs,
+        max_fetch_latency_secs,
+    )
+    counters.live_fetch_latency_threshold_max_secs = _max_threshold(
+        counters.live_fetch_latency_threshold_max_secs,
+        max_fetch_latency_secs,
+    )
+    counters.live_pair_skew_threshold_min_secs = _min_threshold(
+        counters.live_pair_skew_threshold_min_secs,
+        max_pair_skew_secs,
+    )
+    counters.live_pair_skew_threshold_max_secs = _max_threshold(
+        counters.live_pair_skew_threshold_max_secs,
+        max_pair_skew_secs,
+    )
 
 
 class RuntimeProbeCoverageError(RuntimeError):
@@ -429,7 +639,7 @@ def _run_node(node, context: RunnerContext) -> int:
     )
     runtime_probe_stop: threading.Event | None = None
     runtime_probe_writer: RuntimeProbeStatusWriter | None = None
-    if context.manifest.validation_mode and hasattr(node, "trader"):
+    if hasattr(node, "trader"):
         runtime_probe_stop = threading.Event()
         runtime_probe_writer = RuntimeProbeStatusWriter(
             status_path=context.status_path,
@@ -514,6 +724,7 @@ def _write_status(
         "manifestPath": str(manifest_snapshot),
         "renderedConfigPath": str(rendered_config_path),
         "semanticCache": semantic_cache,
+        "executionReadiness": manifest_execution_readiness(manifest),
     }
     if heartbeat_path is not None:
         payload["heartbeatPath"] = str(heartbeat_path)
@@ -548,11 +759,25 @@ def _semantic_cache_payload(status: SemanticCacheStatus | None) -> dict[str, obj
         "sameVenueExecutionEligibleTemplateCount": (
             payload["same_venue_execution_eligible_template_count"]
         ),
+        "promotedSafetyTierCounts": payload.get("promoted_safety_tier_counts", {}),
+        "promotedMarketFamilyCounts": payload.get("promoted_market_family_counts", {}),
+        "executionSafeMarketFamilyCounts": payload.get(
+            "execution_safe_market_family_counts",
+            {},
+        ),
+        "sameVenueEligibleMarketFamilyCounts": payload.get(
+            "same_venue_eligible_market_family_counts",
+            {},
+        ),
+        "strictExecutionBlockerCounts": payload.get("strict_execution_blocker_counts", {}),
         "coverageProofCount": payload["coverage_proof_count"],
         "coverageHyperedgeCount": payload["coverage_hyperedge_count"],
         "compatibilityVersion": payload.get("compatibility_version"),
         "compatibilityScope": payload.get("compatibility_scope"),
         "compatible": payload.get("compatible", True),
+        "summaryReused": payload.get("summary_reused", False),
+        "bootstrapPhaseTimingsSeconds": payload.get("bootstrap_phase_timings_secs", {}),
+        "providerCorpusCoverage": payload.get("provider_corpus_coverage", {}),
     }
 
 
@@ -721,6 +946,8 @@ def _collect_runtime_probe_payload(
             matched_node_ids=set(),
             candidate_venue_pairs={},
         )
+        empty_profitability = _empty_candidate_quality_payload()
+        latency_diagnostics = _runtime_latency_diagnostics(stats, empty_profitability)
         return {
             "elapsedSeconds": round(elapsed_seconds, 2),
             "minProfitMargin": str(min_profit_margin),
@@ -737,6 +964,7 @@ def _collect_runtime_probe_payload(
                 "opportunity_graph_coverage_hyperedge_count",
                 0,
             ),
+            "coverageDiagnostics": stats.get("opportunity_graph_coverage_summary", {}),
             "semanticMatchInstruments": 0,
             "quotedSemanticMatchInstruments": 0,
             "executionSafeEdges": 0,
@@ -753,9 +981,19 @@ def _collect_runtime_probe_payload(
                 "total": 0,
             },
             "candidateQuality": _empty_candidate_quality_payload(),
+            "instrumentRefresh": _instrument_refresh_payload(stats),
             "strategyStats": stats,
+            "latencyDiagnostics": latency_diagnostics,
             "semanticDiagnostics": semantic_diagnostics,
+            "providerQuotePollStats": stats.get("provider_quote_poll_stats", {}),
+            "fxPolicy": stats.get("fx_policy", {}),
             "venueCoverage": venue_coverage,
+            "resolutionHorizon": _resolution_horizon_payload(
+                stats,
+                nodes={},
+                quotes={},
+                edges=[],
+            ),
             "sampleCandidates": [],
             "negativeNearMisses": [],
         }
@@ -770,6 +1008,14 @@ def _collect_runtime_probe_payload(
         quotes=snapshot["quotes"],
         min_profit_margin=min_profit_margin,
     )
+    coverage_book_devig = _probe_coverage_book_devig_diagnostics(
+        strategy,
+        coverage_diagnostics=stats.get("opportunity_graph_coverage_summary", {}),
+        nodes=snapshot["nodes"],
+        quotes=snapshot["quotes"],
+        min_profit_margin=min_profit_margin,
+    )
+    latency_diagnostics = _runtime_latency_diagnostics(stats, profitability)
     venue_coverage = _venue_pair_coverage(
         strategy,
         edges=snapshot["edges"],
@@ -792,6 +1038,21 @@ def _collect_runtime_probe_payload(
         "semanticTemplateCount": stats.get("opportunity_graph_semantic_template_count", 0),
         "coverageProofCount": stats.get("opportunity_graph_coverage_proof_count", 0),
         "coverageHyperedgeCount": stats.get("opportunity_graph_coverage_hyperedge_count", 0),
+        "coverageDiagnostics": stats.get("opportunity_graph_coverage_summary", {}),
+        "feePolicy": {
+            "venueTakerFeeRates": stats.get("venue_taker_fee_rates", {}),
+            "venueMakerRebateRates": stats.get("venue_maker_rebate_rates", {}),
+            "venueWinningProfitFeeRates": stats.get("venue_winning_profit_fee_rates", {}),
+            "venueBasketRebateRates": stats.get("venue_basket_rebate_rates", {}),
+            "venueBasketBoostRates": stats.get("venue_basket_boost_rates", {}),
+            "devigEnabled": stats.get("devig_enabled", False),
+            "devigMethod": stats.get("devig_method", "auto"),
+            "devigReferenceVenues": stats.get("devig_reference_venues", []),
+            "valueDiagnosticsEnabled": stats.get("value_diagnostics_enabled", False),
+            "valueExecutionEnabled": stats.get("value_execution_enabled", False),
+            "minValueEdge": stats.get("min_value_edge", "0"),
+        },
+        "liveExecution": stats.get("live_execution", {}),
         "semanticMatchInstruments": len(snapshot["matched_node_ids"]),
         "quotedSemanticMatchInstruments": sum(
             1 for node_id in snapshot["matched_node_ids"] if node_id in snapshot["quotes"]
@@ -816,20 +1077,453 @@ def _collect_runtime_probe_payload(
             "timingFlags": profitability["timing_flags"],
             "freshnessProfiles": profitability["freshness_profiles"],
             "semanticBlockedReasons": profitability["semantic_blocked_reasons"],
+            "semanticBlockedRelationships": profitability["semantic_blocked_relationships"],
             "blockerSamples": profitability["blocker_samples"],
             "venueQuoteHealth": profitability["venue_quote_health"],
+            "latencyHistograms": {
+                "quoteAgeSeconds": profitability["latency_histograms"]["quote_age_secs"],
+                "fetchLatencySeconds": profitability["latency_histograms"]["fetch_latency_secs"],
+                "pairSkewSeconds": profitability["latency_histograms"]["pair_skew_secs"],
+            },
+            "liveQuoteAgeSlo": {
+                "maxQuoteAgeSeconds": profitability["live_quote_age_slo"]["max_quote_age_secs"],
+                "observations": profitability["live_quote_age_slo"]["observations"],
+                "violations": profitability["live_quote_age_slo"]["violations"],
+            },
+            "liveTimingSlo": {
+                "quoteAge": {
+                    "thresholdSeconds": profitability["live_timing_slo"]["quote_age"][
+                        "threshold_secs"
+                    ],
+                    "observations": profitability["live_timing_slo"]["quote_age"]["observations"],
+                    "violations": profitability["live_timing_slo"]["quote_age"]["violations"],
+                },
+                "fetchLatency": {
+                    "thresholdMode": profitability["live_timing_slo"]["fetch_latency"][
+                        "threshold_mode"
+                    ],
+                    "minThresholdSeconds": profitability["live_timing_slo"]["fetch_latency"][
+                        "min_threshold_secs"
+                    ],
+                    "maxThresholdSeconds": profitability["live_timing_slo"]["fetch_latency"][
+                        "max_threshold_secs"
+                    ],
+                    "observations": profitability["live_timing_slo"]["fetch_latency"][
+                        "observations"
+                    ],
+                    "violations": profitability["live_timing_slo"]["fetch_latency"]["violations"],
+                },
+                "pairSkew": {
+                    "thresholdMode": profitability["live_timing_slo"]["pair_skew"][
+                        "threshold_mode"
+                    ],
+                    "minThresholdSeconds": profitability["live_timing_slo"]["pair_skew"][
+                        "min_threshold_secs"
+                    ],
+                    "maxThresholdSeconds": profitability["live_timing_slo"]["pair_skew"][
+                        "max_threshold_secs"
+                    ],
+                    "observations": profitability["live_timing_slo"]["pair_skew"]["observations"],
+                    "violations": profitability["live_timing_slo"]["pair_skew"]["violations"],
+                },
+            },
+            "sameVenueDryRun": {
+                "passes": profitability["same_venue_dry_run"]["passes"],
+                "failures": profitability["same_venue_dry_run"]["failures"],
+                "failureReasons": profitability["same_venue_dry_run"]["failure_reasons"],
+            },
+            "feeAdjustment": {
+                "evaluatedEdges": profitability["fee_adjustment"]["evaluated_edges"],
+                "feeDragMargin": profitability["fee_adjustment"]["fee_drag_margin"],
+                "impactBuckets": profitability["fee_adjustment"].get("impact_buckets", {}),
+            },
+            "devigDiagnostics": {
+                "evaluatedEdges": profitability["devig_diagnostics"]["evaluated_edges"],
+                "completeBooks": profitability["devig_diagnostics"]["complete_books"],
+                "incompleteBooks": profitability["devig_diagnostics"]["incomplete_books"],
+                "methodCounts": profitability["devig_diagnostics"]["method_counts"],
+                "methodReasonCounts": profitability["devig_diagnostics"]["method_reason_counts"],
+                "convergenceCounts": profitability["devig_diagnostics"]["convergence_counts"],
+                "valueBuckets": profitability["devig_diagnostics"]["value_buckets"],
+                "overround": profitability["devig_diagnostics"]["overround"],
+                "vig": profitability["devig_diagnostics"]["vig"],
+                "grossValueEdge": profitability["devig_diagnostics"]["gross_value_edge"],
+                "feeAdjustedValueEdge": profitability["devig_diagnostics"][
+                    "fee_adjusted_value_edge"
+                ],
+            },
+            "coverageBookDevigDiagnostics": coverage_book_devig,
             "venuePairs": profitability["venue_pairs"],
             "marketFamilies": profitability["market_families"],
             "zeroCandidateVenuePairSamples": venue_coverage["zeroCandidateVenuePairs"],
+            "zeroCandidateBlockerCounts": venue_coverage["zeroCandidateBlockerCounts"],
+            "zeroCandidateFixtureProofBlockerCounts": venue_coverage[
+                "zeroCandidateFixtureProofBlockerCounts"
+            ],
             "topPositiveCandidates": profitability["sample_candidates"],
             "topNegativeNearMisses": profitability["negative_near_misses"],
+            "topValueEdgeCandidates": profitability["value_edge_candidates"],
+            "topVigErasedCandidates": profitability["vig_erased_candidates"],
         },
+        "instrumentRefresh": _instrument_refresh_payload(stats),
         "strategyStats": stats,
+        "latencyDiagnostics": latency_diagnostics,
+        "providerQuotePollStats": stats.get("provider_quote_poll_stats", {}),
         "semanticDiagnostics": semantic_diagnostics,
+        "fxPolicy": stats.get("fx_policy", {}),
         "venueCoverage": venue_coverage,
+        "resolutionHorizon": _resolution_horizon_payload(
+            stats,
+            nodes=snapshot["nodes"],
+            quotes=snapshot["quotes"],
+            edges=snapshot["edges"],
+        ),
         "sampleCandidates": profitability["sample_candidates"],
         "negativeNearMisses": profitability["negative_near_misses"],
     }
+
+
+def _instrument_refresh_payload(stats: dict[str, object]) -> dict[str, object]:
+    latency_diagnostics = stats.get("latency_diagnostics") or {}
+    if not isinstance(latency_diagnostics, dict):
+        latency_diagnostics = {}
+    return {
+        "requests": int(stats.get("instrument_refresh_requests") or 0),
+        "failures": int(stats.get("instrument_refresh_failures") or 0),
+        "added": int(stats.get("instrument_refresh_added") or 0),
+        "removed": int(stats.get("instrument_refresh_removed") or 0),
+        "delistedRemoved": int(stats.get("instrument_refresh_delisted_removed") or 0),
+        "reconciles": int(stats.get("instrument_refresh_reconciles") or 0),
+        "graphRebuilds": int(stats.get("instrument_refresh_graph_rebuilds") or 0),
+        "staleQuoteTriggers": int(stats.get("instrument_refresh_stale_triggers") or 0),
+        "quoteUnsubscribeRequests": int(stats.get("quote_unsubscribe_requests") or 0),
+        "venues": stats.get("instrument_refresh_by_venue", {}),
+        "reconcileLatency": latency_diagnostics.get("instrument_refresh_reconcile", {}),
+    }
+
+
+def _resolution_horizon_payload(
+    stats: dict[str, object],
+    *,
+    nodes: dict[Any, object],
+    quotes: dict[Any, object],
+    edges: list[object],
+) -> dict[str, object]:
+    horizon_hours = stats.get("max_resolution_horizon_hours")
+    if horizon_hours is None:
+        return _empty_resolution_horizon_payload()
+    try:
+        horizon = timedelta(hours=float(horizon_hours))
+    except (TypeError, ValueError):
+        horizon = timedelta(hours=48)
+    now = datetime.now(tz=UTC)
+    state_by_node: dict[Any, str] = {}
+    samples: dict[str, list[str]] = {
+        "inside": [],
+        "recent_past": [],
+        "outside": [],
+        "stale_past": [],
+        "unknown": [],
+    }
+    event_keys_by_state: dict[str, set[str]] = {
+        "inside": set(),
+        "recent_past": set(),
+        "outside": set(),
+        "stale_past": set(),
+        "unknown": set(),
+    }
+    for node_id, node in nodes.items():
+        instrument = getattr(node, "instrument", None)
+        state = _resolution_horizon_state(instrument, now=now, horizon=horizon)
+        state_by_node[node_id] = state
+        event_key = _canonical_probe_event_key_no_time(node)
+        if event_key:
+            event_keys_by_state[state].add(event_key)
+            if len(samples[state]) < 5:
+                samples[state].append(event_key)
+    quoted_candidates_inside = 0
+    blocked_due_horizon = 0
+    for edge in edges:
+        source = getattr(edge, "source_node_id", None)
+        target = getattr(edge, "target_node_id", None)
+        if source not in quotes or target not in quotes:
+            continue
+        states = {state_by_node.get(source, "unknown"), state_by_node.get(target, "unknown")}
+        if states <= {"inside", "recent_past"}:
+            quoted_candidates_inside += 1
+        elif "outside" in states or "stale_past" in states:
+            blocked_due_horizon += 1
+    return {
+        "enabled": True,
+        "maxResolutionHorizonHours": float(horizon_hours),
+        "eventsInsideHorizon": len(event_keys_by_state["inside"]),
+        "recentPastEvents": len(event_keys_by_state["recent_past"]),
+        "eventsOutsideHorizon": len(event_keys_by_state["outside"]),
+        "stalePastEvents": len(event_keys_by_state["stale_past"]),
+        "unknownResolutionEvents": len(event_keys_by_state["unknown"]),
+        "quotedCandidatesInsideHorizon": quoted_candidates_inside,
+        "blockedCandidatesDueHorizon": blocked_due_horizon,
+        "insideHorizonEventSamples": samples["inside"],
+        "recentPastEventSamples": samples["recent_past"],
+        "outsideHorizonEventSamples": samples["outside"],
+        "stalePastEventSamples": samples["stale_past"],
+        "unknownResolutionEventSamples": samples["unknown"],
+    }
+
+
+def _empty_resolution_horizon_payload() -> dict[str, object]:
+    return {
+        "enabled": False,
+        "maxResolutionHorizonHours": None,
+        "eventsInsideHorizon": 0,
+        "recentPastEvents": 0,
+        "eventsOutsideHorizon": 0,
+        "stalePastEvents": 0,
+        "unknownResolutionEvents": 0,
+        "quotedCandidatesInsideHorizon": 0,
+        "blockedCandidatesDueHorizon": 0,
+        "insideHorizonEventSamples": [],
+        "recentPastEventSamples": [],
+        "outsideHorizonEventSamples": [],
+        "stalePastEventSamples": [],
+        "unknownResolutionEventSamples": [],
+    }
+
+
+def _resolution_horizon_state(
+    instrument: object | None,
+    *,
+    now: datetime,
+    horizon: timedelta,
+) -> str:
+    start_time = _probe_parsed_start_time(instrument)
+    if start_time is None:
+        return "unknown"
+    stale_grace = timedelta(hours=6)
+    if start_time < now - stale_grace:
+        return "stale_past"
+    if start_time < now:
+        return "recent_past"
+    return "inside" if start_time <= now + horizon else "outside"
+
+
+def _probe_parsed_start_time(instrument: object | None) -> datetime | None:
+    parser = getattr(instrument, "parsed_start_time", None)
+    if callable(parser):
+        try:
+            parsed = parser()
+        except (AttributeError, TypeError, ValueError):
+            parsed = None
+        if isinstance(parsed, datetime):
+            return (
+                parsed.astimezone(UTC) if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+            )
+    start_time = getattr(instrument, "start_time", None)
+    if not start_time:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(start_time))
+    except ValueError:
+        return None
+    return parsed.astimezone(UTC) if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+def _runtime_latency_diagnostics(
+    stats: dict[str, object],
+    profitability: dict[str, object],
+) -> dict[str, object]:
+    diagnostics = dict(stats.get("latency_diagnostics") or {})
+    candidate_decision = diagnostics.get("candidate_decision")
+    candidate_decision_count = (
+        int(candidate_decision.get("count") or 0) if isinstance(candidate_decision, dict) else 0
+    )
+    probe_candidate_decision = profitability.get("candidate_decision_latency")
+    diagnostics["candidate_decision_source"] = "strategy"
+    if candidate_decision_count == 0 and isinstance(probe_candidate_decision, dict):
+        diagnostics["candidate_decision"] = probe_candidate_decision
+        diagnostics["candidate_decision_source"] = "runtime_probe"
+    diagnostics["runtime_probe_candidate_decision"] = (
+        probe_candidate_decision if isinstance(probe_candidate_decision, dict) else {}
+    )
+    diagnostics["sloStatus"] = _runtime_latency_slo_status(diagnostics, profitability)
+    diagnostics["diagnosticWarnings"] = _runtime_latency_diagnostic_warnings(
+        diagnostics,
+        profitability,
+    )
+    return diagnostics
+
+
+def _runtime_latency_slo_status(
+    diagnostics: dict[str, object],
+    profitability: dict[str, object],
+) -> dict[str, object]:
+    live_timing = profitability.get("live_timing_slo")
+    live_timing = live_timing if isinstance(live_timing, dict) else {}
+    histograms = profitability.get("latency_histograms")
+    histograms = histograms if isinstance(histograms, dict) else {}
+    quote_age = _runtime_slo_section_status(
+        live_timing.get("quote_age"),
+        threshold_key="threshold_secs",
+        fallback=_runtime_histogram_slo_status(
+            histograms.get("quote_age_secs"),
+            threshold_seconds=5.0,
+        ),
+    )
+    fetch_latency = _runtime_slo_section_status(
+        live_timing.get("fetch_latency"),
+        fallback=_runtime_histogram_slo_status(
+            histograms.get("fetch_latency_secs"),
+            threshold_seconds=5.0,
+            ms_histogram=diagnostics.get("quote_fetch_latency"),
+        ),
+    )
+    pair_skew = _runtime_slo_section_status(
+        live_timing.get("pair_skew"),
+        fallback=_runtime_histogram_slo_status(
+            histograms.get("pair_skew_secs"),
+            threshold_seconds=1.0,
+        ),
+    )
+    stages = {
+        "quoteReceiveObserved": _latency_count(diagnostics.get("quote_event_to_strategy")) > 0
+        or _latency_count(diagnostics.get("quote_publish_to_strategy")) > 0,
+        "graphScanObserved": _latency_count(diagnostics.get("graph_scan")) > 0,
+        "candidateDecisionObserved": _latency_count(diagnostics.get("candidate_decision")) > 0,
+        "providerLatencyObserved": _latency_count(
+            (histograms.get("fetch_latency_secs") if isinstance(histograms, dict) else {}),
+        )
+        > 0
+        or _latency_count(diagnostics.get("quote_fetch_latency")) > 0,
+        "candidateDecisionSource": diagnostics.get("candidate_decision_source"),
+    }
+    statuses = [
+        str(quote_age.get("status") or "unknown"),
+        str(fetch_latency.get("status") or "unknown"),
+        str(pair_skew.get("status") or "unknown"),
+    ]
+    if any(status == "warn" for status in statuses):
+        overall = "warn"
+    elif any(status == "pass" for status in statuses):
+        overall = "pass"
+    else:
+        overall = "unknown"
+    missing_stages = [
+        label
+        for label, observed in (
+            ("quote_receive", stages["quoteReceiveObserved"]),
+            ("graph_scan", stages["graphScanObserved"]),
+            ("candidate_decision", stages["candidateDecisionObserved"]),
+            ("provider_latency", stages["providerLatencyObserved"]),
+        )
+        if not observed
+    ]
+    return {
+        "overall": overall,
+        "quoteAge": quote_age,
+        "fetchLatency": fetch_latency,
+        "pairSkew": pair_skew,
+        "strategyLatency": stages,
+        "missingStages": missing_stages,
+    }
+
+
+def _runtime_slo_section_status(
+    section: object,
+    *,
+    threshold_key: str = "max_threshold_secs",
+    fallback: dict[str, object] | None = None,
+) -> dict[str, object]:
+    payload = section if isinstance(section, dict) else {}
+    observations = int(payload.get("observations") or 0)
+    if observations <= 0 and fallback and int(fallback.get("observations") or 0) > 0:
+        return fallback
+    violations = int(payload.get("violations") or 0)
+    if observations <= 0:
+        status = "unknown"
+    elif violations > 0:
+        status = "warn"
+    else:
+        status = "pass"
+    threshold = payload.get(threshold_key)
+    return {
+        "status": status,
+        "observations": observations,
+        "violations": violations,
+        "violationRate": round((violations / observations) if observations else 0.0, 6),
+        "thresholdSeconds": threshold,
+        "minThresholdSeconds": payload.get("min_threshold_secs"),
+        "maxThresholdSeconds": payload.get("max_threshold_secs"),
+        "thresholdMode": payload.get("threshold_mode"),
+    }
+
+
+def _runtime_histogram_slo_status(
+    histogram: object,
+    *,
+    threshold_seconds: float,
+    ms_histogram: object | None = None,
+) -> dict[str, object]:
+    payload = histogram if isinstance(histogram, dict) else {}
+    observations = int(payload.get("count") or 0)
+    p95 = float(payload.get("p95") or 0.0)
+    max_value = float(payload.get("max") or 0.0)
+    if observations <= 0 and isinstance(ms_histogram, dict):
+        observations = int(ms_histogram.get("count") or 0)
+        p95 = float(ms_histogram.get("p95_ms") or 0.0) / 1000.0
+        max_value = float(ms_histogram.get("max_ms") or 0.0) / 1000.0
+    violations = observations if observations > 0 and max(p95, max_value) > threshold_seconds else 0
+    status = "unknown" if observations <= 0 else "warn" if violations else "pass"
+    return {
+        "status": status,
+        "observations": observations,
+        "violations": violations,
+        "violationRate": 1.0 if violations else 0.0,
+        "thresholdSeconds": threshold_seconds,
+        "minThresholdSeconds": None,
+        "maxThresholdSeconds": None,
+        "thresholdMode": "histogram_p95_or_max",
+    }
+
+
+def _runtime_latency_diagnostic_warnings(
+    diagnostics: dict[str, object],
+    profitability: dict[str, object],
+) -> list[str]:
+    quoted_edges = int(profitability.get("quoted_edges") or 0)
+    positive = int(profitability.get("positive_execution") or 0) + int(
+        profitability.get("positive_same_venue") or 0,
+    )
+    threshold = int(profitability.get("threshold_execution") or 0) + int(
+        profitability.get("threshold_same_venue") or 0,
+    )
+    has_activity = quoted_edges > 0 or positive > 0 or threshold > 0
+    if not has_activity:
+        return []
+    warnings: list[str] = []
+    if (
+        _latency_count(diagnostics.get("quote_event_to_strategy")) == 0
+        and _latency_count(
+            diagnostics.get("quote_publish_to_strategy"),
+        )
+        == 0
+    ):
+        warnings.append("missing_quote_receive_latency")
+    if _latency_count(diagnostics.get("graph_scan")) == 0:
+        warnings.append("missing_graph_scan_latency")
+    if _latency_count(diagnostics.get("candidate_decision")) == 0:
+        warnings.append("missing_candidate_decision_latency")
+    histograms = profitability.get("latency_histograms")
+    histograms = histograms if isinstance(histograms, dict) else {}
+    if (
+        _latency_count(histograms.get("fetch_latency_secs")) == 0
+        and _latency_count(diagnostics.get("quote_fetch_latency")) == 0
+    ):
+        warnings.append("missing_provider_latency")
+    return warnings
+
+
+def _latency_count(value: object) -> int:
+    return int(value.get("count") or 0) if isinstance(value, dict) else 0
 
 
 def _runtime_probe_satisfied(
@@ -939,13 +1633,85 @@ def _empty_candidate_quality_payload() -> dict[str, object]:
         "timingFlags": {},
         "freshnessProfiles": {},
         "semanticBlockedReasons": {},
+        "semanticBlockedRelationships": {},
         "blockerSamples": {},
         "venueQuoteHealth": {},
+        "latencyHistograms": {
+            "quoteAgeSeconds": {"count": 0, "p50": 0.0, "p95": 0.0, "p99": 0.0, "max": 0.0},
+            "fetchLatencySeconds": {
+                "count": 0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "p99": 0.0,
+                "max": 0.0,
+            },
+            "pairSkewSeconds": {"count": 0, "p50": 0.0, "p95": 0.0, "p99": 0.0, "max": 0.0},
+        },
+        "liveQuoteAgeSlo": {
+            "maxQuoteAgeSeconds": 5.0,
+            "observations": 0,
+            "violations": 0,
+        },
+        "liveTimingSlo": {
+            "quoteAge": {
+                "thresholdSeconds": 5.0,
+                "observations": 0,
+                "violations": 0,
+            },
+            "fetchLatency": {
+                "thresholdMode": "per_candidate",
+                "minThresholdSeconds": None,
+                "maxThresholdSeconds": None,
+                "observations": 0,
+                "violations": 0,
+            },
+            "pairSkew": {
+                "thresholdMode": "per_candidate",
+                "minThresholdSeconds": None,
+                "maxThresholdSeconds": None,
+                "observations": 0,
+                "violations": 0,
+            },
+        },
+        "sameVenueDryRun": {
+            "passes": 0,
+            "failures": 0,
+            "failureReasons": {},
+        },
+        "feeAdjustment": {
+            "evaluatedEdges": 0,
+            "feeDragMargin": {"count": 0, "p50": 0.0, "p95": 0.0, "p99": 0.0, "max": 0.0},
+            "impactBuckets": {},
+        },
+        "devigDiagnostics": {
+            "evaluatedEdges": 0,
+            "completeBooks": 0,
+            "incompleteBooks": 0,
+            "methodCounts": {},
+            "methodReasonCounts": {},
+            "convergenceCounts": {},
+            "valueBuckets": {},
+            "overround": {"count": 0, "p50": 0.0, "p95": 0.0, "p99": 0.0, "max": 0.0},
+            "vig": {"count": 0, "p50": 0.0, "p95": 0.0, "p99": 0.0, "max": 0.0},
+            "grossValueEdge": {"count": 0, "p50": 0.0, "p95": 0.0, "p99": 0.0, "max": 0.0},
+            "feeAdjustedValueEdge": {
+                "count": 0,
+                "p50": 0.0,
+                "p95": 0.0,
+                "p99": 0.0,
+                "max": 0.0,
+            },
+        },
         "venuePairs": {},
         "marketFamilies": {},
         "zeroCandidateVenuePairSamples": [],
+        "zeroCandidateBlockerCounts": {},
+        "zeroCandidateFixtureProofBlockerCounts": {},
         "topPositiveCandidates": [],
         "topNegativeNearMisses": [],
+        "topValueEdgeCandidates": [],
+        "topVigErasedCandidates": [],
+        "coverageBookDevigDiagnostics": _empty_coverage_book_devig_payload(),
     }
 
 
@@ -1016,19 +1782,33 @@ def _venue_pair_coverage(
         if _quoted_probe_edge(edge, nodes, quotes) is not None:
             quoted_edge_counts[pair] += 1
 
-    all_pairs = [f"{source}->{target}" for source in venues for target in venues]
+    all_pairs = [
+        pair
+        for source in venues
+        for target in venues
+        if _venue_pair_matches_execution_venue_mode(strategy, pair := f"{source}->{target}")
+    ]
     candidate_counts = _venue_pair_candidate_counts(candidate_venue_pairs)
     zero_pairs = [
         _zero_venue_pair_report(
             pair,
+            strategy=strategy,
             nodes=nodes,
+            quotes=quotes,
             node_counts=node_counts,
             edge_counts=edge_counts,
             quoted_edge_counts=quoted_edge_counts,
+            candidate_count=candidate_counts.get(pair, 0),
         )
         for pair in all_pairs
         if candidate_counts.get(pair, 0) == 0
     ]
+    zero_pair_blocker_counts = Counter(
+        str(report.get("blockerReason") or report.get("reason") or "unknown")
+        for report in zero_pairs
+        if isinstance(report, dict)
+    )
+    zero_pair_fixture_proof_blocker_counts = _zero_pair_fixture_proof_blocker_counts(zero_pairs)
     cross_venue_candidate_count = sum(
         count for pair, count in candidate_counts.items() if _is_cross_venue_pair(pair)
     )
@@ -1039,6 +1819,24 @@ def _venue_pair_coverage(
             0,
         )
         for venue in venues
+    }
+    config = getattr(strategy, "_config", None)
+    quote_subscription_limits = {
+        str(venue).upper(): int(limit)
+        for venue, limit in (
+            getattr(config, "semantic_quote_subscription_limit_by_venue", {}) or {}
+        ).items()
+    }
+    quote_subscription_limit_exceeded_counts = {
+        venue: max(
+            int(quote_subscription_counts.get(venue, 0) or 0)
+            - int(quote_subscription_limits.get(venue, 0) or 0),
+            0,
+        )
+        for venue in venues
+        if quote_subscription_limits.get(venue) is not None
+        and int(quote_subscription_counts.get(venue, 0) or 0)
+        > int(quote_subscription_limits.get(venue, 0) or 0)
     }
     unquoted_semantic_match_counts = {
         venue: max(
@@ -1052,9 +1850,22 @@ def _venue_pair_coverage(
     return {
         "enabledVenues": venues,
         "nodeCounts": {venue: node_counts.get(venue, 0) for venue in venues},
+        "eventKeyCounts": {
+            venue: len(_event_keys_for_venue(nodes, venue) - {""}) for venue in venues
+        },
+        "eventSportCounts": {
+            venue: dict(sorted(_event_sport_counts(_event_keys_for_venue(nodes, venue)).items()))
+            for venue in venues
+        },
         "quoteSubscriptionCounts": {
             venue: quote_subscription_counts.get(venue, 0) for venue in venues
         },
+        "quoteSubscriptionLimits": {
+            venue: quote_subscription_limits.get(venue)
+            for venue in venues
+            if quote_subscription_limits.get(venue) is not None
+        },
+        "quoteSubscriptionLimitExceededCounts": quote_subscription_limit_exceeded_counts,
         "quoteSubscriptionGapCounts": quote_subscription_gap_counts,
         "venuesWithSubscriptionQuoteGap": [
             venue for venue in venues if quote_subscription_gap_counts.get(venue, 0) > 0
@@ -1072,6 +1883,10 @@ def _venue_pair_coverage(
         "quotedEdgeCounts": {pair: quoted_edge_counts.get(pair, 0) for pair in all_pairs},
         "candidateCounts": {pair: candidate_counts.get(pair, 0) for pair in all_pairs},
         "crossVenueCandidateCount": cross_venue_candidate_count,
+        "zeroCandidateBlockerCounts": dict(sorted(zero_pair_blocker_counts.items())),
+        "zeroCandidateFixtureProofBlockerCounts": dict(
+            sorted(zero_pair_fixture_proof_blocker_counts.items()),
+        ),
         "crossVenuePairsWithCandidates": [
             pair
             for pair in all_pairs
@@ -1079,6 +1894,19 @@ def _venue_pair_coverage(
         ],
         "zeroCandidateVenuePairs": zero_pairs,
     }
+
+
+def _zero_pair_fixture_proof_blocker_counts(
+    zero_pairs: list[dict[str, object]],
+) -> Counter[str]:
+    counts: Counter[str] = Counter()
+    for report in zero_pairs:
+        fixture_proof_counts = report.get("fixtureProofBlockerCounts")
+        if not isinstance(fixture_proof_counts, dict):
+            continue
+        for reason, count in fixture_proof_counts.items():
+            counts[str(reason)] += int(count or 0)
+    return counts
 
 
 def _quote_subscription_counts_by_venue(strategy) -> Counter[str]:
@@ -1102,6 +1930,17 @@ def _venue_pair_candidate_counts(candidate_venue_pairs: Any) -> dict[str, int]:
         for pair, buckets in candidate_venue_pairs.items()
         if isinstance(buckets, dict)
     }
+
+
+def _venue_pair_matches_execution_venue_mode(strategy, pair: str) -> bool:
+    source, target = pair.split("->", maxsplit=1)
+    config = getattr(strategy, "_config", None)
+    mode = str(getattr(config, "execution_venue_mode", "all") or "all").strip().lower()
+    if mode == "cross_venue":
+        return source != target
+    if mode == "same_venue":
+        return source == target
+    return True
 
 
 def _enabled_probe_venues(strategy, nodes: dict[Any, object]) -> list[str]:
@@ -1145,10 +1984,13 @@ def _zero_venue_pair_reason(
 def _zero_venue_pair_report(
     pair: str,
     *,
+    strategy,
     nodes: dict[Any, object],
+    quotes: dict[Any, object],
     node_counts: Counter[str],
     edge_counts: Counter[str],
     quoted_edge_counts: Counter[str],
+    candidate_count: int,
 ) -> dict[str, object]:
     reason = _zero_venue_pair_reason(
         pair,
@@ -1156,19 +1998,32 @@ def _zero_venue_pair_report(
         edge_counts=edge_counts,
         quoted_edge_counts=quoted_edge_counts,
     )
-    report: dict[str, object] = {"venuePair": pair, "reason": reason}
+    source, target = pair.split("->", maxsplit=1)
+    report: dict[str, object] = {
+        "venuePair": pair,
+        "reason": reason,
+        "sourceNodeCount": node_counts.get(source, 0),
+        "targetNodeCount": node_counts.get(target, 0),
+        "edgeCount": edge_counts.get(pair, 0),
+        "quotedEdgeCount": quoted_edge_counts.get(pair, 0),
+        "candidateCount": int(candidate_count),
+    }
     if reason == "missing_instruments":
         return report
 
-    source, target = pair.split("->", maxsplit=1)
-    source_nodes = _sample_probe_nodes_for_venue(nodes, source)
-    target_nodes = _sample_probe_nodes_for_venue(nodes, target)
-    source_event_keys = {_probe_event_key_no_time(node) for node in source_nodes}
-    target_event_keys = {_probe_event_key_no_time(node) for node in target_nodes}
+    source_event_keys = _event_keys_for_venue(nodes, source)
+    target_event_keys = _event_keys_for_venue(nodes, target)
     common_event_keys = sorted((source_event_keys & target_event_keys) - {""})
+    common_quote_coverage = _common_event_quote_coverage(
+        source=source,
+        target=target,
+        nodes=nodes,
+        quotes=quotes,
+        common_event_keys=set(common_event_keys),
+    )
     if reason == "no_semantic_edge":
         report["blockerReason"] = (
-            CoverageBlockerReason.FIXTURE_IDENTITY_MISMATCH.value
+            CoverageBlockerReason.NO_COMMON_FIXTURE.value
             if not common_event_keys
             else CoverageBlockerReason.NO_SEMANTIC_EDGE.value
         )
@@ -1177,59 +2032,351 @@ def _zero_venue_pair_report(
     else:
         report["blockerReason"] = "pricing_or_threshold"
     report["commonEventKeyCount"] = len(common_event_keys)
+    report["commonEventKeySamples"] = common_event_keys[:5]
+    report.update(common_quote_coverage)
     report["sourceEventKeySamples"] = sorted(source_event_keys - {""})[:5]
     report["targetEventKeySamples"] = sorted(target_event_keys - {""})[:5]
+    report["sourceEventSportCounts"] = dict(sorted(_event_sport_counts(source_event_keys).items()))
+    report["targetEventSportCounts"] = dict(sorted(_event_sport_counts(target_event_keys).items()))
+    if reason == "no_semantic_edge" and not common_event_keys:
+        report["discoveryGapReason"] = "no_common_fixture_loaded"
+        report["marketFamilyPairs"] = {}
+        report["sampleBlockerCounts"] = {}
+        report["samples"] = []
+        return report
 
-    market_family_pairs: Counter[str] = Counter()
-    samples: list[dict[str, object]] = []
-    for source_node, target_node in _sample_zero_pair_nodes(
+    source_nodes = _sample_probe_nodes_for_venue(
+        nodes,
+        source,
+        preferred_event_keys=set(common_event_keys),
+    )
+    target_nodes = _sample_probe_nodes_for_venue(
+        nodes,
+        target,
+        preferred_event_keys=set(common_event_keys),
+    )
+    sample_pairs = _sample_zero_pair_nodes(
         source_nodes=source_nodes,
         target_nodes=target_nodes,
         common_event_keys=set(common_event_keys),
-    ):
+    )
+    verified_pairs, fixture_blocker_counts = _verified_fixture_sample_pairs(sample_pairs)
+    diagnostic_pairs = verified_pairs or sample_pairs
+    report["verifiedCommonFixtureSampleCount"] = len(verified_pairs)
+    report["fixtureProofBlockerCounts"] = dict(sorted(fixture_blocker_counts.items()))
+    if reason == "no_semantic_edge" and common_event_keys and not verified_pairs:
+        report["blockerReason"] = CoverageBlockerReason.FIXTURE_IDENTITY_MISMATCH.value
+        report["discoveryGapReason"] = "common_event_aliases_failed_fixture_proof"
+    market_family_pairs: Counter[str] = Counter()
+    sample_blocker_counts: Counter[str] = Counter()
+    samples: list[dict[str, object]] = []
+    for source_node, target_node in diagnostic_pairs:
         family = _probe_market_family(source_node, target_node)
         market_family_pairs[family] += 1
+        sample = _zero_pair_sample_payload(strategy, source_node, target_node)
+        blocker_hint = str(sample.get("blockerHint") or "")
+        if blocker_hint:
+            sample_blocker_counts[blocker_hint] += 1
         if len(samples) < 5:
-            samples.append(
-                {
-                    "instrumentIdA": str(getattr(source_node.instrument, "id", "")),
-                    "instrumentIdB": str(getattr(target_node.instrument, "id", "")),
-                    "eventKeyA": _probe_event_key_no_time(source_node),
-                    "eventKeyB": _probe_event_key_no_time(target_node),
-                    "marketFamily": family,
-                    "patternA": _probe_pattern_payload(source_node),
-                    "patternB": _probe_pattern_payload(target_node),
-                },
-            )
+            sample["marketFamily"] = family
+            samples.append(sample)
     report["marketFamilyPairs"] = dict(market_family_pairs)
+    report["sampleBlockerCounts"] = dict(sorted(sample_blocker_counts.items()))
     report["samples"] = samples
     if reason == "no_semantic_edge" and samples:
         report["blockerReason"] = _zero_pair_sample_blocker(samples, report["blockerReason"])
     return report
 
 
+def _verified_fixture_sample_pairs(
+    pairs: list[tuple[object, object]],
+) -> tuple[list[tuple[object, object]], Counter[str]]:
+    verified: list[tuple[object, object]] = []
+    blocker_counts: Counter[str] = Counter()
+    for source_node, target_node in pairs:
+        proof = DEFAULT_FIXTURE_IDENTITY_RESOLVER.resolve(
+            source_node.instrument,
+            target_node.instrument,
+        )
+        if proof.same_fixture:
+            verified.append((source_node, target_node))
+        else:
+            blocker_counts[proof.blocker_reason or proof.reason or "fixture_identity_mismatch"] += 1
+    return verified, blocker_counts
+
+
+def _common_event_quote_coverage(
+    *,
+    source: str,
+    target: str,
+    nodes: dict[Any, object],
+    quotes: dict[Any, object],
+    common_event_keys: set[str],
+) -> dict[str, object]:
+    source_quoted_keys = _quoted_event_keys_for_venue(nodes, quotes, source)
+    target_quoted_keys = _quoted_event_keys_for_venue(nodes, quotes, target)
+    fully_quoted_keys = common_event_keys & source_quoted_keys & target_quoted_keys
+    source_missing_keys = common_event_keys - source_quoted_keys
+    target_missing_keys = common_event_keys - target_quoted_keys
+    samples: list[dict[str, object]] = []
+    for event_key in sorted((source_missing_keys | target_missing_keys) - {""})[:5]:
+        samples.append(
+            {
+                "eventKey": event_key,
+                "sourceQuoted": event_key in source_quoted_keys,
+                "targetQuoted": event_key in target_quoted_keys,
+            },
+        )
+    return {
+        "fullyQuotedCommonEventKeyCount": len(fully_quoted_keys),
+        "sourceQuotedCommonEventKeyCount": len(common_event_keys & source_quoted_keys),
+        "targetQuotedCommonEventKeyCount": len(common_event_keys & target_quoted_keys),
+        "unquotedCommonEventKeySamples": samples,
+    }
+
+
+def _quoted_event_keys_for_venue(
+    nodes: dict[Any, object],
+    quotes: dict[Any, object],
+    venue: str,
+) -> set[str]:
+    keys: set[str] = set()
+    for node_id, node in nodes.items():
+        if node_id not in quotes or _probe_node_venue(node) != venue:
+            continue
+        keys.update(_probe_event_keys_no_time(node))
+    return keys
+
+
 def _zero_pair_sample_blocker(samples: list[dict[str, object]], fallback: object) -> str:
     fallback_reason = str(fallback or CoverageBlockerReason.NO_SEMANTIC_EDGE.value)
-    if fallback_reason == CoverageBlockerReason.FIXTURE_IDENTITY_MISMATCH.value:
-        return fallback_reason
+    fixture_identity_reason = _fixture_identity_fallback_reason(samples, fallback_reason)
+    if fixture_identity_reason is not None:
+        return fixture_identity_reason
+    blocker_hints: Counter[str] = Counter()
     for sample in samples:
+        blocker_hint = str(sample.get("blockerHint") or "")
+        if blocker_hint:
+            blocker_hints[blocker_hint] += 1
         pattern_a = sample.get("patternA")
         pattern_b = sample.get("patternB")
         if not isinstance(pattern_a, dict) or not isinstance(pattern_b, dict):
             continue
         if pattern_a.get("scope") != pattern_b.get("scope"):
             return CoverageBlockerReason.SCOPE_MISMATCH.value
+        if _semantic_pattern_subject(pattern_a) != _semantic_pattern_subject(pattern_b):
+            return CoverageBlockerReason.PROVIDER_SCOPE_MISMATCH.value
         if pattern_a.get("marketFamily") == pattern_b.get("marketFamily") and pattern_a.get(
             "paramsKey",
         ) != pattern_b.get("paramsKey"):
             return CoverageBlockerReason.SAME_MARKET_PARAMS_MISMATCH.value
+    if blocker_hints:
+        return blocker_hints.most_common(1)[0][0]
     return fallback_reason
 
 
-def _sample_probe_nodes_for_venue(nodes: dict[Any, object], venue: str, limit: int = 40) -> list:
-    sampled: list[object] = []
+def _fixture_identity_fallback_reason(
+    samples: list[dict[str, object]],
+    fallback_reason: str,
+) -> str | None:
+    if fallback_reason == CoverageBlockerReason.NO_COMMON_FIXTURE.value:
+        return fallback_reason
+    if fallback_reason != CoverageBlockerReason.FIXTURE_IDENTITY_MISMATCH.value:
+        return None
+    if _only_start_time_fixture_mismatches(samples):
+        return CoverageBlockerReason.NO_COMMON_FIXTURE.value
+    return fallback_reason
+
+
+def _only_start_time_fixture_mismatches(samples: list[dict[str, object]]) -> bool:
+    fixture_blockers: Counter[str] = Counter()
+    for sample in samples:
+        fixture_proof = sample.get("fixtureIdentityProof")
+        if isinstance(fixture_proof, dict):
+            blocker = str(fixture_proof.get("blockerReason") or "")
+            if blocker:
+                fixture_blockers[blocker] += 1
+    return bool(fixture_blockers) and set(fixture_blockers) == {"start_time_mismatch"}
+
+
+def _zero_pair_sample_payload(strategy, source_node, target_node) -> dict[str, object]:
+    instrument_a = source_node.instrument
+    instrument_b = target_node.instrument
+    fixture_proof = DEFAULT_FIXTURE_IDENTITY_RESOLVER.resolve(instrument_a, instrument_b)
+    fixture_start_time_a = DEFAULT_FIXTURE_IDENTITY_RESOLVER.parsed_start_time(instrument_a)
+    fixture_start_time_b = DEFAULT_FIXTURE_IDENTITY_RESOLVER.parsed_start_time(instrument_b)
+    pattern_a = _probe_pattern_payload(source_node)
+    pattern_b = _probe_pattern_payload(target_node)
+    matcher_suspect, suspect_reason = _strategy_matcher_suspect_reason(
+        strategy,
+        instrument_a,
+        instrument_b,
+    )
+    fixture_suspect, fixture_suspect_reason = _semantic_fixture_suspect_reason(
+        strategy,
+        instrument_a,
+        instrument_b,
+    )
+    blocker_hint = _zero_pair_blocker_hint(
+        pattern_a,
+        pattern_b,
+        suspect_reason=suspect_reason,
+        fixture_suspect=fixture_suspect,
+        fixture_suspect_reason=fixture_suspect_reason,
+    )
+    return {
+        "instrumentIdA": str(getattr(instrument_a, "id", "")),
+        "instrumentIdB": str(getattr(instrument_b, "id", "")),
+        "eventKeyA": _probe_event_key_no_time(source_node),
+        "eventKeyB": _probe_event_key_no_time(target_node),
+        "eventAliasKeysA": sorted(_probe_event_keys_no_time(source_node))[:5],
+        "eventAliasKeysB": sorted(_probe_event_keys_no_time(target_node))[:5],
+        "canonicalEventKeyA": _canonical_probe_event_key_no_time(source_node),
+        "canonicalEventKeyB": _canonical_probe_event_key_no_time(target_node),
+        "fixtureStartTimeA": _isoformat_utc(fixture_start_time_a),
+        "fixtureStartTimeB": _isoformat_utc(fixture_start_time_b),
+        "patternA": pattern_a,
+        "patternB": pattern_b,
+        "matcherSuspect": matcher_suspect,
+        "matcherSuspectReason": suspect_reason,
+        "fixtureSuspect": fixture_suspect,
+        "fixtureSuspectReason": fixture_suspect_reason,
+        "fixtureIdentityProof": {
+            "sameFixture": fixture_proof.same_fixture,
+            "reason": fixture_proof.reason,
+            "confidence": fixture_proof.confidence,
+            "aliasHits": list(fixture_proof.alias_hits),
+            "matchedFields": list(fixture_proof.matched_fields),
+            "startTimeDeltaSeconds": fixture_proof.start_time_delta_secs,
+            "ambiguous": fixture_proof.ambiguous,
+            "blockerReason": fixture_proof.blocker_reason,
+        },
+        "blockerHint": blocker_hint,
+    }
+
+
+def _isoformat_utc(timestamp) -> str | None:
+    if timestamp is None:
+        return None
+    return timestamp.isoformat().replace("+00:00", "Z")
+
+
+def _strategy_matcher_suspect_reason(strategy, instrument_a, instrument_b) -> tuple[bool, str]:
+    checker = getattr(strategy, "matcher_suspect_reason", None)
+    if checker is None:
+        checker = getattr(strategy, "_matcher_suspect_reason", None)
+    if checker is None:
+        from nautilus_trader.examples.strategies.betting_arbitrage import (
+            BettingArbitrageStrategy,
+        )
+
+        checker = BettingArbitrageStrategy.matcher_suspect_reason
+    return checker(instrument_a, instrument_b)
+
+
+def _zero_pair_blocker_hint(
+    pattern_a: dict[str, object],
+    pattern_b: dict[str, object],
+    *,
+    suspect_reason: str,
+    fixture_suspect: bool,
+    fixture_suspect_reason: str,
+) -> str:
+    if fixture_suspect and fixture_suspect_reason in {
+        "same_venue_event_id_mismatch",
+        "event_mismatch",
+    }:
+        return CoverageBlockerReason.FIXTURE_IDENTITY_MISMATCH.value
+    if suspect_reason == "same_market_params_mismatch":
+        if _semantic_pattern_subject(pattern_a) != _semantic_pattern_subject(pattern_b):
+            return CoverageBlockerReason.PROVIDER_SCOPE_MISMATCH.value
+        return CoverageBlockerReason.SAME_MARKET_PARAMS_MISMATCH.value
+    if pattern_a.get("scope") != pattern_b.get("scope"):
+        return CoverageBlockerReason.SCOPE_MISMATCH.value
+    if _semantic_pattern_subject(pattern_a) != _semantic_pattern_subject(pattern_b):
+        return CoverageBlockerReason.PROVIDER_SCOPE_MISMATCH.value
+    if pattern_a.get("marketFamily") == pattern_b.get("marketFamily") and pattern_a.get(
+        "paramsKey",
+    ) != pattern_b.get("paramsKey"):
+        return CoverageBlockerReason.SAME_MARKET_PARAMS_MISMATCH.value
+    return ""
+
+
+def _semantic_pattern_subject(pattern: dict[str, object]) -> str:
+    params = _semantic_params_from_key(str(pattern.get("paramsKey") or ""))
+    explicit = str(params.get("subject") or params.get("market_subject") or "").strip().lower()
+    if explicit:
+        return explicit
+    raw_text = " ".join(
+        str(pattern.get(key) or "")
+        for key in ("rawMarketName", "rawMarketType", "marketType", "marketFamily")
+    ).lower()
+    if "corner" in raw_text:
+        return "corners"
+    if "card" in raw_text:
+        return "cards"
+    return ""
+
+
+def _semantic_params_from_key(params_key: str) -> dict[str, str]:
+    if not params_key or params_key == "[]":
+        return {}
+    try:
+        raw = json.loads(params_key)
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(raw, list):
+        return {}
+    params: dict[str, str] = {}
+    for item in raw:
+        if type(item) in {str, bytes} or not isinstance(item, Sequence) or len(item) != 2:
+            continue
+        key, value = item
+        params[str(key)] = str(value)
+    return params
+
+
+def _event_keys_for_venue(nodes: dict[Any, object], venue: str) -> set[str]:
+    keys: set[str] = set()
     for node in nodes.values():
         if _probe_node_venue(node) != venue:
+            continue
+        keys.update(_probe_event_keys_no_time(node))
+    return keys
+
+
+def _event_sport_counts(event_keys: set[str]) -> Counter[str]:
+    counts: Counter[str] = Counter()
+    for event_key in event_keys:
+        if not event_key:
+            continue
+        sport = event_key.split(":", maxsplit=1)[0].strip()
+        if sport:
+            counts[sport] += 1
+    return counts
+
+
+def _sample_probe_nodes_for_venue(
+    nodes: dict[Any, object],
+    venue: str,
+    limit: int = 40,
+    preferred_event_keys: set[str] | None = None,
+) -> list:
+    sampled: list[object] = []
+    preferred = preferred_event_keys or set()
+    if preferred:
+        for node in nodes.values():
+            if _probe_node_venue(node) != venue:
+                continue
+            if not (_probe_event_keys_no_time(node) & preferred):
+                continue
+            sampled.append(node)
+            if len(sampled) >= limit:
+                return sampled
+    for node in nodes.values():
+        if _probe_node_venue(node) != venue:
+            continue
+        if node in sampled:
             continue
         sampled.append(node)
         if len(sampled) >= limit:
@@ -1244,18 +2391,50 @@ def _sample_zero_pair_nodes(
     common_event_keys: set[str],
     limit: int = 12,
 ) -> list[tuple[object, object]]:
-    pairs: list[tuple[object, object]] = []
     if common_event_keys:
-        for source_node in source_nodes:
-            source_key = _probe_event_key_no_time(source_node)
-            if source_key not in common_event_keys:
+        pairs = _sample_zero_pair_nodes_for_common_events(
+            source_nodes,
+            target_nodes,
+            common_event_keys=common_event_keys,
+            limit=limit,
+        )
+        if pairs:
+            return pairs
+    return _sample_zero_pair_nodes_fallback(
+        source_nodes,
+        target_nodes,
+        limit=limit,
+    )
+
+
+def _sample_zero_pair_nodes_for_common_events(
+    source_nodes: list,
+    target_nodes: list,
+    *,
+    common_event_keys: set[str],
+    limit: int,
+) -> list[tuple[object, object]]:
+    pairs: list[tuple[object, object]] = []
+    for source_node in source_nodes:
+        source_keys = _probe_event_keys_no_time(source_node) & common_event_keys
+        if not source_keys:
+            continue
+        for target_node in target_nodes:
+            if not (_probe_event_keys_no_time(target_node) & source_keys):
                 continue
-            for target_node in target_nodes:
-                if _probe_event_key_no_time(target_node) != source_key:
-                    continue
-                pairs.append((source_node, target_node))
-                if len(pairs) >= limit:
-                    return pairs
+            pairs.append((source_node, target_node))
+            if len(pairs) >= limit:
+                return pairs
+    return pairs
+
+
+def _sample_zero_pair_nodes_fallback(
+    source_nodes: list,
+    target_nodes: list,
+    *,
+    limit: int,
+) -> list[tuple[object, object]]:
+    pairs: list[tuple[object, object]] = []
     for source_node in source_nodes[:4]:
         for target_node in target_nodes[:4]:
             pairs.append((source_node, target_node))
@@ -1273,6 +2452,48 @@ def _probe_event_key_no_time(node) -> str:
         except (AttributeError, TypeError, ValueError):
             pass
     return str(getattr(node, "canonical_event_key", ""))
+
+
+def _canonical_probe_event_key_no_time(node) -> str:
+    return _canonical_event_key_text(_probe_event_key_no_time(node))
+
+
+def _probe_event_keys_no_time(node) -> set[str]:
+    keys = {_canonical_probe_event_key_no_time(node)}
+    instrument = getattr(node, "instrument", None)
+    event_alias_keys = getattr(instrument, "event_alias_keys", None)
+    if callable(event_alias_keys):
+        try:
+            raw_aliases = event_alias_keys(include_start_time=False)
+        except (AttributeError, TypeError, ValueError):
+            raw_aliases = ()
+        if isinstance(raw_aliases, str | bytes):
+            raw_aliases = (raw_aliases,)
+        for alias in raw_aliases or ():
+            keys.add(_canonical_event_key_text(str(alias)))
+    return {key for key in keys if key}
+
+
+def _canonical_event_key_text(value: str) -> str:
+    raw = str(value or "")
+    if not raw:
+        return ""
+    parts = [part.strip() for part in raw.replace("|", ":").split(":") if part.strip()]
+    if not parts:
+        return ""
+    sport = CryptoBettingInstrument._normalize_event_component(parts[0].replace("_", " "))
+    team_parts: list[str] = []
+    for part in parts[1:]:
+        lowered = part.lower()
+        if "t" in lowered and lowered[:4].isdigit():
+            continue
+        if len(lowered) >= 4 and lowered[:4].isdigit():
+            continue
+        normalized = CryptoBettingInstrument._normalize_team_name(part.replace("_", " "))
+        if normalized:
+            team_parts.append(normalized)
+    teams = sorted(set(team_parts))
+    return ":".join(part for part in (sport, *teams) if part)
 
 
 def _probe_pattern_payload(node) -> dict[str, str]:
@@ -1315,16 +2536,34 @@ def _semantic_probe_diagnostics(graph) -> dict[str, object]:
         node_diagnostics["provider_pattern_counts"],
         template_diagnostics["provider_pattern_counts"],
     )
+    unsupported_provider_patterns = _unsupported_provider_patterns(
+        node_diagnostics["provider_pattern_counts"],
+        template_diagnostics["provider_pattern_counts"],
+        node_diagnostics["provider_pattern_samples"],
+    )
+    normalized_node_count = sum(node_diagnostics["pattern_counts"].values())
     common_pattern_key_count = len(
         set(node_diagnostics["pattern_counts"]) & set(template_diagnostics["pattern_counts"]),
     )
     return {
         "available": True,
         "nodeCount": len(nodes),
-        "normalizedNodeCount": sum(node_diagnostics["pattern_counts"].values()),
+        "normalizedNodeCount": normalized_node_count,
         "normalizationErrorCount": sum(node_diagnostics["normalization_errors"].values()),
         "supportedProviderNodeCount": supported_provider_node_count,
+        "unsupportedProviderNodeCount": unsupported_provider_patterns["node_count"],
+        "supportedProviderCoverageRatio": round(
+            (
+                supported_provider_node_count / normalized_node_count
+                if normalized_node_count > 0
+                else 0.0
+            ),
+            6,
+        ),
         "commonPatternKeyCount": common_pattern_key_count,
+        "unsupportedProviderPatternCount": unsupported_provider_patterns["pattern_count"],
+        "unsupportedProviderPatterns": unsupported_provider_patterns["top_patterns"],
+        "unsupportedProviderPatternSamples": unsupported_provider_patterns["samples"],
         "templateCount": template_diagnostics["template_count"],
         "nodeSports": _top_counter(node_diagnostics["sport_counts"]),
         "nodeMarkets": _top_counter(node_diagnostics["market_counts"]),
@@ -1357,6 +2596,7 @@ def _semantic_node_diagnostics(nodes: dict[str, object]) -> dict[str, object]:
     normalization_errors: Counter[str] = Counter()
     normalization_error_samples: list[dict[str, object]] = []
     normalized_node_samples: list[dict[str, object]] = []
+    provider_pattern_samples: dict[tuple[str, ...], list[dict[str, object]]] = {}
     for node_id, node in nodes.items():
         instrument = getattr(node, "instrument", None)
         try:
@@ -1390,6 +2630,22 @@ def _semantic_node_diagnostics(nodes: dict[str, object]) -> dict[str, object]:
         provider_pattern_counts[provider_pattern_key] += 1
         sport_counts[normalized.sport] += 1
         market_counts[normalized.market_type] += 1
+        provider_samples = provider_pattern_samples.setdefault(provider_pattern_key, [])
+        if len(provider_samples) < 3:
+            provider_samples.append(
+                {
+                    "nodeId": str(node_id),
+                    "instrumentId": str(getattr(instrument, "id", node_id)),
+                    "venue": normalized.venue,
+                    "sport": normalized.sport,
+                    "scope": normalized.scope,
+                    "marketType": normalized.market_type,
+                    "marketFamily": normalized.market_family,
+                    "selection": normalized.selection,
+                    "paramsKey": pattern_key[-1],
+                    "eventKey": normalized.event_key,
+                },
+            )
         if len(normalized_node_samples) < 5:
             normalized_node_samples.append(
                 {
@@ -1411,6 +2667,7 @@ def _semantic_node_diagnostics(nodes: dict[str, object]) -> dict[str, object]:
         "normalization_errors": normalization_errors,
         "normalization_error_samples": normalization_error_samples,
         "normalized_node_samples": normalized_node_samples,
+        "provider_pattern_samples": provider_pattern_samples,
     }
 
 
@@ -1505,6 +2762,44 @@ def _supported_provider_node_count(
     return supported_provider_node_count
 
 
+def _unsupported_provider_patterns(
+    node_provider_pattern_counts: Counter[tuple[str, ...]],
+    template_provider_pattern_counts: Counter[tuple[str, ...]],
+    provider_pattern_samples: dict[tuple[str, ...], list[dict[str, object]]],
+    *,
+    limit: int = 10,
+) -> dict[str, object]:
+    unsupported_counts: Counter[tuple[str, ...]] = Counter()
+    for provider_pattern_key, count in node_provider_pattern_counts.items():
+        venue = provider_pattern_key[0]
+        pattern_key = provider_pattern_key[1:]
+        if template_provider_pattern_counts.get((venue, *pattern_key), 0):
+            continue
+        if template_provider_pattern_counts.get(("venue_agnostic", *pattern_key), 0):
+            continue
+        unsupported_counts[provider_pattern_key] += count
+
+    return {
+        "node_count": sum(unsupported_counts.values()),
+        "pattern_count": len(unsupported_counts),
+        "top_patterns": _top_counter(unsupported_counts, limit=limit),
+        "samples": [
+            {
+                "provider": key[0],
+                "sport": key[1],
+                "scope": key[2],
+                "marketType": key[3],
+                "marketFamily": key[4],
+                "selection": key[5],
+                "paramsKey": key[6],
+                "count": count,
+                "samples": provider_pattern_samples.get(key, [])[:3],
+            }
+            for key, count in unsupported_counts.most_common(limit)
+        ],
+    }
+
+
 def _semantic_template_payloads_for_diagnostics(graph) -> list[dict[str, object]]:
     payloads = getattr(graph, "_semantic_template_payloads", None)
     if not callable(payloads):
@@ -1540,6 +2835,251 @@ def _top_counter(counter: Counter, limit: int = 10) -> list[dict[str, object]]:
     ]
 
 
+def _empty_coverage_book_devig_payload() -> dict[str, object]:
+    return {
+        "sampledHyperedges": 0,
+        "quotedHyperedges": 0,
+        "incompleteHyperedges": 0,
+        "methodCounts": {},
+        "valueBuckets": {},
+        "overround": _percentile_payload([]),
+        "vig": _percentile_payload([]),
+        "rawProfitMargin": _percentile_payload([]),
+        "feeAdjustedProfitMargin": _percentile_payload([]),
+        "samples": [],
+    }
+
+
+def _probe_coverage_book_devig_diagnostics(  # noqa: C901
+    strategy,
+    *,
+    coverage_diagnostics: object,
+    nodes: dict[Any, object],
+    quotes: dict[Any, object],
+    min_profit_margin: Decimal,
+) -> dict[str, object]:
+    if not isinstance(coverage_diagnostics, dict):
+        return _empty_coverage_book_devig_payload()
+    sample_hyperedges = coverage_diagnostics.get("sampleHyperedges")
+    if not isinstance(sample_hyperedges, list) or not sample_hyperedges:
+        return _empty_coverage_book_devig_payload()
+
+    method_counts: Counter[str] = Counter()
+    value_buckets: Counter[str] = Counter()
+    overround_samples: list[float] = []
+    vig_samples: list[float] = []
+    raw_margin_samples: list[float] = []
+    adjusted_margin_samples: list[float] = []
+    samples: list[dict[str, object]] = []
+    quoted_hyperedges = 0
+    incomplete_hyperedges = 0
+    adjuster = getattr(strategy, "fee_adjusted_coverage_basket", None)
+
+    for hyperedge in sample_hyperedges:
+        if not isinstance(hyperedge, dict):
+            continue
+        instrument_ids = tuple(str(item) for item in hyperedge.get("instrument_ids", ()) or ())
+        resolved_ids, missing_ids = _resolve_coverage_hyperedge_node_ids(
+            hyperedge,
+            nodes=nodes,
+            quotes=quotes,
+        )
+        if len(instrument_ids) < 2 or not callable(adjuster):
+            incomplete_hyperedges += 1
+            value_buckets["coverage_reference_book_incomplete"] += 1
+            continue
+        if missing_ids:
+            incomplete_hyperedges += 1
+            value_buckets["coverage_reference_book_incomplete"] += 1
+            if len(samples) < 5:
+                samples.append(
+                    {
+                        "hyperedgeId": str(hyperedge.get("hyperedge_id") or ""),
+                        "coverageProofId": str(hyperedge.get("coverage_proof_id") or ""),
+                        "classification": "coverage_reference_book_incomplete",
+                        "missingInstrumentIds": missing_ids[:10],
+                        "resolvedInstrumentIds": list(resolved_ids),
+                    },
+                )
+            continue
+
+        try:
+            instruments = tuple(nodes[instrument_id].instrument for instrument_id in resolved_ids)
+            odds = tuple(Decimal(str(quotes[instrument_id].odds)) for instrument_id in resolved_ids)
+            adjusted = adjuster(instruments, odds)
+        except (AttributeError, ArithmeticError, TypeError, ValueError) as exc:
+            incomplete_hyperedges += 1
+            value_buckets["coverage_devig_method_failed"] += 1
+            if len(samples) < 5:
+                samples.append(
+                    {
+                        "hyperedgeId": str(hyperedge.get("hyperedge_id") or ""),
+                        "coverageProofId": str(hyperedge.get("coverage_proof_id") or ""),
+                        "classification": "coverage_devig_method_failed",
+                        "error": str(exc)[:240],
+                    },
+                )
+            continue
+
+        quoted_hyperedges += 1
+        method_counts[str(adjusted.devig_method or "none")] += 1
+        overround_samples.append(float(adjusted.overround))
+        vig_samples.append(float(adjusted.vig))
+        raw_margin_samples.append(float(adjusted.basket.raw_profit_margin))
+        adjusted_margin_samples.append(float(adjusted.basket.effective_profit_margin))
+        execution_safe = bool(hyperedge.get("execution_safe"))
+        if adjusted.basket.effective_profit_margin >= min_profit_margin:
+            classification = (
+                "coverage_locked_execution_safe_arbitrage"
+                if execution_safe
+                else "coverage_positive_non_executable_hyperedge"
+            )
+        elif adjusted.basket.effective_profit_margin > 0:
+            classification = "coverage_below_threshold"
+        else:
+            classification = "coverage_negative_margin"
+        value_buckets[classification] += 1
+        if len(samples) < 5:
+            samples.append(
+                {
+                    "hyperedgeId": str(hyperedge.get("hyperedge_id") or ""),
+                    "coverageProofId": str(hyperedge.get("coverage_proof_id") or ""),
+                    "instrumentIds": list(resolved_ids),
+                    "semanticInstrumentIds": list(instrument_ids),
+                    "providerScope": list(hyperedge.get("provider_scope") or []),
+                    "safetyTier": str(hyperedge.get("safety_tier") or ""),
+                    "executionSafe": execution_safe,
+                    "classification": classification,
+                    "devigMethod": adjusted.devig_method,
+                    "bookOverround": str(adjusted.overround),
+                    "bookVig": str(adjusted.vig),
+                    "rawProfitMargin": str(adjusted.basket.raw_profit_margin),
+                    "feeAdjustedProfitMargin": str(adjusted.basket.effective_profit_margin),
+                    "basketRebateRate": str(adjusted.basket.basket_rebate_rate),
+                    "basketBoostRate": str(adjusted.basket.basket_boost_rate),
+                },
+            )
+
+    return {
+        "sampledHyperedges": len(sample_hyperedges),
+        "quotedHyperedges": quoted_hyperedges,
+        "incompleteHyperedges": incomplete_hyperedges,
+        "methodCounts": dict(method_counts),
+        "valueBuckets": dict(value_buckets),
+        "overround": _percentile_payload(overround_samples),
+        "vig": _percentile_payload(vig_samples),
+        "rawProfitMargin": _percentile_payload(raw_margin_samples),
+        "feeAdjustedProfitMargin": _percentile_payload(adjusted_margin_samples),
+        "samples": samples,
+    }
+
+
+def _resolve_coverage_hyperedge_node_ids(
+    hyperedge: dict[str, object],
+    *,
+    nodes: dict[Any, object],
+    quotes: dict[Any, object],
+) -> tuple[tuple[str, ...], list[str]]:
+    node_by_id = {str(node_id): node for node_id, node in nodes.items()}
+    quoted_ids = {str(node_id) for node_id in quotes}
+    instrument_ids = tuple(str(item) for item in hyperedge.get("instrument_ids", ()) or ())
+    direct_ids = tuple(
+        instrument_id for instrument_id in instrument_ids if instrument_id in node_by_id
+    )
+    if len(direct_ids) == len(instrument_ids) and all(
+        node_id in quoted_ids for node_id in direct_ids
+    ):
+        return direct_ids, []
+
+    index = _coverage_runtime_node_index(nodes, quoted_ids)
+    resolved: list[str] = []
+    missing: list[str] = []
+    predicates = hyperedge.get("predicates")
+    predicate_payloads = predicates if isinstance(predicates, list) else []
+    if predicate_payloads:
+        for index_hint, predicate in enumerate(predicate_payloads):
+            if not isinstance(predicate, dict):
+                continue
+            node_id = _resolve_coverage_predicate_node_id(
+                predicate,
+                index=index,
+                used=set(resolved),
+            )
+            if node_id and node_id in quoted_ids:
+                resolved.append(node_id)
+            else:
+                missing.append(
+                    str(
+                        predicate.get("instrument_id")
+                        or predicate.get("predicate_id")
+                        or f"predicate-{index_hint}",
+                    ),
+                )
+        return tuple(resolved), missing
+
+    for instrument_id in instrument_ids:
+        if instrument_id in node_by_id and instrument_id in quoted_ids:
+            resolved.append(instrument_id)
+        else:
+            missing.append(instrument_id)
+    return tuple(resolved), missing
+
+
+def _coverage_runtime_node_index(
+    nodes: dict[Any, object],
+    quoted_ids: set[str],
+) -> dict[tuple[str, str, str, str, str, str, str], list[str]]:
+    index: dict[tuple[str, str, str, str, str, str, str], list[str]] = {}
+    for node_id, node in nodes.items():
+        provider = _probe_node_venue(node) or ""
+        pattern = _probe_pattern_payload(node)
+        key = (
+            provider,
+            _canonical_probe_event_key_no_time(node),
+            str(pattern.get("sport") or ""),
+            str(pattern.get("scope") or ""),
+            str(pattern.get("marketFamily") or ""),
+            str(pattern.get("selection") or ""),
+            str(pattern.get("paramsKey") or ""),
+        )
+        bucket = index.setdefault(key, [])
+        string_id = str(node_id)
+        if string_id in quoted_ids:
+            bucket.insert(0, string_id)
+        else:
+            bucket.append(string_id)
+    return index
+
+
+def _resolve_coverage_predicate_node_id(
+    predicate: dict[str, object],
+    *,
+    index: dict[tuple[str, str, str, str, str, str, str], list[str]],
+    used: set[str],
+) -> str | None:
+    params_key = str(predicate.get("params_key") or "")
+    if not params_key:
+        params = predicate.get("params")
+        params_key = (
+            _semantic_params_key(tuple(tuple(item) for item in params))
+            if isinstance(params, list)
+            else ""
+        )
+    key = (
+        str(predicate.get("provider") or "").upper(),
+        _canonical_event_key_text(str(predicate.get("event_key") or "")),
+        str(predicate.get("sport") or ""),
+        str(predicate.get("scope") or ""),
+        str(predicate.get("market_family") or predicate.get("marketFamily") or ""),
+        str(predicate.get("selection") or ""),
+        params_key,
+    )
+    for node_id in index.get(key, []):
+        if node_id not in used:
+            return node_id
+    return None
+
+
 def _probe_edge_profitability(
     strategy,
     *,
@@ -1550,50 +3090,77 @@ def _probe_edge_profitability(
 ) -> dict[str, object]:
     matcher = strategy.market_matcher
     counters = ProbeProfitabilityCounters()
+    counters.live_quote_age_slo_secs = float(getattr(strategy, "live_quote_age_slo_secs", 5.0))
 
     for edge in edges:
         quoted_edge = _quoted_probe_edge(edge, nodes, quotes)
         if quoted_edge is None:
             continue
         source_node, target_node, quote_a, quote_b = quoted_edge
+        if not _probe_edge_matches_execution_venue_mode(strategy, source_node, target_node):
+            continue
 
         counters.quoted_edges += 1
-        allow_same_venue = edge.same_venue_execution_eligible and not edge.execution_safe
-        quality = _probe_candidate_quality(
-            strategy,
-            edge=edge,
-            source_node=source_node,
-            target_node=target_node,
-            quote_a=quote_a,
-            quote_b=quote_b,
-            min_profit_margin=min_profit_margin,
-            allow_same_venue=allow_same_venue,
-        )
-        _record_probe_quality(counters, quality)
-        if not edge.execution_safe and not allow_same_venue:
-            continue
+        decision_started_ns = time.perf_counter_ns()
+        try:
+            allow_same_venue = edge.same_venue_execution_eligible and not edge.execution_safe
+            quality = _probe_candidate_quality(
+                strategy,
+                edge=edge,
+                source_node=source_node,
+                target_node=target_node,
+                quote_a=quote_a,
+                quote_b=quote_b,
+                min_profit_margin=min_profit_margin,
+                allow_same_venue=allow_same_venue,
+            )
+            _record_probe_quality(counters, quality)
+            if not edge.execution_safe and not allow_same_venue:
+                continue
 
-        opportunity = matcher.check_arbitrage(
-            source_node.instrument,
-            target_node.instrument,
-            odds_a=quote_a.odds,
-            odds_b=quote_b.odds,
-            allow_same_venue_execution_eligible=allow_same_venue,
-        )
-        if opportunity is None:
-            continue
+            opportunity = matcher.check_arbitrage(
+                source_node.instrument,
+                target_node.instrument,
+                odds_a=quote_a.odds,
+                odds_b=quote_b.odds,
+                allow_same_venue_execution_eligible=allow_same_venue,
+            )
+            if opportunity is None:
+                continue
+            opportunity = _strategy_fee_adjusted_opportunity(strategy, opportunity)
 
-        _record_probe_opportunity(
-            counters,
-            opportunity=opportunity,
-            edge=edge,
-            source_node=source_node,
-            target_node=target_node,
-            allow_same_venue=allow_same_venue,
-            min_profit_margin=min_profit_margin,
-        )
+            _record_probe_opportunity(
+                counters,
+                opportunity=opportunity,
+                edge=edge,
+                source_node=source_node,
+                target_node=target_node,
+                allow_same_venue=allow_same_venue,
+                min_profit_margin=min_profit_margin,
+            )
+        finally:
+            counters.candidate_decision_latency_ns.append(
+                time.perf_counter_ns() - decision_started_ns,
+            )
 
     return counters.to_payload()
+
+
+def _probe_edge_matches_execution_venue_mode(strategy, source_node, target_node) -> bool:
+    config = getattr(strategy, "_config", None)
+    mode = str(getattr(config, "execution_venue_mode", "all") or "all").strip().lower()
+    if mode == "all":
+        return True
+    source_venue = _probe_node_venue(source_node)
+    target_venue = _probe_node_venue(target_node)
+    if not source_venue or not target_venue:
+        return True
+    same_venue = source_venue == target_venue
+    if mode == "cross_venue":
+        return not same_venue
+    if mode == "same_venue":
+        return same_venue
+    return True
 
 
 def _probe_candidate_quality(
@@ -1609,10 +3176,46 @@ def _probe_candidate_quality(
 ) -> dict[str, object]:
     odds_a = Decimal(str(quote_a.odds))
     odds_b = Decimal(str(quote_b.odds))
-    probability_a = Decimal(1) / odds_a
-    probability_b = Decimal(1) / odds_b
-    total_probability = probability_a + probability_b
-    profit_margin = (Decimal(1) / total_probability) - Decimal(1)
+    raw_probability_a = Decimal(1) / odds_a
+    raw_probability_b = Decimal(1) / odds_b
+    raw_total_probability = raw_probability_a + raw_probability_b
+    raw_profit_margin = (Decimal(1) / raw_total_probability) - Decimal(1)
+    match_type = _probe_match_type(source_node.instrument, target_node.instrument)
+    opportunity = _strategy_fee_adjusted_opportunity(
+        strategy,
+        ArbitrageOpportunity(
+            instrument_a=source_node.instrument,
+            instrument_b=target_node.instrument,
+            probability_a=raw_probability_a,
+            probability_b=raw_probability_b,
+            total_probability=raw_total_probability,
+            profit_margin=raw_profit_margin,
+            odds_a=odds_a,
+            odds_b=odds_b,
+            is_same_venue=source_node.instrument.venue_name == target_node.instrument.venue_name,
+            match_type=match_type,
+            raw_probability_a=raw_probability_a,
+            raw_probability_b=raw_probability_b,
+            raw_total_probability=raw_total_probability,
+            raw_profit_margin=raw_profit_margin,
+        ),
+    )
+    devig_diagnostics = _probe_devig_diagnostics(
+        strategy,
+        edge=edge,
+        source_node=source_node,
+        target_node=target_node,
+        odds_a=odds_a,
+        odds_b=odds_b,
+        raw_probability_a=raw_probability_a,
+        raw_probability_b=raw_probability_b,
+        fee_adjusted_probability_a=opportunity.probability_a,
+        fee_adjusted_probability_b=opportunity.probability_b,
+        raw_profit_margin=raw_profit_margin,
+        fee_adjusted_profit_margin=opportunity.profit_margin,
+    )
+    total_probability = opportunity.total_probability
+    profit_margin = opportunity.profit_margin
     observed_ns = max(int(quote_a.received_ns), int(quote_b.received_ns))
     quote_age_a_secs = strategy.quote_age_secs(observed_ns, quote_a.quote)
     quote_age_b_secs = strategy.quote_age_secs(observed_ns, quote_b.quote)
@@ -1699,6 +3302,24 @@ def _probe_candidate_quality(
         "outcomeB": target_node.outcome,
         "profitMargin": str(profit_margin),
         "totalProbability": str(total_probability),
+        "rawProfitMargin": str(raw_profit_margin),
+        "rawTotalProbability": str(raw_total_probability),
+        "feeAdjusted": opportunity.fee_adjusted,
+        "feeAdjustedProfitMargin": str(opportunity.profit_margin),
+        "feeAdjustedTotalProbability": str(opportunity.total_probability),
+        "feeDrag": str(opportunity.fee_drag),
+        "feeAdjustedOddsA": str(opportunity.fee_adjusted_odds_a or opportunity.odds_a),
+        "feeAdjustedOddsB": str(opportunity.fee_adjusted_odds_b or opportunity.odds_b),
+        "devig": devig_diagnostics,
+        "candidateValueClassification": devig_diagnostics.get("valueClassification"),
+        "takerFeeRateA": str(opportunity.taker_fee_rate_a),
+        "takerFeeRateB": str(opportunity.taker_fee_rate_b),
+        "makerRebateRateA": str(opportunity.maker_rebate_rate_a),
+        "makerRebateRateB": str(opportunity.maker_rebate_rate_b),
+        "winningProfitFeeRateA": str(opportunity.winning_profit_fee_rate_a),
+        "winningProfitFeeRateB": str(opportunity.winning_profit_fee_rate_b),
+        "basketRebateRate": str(opportunity.basket_rebate_rate),
+        "basketBoostRate": str(opportunity.basket_boost_rate),
         "gapToZero": str(max(Decimal(0), -profit_margin)),
         "gapToMinProfitThreshold": str(max(Decimal(0), min_profit_margin - profit_margin)),
         "marginBand": _probe_margin_band(profit_margin),
@@ -1744,6 +3365,215 @@ def _probe_candidate_quality(
     }
 
 
+def _strategy_fee_adjusted_opportunity(strategy, opportunity: ArbitrageOpportunity):
+    adjuster = getattr(strategy, "fee_adjusted_opportunity", None)
+    if callable(adjuster):
+        return adjuster(opportunity)
+    return opportunity
+
+
+def _probe_devig_diagnostics(
+    strategy,
+    *,
+    edge,
+    source_node,
+    target_node,
+    odds_a: Decimal,
+    odds_b: Decimal,
+    raw_probability_a: Decimal,
+    raw_probability_b: Decimal,
+    fee_adjusted_probability_a: Decimal,
+    fee_adjusted_probability_b: Decimal,
+    raw_profit_margin: Decimal,
+    fee_adjusted_profit_margin: Decimal,
+) -> dict[str, object]:
+    config = getattr(strategy, "_config", None)
+    if not bool(getattr(config, "devig_enabled", False)):
+        return {
+            "enabled": False,
+            "bookStatus": "disabled",
+            "valueClassification": "devig_disabled",
+        }
+    if not bool(getattr(config, "value_diagnostics_enabled", True)):
+        return {
+            "enabled": True,
+            "bookStatus": "disabled",
+            "valueClassification": "value_diagnostics_disabled",
+        }
+
+    venue_a = str(source_node.instrument.id.venue).upper()
+    venue_b = str(target_node.instrument.id.venue).upper()
+    reference_venues = getattr(config, "devig_reference_venues", None)
+    reference_allowed = (
+        not reference_venues or venue_a in reference_venues or venue_b in reference_venues
+    )
+    book_status = _probe_devig_book_status(
+        edge=edge,
+        venue_a=venue_a,
+        venue_b=venue_b,
+        reference_allowed=reference_allowed,
+    )
+    if book_status == "incomplete_book_no_devig":
+        return {
+            "enabled": True,
+            "bookStatus": book_status,
+            "valueClassification": "reference_book_incomplete",
+            "referenceVenue": _probe_devig_reference_venue(venue_a, venue_b),
+            "referenceQuality": "incomplete",
+        }
+
+    devigged_book = None
+    try:
+        devigged = getattr(strategy, "devigged_book", None)
+        if callable(devigged):
+            devigged_book = devigged((odds_a, odds_b))
+    except (ArithmeticError, ValueError) as exc:
+        return {
+            "enabled": True,
+            "bookStatus": "devig_method_failed",
+            "valueClassification": "devig_method_failed",
+            "error": str(exc)[:240],
+            "referenceVenue": _probe_devig_reference_venue(venue_a, venue_b),
+            "referenceQuality": book_status,
+        }
+    if devigged_book is None:
+        return {
+            "enabled": False,
+            "bookStatus": "disabled",
+            "valueClassification": "devig_disabled",
+        }
+
+    fair_a, fair_b = devigged_book.no_vig_probabilities
+    gross_value_edge_a = fair_a - raw_probability_a
+    gross_value_edge_b = fair_b - raw_probability_b
+    fee_adjusted_value_edge_a = fair_a - fee_adjusted_probability_a
+    fee_adjusted_value_edge_b = fair_b - fee_adjusted_probability_b
+    max_gross_value_edge = max(gross_value_edge_a, gross_value_edge_b)
+    max_fee_adjusted_value_edge = max(fee_adjusted_value_edge_a, fee_adjusted_value_edge_b)
+    best_side = "A" if fee_adjusted_value_edge_a >= fee_adjusted_value_edge_b else "B"
+    best_probability = (
+        fee_adjusted_probability_a if best_side == "A" else fee_adjusted_probability_b
+    )
+    relative_value_edge = (
+        max_fee_adjusted_value_edge / best_probability if best_probability > 0 else Decimal(0)
+    )
+    classification = _probe_value_classification(
+        config=config,
+        venue_a=venue_a,
+        venue_b=venue_b,
+        execution_safe=bool(getattr(edge, "execution_safe", False)),
+        same_venue_execution_eligible=bool(
+            getattr(edge, "same_venue_execution_eligible", False),
+        ),
+        semantic_blocker_reason=(
+            ""
+            if bool(getattr(edge, "execution_safe", False))
+            else _semantic_non_execution_bucket(edge)
+        ),
+        raw_profit_margin=raw_profit_margin,
+        fee_adjusted_profit_margin=fee_adjusted_profit_margin,
+        max_gross_value_edge=max_gross_value_edge,
+        max_fee_adjusted_value_edge=max_fee_adjusted_value_edge,
+    )
+    return {
+        "enabled": True,
+        "bookStatus": book_status,
+        "referenceVenue": _probe_devig_reference_venue(venue_a, venue_b),
+        "referenceQuality": book_status,
+        "rawImpliedProbabilityA": str(raw_probability_a),
+        "rawImpliedProbabilityB": str(raw_probability_b),
+        "noVigProbabilityA": str(fair_a),
+        "noVigProbabilityB": str(fair_b),
+        "bookOverround": str(devigged_book.overround),
+        "bookVig": str(devigged_book.vig),
+        "devigMethod": devigged_book.method,
+        "devigMethodReason": devigged_book.method_reason,
+        "devigConvergenceStatus": devigged_book.convergence_status,
+        "devigIterations": devigged_book.iterations,
+        "devigDelta": str(devigged_book.delta),
+        "devigZ": str(devigged_book.z) if devigged_book.z is not None else None,
+        "grossValueEdgeA": str(gross_value_edge_a),
+        "grossValueEdgeB": str(gross_value_edge_b),
+        "feeAdjustedValueEdgeA": str(fee_adjusted_value_edge_a),
+        "feeAdjustedValueEdgeB": str(fee_adjusted_value_edge_b),
+        "grossValueEdge": str(max_gross_value_edge),
+        "feeAdjustedValueEdge": str(max_fee_adjusted_value_edge),
+        "relativeValueEdge": str(relative_value_edge),
+        "bestValueSide": best_side,
+        "valueClassification": classification,
+        "valueExecutionEnabled": bool(getattr(config, "value_execution_enabled", False)),
+        "valueExecutionBlockedReason": (
+            ""
+            if bool(getattr(config, "value_execution_enabled", False))
+            else "value_execution_disabled"
+        ),
+    }
+
+
+def _probe_devig_book_status(
+    *,
+    edge,
+    venue_a: str,
+    venue_b: str,
+    reference_allowed: bool,
+) -> str:
+    if not reference_allowed:
+        return "incomplete_book_no_devig"
+    if venue_a == venue_b:
+        return "same_venue_complete_pair"
+    if bool(getattr(edge, "execution_safe", False)) or bool(
+        getattr(edge, "same_venue_execution_eligible", False),
+    ):
+        return "synthetic_cross_venue_pair"
+    return "incomplete_book_no_devig"
+
+
+def _probe_devig_reference_venue(venue_a: str, venue_b: str) -> str:
+    if venue_a == venue_b:
+        return venue_a
+    return f"mixed:{venue_a}+{venue_b}"
+
+
+def _probe_value_classification(
+    *,
+    config,
+    venue_a: str,
+    venue_b: str,
+    execution_safe: bool,
+    same_venue_execution_eligible: bool,
+    semantic_blocker_reason: str,
+    raw_profit_margin: Decimal,
+    fee_adjusted_profit_margin: Decimal,
+    max_gross_value_edge: Decimal,
+    max_fee_adjusted_value_edge: Decimal,
+) -> str:
+    min_value_edge = Decimal(str(getattr(config, "min_value_edge", Decimal("0.015"))))
+    min_profit_margin = Decimal(str(getattr(config, "min_profit_margin", 0)))
+    if fee_adjusted_profit_margin >= min_profit_margin:
+        if execution_safe:
+            return "locked_execution_safe_arbitrage"
+        if same_venue_execution_eligible:
+            return "same_venue_positive_dry_run_edge"
+        return f"positive_non_executable_semantic_edge:{semantic_blocker_reason or 'unknown'}"
+    if raw_profit_margin > 0 and fee_adjusted_profit_margin <= 0:
+        return "fee_or_vig_erased_edge"
+    if max_gross_value_edge > 0 and max_fee_adjusted_value_edge <= 0:
+        return "fee_or_vig_erased_edge"
+    if max_fee_adjusted_value_edge >= min_value_edge:
+        if "POLYMARKET" in {venue_a, venue_b}:
+            return "prediction_market_value_edge"
+        return "sportsbook_value_edge"
+    return "vig_only_edge"
+
+
+def _probe_match_type(instrument_a, instrument_b) -> str:
+    if getattr(instrument_a, "market_name", None) == getattr(instrument_b, "market_name", None):
+        return "same_market"
+    if getattr(instrument_a, "venue_name", None) == getattr(instrument_b, "venue_name", None):
+        return "cross_market"
+    return "cross_venue"
+
+
 def _semantic_fixture_suspect_reason(
     strategy,
     instrument_a,
@@ -1751,7 +3581,15 @@ def _semantic_fixture_suspect_reason(
 ) -> tuple[bool, str]:
     checker = getattr(strategy, "semantic_fixture_suspect_reason", None)
     if checker is None:
-        checker = strategy.matcher_suspect_reason
+        checker = getattr(strategy, "_semantic_fixture_suspect_reason", None)
+    if checker is None:
+        checker = getattr(strategy, "matcher_suspect_reason", None)
+    if checker is None:
+        from nautilus_trader.examples.strategies.betting_arbitrage import (
+            BettingArbitrageStrategy,
+        )
+
+        checker = BettingArbitrageStrategy.semantic_fixture_suspect_reason
     return checker(instrument_a, instrument_b)
 
 
@@ -1828,8 +3666,36 @@ def _record_probe_quality(
     counters.margin_bands[margin_band] += 1
     counters.rejection_buckets[rejection_bucket] += 1
     counters.freshness_profiles[str(quality.get("freshnessProfile") or "unknown")] += 1
+    if quality.get("feeAdjusted"):
+        counters.fee_adjusted_edges += 1
+        counters.fee_drag_samples.append(float(quality.get("feeDrag") or 0.0))
+        _record_fee_impact_bucket(counters, quality)
+    _record_devig_quality(counters, quality)
+    quote_age_a_secs = float(quality.get("quoteAgeASeconds") or 0.0)
+    quote_age_b_secs = float(quality.get("quoteAgeBSeconds") or 0.0)
+    fetch_latency_a_secs = float(quality.get("fetchLatencyASeconds") or 0.0)
+    fetch_latency_b_secs = float(quality.get("fetchLatencyBSeconds") or 0.0)
+    quote_delta_secs = float(quality.get("quoteDeltaSeconds") or 0.0)
+    max_fetch_latency_secs = float(quality.get("maxFetchLatencySeconds") or 0.0)
+    max_pair_skew_secs = float(quality.get("maxPairSkewSeconds") or 0.0)
+    counters.quote_age_samples_secs.extend([quote_age_a_secs, quote_age_b_secs])
+    counters.fetch_latency_samples_secs.extend([fetch_latency_a_secs, fetch_latency_b_secs])
+    counters.pair_skew_samples_secs.append(quote_delta_secs)
+    if str(quality.get("freshnessProfile") or "") == "live":
+        _record_live_timing_slo(
+            counters,
+            quote_age_a_secs=quote_age_a_secs,
+            quote_age_b_secs=quote_age_b_secs,
+            fetch_latency_a_secs=fetch_latency_a_secs,
+            fetch_latency_b_secs=fetch_latency_b_secs,
+            quote_delta_secs=quote_delta_secs,
+            max_fetch_latency_secs=max_fetch_latency_secs,
+            max_pair_skew_secs=max_pair_skew_secs,
+        )
+    _record_same_venue_dry_run_quality(counters, quality)
     if rejection_bucket in _SEMANTIC_NON_EXECUTION_BUCKETS:
         counters.semantic_blocked_reasons[_semantic_blocked_reason(quality)] += 1
+        counters.semantic_blocked_relationships[_semantic_blocked_relationship(quality)] += 1
         samples = counters.blocker_samples.setdefault(rejection_bucket, [])
         if len(samples) < 5:
             samples.append(
@@ -1854,14 +3720,14 @@ def _record_probe_quality(
     _record_venue_quote_health(
         counters,
         venue=str(quality.get("venueA") or ""),
-        quote_age_secs=float(quality.get("quoteAgeASeconds") or 0.0),
-        fetch_latency_secs=float(quality.get("fetchLatencyASeconds") or 0.0),
+        quote_age_secs=quote_age_a_secs,
+        fetch_latency_secs=fetch_latency_a_secs,
     )
     _record_venue_quote_health(
         counters,
         venue=str(quality.get("venueB") or ""),
-        quote_age_secs=float(quality.get("quoteAgeBSeconds") or 0.0),
-        fetch_latency_secs=float(quality.get("fetchLatencyBSeconds") or 0.0),
+        quote_age_secs=quote_age_b_secs,
+        fetch_latency_secs=fetch_latency_b_secs,
     )
     if margin > 0:
         counters.samples.append((margin, quality))
@@ -1869,7 +3735,104 @@ def _record_probe_quality(
         counters.negative_samples.append((margin, quality))
 
 
+def _record_devig_quality(
+    counters: ProbeProfitabilityCounters,
+    quality: dict[str, object],
+) -> None:
+    devig = quality.get("devig")
+    if not isinstance(devig, dict) or not bool(devig.get("enabled")):
+        return
+    counters.devig_evaluated_edges += 1
+    book_status = str(devig.get("bookStatus") or "unknown")
+    if book_status in {"same_venue_complete_pair", "synthetic_cross_venue_pair"}:
+        counters.devig_complete_books += 1
+    else:
+        counters.devig_incomplete_books += 1
+    method = str(devig.get("devigMethod") or "none")
+    method_reason = str(devig.get("devigMethodReason") or "none")
+    convergence = str(devig.get("devigConvergenceStatus") or "none")
+    value_classification = str(devig.get("valueClassification") or "unknown")
+    counters.devig_method_counts[method] += 1
+    counters.devig_method_reason_counts[method_reason] += 1
+    counters.devig_convergence_counts[convergence] += 1
+    counters.devig_value_buckets[value_classification] += 1
+    if "bookOverround" in devig:
+        counters.overround_samples.append(float(devig.get("bookOverround") or 0.0))
+    if "bookVig" in devig:
+        counters.vig_samples.append(float(devig.get("bookVig") or 0.0))
+    gross_edge = Decimal(str(devig.get("grossValueEdge") or 0))
+    net_edge = Decimal(str(devig.get("feeAdjustedValueEdge") or 0))
+    counters.gross_value_edge_samples.append(float(gross_edge))
+    counters.fee_adjusted_value_edge_samples.append(float(net_edge))
+    if value_classification in {
+        "sportsbook_value_edge",
+        "prediction_market_value_edge",
+        "locked_execution_safe_arbitrage",
+        "same_venue_positive_dry_run_edge",
+    } or value_classification.startswith("positive_non_executable_semantic_edge:"):
+        counters.value_samples.append((net_edge, quality))
+    if value_classification == "fee_or_vig_erased_edge":
+        counters.vig_erased_samples.append((gross_edge, quality))
+
+
+def _record_fee_impact_bucket(
+    counters: ProbeProfitabilityCounters,
+    quality: dict[str, object],
+) -> None:
+    raw_margin = Decimal(str(quality.get("rawProfitMargin") or 0))
+    adjusted_margin = Decimal(str(quality.get("feeAdjustedProfitMargin") or raw_margin))
+    fee_drag = Decimal(str(quality.get("feeDrag") or 0))
+    if adjusted_margin > raw_margin:
+        counters.fee_impact_buckets["fee_or_incentive_helped"] += 1
+    elif adjusted_margin < raw_margin:
+        counters.fee_impact_buckets["fee_hurt"] += 1
+    else:
+        counters.fee_impact_buckets["fee_neutral"] += 1
+    if raw_margin > 0 and adjusted_margin <= 0:
+        counters.fee_impact_buckets["raw_positive_fee_adjusted_negative"] += 1
+    elif raw_margin <= 0 and adjusted_margin > 0:
+        counters.fee_impact_buckets["raw_negative_fee_adjusted_positive"] += 1
+    if fee_drag < 0:
+        counters.fee_impact_buckets["net_rebate_or_boost"] += 1
+    elif fee_drag > 0:
+        counters.fee_impact_buckets["net_fee_drag"] += 1
+
+
+def _record_same_venue_dry_run_quality(
+    counters: ProbeProfitabilityCounters,
+    quality: dict[str, object],
+) -> None:
+    if not bool(quality.get("sameVenueExecutionEligible")) or bool(quality.get("executionSafe")):
+        return
+    if bool(quality.get("wouldExecuteSameVenueDryRun")):
+        counters.same_venue_dry_run_passes += 1
+        return
+
+    counters.same_venue_dry_run_failures += 1
+    policy = quality.get("sameVenueRiskPolicy")
+    if not isinstance(policy, dict):
+        return
+    for reason in (
+        "sameVenue",
+        "sameFixture",
+        "compatibleMarketFamily",
+        "freshQuotes",
+        "sufficientLiquidity",
+        "thresholdProfit",
+    ):
+        if policy.get(reason) is False:
+            counters.same_venue_dry_run_failure_reasons[reason] += 1
+
+
 def _semantic_blocked_reason(quality: dict[str, object]) -> str:
+    return str(
+        quality.get("blockerReason")
+        or quality.get("rejectionBucket")
+        or CoverageBlockerReason.UNSUPPORTED_MARKET_FAMILY.value,
+    )
+
+
+def _semantic_blocked_relationship(quality: dict[str, object]) -> str:
     safety_tier = str(quality.get("safetyTier") or "unknown")
     relationship_type = str(quality.get("relationshipType") or "unknown")
     return f"{safety_tier}:{relationship_type}"

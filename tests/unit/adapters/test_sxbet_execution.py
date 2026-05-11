@@ -23,6 +23,10 @@ from nautilus_trader.adapters.sxbet.execution import SXBetExecutionClient
 from nautilus_trader.adapters.sxbet.providers import SXBetInstrumentProvider
 from nautilus_trader.common.component import Logger
 from nautilus_trader.common.functions import get_event_loop
+from nautilus_trader.core.uuid import UUID4
+from nautilus_trader.execution.messages import GenerateFillReports
+from nautilus_trader.execution.messages import GenerateOrderStatusReports
+from nautilus_trader.execution.messages import GeneratePositionStatusReports
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.enums import OrderType
 from nautilus_trader.model.identifiers import ClientOrderId
@@ -199,6 +203,258 @@ async def test_submit_order_rejects_signing_import_error(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_submit_order_dry_run_signs_but_does_not_place_order(monkeypatch):
+    config = SimpleNamespace(
+        api_key="api-key",
+        wallet_address="0x" + "12" * 20,
+        private_key="0x" + "34" * 32,
+        base_currency="USDC",
+        dry_run=True,
+    )
+    instrument_provider = SXBetInstrumentProvider(
+        http_client=Mock(),
+        config=SXBetInstrumentProviderConfig(),
+        logger=Mock(),
+    )
+    http_client = Mock()
+    http_client.place_order = AsyncMock()
+    client = SXBetExecutionClient(
+        loop=get_event_loop(),
+        http_client=http_client,
+        instrument_provider=instrument_provider,
+        msgbus=TestComponentStubs.msgbus(),
+        cache=TestComponentStubs.cache(),
+        clock=TestComponentStubs.clock(),
+        logger=Logger(name="test-sxbet-execution"),
+        config=config,
+    )
+
+    rejected: dict[str, str] = {}
+    client._generate_order_submitted = Mock()
+    client._generate_order_accepted = Mock()
+    client._generate_order_rejected = lambda **kwargs: rejected.update({"reason": kwargs["reason"]})
+
+    instrument = CryptoBettingInstrument(
+        venue=SXBET_VENUE,
+        event_id="fixture-1",
+        event_name="Team A vs Team B",
+        home_name="Team A",
+        away_name="Team B",
+        sport_name="Soccer",
+        competition_name="League",
+        market_name="Match Odds",
+        market_type="match_odds",
+        outcome="home",
+        side=SelectionSide.BACK,
+        price=2.0,
+        currency=Currency.from_str("USDC"),
+        params="",
+        market_id="0x" + "ab" * 32,
+        info={"outcome_one": True},
+    )
+    instrument_provider.find = Mock(return_value=instrument)
+
+    order = SimpleNamespace(
+        instrument_id=instrument.id,
+        order_type=OrderType.LIMIT,
+        price=Decimal("2.10"),
+        quantity=Decimal("0.29"),
+        client_order_id=ClientOrderId("order-dry-run"),
+    )
+    command = SimpleNamespace(order=order)
+
+    signed_payloads: list[dict] = []
+    monkeypatch.setattr(
+        "nautilus_trader.adapters.sxbet.execution.sign_eip712_order",
+        lambda **kwargs: signed_payloads.append(kwargs["order"]) or "0xsig",
+    )
+    monkeypatch.setattr(
+        "nautilus_trader.adapters.sxbet.execution.generate_salt",
+        lambda: 12345,
+    )
+    monkeypatch.setattr(
+        "nautilus_trader.adapters.sxbet.execution.get_expiry",
+        _fixed_expiry,
+    )
+
+    await client._submit_order(command)
+
+    assert signed_payloads
+    assert signed_payloads[0]["marketHash"] == instrument.market_id
+    client._generate_order_submitted.assert_called_once_with(order)
+    client._generate_order_accepted.assert_not_called()
+    http_client.place_order.assert_not_awaited()
+    assert rejected["reason"] == "dry_run_no_submit"
+
+
+@pytest.mark.asyncio
+async def test_submit_order_taker_fill_signs_and_calls_fill_endpoint(monkeypatch):
+    config = SimpleNamespace(
+        api_key="api-key",
+        wallet_address="0x" + "12" * 20,
+        private_key="0x" + "34" * 32,
+        base_currency="USDC",
+        dry_run=False,
+        execution_mode="taker_fill",
+        odds_slippage=7,
+    )
+    instrument_provider = SXBetInstrumentProvider(
+        http_client=Mock(),
+        config=SXBetInstrumentProviderConfig(),
+        logger=Mock(),
+    )
+    http_client = Mock()
+    http_client.fill_order = AsyncMock(
+        return_value={"data": {"fillHash": "0xfillhash"}},
+    )
+    client = SXBetExecutionClient(
+        loop=get_event_loop(),
+        http_client=http_client,
+        instrument_provider=instrument_provider,
+        msgbus=TestComponentStubs.msgbus(),
+        cache=TestComponentStubs.cache(),
+        clock=TestComponentStubs.clock(),
+        logger=Logger(name="test-sxbet-execution"),
+        config=config,
+    )
+    client._generate_order_submitted = Mock()
+    client._generate_order_accepted = Mock()
+    client._generate_order_rejected = Mock()
+
+    instrument = CryptoBettingInstrument(
+        venue=SXBET_VENUE,
+        event_id="fixture-1",
+        event_name="Team A vs Team B",
+        home_name="Team A",
+        away_name="Team B",
+        sport_name="Soccer",
+        competition_name="League",
+        market_name="Match Odds",
+        market_type="match_odds",
+        outcome="home",
+        side=SelectionSide.BACK,
+        price=2.0,
+        currency=Currency.from_str("USDC"),
+        params="",
+        market_id="0x" + "ab" * 32,
+        info={"outcome_one": True},
+    )
+    instrument_provider.find = Mock(return_value=instrument)
+
+    order = SimpleNamespace(
+        instrument_id=instrument.id,
+        order_type=OrderType.LIMIT,
+        price=Decimal("2.10"),
+        quantity=Decimal("6.25"),
+        client_order_id=ClientOrderId("order-taker-fill"),
+    )
+    command = SimpleNamespace(order=order)
+
+    signed_payloads: list[dict] = []
+    monkeypatch.setattr(
+        "nautilus_trader.adapters.sxbet.execution.sign_eip712_fill_order",
+        lambda **kwargs: signed_payloads.append(kwargs["fill"]) or "0xfillsig",
+    )
+    monkeypatch.setattr(
+        "nautilus_trader.adapters.sxbet.execution.generate_salt",
+        lambda: 999,
+    )
+
+    await client._submit_order(command)
+
+    assert signed_payloads
+    assert signed_payloads[0]["market"] == instrument.market_id
+    assert signed_payloads[0]["taker"] == config.wallet_address
+    assert signed_payloads[0]["oddsSlippage"] == 7
+    assert signed_payloads[0]["message"] == "Nautilus live arbitrage taker fill"
+    http_client.fill_order.assert_awaited_once()
+    call_kwargs = http_client.fill_order.await_args.kwargs
+    assert call_kwargs["market"] == instrument.market_id
+    assert call_kwargs["taker_sig"] == "0xfillsig"
+    assert call_kwargs["message"] == "Nautilus live arbitrage taker fill"
+    client._generate_order_submitted.assert_called_once_with(order)
+    client._generate_order_accepted.assert_called_once()
+    client._generate_order_rejected.assert_not_called()
+    assert client._venue_order_ids[order.client_order_id] == VenueOrderId("0xfillhash")
+
+
+@pytest.mark.asyncio
+async def test_submit_order_taker_fill_dry_run_does_not_call_fill_endpoint(monkeypatch):
+    config = SimpleNamespace(
+        api_key="api-key",
+        wallet_address="0x" + "12" * 20,
+        private_key="0x" + "34" * 32,
+        base_currency="USDC",
+        dry_run=True,
+        execution_mode="taker_fill",
+        odds_slippage=5,
+    )
+    instrument_provider = SXBetInstrumentProvider(
+        http_client=Mock(),
+        config=SXBetInstrumentProviderConfig(),
+        logger=Mock(),
+    )
+    http_client = Mock()
+    http_client.fill_order = AsyncMock()
+    client = SXBetExecutionClient(
+        loop=get_event_loop(),
+        http_client=http_client,
+        instrument_provider=instrument_provider,
+        msgbus=TestComponentStubs.msgbus(),
+        cache=TestComponentStubs.cache(),
+        clock=TestComponentStubs.clock(),
+        logger=Logger(name="test-sxbet-execution"),
+        config=config,
+    )
+    rejected: dict[str, str] = {}
+    client._generate_order_submitted = Mock()
+    client._generate_order_accepted = Mock()
+    client._generate_order_rejected = lambda **kwargs: rejected.update({"reason": kwargs["reason"]})
+    instrument = CryptoBettingInstrument(
+        venue=SXBET_VENUE,
+        event_id="fixture-1",
+        event_name="Team A vs Team B",
+        home_name="Team A",
+        away_name="Team B",
+        sport_name="Soccer",
+        competition_name="League",
+        market_name="Match Odds",
+        market_type="match_odds",
+        outcome="home",
+        side=SelectionSide.BACK,
+        price=2.0,
+        currency=Currency.from_str("USDC"),
+        params="",
+        market_id="0x" + "ab" * 32,
+        info={"outcome_one": True},
+    )
+    instrument_provider.find = Mock(return_value=instrument)
+    order = SimpleNamespace(
+        instrument_id=instrument.id,
+        order_type=OrderType.LIMIT,
+        price=Decimal("2.10"),
+        quantity=Decimal("6.25"),
+        client_order_id=ClientOrderId("order-taker-fill-dry-run"),
+    )
+    command = SimpleNamespace(order=order)
+    monkeypatch.setattr(
+        "nautilus_trader.adapters.sxbet.execution.sign_eip712_fill_order",
+        lambda **_kwargs: "0xfillsig",
+    )
+    monkeypatch.setattr(
+        "nautilus_trader.adapters.sxbet.execution.generate_salt",
+        lambda: 999,
+    )
+
+    await client._submit_order(command)
+
+    client._generate_order_submitted.assert_called_once_with(order)
+    client._generate_order_accepted.assert_not_called()
+    http_client.fill_order.assert_not_awaited()
+    assert rejected["reason"] == "dry_run_no_submit"
+
+
+@pytest.mark.asyncio
 async def test_generate_order_status_report_uses_command_and_cached_venue_id():
     config = SimpleNamespace(
         api_key="api-key",
@@ -270,6 +526,167 @@ async def test_generate_order_status_report_uses_command_and_cached_venue_id():
 
 
 @pytest.mark.asyncio
+async def test_generate_order_status_reports_without_filters_is_empty_startup_noop():
+    config = SimpleNamespace(
+        api_key="api-key",
+        wallet_address="0x" + "12" * 20,
+        private_key="0x" + "34" * 32,
+        base_currency="USDC",
+    )
+    instrument_provider = SXBetInstrumentProvider(
+        http_client=Mock(),
+        config=SXBetInstrumentProviderConfig(),
+        logger=Mock(),
+    )
+    http_client = Mock()
+    http_client.get_user_orders = AsyncMock()
+    clock = TestComponentStubs.clock()
+    client = SXBetExecutionClient(
+        loop=get_event_loop(),
+        http_client=http_client,
+        instrument_provider=instrument_provider,
+        msgbus=TestComponentStubs.msgbus(),
+        cache=TestComponentStubs.cache(),
+        clock=clock,
+        logger=Logger(name="test-sxbet-execution"),
+        config=config,
+    )
+    command = GenerateOrderStatusReports(
+        instrument_id=None,
+        start=None,
+        end=None,
+        open_only=False,
+        command_id=UUID4(),
+        ts_init=clock.timestamp_ns(),
+    )
+
+    reports = await client.generate_order_status_reports(command)
+
+    assert reports == []
+    http_client.get_user_orders.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_generate_fill_and_position_reports_are_empty_startup_noops():
+    config = SimpleNamespace(
+        api_key="api-key",
+        wallet_address="0x" + "12" * 20,
+        private_key="0x" + "34" * 32,
+        base_currency="USDC",
+    )
+    instrument_provider = SXBetInstrumentProvider(
+        http_client=Mock(),
+        config=SXBetInstrumentProviderConfig(),
+        logger=Mock(),
+    )
+    http_client = Mock()
+    clock = TestComponentStubs.clock()
+    client = SXBetExecutionClient(
+        loop=get_event_loop(),
+        http_client=http_client,
+        instrument_provider=instrument_provider,
+        msgbus=TestComponentStubs.msgbus(),
+        cache=TestComponentStubs.cache(),
+        clock=clock,
+        logger=Logger(name="test-sxbet-execution"),
+        config=config,
+    )
+
+    fill_reports = await client.generate_fill_reports(
+        GenerateFillReports(
+            instrument_id=None,
+            venue_order_id=None,
+            start=None,
+            end=None,
+            command_id=UUID4(),
+            ts_init=clock.timestamp_ns(),
+        ),
+    )
+    position_reports = await client.generate_position_status_reports(
+        GeneratePositionStatusReports(
+            instrument_id=None,
+            start=None,
+            end=None,
+            command_id=UUID4(),
+            ts_init=clock.timestamp_ns(),
+        ),
+    )
+
+    assert fill_reports == []
+    assert position_reports == []
+
+
+@pytest.mark.asyncio
+async def test_generate_mass_status_registers_account_for_reconciliation_conversion():
+    config = SimpleNamespace(
+        api_key="api-key",
+        wallet_address="0x" + "12" * 20,
+        private_key="0x" + "34" * 32,
+        base_currency="USDC",
+    )
+    instrument_provider = SXBetInstrumentProvider(
+        http_client=Mock(),
+        config=SXBetInstrumentProviderConfig(),
+        logger=Mock(),
+    )
+    http_client = Mock()
+    http_client.get_user_orders = AsyncMock()
+    clock = TestComponentStubs.clock()
+    client = SXBetExecutionClient(
+        loop=get_event_loop(),
+        http_client=http_client,
+        instrument_provider=instrument_provider,
+        msgbus=TestComponentStubs.msgbus(),
+        cache=TestComponentStubs.cache(),
+        clock=clock,
+        logger=Logger(name="test-sxbet-execution"),
+        config=config,
+    )
+
+    mass_status = await client.generate_mass_status(lookback_mins=60)
+
+    assert mass_status is not None
+    assert str(mass_status.account_id).startswith("SXBET-")
+    assert mass_status.to_dict()["account_id"] == mass_status.account_id.value
+    mass_status.to_pyo3()
+    http_client.get_user_orders.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cancel_all_orders_cancels_tracked_sxbet_maker_orders():
+    config = SimpleNamespace(
+        api_key="api-key",
+        wallet_address="0x" + "12" * 20,
+        private_key="0x" + "34" * 32,
+        base_currency="USDC",
+    )
+    instrument_provider = SXBetInstrumentProvider(
+        http_client=Mock(),
+        config=SXBetInstrumentProviderConfig(),
+        logger=Mock(),
+    )
+    http_client = Mock()
+    http_client.cancel_order = AsyncMock()
+    client = SXBetExecutionClient(
+        loop=get_event_loop(),
+        http_client=http_client,
+        instrument_provider=instrument_provider,
+        msgbus=TestComponentStubs.msgbus(),
+        cache=TestComponentStubs.cache(),
+        clock=TestComponentStubs.clock(),
+        logger=Logger(name="test-sxbet-execution"),
+        config=config,
+    )
+    client_order_id = ClientOrderId("order-cancel-all")
+    client._orders[client_order_id] = {"order_hash": "0xorderhash"}
+    client._venue_order_ids[client_order_id] = VenueOrderId("0xorderhash")
+
+    await client._cancel_all_orders(SimpleNamespace())
+
+    http_client.cancel_order.assert_awaited_once_with("0xorderhash")
+
+
+@pytest.mark.asyncio
 async def test_connect_uses_usdc_token_address():
     config = SimpleNamespace(
         api_key="api-key",
@@ -332,6 +749,34 @@ def test_init_rejects_non_usdc_base_currency():
             logger=Logger(name="test-sxbet-execution"),
             config=config,
         )
+
+
+def test_init_accepts_unprefixed_hex_wallet_credentials():
+    config = SimpleNamespace(
+        api_key="api-key",
+        wallet_address="12" * 20,
+        private_key="34" * 32,
+        base_currency="USDC",
+    )
+    instrument_provider = SXBetInstrumentProvider(
+        http_client=Mock(),
+        config=SXBetInstrumentProviderConfig(),
+        logger=Mock(),
+    )
+
+    client = SXBetExecutionClient(
+        loop=get_event_loop(),
+        http_client=Mock(),
+        instrument_provider=instrument_provider,
+        msgbus=TestComponentStubs.msgbus(),
+        cache=TestComponentStubs.cache(),
+        clock=TestComponentStubs.clock(),
+        logger=Logger(name="test-sxbet-execution"),
+        config=config,
+    )
+
+    assert client._wallet_address == "0x" + "12" * 20
+    assert client._private_key == "0x" + "34" * 32
 
 
 @pytest.mark.parametrize(

@@ -97,6 +97,7 @@ repos:
     hooks:
       - id: codespell
         description: Checks for common misspellings
+        args: ["--ignore-words-list", "acn,alo,arange,highter,nd,ot,pnl,secur,serie,strat"]
         types_or: [rust, python, cython, toml, yaml, rst, markdown]
         exclude: *legacy_cloudbet_exclude
 

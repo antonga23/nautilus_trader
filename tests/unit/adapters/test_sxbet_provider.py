@@ -4,6 +4,11 @@
 #  Unit tests for SXBet instrument provider normalization.
 # -------------------------------------------------------------------------------------------------
 
+from collections import Counter
+from datetime import UTC
+from datetime import datetime
+from datetime import timedelta
+
 import pytest
 
 from nautilus_trader.adapters.sxbet.config import SXBetInstrumentProviderConfig
@@ -181,6 +186,50 @@ async def test_sxbet_provider_uses_fixture_event_id_and_keeps_market_hash_as_mar
     assert all(instrument.info["sxbet_market_hash"] == "market-1" for instrument in instruments)
     assert all(instrument.info["sxbet_event_id_source"] == "eventId" for instrument in instruments)
     assert provider.find_by_market_hash("market-1") == instruments
+
+
+@pytest.mark.asyncio
+async def test_sxbet_provider_scoped_match_winner_market_sets_period_params():
+    provider = SXBetInstrumentProvider(
+        http_client=object(),
+        config=SXBetInstrumentProviderConfig(),
+    )
+
+    await provider._process_market(
+        {
+            "marketHash": "market-q1",
+            "teamOneName": "Team A",
+            "teamTwoName": "Team B",
+            "sportId": 1,
+            "leagueName": "Premier League",
+            "type": 202,
+            "outcomeOneName": "Team A (1st Quarter)",
+            "outcomeTwoName": "Team B (1st Quarter)",
+        },
+    )
+    await provider._process_market(
+        {
+            "marketHash": "market-set1",
+            "teamOneName": "Player A",
+            "teamTwoName": "Player B",
+            "sportId": 6,
+            "leagueName": "ATP",
+            "type": 202,
+            "outcomeOneName": "Player A (1st Set)",
+            "outcomeTwoName": "Player B (1st Set)",
+        },
+    )
+
+    instruments = list(provider.get_all().values())
+    basketball = [inst for inst in instruments if inst.market_id == "market-q1"]
+    tennis = [inst for inst in instruments if inst.market_id == "market-set1"]
+
+    assert len(basketball) == TWO_INSTRUMENTS
+    assert len(tennis) == TWO_INSTRUMENTS
+    assert all(instrument.market_type == "match_odds" for instrument in basketball)
+    assert all(instrument.params == "period=q1" for instrument in basketball)
+    assert all(instrument.market_type == "match_odds" for instrument in tennis)
+    assert all(instrument.params == "set=1,period=set1" for instrument in tennis)
 
 
 @pytest.mark.asyncio
@@ -651,6 +700,106 @@ async def test_sxbet_provider_decouples_market_discovery_from_instrument_limit()
 
 
 @pytest.mark.asyncio
+async def test_sxbet_provider_balances_market_discovery_across_configured_sports():
+    class RecordingHttpClient:
+        def __init__(self) -> None:
+            self.market_calls: list[int | None] = []
+
+        async def get_markets(
+            self,
+            sport_id: int | None = None,
+            league_id: int | None = None,
+            only_active: bool = True,
+            pagination_key: str | None = None,
+            page_size: int | None = None,
+        ) -> dict:
+            self.market_calls.append(sport_id)
+            return {
+                "data": {
+                    "markets": [
+                        {
+                            "marketHash": f"market-{sport_id}-{index}",
+                            "teamOneName": f"Sport {sport_id} Team {index}A",
+                            "teamTwoName": f"Sport {sport_id} Team {index}B",
+                            "sportId": sport_id,
+                            "leagueName": f"League {sport_id}",
+                            "type": 52,
+                            "outcomeOneName": f"Sport {sport_id} Team {index}A",
+                            "outcomeTwoName": f"Sport {sport_id} Team {index}B",
+                        }
+                        for index in range(3)
+                    ],
+                },
+            }
+
+        @staticmethod
+        async def get_best_odds(
+            *,
+            market_hashes: list[str],
+            base_token: str,
+            log_api_error: bool = True,
+        ) -> dict:
+            return {"data": {"bestOdds": []}}
+
+    http_client = RecordingHttpClient()
+    provider = SXBetInstrumentProvider(
+        http_client=http_client,
+        config=SXBetInstrumentProviderConfig(
+            sport_ids=frozenset({1, 5, 6}),
+            market_discovery_limit=6,
+            prefer_liquid_markets=False,
+        ),
+    )
+
+    await provider.load_all_async()
+
+    sport_counts = Counter(instrument.sport_name for instrument in provider.get_all().values())
+    assert http_client.market_calls == [1, 5, 6]
+    assert sport_counts == {
+        "basketball": 4,
+        "soccer": 4,
+        "tennis": 4,
+    }
+
+
+def test_sxbet_provider_prioritizes_near_horizon_markets_within_balanced_sports():
+    provider = SXBetInstrumentProvider(
+        http_client=object(),
+        config=SXBetInstrumentProviderConfig(max_resolution_horizon_hours=48),
+    )
+    now = datetime.now(UTC)
+    markets = [
+        {
+            "marketHash": "basketball-far",
+            "sportId": 1,
+            "gameTime": int((now + timedelta(hours=72)).timestamp()),
+        },
+        {
+            "marketHash": "basketball-near",
+            "sportId": 1,
+            "gameTime": int((now + timedelta(hours=2)).timestamp()),
+        },
+        {
+            "marketHash": "soccer-far",
+            "sportId": 5,
+            "gameTime": int((now + timedelta(hours=72)).timestamp()),
+        },
+        {
+            "marketHash": "soccer-near",
+            "sportId": 5,
+            "gameTime": int((now + timedelta(hours=3)).timestamp()),
+        },
+    ]
+
+    selected = provider._balanced_market_sequence(markets, sport_order=(1, 5), limit=2)
+
+    assert [market["marketHash"] for market in selected] == [
+        "basketball-near",
+        "soccer-near",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_sxbet_provider_scans_until_pagination_end_when_discovery_limit_is_none():
     class RecordingHttpClient:
         def __init__(self) -> None:
@@ -786,6 +935,51 @@ async def test_sxbet_provider_prefers_two_sided_liquid_markets():
     selected = await provider._select_markets_for_processing(markets, target_market_count=2)
 
     assert [market["marketHash"] for market in selected] == ["market-2", "market-4"]
+
+
+@pytest.mark.asyncio
+async def test_sxbet_provider_tolerates_liquidity_probe_timeout():
+    class RecordingHttpClient:
+        def __init__(self) -> None:
+            self.order_book_calls: list[str] = []
+
+        async def get_order_book(self, market_hash: str) -> dict:
+            self.order_book_calls.append(market_hash)
+            if market_hash == "market-0":
+                raise SXBetHttpClientError(
+                    "Request failed for GET /orders: TimeoutError",
+                )
+            return {
+                "data": {
+                    "orders": [
+                        {
+                            "isMakerBettingOutcomeOne": True,
+                            "percentageOdds": decimal_odds_to_percentage(2.0),
+                        },
+                        {
+                            "isMakerBettingOutcomeOne": False,
+                            "percentageOdds": decimal_odds_to_percentage(2.1),
+                        },
+                    ],
+                },
+            }
+
+    markets = [{"marketHash": f"market-{index}"} for index in range(3)]
+    http_client = RecordingHttpClient()
+    provider = SXBetInstrumentProvider(
+        http_client=http_client,
+        config=SXBetInstrumentProviderConfig(
+            instrument_load_limit=6,
+            prefer_liquid_markets=True,
+            liquidity_probe_limit=3,
+            min_two_sided_markets=1,
+        ),
+    )
+
+    selected = await provider._select_markets_for_processing(markets, target_market_count=2)
+
+    assert [market["marketHash"] for market in selected] == ["market-1", "market-2"]
+    assert http_client.order_book_calls == ["market-0", "market-1", "market-2"]
 
 
 @pytest.mark.asyncio

@@ -142,6 +142,72 @@ def build_trading_node_config(manifest: BettingArbitrageNodeManifest) -> Trading
     )
 
 
+def manifest_execution_readiness(
+    manifest: BettingArbitrageNodeManifest,
+) -> dict[str, object]:
+    enabled_venues = [venue for venue in manifest.venues if venue.enabled]
+    venue_payloads: list[dict[str, object]] = []
+    for index, venue in enumerate(enabled_venues, start=1):
+        client_key = _client_key(venue, index)
+        api_url, ws_url = _resolve_venue_endpoints(venue)
+        venue_payloads.append(
+            {
+                "venue": venue.venue,
+                "clientKey": client_key,
+                "dataEnabled": venue.data_enabled,
+                "executionEnabled": venue.execution_enabled,
+                "executionDryRun": venue.execution_dry_run,
+                "environment": venue.environment or "prod",
+                "baseCurrency": _resolve_base_currency(venue),
+                "apiUrl": api_url,
+                "wsUrl": ws_url,
+                "sportKeys": sorted(venue.sport_keys) if venue.sport_keys else [],
+                "sportIds": sorted(venue.sport_ids) if venue.sport_ids else [],
+                "liveOnly": venue.live_only,
+                "loadAllInstruments": venue.load_all_instruments,
+                "instrumentLoadLimit": venue.instrument_load_limit,
+                "marketDiscoveryLimit": venue.market_discovery_limit,
+            },
+        )
+
+    return {
+        "validationMode": manifest.validation_mode,
+        "autoExecute": manifest.strategy.auto_execute,
+        "liveExecutionArmed": getattr(manifest.strategy, "live_execution_armed", False),
+        "liveExecutionEnvArmed": os.getenv("BETTING_LIVE_EXECUTION_ARMED", "").strip().lower()
+        in {"1", "true", "yes", "armed"},
+        "allowSameVenueLiveExecution": getattr(
+            manifest.strategy,
+            "allow_same_venue_live_execution",
+            False,
+        ),
+        "allowCrossCurrencyLiveExecution": getattr(
+            manifest.strategy,
+            "allow_cross_currency_live_execution",
+            False,
+        ),
+        "executionVenueMode": getattr(manifest.strategy, "execution_venue_mode", "all"),
+        "maxResolutionHorizonHours": getattr(
+            manifest.strategy,
+            "max_resolution_horizon_hours",
+            None,
+        ),
+        "portfolioBaseCurrency": getattr(manifest.strategy, "portfolio_base_currency", "USD"),
+        "stablecoinCurrencies": sorted(
+            getattr(manifest.strategy, "stablecoin_currencies", frozenset({"USD", "USDC", "USDT"})),
+        ),
+        "stablecoinHaircutBps": getattr(manifest.strategy, "stablecoin_haircut_bps", 0),
+        "fxQuoteMaxAgeSecs": getattr(manifest.strategy, "fx_quote_max_age_secs", 0),
+        "riskCaps": {
+            "maxLegStake": str(getattr(manifest.strategy, "max_leg_stake", "0")),
+            "maxDailyNotional": str(getattr(manifest.strategy, "max_daily_notional", "0")),
+            "maxDailyLoss": str(getattr(manifest.strategy, "max_daily_loss", "0")),
+        },
+        "semanticCacheConfigured": bool(manifest.semantic_rule_cache_dir),
+        "venues": venue_payloads,
+    }
+
+
 def _add_venue_clients(
     *,
     venue: BettingVenueManifest,
@@ -174,10 +240,18 @@ def _build_strategy_importable_config(
 ) -> ImportableStrategyConfig:
     strategy_config: dict[str, Any] = dict(manifest.strategy.json_primitives() or {})
     strategy_config["enabled_venues"] = sorted({venue.venue for venue in enabled_venues})
+    semantic_quote_limits = {
+        venue.venue: int(venue.quote_subscription_limit)
+        for venue in enabled_venues
+        if venue.quote_subscription_limit is not None
+    }
+    if semantic_quote_limits:
+        strategy_config["semantic_quote_subscription_limit_by_venue"] = semantic_quote_limits
     if manifest.semantic_rule_cache_dir:
         strategy_config["semantic_rule_cache_dir"] = manifest.semantic_rule_cache_dir
     if manifest.validation_mode:
         strategy_config["auto_execute"] = False
+        strategy_config["value_execution_enabled"] = False
     return ImportableStrategyConfig(
         strategy_path=STRATEGY_PATH,
         config_path=STRATEGY_CONFIG_PATH,
@@ -206,6 +280,7 @@ def _build_sxbet_data_importable(
         "prefer_liquid_markets": venue.prefer_liquid_markets,
         "liquidity_probe_limit": venue.liquidity_probe_limit,
         "min_two_sided_markets": venue.min_two_sided_markets,
+        "max_resolution_horizon_hours": manifest.strategy.max_resolution_horizon_hours,
     }
     config = {
         "api_key": api_key,
@@ -224,6 +299,8 @@ def _build_sxbet_data_importable(
         "order_book_poll_interval_secs": venue.order_book_poll_interval_secs,
         "order_book_poll_summary_interval_secs": venue.order_book_poll_summary_interval_secs,
         "order_book_concurrency": venue.order_book_concurrency,
+        "order_book_poll_mode": venue.order_book_poll_mode,
+        "order_book_best_odds_batch_size": venue.order_book_best_odds_batch_size,
         "routing": {"venues": [venue.venue]},
     }
     return ImportableConfig(
@@ -254,21 +331,31 @@ def _build_sxbet_exec_importable(
         "prefer_liquid_markets": venue.prefer_liquid_markets,
         "liquidity_probe_limit": venue.liquidity_probe_limit,
         "min_two_sided_markets": venue.min_two_sided_markets,
+        "max_resolution_horizon_hours": manifest.strategy.max_resolution_horizon_hours,
     }
     config = {
         "api_key": api_key,
         "api_key_pool": api_key_pool,
-        "private_key": _resolve_secret(prefix, "PRIVATE_KEY", manifest.allow_dummy_credentials),
-        "wallet_address": _resolve_secret(
-            prefix,
-            "WALLET_ADDRESS",
-            manifest.allow_dummy_credentials,
+        "private_key": _normalize_prefixed_hex_secret(
+            _resolve_secret(prefix, "PRIVATE_KEY", manifest.allow_dummy_credentials),
+            expected_nibbles=64,
+        ),
+        "wallet_address": _normalize_prefixed_hex_secret(
+            _resolve_secret(
+                prefix,
+                "WALLET_ADDRESS",
+                manifest.allow_dummy_credentials,
+            ),
+            expected_nibbles=40,
         ),
         "api_url": api_url,
         "ws_url": ws_url,
         "instrument_provider": provider_config,
         "max_retry_attempts": 3,
         "base_currency": _resolve_base_currency(venue),
+        "dry_run": venue.execution_dry_run,
+        "execution_mode": str((venue.metadata or {}).get("execution_mode") or "taker_fill"),
+        "odds_slippage": int((venue.metadata or {}).get("odds_slippage") or 5),
         "routing": {"venues": [venue.venue]},
     }
     return ImportableConfig(
@@ -303,6 +390,12 @@ def _build_cloudbet_data_importable(
         "quote_poll_interval_secs": venue.order_book_poll_interval_secs,
         "quote_poll_summary_interval_secs": venue.order_book_poll_summary_interval_secs,
         "quote_poll_concurrency": venue.order_book_concurrency,
+        "quote_poll_min_concurrency": venue.order_book_min_concurrency,
+        "quote_poll_max_concurrency": venue.order_book_max_concurrency,
+        "quote_poll_target_cycle_secs": venue.order_book_target_cycle_secs,
+        "quote_poll_adaptive_concurrency": venue.order_book_adaptive_concurrency,
+        "quote_poll_event_batching": venue.order_book_event_batching,
+        "quote_poll_missing_prune_threshold": venue.order_book_missing_prune_threshold,
         "routing": {"venues": [venue.venue]},
     }
     return ImportableConfig(
@@ -324,6 +417,18 @@ def _build_cloudbet_exec_importable(
         "api_url": api_url,
         "base_currency": _resolve_base_currency(venue),
         "market_filter": dict(filters) if filters else None,
+        "dry_run": venue.execution_dry_run,
+        "accept_price_change": str(
+            (venue.metadata or {}).get("accept_price_change")
+            or manifest.strategy.execution_price_change_policy
+            or "better",
+        ),
+        "pending_acceptance_poll_attempts": int(
+            (venue.metadata or {}).get("pending_acceptance_poll_attempts") or 3,
+        ),
+        "pending_acceptance_poll_interval_secs": float(
+            (venue.metadata or {}).get("pending_acceptance_poll_interval_secs") or 0.5,
+        ),
         "routing": {"venues": [venue.venue]},
     }
     return ImportableConfig(
@@ -388,7 +493,7 @@ def _build_polymarket_data_importable(
         "passphrase": _resolve_secret(prefix, "PASSPHRASE", manifest.allow_dummy_credentials),
         "base_url_http": venue.api_url,
         "base_url_ws": venue.ws_url,
-        "instrument_provider": _polymarket_instrument_provider_dict(venue),
+        "instrument_provider": _polymarket_instrument_provider_dict(venue, manifest),
         "compute_effective_deltas": False,
         "drop_quotes_missing_side": True,
         "routing": {"venues": [venue.venue]},
@@ -414,7 +519,7 @@ def _build_polymarket_exec_importable(
         "passphrase": _resolve_secret(prefix, "PASSPHRASE", manifest.allow_dummy_credentials),
         "base_url_http": venue.api_url,
         "base_url_ws": venue.ws_url,
-        "instrument_provider": _polymarket_instrument_provider_dict(venue),
+        "instrument_provider": _polymarket_instrument_provider_dict(venue, manifest),
         "generate_order_history_from_trades": False,
         "use_data_api": venue.use_data_api,
         "routing": {"venues": [venue.venue]},
@@ -426,17 +531,27 @@ def _build_polymarket_exec_importable(
     )
 
 
-def _polymarket_instrument_provider_dict(venue: BettingVenueManifest) -> dict[str, Any]:
+def _polymarket_instrument_provider_dict(
+    venue: BettingVenueManifest,
+    manifest: BettingArbitrageNodeManifest,
+) -> dict[str, Any]:
     filters: dict[str, Any] = {}
     if venue.sport_keys:
         filters["sports"] = sorted(venue.sport_keys)
     if venue.instrument_load_limit is not None:
         filters["limit"] = min(int(venue.instrument_load_limit), 500)
         filters["max_results"] = int(venue.instrument_load_limit)
+    max_resolution_horizon_hours = manifest.strategy.max_resolution_horizon_hours
     if venue.load_all_instruments:
         return {
             "load_all": True,
-            "filters": {"is_active": True, **filters},
+            "filters": _drop_none(
+                {
+                    "is_active": True,
+                    "max_resolution_horizon_hours": max_resolution_horizon_hours,
+                    **filters,
+                },
+            ),
             "use_gamma_markets": True,
         }
     provider_config: dict[str, Any] = {
@@ -487,6 +602,18 @@ def _resolve_secret_pool(
     return None
 
 
+def _normalize_prefixed_hex_secret(value: str, *, expected_nibbles: int) -> str:
+    normalized = value.strip()
+    if normalized.startswith("0X"):
+        normalized = f"0x{normalized[2:]}"
+    if not normalized.startswith("0x") and re.fullmatch(
+        rf"[0-9a-fA-F]{{{expected_nibbles}}}",
+        normalized,
+    ):
+        return f"0x{normalized}"
+    return normalized
+
+
 def _client_key(venue: BettingVenueManifest, index: int) -> str:
     raw = venue.client_key or f"{venue.venue}_{index}"
     cleaned = re.sub(r"[^A-Z0-9_]+", "_", raw.upper()).strip("_")
@@ -523,6 +650,7 @@ __all__ = [
     "build_trading_node_config",
     "default_render_paths",
     "load_manifest",
+    "manifest_execution_readiness",
     "manifest_to_json",
     "render_trading_node_config_json",
     "write_manifest_snapshot",

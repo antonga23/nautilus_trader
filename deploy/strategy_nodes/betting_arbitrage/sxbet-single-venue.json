@@ -18,6 +18,11 @@
     "instrument_refresh_interval_secs": 300.0,
     "rollover_aware": true,
     "opportunity_graph_engine": "auto",
+    "devig_enabled": true,
+    "devig_method": "auto",
+    "value_diagnostics_enabled": true,
+    "value_execution_enabled": false,
+    "min_value_edge": "0.015",
     "auto_execute": false
   },
   "venues": [
@@ -29,8 +34,8 @@
       "credential_prefix": "SXBET",
       "load_all_instruments": true,
       "sport_ids": [1, 2, 3, 5, 6],
-      "instrument_load_limit": 250,
-      "market_discovery_limit": 250,
+      "instrument_load_limit": 400,
+      "market_discovery_limit": 600,
       "prefer_liquid_markets": true,
       "liquidity_probe_limit": 250,
       "min_two_sided_markets": 1,

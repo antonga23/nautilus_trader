@@ -53,6 +53,22 @@ class ArbitrageOpportunity:
     odds_b: Decimal
     is_same_venue: bool
     match_type: str  # "same_market", "cross_market", "cross_venue"
+    raw_probability_a: Decimal | None = None
+    raw_probability_b: Decimal | None = None
+    raw_total_probability: Decimal | None = None
+    raw_profit_margin: Decimal | None = None
+    fee_adjusted: bool = False
+    fee_drag: Decimal = Decimal(0)
+    fee_adjusted_odds_a: Decimal | None = None
+    fee_adjusted_odds_b: Decimal | None = None
+    taker_fee_rate_a: Decimal = Decimal(0)
+    taker_fee_rate_b: Decimal = Decimal(0)
+    maker_rebate_rate_a: Decimal = Decimal(0)
+    maker_rebate_rate_b: Decimal = Decimal(0)
+    winning_profit_fee_rate_a: Decimal = Decimal(0)
+    winning_profit_fee_rate_b: Decimal = Decimal(0)
+    basket_rebate_rate: Decimal = Decimal(0)
+    basket_boost_rate: Decimal = Decimal(0)
 
     @property
     def is_arbitrage(self) -> bool:
@@ -649,6 +665,10 @@ class MarketMatcher:
             odds_b=odds_b,
             is_same_venue=is_same_venue,
             match_type=match_type,
+            raw_probability_a=prob_a,
+            raw_probability_b=prob_b,
+            raw_total_probability=total_prob,
+            raw_profit_margin=profit_margin,
         )
 
     def find_arbitrage_opportunities(

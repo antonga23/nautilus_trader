@@ -11,10 +11,13 @@ import pytest
 
 from nautilus_trader.adapters.betting.common.enums import SelectionSide
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
+from nautilus_trader.adapters.betting.runtime_cache import decode_venue_quote_poll_stats
+from nautilus_trader.adapters.betting.runtime_cache import venue_quote_poll_stats_key
 from nautilus_trader.adapters.sxbet.config import SXBetDataClientConfig
 from nautilus_trader.adapters.sxbet.config import SXBetInstrumentProviderConfig
 from nautilus_trader.adapters.sxbet.constants import SXBET_TOKENS
 from nautilus_trader.adapters.sxbet.data import SXBetDataClient
+from nautilus_trader.adapters.sxbet.http_client import SXBetHttpClientError
 from nautilus_trader.adapters.sxbet.providers import SXBetInstrumentProvider
 from nautilus_trader.adapters.sxbet.signing import decimal_odds_to_percentage
 from nautilus_trader.common.component import Logger
@@ -203,6 +206,11 @@ async def test_fetch_and_publish_quote_stats_reports_two_sided_liquidity():
         },
     )
     instrument_provider = _make_provider()
+    instruments_by_id = {
+        instrument_one.id: instrument_one,
+        instrument_two.id: instrument_two,
+    }
+    instrument_provider.find = Mock(side_effect=instruments_by_id.get)
     instrument_provider.find_by_market_hash = Mock(return_value=[instrument_one, instrument_two])
     client = SXBetDataClient(
         loop=get_event_loop(),
@@ -223,6 +231,9 @@ async def test_fetch_and_publish_quote_stats_reports_two_sided_liquidity():
         has_outcome_one,
         has_outcome_two,
         elapsed,
+        failed,
+        rate_limited,
+        error,
     ) = await client._fetch_and_publish_quote_stats("market-1")
 
     assert published == 2
@@ -230,10 +241,175 @@ async def test_fetch_and_publish_quote_stats_reports_two_sided_liquidity():
     assert has_outcome_one is True
     assert has_outcome_two is True
     assert elapsed >= 0
+    assert failed is False
+    assert rate_limited is False
+    assert error is None
     for call in client._handle_data.call_args_list:
         quote = call.args[0]
         assert quote.ts_event > 0
         assert quote.ts_init >= quote.ts_event
+
+
+@pytest.mark.asyncio
+async def test_poll_order_books_once_records_provider_poll_stats():
+    instrument_one = _make_instrument(outcome="home", outcome_one=True)
+    instrument_two = _make_instrument(outcome="away", outcome_one=False)
+
+    http_client = Mock()
+    http_client.get_order_book = AsyncMock(
+        return_value={
+            "data": {
+                "orders": [
+                    {
+                        "isMakerBettingOutcomeOne": True,
+                        "percentageOdds": decimal_odds_to_percentage(2.0),
+                    },
+                    {
+                        "isMakerBettingOutcomeOne": False,
+                        "percentageOdds": decimal_odds_to_percentage(2.1),
+                    },
+                ],
+            },
+        },
+    )
+    instrument_provider = _make_provider()
+    instruments_by_id = {
+        instrument_one.id: instrument_one,
+        instrument_two.id: instrument_two,
+    }
+    instrument_provider.find = Mock(side_effect=instruments_by_id.get)
+    instrument_provider.find_by_market_hash = Mock(return_value=[instrument_one, instrument_two])
+    cache = TestComponentStubs.cache()
+    client = SXBetDataClient(
+        loop=get_event_loop(),
+        http_client=http_client,
+        instrument_provider=instrument_provider,
+        msgbus=TestComponentStubs.msgbus(),
+        cache=cache,
+        clock=TestComponentStubs.clock(),
+        logger=Logger(name="test-sxbet-data"),
+        config=SXBetDataClientConfig(order_book_concurrency=1),
+    )
+    client._subscribed_instruments = {instrument_one.id, instrument_two.id}
+    client._handle_data = Mock()
+
+    await client._poll_order_books_once()
+
+    stats = decode_venue_quote_poll_stats(cache.get(venue_quote_poll_stats_key("SXBET")))
+    assert stats is not None
+    assert stats.venue == "SXBET"
+    assert stats.cycle_id == 1
+    assert stats.source == "rest_order_book_poll"
+    assert stats.subscribed_instrument_count == 2
+    assert stats.market_count == 1
+    assert stats.quote_count == 2
+    assert stats.order_count == 2
+    assert stats.two_sided_market_count == 1
+    assert stats.concurrency == 1
+    assert stats.poll_interval_secs == 3.0
+    assert stats.failure_count == 0
+    assert stats.rate_limit_count == 0
+
+
+@pytest.mark.asyncio
+async def test_poll_order_books_once_can_use_batched_best_odds_for_live_latency():
+    instrument_one = _make_instrument(outcome="home", outcome_one=True)
+    instrument_two = _make_instrument(outcome="away", outcome_one=False)
+
+    http_client = Mock()
+    http_client.get_order_book = AsyncMock()
+    http_client.get_best_odds = AsyncMock(
+        return_value={
+            "data": {
+                "bestOdds": [
+                    {
+                        "marketHash": "market-1",
+                        "outcomeOne": {
+                            "percentageOdds": str(decimal_odds_to_percentage(2.0)),
+                        },
+                        "outcomeTwo": {
+                            "percentageOdds": str(decimal_odds_to_percentage(2.1)),
+                        },
+                    },
+                ],
+            },
+        },
+    )
+    instrument_provider = _make_provider()
+    instruments_by_id = {
+        instrument_one.id: instrument_one,
+        instrument_two.id: instrument_two,
+    }
+    instrument_provider.find = Mock(side_effect=instruments_by_id.get)
+    instrument_provider.find_by_market_hash = Mock(return_value=[instrument_one, instrument_two])
+    cache = TestComponentStubs.cache()
+    client = SXBetDataClient(
+        loop=get_event_loop(),
+        http_client=http_client,
+        instrument_provider=instrument_provider,
+        msgbus=TestComponentStubs.msgbus(),
+        cache=cache,
+        clock=TestComponentStubs.clock(),
+        logger=Logger(name="test-sxbet-data"),
+        config=SXBetDataClientConfig(
+            order_book_concurrency=4,
+            order_book_poll_mode="best_odds_batch",
+            order_book_best_odds_batch_size=30,
+        ),
+    )
+    client._subscribed_instruments = {instrument_one.id, instrument_two.id}
+    client._handle_data = Mock()
+
+    await client._poll_order_books_once()
+
+    http_client.get_order_book.assert_not_awaited()
+    http_client.get_best_odds.assert_awaited_once_with(
+        market_hashes=["market-1"],
+        base_token=SXBET_TOKENS["USDC"],
+        log_api_error=False,
+    )
+    stats = decode_venue_quote_poll_stats(cache.get(venue_quote_poll_stats_key("SXBET")))
+    assert stats is not None
+    assert stats.source == "rest_best_odds_batch"
+    assert stats.market_count == 1
+    assert stats.request_count == 1
+    assert stats.backlog_count == 0
+    assert stats.quote_count == 2
+    assert stats.order_count == 0
+    assert stats.two_sided_market_count == 1
+    assert client._handle_data.call_count == 2
+
+
+def test_rejects_unknown_order_book_poll_mode():
+    with pytest.raises(ValueError, match="order_book_poll_mode"):
+        _make_client(config=SXBetDataClientConfig(order_book_poll_mode="websocket"))
+
+
+@pytest.mark.asyncio
+async def test_poll_order_books_once_records_rate_limit_failures():
+    instrument = _make_instrument()
+    instrument_provider = _make_provider()
+    instrument_provider.find = Mock(return_value=instrument)
+    instrument_provider.find_by_market_hash = Mock(return_value=[instrument])
+    client = _make_client(
+        instrument_provider=instrument_provider,
+        config=SXBetDataClientConfig(order_book_concurrency=1),
+    )
+    client._http_client.get_order_book = AsyncMock(
+        side_effect=SXBetHttpClientError("rate limited", status_code=429),
+    )
+    client._subscribed_instruments = {instrument.id}
+
+    await client._poll_order_books_once()
+
+    stats = decode_venue_quote_poll_stats(
+        client._cache.get(venue_quote_poll_stats_key("SXBET")),
+    )
+    assert stats is not None
+    assert stats.failure_count == 1
+    assert stats.rate_limit_count == 1
+    assert stats.backoff_secs == 1.0
+    assert stats.last_error == "rate limited"
 
 
 @pytest.mark.asyncio

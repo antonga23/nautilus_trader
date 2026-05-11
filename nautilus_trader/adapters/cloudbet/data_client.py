@@ -16,9 +16,13 @@
 import asyncio
 import contextlib
 import time
+from collections import defaultdict
 from typing import Any
 from nautilus_trader.adapters.betting.runtime_cache import active_venue_instrument_index_key
 from nautilus_trader.adapters.betting.runtime_cache import encode_active_venue_instrument_index
+from nautilus_trader.adapters.betting.runtime_cache import encode_venue_quote_poll_stats
+from nautilus_trader.adapters.betting.runtime_cache import latency_percentiles
+from nautilus_trader.adapters.betting.runtime_cache import venue_quote_poll_stats_key
 from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.clock import LiveClock
 from nautilus_trader.common.enums import LogColor
@@ -37,9 +41,12 @@ from nautilus_trader.msgbus.bus import MessageBus
 
 from nautilus_trader.adapters.cloudbet.client.core import CLOUDBET_VENUE
 from nautilus_trader.adapters.cloudbet.client.core import CloudbetClient
+from nautilus_trader.adapters.cloudbet.client.exceptions import CloudbetAPIError
 from nautilus_trader.adapters.cloudbet.client.schema import (
+    GetEventResponse,
     SelectionId,
     GetLatestOddsResponse,
+    SelectionSide,
     SelectionStatus,
 )
 from nautilus_trader.adapters.cloudbet.config import CloudbetDataClientConfig
@@ -130,8 +137,37 @@ class CloudbetDataClient(LiveMarketDataClient):
             getattr(self._config, "quote_poll_summary_interval_secs", 30.0),
         )
         self._quote_poll_concurrency = int(getattr(self._config, "quote_poll_concurrency", 4))
+        self._quote_poll_min_concurrency = max(
+            1,
+            int(getattr(self._config, "quote_poll_min_concurrency", 1)),
+        )
+        self._quote_poll_max_concurrency = max(
+            self._quote_poll_min_concurrency,
+            int(getattr(self._config, "quote_poll_max_concurrency", 16)),
+        )
+        self._quote_poll_target_cycle_secs = max(
+            0.1,
+            float(getattr(self._config, "quote_poll_target_cycle_secs", 5.0)),
+        )
+        self._quote_poll_adaptive_concurrency = bool(
+            getattr(self._config, "quote_poll_adaptive_concurrency", True),
+        )
+        self._quote_poll_event_batching = bool(
+            getattr(self._config, "quote_poll_event_batching", True),
+        )
+        self._quote_poll_missing_prune_threshold = max(
+            1,
+            int(getattr(self._config, "quote_poll_missing_prune_threshold", 3)),
+        )
+        self._quote_poll_missing_counts: dict[InstrumentId, int] = defaultdict(int)
+        self._quote_poll_concurrency = min(
+            max(self._quote_poll_min_concurrency, self._quote_poll_concurrency),
+            self._quote_poll_max_concurrency,
+        )
+        self._next_quote_poll_sleep_secs = self._quote_polling_interval
         self._last_quote_poll_summary_at = 0.0
         self._quote_polling_running = False
+        self._quote_poll_cycle_id = 0
 
         # Hot caches
         self.subscribed_orderbooks: dict[InstrumentId, OrderBook] = {}
@@ -193,6 +229,7 @@ class CloudbetDataClient(LiveMarketDataClient):
         self._update_instruments_task = None
         self._quote_polling_running = False
         self._subscribed_quote_instruments.clear()
+        self._quote_poll_missing_counts.clear()
         if self._quote_polling_task is not None:
             self._quote_polling_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -201,7 +238,7 @@ class CloudbetDataClient(LiveMarketDataClient):
         # TODO: create and then remove data_client specific cache
         # await self._remove_all_instruments_from_data_engine()
 
-    async def _dispose(self) -> None:
+    def _dispose(self) -> None:
         if self.is_connected:
             self._log.error("Cannot dispose a connected data client.")
             return
@@ -340,18 +377,20 @@ class CloudbetDataClient(LiveMarketDataClient):
     async def _subscribe_quote_ticks(self, command: SubscribeQuoteTicks) -> None:
         instrument_id = command.instrument_id
         self._subscribed_quote_instruments.add(instrument_id)
+        self._quote_poll_missing_counts.pop(instrument_id, None)
         self._log.debug(f"Subscribed to quote ticks: {instrument_id}")
         self._start_quote_polling()
 
     async def _unsubscribe_quote_ticks(self, command: UnsubscribeQuoteTicks) -> None:
         instrument_id = command.instrument_id
         self._subscribed_quote_instruments.discard(instrument_id)
+        self._quote_poll_missing_counts.pop(instrument_id, None)
         self._log.debug(f"Unsubscribed from quote ticks: {instrument_id}")
         if not self._subscribed_quote_instruments:
             self._quote_polling_running = False
 
     async def _unsubscribe_instrument(self, instrument_id: InstrumentId) -> None:
-        if instrument_id in self.subscribed_instruments:
+        if instrument_id in self.subscribed_instruments():
             self._remove_subscription_instrument(instrument_id)
             self.subscribed_market_names.pop(instrument_id, None)
             self.subscribed_event_ids.pop(instrument_id, None)
@@ -419,7 +458,7 @@ class CloudbetDataClient(LiveMarketDataClient):
             for instrument in self._instrument_provider.list_all()
             if isinstance(instrument, CryptoBettingInstrument)
         ]
-        loaded_instruments.sort(key=lambda instrument: str(instrument.id))
+        loaded_instruments.sort(key=self._quote_subscription_priority_key)
         limit = getattr(self._config, "quote_subscription_limit", None)
         selected_instruments = (
             loaded_instruments[:limit] if limit is not None else loaded_instruments
@@ -439,6 +478,19 @@ class CloudbetDataClient(LiveMarketDataClient):
         self._start_quote_polling()
         return selected_count
 
+    @staticmethod
+    def _quote_subscription_priority_key(
+        instrument: CryptoBettingInstrument,
+    ) -> tuple[int, int, float, str]:
+        enabled_rank = 0 if bool(getattr(instrument, "enabled", True)) else 1
+        status = str(getattr(instrument, "trading_status", "") or "").strip().upper()
+        inactive_rank = 1 if status in {"CANCELLED", "CLOSED", "RESULTED", "SUSPENDED"} else 0
+        try:
+            max_size = float(getattr(instrument, "max_size", 0) or 0)
+        except (TypeError, ValueError):
+            max_size = 0.0
+        return (enabled_rank, inactive_rank, -max_size, str(instrument.id))
+
     def _start_quote_polling(self) -> None:
         if not self._subscribed_quote_instruments:
             return
@@ -451,7 +503,7 @@ class CloudbetDataClient(LiveMarketDataClient):
         while self._quote_polling_running:
             try:
                 await self._poll_quote_ticks_once()
-                await asyncio.sleep(self._quote_polling_interval)
+                await asyncio.sleep(self._next_quote_poll_sleep_secs)
             except asyncio.CancelledError:
                 break
             except (RuntimeError, ValueError, TypeError, KeyError) as e:
@@ -465,43 +517,367 @@ class CloudbetDataClient(LiveMarketDataClient):
             return (0, 0)
 
         started_at = time.perf_counter()
-        semaphore = asyncio.Semaphore(max(1, self._quote_poll_concurrency))
-
-        async def _fetch(instrument_id: InstrumentId) -> QuoteTick | None:
-            async with semaphore:
-                return await self._fetch_quote_tick(instrument_id)
-
-        results = await asyncio.gather(*[_fetch(instrument_id) for instrument_id in instrument_ids])
+        if self._quote_poll_event_batching:
+            (
+                results,
+                request_count,
+                event_request_count,
+                line_request_count,
+            ) = await self._fetch_quote_ticks_event_batched(instrument_ids)
+        else:
+            results, line_request_count = await self._fetch_quote_ticks_individual(instrument_ids)
+            event_request_count = 0
+            request_count = line_request_count
         published = 0
-        for quote in results:
-            if quote is None:
+        fetch_latencies_secs: list[float] = []
+        max_fetch_latency_secs = 0.0
+        failure_count = 0
+        rate_limit_count = 0
+        last_error: str | None = None
+        pruned_subscription_count = 0
+        pruned_instrument_ids: set[InstrumentId] = set()
+        for instrument_id, quote, error in results:
+            if error is not None:
+                failure_count += 1
+                last_error = error
+                if "429" in error or "code='429'" in error or "code=429" in error:
+                    rate_limit_count += 1
                 continue
+            if quote is None:
+                if self._record_missing_quote_subscription(instrument_id):
+                    pruned_subscription_count += 1
+                    pruned_instrument_ids.add(instrument_id)
+                continue
+            self._quote_poll_missing_counts.pop(instrument_id, None)
             self._handle_data(quote)
             published += 1
+            max_fetch_latency_secs = max(
+                max_fetch_latency_secs,
+                max(0.0, (quote.ts_init - quote.ts_event) / 1_000_000_000),
+            )
+            fetch_latencies_secs.append(max(0.0, (quote.ts_init - quote.ts_event) / 1_000_000_000))
+        refilled_subscription_count = 0
+        if pruned_subscription_count > 0:
+            refilled_subscription_count = self._refill_quote_subscriptions(
+                exclude=pruned_instrument_ids,
+                max_added=pruned_subscription_count,
+            )
 
+        cycle_elapsed = time.perf_counter() - started_at
+        self._adapt_quote_poll_schedule(
+            instrument_count=len(instrument_ids),
+            cycle_elapsed=cycle_elapsed,
+            rate_limit_count=rate_limit_count,
+            failure_count=failure_count,
+        )
+        self._record_quote_poll_stats(
+            instrument_count=len(instrument_ids),
+            quote_count=published,
+            request_count=request_count,
+            event_request_count=event_request_count,
+            line_request_count=line_request_count,
+            pruned_subscription_count=pruned_subscription_count,
+            refilled_subscription_count=refilled_subscription_count,
+            cycle_elapsed=cycle_elapsed,
+            max_fetch_latency_secs=max_fetch_latency_secs,
+            fetch_latency_percentiles=latency_percentiles(fetch_latencies_secs),
+            failure_count=failure_count,
+            rate_limit_count=rate_limit_count,
+            backoff_secs=float(rate_limit_count),
+            last_error=last_error,
+        )
         self._log_quote_poll_summary(
             instrument_count=len(instrument_ids),
             quote_count=published,
-            cycle_elapsed=time.perf_counter() - started_at,
+            request_count=request_count,
+            cycle_elapsed=cycle_elapsed,
         )
         return published, len(instrument_ids)
+
+    def _refill_quote_subscriptions(
+        self,
+        *,
+        exclude: set[InstrumentId],
+        max_added: int,
+    ) -> int:
+        if max_added <= 0:
+            return 0
+        limit = getattr(self._config, "quote_subscription_limit", None)
+        if limit is not None:
+            slots_available = max(0, int(limit) - len(self._subscribed_quote_instruments))
+            max_added = min(max_added, slots_available)
+        if max_added <= 0:
+            return 0
+        candidates = [
+            instrument
+            for instrument in self._instrument_provider.list_all()
+            if isinstance(instrument, CryptoBettingInstrument)
+            and instrument.id not in self._subscribed_quote_instruments
+            and instrument.id not in exclude
+        ]
+        candidates.sort(key=self._quote_subscription_priority_key)
+        added = 0
+        for instrument in candidates:
+            self._subscribed_quote_instruments.add(instrument.id)
+            self._quote_poll_missing_counts.pop(instrument.id, None)
+            added += 1
+            if added >= max_added:
+                break
+        if added > 0:
+            self._quote_polling_running = True
+            self._log.info(
+                "Refilled Cloudbet quote subscriptions after pruning: "
+                f"added={added} subscribed={len(self._subscribed_quote_instruments)}",
+            )
+        return added
+
+    async def _fetch_quote_ticks_individual(
+        self,
+        instrument_ids: list[InstrumentId],
+    ) -> tuple[list[tuple[InstrumentId, QuoteTick | None, str | None]], int]:
+        semaphore = asyncio.Semaphore(max(1, self._quote_poll_concurrency))
+
+        async def _fetch(
+            instrument_id: InstrumentId,
+        ) -> tuple[InstrumentId, QuoteTick | None, str | None]:
+            async with semaphore:
+                try:
+                    return instrument_id, await self._fetch_quote_tick(instrument_id), None
+                except CloudbetAPIError as exc:
+                    self._log.warning(f"Cloudbet quote poll failed for {instrument_id}: {exc}")
+                    return instrument_id, None, str(exc)
+                except (ValueError, TypeError, KeyError) as exc:
+                    self._log.warning(f"Cloudbet quote poll failed for {instrument_id}: {exc}")
+                    return instrument_id, None, str(exc)
+
+        results = await asyncio.gather(*[_fetch(instrument_id) for instrument_id in instrument_ids])
+        return list(results), len(instrument_ids)
+
+    async def _fetch_quote_ticks_event_batched(
+        self,
+        instrument_ids: list[InstrumentId],
+    ) -> tuple[list[tuple[InstrumentId, QuoteTick | None, str | None]], int, int, int]:
+        event_groups, line_fallback_ids = self._group_quote_instruments_by_event(instrument_ids)
+        semaphore = asyncio.Semaphore(max(1, self._quote_poll_concurrency))
+        event_results = await asyncio.gather(
+            *[
+                self._fetch_quote_ticks_for_event_group(
+                    event_id,
+                    group_instrument_ids,
+                    semaphore,
+                )
+                for event_id, group_instrument_ids in event_groups.items()
+            ],
+        )
+        results: list[tuple[QuoteTick | None, str | None]] = []
+        line_request_count = 0
+        for group_results, fallback_count in event_results:
+            results.extend(group_results)
+            line_request_count += fallback_count
+
+        if line_fallback_ids:
+            fallback_results, fallback_count = await self._fetch_quote_ticks_individual(
+                line_fallback_ids,
+            )
+            results.extend(fallback_results)
+            line_request_count += fallback_count
+
+        event_request_count = len(event_groups)
+        request_count = event_request_count + line_request_count
+        return results, request_count, event_request_count, line_request_count
+
+    def _group_quote_instruments_by_event(
+        self,
+        instrument_ids: list[InstrumentId],
+    ) -> tuple[dict[int, list[InstrumentId]], list[InstrumentId]]:
+        event_groups: dict[int, list[InstrumentId]] = defaultdict(list)
+        line_fallback_ids: list[InstrumentId] = []
+        for instrument_id in instrument_ids:
+            instrument = self._instrument_provider.find(instrument_id)
+            if not isinstance(instrument, CryptoBettingInstrument):
+                line_fallback_ids.append(instrument_id)
+                continue
+            try:
+                event_id = int(str(instrument.event_id))
+            except (TypeError, ValueError):
+                line_fallback_ids.append(instrument_id)
+                continue
+            event_groups[event_id].append(instrument_id)
+        return event_groups, line_fallback_ids
+
+    async def _fetch_quote_ticks_for_event_group(
+        self,
+        event_id: int,
+        group_instrument_ids: list[InstrumentId],
+        semaphore: asyncio.Semaphore,
+    ) -> tuple[list[tuple[InstrumentId, QuoteTick | None, str | None]], int]:
+        async with semaphore:
+            request_started_ns = self._clock.timestamp_ns()
+            try:
+                event = await self._client.get_event(event_id)
+            except CloudbetAPIError as exc:
+                self._log.warning(f"Cloudbet event quote poll failed for event {event_id}: {exc}")
+                return await self._fetch_quote_ticks_individual(group_instrument_ids)
+            except (ValueError, TypeError, KeyError) as exc:
+                self._log.warning(f"Cloudbet event quote poll failed for event {event_id}: {exc}")
+                return await self._fetch_quote_ticks_individual(group_instrument_ids)
+            response_received_ns = self._clock.timestamp_ns()
+
+        group_results: list[tuple[InstrumentId, QuoteTick | None, str | None]] = []
+        unresolved_ids: list[InstrumentId] = []
+        for instrument_id in group_instrument_ids:
+            instrument = self._instrument_provider.find(instrument_id)
+            if not isinstance(instrument, CryptoBettingInstrument):
+                group_results.append((instrument_id, None, None))
+                continue
+            quote = self._quote_tick_from_event(
+                instrument=instrument,
+                event=event,
+                request_started_ns=request_started_ns,
+                response_received_ns=response_received_ns,
+            )
+            if quote is None:
+                unresolved_ids.append(instrument_id)
+            else:
+                group_results.append((instrument_id, quote, None))
+
+        fallback_count = 0
+        if unresolved_ids:
+            fallback_results, fallback_count = await self._fetch_quote_ticks_individual(
+                unresolved_ids,
+            )
+            group_results.extend(fallback_results)
+        return group_results, fallback_count
+
+    def _record_missing_quote_subscription(self, instrument_id: InstrumentId) -> bool:
+        if instrument_id not in self._subscribed_quote_instruments:
+            return False
+        missing_count = self._quote_poll_missing_counts[instrument_id] + 1
+        if missing_count < self._quote_poll_missing_prune_threshold:
+            self._quote_poll_missing_counts[instrument_id] = missing_count
+            return False
+        self._quote_poll_missing_counts.pop(instrument_id, None)
+        self._subscribed_quote_instruments.discard(instrument_id)
+        self._log.info(
+            "Pruned Cloudbet quote subscription after consecutive missing polls: "
+            f"instrument_id={instrument_id} misses={missing_count}",
+        )
+        if not self._subscribed_quote_instruments:
+            self._quote_polling_running = False
+        return True
+
+    def _adapt_quote_poll_schedule(
+        self,
+        *,
+        instrument_count: int,
+        cycle_elapsed: float,
+        rate_limit_count: int,
+        failure_count: int,
+    ) -> None:
+        if not self._quote_poll_adaptive_concurrency:
+            self._next_quote_poll_sleep_secs = self._quote_polling_interval
+            return
+
+        target = self._quote_poll_target_cycle_secs
+        if rate_limit_count > 0:
+            self._quote_poll_concurrency = max(
+                self._quote_poll_min_concurrency,
+                self._quote_poll_concurrency // 2,
+            )
+        elif instrument_count > self._quote_poll_concurrency and cycle_elapsed > target:
+            scale = min(2.0, max(1.1, cycle_elapsed / target))
+            self._quote_poll_concurrency = min(
+                self._quote_poll_max_concurrency,
+                max(self._quote_poll_concurrency + 1, int(self._quote_poll_concurrency * scale)),
+            )
+        elif (
+            failure_count == 0
+            and instrument_count <= self._quote_poll_concurrency // 2
+            and cycle_elapsed < target * 0.35
+        ):
+            self._quote_poll_concurrency = max(
+                self._quote_poll_min_concurrency,
+                self._quote_poll_concurrency - 1,
+            )
+
+        self._next_quote_poll_sleep_secs = min(
+            self._quote_polling_interval,
+            max(0.25, target - cycle_elapsed),
+        )
 
     async def _fetch_quote_tick(self, instrument_id: InstrumentId) -> QuoteTick | None:
         instrument = self._instrument_provider.find(instrument_id)
         if not isinstance(instrument, CryptoBettingInstrument):
             return None
 
-        market_url = (
-            instrument.market_name + "/" + instrument.outcome + "?" + instrument.params
-            if instrument.params is not None
-            else instrument.market_name + "/" + instrument.outcome
-        )
+        market_url = self._market_url_for_instrument(instrument)
         request_started_ns = self._clock.timestamp_ns()
         odds = await self._client.get_latest_odds(
             event_id=instrument.event_id,
             market_url=market_url,
         )
         response_received_ns = self._clock.timestamp_ns()
+        return self._quote_tick_from_odds(
+            instrument=instrument,
+            odds=odds,
+            request_started_ns=request_started_ns,
+            response_received_ns=response_received_ns,
+        )
+
+    def _quote_tick_from_event(
+        self,
+        *,
+        instrument: CryptoBettingInstrument,
+        event: GetEventResponse,
+        request_started_ns: int,
+        response_received_ns: int,
+    ) -> QuoteTick | None:
+        market = event.markets.get(str(instrument.market_name))
+        if market is None:
+            return None
+
+        submarkets = market.submarkets
+        preferred_submarket = self._preferred_submarket_key(instrument)
+        submarket_items = []
+        if preferred_submarket and preferred_submarket in submarkets:
+            submarket_items.append((preferred_submarket, submarkets[preferred_submarket]))
+        submarket_items.extend(
+            (key, value) for key, value in submarkets.items() if key != preferred_submarket
+        )
+        expected_outcome = self._normalize_cloudbet_selection_field(instrument.outcome)
+        expected_params = self._normalize_cloudbet_selection_field(instrument.params)
+        for _, submarket in submarket_items:
+            for selection in submarket.selections:
+                if self._normalize_cloudbet_selection_field(selection.outcome) != expected_outcome:
+                    continue
+                if self._normalize_cloudbet_selection_field(selection.params) != expected_params:
+                    continue
+                odds = GetLatestOddsResponse(
+                    max_stake=selection.maxStake,
+                    min_stake=selection.minStake,
+                    price=selection.price,
+                    status=self._selection_status(selection.status),
+                    outcome=selection.outcome,
+                    params=selection.params,
+                    probability=selection.probability,
+                    side=self._selection_side(selection.side),
+                )
+                return self._quote_tick_from_odds(
+                    instrument=instrument,
+                    odds=odds,
+                    request_started_ns=request_started_ns,
+                    response_received_ns=response_received_ns,
+                )
+        return None
+
+    def _quote_tick_from_odds(
+        self,
+        *,
+        instrument: CryptoBettingInstrument,
+        odds: GetLatestOddsResponse,
+        request_started_ns: int,
+        response_received_ns: int,
+    ) -> QuoteTick | None:
         price = float(odds.price)
         if price <= 0:
             return None
@@ -519,11 +895,51 @@ class CloudbetDataClient(LiveMarketDataClient):
             ts_init=response_received_ns,
         )
 
+    @staticmethod
+    def _market_url_for_instrument(instrument: CryptoBettingInstrument) -> str:
+        return (
+            instrument.market_name + "/" + instrument.outcome + "?" + instrument.params
+            if instrument.params is not None
+            else instrument.market_name + "/" + instrument.outcome
+        )
+
+    @staticmethod
+    def _preferred_submarket_key(instrument: CryptoBettingInstrument) -> str | None:
+        market_type = str(getattr(instrument, "market_type", "") or "")
+        market_name = str(getattr(instrument, "market_name", "") or "")
+        prefix = f"{market_name}_"
+        if market_type.startswith(prefix):
+            return market_type[len(prefix) :]
+        return None
+
+    @staticmethod
+    def _normalize_cloudbet_selection_field(value: object) -> str:
+        return str(value or "").strip()
+
+    @staticmethod
+    def _selection_status(value: object) -> SelectionStatus:
+        if isinstance(value, SelectionStatus):
+            return value
+        try:
+            return SelectionStatus(str(value))
+        except ValueError:
+            return SelectionStatus.DISABLED
+
+    @staticmethod
+    def _selection_side(value: object) -> SelectionSide:
+        if isinstance(value, SelectionSide):
+            return value
+        try:
+            return SelectionSide(str(value))
+        except ValueError:
+            return SelectionSide.UNDEFINED
+
     def _log_quote_poll_summary(
         self,
         *,
         instrument_count: int,
         quote_count: int,
+        request_count: int,
         cycle_elapsed: float,
     ) -> None:
         now = time.monotonic()
@@ -533,8 +949,67 @@ class CloudbetDataClient(LiveMarketDataClient):
         self._log.info(
             "Cloudbet quote poll cycle: "
             f"instruments={instrument_count} quotes={quote_count} "
+            f"requests={request_count} "
             f"concurrency={self._quote_poll_concurrency} "
-            f"cycle_elapsed={cycle_elapsed:.2f}s",
+            f"cycle_elapsed={cycle_elapsed:.2f}s "
+            f"next_sleep={self._next_quote_poll_sleep_secs:.2f}s",
+        )
+
+    def _record_quote_poll_stats(
+        self,
+        *,
+        instrument_count: int,
+        quote_count: int,
+        request_count: int,
+        event_request_count: int,
+        line_request_count: int,
+        pruned_subscription_count: int,
+        refilled_subscription_count: int,
+        cycle_elapsed: float,
+        max_fetch_latency_secs: float,
+        fetch_latency_percentiles: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        failure_count: int = 0,
+        rate_limit_count: int = 0,
+        backoff_secs: float = 0.0,
+        last_error: str | None = None,
+    ) -> None:
+        self._quote_poll_cycle_id += 1
+        backlog_count = max(0, instrument_count - max(1, self._quote_poll_concurrency))
+        self._cache.add(
+            venue_quote_poll_stats_key(CLOUDBET_VENUE.value),
+            encode_venue_quote_poll_stats(
+                venue=CLOUDBET_VENUE.value,
+                updated_at_ns=self._clock.timestamp_ns(),
+                cycle_id=self._quote_poll_cycle_id,
+                source="rest_event_poll" if self._quote_poll_event_batching else "rest_line_poll",
+                subscribed_instrument_count=len(self._subscribed_quote_instruments),
+                market_count=instrument_count,
+                quote_count=quote_count,
+                request_count=request_count,
+                event_request_count=event_request_count,
+                line_request_count=line_request_count,
+                pruned_subscription_count=pruned_subscription_count,
+                refilled_subscription_count=refilled_subscription_count,
+                concurrency=self._quote_poll_concurrency,
+                backlog_count=backlog_count,
+                cycle_elapsed_secs=cycle_elapsed,
+                max_fetch_latency_secs=max_fetch_latency_secs,
+                poll_interval_secs=self._quote_polling_interval,
+                fetch_latency_p50_secs=fetch_latency_percentiles[0],
+                fetch_latency_p95_secs=fetch_latency_percentiles[1],
+                fetch_latency_p99_secs=fetch_latency_percentiles[2],
+                poll_target_cycle_secs=self._quote_poll_target_cycle_secs,
+                next_poll_sleep_secs=self._next_quote_poll_sleep_secs,
+                min_concurrency=self._quote_poll_min_concurrency,
+                max_concurrency=self._quote_poll_max_concurrency,
+                adaptive_concurrency=self._quote_poll_adaptive_concurrency,
+                quote_event_timestamp_source="request_started",
+                quote_init_timestamp_source="response_received",
+                failure_count=failure_count,
+                rate_limit_count=rate_limit_count,
+                backoff_secs=backoff_secs,
+                last_error=last_error,
+            ),
         )
 
     # async def _remove_all_instruments_from_data_engine(self) -> None:
@@ -556,7 +1031,7 @@ class CloudbetDataClient(LiveMarketDataClient):
                     f"{self._update_instrument_interval}s.",
                 )
                 await asyncio.sleep(self._update_instrument_interval)
-                await self._instrument_provider.load_ids_async(self.subscribed_instruments)
+                await self._instrument_provider.load_ids_async(self.subscribed_instruments())
                 # send to Data Engine for processing => add to cache and propagate to subscriptions
                 self._send_all_instruments_to_data_engine()
                 # Signal completion of the update cycle

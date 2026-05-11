@@ -33,8 +33,13 @@ on:
         description: Rebuild the strategy-node image archive even when an R2 archive already exists
         required: false
         default: 'false'
+      live_execution_armed:
+        description: Explicitly arm live execution for manifests that also opt in
+        required: false
+        default: 'false'
 
 permissions:
+  actions: read
   contents: read
 
 env:
@@ -192,7 +197,16 @@ jobs:
                   shutil.copy2(source, destination)
           PY
 
+      - name: Patch cached wheel with checked-out Python sources
+        if: steps.local-wheel-cache.outputs.cache-hit == 'true'
+        run: |
+          wheel_path="$(find dist -maxdepth 1 -name 'nautilus_trader-*.whl' -type f | sort | tail -n 1)"
+          test -n "$wheel_path"
+          python3 scripts/ci/patch_wheel_python_sources.py "$wheel_path"
+          ls -lh dist/
+
       - name: Build validated wheel from checked-out source
+        if: steps.local-wheel-cache.outputs.cache-hit != 'true'
         env:
           BUILD_MODE: release
         run: |
@@ -362,10 +376,97 @@ jobs:
               put artifacts/strategy-nodes diagnostics/strategy-nodes
           fi
 
+  check-deploy-runner:
+    name: check-ec2-deploy-runner
+    timeout-minutes: 5
+    needs: [validate-manifests]
+    runs-on: [self-hosted, linux, x64, cloudbet-market-maker, ci, gcp, ubuntu24]
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
+        with:
+          egress-policy: audit
+          allowed-endpoints: |
+            api.github.com:443
+
+      - name: Check EC2 deploy runner availability
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEPLOY_ENABLED: ${{ github.event.inputs.deploy_enabled || '' }}
+        run: |
+          set -euo pipefail
+
+          deploy_requested="false"
+          if [[ "${GITHUB_EVENT_NAME}" == "push" || "${DEPLOY_ENABLED}" == "true" ]]; then
+            deploy_requested="true"
+          fi
+
+          if [[ "$deploy_requested" != "true" ]]; then
+            echo "Deploy was not requested; EC2 runner availability is informational."
+            exit 0
+          fi
+
+          response_file="$(mktemp)"
+          http_code="$(
+            curl -sS -L \
+              -o "$response_file" \
+              -w "%{http_code}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/runners?per_page=100"
+          )"
+          if [[ "$http_code" == "403" ]]; then
+            echo "::warning::GitHub token cannot list repository runners; continuing "\
+              "so the EC2 deploy job can queue normally."
+            exit 0
+          fi
+          if [[ "$http_code" -lt 200 || "$http_code" -ge 300 ]]; then
+            echo "GitHub runner inventory request failed with HTTP $http_code" >&2
+            cat "$response_file" >&2 || true
+            exit 1
+          fi
+          response="$(cat "$response_file")"
+          RUNNER_RESPONSE="$response" python3 - <<'PY'
+          import json
+          import os
+          import sys
+
+          payload = json.loads(os.environ["RUNNER_RESPONSE"])
+          required = {"self-hosted", "Linux", "X64", "ec2", "deploy", "trading"}
+          matching = []
+          for runner in payload.get("runners", []):
+              labels = {label.get("name") for label in runner.get("labels", [])}
+              if required.issubset(labels):
+                  matching.append(
+                      {
+                          "name": runner.get("name"),
+                          "status": runner.get("status"),
+                          "busy": runner.get("busy"),
+                      },
+                  )
+
+          if not matching:
+              print("No EC2 deploy runner with required labels was found.", file=sys.stderr)
+              sys.exit(1)
+
+          online = [runner for runner in matching if runner.get("status") == "online"]
+          print(f"matching_ec2_deploy_runners={matching}")
+          if not online:
+              print(
+                  "All EC2 deploy runners are offline; failing before image build to avoid "
+                  "a queued deploy job.",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+          PY
+
   build-strategy-node-image:
     name: build-strategy-node-image
     timeout-minutes: 45
-    needs: [validate-manifests]
+    needs: [validate-manifests, check-deploy-runner]
     runs-on: [self-hosted, linux, x64, cloudbet-market-maker, ci, gcp, ubuntu24]
     env:
       STRATEGY_NODE_GHCR_USERNAME: ${{ secrets.STRATEGY_NODE_GHCR_USERNAME }}
@@ -556,16 +657,20 @@ jobs:
           artifacts/strategy-node-image/betting-arbitrage-node.tar.gz
           "$IMAGE_ARCHIVE_KEY"
 
+      - name: Post-build cleanup of stale Docker artifacts
+        if: always()
+        run: |
+          docker image prune -f || true
+          docker builder prune -f --filter "until=48h" || true
+          find artifacts -type f -mtime +2 -delete 2> /dev/null || true
+
   deploy-strategy-node:
     name: deploy-strategy-node
-    timeout-minutes: 30
+    timeout-minutes: 45
     needs: [build-strategy-node-image]
     if: github.event_name == 'workflow_dispatch' && github.event.inputs.deploy_enabled == 'true'
-    runs-on: [self-hosted, linux, x64, cloudbet-market-maker, ci, gcp, ubuntu24]
+    runs-on: [self-hosted, linux, x64, ec2, deploy, trading]
     env:
-      STRATEGY_NODE_HOST: ${{ secrets.STRATEGY_NODE_HOST }}
-      STRATEGY_NODE_SSH_USER: ${{ secrets.STRATEGY_NODE_SSH_USER }}
-      STRATEGY_NODE_SSH_KEY: ${{ secrets.STRATEGY_NODE_SSH_KEY }}
       STRATEGY_NODE_ENV_FILE: ${{ secrets.STRATEGY_NODE_ENV_FILE }}
       STRATEGY_NODE_GHCR_USERNAME: ${{ secrets.STRATEGY_NODE_GHCR_USERNAME }}
       STRATEGY_NODE_GHCR_TOKEN: ${{ secrets.STRATEGY_NODE_GHCR_TOKEN }}
@@ -581,6 +686,7 @@ jobs:
       POLYMARKET_PASSPHRASE: ${{ secrets.POLYMARKET_PASSPHRASE }}
       STRATEGY_NODE_CONTAINER_NAME: ${{ github.event.inputs.container_name }}
       STRATEGY_NODE_IMAGE_TRANSPORT: ${{ github.event.inputs.image_transport }}
+      BETTING_LIVE_EXECUTION_ARMED_INPUT: ${{ github.event.inputs.live_execution_armed }}
     steps:
       - uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
         with:
@@ -644,21 +750,6 @@ jobs:
 
       - name: Validate deploy inputs
         run: |
-          missing=()
-          for name in \
-            STRATEGY_NODE_HOST \
-            STRATEGY_NODE_SSH_USER \
-            STRATEGY_NODE_SSH_KEY
-          do
-            if [ -z "${!name}" ]; then
-              missing+=("$name")
-            fi
-          done
-          if [ "${#missing[@]}" -gt 0 ]; then
-            printf 'Missing required strategy-node deploy secret(s): %s\n' \
-              "${missing[*]}" >&2
-            exit 1
-          fi
           case "$STRATEGY_NODE_CONTAINER_NAME" in
             ""|*[!A-Za-z0-9_.-]*)
               echo "Invalid STRATEGY_NODE_CONTAINER_NAME: $STRATEGY_NODE_CONTAINER_NAME" >&2
@@ -677,11 +768,6 @@ jobs:
             echo "STRATEGY_NODE_GHCR_USERNAME is required when STRATEGY_NODE_GHCR_TOKEN is set" >&2
             exit 1
           fi
-
-      - name: Prepare SSH key
-        run: |
-          install -m 600 /dev/null strategy-node.key
-          printf '%s' "$STRATEGY_NODE_SSH_KEY" > strategy-node.key
 
       - name: Resolve deploy metadata
         id: deploy-meta
@@ -726,10 +812,15 @@ jobs:
           "$IMAGE_ARCHIVE_KEY"
           artifacts/strategy-node-image/betting-arbitrage-node.tar.gz
 
-      - name: Upload manifest and deploy script
+      - name: Prepare local deploy assets
+        id: deploy-assets
         env:
           INPUT_MANIFEST_PATH: ${{ github.event.inputs.manifest_path }}
         run: |
+          deploy_tmp="${RUNNER_TEMP:-/tmp}/strategy-node-release-${GITHUB_RUN_ID}"
+          rm -rf "$deploy_tmp"
+          install -d -m 700 "$deploy_tmp"
+
           manifest_path="$INPUT_MANIFEST_PATH"
           if [ -z "$manifest_path" ]; then
             manifest_path="deploy/strategy_nodes/betting_arbitrage/sxbet-single-venue.json"
@@ -742,28 +833,33 @@ jobs:
               ;;
           esac
           test -f "$manifest_path"
-          scp -i strategy-node.key -o StrictHostKeyChecking=no \
-            "$manifest_path" \
-            "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST:/tmp/strategy-node-manifest.json"
-          scp -i strategy-node.key -o StrictHostKeyChecking=no \
+          cp "$manifest_path" "$deploy_tmp/strategy-node-manifest.json"
+          cp \
             scripts/deploy/strategy_nodes/deploy_betting_strategy_node.sh \
-            "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST:/tmp/deploy_betting_strategy_node.sh"
-          scp -i strategy-node.key -o StrictHostKeyChecking=no \
+            "$deploy_tmp/deploy_betting_strategy_node.sh"
+          cp \
             scripts/deploy/strategy_nodes/wait_for_strategy_node_status.sh \
-            "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST:/tmp/wait_for_strategy_node_status.sh"
-          scp -i strategy-node.key -o StrictHostKeyChecking=no \
-            scripts/ci/runner_health_check.sh \
-            "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST:/tmp/runner_health_check.sh"
-          install -m 600 /dev/null strategy-node.env
+            "$deploy_tmp/wait_for_strategy_node_status.sh"
+          cp scripts/ci/runner_health_check.sh "$deploy_tmp/runner_health_check.sh"
+          chmod 700 \
+            "$deploy_tmp/deploy_betting_strategy_node.sh" \
+            "$deploy_tmp/wait_for_strategy_node_status.sh" \
+            "$deploy_tmp/runner_health_check.sh"
+
+          env_file="$deploy_tmp/strategy-node.env"
+          install -m 600 /dev/null "$env_file"
           if [ -n "$STRATEGY_NODE_ENV_FILE" ]; then
-            printf '%s\n' "$STRATEGY_NODE_ENV_FILE" >> strategy-node.env
+            printf '%s\n' "$STRATEGY_NODE_ENV_FILE" >> "$env_file"
+          fi
+          if [ "${BETTING_LIVE_EXECUTION_ARMED_INPUT:-false}" = "true" ]; then
+            printf '%s\n' "BETTING_LIVE_EXECUTION_ARMED=1" >> "$env_file"
           fi
 
           append_env_secret() {
             local name="$1"
             local value="${!name:-}"
             if [ -n "$value" ]; then
-              printf '%s=%s\n' "$name" "$value" >> strategy-node.env
+              printf '%s=%s\n' "$name" "$value" >> "$env_file"
             fi
           }
 
@@ -778,82 +874,63 @@ jobs:
           append_env_secret POLYMARKET_API_SECRET
           append_env_secret POLYMARKET_PASSPHRASE
 
-          scp -i strategy-node.key -o StrictHostKeyChecking=no \
-            strategy-node.env \
-            "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST:/tmp/strategy-node.env"
-          ssh -i strategy-node.key -o StrictHostKeyChecking=no \
-            "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST" \
-            'chmod 600 /tmp/strategy-node.env'
           if [ -n "$STRATEGY_NODE_GHCR_TOKEN" ]; then
-            printf '%s' "$STRATEGY_NODE_GHCR_TOKEN" | \
-              ssh -i strategy-node.key -o StrictHostKeyChecking=no \
-                "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST" \
-                'cat > /tmp/strategy-node-ghcr-token'
-            ssh -i strategy-node.key -o StrictHostKeyChecking=no \
-              "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST" \
-              'chmod 600 /tmp/strategy-node-ghcr-token'
+            install -m 600 /dev/null "$deploy_tmp/strategy-node-ghcr-token"
+            printf '%s' "$STRATEGY_NODE_GHCR_TOKEN" > "$deploy_tmp/strategy-node-ghcr-token"
           fi
 
-      - name: Upload and load strategy-node image archive
+          {
+            echo "deploy_tmp=$deploy_tmp"
+            echo "manifest_path=$deploy_tmp/strategy-node-manifest.json"
+            echo "env_file=$env_file"
+            echo "registry_token_file=$deploy_tmp/strategy-node-ghcr-token"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Load strategy-node image archive
         if: github.event.inputs.image_transport == 'archive'
         run: |
           image_archive="artifacts/strategy-node-image/betting-arbitrage-node.tar.gz"
           test -f "$image_archive"
-          scp -i strategy-node.key -o StrictHostKeyChecking=no \
-            "$image_archive" \
-            "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST:/tmp/strategy-node-image.tar.gz"
-          ssh -i strategy-node.key -o StrictHostKeyChecking=no \
-            "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST" \
-            "sudo docker load -i /tmp/strategy-node-image.tar.gz"
+          if ! docker load -i "$image_archive"; then
+            sudo -n docker load -i "$image_archive"
+          fi
 
       - name: Verify EC2 deploy host health
         run: |
-          runner_service_name="actions.runner.antonga23-cloudbet-market-maker."
-          runner_service_name+="ip-172-31-21-124-cloudbet-market-maker.service"
           health_output="$(
-            ssh -i strategy-node.key -o StrictHostKeyChecking=no "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST" \
-              "chmod +x /tmp/runner_health_check.sh && \
-               RUNNER_ROLE=deploy \
-               ACTIONS_RUNNER_ROOT=/home/ubuntu/actions-runner \
-               GITHUB_RUNNER_SERVICE_NAME=$runner_service_name \
-               OPTIONAL_SERVICE_NAMES=control-plane.service,actions-runner-hygiene.timer \
-               bash /tmp/runner_health_check.sh"
+            RUNNER_ROLE=deploy \
+              ACTIONS_RUNNER_ROOT=/home/ubuntu/actions-runner \
+              OPTIONAL_SERVICE_NAMES=control-plane.service,actions-runner-hygiene.timer \
+              bash scripts/ci/runner_health_check.sh
           )"
           printf '%s\n' "$health_output"
-          expected_runner_state="${runner_service_name}"$'\tactive'
           if echo "$health_output" | grep -Fq $'docker\tmissing'; then
             echo "EC2 deploy host does not report a usable docker installation" >&2
-            exit 1
-          fi
-          if ! echo "$health_output" | grep -Fq \
-            "$expected_runner_state"; then
-            echo "EC2 deploy runner service is not active" >&2
             exit 1
           fi
 
       - name: Deploy node on target host
         env:
           IMAGE_REF: ${{ needs.build-strategy-node-image.outputs.image_ref || steps.deploy-meta.outputs.image_ref }}
+          LOCAL_DEPLOY_MANIFEST_PATH: ${{ steps.deploy-assets.outputs.manifest_path }}
+          LOCAL_DEPLOY_ENV_FILE: ${{ steps.deploy-assets.outputs.env_file }}
+          LOCAL_REGISTRY_TOKEN_FILE: ${{ steps.deploy-assets.outputs.registry_token_file }}
         run: |
+          registry_args=()
           if [ -n "$STRATEGY_NODE_GHCR_TOKEN" ]; then
             if [ "$STRATEGY_NODE_IMAGE_TRANSPORT" = "registry" ]; then
-              registry_args="--registry-user $STRATEGY_NODE_GHCR_USERNAME "
-              registry_args+="--registry-token-file /tmp/strategy-node-ghcr-token"
-            else
-              registry_args=""
+              registry_args+=(
+                --registry-user "$STRATEGY_NODE_GHCR_USERNAME"
+                --registry-token-file "$LOCAL_REGISTRY_TOKEN_FILE"
+              )
             fi
-          else
-            registry_args=""
           fi
-          ssh -i strategy-node.key -o StrictHostKeyChecking=no "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST" \
-            "chmod +x /tmp/deploy_betting_strategy_node.sh && \
-             /tmp/deploy_betting_strategy_node.sh \
-               --manifest /tmp/strategy-node-manifest.json \
-               --image '$IMAGE_REF' \
-               --name '$STRATEGY_NODE_CONTAINER_NAME' \
-               --env-file /tmp/strategy-node.env \
-               $registry_args && \
-             rm -f /tmp/strategy-node-ghcr-token"
+          scripts/deploy/strategy_nodes/deploy_betting_strategy_node.sh \
+            --manifest "$LOCAL_DEPLOY_MANIFEST_PATH" \
+            --image "$IMAGE_REF" \
+            --name "$STRATEGY_NODE_CONTAINER_NAME" \
+            --env-file "$LOCAL_DEPLOY_ENV_FILE" \
+            "${registry_args[@]}"
 
       - name: Wait for deployed node status and semantic cache
         env:
@@ -868,12 +945,36 @@ jobs:
           require_cross_venue_candidates_or_blockers=false
           wait_timeout_seconds=900
           quoted_node_args=()
+          cloudbet_sxbet_live_pilot_manifest="deploy/strategy_nodes/betting_arbitrage/cloudbet-sxbet-cross-venue-live-pilot.json"
+          polymarket_sxbet_live_pilot_manifest="deploy/strategy_nodes/betting_arbitrage/polymarket-sxbet-cross-venue-live-pilot.json"
+          sxbet_same_venue_live_pilot_manifest="deploy/strategy_nodes/betting_arbitrage/sxbet-same-venue-live-pilot.json"
+          cloudbet_same_venue_live_pilot_manifest="deploy/strategy_nodes/betting_arbitrage/cloudbet-same-venue-live-pilot.json"
           if [ "$manifest_path" = "deploy/strategy_nodes/betting_arbitrage/multi-venue-validation.json" ]; then
-            min_positive_margin_candidates=1
             require_cross_venue_candidates_or_blockers=true
-            wait_timeout_seconds=1200
+            wait_timeout_seconds=1800
+            quoted_node_args+=(--min-quoted-node-count CLOUDBET:2)
             quoted_node_args+=(--min-quoted-node-count SXBET:2)
             quoted_node_args+=(--min-quoted-node-count POLYMARKET:2)
+          fi
+          if [ "$manifest_path" = "$cloudbet_sxbet_live_pilot_manifest" ]; then
+            require_cross_venue_candidates_or_blockers=true
+            wait_timeout_seconds=2400
+            quoted_node_args+=(--min-quoted-node-count CLOUDBET:2)
+            quoted_node_args+=(--min-quoted-node-count SXBET:2)
+          fi
+          if [ "$manifest_path" = "$polymarket_sxbet_live_pilot_manifest" ]; then
+            require_cross_venue_candidates_or_blockers=true
+            wait_timeout_seconds=2400
+            quoted_node_args+=(--min-quoted-node-count POLYMARKET:2)
+            quoted_node_args+=(--min-quoted-node-count SXBET:2)
+          fi
+          if [ "$manifest_path" = "$sxbet_same_venue_live_pilot_manifest" ]; then
+            wait_timeout_seconds=1800
+            quoted_node_args+=(--min-quoted-node-count SXBET:2)
+          fi
+          if [ "$manifest_path" = "$cloudbet_same_venue_live_pilot_manifest" ]; then
+            wait_timeout_seconds=1800
+            quoted_node_args+=(--min-quoted-node-count CLOUDBET:2)
           fi
           echo "min_positive_margin_candidates=$min_positive_margin_candidates"
           echo "min_cross_venue_candidates=$min_cross_venue_candidates"
@@ -883,55 +984,45 @@ jobs:
           if [ "$require_cross_venue_candidates_or_blockers" = "true" ]; then
             cross_venue_args+=(--require-cross-venue-candidates-or-blockers)
           fi
-          ssh -i strategy-node.key -o StrictHostKeyChecking=no "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST" \
-            "chmod +x /tmp/wait_for_strategy_node_status.sh && \
-             /tmp/wait_for_strategy_node_status.sh \
-               --status-file /opt/cloudbet/strategy-nodes/$STRATEGY_NODE_CONTAINER_NAME/status.json \
-               --timeout-seconds $wait_timeout_seconds \
-               --success-status running,completed \
-               --require-semantic-cache-ready \
-               --require-runtime-probe \
-               --require-rust-semantic-topology \
-               --min-connected-nodes 2 \
-               --min-match-instruments 2 \
-               --min-quoted-match-instruments 2 \
-               --min-positive-margin-candidates $min_positive_margin_candidates \
-               --min-cross-venue-candidates $min_cross_venue_candidates \
-               ${cross_venue_args[*]} \
-               ${quoted_node_args[*]}"
+          scripts/deploy/strategy_nodes/wait_for_strategy_node_status.sh \
+            --status-file "/opt/cloudbet/strategy-nodes/$STRATEGY_NODE_CONTAINER_NAME/status.json" \
+            --timeout-seconds "$wait_timeout_seconds" \
+            --success-status running,completed \
+            --require-semantic-cache-ready \
+            --require-runtime-probe \
+            --require-rust-semantic-topology \
+            --min-connected-nodes 2 \
+            --min-match-instruments 2 \
+            --min-quoted-match-instruments 2 \
+            --min-positive-margin-candidates "$min_positive_margin_candidates" \
+            --min-cross-venue-candidates "$min_cross_venue_candidates" \
+            "${cross_venue_args[@]}" \
+            "${quoted_node_args[@]}"
 
       - name: Inspect deployed semantic cache directory
         run: |
-          ssh -i strategy-node.key -o StrictHostKeyChecking=no "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST" \
-            "cache_dir=/opt/cloudbet/strategy-nodes/$STRATEGY_NODE_CONTAINER_NAME/semantic-rule-cache && \
-             test -d \"\$cache_dir\" && \
-             file_count=\$(find \"\$cache_dir\" -type f | wc -l | tr -d ' ') && \
-             printf 'semantic_cache_dir=%s\nsemantic_cache_file_count=%s\n' \"\$cache_dir\" \"\$file_count\" && \
-             test \"\$file_count\" -gt 0"
+          cache_dir="/opt/cloudbet/strategy-nodes/$STRATEGY_NODE_CONTAINER_NAME/semantic-rule-cache"
+          test -d "$cache_dir"
+          file_count="$(find "$cache_dir" -type f | wc -l | tr -d ' ')"
+          printf 'semantic_cache_dir=%s\nsemantic_cache_file_count=%s\n' "$cache_dir" "$file_count"
+          test "$file_count" -gt 0
 
       - name: Fetch deployed node status artifacts
         if: always()
         run: |
-          mkdir -p artifacts/strategy-node-deploy
-          remote="$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST"
-          remote_bundle="/tmp/strategy-node-deploy-artifacts-$STRATEGY_NODE_CONTAINER_NAME"
-          ssh -i strategy-node.key -o StrictHostKeyChecking=no "$remote" \
-            "STRATEGY_NODE_CONTAINER_NAME='$STRATEGY_NODE_CONTAINER_NAME' bash -s" <<'REMOTE'
           set -euo pipefail
-
+          mkdir -p artifacts/strategy-node-deploy
           node_dir="/opt/cloudbet/strategy-nodes/$STRATEGY_NODE_CONTAINER_NAME"
-          remote_bundle="/tmp/strategy-node-deploy-artifacts-$STRATEGY_NODE_CONTAINER_NAME"
-          rm -rf "$remote_bundle"
-          mkdir -p "$remote_bundle"
+          artifact_dir="artifacts/strategy-node-deploy"
 
           for name in status heartbeat manifest.runtime release current-session; do
             if [ -f "$node_dir/$name.json" ]; then
-              cp "$node_dir/$name.json" "$remote_bundle/$name.json"
+              cp "$node_dir/$name.json" "$artifact_dir/$name.json"
             fi
           done
 
           if [ -f "$node_dir/current-session.json" ]; then
-            python3 - "$node_dir/current-session.json" "$remote_bundle" <<'PY'
+            python3 - "$node_dir/current-session.json" "$artifact_dir" <<'PY'
           import json
           import pathlib
           import shutil
@@ -953,7 +1044,7 @@ jobs:
           PY
           fi
           if [ -f "$node_dir/status.json" ]; then
-            python3 - "$node_dir/status.json" "$remote_bundle/runtime-summary.json" <<'PY'
+            python3 - "$node_dir/status.json" "$artifact_dir/runtime-summary.json" <<'PY'
           import json
           import pathlib
           import sys
@@ -963,56 +1054,45 @@ jobs:
           status = json.loads(status_path.read_text())
           runtime = status.get("runtimeProbe") or {}
           candidate_quality = runtime.get("candidateQuality") or {}
+          runtime_probe_summary = dict(runtime) if isinstance(runtime, dict) else {}
+          if isinstance(candidate_quality, dict):
+              runtime_probe_summary["candidateQuality"] = dict(candidate_quality)
+              for key in (
+                  "blockerSamples",
+                  "latencyHistograms",
+                  "liveTimingSlo",
+                  "semanticBlockedRelationships",
+                  "topNegativeNearMisses",
+                  "topPositiveCandidates",
+                  "venueQuoteHealth",
+                  "zeroCandidateBlockerCounts",
+                  "zeroCandidateVenuePairSamples",
+              ):
+                  runtime_probe_summary["candidateQuality"][key] = candidate_quality.get(key)
+          for key in (
+              "coverageDiagnostics",
+              "latencyDiagnostics",
+              "providerQuotePollStats",
+              "instrumentRefresh",
+              "semanticDiagnostics",
+              "venueCoverage",
+          ):
+              runtime_probe_summary[key] = runtime.get(key)
           summary = {
               "status": status.get("status"),
               "nodeId": status.get("nodeId"),
               "updatedAt": status.get("updatedAt"),
               "semanticCache": status.get("semanticCache"),
-              "runtimeProbe": {
-                  "graphEngine": runtime.get("graphEngine"),
-                  "topologySource": runtime.get("topologySource"),
-                  "semanticTemplateCount": runtime.get("semanticTemplateCount"),
-                  "coverageProofCount": runtime.get("coverageProofCount"),
-                  "coverageHyperedgeCount": runtime.get("coverageHyperedgeCount"),
-                  "graphNodes": runtime.get("graphNodes"),
-                  "graphEdges": runtime.get("graphEdges"),
-                  "quotedSemanticMatchInstruments": runtime.get(
-                      "quotedSemanticMatchInstruments",
-                  ),
-                  "quotedEdges": runtime.get("quotedEdges"),
-                  "positiveMarginCandidates": runtime.get("positiveMarginCandidates"),
-                  "thresholdMarginCandidates": runtime.get("thresholdMarginCandidates"),
-                  "venueCoverage": runtime.get("venueCoverage"),
-                  "candidateQuality": {
-                      "rejectionBuckets": candidate_quality.get("rejectionBuckets"),
-                      "timingFlags": candidate_quality.get("timingFlags"),
-                      "freshnessProfiles": candidate_quality.get("freshnessProfiles"),
-                      "semanticBlockedReasons": candidate_quality.get(
-                          "semanticBlockedReasons",
-                      ),
-                      "blockerSamples": candidate_quality.get("blockerSamples"),
-                      "venueQuoteHealth": candidate_quality.get("venueQuoteHealth"),
-                      "venuePairs": candidate_quality.get("venuePairs"),
-                      "marketFamilies": candidate_quality.get("marketFamilies"),
-                      "zeroCandidateVenuePairSamples": candidate_quality.get(
-                          "zeroCandidateVenuePairSamples",
-                      ),
-                      "topPositiveCandidates": candidate_quality.get(
-                          "topPositiveCandidates",
-                      ),
-                      "topNegativeNearMisses": candidate_quality.get(
-                          "topNegativeNearMisses",
-                      ),
-                  },
-              },
+              "executionReadiness": status.get("executionReadiness"),
+              "runtimeProbe": runtime_probe_summary,
           }
           output_path.write_text(json.dumps(summary, indent=2, sort_keys=True))
           PY
+            python3 scripts/betting/runtime_probe_report.py \
+              "$node_dir/status.json" \
+              --format json \
+              > "$artifact_dir/runtime-report.json" || true
           fi
-          REMOTE
-          scp -i strategy-node.key -o StrictHostKeyChecking=no -r \
-            "$remote:$remote_bundle/." \
-            "artifacts/strategy-node-deploy/" || true
 
           if [ -f artifacts/strategy-node-deploy/status.json ]; then
             echo "status_json<<EOF"
@@ -1035,6 +1115,47 @@ jobs:
             echo "EOF"
           fi
 
+      - name: Evaluate deployed runtime report
+        if: always()
+        env:
+          MANIFEST_PATH: ${{ github.event.inputs.manifest_path }}
+        run: |
+          if [ ! -f artifacts/strategy-node-deploy/status.json ]; then
+            echo "No deployed status artifact available for runtime report evaluation."
+            exit 0
+          fi
+          report_args=(
+            --format text
+            --require-rust-semantic
+            --require-coverage-runtime
+            --min-quoted-semantic-instruments 2
+          )
+          cloudbet_sxbet_live_pilot_manifest="deploy/strategy_nodes/betting_arbitrage/cloudbet-sxbet-cross-venue-live-pilot.json"
+          polymarket_sxbet_live_pilot_manifest="deploy/strategy_nodes/betting_arbitrage/polymarket-sxbet-cross-venue-live-pilot.json"
+          sxbet_same_venue_live_pilot_manifest="deploy/strategy_nodes/betting_arbitrage/sxbet-same-venue-live-pilot.json"
+          cloudbet_same_venue_live_pilot_manifest="deploy/strategy_nodes/betting_arbitrage/cloudbet-same-venue-live-pilot.json"
+          live_pilot_manifest=false
+          case "$MANIFEST_PATH" in
+            "$cloudbet_sxbet_live_pilot_manifest"|"$polymarket_sxbet_live_pilot_manifest"|"$sxbet_same_venue_live_pilot_manifest"|"$cloudbet_same_venue_live_pilot_manifest")
+              live_pilot_manifest=true
+              ;;
+          esac
+          if [ "$live_pilot_manifest" = "true" ]; then
+            report_args+=(--require-live-execution-env-unarmed)
+            if [ "$MANIFEST_PATH" = "$cloudbet_sxbet_live_pilot_manifest" ]; then
+              report_args+=(--require-cross-currency-live-blocked)
+            fi
+          else
+            report_args+=(--require-auto-execute-false)
+            report_args+=(--require-validation-mode)
+          fi
+          if [ "$MANIFEST_PATH" = "deploy/strategy_nodes/betting_arbitrage/multi-venue-validation.json" ]; then
+            report_args+=(--min-cross-venue-candidates 1)
+          fi
+          python3 scripts/betting/runtime_probe_report.py \
+            artifacts/strategy-node-deploy/status.json \
+            "${report_args[@]}"
+
       - name: Upload deployed node status artifacts to GitHub
         if: always()
         continue-on-error: true
@@ -1054,18 +1175,11 @@ jobs:
               "diagnostics/strategy-node-deploy/$STRATEGY_NODE_CONTAINER_NAME"
           fi
 
-      - name: Cleanup remote helper files
+      - name: Cleanup local deploy helper files
         if: always()
+        env:
+          LOCAL_DEPLOY_TMP: ${{ steps.deploy-assets.outputs.deploy_tmp }}
         run: |
-          if [ ! -s strategy-node.key ] \
-            || [ -z "$STRATEGY_NODE_SSH_USER" ] \
-            || [ -z "$STRATEGY_NODE_HOST" ]; then
-            echo "Skipping remote cleanup because SSH deploy inputs were not prepared."
-            exit 0
+          if [ -n "${LOCAL_DEPLOY_TMP:-}" ] && [ -d "$LOCAL_DEPLOY_TMP" ]; then
+            rm -rf "$LOCAL_DEPLOY_TMP"
           fi
-          ssh -i strategy-node.key -o StrictHostKeyChecking=no "$STRATEGY_NODE_SSH_USER@$STRATEGY_NODE_HOST" \
-            'rm -f /tmp/deploy_betting_strategy_node.sh \
-              /tmp/wait_for_strategy_node_status.sh \
-              /tmp/runner_health_check.sh \
-              /tmp/strategy-node-ghcr-token \
-              /tmp/strategy-node-image.tar.gz'

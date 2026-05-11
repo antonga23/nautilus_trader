@@ -14,6 +14,9 @@
 # -------------------------------------------------------------------------------------------------
 
 import asyncio
+from datetime import UTC
+from datetime import datetime
+from datetime import timedelta
 from typing import Any
 
 import msgspec
@@ -128,6 +131,134 @@ def _selected_sports_tag_ids(sport_metadata: dict[str, Any]) -> list[str]:
     return [tag for tag in tags if tag not in {"1", "100639"}] or tags[:1]
 
 
+def _market_unique_id(market: dict[str, Any]) -> str:
+    return str(market.get("conditionId") or market.get("id") or market.get("slug") or "")
+
+
+def _market_has_event_metadata(market: dict[str, Any]) -> bool:
+    events = market.get("events")
+    if isinstance(events, list):
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            if event.get("title") or event.get("slug") or event.get("startDate"):
+                return True
+    return bool(
+        market.get("startDate") or market.get("startDateIso") or market.get("gameStartTime"),
+    )
+
+
+def _parse_gamma_datetime(value: Any) -> datetime | None:
+    if value in (None, ""):
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _market_event_or_resolution_times(market: dict[str, Any]) -> list[datetime]:
+    times: list[datetime] = []
+    events = market.get("events")
+    if isinstance(events, list):
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            for key in ("startDate", "startDateIso", "gameStartTime", "endDate", "endDateIso"):
+                parsed = _parse_gamma_datetime(event.get(key))
+                if parsed is not None:
+                    times.append(parsed)
+    for key in ("startDate", "startDateIso", "gameStartTime", "endDate", "endDateIso"):
+        parsed = _parse_gamma_datetime(market.get(key))
+        if parsed is not None:
+            times.append(parsed)
+    return times
+
+
+def _market_horizon_sort_key(
+    market: dict[str, Any],
+    *,
+    now: datetime,
+    horizon: timedelta | None,
+) -> tuple[int, float, str]:
+    if horizon is None:
+        return (0, 0.0, _market_unique_id(market))
+
+    stale_grace = timedelta(hours=6)
+    times = _market_event_or_resolution_times(market)
+    if not times:
+        return (2, float("inf"), _market_unique_id(market))
+
+    deltas = [(timestamp - now).total_seconds() for timestamp in times]
+    horizon_secs = horizon.total_seconds()
+    stale_grace_secs = stale_grace.total_seconds()
+    inside = [abs(delta) for delta in deltas if -stale_grace_secs <= delta <= horizon_secs]
+    if inside:
+        return (0, min(inside), _market_unique_id(market))
+
+    future = [delta for delta in deltas if delta > horizon_secs]
+    if future:
+        return (1, min(future), _market_unique_id(market))
+
+    return (3, abs(max(deltas)), _market_unique_id(market))
+
+
+def _rank_markets_by_horizon(
+    markets: list[dict[str, Any]],
+    *,
+    now: datetime,
+    horizon: timedelta | None,
+) -> list[dict[str, Any]]:
+    if horizon is None:
+        return markets
+    return sorted(
+        markets,
+        key=lambda market: _market_horizon_sort_key(market, now=now, horizon=horizon),
+    )
+
+
+def _horizon_fetch_limit(limit: int | None, horizon: timedelta | None) -> int | None:
+    if limit is None or horizon is None:
+        return limit
+    return min(max(limit * 3, limit + 25), 500)
+
+
+def _selected_sports_tag_groups(
+    sports_metadata: list[Any],
+    sports_filter: set[str],
+) -> dict[str, dict[str, Any]]:
+    groups: dict[str, dict[str, Any]] = {}
+    for sport_metadata in sports_metadata:
+        if not isinstance(sport_metadata, dict):
+            continue
+        sport_code = str(sport_metadata.get("sport") or "")
+        canonical_sport = _canonical_polymarket_sport(sport_code)
+        if canonical_sport not in sports_filter:
+            continue
+        group = groups.setdefault(
+            canonical_sport,
+            {
+                "sport": canonical_sport,
+                "sport_codes": [],
+                "tag_ids": [],
+            },
+        )
+        if sport_code and sport_code not in group["sport_codes"]:
+            group["sport_codes"].append(sport_code)
+        for tag_id in _selected_sports_tag_ids(sport_metadata):
+            if tag_id not in group["tag_ids"]:
+                group["tag_ids"].append(tag_id)
+    return groups
+
+
 def _collect_sports_event_markets(
     *,
     canonical_sport: str,
@@ -142,9 +273,7 @@ def _collect_sports_event_markets(
         for market in event.get("markets", []):
             if not isinstance(market, dict):
                 continue
-            market_id = str(
-                market.get("id") or market.get("conditionId") or market.get("slug") or "",
-            )
+            market_id = _market_unique_id(market)
             if not market_id:
                 continue
             enriched_market = dict(market)
@@ -162,6 +291,73 @@ def _collect_sports_event_markets(
                 },
             ]
             discovered_markets[market_id] = enriched_market
+
+
+def _enrich_sport_tag_market(
+    market: dict[str, Any],
+    *,
+    canonical_sport: str,
+    sport_code: str,
+    selected_tags: list[str],
+) -> dict[str, Any]:
+    enriched_market = dict(market)
+    enriched_market["sport"] = canonical_sport
+    enriched_market["sportsTag"] = sport_code
+    enriched_market["sportsTagIds"] = tuple(selected_tags)
+    events = enriched_market.get("events")
+    if isinstance(events, list):
+        enriched_events: list[Any] = []
+        for event in events:
+            if isinstance(event, dict):
+                enriched_event = dict(event)
+                enriched_event.setdefault("sport", canonical_sport)
+                enriched_events.append(enriched_event)
+            else:
+                enriched_events.append(event)
+        enriched_market["events"] = enriched_events
+    return enriched_market
+
+
+def _selected_sports_metadata(
+    sports_metadata: list[Any],
+    sports_filter: set[str],
+) -> list[dict[str, Any]]:
+    return [
+        sport_metadata
+        for sport_metadata in sports_metadata
+        if isinstance(sport_metadata, dict)
+        and _canonical_polymarket_sport(str(sport_metadata.get("sport") or "")) in sports_filter
+    ]
+
+
+def _balanced_sport_limit(max_results: int | None, selected_sport_count: int) -> int | None:
+    if max_results is None:
+        return None
+    return max(1, (max_results + selected_sport_count - 1) // selected_sport_count)
+
+
+def _add_balanced_sport_markets(
+    *,
+    discovered_markets: dict[str, dict[str, Any]],
+    overflow_markets: dict[str, dict[str, Any]],
+    sport_markets: dict[str, dict[str, Any]],
+    sport_quota: int,
+    now: datetime,
+    horizon: timedelta | None,
+) -> None:
+    ranked_markets = _rank_markets_by_horizon(
+        list(sport_markets.values()),
+        now=now,
+        horizon=horizon,
+    )
+    for index, market in enumerate(ranked_markets):
+        market_id = _market_unique_id(market)
+        if not market_id:
+            continue
+        if index < sport_quota:
+            discovered_markets.setdefault(market_id, market)
+        else:
+            overflow_markets.setdefault(market_id, market)
 
 
 def _check_clob_response(response: dict[str, Any] | str) -> dict[str, Any]:
@@ -291,19 +487,35 @@ class PolymarketInstrumentProvider(InstrumentProvider):
         }
         max_results = filters.pop("max_results", None)
         max_results = int(max_results) if max_results is not None else None
+        horizon_hours = filters.pop("max_resolution_horizon_hours", None)
+        horizon = timedelta(hours=float(horizon_hours)) if horizon_hours not in (None, "") else None
+        now = datetime.fromtimestamp(self._clock.timestamp_ns() / 1_000_000_000, tz=UTC)
 
         self._log.info(
             "Loading Polymarket instruments using Gamma discovery "
-            f"filters={filters} sports={sorted(sports_filter)} max_results={max_results}",
+            f"filters={filters} sports={sorted(sports_filter)} max_results={max_results} "
+            f"max_resolution_horizon_hours={horizon_hours}",
         )
         loaded_condition_ids: set[str] = set()
-        loaded_markets = await self._load_filtered_sports_event_markets(
+        loaded_markets = await self._load_filtered_sport_tag_gamma_markets(
+            filters=filters,
             sports_filter=sports_filter,
             max_results=max_results,
             loaded_condition_ids=loaded_condition_ids,
+            now=now,
+            horizon=horizon,
         )
 
         remaining_results = None
+        if max_results is not None:
+            remaining_results = max(max_results - loaded_markets, 0)
+        loaded_markets += await self._load_filtered_sports_event_markets(
+            sports_filter=sports_filter,
+            max_results=remaining_results if remaining_results is not None else max_results,
+            loaded_condition_ids=loaded_condition_ids,
+            now=now,
+            horizon=horizon,
+        )
         if max_results is not None:
             remaining_results = max(max_results - loaded_markets, 0)
         loaded_markets += await self._load_filtered_gamma_markets(
@@ -311,6 +523,8 @@ class PolymarketInstrumentProvider(InstrumentProvider):
             sports_filter=sports_filter,
             max_results=remaining_results if remaining_results is not None else max_results,
             loaded_condition_ids=loaded_condition_ids,
+            now=now,
+            horizon=horizon,
         )
         self._log.info(f"Loaded Polymarket sports markets using Gamma API: {loaded_markets}")
 
@@ -320,12 +534,16 @@ class PolymarketInstrumentProvider(InstrumentProvider):
         sports_filter: set[str],
         max_results: int | None,
         loaded_condition_ids: set[str],
+        now: datetime,
+        horizon: timedelta | None,
     ) -> int:
         if not sports_filter:
             return 0
         event_markets = await self._load_sports_event_markets_using_gamma(
             sports_filter=sports_filter,
             max_results=max_results,
+            now=now,
+            horizon=horizon,
         )
         self._log.info(
             "Loaded "
@@ -351,6 +569,8 @@ class PolymarketInstrumentProvider(InstrumentProvider):
         sports_filter: set[str],
         max_results: int | None,
         loaded_condition_ids: set[str],
+        now: datetime,
+        horizon: timedelta | None,
     ) -> int:
         if max_results == 0:
             markets: list[dict[str, Any]] = []
@@ -358,8 +578,9 @@ class PolymarketInstrumentProvider(InstrumentProvider):
             markets = await list_markets(
                 http_client=self._http_client,
                 filters=filters,
-                max_results=max_results,
+                max_results=_horizon_fetch_limit(max_results, horizon),
             )
+            markets = _rank_markets_by_horizon(markets, now=now, horizon=horizon)
         self._log.info(f"Loaded {len(markets)} candidate Polymarket markets using Gamma API")
         loaded_markets = 0
         for market in markets:
@@ -373,6 +594,44 @@ class PolymarketInstrumentProvider(InstrumentProvider):
                 loaded_markets += loaded
                 if condition_id:
                     loaded_condition_ids.add(condition_id)
+        return loaded_markets
+
+    async def _load_filtered_sport_tag_gamma_markets(
+        self,
+        *,
+        filters: dict[str, Any],
+        sports_filter: set[str],
+        max_results: int | None,
+        loaded_condition_ids: set[str],
+        now: datetime,
+        horizon: timedelta | None,
+    ) -> int:
+        if not sports_filter or max_results == 0:
+            return 0
+
+        tag_markets = await self._load_sport_tag_markets_using_gamma(
+            filters=filters,
+            sports_filter=sports_filter,
+            max_results=max_results,
+            now=now,
+            horizon=horizon,
+        )
+        self._log.info(
+            f"Loaded {len(tag_markets)} candidate Polymarket sport-tag markets using Gamma API",
+        )
+        loaded_markets = 0
+        for market in tag_markets:
+            condition_id = str(market.get("conditionId") or "")
+            if not condition_id or condition_id in loaded_condition_ids:
+                continue
+            if not _market_matches_sports_filter(market, sports_filter):
+                continue
+            loaded = self._load_gamma_market_instruments(market)
+            if loaded:
+                loaded_markets += loaded
+                loaded_condition_ids.add(condition_id)
+            if max_results is not None and loaded_markets >= max_results:
+                break
         return loaded_markets
 
     def _load_gamma_market_instruments(self, market: dict[str, Any]) -> int:
@@ -398,45 +657,174 @@ class PolymarketInstrumentProvider(InstrumentProvider):
         *,
         sports_filter: set[str],
         max_results: int | None,
+        now: datetime | None = None,
+        horizon: timedelta | None = None,
     ) -> list[dict[str, Any]]:
+        now = now or datetime.now(tz=UTC)
         sports_metadata = await self._gamma_get_json("/sports")
         if not isinstance(sports_metadata, list):
             return []
 
+        selected_sports = _selected_sports_metadata(sports_metadata, sports_filter)
+        if not selected_sports:
+            return []
+
+        per_sport_limit = _balanced_sport_limit(max_results, len(selected_sports))
         discovered_markets: dict[str, dict[str, Any]] = {}
-        for sport_metadata in sports_metadata:
-            if not isinstance(sport_metadata, dict):
+        overflow_markets: dict[str, dict[str, Any]] = {}
+        for sport_metadata in selected_sports:
+            sport_markets = await self._discover_sport_event_markets(
+                sport_metadata=sport_metadata,
+                per_sport_limit=per_sport_limit,
+                max_results=max_results,
+                horizon=horizon,
+            )
+            _add_balanced_sport_markets(
+                discovered_markets=discovered_markets,
+                overflow_markets=overflow_markets,
+                sport_markets=sport_markets,
+                sport_quota=per_sport_limit or len(sport_markets),
+                now=now,
+                horizon=horizon,
+            )
+        if max_results is not None:
+            for market_id, market in overflow_markets.items():
+                if len(discovered_markets) >= max_results:
+                    break
+                discovered_markets.setdefault(market_id, market)
+        return list(discovered_markets.values())[:max_results]
+
+    async def _discover_sport_event_markets(
+        self,
+        *,
+        sport_metadata: dict[str, Any],
+        per_sport_limit: int | None,
+        max_results: int | None,
+        horizon: timedelta | None,
+    ) -> dict[str, dict[str, Any]]:
+        sport_code = str(sport_metadata.get("sport") or "")
+        canonical_sport = _canonical_polymarket_sport(sport_code)
+        selected_tags = _selected_sports_tag_ids(sport_metadata)
+        sport_markets: dict[str, dict[str, Any]] = {}
+        for tag_id in selected_tags:
+            events = await self._gamma_get_json(
+                "/events",
+                params={
+                    "tag_id": tag_id,
+                    "related_tags": "true",
+                    "active": "true",
+                    "closed": "false",
+                    "archived": "false",
+                    "limit": _horizon_fetch_limit(
+                        per_sport_limit or max_results or 100,
+                        horizon,
+                    ),
+                    "order": "volume",
+                    "ascending": "false",
+                },
+            )
+            if not isinstance(events, list):
                 continue
-            sport_code = str(sport_metadata.get("sport") or "")
-            canonical_sport = _canonical_polymarket_sport(sport_code)
-            if canonical_sport not in sports_filter:
-                continue
-            for tag_id in _selected_sports_tag_ids(sport_metadata):
-                events = await self._gamma_get_json(
-                    "/events",
-                    params={
-                        "tag_id": tag_id,
-                        "related_tags": "true",
-                        "active": "true",
-                        "closed": "false",
-                        "archived": "false",
-                        "limit": max_results or 100,
-                        "order": "volume",
-                        "ascending": "false",
-                    },
-                )
-                if not isinstance(events, list):
+            _collect_sports_event_markets(
+                canonical_sport=canonical_sport,
+                sport_code=sport_code,
+                selected_tags=selected_tags,
+                events=events,
+                discovered_markets=sport_markets,
+            )
+        return sport_markets
+
+    async def _load_sport_tag_markets_using_gamma(
+        self,
+        *,
+        filters: dict[str, Any],
+        sports_filter: set[str],
+        max_results: int | None,
+        now: datetime | None = None,
+        horizon: timedelta | None = None,
+    ) -> list[dict[str, Any]]:
+        now = now or datetime.now(tz=UTC)
+        sports_metadata = await self._gamma_get_json("/sports")
+        if not isinstance(sports_metadata, list):
+            return []
+
+        tag_groups = _selected_sports_tag_groups(sports_metadata, sports_filter)
+        if not tag_groups:
+            return []
+
+        per_sport_limit = _balanced_sport_limit(max_results, len(tag_groups))
+        discovered_markets: dict[str, dict[str, Any]] = {}
+        overflow_markets: dict[str, dict[str, Any]] = {}
+        for canonical_sport, tag_group in tag_groups.items():
+            sport_markets = await self._discover_sport_tag_markets(
+                filters=filters,
+                canonical_sport=canonical_sport,
+                sport_codes=list(tag_group["sport_codes"]),
+                selected_tags=list(tag_group["tag_ids"]),
+                per_sport_limit=per_sport_limit,
+                max_results=max_results,
+                horizon=horizon,
+            )
+            _add_balanced_sport_markets(
+                discovered_markets=discovered_markets,
+                overflow_markets=overflow_markets,
+                sport_markets=sport_markets,
+                sport_quota=per_sport_limit or len(sport_markets),
+                now=now,
+                horizon=horizon,
+            )
+        if max_results is not None:
+            for market_id, market in overflow_markets.items():
+                if len(discovered_markets) >= max_results:
+                    break
+                discovered_markets.setdefault(market_id, market)
+        return list(discovered_markets.values())[:max_results]
+
+    async def _discover_sport_tag_markets(
+        self,
+        *,
+        filters: dict[str, Any],
+        canonical_sport: str,
+        sport_codes: list[str],
+        selected_tags: list[str],
+        per_sport_limit: int | None,
+        max_results: int | None,
+        horizon: timedelta | None,
+    ) -> dict[str, dict[str, Any]]:
+        sport_markets: dict[str, dict[str, Any]] = {}
+        sport_code = sport_codes[0] if sport_codes else canonical_sport
+        for tag_id in selected_tags:
+            tag_filters = {
+                **filters,
+                "tag_id": tag_id,
+                "related_tags": "true",
+                "active": "true",
+                "closed": "false",
+                "archived": "false",
+                "order": "volume24hr",
+                "ascending": "false",
+            }
+            markets = await list_markets(
+                http_client=self._http_client,
+                filters=tag_filters,
+                max_results=_horizon_fetch_limit(per_sport_limit or max_results, horizon),
+            )
+            for market in markets:
+                market_id = _market_unique_id(market)
+                if not market_id:
                     continue
-                _collect_sports_event_markets(
+                enriched_market = _enrich_sport_tag_market(
+                    market,
                     canonical_sport=canonical_sport,
                     sport_code=sport_code,
-                    selected_tags=_selected_sports_tag_ids(sport_metadata),
-                    events=events,
-                    discovered_markets=discovered_markets,
+                    selected_tags=selected_tags,
                 )
-                if max_results is not None and len(discovered_markets) >= max_results:
-                    return list(discovered_markets.values())[:max_results]
-        return list(discovered_markets.values())[:max_results]
+                if not _market_has_event_metadata(enriched_market):
+                    continue
+                if not _market_matches_sports_filter(enriched_market, {canonical_sport}):
+                    continue
+                sport_markets.setdefault(market_id, enriched_market)
+        return sport_markets
 
     async def _gamma_get_json(
         self,

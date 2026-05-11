@@ -66,6 +66,7 @@ def make_instrument(
     handicap: float | None = None,
     info: dict | None = None,
     start_time: str | None = "2026-03-13T18:00:00Z",
+    sport_name: str = "soccer",
 ) -> CryptoBettingInstrument:
     return CryptoBettingInstrument(
         venue=Venue(venue),
@@ -73,7 +74,7 @@ def make_instrument(
         event_name=event_name,
         home_name=home_name,
         away_name=away_name,
-        sport_name="soccer",
+        sport_name=sport_name,
         competition_name="Test League",
         market_name=market_name,
         market_type=market_type,
@@ -164,6 +165,44 @@ class TestMarketMatcher:
         assert len(hedges) == 1
         assert hedges[0].instrument == sample_instrument_b
         assert hedges[0].match_type == "same_market"
+
+    def test_find_hedges_uses_fixture_aliases_for_cloudbet_sxbet_screenshot_case(
+        self,
+        market_matcher,
+    ):
+        """
+        Cloudbet/SXBET DNB screenshot names should not fail fixture identity.
+        """
+        cloudbet = make_instrument(
+            venue="CLOUDBET",
+            event_id="cloudbet-min-sa",
+            event_name="MIN Timberwolves v SA Spurs",
+            home_name="MIN Timberwolves",
+            away_name="SA Spurs",
+            sport_name="basketball",
+            market_name="draw_no_bet",
+            market_type="draw_no_bet",
+            outcome="home",
+            price=6.402,
+        )
+        sxbet = make_instrument(
+            venue="SXBET",
+            event_id="sxbet-min-sa",
+            event_name="Minnesota Timberwolves vs San Antonio Spurs",
+            home_name="Minnesota Timberwolves",
+            away_name="San Antonio Spurs",
+            sport_name="basketball",
+            market_name="draw_no_bet",
+            market_type="draw_no_bet",
+            outcome="away",
+            price=1.454,
+        )
+
+        hedges = market_matcher.find_hedges(cloudbet, [sxbet])
+
+        assert len(hedges) == 1
+        assert hedges[0].match_type == "same_market"
+        assert hedges[0].instrument is sxbet
 
     def test_check_arbitrage_opportunity(
         self,

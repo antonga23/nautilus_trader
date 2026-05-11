@@ -50,10 +50,19 @@ class BettingVenueManifest(NautilusConfig, frozen=True):
     order_book_poll_interval_secs: PositiveFloat = 3.0
     order_book_poll_summary_interval_secs: PositiveFloat = 30.0
     order_book_concurrency: PositiveInt = 4
+    order_book_poll_mode: str = "order_book"
+    order_book_best_odds_batch_size: PositiveInt = 30
+    order_book_min_concurrency: PositiveInt = 1
+    order_book_max_concurrency: PositiveInt | None = None
+    order_book_target_cycle_secs: PositiveFloat = 5.0
+    order_book_adaptive_concurrency: bool = True
+    order_book_event_batching: bool = True
+    order_book_missing_prune_threshold: PositiveInt = 3
     api_url: str | None = None
     ws_url: str | None = None
     environment: str | None = None
     base_currency: str | None = None
+    execution_dry_run: bool = False
     signature_type: int = 0
     use_data_api: bool = False
     metadata: dict[str, str] | None = None
@@ -115,6 +124,7 @@ class BettingArbitrageNodeManifest(NautilusConfig, frozen=True):
     trader_id: str = "BET-ARB-001"
     strategy: BettingArbitrageConfig = BettingArbitrageConfig(auto_execute=False)
     semantic_rule_cache_dir: str | None = None
+    semantic_rule_cache_seed_dir: str | None = None
     venues: list[BettingVenueManifest] = []
     validation_mode: bool = True
     allow_dummy_credentials: bool = True
@@ -156,6 +166,12 @@ class BettingArbitrageNodeManifest(NautilusConfig, frozen=True):
                 self,
                 "semantic_rule_cache_dir",
                 self.semantic_rule_cache_dir.strip(),
+            )
+        if self.semantic_rule_cache_seed_dir is not None:
+            msgspec.structs.force_setattr(
+                self,
+                "semantic_rule_cache_seed_dir",
+                self.semantic_rule_cache_seed_dir.strip(),
             )
 
 

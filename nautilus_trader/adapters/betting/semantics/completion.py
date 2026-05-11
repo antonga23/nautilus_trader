@@ -50,6 +50,9 @@ class ProviderCompletion:
     manifest_count: int
     selection_count: int
     event_candidate_count: int
+    coverage_proof_count: int
+    coverage_hyperedge_count: int
+    semantic_candidate_count: int
     template_candidate_count: int
     promoted_template_count: int
     execution_safe_template_count: int
@@ -66,6 +69,9 @@ class SportCompletion:
     sport: str
     selection_count: int
     event_candidate_count: int
+    coverage_proof_count: int
+    coverage_hyperedge_count: int
+    semantic_candidate_count: int
     template_candidate_count: int
     provider_count: int
     providers: tuple[str, ...]
@@ -79,7 +85,7 @@ class SportCompletion:
 
     @property
     def target_reached(self) -> bool:
-        return self.event_candidate_count >= self.target_candidates
+        return self.semantic_candidate_count >= self.target_candidates
 
 
 @dataclass(frozen=True)
@@ -91,6 +97,9 @@ class SemanticMiningCompletionReport:
     target_candidates: int
     total_normalized_selections: int
     total_event_candidates: int
+    total_coverage_proofs: int
+    total_coverage_hyperedges: int
+    total_semantic_candidates: int
     total_template_candidates: int
     total_promoted_templates: int
     total_execution_safe_templates: int
@@ -100,10 +109,25 @@ class SemanticMiningCompletionReport:
     promotion_blockers: tuple[tuple[str, int], ...]
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        for sport in payload.get("sports", []):
+            event_candidate_count = int(sport.get("event_candidate_count") or 0)
+            semantic_candidate_count = int(sport.get("semantic_candidate_count") or 0)
+            min_candidates = int(sport.get("min_candidates") or 0)
+            target_candidates = int(sport.get("target_candidates") or 0)
+            sport["event_candidate_floor_met"] = event_candidate_count >= min_candidates
+            sport["semantic_candidate_floor_met"] = semantic_candidate_count >= min_candidates
+            sport["event_target_reached"] = event_candidate_count >= target_candidates
+            sport["semantic_target_reached"] = semantic_candidate_count >= target_candidates
+            sport["event_candidate_shortfall"] = max(0, min_candidates - event_candidate_count)
+            sport["semantic_candidate_shortfall"] = max(
+                0,
+                min_candidates - semantic_candidate_count,
+            )
+        return payload
 
 
-def build_completion_report(
+def build_completion_report(  # noqa: C901
     store: RuleStore,
     *,
     required_providers: tuple[str, ...] = DEFAULT_REQUIRED_PROVIDERS,
@@ -139,6 +163,17 @@ def build_completion_report(
         for template_id in store.list_promoted_template_ids()
         if (template := store.load_promoted_template(template_id)) is not None
     ]
+    coverage_proofs = [
+        proof
+        for proof_id in store.list_coverage_proof_ids()
+        if (proof := store.load_coverage_proof(proof_id)) is not None
+    ]
+    coverage_hyperedges = [
+        hyperedge
+        for hyperedge_id in store.list_coverage_hyperedge_ids()
+        if (hyperedge := store.load_coverage_hyperedge(hyperedge_id)) is not None
+    ]
+    proof_by_id = {proof.proof_id: proof for proof in coverage_proofs}
     safety_tier_counts = Counter(template.safety_tier for template in template_candidates)
 
     manifests_by_provider = Counter(manifest.provider.upper() for manifest in manifests)
@@ -152,6 +187,10 @@ def build_completion_report(
 
     event_candidates_by_provider: Counter[str] = Counter()
     event_candidates_by_sport: Counter[str] = Counter()
+    coverage_proofs_by_provider: Counter[str] = Counter()
+    coverage_proofs_by_sport: Counter[str] = Counter()
+    coverage_hyperedges_by_provider: Counter[str] = Counter()
+    coverage_hyperedges_by_sport: Counter[str] = Counter()
     providers_by_sport: dict[str, set[str]] = defaultdict(set)
     template_candidates_by_provider: Counter[str] = Counter()
     template_candidates_by_sport: Counter[str] = Counter()
@@ -174,6 +213,22 @@ def build_completion_report(
                 event_candidates_by_provider[normalized_provider] += 1
                 providers_by_sport[sport].add(normalized_provider)
 
+    for proof in coverage_proofs:
+        sport = _normalize_sport(proof.universe.sport)
+        coverage_proofs_by_sport[sport] += 1
+        for provider in proof.coverage_set.provider_scope:
+            normalized_provider = provider.upper()
+            coverage_proofs_by_provider[normalized_provider] += 1
+            providers_by_sport[sport].add(normalized_provider)
+
+    for hyperedge in coverage_hyperedges:
+        proof = proof_by_id.get(hyperedge.coverage_proof_id)
+        sport = _normalize_sport(proof.universe.sport) if proof is not None else "unknown"
+        coverage_hyperedges_by_sport[sport] += 1
+        for provider in hyperedge.provider_scope:
+            normalized_provider = provider.upper()
+            coverage_hyperedges_by_provider[normalized_provider] += 1
+
     promoted_by_provider: Counter[str] = Counter()
     execution_safe_by_provider: Counter[str] = Counter()
     for template in promoted_templates:
@@ -189,6 +244,8 @@ def build_completion_report(
             manifest_count=manifests_by_provider[provider],
             selection_count=selections_by_provider[provider],
             event_candidate_count=event_candidates_by_provider[provider],
+            coverage_proof_count=coverage_proofs_by_provider[provider],
+            coverage_hyperedge_count=coverage_hyperedges_by_provider[provider],
             template_candidate_count=template_candidates_by_provider[provider],
             promoted_template_count=promoted_by_provider[provider],
             execution_safe_template_count=execution_safe_by_provider[provider],
@@ -202,6 +259,8 @@ def build_completion_report(
             sport=sport,
             selection_count=selections_by_sport[sport],
             event_candidate_count=event_candidates_by_sport[sport],
+            coverage_proof_count=coverage_proofs_by_sport[sport],
+            coverage_hyperedge_count=coverage_hyperedges_by_sport[sport],
             template_candidate_count=template_candidates_by_sport[sport],
             providers=tuple(sorted(providers_by_sport[sport])),
             min_candidates=min_candidates,
@@ -224,6 +283,16 @@ def build_completion_report(
         total_event_candidates=sum(event_candidates_by_sport.values())
         if template_candidates
         else len(candidate_rules),
+        total_coverage_proofs=len(coverage_proofs),
+        total_coverage_hyperedges=len(coverage_hyperedges),
+        total_semantic_candidates=(
+            (
+                sum(event_candidates_by_sport.values())
+                if template_candidates
+                else len(candidate_rules)
+            )
+            + len(coverage_proofs)
+        ),
         total_template_candidates=len(template_candidates),
         total_promoted_templates=len(promoted_templates),
         total_execution_safe_templates=sum(
@@ -242,23 +311,29 @@ def _provider_report(
     manifest_count: int,
     selection_count: int,
     event_candidate_count: int,
+    coverage_proof_count: int,
+    coverage_hyperedge_count: int,
     template_candidate_count: int,
     promoted_template_count: int,
     execution_safe_template_count: int,
     sports: tuple[str, ...],
 ) -> ProviderCompletion:
+    semantic_candidate_count = event_candidate_count + coverage_proof_count
     blockers: list[str] = []
     if manifest_count == 0:
         blockers.append("missing_manifest")
     if selection_count == 0:
         blockers.append("no_normalized_selections")
-    if event_candidate_count == 0:
-        blockers.append("no_event_candidates")
+    if semantic_candidate_count == 0:
+        blockers.append("no_semantic_candidates")
     return ProviderCompletion(
         provider=provider,
         manifest_count=manifest_count,
         selection_count=selection_count,
         event_candidate_count=event_candidate_count,
+        coverage_proof_count=coverage_proof_count,
+        coverage_hyperedge_count=coverage_hyperedge_count,
+        semantic_candidate_count=semantic_candidate_count,
         template_candidate_count=template_candidate_count,
         promoted_template_count=promoted_template_count,
         execution_safe_template_count=execution_safe_template_count,
@@ -272,22 +347,28 @@ def _sport_report(
     sport: str,
     selection_count: int,
     event_candidate_count: int,
+    coverage_proof_count: int,
+    coverage_hyperedge_count: int,
     template_candidate_count: int,
     providers: tuple[str, ...],
     min_candidates: int,
     target_candidates: int,
 ) -> SportCompletion:
+    semantic_candidate_count = event_candidate_count + coverage_proof_count
     blockers: list[str] = []
     if selection_count == 0:
         blockers.append("no_normalized_selections")
-    if event_candidate_count == 0:
-        blockers.append("no_event_candidates")
-    elif event_candidate_count < min_candidates:
+    if semantic_candidate_count == 0:
+        blockers.append("no_semantic_candidates")
+    elif semantic_candidate_count < min_candidates:
         blockers.append("below_min_candidate_count")
     return SportCompletion(
         sport=sport,
         selection_count=selection_count,
         event_candidate_count=event_candidate_count,
+        coverage_proof_count=coverage_proof_count,
+        coverage_hyperedge_count=coverage_hyperedge_count,
+        semantic_candidate_count=semantic_candidate_count,
         template_candidate_count=template_candidate_count,
         provider_count=len(providers),
         providers=providers,

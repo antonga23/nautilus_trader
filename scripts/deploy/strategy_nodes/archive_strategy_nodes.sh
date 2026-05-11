@@ -3,17 +3,19 @@ set -euo pipefail
 
 usage() {
   cat << USAGE
-Usage: $0 --container <name> [--container <name> ...] [--root <path>] [--archive-root <path>] [--stop]
+Usage: $0 --container <name> [--container <name> ...] [--root <path>] [--archive-root <path>] [--stop] [--remove]
 
 Archive strategy-node runtime artifacts and optional Docker state before stopping
-stale validation containers. This script is intended to run on the EC2 deploy
-host, not on CI runners.
+or removing stale validation containers. Removal happens only after archive
+copies are written. This script is intended to run on the EC2 deploy host, not
+on CI runners.
 USAGE
 }
 
 root_dir="/opt/cloudbet/strategy-nodes"
 archive_root="/opt/cloudbet/strategy-nodes/archives"
 stop_container="false"
+remove_container="false"
 declare -a containers=()
 
 while [[ $# -gt 0 ]]; do
@@ -32,6 +34,11 @@ while [[ $# -gt 0 ]]; do
       ;;
     --stop)
       stop_container="true"
+      shift 1
+      ;;
+    --remove)
+      stop_container="true"
+      remove_container="true"
       shift 1
       ;;
     -h | --help)
@@ -89,6 +96,7 @@ for container in "${containers[@]}"; do
     echo "node_dir=$node_dir"
     echo "archive_dir=$archive_dir"
     echo "stop_requested=$stop_container"
+    echo "remove_requested=$remove_container"
   } > "$archive_dir/summary.env"
 
   if [[ -d "$node_dir" ]]; then
@@ -102,10 +110,18 @@ for container in "${containers[@]}"; do
     docker logs --timestamps "$container" > "$archive_dir/docker.log" 2>&1 || true
     docker stats --no-stream "$container" > "$archive_dir/docker-stats.txt" 2>&1 || true
     if [[ "$stop_container" == "true" ]]; then
-      docker stop "$container" > "$archive_dir/docker-stop.txt"
+      docker stop "$container" > "$archive_dir/docker-stop.txt" 2>&1 || true
+    fi
+    if [[ "$remove_container" == "true" ]]; then
+      docker rm "$container" > "$archive_dir/docker-rm.txt" 2>&1 || true
     fi
   else
     echo "docker_container_missing=true" >> "$archive_dir/summary.env"
+  fi
+
+  if [[ "$remove_container" == "true" && -d "$node_dir" ]]; then
+    rm -rf "$node_dir"
+    echo "node_dir_removed=true" >> "$archive_dir/summary.env"
   fi
 
   echo "archived=$archive_dir"

@@ -1685,8 +1685,10 @@ class TestCloudbetExecutionReports:
                 False,
                 0,
             ),
-            # Case 8: Neither instrument ID nor time range provided
-            (None, AssertionError, None, None, None, False, None),
+            # Case 8: Neither instrument ID nor time range provided.
+            # Startup reconciliation may request this broad shape before any local
+            # orders exist; the adapter should return an empty no-op report list.
+            (None, None, None, None, None, False, 0),
         ],
     )
     @patch.object(CloudbetClient, "get_bet_history", new_callable=AsyncMock)
@@ -2102,7 +2104,7 @@ class TestCloudbetExecutionCommand:
             ("valid_instrument", False, None, "rejected", ValueError),
             ("valid_instrument", True, CloudbetResponses.place_bet_failure(), "rejected", False),
             ("invalid_instrument", True, None, "rejected", TypeError),  # invalid instrument
-            ("valid_instrument", True, Exception("Some exception"), "rejected", Exception),
+            ("valid_instrument", True, Exception("Some exception"), "rejected", False),
         ],
     )
     @patch.object(CloudbetLiveExecutionClient, "_cache")
@@ -2195,7 +2197,10 @@ class TestCloudbetExecutionCommand:
 
         # command = create_submit_order_command(valid_cache_instrument, order_has_price)
         # mock_cache.instrument.return_value = create_mock_instrument(valid_cache_instrument)
-        mock_place_bets.return_value = place_bet_response
+        if isinstance(place_bet_response, Exception):
+            mock_place_bets.side_effect = place_bet_response
+        else:
+            mock_place_bets.return_value = place_bet_response
 
         # Act
         if expected_exception:

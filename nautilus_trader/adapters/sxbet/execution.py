@@ -17,6 +17,7 @@ SX.bet execution client.
 """
 
 import asyncio
+import re
 from decimal import Decimal
 
 from nautilus_trader.adapters.betting.common.enums import Outcome
@@ -30,6 +31,7 @@ from nautilus_trader.adapters.sxbet.providers import SXBetInstrumentProvider
 from nautilus_trader.adapters.sxbet.signing import decimal_odds_to_percentage
 from nautilus_trader.adapters.sxbet.signing import generate_salt
 from nautilus_trader.adapters.sxbet.signing import get_expiry
+from nautilus_trader.adapters.sxbet.signing import sign_eip712_fill_order
 from nautilus_trader.adapters.sxbet.signing import sign_eip712_order
 from nautilus_trader.adapters.sxbet.signing import to_wei
 from nautilus_trader.cache.cache import Cache
@@ -37,11 +39,17 @@ from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.component import Logger
 from nautilus_trader.common.component import MessageBus
 from nautilus_trader.core.uuid import UUID4
+from nautilus_trader.execution.messages import CancelAllOrders
 from nautilus_trader.execution.messages import CancelOrder
+from nautilus_trader.execution.messages import GenerateFillReports
 from nautilus_trader.execution.messages import GenerateOrderStatusReport
+from nautilus_trader.execution.messages import GenerateOrderStatusReports
+from nautilus_trader.execution.messages import GeneratePositionStatusReports
 from nautilus_trader.execution.messages import ModifyOrder
 from nautilus_trader.execution.messages import SubmitOrder
+from nautilus_trader.execution.reports import FillReport
 from nautilus_trader.execution.reports import OrderStatusReport
+from nautilus_trader.execution.reports import PositionStatusReport
 from nautilus_trader.live.execution_client import LiveExecutionClient
 from nautilus_trader.model.enums import AccountType
 from nautilus_trader.model.enums import OmsType
@@ -99,6 +107,15 @@ class SXBetInvalidConfigError(SXBetExecutionError):
         super().__init__(f"Invalid SX.bet execution config for {field_name}: {reason}")
 
 
+class SXBetMissingFillHashError(SXBetExecutionError):
+    """
+    Raised when the venue fill response does not include a usable fill hash.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("SX.bet response missing a valid fillHash")
+
+
 class SXBetExecutionClient(LiveExecutionClient):
     """
     Provides an execution client for the SX.bet venue.
@@ -138,7 +155,9 @@ class SXBetExecutionClient(LiveExecutionClient):
         self._instrument_provider = instrument_provider
         self._logger = logger
         self._validate_config(config)
-        self._account_id = AccountId(f"{SXBET_VENUE.value}-{config.wallet_address[:10]}")
+        self._wallet_address = self._normalize_wallet_address(config.wallet_address)
+        self._private_key = self._normalize_private_key(config.private_key)
+        self._set_account_id(AccountId(f"{SXBET_VENUE.value}-{self._wallet_address[:10]}"))
         self._base_token = self._resolve_base_token(config.base_currency)
         # Order tracking
         self._orders: dict[ClientOrderId, dict] = {}
@@ -154,7 +173,7 @@ class SXBetExecutionClient(LiveExecutionClient):
         # Get balance
         try:
             balance = await self._http_client.get_balance(
-                self._config.wallet_address,
+                self._wallet_address,
                 self._base_token,
             )
             if balance:
@@ -176,6 +195,16 @@ class SXBetExecutionClient(LiveExecutionClient):
     async def _submit_order(self, command: SubmitOrder) -> None:
         """
         Submit an order to the venue.
+        """
+        execution_mode = getattr(self._config, "execution_mode", "maker_post")
+        if execution_mode == "taker_fill":
+            await self._submit_taker_fill(command)
+            return
+        await self._submit_maker_order(command)
+
+    async def _submit_maker_order(self, command: SubmitOrder) -> None:
+        """
+        Post a maker order to the SX.bet order book.
         """
         order = command.order
         instrument_id = order.instrument_id
@@ -211,7 +240,7 @@ class SXBetExecutionClient(LiveExecutionClient):
 
         order_data = {
             "marketHash": market_hash,
-            "maker": self._config.wallet_address,
+            "maker": self._wallet_address,
             "totalBetSize": stake_wei,
             "percentageOdds": percentage_odds,
             "expiry": expiry,
@@ -226,11 +255,18 @@ class SXBetExecutionClient(LiveExecutionClient):
             # Sign the order
             signature = sign_eip712_order(
                 order=order_data,
-                private_key=self._config.private_key,
+                private_key=self._private_key,
             )
 
             # Submit order event once the payload is signed and ready for venue submission.
             self._generate_order_submitted(order)
+
+            if getattr(self._config, "dry_run", False):
+                self._log.info(
+                    "SX.bet dry-run execution enabled; order payload was signed but not submitted",
+                )
+                self._generate_order_rejected(order=order, reason="dry_run_no_submit")
+                return
 
             # Place order via API
             result = await self._http_client.place_order(
@@ -263,6 +299,88 @@ class SXBetExecutionClient(LiveExecutionClient):
             self._log.error(msg)
             self._generate_order_rejected(order=order, reason=str(e))
 
+    async def _submit_taker_fill(self, command: SubmitOrder) -> None:
+        """
+        Fill displayed SX.bet order-book liquidity as a taker.
+        """
+        order = command.order
+        instrument_id = order.instrument_id
+
+        instrument = self._instrument_provider.find(instrument_id)
+        if not isinstance(instrument, CryptoBettingInstrument):
+            self._generate_order_rejected(
+                order=order,
+                reason=f"Instrument not found: {instrument_id}",
+            )
+            return
+
+        market = instrument.market_id or instrument.event_id
+        is_taker_betting_outcome_one = self._instrument_is_outcome_one(instrument)
+        if order.order_type == OrderType.LIMIT and order.price:
+            decimal_odds = float(order.price)
+        else:
+            decimal_odds = instrument.price
+        desired_odds = decimal_odds_to_percentage(decimal_odds)
+        stake_wei = to_wei(Decimal(str(order.quantity)), decimals=6)
+        fill_salt = generate_salt()
+        odds_slippage = int(getattr(self._config, "odds_slippage", 5))
+        message = "Nautilus live arbitrage taker fill"
+
+        fill_data = {
+            "market": market,
+            "taker": self._wallet_address,
+            "baseToken": self._base_token,
+            "isTakerBettingOutcomeOne": is_taker_betting_outcome_one,
+            "stakeWei": stake_wei,
+            "desiredOdds": desired_odds,
+            "oddsSlippage": odds_slippage,
+            "fillSalt": fill_salt,
+            "message": message,
+        }
+
+        self._log.info(f"Filling SX.bet order-book liquidity for {instrument_id}")
+
+        try:
+            taker_sig = sign_eip712_fill_order(
+                fill=fill_data,
+                private_key=self._private_key,
+            )
+            self._generate_order_submitted(order)
+
+            if getattr(self._config, "dry_run", False):
+                self._log.info(
+                    "SX.bet dry-run execution enabled; taker fill payload was signed "
+                    "but not submitted",
+                )
+                self._generate_order_rejected(order=order, reason="dry_run_no_submit")
+                return
+
+            result = await self._http_client.fill_order(
+                market=market,
+                taker=self._wallet_address,
+                base_token=self._base_token,
+                is_taker_betting_outcome_one=is_taker_betting_outcome_one,
+                stake_wei=stake_wei,
+                desired_odds=desired_odds,
+                odds_slippage=odds_slippage,
+                taker_sig=taker_sig,
+                fill_salt=fill_salt,
+                message=message,
+            )
+            fill_hash = self._extract_fill_hash(result)
+            self._orders[order.client_order_id] = {
+                "fill_hash": fill_hash,
+                "result": result,
+            }
+            venue_order_id = VenueOrderId(fill_hash)
+            self._venue_order_ids[order.client_order_id] = venue_order_id
+            self._generate_order_accepted(order, venue_order_id)
+
+        except (ImportError, ValueError, TypeError, KeyError, SXBetHttpClientError) as e:
+            msg = f"Failed to fill order: {e}"
+            self._log.error(msg)
+            self._generate_order_rejected(order=order, reason=str(e))
+
     @staticmethod
     def _resolve_base_token(base_currency: str) -> str:
         normalized_currency = base_currency.upper()
@@ -281,19 +399,48 @@ class SXBetExecutionClient(LiveExecutionClient):
             if not isinstance(value, str) or not value.strip():
                 raise SXBetInvalidConfigError(field_name, "must be a non-empty string")
 
-        wallet_address = config.wallet_address.strip()
-        if not wallet_address.startswith("0x") or len(wallet_address) != 42:
+        SXBetExecutionClient._normalize_wallet_address(config.wallet_address)
+        SXBetExecutionClient._normalize_private_key(config.private_key)
+        execution_mode = getattr(config, "execution_mode", "maker_post")
+        if execution_mode not in {"taker_fill", "maker_post"}:
+            raise SXBetInvalidConfigError(
+                "execution_mode",
+                "must be 'taker_fill' or 'maker_post'",
+            )
+        odds_slippage = int(getattr(config, "odds_slippage", 5))
+        if odds_slippage < 0 or odds_slippage > 100:
+            raise SXBetInvalidConfigError(
+                "odds_slippage",
+                "must be between 0 and 100",
+            )
+
+    @staticmethod
+    def _normalize_wallet_address(wallet_address: str) -> str:
+        normalized = wallet_address.strip()
+        if normalized.startswith("0X"):
+            normalized = f"0x{normalized[2:]}"
+        if not normalized.startswith("0x") and re.fullmatch(r"[0-9a-fA-F]{40}", normalized):
+            normalized = f"0x{normalized}"
+        if not re.fullmatch(r"0x[0-9a-fA-F]{40}", normalized):
             raise SXBetInvalidConfigError(
                 "wallet_address",
                 "must be a 42-character 0x-prefixed address",
             )
+        return normalized
 
-        private_key = config.private_key.strip()
-        if not private_key.startswith("0x") or len(private_key) != 66:
+    @staticmethod
+    def _normalize_private_key(private_key: str) -> str:
+        normalized = private_key.strip()
+        if normalized.startswith("0X"):
+            normalized = f"0x{normalized[2:]}"
+        if not normalized.startswith("0x") and re.fullmatch(r"[0-9a-fA-F]{64}", normalized):
+            normalized = f"0x{normalized}"
+        if not re.fullmatch(r"0x[0-9a-fA-F]{64}", normalized):
             raise SXBetInvalidConfigError(
                 "private_key",
                 "must be a 66-character 0x-prefixed private key",
             )
+        return normalized
 
     @staticmethod
     def _extract_order_hash(result: dict) -> str:
@@ -301,6 +448,13 @@ class SXBetExecutionClient(LiveExecutionClient):
         if not isinstance(order_hash, str) or not order_hash.strip():
             raise SXBetMissingOrderHashError
         return order_hash
+
+    @staticmethod
+    def _extract_fill_hash(result: dict) -> str:
+        fill_hash = result.get("data", {}).get("fillHash")
+        if not isinstance(fill_hash, str) or not fill_hash.strip():
+            raise SXBetMissingFillHashError
+        return fill_hash
 
     @staticmethod
     def _instrument_is_outcome_one(instrument: CryptoBettingInstrument) -> bool:
@@ -319,16 +473,23 @@ class SXBetExecutionClient(LiveExecutionClient):
             params = str(params)
         return "outcome_one=True" in params
 
+    def _resolved_account_id(self) -> AccountId:
+        account_id = self.account_id
+        if account_id is None:  # pragma: no cover - constructor sets this defensively
+            raise RuntimeError("SX.bet execution account_id is not initialized")
+        return account_id
+
     def _generate_order_submitted(self, order: Order) -> None:
         """
         Generate and send order submitted event.
         """
+        account_id = self._resolved_account_id()
         event = OrderSubmitted(
             trader_id=order.trader_id,
             strategy_id=order.strategy_id,
             instrument_id=order.instrument_id,
             client_order_id=order.client_order_id,
-            account_id=self._account_id,
+            account_id=account_id,
             ts_event=self._clock.timestamp_ns(),
             ts_init=self._clock.timestamp_ns(),
         )
@@ -342,13 +503,14 @@ class SXBetExecutionClient(LiveExecutionClient):
         """
         Generate and send order accepted event.
         """
+        account_id = self._resolved_account_id()
         event = OrderAccepted(
             trader_id=order.trader_id,
             strategy_id=order.strategy_id,
             instrument_id=order.instrument_id,
             client_order_id=order.client_order_id,
             venue_order_id=venue_order_id,
-            account_id=self._account_id,
+            account_id=account_id,
             ts_event=self._clock.timestamp_ns(),
             ts_init=self._clock.timestamp_ns(),
         )
@@ -362,12 +524,13 @@ class SXBetExecutionClient(LiveExecutionClient):
         """
         Generate and send order rejected event.
         """
+        account_id = self._resolved_account_id()
         event = OrderRejected(
             trader_id=order.trader_id,
             strategy_id=order.strategy_id,
             instrument_id=order.instrument_id,
             client_order_id=order.client_order_id,
-            account_id=self._account_id,
+            account_id=account_id,
             reason=reason,
             ts_event=self._clock.timestamp_ns(),
             ts_init=self._clock.timestamp_ns(),
@@ -382,13 +545,14 @@ class SXBetExecutionClient(LiveExecutionClient):
         """
         Generate and send order canceled event.
         """
+        account_id = self._resolved_account_id()
         event = OrderCanceled(
             trader_id=order.trader_id,
             strategy_id=order.strategy_id,
             instrument_id=order.instrument_id,
             client_order_id=order.client_order_id,
             venue_order_id=venue_order_id,
-            account_id=self._account_id,
+            account_id=account_id,
             ts_event=self._clock.timestamp_ns(),
             ts_init=self._clock.timestamp_ns(),
         )
@@ -430,6 +594,27 @@ class SXBetExecutionClient(LiveExecutionClient):
         except (ValueError, TypeError, SXBetHttpClientError) as e:
             msg = f"Failed to cancel order: {e}"
             self._log.error(msg)
+
+    async def _cancel_all_orders(self, command: CancelAllOrders) -> None:
+        """
+        Cancel all locally tracked SX.bet maker orders.
+        """
+        cancelable = tuple(
+            (client_order_id, order_info.get("order_hash"))
+            for client_order_id, order_info in self._orders.items()
+            if order_info.get("order_hash")
+        )
+        for client_order_id, order_hash in cancelable:
+            try:
+                await self._http_client.cancel_order(str(order_hash))
+            except (ValueError, TypeError, SXBetHttpClientError) as e:
+                self._log.error(f"Failed to cancel SX.bet order {client_order_id}: {e}")
+                continue
+
+            order = self._cache.order(client_order_id)
+            venue_order_id = self._venue_order_ids.get(client_order_id)
+            if order and venue_order_id:
+                self._generate_order_canceled(order, venue_order_id)
 
     async def _modify_order(self, command: ModifyOrder) -> None:
         """
@@ -491,7 +676,7 @@ class SXBetExecutionClient(LiveExecutionClient):
 
         try:
             orders = await self._http_client.get_user_orders(
-                self._config.wallet_address,
+                self._wallet_address,
             )
 
             for order_data in orders.get("data", {}).get("orders", []):
@@ -499,7 +684,7 @@ class SXBetExecutionClient(LiveExecutionClient):
                     continue
 
                 return OrderStatusReport(
-                    account_id=self._account_id,
+                    account_id=self._resolved_account_id(),
                     instrument_id=instrument_id,
                     venue_order_id=venue_order_id,
                     client_order_id=command.client_order_id,
@@ -520,3 +705,107 @@ class SXBetExecutionClient(LiveExecutionClient):
             self._log.error(msg)
 
         return None
+
+    async def generate_order_status_reports(
+        self,
+        command: GenerateOrderStatusReports,
+    ) -> list[OrderStatusReport]:
+        """
+        Generate order status reports for locally tracked SX.bet orders.
+
+        Nautilus calls this during startup reconciliation before this client has
+        necessarily submitted any orders in the current process. SX.bet does not expose
+        a safe unbounded "all order statuses for this account" query for our startup
+        path, so an empty local order set is a valid no-op.
+
+        """
+        instrument_id = command.instrument_id
+        if command.start is not None or command.end is not None:
+            self._log.debug(
+                "SX.bet bulk order status reconciliation ignores time range filters "
+                "and reports locally tracked orders only",
+            )
+
+        if instrument_id is not None:
+            client_order_ids = list(
+                self._cache.client_order_ids(venue=SXBET_VENUE, instrument_id=instrument_id),
+            )
+        else:
+            client_order_ids = list(self._venue_order_ids)
+
+        if not client_order_ids:
+            self._log.debug(
+                "No locally tracked SX.bet orders available for bulk status reconciliation",
+            )
+            return []
+
+        reports: list[OrderStatusReport] = []
+        for client_order_id in client_order_ids:
+            cached_order = self._cache.order(client_order_id)
+            venue_order_id = self._venue_order_ids.get(client_order_id)
+            if venue_order_id is None and cached_order is not None:
+                venue_order_id = cached_order.venue_order_id
+            if venue_order_id is None:
+                self._log.warning(
+                    "Cannot query SX.bet order status without a venue order id "
+                    f"(client_order_id={client_order_id})",
+                )
+                continue
+
+            report = await self.generate_order_status_report(
+                GenerateOrderStatusReport(
+                    instrument_id=instrument_id
+                    or (cached_order.instrument_id if cached_order is not None else None),
+                    client_order_id=client_order_id,
+                    venue_order_id=venue_order_id,
+                    command_id=UUID4(),
+                    ts_init=self._clock.timestamp_ns(),
+                    params=command.params,
+                ),
+            )
+            if report is None:
+                continue
+            if command.open_only and report.order_status not in {
+                OrderStatus.SUBMITTED,
+                OrderStatus.ACCEPTED,
+            }:
+                continue
+            reports.append(report)
+
+        return reports
+
+    async def generate_fill_reports(
+        self,
+        command: GenerateFillReports,
+    ) -> list[FillReport]:
+        """
+        Generate SX.bet fill reports for locally tracked fills.
+
+        Startup reconciliation may request a partial lookback range before this process
+        has submitted any orders. SX.bet fill history is not available through the
+        public REST path used here, so the safe startup result is an empty report list.
+
+        """
+        self._log.debug(
+            "SX.bet fill report reconciliation is local-only; returning no reports "
+            f"(instrument_id={command.instrument_id}, venue_order_id={command.venue_order_id})",
+        )
+        return []
+
+    async def generate_position_status_reports(
+        self,
+        command: GeneratePositionStatusReports,
+    ) -> list[PositionStatusReport]:
+        """
+        Generate SX.bet position status reports.
+
+        The live arbitrage pilot does not reconstruct SX.bet positions from account
+        history during startup. Orders submitted by this process are tracked via order
+        status reports and order lifecycle events.
+
+        """
+        self._log.debug(
+            "SX.bet position status reconciliation is local-only; returning no reports "
+            f"(instrument_id={command.instrument_id})",
+        )
+        return []

@@ -51,6 +51,9 @@ class SXBetInstrumentProviderConfig(InstrumentProviderConfig, frozen=True):
         Maximum markets to probe while searching for liquid markets.
     min_two_sided_markets : PositiveInt, default 1
         Minimum desired count of markets with active orders on both outcomes.
+    max_resolution_horizon_hours : PositiveFloat, optional
+        Prefer markets whose fixture starts within this many hours when applying
+        discovery and liquidity-selection budgets.
     api_key_pool : tuple[str, ...], optional
         SX.bet API keys for realtime/WebSocket-capable surfaces.
     log_warnings : bool, default True
@@ -69,6 +72,7 @@ class SXBetInstrumentProviderConfig(InstrumentProviderConfig, frozen=True):
     prefer_liquid_markets: bool = False
     liquidity_probe_limit: PositiveInt = 100
     min_two_sided_markets: PositiveInt = 1
+    max_resolution_horizon_hours: PositiveFloat | None = None
     api_key_pool: tuple[str, ...] | None = None
     log_warnings: bool = True
 
@@ -103,6 +107,12 @@ class SXBetDataClientConfig(LiveDataClientConfig, frozen=True):
         Minimum interval between order book polling summary log lines.
     order_book_concurrency : PositiveInt, default 4
         Maximum concurrent order-book REST requests per poll cycle.
+    order_book_poll_mode : str, default "order_book"
+        Quote polling mode. ``"order_book"`` fetches each market order book and
+        preserves depth diagnostics. ``"best_odds_batch"`` fetches top-of-book
+        odds in market batches for live low-latency pilots.
+    order_book_best_odds_batch_size : PositiveInt, default 30
+        Number of market hashes per SX.bet best-odds batch request.
     api_key_pool : tuple[str, ...], optional
         SX.bet API keys for realtime/WebSocket-capable surfaces.
 
@@ -120,6 +130,8 @@ class SXBetDataClientConfig(LiveDataClientConfig, frozen=True):
     order_book_poll_interval_secs: PositiveFloat = 3.0
     order_book_poll_summary_interval_secs: PositiveFloat = 30.0
     order_book_concurrency: PositiveInt = 4
+    order_book_poll_mode: str = "order_book"
+    order_book_best_odds_batch_size: PositiveInt = 30
     api_key_pool: tuple[str, ...] | None = None
 
 
@@ -148,6 +160,13 @@ class SXBetExecClientConfig(LiveExecClientConfig, frozen=True):
     base_currency : str, default "USDC"
         The base currency for trading. Only ``"USDC"`` is currently supported
         by the execution client.
+    dry_run : bool, default False
+        If True, build and sign order payloads but do not submit them to SX.bet.
+    execution_mode : str, default "taker_fill"
+        Execution path for live orders. ``"taker_fill"`` fills displayed liquidity,
+        while ``"maker_post"`` posts a maker order to the SX.bet order book.
+    odds_slippage : int, default 5
+        Slippage tolerance sent to the SX.bet taker fill endpoint.
 
     """
 
@@ -160,3 +179,6 @@ class SXBetExecClientConfig(LiveExecClientConfig, frozen=True):
     instrument_provider: SXBetInstrumentProviderConfig | None = None  # type: ignore[assignment]
     max_retry_attempts: int = 3
     base_currency: str = "USDC"
+    dry_run: bool = False
+    execution_mode: str = "taker_fill"
+    odds_slippage: int = 5

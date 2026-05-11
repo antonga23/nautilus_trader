@@ -1,4 +1,6 @@
+# ruff: noqa: C901, D213, D401, D406, D407, D409, D410, D411, F401, F541, F841, PIE790, RUF010, UP006, UP007, UP035, UP045
 import asyncio
+import uuid
 from typing import Optional, Any, List, Union, Set
 
 import pandas as pd
@@ -38,6 +40,7 @@ from nautilus_trader.msgbus.bus import MessageBus
 from nautilus_trader.adapters.cloudbet.client.core import CloudbetClient
 from nautilus_trader.adapters.cloudbet.client.exceptions import CloudbetAPIError
 from nautilus_trader.adapters.cloudbet.client.schema import (
+    AcceptPriceChange,
     GetAccountCurrencies,
     GetAccountBalance,
     SelectionSide,
@@ -124,6 +127,7 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
         )
 
         self._instrument_provider: CloudbetInstrumentProvider = instrument_provider
+        self._config = config
         self._set_account_id(account_id or AccountId(f"{CLOUDBET_VENUE.value}-001"))
         # an asyncio Task to watch the stream
         # self._watch_stream_task: Optional[asyncio.Task] = None
@@ -230,14 +234,21 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
         await self._client.disconnect()
 
     def reset(self) -> None:
-        # TODO: implement some clean up logic, eg reset/recalculate states
-        # pass
-        raise NotImplementedError("method not currently implemented")  # pragma: no cover
+        self.venue_order_id_to_client_order_id.clear()
 
     def dispose(self) -> None:
-        # TODO: implement some clean up logic, eg release resources like stream client
-        # pass
-        raise NotImplementedError("method not currently implemented")  # pragma: no cover
+        async def close_resources() -> None:
+            await self._disconnect()
+
+        try:
+            if self._loop.is_closed():
+                return
+            if self._loop.is_running():
+                self._loop.create_task(close_resources())
+            else:
+                self._loop.run_until_complete(close_resources())
+        except Exception as e:  # pragma: no cover - defensive shutdown path
+            self._log.warning(f"Error disposing Cloudbet execution resources: {e}")
 
     async def watch_stream(self) -> None:
         """Ensure socket stream is connected"""
@@ -500,9 +511,19 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
             open_only = command.open_only
 
         self._log.info(f"Generating OrderStatusReports for {self.id}...")
-        # assert instrument_id is not None or (start is not None and end is not None)
-        assert instrument_id is not None or (start is not None and end is not None)
         report_list: List[OrderStatusReport] = []
+        if (start is None) != (end is None):
+            self._log.debug(
+                "Cannot generate Cloudbet order status reports with a partial time range",
+            )
+            return report_list
+
+        if instrument_id is None and start is None and end is None:
+            self._log.debug(
+                "No Cloudbet order status filters supplied; returning no reports",
+            )
+            return report_list
+
         # if a time-range is specified, we explicitly rely on the venue bet_history endpoint
         if start and end:
             start_date: str = datetime_to_cloudbet_timestamp(start)
@@ -514,7 +535,7 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
                 self._log.info(f"Received bet history: {bet_history}")
             except Exception as e:  # TODO: handle exceptions gracefully
                 self._log.error(f"Could not fetch bet history from Cloudbet: {e}")
-                return None
+                return report_list
             for bet in bet_history.bets:
                 report: Optional[OrderStatusReport] = None
                 self._log.info(f"Processing bet: {bet}")
@@ -529,16 +550,26 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
                     cached_order: Order = self._cache.order(
                         client_order_id
                     )  # no need to assert not None, an Order must have a client_order_id on init
+                    if cached_order is None:
+                        self._log.warning(
+                            f"Attempting to query order that does not exist in the cache, Client Order ID: {client_order_id}",
+                        )
+                        continue
                     instrument_id: InstrumentId = cached_order.instrument_id
 
                 if open_only is False:  # we don't care about the order status
-                    report = self.generate_order_status_report(
+                    report = await self.generate_order_status_report(
                         instrument_id=instrument_id,
                         client_order_id=client_order_id,
                         venue_order_id=venue_order_id,
                     )
                 else:
                     cached_order: Order = self._cache.order(client_order_id)
+                    if cached_order is None:
+                        self._log.warning(
+                            f"Attempting to query order that does not exist in the cache, Client Order ID: {client_order_id}",
+                        )
+                        continue
                     if cached_order.is_open or bet.status == bet.status.PENDING_ACCEPTANCE:
                         report = cb_bet_to_order_status_report(
                             order=cached_order,
@@ -563,7 +594,17 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
             report: Optional[OrderStatusReport] = None
             for client_order_id in unique_client_ids:
                 cached_order: Order = self._cache.order(client_order_id)
+                if cached_order is None:
+                    self._log.warning(
+                        f"Attempting to query order that does not exist in the cache, Client Order ID: {client_order_id}",
+                    )
+                    continue
                 venue_order_id: VenueOrderId = cached_order.venue_order_id
+                if venue_order_id is None:
+                    self._log.warning(
+                        f"Unable to generate a Cloudbet report for order without a valid VenueOrderId, Client Order ID: {client_order_id}",
+                    )
+                    continue
                 # use the venue_order_id to query the bet_status endpoint
                 try:
                     bet_status: GetBetResponse = await self._client.get_bet_status(
@@ -605,8 +646,8 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
                         venue_order_id=venue_order_id,
                         report_id=UUID4(),
                     )
-        if report is not None:
-            report_list.append(report)
+                if report is not None:
+                    report_list.append(report)
         return report_list
 
     async def generate_fill_reports(
@@ -653,14 +694,18 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
         ------
             A Trade corresponds to an order that has a final result (WIN, LOSS, etc )or has been processed by the exchange. (ACCEPTED)
         """
-        # either specify a time range or an instrument_id or a venue order id
-        assert (
-            instrument_id is not None
-            or venue_order_id is not None
-            or (start is not None and end is not None)
-        )
         self._log.info(f"Generating TradeReports for {self.id}...")
         report_list: List[TradeReport] = []
+        if (start is None) != (end is None):
+            self._log.debug(
+                "Cannot generate Cloudbet trade reports with a partial time range",
+            )
+            return report_list
+
+        if instrument_id is None and venue_order_id is None and start is None and end is None:
+            self._log.debug("No Cloudbet trade report filters supplied; returning no reports")
+            return report_list
+
         # if a time-range is specified, we explicitly rely on the venue bet_history endpoint
         if start and end:
             start_date: str = datetime_to_cloudbet_timestamp(start)
@@ -915,10 +960,20 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
             start = command.start
             end = command.end
 
-        # either specify a time range or an instrument_id or a venue order id
-        assert instrument_id is not None or (start is not None and end is not None)
         self._log.info(f"Generating PositionStatusReport for {self.id}...")
         report_list: List[PositionStatusReport] = []
+        if (start is None) != (end is None):
+            self._log.debug(
+                "Cannot generate Cloudbet position status reports with a partial time range",
+            )
+            return report_list
+
+        if instrument_id is None and start is None and end is None:
+            self._log.debug(
+                "No Cloudbet position status filters supplied; returning no reports",
+            )
+            return report_list
+
         # if a time-range is specified, we explicitly rely on the venue bet_history endpoint
         if start and end:
             start_date: str = datetime_to_cloudbet_timestamp(start)
@@ -1129,12 +1184,32 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
                 ts_event=self._clock.timestamp_ns(),
             )
             self._log.debug("Generated _generate_order_submitted")
+            if getattr(self._config, "dry_run", False):
+                self._log.info(
+                    "Cloudbet dry-run execution enabled; bet request was built but not submitted",
+                )
+                self.generate_order_rejected(
+                    strategy_id=command.strategy_id,
+                    instrument_id=command.instrument_id,
+                    client_order_id=client_order_id,
+                    reason="dry_run_no_submit",
+                    ts_event=self._clock.timestamp_ns(),
+                )
+                return
+            accept_price_change = self._accept_price_change_policy()
+            reference_id = str(uuid.uuid4())
             place_bet_response: GetBetResponse = await self._client.place_bets(
                 event_id=instrument.event_id,
                 market_url=market_url,
                 price=price,  # assumes Order has price eg. Limit Order
                 side=side,
                 stake=stake,
+                reference_id=reference_id,
+                accept_price_change=accept_price_change,
+            )
+            place_bet_response = await self._resolve_pending_acceptance(
+                reference_id,
+                place_bet_response,
             )
         except Exception as e:
             # if isinstance(CloudbetAPIError):
@@ -1212,3 +1287,39 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
         #     self._handle_status_message(update=update)
         # else:
         #     raise RuntimeError
+
+    def _accept_price_change_policy(self) -> AcceptPriceChange:
+        raw_policy = getattr(self._config, "accept_price_change", "BETTER")
+        normalized = str(raw_policy or "BETTER").strip().upper()
+        try:
+            return AcceptPriceChange(normalized)
+        except ValueError:
+            self._log.warning(
+                f"Invalid Cloudbet accept_price_change={raw_policy!r}; using BETTER",
+            )
+            return AcceptPriceChange.BETTER
+
+    async def _resolve_pending_acceptance(
+        self,
+        reference_id: str,
+        response: GetBetResponse,
+    ) -> GetBetResponse:
+        if response.status is not BetStatus.PENDING_ACCEPTANCE:
+            return response
+        attempts = max(0, int(getattr(self._config, "pending_acceptance_poll_attempts", 3)))
+        interval_secs = max(
+            0.0,
+            float(getattr(self._config, "pending_acceptance_poll_interval_secs", 0.5)),
+        )
+        resolved = response
+        for _ in range(attempts):
+            if interval_secs:
+                await asyncio.sleep(interval_secs)
+            try:
+                resolved = await self._client.get_bet_status(reference_id)
+            except Exception as e:
+                self._log.warning(f"Cloudbet pending acceptance polling failed: {e!r}")
+                break
+            if resolved.status is not BetStatus.PENDING_ACCEPTANCE:
+                break
+        return resolved

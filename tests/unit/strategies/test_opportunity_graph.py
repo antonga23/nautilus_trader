@@ -14,6 +14,7 @@ Parity and fast-path tests for the opportunity graph engines.
 from decimal import Decimal
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from typing import cast
 
@@ -463,6 +464,105 @@ def test_venue_agnostic_polymarket_template_builds_cross_venue_edge(
     ensure(edge.execution_safe is True)
 
 
+def test_python_graph_coverage_summary_reports_store_tiers_and_samples() -> None:
+    class FakeRuleStore:
+        def list_promoted_template_ids(self):
+            return []
+
+        def list_coverage_proof_ids(self):
+            return ["proof-exec", "proof-topology"]
+
+        def load_coverage_proof(self, proof_id):
+            return {
+                "proof-exec": SimpleNamespace(
+                    proof_id="proof-exec",
+                    universe=SimpleNamespace(sport="soccer", scope="match"),
+                    coverage_set=SimpleNamespace(provider_scope=("SXBET",)),
+                    predicates=(
+                        SimpleNamespace(instrument_id="home.SXBET"),
+                        SimpleNamespace(instrument_id="draw.SXBET"),
+                        SimpleNamespace(instrument_id="away.SXBET"),
+                    ),
+                    complete=True,
+                    win_covered_states=("HOME_WIN", "DRAW", "AWAY_WIN"),
+                    overlapping_win_states=(),
+                    gaps=(),
+                    risks=(),
+                    safety_tier="EXECUTION_SAFE",
+                    execution_safe=True,
+                    same_venue_execution_eligible=False,
+                    relationship_type="COMPLEMENTARY_COVERAGE",
+                    blocker_reasons=(),
+                ),
+                "proof-topology": SimpleNamespace(
+                    proof_id="proof-topology",
+                    universe=SimpleNamespace(sport="soccer", scope="match"),
+                    coverage_set=SimpleNamespace(provider_scope=("SXBET",)),
+                    predicates=(
+                        SimpleNamespace(instrument_id="dnb_home.SXBET"),
+                        SimpleNamespace(instrument_id="ah0_home.SXBET"),
+                    ),
+                    complete=False,
+                    win_covered_states=("HOME_WIN",),
+                    overlapping_win_states=("HOME_WIN",),
+                    gaps=(SimpleNamespace(reason="incomplete_coverage"),),
+                    risks=(SimpleNamespace(reason="equivalent_selection"),),
+                    safety_tier="TOPOLOGY_SAFE",
+                    execution_safe=False,
+                    same_venue_execution_eligible=True,
+                    relationship_type="EQUIVALENT_SELECTION",
+                    blocker_reasons=("equivalent_selection",),
+                ),
+            }.get(proof_id)
+
+        def list_coverage_hyperedge_ids(self):
+            return ["hyperedge-exec"]
+
+        def load_coverage_hyperedge(self, hyperedge_id):
+            return {
+                "hyperedge-exec": SimpleNamespace(
+                    hyperedge_id="hyperedge-exec",
+                    coverage_proof_id="proof-exec",
+                    instrument_ids=("home.SXBET", "draw.SXBET", "away.SXBET"),
+                    provider_scope=("SXBET",),
+                    relationship_type="COMPLEMENTARY_COVERAGE",
+                    safety_tier="EXECUTION_SAFE",
+                    execution_safe=True,
+                    caveats=(),
+                ),
+            }.get(hyperedge_id)
+
+    graph = OpportunityGraph(
+        MarketMatcher(rule_store=cast(RuleStore, FakeRuleStore()), allow_unpromoted_topology=False),
+        engine="python",
+    )
+
+    graph.build([_instrument()])
+
+    summary = graph.semantic_coverage_summary()
+    ensure(summary["coverageProofCount"] == 2)
+    ensure(summary["coverageHyperedgeCount"] == 1)
+    ensure(summary["executionSafeCoverageProofCount"] == 1)
+    ensure(summary["executionSafeCoverageHyperedgeCount"] == 1)
+    ensure(summary["sameVenueEligibleCoverageProofCount"] == 1)
+    ensure(summary["proofSafetyTierCounts"] == {"EXECUTION_SAFE": 1, "TOPOLOGY_SAFE": 1})
+    ensure(summary["hyperedgeSafetyTierCounts"] == {"EXECUTION_SAFE": 1})
+    ensure(
+        summary["proofRelationshipTypeCounts"]
+        == {"COMPLEMENTARY_COVERAGE": 1, "EQUIVALENT_SELECTION": 1},
+    )
+    ensure(summary["proofBlockerReasonCounts"] == {"equivalent_selection": 1})
+    ensure(summary["proofGapReasonCounts"] == {"incomplete_coverage": 1})
+    ensure(summary["proofRiskReasonCounts"] == {"equivalent_selection": 1})
+    ensure(summary["sampleProofIds"] == ["proof-exec", "proof-topology"])
+    sample_proofs = cast(list[dict[str, object]], summary["sampleProofs"])
+    sample_hyperedges = cast(list[dict[str, object]], summary["sampleHyperedges"])
+    ensure(
+        sample_proofs[0]["instrument_ids"] == ["home.SXBET", "draw.SXBET", "away.SXBET"],
+    )
+    ensure(sample_hyperedges[0]["hyperedge_id"] == "hyperedge-exec")
+
+
 def test_sync_keeps_rust_semantic_edges_without_python_rediscovery() -> None:  # skipcq
     matcher = MarketMatcher(allow_unpromoted_topology=False)
     instruments = [
@@ -544,6 +644,33 @@ def test_node_payload_fallbacks_cover_missing_helper_methods() -> None:  # skipc
     ensure(payload["event_key_no_time"] == str(template.id))
     ensure(payload["selection_key"] == "over")
     ensure(payload["start_time_ns"] is None)
+
+
+def test_node_payload_ignores_non_iterable_alias_helper_return() -> None:  # skipcq
+    template = _instrument()
+
+    class MockLikeInstrument:
+        def __init__(self) -> None:
+            self.id = template.id
+            self.event_id = template.event_id
+            self.event_name = template.event_name
+            self.market_name = template.market_name
+            self.market_type = template.market_type
+            self.outcome = template.outcome
+            self.params = template.params
+            self.handicap = template.handicap
+
+        def event_key(self, *, include_start_time: bool = True) -> str:
+            return "soccer:minnesota timberwolves:san antonio spurs"
+
+        def event_alias_keys(self, *, include_start_time: bool = True) -> object:
+            return object()
+
+    instrument = cast(Any, MockLikeInstrument())
+    node = OpportunityGraph._node_from_instrument(instrument)
+    payload = OpportunityGraph._node_payload_from_node(node, instrument)
+
+    ensure(payload["event_alias_keys"] == ("soccer:minnesota timberwolves:san antonio spurs",))
 
 
 def test_rust_scan_filters_unprofitable_edges_before_decimal_validation() -> None:  # skipcq
