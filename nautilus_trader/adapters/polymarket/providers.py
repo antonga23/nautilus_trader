@@ -62,6 +62,7 @@ POLYMARKET_SPORT_KEYWORDS = {
     ),
     "tennis": ("tennis", "wimbledon", "us open", "australian open", "french open", "atp", "wta"),
 }
+POLYMARKET_DEFAULT_MAX_MARKETS_PER_EVENT = 16
 
 
 def _canonical_polymarket_sport(raw: str) -> str:
@@ -133,6 +134,69 @@ def _selected_sports_tag_ids(sport_metadata: dict[str, Any]) -> list[str]:
 
 def _market_unique_id(market: dict[str, Any]) -> str:
     return str(market.get("conditionId") or market.get("id") or market.get("slug") or "")
+
+
+def _market_event_key(market: dict[str, Any]) -> str:
+    events = market.get("events")
+    if isinstance(events, list) and events and isinstance(events[0], dict):
+        event = events[0]
+        return str(
+            event.get("id")
+            or event.get("slug")
+            or "|".join(
+                str(value)
+                for value in (
+                    event.get("title"),
+                    event.get("startDate") or event.get("startDateIso"),
+                )
+                if value
+            ),
+        )
+    return _market_unique_id(market)
+
+
+def _market_family_priority(market: dict[str, Any]) -> int:
+    text = " ".join(
+        str(value)
+        for value in (
+            market.get("sportsMarketType"),
+            market.get("question"),
+            market.get("slug"),
+        )
+        if value
+    ).lower()
+    if any(token in text for token in ("winner", "moneyline", "match odds", " win ")):
+        return 0
+    if any(token in text for token in ("spread", "handicap", "draw no bet")):
+        return 1
+    if any(token in text for token in ("total", "over", "under")):
+        return 2
+    return 3
+
+
+def _diversify_ranked_markets_by_event(markets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    event_groups: dict[str, list[dict[str, Any]]] = {}
+    event_order: list[str] = []
+    for market in markets:
+        event_key = _market_event_key(market)
+        if event_key not in event_groups:
+            event_groups[event_key] = []
+            event_order.append(event_key)
+        event_groups[event_key].append(market)
+    for group in event_groups.values():
+        group.sort(key=lambda market: (_market_family_priority(market), _market_unique_id(market)))
+
+    diversified: list[dict[str, Any]] = []
+    while event_order:
+        next_order: list[str] = []
+        for event_key in event_order:
+            group = event_groups[event_key]
+            if group:
+                diversified.append(group.pop(0))
+            if group:
+                next_order.append(event_key)
+        event_order = next_order
+    return diversified
 
 
 def _market_has_event_metadata(market: dict[str, Any]) -> bool:
@@ -225,6 +289,62 @@ def _rank_markets_by_horizon(
     )
 
 
+def _runtime_horizon_candidate(
+    market: dict[str, Any],
+    *,
+    now: datetime,
+    horizon: timedelta | None,
+) -> bool:
+    if horizon is None:
+        return True
+    bucket = _market_horizon_sort_key(market, now=now, horizon=horizon)[0]
+    # Keep markets inside the near-term window and markets with missing timing
+    # metadata. Exclude stale resolved markets and known far-future markets so
+    # they do not consume live-pilot discovery and quote capacity.
+    return bucket in {0, 2}
+
+
+def _rank_runtime_horizon_markets(
+    markets: list[dict[str, Any]],
+    *,
+    now: datetime,
+    horizon: timedelta | None,
+) -> list[dict[str, Any]]:
+    if horizon is None:
+        return markets
+    return _diversify_ranked_markets_by_event(
+        _rank_markets_by_horizon(
+            [
+                market
+                for market in markets
+                if _runtime_horizon_candidate(market, now=now, horizon=horizon)
+            ],
+            now=now,
+            horizon=horizon,
+        ),
+    )
+
+
+def _isoformat_z(timestamp: datetime) -> str:
+    return timestamp.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _with_horizon_date_filters(
+    filters: dict[str, Any],
+    *,
+    now: datetime,
+    horizon: timedelta | None,
+) -> dict[str, Any]:
+    if horizon is None:
+        return filters
+    stale_grace = timedelta(hours=6)
+    return {
+        **filters,
+        "start_date_min": _isoformat_z(now - stale_grace),
+        "start_date_max": _isoformat_z(now + horizon),
+    }
+
+
 def _horizon_fetch_limit(limit: int | None, horizon: timedelta | None) -> int | None:
     if limit is None or horizon is None:
         return limit
@@ -266,11 +386,18 @@ def _collect_sports_event_markets(
     selected_tags: list[str],
     events: list[dict[str, Any]],
     discovered_markets: dict[str, dict[str, Any]],
+    max_markets_per_event: int | None = None,
 ) -> None:
     for event in events:
         if not isinstance(event, dict):
             continue
-        for market in event.get("markets", []):
+        event_markets = [market for market in event.get("markets", []) if isinstance(market, dict)]
+        event_markets.sort(
+            key=lambda market: (_market_family_priority(market), _market_unique_id(market)),
+        )
+        if max_markets_per_event is not None:
+            event_markets = event_markets[:max_markets_per_event]
+        for market in event_markets:
             if not isinstance(market, dict):
                 continue
             market_id = _market_unique_id(market)
@@ -345,7 +472,7 @@ def _add_balanced_sport_markets(
     now: datetime,
     horizon: timedelta | None,
 ) -> None:
-    ranked_markets = _rank_markets_by_horizon(
+    ranked_markets = _rank_runtime_horizon_markets(
         list(sport_markets.values()),
         now=now,
         horizon=horizon,
@@ -497,8 +624,7 @@ class PolymarketInstrumentProvider(InstrumentProvider):
             f"max_resolution_horizon_hours={horizon_hours}",
         )
         loaded_condition_ids: set[str] = set()
-        loaded_markets = await self._load_filtered_sport_tag_gamma_markets(
-            filters=filters,
+        loaded_markets = await self._load_filtered_sports_event_markets(
             sports_filter=sports_filter,
             max_results=max_results,
             loaded_condition_ids=loaded_condition_ids,
@@ -509,7 +635,8 @@ class PolymarketInstrumentProvider(InstrumentProvider):
         remaining_results = None
         if max_results is not None:
             remaining_results = max(max_results - loaded_markets, 0)
-        loaded_markets += await self._load_filtered_sports_event_markets(
+        loaded_markets += await self._load_filtered_sport_tag_gamma_markets(
+            filters=filters,
             sports_filter=sports_filter,
             max_results=remaining_results if remaining_results is not None else max_results,
             loaded_condition_ids=loaded_condition_ids,
@@ -577,10 +704,10 @@ class PolymarketInstrumentProvider(InstrumentProvider):
         else:
             markets = await list_markets(
                 http_client=self._http_client,
-                filters=filters,
+                filters=_with_horizon_date_filters(filters, now=now, horizon=horizon),
                 max_results=_horizon_fetch_limit(max_results, horizon),
             )
-            markets = _rank_markets_by_horizon(markets, now=now, horizon=horizon)
+            markets = _rank_runtime_horizon_markets(markets, now=now, horizon=horizon)
         self._log.info(f"Loaded {len(markets)} candidate Polymarket markets using Gamma API")
         loaded_markets = 0
         for market in markets:
@@ -677,6 +804,7 @@ class PolymarketInstrumentProvider(InstrumentProvider):
                 sport_metadata=sport_metadata,
                 per_sport_limit=per_sport_limit,
                 max_results=max_results,
+                now=now,
                 horizon=horizon,
             )
             _add_balanced_sport_markets(
@@ -700,6 +828,7 @@ class PolymarketInstrumentProvider(InstrumentProvider):
         sport_metadata: dict[str, Any],
         per_sport_limit: int | None,
         max_results: int | None,
+        now: datetime,
         horizon: timedelta | None,
     ) -> dict[str, dict[str, Any]]:
         sport_code = str(sport_metadata.get("sport") or "")
@@ -709,19 +838,23 @@ class PolymarketInstrumentProvider(InstrumentProvider):
         for tag_id in selected_tags:
             events = await self._gamma_get_json(
                 "/events",
-                params={
-                    "tag_id": tag_id,
-                    "related_tags": "true",
-                    "active": "true",
-                    "closed": "false",
-                    "archived": "false",
-                    "limit": _horizon_fetch_limit(
-                        per_sport_limit or max_results or 100,
-                        horizon,
-                    ),
-                    "order": "volume",
-                    "ascending": "false",
-                },
+                params=_with_horizon_date_filters(
+                    {
+                        "tag_id": tag_id,
+                        "related_tags": "true",
+                        "active": "true",
+                        "closed": "false",
+                        "archived": "false",
+                        "limit": _horizon_fetch_limit(
+                            per_sport_limit or max_results or 100,
+                            horizon,
+                        ),
+                        "order": "volume",
+                        "ascending": "false",
+                    },
+                    now=now,
+                    horizon=horizon,
+                ),
             )
             if not isinstance(events, list):
                 continue
@@ -731,6 +864,7 @@ class PolymarketInstrumentProvider(InstrumentProvider):
                 selected_tags=selected_tags,
                 events=events,
                 discovered_markets=sport_markets,
+                max_markets_per_event=POLYMARKET_DEFAULT_MAX_MARKETS_PER_EVENT,
             )
         return sport_markets
 
@@ -763,6 +897,7 @@ class PolymarketInstrumentProvider(InstrumentProvider):
                 selected_tags=list(tag_group["tag_ids"]),
                 per_sport_limit=per_sport_limit,
                 max_results=max_results,
+                now=now,
                 horizon=horizon,
             )
             _add_balanced_sport_markets(
@@ -789,6 +924,7 @@ class PolymarketInstrumentProvider(InstrumentProvider):
         selected_tags: list[str],
         per_sport_limit: int | None,
         max_results: int | None,
+        now: datetime,
         horizon: timedelta | None,
     ) -> dict[str, dict[str, Any]]:
         sport_markets: dict[str, dict[str, Any]] = {}
@@ -806,7 +942,11 @@ class PolymarketInstrumentProvider(InstrumentProvider):
             }
             markets = await list_markets(
                 http_client=self._http_client,
-                filters=tag_filters,
+                filters=_with_horizon_date_filters(
+                    tag_filters,
+                    now=now,
+                    horizon=horizon,
+                ),
                 max_results=_horizon_fetch_limit(per_sport_limit or max_results, horizon),
             )
             for market in markets:

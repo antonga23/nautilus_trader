@@ -795,6 +795,166 @@ def test_polymarket_gamma_token_price_and_team_roles_are_preserved():
     assert dict(normalized.resolution_policy)["tie_or_unknown"] == "lose"
 
 
+def test_polymarket_transform_strips_tournament_prefix_and_maps_token_outcomes():
+    info = {
+        "condition_id": "0xtennis",
+        "question": "Internazionali BNL d'Italia: Jannik Sinner vs Alexei Popyrin",
+        "tokens": [
+            {"token_id": "sinner-token", "outcome": "Jannik Sinner", "price": 0.71},
+            {"token_id": "popyrin-token", "outcome": "Alexei Popyrin", "price": 0.29},
+        ],
+        "selected_token_id": "sinner-token",
+        "selected_outcome": "Jannik Sinner",
+        "_gamma_original": {
+            "sport": "atp",
+            "description": "This market resolves to the match winner.",
+            "outcomePrices": '["0.71","0.29"]',
+            "events": [
+                {
+                    "title": "Internazionali BNL d'Italia: Jannik Sinner vs Alexei Popyrin",
+                    "sport": "tennis",
+                    "startDateIso": "2026-05-11T15:00:00Z",
+                },
+            ],
+        },
+    }
+
+    transformed = PolymarketSportsTransformer.to_crypto_betting_instrument(
+        polymarket_binary_option(
+            symbol="sinner-token",
+            outcome="Jannik Sinner",
+            question=info["question"],
+            info=info,
+        ),
+    )
+
+    assert transformed is not None
+    assert transformed.home_name == "Jannik Sinner"
+    assert transformed.away_name == "Alexei Popyrin"
+    assert transformed.market_type == "tennis.winner"
+    assert transformed.outcome == "home"
+
+    normalized = MarketNormalizer().normalize(transformed)
+    assert normalized.selection == "HOME"
+    assert normalized.event_key == "tennis|jannik_sinner|alexei_popyrin|2026-05-11T15:00:00Z"
+
+
+def test_polymarket_transform_strips_market_suffix_from_fixture_name():
+    info = {
+        "condition_id": "0xsoccer-corners",
+        "question": "Tottenham Hotspur FC vs Leeds United FC - Total Corners",
+        "tokens": [
+            {"token_id": "over-token", "outcome": "Yes", "price": 0.44},
+            {"token_id": "under-token", "outcome": "No", "price": 0.56},
+        ],
+        "selected_token_id": "over-token",
+        "selected_outcome": "Yes",
+        "_gamma_original": {
+            "sport": "epl",
+            "sportsMarketType": "total",
+            "description": "This market resolves based on total corners.",
+            "outcomePrices": '["0.44","0.56"]',
+            "events": [
+                {
+                    "title": "Tottenham Hotspur FC vs Leeds United FC - Total Corners",
+                    "sport": "soccer",
+                    "startDateIso": "2026-05-11T19:00:00Z",
+                },
+            ],
+        },
+    }
+
+    transformed = PolymarketSportsTransformer.to_crypto_betting_instrument(
+        polymarket_binary_option(
+            symbol="over-token",
+            outcome="Yes",
+            question=info["question"],
+            info=info,
+        ),
+    )
+
+    assert transformed is not None
+    assert transformed.home_name == "Tottenham Hotspur FC"
+    assert transformed.away_name == "Leeds United FC"
+
+
+def test_polymarket_spread_token_outcomes_map_to_team_roles():
+    info = {
+        "condition_id": "0xsoccer-spread",
+        "question": "Gaziantep FK vs. Rams Başakşehir FK - Spread",
+        "tokens": [
+            {"token_id": "home-token", "outcome": "Gaziantep FK", "price": 0.49},
+            {"token_id": "away-token", "outcome": "Rams Başakşehir FK", "price": 0.51},
+        ],
+        "selected_token_id": "away-token",
+        "selected_outcome": "Rams Başakşehir FK",
+        "_gamma_original": {
+            "sport": "epl",
+            "sportsMarketType": "spread",
+            "line": "+0.5",
+            "description": "This market resolves based on the spread.",
+            "outcomePrices": '["0.49","0.51"]',
+            "events": [
+                {
+                    "title": "Gaziantep FK vs. Rams Başakşehir FK - Spread",
+                    "sport": "soccer",
+                    "startDateIso": "2026-05-11T14:00:00Z",
+                },
+            ],
+        },
+    }
+
+    transformed = PolymarketSportsTransformer.to_crypto_betting_instrument(
+        polymarket_binary_option(
+            symbol="away-token",
+            outcome="Rams Başakşehir FK",
+            question=info["question"],
+            info=info,
+        ),
+    )
+
+    assert transformed is not None
+    assert transformed.market_type == "soccer.spread"
+    assert transformed.outcome == "away"
+
+
+def test_polymarket_same_city_team_tokens_use_discriminating_name_parts():
+    info = {
+        "condition_id": "0xmlb",
+        "question": "Chicago Cubs vs Chicago White Sox",
+        "tokens": [
+            {"token_id": "cubs-token", "outcome": "Chicago Cubs", "price": 0.58},
+            {"token_id": "sox-token", "outcome": "Chicago White Sox", "price": 0.42},
+        ],
+        "selected_token_id": "sox-token",
+        "selected_outcome": "Chicago White Sox",
+        "_gamma_original": {
+            "sport": "mlb",
+            "description": "This market resolves to the game winner.",
+            "outcomePrices": '["0.58","0.42"]',
+            "events": [
+                {
+                    "title": "Chicago Cubs vs Chicago White Sox",
+                    "sport": "baseball",
+                    "startDateIso": "2026-05-11T20:00:00Z",
+                },
+            ],
+        },
+    }
+
+    transformed = PolymarketSportsTransformer.to_crypto_betting_instrument(
+        polymarket_binary_option(
+            symbol="sox-token",
+            outcome="Chicago White Sox",
+            question=info["question"],
+            info=info,
+        ),
+    )
+
+    assert transformed is not None
+    assert transformed.outcome == "away"
+
+
 def test_polymarket_spread_binary_maps_yes_no_to_team_line_semantics():
     question = "Will the Lakers cover the spread against the Nuggets?"
     info = {

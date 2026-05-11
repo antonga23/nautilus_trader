@@ -931,7 +931,7 @@ class TestBettingArbitrageNodeBuilder:
         assert any(call["filters"]["tag_id"] == "864" for call in list_calls)
         assert all(call["filters"]["order"] == "volume24hr" for call in list_calls)
 
-    def test_polymarket_gamma_discovery_prioritizes_tag_markets_before_events(self):
+    def test_polymarket_gamma_discovery_prioritizes_event_markets_before_tags(self):
         class Clock:
             @staticmethod
             def timestamp_ns() -> int:
@@ -946,11 +946,11 @@ class TestBettingArbitrageNodeBuilder:
 
         async def fake_tag_markets(**kwargs):
             calls.append(("tag", kwargs["max_results"]))
-            return 4
+            return int(kwargs["max_results"] or 0)
 
         async def fake_event_markets(**kwargs):
             calls.append(("event", kwargs["max_results"]))
-            return int(kwargs["max_results"] or 0)
+            return 4
 
         async def fake_gamma_markets(**kwargs):
             calls.append(("fallback", kwargs["max_results"]))
@@ -970,7 +970,7 @@ class TestBettingArbitrageNodeBuilder:
             ),
         )
 
-        assert calls == [("tag", 10), ("event", 6), ("fallback", 0)]
+        assert calls == [("event", 10), ("tag", 6), ("fallback", 0)]
 
     def test_polymarket_gamma_discovery_prefers_near_term_tag_markets(self, monkeypatch):
         class Clock:
@@ -1015,9 +1015,12 @@ class TestBettingArbitrageNodeBuilder:
                 return []
             raise AssertionError(endpoint)
 
+        list_filters: list[dict[str, object]] = []
+
         async def fake_list_markets(*, http_client, filters, max_results=None, **kwargs):
-            del http_client, filters, kwargs
+            del http_client, kwargs
             list_limits.append(max_results)
+            list_filters.append(dict(filters))
             return [
                 market(
                     "futurecondition",
@@ -1046,11 +1049,46 @@ class TestBettingArbitrageNodeBuilder:
         )
 
         assert list_limits == [26]
+        assert "start_date_min" in list_filters[0]
+        assert "start_date_max" in list_filters[0]
         instruments = provider.list_all()
         assert len(instruments) == 2
         assert {
             instrument.info["_gamma_original"]["events"][0]["title"] for instrument in instruments
         } == {"Frances Tiafoe vs Ignacio Buse"}
+
+    def test_polymarket_runtime_horizon_ranking_diversifies_fixture_events(self):
+        now = datetime(2026, 5, 10, 12, tzinfo=UTC)
+
+        def market(condition_id: str, event_id: str, question: str) -> dict[str, object]:
+            return {
+                "id": condition_id,
+                "conditionId": condition_id,
+                "question": question,
+                "events": [
+                    {
+                        "id": event_id,
+                        "title": event_id,
+                        "startDate": "2026-05-10T18:00:00Z",
+                    },
+                ],
+            }
+
+        ranked = polymarket_providers._rank_runtime_horizon_markets(
+            [
+                market("a-winner", "event-a", "Team A winner"),
+                market("a-spread", "event-a", "Team A spread"),
+                market("a-total", "event-a", "Team A total points"),
+                market("b-winner", "event-b", "Team B winner"),
+            ],
+            now=now,
+            horizon=timedelta(hours=48),
+        )
+
+        assert [polymarket_providers._market_event_key(market) for market in ranked[:2]] == [
+            "event-a",
+            "event-b",
+        ]
 
     def test_polymarket_provider_preserves_selected_token_metadata(self):
         class Clock:
