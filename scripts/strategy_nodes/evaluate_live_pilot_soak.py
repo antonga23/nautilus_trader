@@ -209,6 +209,7 @@ def _snapshot_payload(
     runtime = _raw_runtime(payload)
     quality = _quality_from_summary(summary)
     venue_coverage = _as_dict(runtime.get("venueCoverage"))
+    summary_venue_coverage = _as_dict(summary.get("venueCoverage"))
     horizon = _as_dict(runtime.get("resolutionHorizon"))
     latency = _as_dict(summary.get("latencyDiagnostics"))
     timestamp = _snapshot_time(path, payload)
@@ -249,6 +250,8 @@ def _snapshot_payload(
             "quotedCandidatesInsideHorizon": horizon.get("quotedCandidatesInsideHorizon"),
             "blockedCandidatesDueHorizon": horizon.get("blockedCandidatesDueHorizon"),
         },
+        "quoteCapacityPressure": summary_venue_coverage.get("quoteCapacityPressure") or {},
+        "fxPolicy": summary.get("fxPolicy") or {},
         "latency": {
             "quoteAge": _as_dict(quality.get("latencyHistograms")).get("quoteAgeSeconds"),
             "pairSkew": _as_dict(quality.get("latencyHistograms")).get("quoteDeltaSeconds"),
@@ -418,7 +421,27 @@ def _soak_totals(
         "negativeMarginObservations": int(
             sum(_numeric(item.get("negativeMarginObservations")) for item in snapshots),
         ),
+        "maxQuoteCapacityPressureScore": _max_quote_capacity_pressure_score(snapshots),
+        "unquotedSemanticMatchedNodes": _sum_unquoted_semantic_matched_nodes(snapshots),
     }
+
+
+def _max_quote_capacity_pressure_score(snapshots: list[dict[str, Any]]) -> float:
+    scores: list[float] = []
+    for snapshot in snapshots:
+        for payload in _as_dict(snapshot.get("quoteCapacityPressure")).values():
+            score = _as_dict(payload).get("capacityPressureScore")
+            if isinstance(score, int | float):
+                scores.append(float(score))
+    return max(scores) if scores else 0.0
+
+
+def _sum_unquoted_semantic_matched_nodes(snapshots: list[dict[str, Any]]) -> int:
+    total = 0
+    for snapshot in snapshots:
+        for payload in _as_dict(snapshot.get("quoteCapacityPressure")).values():
+            total += _int_value(_as_dict(payload).get("unquotedSemanticMatchedNodes"))
+    return total
 
 
 def _early_pass_reasons(
@@ -512,6 +535,9 @@ def _format_text(payload: dict[str, Any]) -> str:
         f"positive={totals.get('positiveCandidates')} threshold={totals.get('thresholdCandidates')} "
         f"inside_horizon={totals.get('quotedCandidatesInsideHorizon')} "
         f"exact_blockers={totals.get('exactBlockers')}",
+        "  quote_capacity "
+        f"max_pressure={totals.get('maxQuoteCapacityPressureScore')} "
+        f"unquoted_semantic={totals.get('unquotedSemanticMatchedNodes')}",
         "  movement "
         f"negative={_as_dict(movement.get('negativeMargin')).get('moving')} "
         f"near_miss={_as_dict(movement.get('nearMiss')).get('moving')}",
