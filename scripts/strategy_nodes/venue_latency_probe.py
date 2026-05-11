@@ -138,7 +138,7 @@ def probe_url(url: str, *, timeout_secs: float = 5.0) -> ProbeSample:
             tls_ms=0.0,
             first_byte_ms=0.0,
             total_ms=(time.perf_counter() - started) * 1000,
-            error=type(e).__name__,
+            error=_error_summary(e),
         )
 
 
@@ -148,6 +148,13 @@ def _ssl_context() -> ssl.SSLContext:
     except ImportError:  # pragma: no cover - certifi is part of the normal dev env
         return ssl.create_default_context()
     return ssl.create_default_context(cafile=certifi.where())
+
+
+def _error_summary(error: Exception) -> str:
+    detail = str(error).replace("\n", " ").strip()
+    if len(detail) > 120:
+        detail = f"{detail[:117]}..."
+    return f"{type(error).__name__}: {detail}" if detail else type(error).__name__
 
 
 def _recommendation(summary_by_venue: dict[str, dict[str, object]]) -> dict[str, object]:

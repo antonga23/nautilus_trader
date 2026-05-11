@@ -1,6 +1,7 @@
 # skipcq: PYL-C0114, PYL-C0116
 
 from scripts.strategy_nodes.venue_latency_probe import ProbeSample
+from scripts.strategy_nodes.venue_latency_probe import _error_summary
 from scripts.strategy_nodes.venue_latency_probe import compare_region_reports
 from scripts.strategy_nodes.venue_latency_probe import placement_recommendations
 from scripts.strategy_nodes.venue_latency_probe import summarize_samples
@@ -23,6 +24,16 @@ def test_latency_probe_summary_includes_tail_and_error_rate():
     assert summary["total_ms"]["median"] == 40.0
     assert summary["total_ms"]["p95"] == 60.0
     assert summary["total_ms"]["max"] == 60.0
+
+
+def test_latency_probe_error_summary_keeps_short_sanitized_details():
+    message = "TLS failed\nwhile connecting " + ("x" * 200)
+
+    summary = _error_summary(RuntimeError(message))
+
+    assert summary.startswith("RuntimeError: TLS failed while connecting ")
+    assert "\n" not in summary
+    assert len(summary) < 150
 
 
 def test_latency_probe_recommends_strategy_placement_by_worst_leg():
