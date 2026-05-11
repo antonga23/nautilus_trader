@@ -356,6 +356,8 @@ class TestBettingArbitrageNodeBuilder:
                     order_book_poll_interval_secs=5.0,
                     order_book_poll_summary_interval_secs=30.0,
                     order_book_concurrency=8,
+                    order_book_poll_mode="best_odds_batch",
+                    order_book_best_odds_batch_size=30,
                 ),
             ],
         )
@@ -375,6 +377,8 @@ class TestBettingArbitrageNodeBuilder:
         assert data_client.config["order_book_poll_interval_secs"] == 5.0
         assert data_client.config["order_book_poll_summary_interval_secs"] == 30.0
         assert data_client.config["order_book_concurrency"] == 8
+        assert data_client.config["order_book_poll_mode"] == "best_odds_batch"
+        assert data_client.config["order_book_best_odds_batch_size"] == 30
         assert data_client.config["api_key_pool"] == ("dummy-sxbet-api-key",)
 
     def test_cloudbet_data_client_receives_runtime_settings(self, monkeypatch):

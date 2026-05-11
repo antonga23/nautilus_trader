@@ -107,6 +107,12 @@ class SXBetDataClientConfig(LiveDataClientConfig, frozen=True):
         Minimum interval between order book polling summary log lines.
     order_book_concurrency : PositiveInt, default 4
         Maximum concurrent order-book REST requests per poll cycle.
+    order_book_poll_mode : str, default "order_book"
+        Quote polling mode. ``"order_book"`` fetches each market order book and
+        preserves depth diagnostics. ``"best_odds_batch"`` fetches top-of-book
+        odds in market batches for live low-latency pilots.
+    order_book_best_odds_batch_size : PositiveInt, default 30
+        Number of market hashes per SX.bet best-odds batch request.
     api_key_pool : tuple[str, ...], optional
         SX.bet API keys for realtime/WebSocket-capable surfaces.
 
@@ -124,6 +130,8 @@ class SXBetDataClientConfig(LiveDataClientConfig, frozen=True):
     order_book_poll_interval_secs: PositiveFloat = 3.0
     order_book_poll_summary_interval_secs: PositiveFloat = 30.0
     order_book_concurrency: PositiveInt = 4
+    order_book_poll_mode: str = "order_book"
+    order_book_best_odds_batch_size: PositiveInt = 30
     api_key_pool: tuple[str, ...] | None = None
 
 

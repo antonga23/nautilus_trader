@@ -50,6 +50,13 @@ from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
 
 
+SXBET_ORDER_BOOK_POLL_MODE = "order_book"
+SXBET_BEST_ODDS_BATCH_POLL_MODE = "best_odds_batch"
+SUPPORTED_SXBET_ORDER_BOOK_POLL_MODES = frozenset(
+    {SXBET_ORDER_BOOK_POLL_MODE, SXBET_BEST_ODDS_BATCH_POLL_MODE},
+)
+
+
 class SXBetDataClient(LiveMarketDataClient):
     """
     Provides a data client for the SX.bet venue.
@@ -87,6 +94,24 @@ class SXBetDataClient(LiveMarketDataClient):
         self._polling_interval = float(config.order_book_poll_interval_secs)
         self._poll_summary_interval = float(config.order_book_poll_summary_interval_secs)
         self._order_book_concurrency = int(config.order_book_concurrency)
+        self._order_book_poll_mode = (
+            str(
+                getattr(config, "order_book_poll_mode", SXBET_ORDER_BOOK_POLL_MODE),
+            )
+            .strip()
+            .lower()
+        )
+        if self._order_book_poll_mode not in SUPPORTED_SXBET_ORDER_BOOK_POLL_MODES:
+            msg = (
+                "SX.bet order_book_poll_mode must be one of "
+                f"{sorted(SUPPORTED_SXBET_ORDER_BOOK_POLL_MODES)}; "
+                f"received {self._order_book_poll_mode!r}"
+            )
+            raise ValueError(msg)
+        self._best_odds_batch_size = max(
+            1,
+            int(getattr(config, "order_book_best_odds_batch_size", 30)),
+        )
         self._last_poll_summary_at = 0.0
         self._running = False
         self._logger = logger
@@ -195,6 +220,10 @@ class SXBetDataClient(LiveMarketDataClient):
         if not market_hashes:
             return
 
+        if self._order_book_poll_mode == SXBET_BEST_ODDS_BATCH_POLL_MODE:
+            await self._poll_best_odds_batches_once(market_hashes)
+            return
+
         cycle_started_at = time.perf_counter()
         results = await self._fetch_order_book_results(market_hashes)
         quote_count = 0
@@ -244,6 +273,77 @@ class SXBetDataClient(LiveMarketDataClient):
             max_latency=max_latency,
             fetch_latency_percentiles=latency_percentiles(fetch_latencies_secs),
             cycle_elapsed=cycle_elapsed,
+            request_count=len(market_hashes),
+            failure_count=failure_count,
+            rate_limit_count=rate_limit_count,
+            backoff_secs=float(rate_limit_count),
+            last_error=last_error,
+        )
+        self._log_poll_summary(
+            market_count=len(market_hashes),
+            order_count=order_count,
+            quote_count=quote_count,
+            empty_count=empty_count,
+            one_sided_count=one_sided_count,
+            two_sided_count=two_sided_count,
+            max_latency=max_latency,
+            cycle_elapsed=cycle_elapsed,
+        )
+
+    async def _poll_best_odds_batches_once(self, market_hashes: set[str]) -> None:
+        cycle_started_at = time.perf_counter()
+        market_hash_batches = [
+            sorted(market_hashes)[start : start + self._best_odds_batch_size]
+            for start in range(0, len(market_hashes), self._best_odds_batch_size)
+        ]
+        results = await self._fetch_best_odds_batch_results(market_hash_batches)
+        quote_count = 0
+        order_count = 0
+        empty_count = 0
+        one_sided_count = 0
+        two_sided_count = 0
+        max_latency = 0.0
+        fetch_latencies_secs: list[float] = []
+        failure_count = 0
+        rate_limit_count = 0
+        last_error: str | None = None
+        for (
+            published,
+            orders,
+            empty,
+            one_sided,
+            two_sided,
+            elapsed,
+            failed,
+            rate_limited,
+            error,
+        ) in results:
+            quote_count += published
+            order_count += orders
+            empty_count += empty
+            one_sided_count += one_sided
+            two_sided_count += two_sided
+            max_latency = max(max_latency, elapsed)
+            fetch_latencies_secs.append(max(0.0, elapsed))
+            if failed:
+                failure_count += 1
+                last_error = error
+            if rate_limited:
+                rate_limit_count += 1
+
+        cycle_elapsed = time.perf_counter() - cycle_started_at
+        self._record_quote_poll_stats(
+            market_count=len(market_hashes),
+            order_count=order_count,
+            quote_count=quote_count,
+            empty_count=empty_count,
+            one_sided_count=one_sided_count,
+            two_sided_count=two_sided_count,
+            max_latency=max_latency,
+            fetch_latency_percentiles=latency_percentiles(fetch_latencies_secs),
+            cycle_elapsed=cycle_elapsed,
+            request_count=len(market_hash_batches),
+            source="rest_best_odds_batch",
             failure_count=failure_count,
             rate_limit_count=rate_limit_count,
             backoff_secs=float(rate_limit_count),
@@ -281,6 +381,20 @@ class SXBetDataClient(LiveMarketDataClient):
                 return await self._fetch_and_publish_quote_stats(market_hash)
 
         return await asyncio.gather(*[_fetch(market_hash) for market_hash in sorted(market_hashes)])
+
+    async def _fetch_best_odds_batch_results(
+        self,
+        market_hash_batches: list[list[str]],
+    ) -> list[tuple[int, int, int, int, int, float, bool, bool, str | None]]:
+        semaphore = asyncio.Semaphore(max(1, self._order_book_concurrency))
+
+        async def _fetch(
+            market_hash_batch: list[str],
+        ) -> tuple[int, int, int, int, int, float, bool, bool, str | None]:
+            async with semaphore:
+                return await self._fetch_and_publish_best_odds_batch_stats(market_hash_batch)
+
+        return await asyncio.gather(*[_fetch(batch) for batch in market_hash_batches])
 
     def _send_all_instruments_to_data_engine(self) -> None:
         for instrument in self._instrument_provider.get_all().values():
@@ -358,23 +472,27 @@ class SXBetDataClient(LiveMarketDataClient):
         max_latency: float,
         fetch_latency_percentiles: tuple[float, float, float],
         cycle_elapsed: float,
+        request_count: int | None = None,
+        source: str = "rest_order_book_poll",
         failure_count: int = 0,
         rate_limit_count: int = 0,
         backoff_secs: float = 0.0,
         last_error: str | None = None,
     ) -> None:
         self._quote_poll_cycle_id += 1
-        backlog_count = max(0, market_count - max(1, self._order_book_concurrency))
+        work_unit_count = int(request_count if request_count is not None else market_count)
+        backlog_count = max(0, work_unit_count - max(1, self._order_book_concurrency))
         self._cache.add(
             venue_quote_poll_stats_key(SXBET_VENUE.value),
             encode_venue_quote_poll_stats(
                 venue=SXBET_VENUE.value,
                 updated_at_ns=self._clock.timestamp_ns(),
                 cycle_id=self._quote_poll_cycle_id,
-                source="rest_order_book_poll",
+                source=source,
                 subscribed_instrument_count=len(self._subscribed_instruments),
                 market_count=market_count,
                 quote_count=quote_count,
+                request_count=max(0, work_unit_count),
                 order_count=order_count,
                 empty_market_count=empty_count,
                 one_sided_market_count=one_sided_count,
@@ -395,6 +513,80 @@ class SXBetDataClient(LiveMarketDataClient):
                 last_error=last_error,
             ),
         )
+
+    async def _fetch_and_publish_best_odds_batch_stats(
+        self,
+        market_hashes: list[str],
+    ) -> tuple[int, int, int, int, int, float, bool, bool, str | None]:
+        started_at = time.perf_counter()
+        request_started_ns = self._clock.timestamp_ns()
+        try:
+            payload = await self._http_client.get_best_odds(
+                market_hashes=sorted(market_hashes),
+                base_token=SXBET_TOKENS["USDC"],
+                log_api_error=False,
+            )
+            response_received_ns = self._clock.timestamp_ns()
+            best_odds_entries = [
+                entry
+                for entry in payload.get("data", {}).get("bestOdds", [])
+                if isinstance(entry, dict) and isinstance(entry.get("marketHash"), str)
+            ]
+            best_odds_by_hash = {str(entry["marketHash"]): entry for entry in best_odds_entries}
+
+            published = 0
+            one_sided_count = 0
+            two_sided_count = 0
+            for market_hash, entry in best_odds_by_hash.items():
+                has_outcome_one = self._best_odds_entry_has_valid_side(entry, "outcomeOne")
+                has_outcome_two = self._best_odds_entry_has_valid_side(entry, "outcomeTwo")
+                if has_outcome_one and has_outcome_two:
+                    two_sided_count += 1
+                elif has_outcome_one or has_outcome_two:
+                    one_sided_count += 1
+
+                instruments = self._instrument_provider.find_by_market_hash(market_hash)
+                for instrument in instruments:
+                    if instrument.id not in self._subscribed_instruments:
+                        continue
+                    quote = self._build_best_odds_quote(
+                        instrument,
+                        entry,
+                        request_started_ns=request_started_ns,
+                        response_received_ns=response_received_ns,
+                    )
+                    if quote is None:
+                        continue
+                    self._handle_data(quote)
+                    published += 1
+
+            empty_count = max(0, len(market_hashes) - len(best_odds_by_hash))
+            return (
+                published,
+                0,
+                empty_count,
+                one_sided_count,
+                two_sided_count,
+                time.perf_counter() - started_at,
+                False,
+                False,
+                None,
+            )
+        except (ValueError, TypeError, KeyError, SXBetHttpClientError) as e:
+            msg = f"Failed to fetch SX.bet best-odds batch: {e}"
+            self._log.warning(msg)
+            rate_limited = isinstance(e, SXBetHttpClientError) and e.status_code == 429
+            return (
+                0,
+                0,
+                len(market_hashes),
+                0,
+                0,
+                time.perf_counter() - started_at,
+                True,
+                rate_limited,
+                str(e),
+            )
 
     async def _fetch_and_publish_best_odds(self, market_hashes: set[str]) -> None:
         try:
@@ -428,10 +620,26 @@ class SXBetDataClient(LiveMarketDataClient):
                         request_started_ns=request_started_ns,
                         response_received_ns=response_received_ns,
                     )
-                    if quote is not None:
-                        self._handle_data(quote)
+                if quote is not None:
+                    self._handle_data(quote)
         except (ValueError, TypeError, KeyError, SXBetHttpClientError) as e:
             self._log.warning(f"Failed to fetch SX.bet best odds: {e}")
+
+    @staticmethod
+    def _best_odds_entry_has_valid_side(
+        best_odds_entry: dict[str, object],
+        key: str,
+    ) -> bool:
+        outcome_payload = best_odds_entry.get(key)
+        if not isinstance(outcome_payload, dict):
+            return False
+        percentage_odds = outcome_payload.get("percentageOdds")
+        if percentage_odds in (None, ""):
+            return False
+        try:
+            return int(str(percentage_odds)) > 0
+        except ValueError:
+            return False
 
     def _build_best_odds_quote(
         self,

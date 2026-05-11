@@ -120,6 +120,8 @@
       "order_book_poll_interval_secs": 3.0,
       "order_book_poll_summary_interval_secs": 15.0,
       "order_book_concurrency": 8,
+      "order_book_poll_mode": "best_odds_batch",
+      "order_book_best_odds_batch_size": 30,
       "order_book_min_concurrency": 4,
       "order_book_max_concurrency": 16,
       "order_book_target_cycle_secs": 3.0,
