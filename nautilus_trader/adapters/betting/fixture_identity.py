@@ -410,8 +410,8 @@ class FixtureIdentityResolver:
             start_delta,
         )
 
+    @staticmethod
     def _provider_event_id_match_proof(
-        self,
         instrument_a: Any,
         instrument_b: Any,
         key_a: str,
