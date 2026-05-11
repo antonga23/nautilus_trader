@@ -42,7 +42,10 @@
     "duplicate_suppression_cooldown_secs": 15.0,
     "rollover_aware": true,
     "opportunity_graph_engine": "auto",
-    "semantic_unmatched_quote_probe_venues": [],
+    "semantic_unmatched_quote_probe_venues": [
+      "POLYMARKET"
+    ],
+    "semantic_unmatched_quote_probe_limit_per_venue": 160,
     "devig_enabled": true,
     "devig_method": "auto",
     "devig_reference_venues": [

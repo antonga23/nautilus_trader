@@ -2031,6 +2031,69 @@ def test_completion_report_counts_coverage_candidates_toward_sport_gate(tmp_path
     assert payload["sports"][0]["semantic_candidate_shortfall"] == 0
 
 
+def test_polymarket_coverage_report_records_selection_counts():
+    coverage_report = {
+        "provider": "POLYMARKET",
+        "sports": {
+            "tennis": {"event_count": 2, "market_count": 3, "attempts": []},
+        },
+    }
+    records = [
+        NormalizedSelectionRecord(
+            record_id="pm-tennis-home",
+            provider="POLYMARKET",
+            manifest_id=None,
+            selection=NormalizedSelection(
+                venue="POLYMARKET",
+                instrument_id="pm-tennis-home",
+                sport="tennis",
+                event_key="tennis:frances tiafoe:ignacio buse",
+                period="full_time",
+                scope="full_time",
+                market_type=CanonicalMarketType.WINNER.value,
+                market_family=CanonicalMarketType.WINNER.value,
+                selection="HOME",
+                params=(),
+                raw_market_name="tennis.moneyline",
+                raw_market_type="tennis.moneyline",
+                raw_outcome="home",
+                outcome_key="home",
+            ),
+        ),
+        NormalizedSelectionRecord(
+            record_id="pm-tennis-away",
+            provider="POLYMARKET",
+            manifest_id=None,
+            selection=NormalizedSelection(
+                venue="POLYMARKET",
+                instrument_id="pm-tennis-away",
+                sport="tennis",
+                event_key="tennis:frances tiafoe:ignacio buse",
+                period="full_time",
+                scope="full_time",
+                market_type=CanonicalMarketType.WINNER.value,
+                market_family=CanonicalMarketType.WINNER.value,
+                selection="AWAY",
+                params=(),
+                raw_market_name="tennis.moneyline",
+                raw_market_type="tennis.moneyline",
+                raw_outcome="away",
+                outcome_key="away",
+            ),
+        ),
+    ]
+
+    SnapshotIngestor._add_polymarket_selection_counts(
+        coverage_report=coverage_report,
+        normalized_records=records,
+    )
+
+    tennis = coverage_report["sports"]["tennis"]
+    assert tennis["selection_count"] == 2
+    assert tennis["normalized_event_count"] == 1
+    assert tennis["normalized_market_count"] == 1
+
+
 def test_file_rule_cache_recovers_from_torn_key_index(tmp_path):
     cache_dir = tmp_path / "semantic-cache"
     cache = FileRuleCache(cache_dir)

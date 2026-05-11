@@ -113,6 +113,14 @@ class SXBetDataClientConfig(LiveDataClientConfig, frozen=True):
         odds in market batches for live low-latency pilots.
     order_book_best_odds_batch_size : PositiveInt, default 30
         Number of market hashes per SX.bet best-odds batch request.
+    order_book_min_concurrency : PositiveInt, default 1
+        Lower bound for adaptive order-book polling concurrency.
+    order_book_max_concurrency : PositiveInt, optional
+        Upper bound for adaptive order-book polling concurrency.
+    order_book_target_cycle_secs : PositiveFloat, optional
+        Target poll-cycle duration for live latency diagnostics and adaptive fanout.
+    order_book_adaptive_concurrency : bool, default False
+        If true, adjust polling concurrency toward the target cycle duration.
     api_key_pool : tuple[str, ...], optional
         SX.bet API keys for realtime/WebSocket-capable surfaces.
 
@@ -132,6 +140,10 @@ class SXBetDataClientConfig(LiveDataClientConfig, frozen=True):
     order_book_concurrency: PositiveInt = 4
     order_book_poll_mode: str = "order_book"
     order_book_best_odds_batch_size: PositiveInt = 30
+    order_book_min_concurrency: PositiveInt = 1
+    order_book_max_concurrency: PositiveInt | None = None
+    order_book_target_cycle_secs: PositiveFloat | None = None
+    order_book_adaptive_concurrency: bool = False
     api_key_pool: tuple[str, ...] | None = None
 
 

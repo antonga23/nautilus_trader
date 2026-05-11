@@ -36,7 +36,7 @@ from nautilus_trader.live.strategy_nodes.betting_arbitrage.config import Betting
 DEFAULT_CLOUDBET_SPORTS = SEMANTIC_TARGET_SPORTS
 DEFAULT_SXBET_SPORTS = SEMANTIC_TARGET_SPORTS
 DEFAULT_POLYMARKET_SPORTS = SEMANTIC_TARGET_SPORTS
-SEMANTIC_CACHE_COMPATIBILITY_VERSION = "semantic-rule-cache:20260507:sxbet-six-sport-default-v2"
+SEMANTIC_CACHE_COMPATIBILITY_VERSION = "semantic-rule-cache:20260510:polymarket-runtime-coverage-v1"
 SEMANTIC_CACHE_COMPATIBILITY_FILE = ".semantic-cache-version"
 SEMANTIC_CACHE_SUMMARY_FILE = ".semantic-cache-summary.json"
 SEMANTIC_CACHE_BOOTSTRAP_TIMINGS_FILE = ".semantic-cache-bootstrap-timings.json"
@@ -511,7 +511,7 @@ def _semantic_coverage_int(value: object) -> int:
 
 
 def _semantic_coverage_str_list(value: object) -> list[str]:
-    if not isinstance(value, (list, tuple, set)):
+    if not isinstance(value, list | tuple | set):
         return []
     return sorted({str(item) for item in value if str(item).strip()})
 

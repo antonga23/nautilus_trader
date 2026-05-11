@@ -870,6 +870,10 @@ class SnapshotIngestor:
                 transformer=PolymarketSportsTransformer,
             )
         )
+        self._add_polymarket_selection_counts(
+            coverage_report=coverage_report,
+            normalized_records=normalized_records,
+        )
 
         source_refs.append(
             self._save_snapshot(
@@ -904,6 +908,37 @@ class SnapshotIngestor:
         self._persist_normalized_records(normalized_records, manifest.manifest_id)
         self._store.save_manifest(manifest)
         return manifest
+
+    @staticmethod
+    def _add_polymarket_selection_counts(
+        *,
+        coverage_report: dict[str, Any],
+        normalized_records: list[NormalizedSelectionRecord],
+    ) -> None:
+        sports_payload = coverage_report.setdefault("sports", {})
+        if not isinstance(sports_payload, dict):
+            return
+        selection_counts: dict[str, int] = {}
+        event_keys_by_sport: dict[str, set[str]] = {}
+        market_names_by_sport: dict[str, set[str]] = {}
+        for record in normalized_records:
+            selection = record.selection
+            sport = str(selection.sport or "").strip()
+            if not sport:
+                continue
+            selection_counts[sport] = selection_counts.get(sport, 0) + 1
+            event_keys_by_sport.setdefault(sport, set()).add(selection.event_key)
+            market_names_by_sport.setdefault(sport, set()).add(
+                selection.raw_market_name or selection.market_type,
+            )
+        for sport, selection_count in selection_counts.items():
+            report = sports_payload.get(sport)
+            if not isinstance(report, dict):
+                report = {}
+                sports_payload[sport] = report
+            report["selection_count"] = selection_count
+            report["normalized_event_count"] = len(event_keys_by_sport.get(sport, set()))
+            report["normalized_market_count"] = len(market_names_by_sport.get(sport, set()))
 
     def _polymarket_normalized_records(
         self,
