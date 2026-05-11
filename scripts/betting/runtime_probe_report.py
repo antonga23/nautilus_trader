@@ -362,7 +362,29 @@ def _normalized_latency_diagnostics(value: Any) -> dict[str, Any]:
             diagnostics.get("order_construction") or diagnostics.get("orderConstruction"),
         ),
         "orderSubmit": _as_dict(diagnostics.get("order_submit") or diagnostics.get("orderSubmit")),
+        "byVenue": _normalized_latency_by_venue(
+            diagnostics.get("by_venue") or diagnostics.get("byVenue"),
+        ),
     }
+
+
+def _normalized_latency_by_venue(value: Any) -> dict[str, dict[str, Any]]:
+    payload = _as_dict(value)
+    normalized: dict[str, dict[str, Any]] = {}
+    for venue, raw_stats in sorted(payload.items()):
+        stats = _as_dict(raw_stats)
+        normalized[str(venue).upper()] = {
+            "quoteEventToStrategy": _as_dict(
+                stats.get("quote_event_to_strategy") or stats.get("quoteEventToStrategy"),
+            ),
+            "quotePublishToStrategy": _as_dict(
+                stats.get("quote_publish_to_strategy") or stats.get("quotePublishToStrategy"),
+            ),
+            "quoteFetchLatency": _as_dict(
+                stats.get("quote_fetch_latency") or stats.get("quoteFetchLatency"),
+            ),
+        }
+    return normalized
 
 
 def _merged_latency_warnings(
@@ -1345,6 +1367,21 @@ def _format_latency_lines(value: Any) -> list[str]:
         )
     if summary_bits:
         lines.append(f"  strategy_latency {'; '.join(summary_bits)}")
+    by_venue = _as_dict(latency.get("byVenue"))
+    venue_bits: list[str] = []
+    for venue, raw_payload in sorted(by_venue.items()):
+        payload = _as_dict(raw_payload)
+        quote_event = _as_dict(payload.get("quoteEventToStrategy"))
+        quote_fetch = _as_dict(payload.get("quoteFetchLatency"))
+        if _int_value(quote_event.get("count")) <= 0 and _int_value(quote_fetch.get("count")) <= 0:
+            continue
+        venue_bits.append(
+            f"{venue}:quote_event_p95={quote_event.get('p95_ms', 0)}ms "
+            f"quote_fetch_p95={quote_fetch.get('p95_ms', 0)}ms "
+            f"quote_fetch_max={quote_fetch.get('max_ms', 0)}ms",
+        )
+    if venue_bits:
+        lines.append(f"  strategy_latency_by_venue {'; '.join(venue_bits)}")
     slo_status = _as_dict(latency.get("sloStatus"))
     if slo_status:
         quote_age = _as_dict(slo_status.get("quoteAge"))
