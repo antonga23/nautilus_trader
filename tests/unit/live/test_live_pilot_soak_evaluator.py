@@ -76,7 +76,7 @@ def _status_payload(*, positive: int = 0, negative_band: int = 2) -> dict[str, o
                 "topNegativeNearMisses": [{"instrumentIdA": "poly-2"}],
                 "latencyHistograms": {
                     "quoteAgeSeconds": {"count": 10, "p95": 1.8},
-                    "quoteDeltaSeconds": {"count": 10, "p95": 0.4},
+                    "pairSkewSeconds": {"count": 10, "p95": 0.4},
                 },
             },
             "latencyDiagnostics": {

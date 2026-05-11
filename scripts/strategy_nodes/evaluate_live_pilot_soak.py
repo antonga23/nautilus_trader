@@ -141,6 +141,15 @@ def _latency_metric(latency: dict[str, Any], name: str) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _latency_histogram_metric(quality: dict[str, Any], *names: str) -> dict[str, Any]:
+    histograms = _as_dict(quality.get("latencyHistograms"))
+    for name in names:
+        value = histograms.get(name)
+        if isinstance(value, dict):
+            return value
+    return {}
+
+
 def _latency_pass(metric: dict[str, Any], *, threshold: float) -> dict[str, Any]:
     count = _int_value(metric.get("count"))
     p95 = metric.get("p95_ms")
@@ -253,8 +262,8 @@ def _snapshot_payload(
         "quoteCapacityPressure": summary_venue_coverage.get("quoteCapacityPressure") or {},
         "fxPolicy": summary.get("fxPolicy") or {},
         "latency": {
-            "quoteAge": _as_dict(quality.get("latencyHistograms")).get("quoteAgeSeconds"),
-            "pairSkew": _as_dict(quality.get("latencyHistograms")).get("quoteDeltaSeconds"),
+            "quoteAge": _latency_histogram_metric(quality, "quoteAgeSeconds"),
+            "pairSkew": _latency_histogram_metric(quality, "pairSkewSeconds", "quoteDeltaSeconds"),
             "graphScan": _latency_metric(latency, "graphScan"),
             "candidateDecision": _latency_metric(latency, "candidateDecision"),
             "sloStatus": _as_dict(latency.get("sloStatus")),
