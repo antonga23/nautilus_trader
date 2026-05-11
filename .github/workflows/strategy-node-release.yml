@@ -1088,6 +1088,10 @@ jobs:
           }
           output_path.write_text(json.dumps(summary, indent=2, sort_keys=True))
           PY
+            python3 scripts/betting/runtime_probe_report.py \
+              "$node_dir/status.json" \
+              --format json \
+              > "$artifact_dir/runtime-report.json" || true
           fi
 
           if [ -f artifacts/strategy-node-deploy/status.json ]; then

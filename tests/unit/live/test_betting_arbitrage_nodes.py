@@ -4588,6 +4588,7 @@ class TestBettingArbitrageNodeRunner:
         assert "providerQuotePollStats" in workflow
         assert "zeroCandidateVenuePairSamples" in workflow
         assert "venueQuoteHealth" in workflow
+        assert "runtime-report.json" in workflow
         assert "Evaluate deployed runtime report" in workflow
         assert "scripts/betting/runtime_probe_report.py" in workflow
         assert "--require-auto-execute-false" in workflow
@@ -4624,6 +4625,7 @@ class TestBettingArbitrageNodeRunner:
         assert "runtime_probe_summary = dict(runtime_probe)" in workflow
         assert '"executionReadiness": status.get("executionReadiness")' in workflow
         assert "zeroCandidateVenuePairSamples" in workflow
+        assert "runtime-report.json" in workflow
         assert "semantic_verify_enabled" in workflow
         assert "semantic_verify_required_providers" in workflow
         assert "semantic_verify_target_sports" in workflow
