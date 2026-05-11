@@ -2121,6 +2121,105 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(strategy._resolution_horizon_priority(node_for(now + timedelta(days=5))) == 2)
         ensure(strategy._resolution_horizon_priority(node_for(now - timedelta(days=2))) == 3)
 
+    def test_semantic_quote_subscriptions_skip_out_of_horizon_fixtures(self) -> None:  # skipcq
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["POLYMARKET", "SXBET"]),
+                max_resolution_horizon_hours=48.0,
+            ),
+        )
+        strategy.subscribe_quote_ticks = Mock()
+        now = datetime.now(tz=UTC)
+        fresh_start = (now + timedelta(hours=2)).isoformat()
+        stale_start = (now - timedelta(days=2)).isoformat()
+        far_start = (now + timedelta(days=5)).isoformat()
+
+        fresh_pm = self._sxbet_instrument(
+            event_id="fresh",
+            venue="POLYMARKET",
+            outcome="home",
+            market_name="match_odds",
+            start_time=fresh_start,
+        )
+        fresh_sx = self._sxbet_instrument(
+            event_id="fresh",
+            venue="SXBET",
+            outcome="away",
+            market_name="match_odds",
+            start_time=fresh_start,
+        )
+        stale_pm = self._sxbet_instrument(
+            event_id="stale",
+            venue="POLYMARKET",
+            outcome="home",
+            market_name="match_odds",
+            start_time=stale_start,
+        )
+        stale_sx = self._sxbet_instrument(
+            event_id="stale",
+            venue="SXBET",
+            outcome="away",
+            market_name="match_odds",
+            start_time=stale_start,
+        )
+        far_pm = self._sxbet_instrument(
+            event_id="far",
+            venue="POLYMARKET",
+            outcome="home",
+            market_name="match_odds",
+            start_time=far_start,
+        )
+        far_sx = self._sxbet_instrument(
+            event_id="far",
+            venue="SXBET",
+            outcome="away",
+            market_name="match_odds",
+            start_time=far_start,
+        )
+        graph = cast(Any, strategy._opportunity_graph)
+        graph.nodes_by_id = {
+            "fresh-pm": SimpleNamespace(instrument=fresh_pm),
+            "fresh-sx": SimpleNamespace(instrument=fresh_sx),
+            "stale-pm": SimpleNamespace(instrument=stale_pm),
+            "stale-sx": SimpleNamespace(instrument=stale_sx),
+            "far-pm": SimpleNamespace(instrument=far_pm),
+            "far-sx": SimpleNamespace(instrument=far_sx),
+        }
+        graph.edges_by_id = {
+            "fresh-edge": SimpleNamespace(
+                source_node_id="fresh-pm",
+                target_node_id="fresh-sx",
+                execution_safe=True,
+                same_venue_execution_eligible=False,
+            ),
+            "stale-edge": SimpleNamespace(
+                source_node_id="stale-pm",
+                target_node_id="stale-sx",
+                execution_safe=True,
+                same_venue_execution_eligible=False,
+            ),
+            "far-edge": SimpleNamespace(
+                source_node_id="far-pm",
+                target_node_id="far-sx",
+                execution_safe=True,
+                same_venue_execution_eligible=False,
+            ),
+        }
+        graph.edge_ids_by_node_id = {
+            "fresh-pm": {"fresh-edge"},
+            "fresh-sx": {"fresh-edge"},
+            "stale-pm": {"stale-edge"},
+            "stale-sx": {"stale-edge"},
+            "far-pm": {"far-edge"},
+            "far-sx": {"far-edge"},
+        }
+
+        subscribed = strategy._subscribe_semantic_connected_quote_ticks()
+        quoted_ids = {call.args[0] for call in strategy.subscribe_quote_ticks.call_args_list}
+
+        ensure(subscribed == 2)
+        ensure(quoted_ids == {fresh_pm.id, fresh_sx.id})
+
     def test_on_start_skips_subscription_when_cache_is_empty(self, default_config):  # skipcq
         strategy = BettingArbitrageStrategy(config=default_config)
         strategy.register(
