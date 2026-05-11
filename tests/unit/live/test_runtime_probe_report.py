@@ -212,7 +212,25 @@ def _runtime_status_payload() -> dict[str, object]:
                 "zeroCandidateVenuePairs": [
                     {
                         "venuePair": "POLYMARKET->SXBET",
+                        "reason": "no_common_fixture",
+                        "blockerReason": "no_common_fixture",
+                        "discoveryGapReason": "no_common_fixture_loaded",
+                        "commonEventKeySamples": ["tennis:frances tiafoe:ignacio buse"],
+                        "sampleBlockerCounts": {"no_common_fixture": 2},
                         "fixtureProofBlockerCounts": {"start_time_mismatch": 2},
+                        "samples": [
+                            {
+                                "instrumentIdA": "poly-tiafoe",
+                                "instrumentIdB": "sxbet-buse",
+                                "blockerHint": "no_common_fixture",
+                                "fixtureIdentityProof": {
+                                    "sameFixture": False,
+                                    "reason": "start_time_mismatch",
+                                    "confidence": 0.62,
+                                    "startTimeDeltaSeconds": 86400,
+                                },
+                            },
+                        ],
                     },
                     {
                         "venuePair": "SXBET->POLYMARKET",
@@ -528,6 +546,11 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
         summary["latencyDiagnostics"]["byVenue"]["POLYMARKET"]["quoteEventToStrategy"]["p95_ms"]
         == 42000.0
     )
+    overlap = summary["candidateQuality"]["fixtureOverlapDiagnostics"][0]
+    assert overlap["venuePair"] == "POLYMARKET->SXBET"
+    assert overlap["discoveryGapReason"] == "no_common_fixture_loaded"
+    assert overlap["fixtureProofBlockerCounts"] == {"start_time_mismatch": 2}
+    assert overlap["sampleProofs"][0]["startTimeDeltaSeconds"] == 86400
     assert summary["latencyDiagnostics"]["graphScan"]["p95_ms"] == 3.1
     assert summary["latencyDiagnostics"]["instrumentRefreshReconcile"]["max_ms"] == 125.0
     assert summary["latencyDiagnostics"]["runtimeProbeCandidateDecision"]["count"] == 8
@@ -989,6 +1012,8 @@ def test_runtime_probe_report_cli_outputs_json_and_text(tmp_path, monkeypatch, c
     assert "strategy_latency quote_event_p95=25.0ms" in text_output
     assert "strategy_latency_by_venue POLYMARKET:quote_event_p95=42000.0ms" in text_output
     assert "SXBET:quote_event_p95=16.0ms quote_fetch_p95=280.0ms" in text_output
+    assert "fixture_overlap POLYMARKET->SXBET reason=no_common_fixture" in text_output
+    assert "fixture_overlap_sample POLYMARKET->SXBET reason=start_time_mismatch" in text_output
     assert "quote_fetch_p95=180.0ms" in text_output
     assert (
         "latency_slo overall=fail quote_age=pass fetch_latency=fail pair_skew=pass" in text_output
