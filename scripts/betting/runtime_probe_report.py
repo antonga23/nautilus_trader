@@ -362,28 +362,43 @@ def _fixture_overlap_sample_proofs(value: Any, *, top_limit: int) -> list[dict[s
     return proofs
 
 
-def _normalized_latency_diagnostics(value: Any) -> dict[str, Any]:
-    diagnostics = _as_dict(value)
+def _normalized_candidate_decision_latency(
+    diagnostics: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], str]:
     runtime_probe_candidate_decision = _as_dict(
         diagnostics.get("runtime_probe_candidate_decision")
         or diagnostics.get("runtimeProbeCandidateDecision"),
     )
-    candidate_decision = _as_dict(
+    strategy_candidate_decision = _as_dict(
         diagnostics.get("candidate_decision") or diagnostics.get("candidateDecision"),
     )
-    strategy_candidate_decision_observed = _int_value(candidate_decision.get("count")) > 0
-    if not strategy_candidate_decision_observed and runtime_probe_candidate_decision:
-        candidate_decision = runtime_probe_candidate_decision
-    candidate_decision_source = diagnostics.get("candidate_decision_source") or diagnostics.get(
+    strategy_observed = _int_value(strategy_candidate_decision.get("count")) > 0
+    candidate_decision = (
+        strategy_candidate_decision
+        if strategy_observed or not runtime_probe_candidate_decision
+        else runtime_probe_candidate_decision
+    )
+    explicit_source = diagnostics.get("candidate_decision_source") or diagnostics.get(
         "candidateDecisionSource",
     )
-    if not candidate_decision_source:
-        if strategy_candidate_decision_observed:
-            candidate_decision_source = "strategy"
-        elif runtime_probe_candidate_decision:
-            candidate_decision_source = "runtime_probe"
-        else:
-            candidate_decision_source = "none"
+    if explicit_source:
+        source = str(explicit_source)
+    elif strategy_observed:
+        source = "strategy"
+    elif runtime_probe_candidate_decision:
+        source = "runtime_probe"
+    else:
+        source = "none"
+    return candidate_decision, runtime_probe_candidate_decision, source
+
+
+def _normalized_latency_diagnostics(value: Any) -> dict[str, Any]:
+    diagnostics = _as_dict(value)
+    (
+        candidate_decision,
+        runtime_probe_candidate_decision,
+        candidate_decision_source,
+    ) = _normalized_candidate_decision_latency(diagnostics)
     return {
         "quoteEventToStrategy": _as_dict(
             diagnostics.get("quote_event_to_strategy") or diagnostics.get("quoteEventToStrategy"),
@@ -402,7 +417,7 @@ def _normalized_latency_diagnostics(value: Any) -> dict[str, Any]:
         "graphScan": _as_dict(diagnostics.get("graph_scan") or diagnostics.get("graphScan")),
         "candidateDecision": candidate_decision,
         "runtimeProbeCandidateDecision": runtime_probe_candidate_decision,
-        "candidateDecisionSource": str(candidate_decision_source),
+        "candidateDecisionSource": candidate_decision_source,
         "rawSloStatus": _as_dict(diagnostics.get("sloStatus")),
         "rawDiagnosticWarnings": [
             str(item) for item in diagnostics.get("diagnosticWarnings") or []
