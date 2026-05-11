@@ -243,6 +243,7 @@ def _best_strategy_region(candidates: list[dict[str, object]]) -> dict[str, obje
     best = min(
         eligible,
         key=lambda item: (
+            _payload_float(item, "placementScoreMs"),
             _payload_float(item, "worstLegTotalP95Ms"),
             _payload_float(item, "venueTotalP95SkewMs"),
             _payload_float(item, "worstLegErrorRate"),
@@ -255,7 +256,11 @@ def _best_strategy_region(candidates: list[dict[str, object]]) -> dict[str, obje
         "venueTotalP95SkewMs": _payload_float(best, "venueTotalP95SkewMs"),
         "worstLegFirstByteP95Ms": _payload_float(best, "worstLegFirstByteP95Ms"),
         "venueFirstByteP95SkewMs": _payload_float(best, "venueFirstByteP95SkewMs"),
+        "worstLegTotalStddevMs": _payload_float(best, "worstLegTotalStddevMs"),
+        "worstLegFirstByteStddevMs": _payload_float(best, "worstLegFirstByteStddevMs"),
         "worstLegErrorRate": _payload_float(best, "worstLegErrorRate"),
+        "placementScoreMs": _payload_float(best, "placementScoreMs"),
+        "dominantLatencyVenue": best.get("dominantLatencyVenue"),
         "venues": best.get("venues") if isinstance(best.get("venues"), list) else [],
     }
 
@@ -286,11 +291,22 @@ def _strategy_placement_recommendation(
     missing_venues = [venue for venue in venues if venue not in venue_payloads]
     total_p95 = _venue_percentiles_ms(venue_payloads, "total_ms")
     first_byte_p95 = _venue_percentiles_ms(venue_payloads, "first_byte_ms")
+    total_stddev = _venue_metric_values(venue_payloads, "total_ms", "stddev")
+    first_byte_stddev = _venue_metric_values(venue_payloads, "first_byte_ms", "stddev")
     error_rates = _venue_error_rates(venue_payloads)
     worst_error_rate = max(error_rates.values()) if error_rates else 1.0
     blockers = _placement_blockers(
         missing_venues=missing_venues,
         data_fresh=data_fresh,
+        worst_error_rate=worst_error_rate,
+    )
+    worst_leg_total_p95 = max(total_p95.values()) if total_p95 else 0.0
+    total_skew = _metric_skew_ms(total_p95)
+    worst_total_stddev = max(total_stddev.values()) if total_stddev else 0.0
+    placement_score_ms = _placement_score_ms(
+        worst_leg_total_p95=worst_leg_total_p95,
+        venue_total_p95_skew_ms=total_skew,
+        worst_leg_total_stddev_ms=worst_total_stddev,
         worst_error_rate=worst_error_rate,
     )
     return {
@@ -299,13 +315,19 @@ def _strategy_placement_recommendation(
         "missingVenues": missing_venues,
         "dataAgeSecs": round(data_age_secs, 3),
         "dataFresh": data_fresh,
-        "worstLegTotalP95Ms": max(total_p95.values()) if total_p95 else 0.0,
+        "worstLegTotalP95Ms": worst_leg_total_p95,
         "worstLegFirstByteP95Ms": max(first_byte_p95.values()) if first_byte_p95 else 0.0,
-        "venueTotalP95SkewMs": _metric_skew_ms(total_p95),
+        "worstLegTotalStddevMs": worst_total_stddev,
+        "worstLegFirstByteStddevMs": max(first_byte_stddev.values()) if first_byte_stddev else 0.0,
+        "venueTotalP95SkewMs": total_skew,
         "venueFirstByteP95SkewMs": _metric_skew_ms(first_byte_p95),
         "worstLegErrorRate": worst_error_rate,
+        "placementScoreMs": placement_score_ms,
+        "dominantLatencyVenue": _dominant_latency_venue(total_p95),
         "venueTotalP95Ms": total_p95,
         "venueFirstByteP95Ms": first_byte_p95,
+        "venueTotalStddevMs": total_stddev,
+        "venueFirstByteStddevMs": first_byte_stddev,
         "venueErrorRates": error_rates,
         "blockers": blockers,
         "eligibleForPlacementComparison": not blockers,
@@ -325,8 +347,16 @@ def _venue_percentiles_ms(
     venue_payloads: dict[str, dict[str, object]],
     metric: str,
 ) -> dict[str, float]:
+    return _venue_metric_values(venue_payloads, metric, "p95")
+
+
+def _venue_metric_values(
+    venue_payloads: dict[str, dict[str, object]],
+    metric: str,
+    statistic: str,
+) -> dict[str, float]:
     return {
-        venue: _summary_percentile_ms(summary, metric, "p95")
+        venue: _summary_percentile_ms(summary, metric, statistic)
         for venue, summary in venue_payloads.items()
     }
 
@@ -342,6 +372,29 @@ def _metric_skew_ms(values_by_venue: dict[str, float]) -> float:
     if len(values) < 2:
         return 0.0
     return round(max(values) - min(values), 3)
+
+
+def _dominant_latency_venue(values_by_venue: dict[str, float]) -> str | None:
+    if not values_by_venue:
+        return None
+    return max(sorted(values_by_venue), key=lambda venue: values_by_venue[venue])
+
+
+def _placement_score_ms(
+    *,
+    worst_leg_total_p95: float,
+    venue_total_p95_skew_ms: float,
+    worst_leg_total_stddev_ms: float,
+    worst_error_rate: float,
+) -> float:
+    error_penalty_ms = max(worst_error_rate, 0.0) * 1000.0
+    score = (
+        worst_leg_total_p95
+        + 0.25 * venue_total_p95_skew_ms
+        + 0.5 * worst_leg_total_stddev_ms
+        + error_penalty_ms
+    )
+    return round(score, 3)
 
 
 def _placement_blockers(
