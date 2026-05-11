@@ -206,12 +206,11 @@ async def test_fetch_and_publish_quote_stats_reports_two_sided_liquidity():
         },
     )
     instrument_provider = _make_provider()
-    instrument_provider.find = Mock(
-        side_effect=lambda instrument_id: {
-            instrument_one.id: instrument_one,
-            instrument_two.id: instrument_two,
-        }.get(instrument_id),
-    )
+    instruments_by_id = {
+        instrument_one.id: instrument_one,
+        instrument_two.id: instrument_two,
+    }
+    instrument_provider.find = Mock(side_effect=instruments_by_id.get)
     instrument_provider.find_by_market_hash = Mock(return_value=[instrument_one, instrument_two])
     client = SXBetDataClient(
         loop=get_event_loop(),
@@ -274,12 +273,11 @@ async def test_poll_order_books_once_records_provider_poll_stats():
         },
     )
     instrument_provider = _make_provider()
-    instrument_provider.find = Mock(
-        side_effect=lambda instrument_id: {
-            instrument_one.id: instrument_one,
-            instrument_two.id: instrument_two,
-        }.get(instrument_id),
-    )
+    instruments_by_id = {
+        instrument_one.id: instrument_one,
+        instrument_two.id: instrument_two,
+    }
+    instrument_provider.find = Mock(side_effect=instruments_by_id.get)
     instrument_provider.find_by_market_hash = Mock(return_value=[instrument_one, instrument_two])
     cache = TestComponentStubs.cache()
     client = SXBetDataClient(
@@ -338,12 +336,11 @@ async def test_poll_order_books_once_can_use_batched_best_odds_for_live_latency(
         },
     )
     instrument_provider = _make_provider()
-    instrument_provider.find = Mock(
-        side_effect=lambda instrument_id: {
-            instrument_one.id: instrument_one,
-            instrument_two.id: instrument_two,
-        }.get(instrument_id),
-    )
+    instruments_by_id = {
+        instrument_one.id: instrument_one,
+        instrument_two.id: instrument_two,
+    }
+    instrument_provider.find = Mock(side_effect=instruments_by_id.get)
     instrument_provider.find_by_market_hash = Mock(return_value=[instrument_one, instrument_two])
     cache = TestComponentStubs.cache()
     client = SXBetDataClient(
