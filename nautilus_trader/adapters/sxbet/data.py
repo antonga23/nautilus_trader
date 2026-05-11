@@ -94,6 +94,22 @@ class SXBetDataClient(LiveMarketDataClient):
         self._polling_interval = float(config.order_book_poll_interval_secs)
         self._poll_summary_interval = float(config.order_book_poll_summary_interval_secs)
         self._order_book_concurrency = int(config.order_book_concurrency)
+        self._order_book_min_concurrency = max(1, int(config.order_book_min_concurrency))
+        configured_max_concurrency = config.order_book_max_concurrency
+        self._order_book_max_concurrency = max(
+            self._order_book_min_concurrency,
+            int(configured_max_concurrency or self._order_book_concurrency),
+        )
+        self._order_book_concurrency = min(
+            max(self._order_book_concurrency, self._order_book_min_concurrency),
+            self._order_book_max_concurrency,
+        )
+        self._order_book_target_cycle_secs = max(
+            0.0,
+            float(config.order_book_target_cycle_secs or 0.0),
+        )
+        self._order_book_adaptive_concurrency = bool(config.order_book_adaptive_concurrency)
+        self._next_poll_sleep_secs = self._polling_interval
         self._order_book_poll_mode = (
             str(
                 getattr(config, "order_book_poll_mode", SXBET_ORDER_BOOK_POLL_MODE),
@@ -204,7 +220,7 @@ class SXBetDataClient(LiveMarketDataClient):
         while self._running:
             try:
                 await self._poll_order_books_once()
-                await asyncio.sleep(self._polling_interval)
+                await asyncio.sleep(self._next_poll_sleep_secs)
 
             except asyncio.CancelledError:
                 break
@@ -273,6 +289,7 @@ class SXBetDataClient(LiveMarketDataClient):
             max_latency=max_latency,
             fetch_latency_percentiles=latency_percentiles(fetch_latencies_secs),
             cycle_elapsed=cycle_elapsed,
+            next_poll_sleep_secs=self._poll_sleep_secs_after_cycle(cycle_elapsed),
             request_count=len(market_hashes),
             failure_count=failure_count,
             rate_limit_count=rate_limit_count,
@@ -342,6 +359,7 @@ class SXBetDataClient(LiveMarketDataClient):
             max_latency=max_latency,
             fetch_latency_percentiles=latency_percentiles(fetch_latencies_secs),
             cycle_elapsed=cycle_elapsed,
+            next_poll_sleep_secs=self._poll_sleep_secs_after_cycle(cycle_elapsed),
             request_count=len(market_hash_batches),
             source="rest_best_odds_batch",
             failure_count=failure_count,
@@ -433,6 +451,33 @@ class SXBetDataClient(LiveMarketDataClient):
             self._polling_task = asyncio.create_task(self._poll_order_books())
         return selected_count
 
+    def _poll_sleep_secs_after_cycle(self, cycle_elapsed_secs: float) -> float:
+        cycle_elapsed_secs = max(0.0, float(cycle_elapsed_secs))
+        target_cycle_secs = (
+            self._order_book_target_cycle_secs
+            if self._order_book_target_cycle_secs > 0
+            else self._polling_interval
+        )
+        if self._order_book_adaptive_concurrency and target_cycle_secs > 0:
+            if (
+                cycle_elapsed_secs > target_cycle_secs
+                and self._order_book_concurrency < self._order_book_max_concurrency
+            ):
+                self._order_book_concurrency = min(
+                    self._order_book_max_concurrency,
+                    max(self._order_book_concurrency + 1, self._order_book_concurrency * 2),
+                )
+            elif (
+                cycle_elapsed_secs < target_cycle_secs / 2
+                and self._order_book_concurrency > self._order_book_min_concurrency
+            ):
+                self._order_book_concurrency = max(
+                    self._order_book_min_concurrency,
+                    self._order_book_concurrency - 1,
+                )
+        self._next_poll_sleep_secs = max(0.0, self._polling_interval - cycle_elapsed_secs)
+        return self._next_poll_sleep_secs
+
     def _log_poll_summary(
         self,
         *,
@@ -478,6 +523,7 @@ class SXBetDataClient(LiveMarketDataClient):
         rate_limit_count: int = 0,
         backoff_secs: float = 0.0,
         last_error: str | None = None,
+        next_poll_sleep_secs: float | None = None,
     ) -> None:
         self._quote_poll_cycle_id += 1
         work_unit_count = int(request_count if request_count is not None else market_count)
@@ -505,6 +551,15 @@ class SXBetDataClient(LiveMarketDataClient):
                 fetch_latency_p50_secs=fetch_latency_percentiles[0],
                 fetch_latency_p95_secs=fetch_latency_percentiles[1],
                 fetch_latency_p99_secs=fetch_latency_percentiles[2],
+                poll_target_cycle_secs=self._order_book_target_cycle_secs,
+                next_poll_sleep_secs=(
+                    self._next_poll_sleep_secs
+                    if next_poll_sleep_secs is None
+                    else max(0.0, float(next_poll_sleep_secs))
+                ),
+                min_concurrency=self._order_book_min_concurrency,
+                max_concurrency=self._order_book_max_concurrency,
+                adaptive_concurrency=self._order_book_adaptive_concurrency,
                 quote_event_timestamp_source="request_started",
                 quote_init_timestamp_source="response_received",
                 failure_count=failure_count,

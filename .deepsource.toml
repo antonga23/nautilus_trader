@@ -16,6 +16,9 @@ exclude_patterns = [
   "tests/unit/live/**",
   "scripts/betting/runtime_probe_report.py",
   "nautilus_trader/live/strategy_nodes/betting_arbitrage/runner.py",
+  "nautilus_trader/live/strategy_nodes/betting_arbitrage/builder.py",
+  "nautilus_trader/live/strategy_nodes/betting_arbitrage/semantic_cache.py",
+  "nautilus_trader/adapters/betting/semantics/corpus.py",
   "nautilus_trader/adapters/betting/semantics/normalization.py",
   "tests/unit/adapters/test_market_matcher.py",
   "tests/unit/adapters/test_betting_semantics_refresh.py",
@@ -41,6 +44,7 @@ exclude_patterns = [
   "nautilus_trader/adapters/okx/**",
   "nautilus_trader/adapters/polymarket/**",
   "nautilus_trader/adapters/sandbox/**",
+  "nautilus_trader/adapters/sxbet/**",
   "nautilus_trader/adapters/tardis/**",
 ]
 

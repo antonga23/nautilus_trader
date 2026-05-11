@@ -602,8 +602,17 @@ class TestBettingArbitrageNodeBuilder:
         assert config.strategies[0].config["execution_venue_mode"] == "cross_venue"
         assert config.strategies[0].config["allow_same_venue_live_execution"] is False
         assert config.strategies[0].config["max_resolution_horizon_hours"] == 48.0
+        assert config.strategies[0].config["semantic_unmatched_quote_probe_venues"] == [
+            "POLYMARKET",
+        ]
+        assert config.strategies[0].config["semantic_unmatched_quote_probe_limit_per_venue"] == 160
         provider_config = config.data_clients["POLYMARKET_PRIMARY"].config["instrument_provider"]
         assert provider_config["filters"]["max_resolution_horizon_hours"] == 48.0
+        sxbet_data = config.data_clients["SXBET_PRIMARY"].config
+        assert sxbet_data["order_book_min_concurrency"] == 4
+        assert sxbet_data["order_book_max_concurrency"] == 16
+        assert sxbet_data["order_book_target_cycle_secs"] == 3.0
+        assert sxbet_data["order_book_adaptive_concurrency"] is True
         assert set(config.exec_clients) == {"POLYMARKET_PRIMARY", "SXBET_PRIMARY"}
         readiness = manifest_execution_readiness(manifest)
         assert readiness["liveExecutionArmed"] is True

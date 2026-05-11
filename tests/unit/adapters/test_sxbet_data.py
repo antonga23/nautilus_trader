@@ -355,6 +355,10 @@ async def test_poll_order_books_once_can_use_batched_best_odds_for_live_latency(
             order_book_concurrency=4,
             order_book_poll_mode="best_odds_batch",
             order_book_best_odds_batch_size=30,
+            order_book_min_concurrency=2,
+            order_book_max_concurrency=8,
+            order_book_target_cycle_secs=3.0,
+            order_book_adaptive_concurrency=True,
         ),
     )
     client._subscribed_instruments = {instrument_one.id, instrument_two.id}
@@ -374,10 +378,31 @@ async def test_poll_order_books_once_can_use_batched_best_odds_for_live_latency(
     assert stats.market_count == 1
     assert stats.request_count == 1
     assert stats.backlog_count == 0
+    assert stats.min_concurrency == 2
+    assert stats.max_concurrency == 8
+    assert stats.poll_target_cycle_secs == 3.0
+    assert stats.adaptive_concurrency is True
     assert stats.quote_count == 2
     assert stats.order_count == 0
     assert stats.two_sided_market_count == 1
     assert client._handle_data.call_count == 2
+
+
+def test_adaptive_poll_sleep_removes_dead_time_and_raises_slow_concurrency():
+    client = _make_client(
+        config=SXBetDataClientConfig(
+            order_book_concurrency=4,
+            order_book_min_concurrency=2,
+            order_book_max_concurrency=8,
+            order_book_target_cycle_secs=3.0,
+            order_book_adaptive_concurrency=True,
+        ),
+    )
+
+    next_sleep = client._poll_sleep_secs_after_cycle(16.0)
+
+    assert next_sleep == 0.0
+    assert client._order_book_concurrency == 8
 
 
 def test_rejects_unknown_order_book_poll_mode():

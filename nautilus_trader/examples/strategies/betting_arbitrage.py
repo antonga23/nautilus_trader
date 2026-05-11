@@ -41,6 +41,7 @@ from nautilus_trader.adapters.betting.common.fees import normalize_venue_fee_rat
 from nautilus_trader.adapters.betting.common.odds import DeviggedBook
 from nautilus_trader.adapters.betting.common.odds import calculate_arbitrage_stakes
 from nautilus_trader.adapters.betting.common.odds import devig_probabilities
+from nautilus_trader.adapters.betting.fixture_identity import DEFAULT_FIXTURE_IDENTITY_RESOLVER
 from nautilus_trader.adapters.betting.fx import FxConversion
 from nautilus_trader.adapters.betting.fx import PortfolioCurrencyPolicy
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
@@ -1383,10 +1384,34 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         horizon = now + timedelta(hours=float(horizon_hours))
         return -1 if start_time <= horizon else 2
 
+    def _instrument_resolution_horizon_priority(self, instrument: BettingInstrument) -> int:
+        horizon_hours = self._config.max_resolution_horizon_hours
+        if horizon_hours is None:
+            return 0
+        start_time = instrument.parsed_start_time()
+        if start_time is None:
+            return 1
+        now = datetime.now(tz=UTC)
+        stale_grace = timedelta(hours=RESOLUTION_HORIZON_STALE_GRACE_HOURS)
+        if start_time < now - stale_grace:
+            return 3
+        if start_time < now:
+            return 0
+        horizon = now + timedelta(hours=float(horizon_hours))
+        return -1 if start_time <= horizon else 2
+
     def _resolution_horizon_quote_allowed(self, node: object | None) -> bool:
         if self._config.max_resolution_horizon_hours is None:
             return True
         return self._resolution_horizon_priority(node) < 2
+
+    def _instrument_resolution_horizon_quote_allowed(
+        self,
+        instrument: BettingInstrument,
+    ) -> bool:
+        if self._config.max_resolution_horizon_hours is None:
+            return True
+        return self._instrument_resolution_horizon_priority(instrument) < 2
 
     @staticmethod
     def _node_venue_value(node: object | None) -> str:
@@ -1417,11 +1442,17 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         subscribed_by_venue = self._quote_subscription_counts_by_venue()
         subscribed_count = 0
 
-        for instrument in sorted(self._subscribed_instruments, key=lambda item: str(item.id)):
+        candidate_instruments = sorted(
+            self._subscribed_instruments,
+            key=self._semantic_unmatched_quote_probe_priority,
+        )
+        for instrument in candidate_instruments:
             venue = instrument.id.venue.value.upper()
             if venue not in probe_venues:
                 continue
             if str(instrument.id) in connected_instrument_ids:
+                continue
+            if not self._instrument_resolution_horizon_quote_allowed(instrument):
                 continue
             if subscribed_by_venue[venue] >= per_venue_limit:
                 continue
@@ -1437,6 +1468,50 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 f"total={len(self._quote_subscribed_instrument_ids)}",
             )
         return subscribed_count
+
+    def _semantic_unmatched_quote_probe_priority(
+        self,
+        instrument: BettingInstrument,
+    ) -> tuple[int, int, int, str]:
+        """
+        Rank unmatched audit probes toward near-term cross-venue fixture evidence.
+
+        These subscriptions do not create graph edges or execution authority. They only
+        keep venues like Polymarket observable when promoted topology is missing, so the
+        first slots should prove whether common near-term fixtures are quoted.
+
+        """
+        venue = instrument.id.venue.value.upper()
+        aliases = self._instrument_event_alias_keys(instrument)
+        other_venue_alias_hit = 1
+        if aliases:
+            for other in self._subscribed_instruments:
+                if other.id.venue.value.upper() == venue:
+                    continue
+                if aliases.intersection(self._instrument_event_alias_keys(other)):
+                    other_venue_alias_hit = 0
+                    break
+        return (
+            other_venue_alias_hit,
+            self._instrument_resolution_horizon_priority(instrument),
+            0 if aliases else 1,
+            str(instrument.id),
+        )
+
+    @staticmethod
+    def _instrument_event_alias_keys(instrument: BettingInstrument) -> set[str]:
+        try:
+            return set(
+                DEFAULT_FIXTURE_IDENTITY_RESOLVER.event_alias_keys(
+                    instrument,
+                    include_start_time=False,
+                ),
+            )
+        except (AttributeError, TypeError, ValueError):
+            event_key = getattr(instrument, "event_key", lambda include_start_time=False: "")(
+                include_start_time=False,
+            )
+            return {str(event_key)} if event_key else set()
 
     def _semantic_connected_instrument_ids(self) -> set[str]:
         connected: set[str] = set()

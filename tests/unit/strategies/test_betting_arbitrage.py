@@ -367,6 +367,10 @@ class TestBettingArbitrageStrategy:  # skipcq
         symbol_value: str = "cond-home",
         outcome: str = "Yes",
         selection_role: str = "home",
+        event_name: str = "Team A vs Team B",
+        home_name: str = "Team A",
+        away_name: str = "Team B",
+        start_time: str = "2026-03-13T18:00:00Z",
     ) -> BinaryOption:
         return BinaryOption(
             instrument_id=InstrumentId(Symbol(symbol_value), Venue("POLYMARKET")),
@@ -388,16 +392,17 @@ class TestBettingArbitrageStrategy:  # skipcq
             ts_event=0,
             ts_init=0,
             info={
-                "condition_id": "0xpm-test",
+                "condition_id": f"0xpm-test-{symbol_value}",
                 "sports_market": {
                     "sport": "basketball",
                     "market_name": "basketball.moneyline",
                     "market_type": "basketball.moneyline",
                     "selection_role": selection_role,
-                    "event_name": "Team A vs Team B",
-                    "home_name": "Team A",
-                    "away_name": "Team B",
+                    "event_name": event_name,
+                    "home_name": home_name,
+                    "away_name": away_name,
                     "competition_name": "NBA",
+                    "start_time": start_time,
                     "price": 0.43,
                     "resolution_policy": {"tie_or_unknown": "50_50"},
                 },
@@ -1815,6 +1820,65 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(len(quoted_ids) == 1)
         ensure(quoted_ids <= {home.id, away.id})
         ensure(strategy.get_stats()["quote_subscribed_instruments"] == 1)
+
+    def test_semantic_unmatched_probe_prioritizes_near_term_common_fixture(
+        self,
+        tmp_path: Path,
+    ) -> None:  # skipcq
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["POLYMARKET", "SXBET"]),
+                opportunity_graph_engine="python",
+                semantic_unmatched_quote_probe_venues=frozenset({"POLYMARKET"}),
+                semantic_unmatched_quote_probe_limit_per_venue=1,
+                max_resolution_horizon_hours=48.0,
+            ),
+        )
+        strategy._matcher.set_rule_store(RuleStore(FileRuleCache(tmp_path / "rules")))
+        strategy.subscribe_quote_ticks = Mock()
+        now = datetime.now(tz=UTC)
+        live_start = (now + timedelta(hours=2)).isoformat().replace("+00:00", "Z")
+        stale_start = (now - timedelta(days=3)).isoformat().replace("+00:00", "Z")
+        stale_polymarket = self._polymarket_sports_binary_option(
+            symbol_value="aaa-stale",
+            event_name="Old Team A vs Old Team B",
+            home_name="Old Team A",
+            away_name="Old Team B",
+            start_time=stale_start,
+        )
+        live_polymarket = self._polymarket_sports_binary_option(
+            symbol_value="zzz-live",
+            event_name="Team A vs Team B",
+            home_name="Team A",
+            away_name="Team B",
+            start_time=live_start,
+        )
+        transformed_stale = strategy._coerce_betting_instrument(stale_polymarket)
+        transformed_live = strategy._coerce_betting_instrument(live_polymarket)
+        sxbet = self._sxbet_instrument(
+            event_id="sxbet-live",
+            outcome="home",
+            event_name="Team A vs Team B",
+            home_name="Team A",
+            away_name="Team B",
+            market_name="match_odds",
+            start_time=live_start,
+            sport_name="basketball",
+        )
+        assert transformed_stale is not None
+        assert transformed_live is not None
+
+        strategy._subscribed_instruments.update({transformed_stale, transformed_live, sxbet})
+        strategy._opportunity_graph.build([transformed_stale, transformed_live, sxbet])
+        strategy._opportunity_graph.edge_ids_by_node_id = {
+            node_id: set() for node_id in strategy._opportunity_graph.nodes_by_id
+        }
+
+        subscribed_count = strategy._subscribe_semantic_unmatched_quote_probe_ticks()
+
+        quoted_ids = {call.args[0] for call in strategy.subscribe_quote_ticks.call_args_list}
+        ensure(subscribed_count == 1)
+        ensure(quoted_ids == {live_polymarket.id})
 
     def test_on_quote_tick_remaps_polymarket_binary_option_to_betting_instrument(self):
         strategy = BettingArbitrageStrategy(
