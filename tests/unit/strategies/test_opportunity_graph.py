@@ -563,6 +563,109 @@ def test_python_graph_coverage_summary_reports_store_tiers_and_samples() -> None
     ensure(sample_hyperedges[0]["hyperedge_id"] == "hyperedge-exec")
 
 
+def test_python_graph_coverage_summary_samples_runtime_relevant_hyperedges() -> None:  # skipcq
+    def _proof(proof_id: str, *, provider: str, event_key: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            proof_id=proof_id,
+            universe=SimpleNamespace(sport="soccer", scope="full_time"),
+            coverage_set=SimpleNamespace(provider_scope=(provider,)),
+            predicates=(
+                SimpleNamespace(
+                    predicate_id=f"{proof_id}:home",
+                    instrument_id=event_key,
+                    provider=provider,
+                    event_key=event_key,
+                    sport="soccer",
+                    scope="full_time",
+                    market_type="MATCH_ODDS",
+                    market_family="MATCH_ODDS",
+                    selection="HOME",
+                    params=(),
+                    result_states=("HOME_WIN", "DRAW", "AWAY_WIN"),
+                    win_states=("HOME_WIN",),
+                    void_states=(),
+                    partial_states=(),
+                    unknown_states=(),
+                    provider_rule_flags=(),
+                    caveats=(),
+                ),
+            ),
+            complete=True,
+            win_covered_states=("HOME_WIN",),
+            overlapping_win_states=(),
+            gaps=(),
+            risks=(),
+            safety_tier="EXECUTION_SAFE",
+            execution_safe=True,
+            same_venue_execution_eligible=False,
+            relationship_type="COMPLEMENTARY_COVERAGE",
+            blocker_reasons=(),
+        )
+
+    class FakeRuleStore:
+        def list_promoted_template_ids(self):
+            return []
+
+        def load_promoted_template(self, template_id):
+            return None
+
+        def list_coverage_proof_ids(self):
+            return [f"proof-cloudbet-{index}" for index in range(12)] + ["proof-sxbet"]
+
+        def load_coverage_proof(self, proof_id):
+            if proof_id == "proof-sxbet":
+                return _proof(
+                    proof_id,
+                    provider="SXBET",
+                    event_key="soccer|team_a|team_b|2026-03-13T18:00:00Z",
+                )
+            index = proof_id.rsplit("-", maxsplit=1)[-1]
+            return _proof(
+                proof_id,
+                provider="CLOUDBET",
+                event_key=f"soccer|other_home_{index}|other_away_{index}|2026-03-13T18:00:00Z",
+            )
+
+        def list_coverage_hyperedge_ids(self):
+            return [f"hyperedge-cloudbet-{index}" for index in range(12)] + ["hyperedge-sxbet"]
+
+        def load_coverage_hyperedge(self, hyperedge_id):
+            if hyperedge_id == "hyperedge-sxbet":
+                return SimpleNamespace(
+                    hyperedge_id=hyperedge_id,
+                    coverage_proof_id="proof-sxbet",
+                    instrument_ids=("semantic-sxbet-home",),
+                    provider_scope=("SXBET",),
+                    relationship_type="COMPLEMENTARY_COVERAGE",
+                    safety_tier="EXECUTION_SAFE",
+                    execution_safe=True,
+                    caveats=(),
+                )
+            index = hyperedge_id.rsplit("-", maxsplit=1)[-1]
+            return SimpleNamespace(
+                hyperedge_id=hyperedge_id,
+                coverage_proof_id=f"proof-cloudbet-{index}",
+                instrument_ids=(f"semantic-cloudbet-{index}",),
+                provider_scope=("CLOUDBET",),
+                relationship_type="COMPLEMENTARY_COVERAGE",
+                safety_tier="EXECUTION_SAFE",
+                execution_safe=True,
+                caveats=(),
+            )
+
+    graph = OpportunityGraph(
+        MarketMatcher(rule_store=cast(RuleStore, FakeRuleStore()), allow_unpromoted_topology=False),
+        engine="python",
+    )
+
+    graph.build([_instrument()])
+
+    summary = graph.semantic_coverage_summary()
+    sample_hyperedges = cast(list[dict[str, object]], summary["sampleHyperedges"])
+    ensure(summary["coverageHyperedgeCount"] == 13)
+    ensure(sample_hyperedges[0]["hyperedge_id"] == "hyperedge-sxbet")
+
+
 def test_sync_keeps_rust_semantic_edges_without_python_rediscovery() -> None:  # skipcq
     matcher = MarketMatcher(allow_unpromoted_topology=False)
     instruments = [
