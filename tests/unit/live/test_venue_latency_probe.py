@@ -10,10 +10,10 @@ from scripts.strategy_nodes.venue_latency_probe import summarize_samples
 def test_latency_probe_summary_includes_tail_and_error_rate():
     summary = summarize_samples(
         [
-            ProbeSample(True, 1.0, 2.0, 3.0, 20.0, 30.0, status=200),
-            ProbeSample(True, 2.0, 3.0, 4.0, 30.0, 40.0, status=200),
-            ProbeSample(True, 3.0, 4.0, 5.0, 40.0, 60.0, status=200),
-            ProbeSample(False, 0.0, 0.0, 0.0, 0.0, 10.0, error="TimeoutError"),
+            ProbeSample(True, 1.0, 2.0, 3.0, 20.0, 4.0, 30.0, status=200),
+            ProbeSample(True, 2.0, 3.0, 4.0, 30.0, 5.0, 40.0, status=200),
+            ProbeSample(True, 3.0, 4.0, 5.0, 40.0, 6.0, 60.0, status=200),
+            ProbeSample(False, 0.0, 0.0, 0.0, 0.0, 0.0, 10.0, error="TimeoutError"),
         ],
     )
 
@@ -24,6 +24,7 @@ def test_latency_probe_summary_includes_tail_and_error_rate():
     assert summary["total_ms"]["median"] == 40.0
     assert summary["total_ms"]["p95"] == 60.0
     assert summary["total_ms"]["max"] == 60.0
+    assert summary["read_ms"]["p95"] == 6.0
 
 
 def test_latency_probe_error_summary_keeps_short_sanitized_details():
@@ -40,20 +41,20 @@ def test_latency_probe_recommends_strategy_placement_by_worst_leg():
     summaries = {
         "cloudbet": summarize_samples(
             [
-                ProbeSample(True, 1.0, 2.0, 3.0, 20.0, 35.0, status=200),
-                ProbeSample(True, 1.0, 2.0, 3.0, 24.0, 45.0, status=200),
+                ProbeSample(True, 1.0, 2.0, 3.0, 20.0, 2.0, 35.0, status=200),
+                ProbeSample(True, 1.0, 2.0, 3.0, 24.0, 4.0, 45.0, status=200),
             ],
         ),
         "sxbet": summarize_samples(
             [
-                ProbeSample(True, 1.0, 3.0, 4.0, 30.0, 80.0, status=200),
-                ProbeSample(True, 1.0, 3.0, 4.0, 36.0, 90.0, status=200),
+                ProbeSample(True, 1.0, 3.0, 4.0, 30.0, 6.0, 80.0, status=200),
+                ProbeSample(True, 1.0, 3.0, 4.0, 36.0, 8.0, 90.0, status=200),
             ],
         ),
         "polymarket": summarize_samples(
             [
-                ProbeSample(True, 1.0, 2.0, 3.0, 15.0, 25.0, status=200),
-                ProbeSample(True, 1.0, 2.0, 3.0, 17.0, 30.0, status=200),
+                ProbeSample(True, 1.0, 2.0, 3.0, 15.0, 1.0, 25.0, status=200),
+                ProbeSample(True, 1.0, 2.0, 3.0, 17.0, 2.0, 30.0, status=200),
             ],
         ),
     }
@@ -75,7 +76,10 @@ def test_latency_probe_recommends_strategy_placement_by_worst_leg():
     assert cloudbet_sxbet["placementScoreMs"] == 103.75
     assert cloudbet_sxbet["dominantLatencyVenue"] == "sxbet"
     assert cloudbet_sxbet["venueFirstByteP95SkewMs"] == 12.0
+    assert cloudbet_sxbet["worstLegReadP95Ms"] == 8.0
+    assert cloudbet_sxbet["venueReadP95SkewMs"] == 4.0
     assert cloudbet_sxbet["worstLegFirstByteStddevMs"] == 3.0
+    assert cloudbet_sxbet["worstLegReadStddevMs"] == 1.0
     assert cloudbet_sxbet["venueTotalP95Ms"] == {"cloudbet": 45.0, "sxbet": 90.0}
     assert cloudbet_sxbet["venueTotalStddevMs"] == {"cloudbet": 5.0, "sxbet": 5.0}
     assert cloudbet_sxbet["eligibleForPlacementComparison"] is True
@@ -86,7 +90,7 @@ def test_latency_probe_blocks_stale_or_missing_placement_samples():
     summaries = {
         "sxbet": summarize_samples(
             [
-                ProbeSample(True, 1.0, 3.0, 4.0, 30.0, 80.0, status=200),
+                ProbeSample(True, 1.0, 3.0, 4.0, 30.0, 6.0, 80.0, status=200),
             ],
         ),
     }

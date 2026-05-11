@@ -45,6 +45,7 @@ class ProbeSample:
     tcp_ms: float
     tls_ms: float
     first_byte_ms: float
+    read_ms: float
     total_ms: float
     status: int | None = None
     error: str | None = None
@@ -66,7 +67,7 @@ def summarize_samples(samples: list[ProbeSample]) -> dict[str, object]:
         "failed": len(samples) - len(successful),
         "errorRate": (len(samples) - len(successful)) / len(samples) if samples else 0.0,
     }
-    for field in ("dns_ms", "tcp_ms", "tls_ms", "first_byte_ms", "total_ms"):
+    for field in ("dns_ms", "tcp_ms", "tls_ms", "first_byte_ms", "read_ms", "total_ms"):
         values = [float(getattr(sample, field)) for sample in successful]
         summary[field] = {
             "median": round(statistics.median(values), 3) if values else 0.0,
@@ -118,7 +119,9 @@ def probe_url(url: str, *, timeout_secs: float = 5.0) -> ProbeSample:
         )
         response = connection.getresponse()
         first_byte_ms = (time.perf_counter() - request_started) * 1000
+        read_started = time.perf_counter()
         response.read(256)
+        read_ms = (time.perf_counter() - read_started) * 1000
         status = int(response.status)
         connection.close()
         return ProbeSample(
@@ -127,6 +130,7 @@ def probe_url(url: str, *, timeout_secs: float = 5.0) -> ProbeSample:
             tcp_ms=tcp_ms,
             tls_ms=tls_ms,
             first_byte_ms=first_byte_ms,
+            read_ms=read_ms,
             total_ms=(time.perf_counter() - started) * 1000,
             status=status,
         )
@@ -137,6 +141,7 @@ def probe_url(url: str, *, timeout_secs: float = 5.0) -> ProbeSample:
             tcp_ms=0.0,
             tls_ms=0.0,
             first_byte_ms=0.0,
+            read_ms=0.0,
             total_ms=(time.perf_counter() - started) * 1000,
             error=_error_summary(e),
         )
@@ -263,8 +268,11 @@ def _best_strategy_region(candidates: list[dict[str, object]]) -> dict[str, obje
         "venueTotalP95SkewMs": _payload_float(best, "venueTotalP95SkewMs"),
         "worstLegFirstByteP95Ms": _payload_float(best, "worstLegFirstByteP95Ms"),
         "venueFirstByteP95SkewMs": _payload_float(best, "venueFirstByteP95SkewMs"),
+        "worstLegReadP95Ms": _payload_float(best, "worstLegReadP95Ms"),
+        "venueReadP95SkewMs": _payload_float(best, "venueReadP95SkewMs"),
         "worstLegTotalStddevMs": _payload_float(best, "worstLegTotalStddevMs"),
         "worstLegFirstByteStddevMs": _payload_float(best, "worstLegFirstByteStddevMs"),
+        "worstLegReadStddevMs": _payload_float(best, "worstLegReadStddevMs"),
         "worstLegErrorRate": _payload_float(best, "worstLegErrorRate"),
         "placementScoreMs": _payload_float(best, "placementScoreMs"),
         "dominantLatencyVenue": best.get("dominantLatencyVenue"),
@@ -298,8 +306,10 @@ def _strategy_placement_recommendation(
     missing_venues = [venue for venue in venues if venue not in venue_payloads]
     total_p95 = _venue_percentiles_ms(venue_payloads, "total_ms")
     first_byte_p95 = _venue_percentiles_ms(venue_payloads, "first_byte_ms")
+    read_p95 = _venue_percentiles_ms(venue_payloads, "read_ms")
     total_stddev = _venue_metric_values(venue_payloads, "total_ms", "stddev")
     first_byte_stddev = _venue_metric_values(venue_payloads, "first_byte_ms", "stddev")
+    read_stddev = _venue_metric_values(venue_payloads, "read_ms", "stddev")
     error_rates = _venue_error_rates(venue_payloads)
     worst_error_rate = max(error_rates.values()) if error_rates else 1.0
     blockers = _placement_blockers(
@@ -324,17 +334,22 @@ def _strategy_placement_recommendation(
         "dataFresh": data_fresh,
         "worstLegTotalP95Ms": worst_leg_total_p95,
         "worstLegFirstByteP95Ms": max(first_byte_p95.values()) if first_byte_p95 else 0.0,
+        "worstLegReadP95Ms": max(read_p95.values()) if read_p95 else 0.0,
         "worstLegTotalStddevMs": worst_total_stddev,
         "worstLegFirstByteStddevMs": max(first_byte_stddev.values()) if first_byte_stddev else 0.0,
+        "worstLegReadStddevMs": max(read_stddev.values()) if read_stddev else 0.0,
         "venueTotalP95SkewMs": total_skew,
         "venueFirstByteP95SkewMs": _metric_skew_ms(first_byte_p95),
+        "venueReadP95SkewMs": _metric_skew_ms(read_p95),
         "worstLegErrorRate": worst_error_rate,
         "placementScoreMs": placement_score_ms,
         "dominantLatencyVenue": _dominant_latency_venue(total_p95),
         "venueTotalP95Ms": total_p95,
         "venueFirstByteP95Ms": first_byte_p95,
+        "venueReadP95Ms": read_p95,
         "venueTotalStddevMs": total_stddev,
         "venueFirstByteStddevMs": first_byte_stddev,
+        "venueReadStddevMs": read_stddev,
         "venueErrorRates": error_rates,
         "blockers": blockers,
         "eligibleForPlacementComparison": not blockers,
