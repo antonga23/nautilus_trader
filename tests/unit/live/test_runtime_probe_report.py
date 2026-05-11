@@ -673,6 +673,22 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
         "CLOUDBET": 20,
         "SXBET": 10,
     }
+    assert summary["venueCoverage"]["quoteCapacityPressure"]["CLOUDBET"] == {
+        "status": "warn",
+        "reasons": ["quote_subscription_gap", "unquoted_semantic_matches"],
+        "subscriptionCount": 10,
+        "subscriptionLimit": 20,
+        "subscriptionUtilizationRatio": 0.5,
+        "subscriptionGap": 5,
+        "subscriptionLimitExceeded": 0,
+        "quotedNodes": 5,
+        "quoteYieldRatio": 0.5,
+        "semanticMatchedNodes": 7,
+        "quotedSemanticMatchedNodes": 5,
+        "unquotedSemanticMatchedNodes": 2,
+        "semanticQuoteCoverageRatio": 0.7143,
+        "capacityPressureScore": 0.5,
+    }
     assert summary["venueCoverage"]["unquotedSemanticMatchedNodeCounts"]["CLOUDBET"] == 2
     assert summary["venueCoverage"]["crossVenuePairsWithCandidates"] == ["CLOUDBET->SXBET"]
     assert summary["recommendedActions"] == [
@@ -685,6 +701,7 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
         "inspect_unresolved_provider_sport_targets",
         "inspect_zero_candidate_blockers",
         "inspect_zero_selection_target_sports",
+        "prioritize_semantic_matched_quotes",
         "reduce_poll_rate_or_add_backoff",
         "widen_provider_corpus_window_or_limits",
     ]
@@ -913,6 +930,12 @@ def test_runtime_probe_report_aggregates_multiple_artifacts():
         "maxConcurrencyUtilizationRatio": 0.5,
         "minCycleHeadroomSeconds": 0.75,
     }
+    assert aggregate["quoteCapacityPressureByVenue"]["CLOUDBET"] == {
+        "maxSubscriptionUtilizationRatio": 0.5,
+        "minSemanticQuoteCoverageRatio": 0.7143,
+        "maxCapacityPressureScore": 0.5,
+        "maxUnquotedSemanticMatchedNodes": 2.0,
+    }
     assert aggregate["semanticCacheCorpusHealthCounts"] == {
         "unknown": 1,
         "warn": 1,
@@ -1006,6 +1029,8 @@ def test_runtime_probe_report_cli_outputs_json_and_text(tmp_path, monkeypatch, c
     assert "health={'fail': 1}" in text_output
     assert "provider_poll_health={'fail': 1}" in text_output
     assert "provider_poll_utilization={'CLOUDBET':" in text_output
+    assert "quote_capacity_pressure={'CLOUDBET':" in text_output
+    assert "quote_capacity_pressure CLOUDBET:status=warn" in text_output
     assert "corpus_health={'warn': 1}" in text_output
     assert "coverage_book_devig_quoted=2" in text_output
     assert "venue_coverage_health={'warn': 1}" in text_output

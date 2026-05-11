@@ -290,6 +290,7 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
             ),
             "zeroCandidateVenuePairs": venue_coverage.get("zeroCandidateVenuePairs"),
             "zeroCandidateBlockerCounts": venue_coverage.get("zeroCandidateBlockerCounts"),
+            "quoteCapacityPressure": _quote_capacity_pressure(venue_coverage),
         },
         "venueCoverageHealth": _venue_coverage_health(venue_coverage),
         "operatorHealth": _operator_health(
@@ -486,6 +487,7 @@ class _SummaryAggregate:
         self.venue_coverage_health_counts: dict[str, int] = {}
         self.execution_safety_counts: dict[str, int] = {}
         self.provider_poll_utilization_by_venue: dict[str, dict[str, float]] = {}
+        self.quote_capacity_pressure_by_venue: dict[str, dict[str, float]] = {}
         self.quote_subscription_counts: dict[str, int] = {}
         self.quoted_node_counts: dict[str, int] = {}
         self.semantic_matched_node_counts: dict[str, int] = {}
@@ -601,12 +603,45 @@ class _SummaryAggregate:
             self.quoted_semantic_matched_node_counts,
             coverage.get("quotedSemanticMatchedNodeCounts"),
         )
+        self._add_quote_capacity_pressure(_as_dict(coverage.get("quoteCapacityPressure")))
         _merge_int_mapping(self.candidate_counts_by_venue_pair, coverage.get("candidateCounts"))
         _merge_int_mapping(self.edge_counts_by_venue_pair, coverage.get("edgeCounts"))
         _merge_int_mapping(
             self.quoted_edge_counts_by_venue_pair,
             coverage.get("quotedEdgeCounts"),
         )
+
+    def _add_quote_capacity_pressure(self, pressure_by_venue: dict[str, Any]) -> None:
+        for venue, raw_payload in sorted(pressure_by_venue.items()):
+            payload = _as_dict(raw_payload)
+            venue_key = str(venue)
+            existing = self.quote_capacity_pressure_by_venue.setdefault(
+                venue_key,
+                {
+                    "maxSubscriptionUtilizationRatio": 0.0,
+                    "minSemanticQuoteCoverageRatio": math.inf,
+                    "maxCapacityPressureScore": 0.0,
+                    "maxUnquotedSemanticMatchedNodes": 0.0,
+                },
+            )
+            existing["maxSubscriptionUtilizationRatio"] = max(
+                existing["maxSubscriptionUtilizationRatio"],
+                _float_value(payload.get("subscriptionUtilizationRatio")),
+            )
+            semantic_quote_coverage = _float_value(payload.get("semanticQuoteCoverageRatio"))
+            if semantic_quote_coverage > 0:
+                existing["minSemanticQuoteCoverageRatio"] = min(
+                    existing["minSemanticQuoteCoverageRatio"],
+                    semantic_quote_coverage,
+                )
+            existing["maxCapacityPressureScore"] = max(
+                existing["maxCapacityPressureScore"],
+                _float_value(payload.get("capacityPressureScore")),
+            )
+            existing["maxUnquotedSemanticMatchedNodes"] = max(
+                existing["maxUnquotedSemanticMatchedNodes"],
+                float(_int_value(payload.get("unquotedSemanticMatchedNodes"))),
+            )
 
     def _add_candidate_quality(self, quality: dict[str, Any]) -> None:
         _merge_nested_count_mapping(self.rejection_bucket_counts, quality.get("rejectionBuckets"))
@@ -715,6 +750,9 @@ class _SummaryAggregate:
             "providerPollHealthCounts": dict(sorted(self.provider_poll_health_counts.items())),
             "providerPollUtilizationByVenue": _finite_provider_poll_utilization(
                 self.provider_poll_utilization_by_venue,
+            ),
+            "quoteCapacityPressureByVenue": _finite_provider_poll_utilization(
+                self.quote_capacity_pressure_by_venue,
             ),
             "semanticCacheCorpusHealthCounts": dict(sorted(self.corpus_health_counts.items())),
             "venueCoverageHealthCounts": dict(sorted(self.venue_coverage_health_counts.items())),
@@ -1243,6 +1281,11 @@ def _format_text_runtime_health_lines(summary: dict[str, Any]) -> list[str]:
     venue_coverage_health = _format_venue_coverage_health(summary.get("venueCoverageHealth"))
     if venue_coverage_health:
         lines.append(f"  venue_coverage_health {venue_coverage_health}")
+    quote_capacity_pressure = _format_quote_capacity_pressure(
+        _as_dict(summary.get("venueCoverage")).get("quoteCapacityPressure"),
+    )
+    if quote_capacity_pressure:
+        lines.append(f"  quote_capacity_pressure {quote_capacity_pressure}")
     lines.extend(
         _format_semantic_cache_corpus_health_lines(summary.get("semanticCacheCorpusHealth")),
     )
@@ -1811,6 +1854,25 @@ def _format_venue_coverage_health(value: Any) -> str:
     return f"overall={health.get('overall')} " + "; ".join(rendered)
 
 
+def _format_quote_capacity_pressure(value: Any) -> str:
+    venues = _as_dict(value)
+    if not venues:
+        return ""
+    rendered = []
+    for venue, raw_payload in sorted(venues.items()):
+        payload = _as_dict(raw_payload)
+        reasons = payload.get("reasons") or []
+        rendered.append(
+            f"{venue}:status={payload.get('status')} "
+            f"sub_util={payload.get('subscriptionUtilizationRatio', 0)} "
+            f"semantic_quote_coverage={payload.get('semanticQuoteCoverageRatio', 0)} "
+            f"pressure={payload.get('capacityPressureScore', 0)} "
+            f"unquoted_semantic={payload.get('unquotedSemanticMatchedNodes', 0)} "
+            f"reasons={','.join(str(r) for r in reasons)}",
+        )
+    return "; ".join(rendered)
+
+
 def _format_aggregate_line(aggregate: dict[str, Any]) -> str:
     return (
         "\naggregate: "
@@ -1829,6 +1891,7 @@ def _format_aggregate_line(aggregate: dict[str, Any]) -> str:
         f"execution_safety={aggregate['executionSafetyCounts']} "
         f"provider_poll_health={aggregate['providerPollHealthCounts']} "
         f"provider_poll_utilization={aggregate['providerPollUtilizationByVenue']} "
+        f"quote_capacity_pressure={aggregate['quoteCapacityPressureByVenue']} "
         f"corpus_health={aggregate['semanticCacheCorpusHealthCounts']} "
         f"venue_coverage_health={aggregate['venueCoverageHealthCounts']} "
         f"devig_methods={aggregate['devigMethodCounts']} "
@@ -2445,6 +2508,20 @@ def _recommended_actions(summary: dict[str, Any]) -> list[str]:
     )
     actions.extend(
         _actions_from_reason_payloads(
+            _as_dict(_as_dict(summary.get("venueCoverage")).get("quoteCapacityPressure")).values(),
+            {
+                "quote_capacity_near_full": "reserve_capacity_for_common_fixtures",
+                "semantic_matches_unquoted": "prioritize_semantic_matched_quotes",
+                "unquoted_semantic_matches": "prioritize_semantic_matched_quotes",
+                "capacity_bound_semantic_matches": "raise_or_rebalance_quote_capacity",
+                "subscriptions_without_quotes": "refresh_market_subscriptions",
+                "quote_subscription_gap": "increase_quote_subscription_limit_or_refresh_quotes",
+                "quote_subscription_limit_exceeded": "reduce_semantic_quote_subscription_load",
+            },
+        ),
+    )
+    actions.extend(
+        _actions_from_reason_payloads(
             _as_dict(_as_dict(summary.get("semanticCacheCorpusHealth")).get("providers")).values(),
             {
                 "no_corpus_sports": "inspect_provider_corpus_discovery",
@@ -2493,6 +2570,97 @@ def _actions_from_reason_names(
     mapping: dict[str, str],
 ) -> list[str]:
     return [action for reason, action in mapping.items() if _numeric(counts.get(reason)) > 0]
+
+
+def _quote_capacity_pressure(venue_coverage: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    enabled_venues = venue_coverage.get("enabledVenues") or []
+    quote_subscriptions = _as_dict(venue_coverage.get("quoteSubscriptionCounts"))
+    quote_subscription_limits = _as_dict(venue_coverage.get("quoteSubscriptionLimits"))
+    quote_limit_exceeded = _as_dict(venue_coverage.get("quoteSubscriptionLimitExceededCounts"))
+    quote_subscription_gaps = _as_dict(venue_coverage.get("quoteSubscriptionGapCounts"))
+    quoted_nodes = _as_dict(venue_coverage.get("quotedNodeCounts"))
+    semantic_matched_nodes = _as_dict(venue_coverage.get("semanticMatchedNodeCounts"))
+    quoted_semantic_nodes = _as_dict(venue_coverage.get("quotedSemanticMatchedNodeCounts"))
+    unquoted_semantic_nodes = _as_dict(venue_coverage.get("unquotedSemanticMatchedNodeCounts"))
+    pressure: dict[str, dict[str, Any]] = {}
+    for venue in sorted(str(item) for item in enabled_venues if item):
+        subscription_count = _int_value(quote_subscriptions.get(venue))
+        subscription_limit = _int_value(quote_subscription_limits.get(venue))
+        subscription_gap = _int_value(quote_subscription_gaps.get(venue))
+        subscription_limit_exceeded = _int_value(quote_limit_exceeded.get(venue))
+        quoted_node_count = _int_value(quoted_nodes.get(venue))
+        semantic_matched_count = _int_value(semantic_matched_nodes.get(venue))
+        quoted_semantic_count = _int_value(quoted_semantic_nodes.get(venue))
+        unquoted_semantic_count = _int_value(unquoted_semantic_nodes.get(venue))
+        subscription_utilization = _ratio(subscription_count, subscription_limit)
+        quote_yield = _ratio(quoted_node_count, subscription_count)
+        semantic_quote_coverage = _ratio(quoted_semantic_count, semantic_matched_count)
+        unquoted_semantic_ratio = (
+            1.0 - semantic_quote_coverage if semantic_matched_count > 0 else 0.0
+        )
+        capacity_pressure_score = max(subscription_utilization, unquoted_semantic_ratio)
+        reasons = _quote_capacity_pressure_reasons(
+            subscription_count=subscription_count,
+            subscription_limit=subscription_limit,
+            subscription_limit_exceeded=subscription_limit_exceeded,
+            subscription_gap=subscription_gap,
+            quoted_node_count=quoted_node_count,
+            semantic_matched_count=semantic_matched_count,
+            quoted_semantic_count=quoted_semantic_count,
+            unquoted_semantic_count=unquoted_semantic_count,
+            subscription_utilization=subscription_utilization,
+        )
+        pressure[venue] = {
+            "status": "warn" if reasons else "pass",
+            "reasons": reasons,
+            "subscriptionCount": subscription_count,
+            "subscriptionLimit": subscription_limit if subscription_limit > 0 else None,
+            "subscriptionUtilizationRatio": round(subscription_utilization, 4),
+            "subscriptionGap": subscription_gap,
+            "subscriptionLimitExceeded": subscription_limit_exceeded,
+            "quotedNodes": quoted_node_count,
+            "quoteYieldRatio": round(quote_yield, 4),
+            "semanticMatchedNodes": semantic_matched_count,
+            "quotedSemanticMatchedNodes": quoted_semantic_count,
+            "unquotedSemanticMatchedNodes": unquoted_semantic_count,
+            "semanticQuoteCoverageRatio": round(semantic_quote_coverage, 4),
+            "capacityPressureScore": round(capacity_pressure_score, 4),
+        }
+    return pressure
+
+
+def _quote_capacity_pressure_reasons(
+    *,
+    subscription_count: int,
+    subscription_limit: int,
+    subscription_limit_exceeded: int,
+    subscription_gap: int,
+    quoted_node_count: int,
+    semantic_matched_count: int,
+    quoted_semantic_count: int,
+    unquoted_semantic_count: int,
+    subscription_utilization: float,
+) -> list[str]:
+    reasons: list[str] = []
+    if subscription_limit_exceeded > 0:
+        reasons.append("quote_subscription_limit_exceeded")
+    if subscription_gap > 0:
+        reasons.append("quote_subscription_gap")
+    if subscription_limit > 0 and subscription_utilization >= 0.9:
+        reasons.append("quote_capacity_near_full")
+    if subscription_count > 0 and quoted_node_count <= 0:
+        reasons.append("subscriptions_without_quotes")
+    if semantic_matched_count > 0 and quoted_semantic_count <= 0:
+        reasons.append("semantic_matches_unquoted")
+    if unquoted_semantic_count > 0:
+        reasons.append("unquoted_semantic_matches")
+    if (
+        subscription_limit > 0
+        and subscription_count >= subscription_limit
+        and unquoted_semantic_count > 0
+    ):
+        reasons.append("capacity_bound_semantic_matches")
+    return reasons
 
 
 def _venue_coverage_health(venue_coverage: dict[str, Any]) -> dict[str, Any]:
