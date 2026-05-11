@@ -806,6 +806,41 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(stats["SXBET"]["backoff_secs"] == 1.5)
         ensure(stats["SXBET"]["last_error"] == "429 rate limit")
 
+    def test_get_stats_reports_quote_latency_by_venue(self):  # skipcq
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(enabled_venues=frozenset({"CLOUDBET", "SXBET"})),
+        )
+
+        strategy._record_quote_receive_latency(
+            cast(
+                Any,
+                SimpleNamespace(
+                    instrument_id=InstrumentId.from_str("NBA.CLOUDBET"),
+                    ts_event=1_000_000_000,
+                    ts_init=1_200_000_000,
+                ),
+            ),
+            1_250_000_000,
+        )
+        strategy._record_quote_receive_latency(
+            cast(
+                Any,
+                SimpleNamespace(
+                    instrument_id=InstrumentId.from_str("NBA.SXBET"),
+                    ts_event=2_000_000_000,
+                    ts_init=2_040_000_000,
+                ),
+            ),
+            2_090_000_000,
+        )
+
+        by_venue = strategy.get_stats()["latency_diagnostics"]["by_venue"]
+
+        ensure(by_venue["CLOUDBET"]["quote_event_to_strategy"]["p95_ms"] == 250.0)
+        ensure(by_venue["CLOUDBET"]["quote_fetch_latency"]["p95_ms"] == 200.0)
+        ensure(by_venue["SXBET"]["quote_event_to_strategy"]["p95_ms"] == 90.0)
+        ensure(by_venue["SXBET"]["quote_fetch_latency"]["p95_ms"] == 40.0)
+
     def test_get_stats_reports_instrument_refresh_by_venue(self):  # skipcq
         strategy = BettingArbitrageStrategy(
             config=BettingArbitrageConfig(enabled_venues=frozenset({"CLOUDBET", "SXBET"})),
