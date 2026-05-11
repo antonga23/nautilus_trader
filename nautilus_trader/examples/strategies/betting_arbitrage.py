@@ -1578,6 +1578,15 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             if inst_sport != self._config.sport_filter:
                 return False
 
+        # Resolution horizon filter. For live-pilot cross-venue nodes this keeps
+        # stale resolved markets and far-future tail markets out of the graph
+        # entirely, not just out of quote subscriptions.
+        if (
+            self._config.max_resolution_horizon_hours is not None
+            and self._instrument_resolution_horizon_priority(instrument) >= 2
+        ):
+            return False
+
         # Market timing filter (requires instrument metadata)
         if self._config.market_timing_filter != "all":
             # Check if instrument has live/pre-market indicator

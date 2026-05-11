@@ -2185,6 +2185,38 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(strategy._resolution_horizon_priority(node_for(now + timedelta(days=5))) == 2)
         ensure(strategy._resolution_horizon_priority(node_for(now - timedelta(days=2))) == 3)
 
+    def test_should_process_instrument_filters_stale_and_far_horizon(self) -> None:  # skipcq
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(max_resolution_horizon_hours=48.0),
+        )
+        now = datetime.now(tz=UTC)
+
+        fresh = self._sxbet_instrument(
+            event_id="fresh",
+            outcome="home",
+            start_time=(now + timedelta(hours=2)).isoformat(),
+        )
+        recent_past = self._sxbet_instrument(
+            event_id="recent",
+            outcome="home",
+            start_time=(now - timedelta(hours=1)).isoformat(),
+        )
+        stale = self._sxbet_instrument(
+            event_id="stale",
+            outcome="home",
+            start_time=(now - timedelta(days=2)).isoformat(),
+        )
+        far = self._sxbet_instrument(
+            event_id="far",
+            outcome="home",
+            start_time=(now + timedelta(days=5)).isoformat(),
+        )
+
+        ensure(strategy._should_process_instrument(fresh) is True)
+        ensure(strategy._should_process_instrument(recent_past) is True)
+        ensure(strategy._should_process_instrument(stale) is False)
+        ensure(strategy._should_process_instrument(far) is False)
+
     def test_semantic_quote_subscriptions_skip_out_of_horizon_fixtures(self) -> None:  # skipcq
         strategy = BettingArbitrageStrategy(
             config=BettingArbitrageConfig(
