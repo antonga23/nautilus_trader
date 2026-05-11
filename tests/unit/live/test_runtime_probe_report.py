@@ -907,6 +907,12 @@ def test_runtime_probe_report_aggregates_multiple_artifacts():
         "fail": 1,
         "unknown": 1,
     }
+    assert aggregate["providerPollUtilizationByVenue"]["CLOUDBET"] == {
+        "maxPollUtilizationRatio": 0.625,
+        "maxFetchLatencyUtilizationRatio": 0.09,
+        "maxConcurrencyUtilizationRatio": 0.5,
+        "minCycleHeadroomSeconds": 0.75,
+    }
     assert aggregate["semanticCacheCorpusHealthCounts"] == {
         "unknown": 1,
         "warn": 1,
@@ -999,6 +1005,7 @@ def test_runtime_probe_report_cli_outputs_json_and_text(tmp_path, monkeypatch, c
     assert "execution_safety={'pass': 1}" in text_output
     assert "health={'fail': 1}" in text_output
     assert "provider_poll_health={'fail': 1}" in text_output
+    assert "provider_poll_utilization={'CLOUDBET':" in text_output
     assert "corpus_health={'warn': 1}" in text_output
     assert "coverage_book_devig_quoted=2" in text_output
     assert "venue_coverage_health={'warn': 1}" in text_output
@@ -1022,6 +1029,10 @@ def test_runtime_probe_report_cli_outputs_json_and_text(tmp_path, monkeypatch, c
     assert "provider_poll CLOUDBET:cycle=12" in text_output
     assert "fetch_p95=0.18s" in text_output
     assert "provider_poll_health overall=fail CLOUDBET:status=fail" in text_output
+    assert "poll_util=0.625" in text_output
+    assert "fetch_util=0.09" in text_output
+    assert "concurrency_util=0.5" in text_output
+    assert "next_sleep=0.2s" in text_output
     assert "semantic_cache_corpus_health overall=warn SXBET:status=warn" in text_output
     assert (
         "corpus_coverage provider=SXBET mode=active_live sports=3/6 selections=842" in text_output
@@ -1145,7 +1156,9 @@ def test_provider_poll_health_explains_cloudbet_poll_fanout_bottlenecks():
                         "source": "rest_event_poll",
                         "cycle_elapsed_secs": 8.2,
                         "poll_target_cycle_secs": 4.0,
+                        "next_poll_sleep_secs": 0.0,
                         "max_fetch_latency_secs": 0.8,
+                        "fetch_latency_p95_secs": 0.72,
                         "request_count": 40,
                         "event_request_count": 10,
                         "line_request_count": 30,
@@ -1172,7 +1185,11 @@ def test_provider_poll_health_explains_cloudbet_poll_fanout_bottlenecks():
     assert cloudbet["requestsPerSecond"] == 4.878
     assert cloudbet["quotesPerSecond"] == 1.9512
     assert cloudbet["cycleHeadroomSeconds"] == -4.2
+    assert cloudbet["pollUtilizationRatio"] == 2.05
+    assert cloudbet["fetchLatencyUtilizationRatio"] == 0.9
+    assert cloudbet["concurrencyUtilizationRatio"] == 1.0
     assert cloudbet["estimatedShardsForTarget"] == 3
+    assert cloudbet["nextPollSleepSeconds"] == 0.0
     assert cloudbet["prunedSubscriptionCount"] == 3
     assert cloudbet["refilledSubscriptionCount"] == 0
     assert cloudbet["pollTargetCycleSeconds"] == 4.0

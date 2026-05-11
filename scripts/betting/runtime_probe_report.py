@@ -485,6 +485,7 @@ class _SummaryAggregate:
         self.corpus_health_counts: dict[str, int] = {}
         self.venue_coverage_health_counts: dict[str, int] = {}
         self.execution_safety_counts: dict[str, int] = {}
+        self.provider_poll_utilization_by_venue: dict[str, dict[str, float]] = {}
         self.quote_subscription_counts: dict[str, int] = {}
         self.quoted_node_counts: dict[str, int] = {}
         self.semantic_matched_node_counts: dict[str, int] = {}
@@ -542,6 +543,9 @@ class _SummaryAggregate:
             self.provider_poll_health_counts,
             _as_dict(summary.get("providerPollHealth")).get("overall") or "unknown",
         )
+        self._add_provider_poll_utilization(
+            _as_dict(_as_dict(summary.get("providerPollHealth")).get("venues")),
+        )
         _increment_count(
             self.corpus_health_counts,
             _as_dict(summary.get("semanticCacheCorpusHealth")).get("overall") or "unknown",
@@ -554,6 +558,37 @@ class _SummaryAggregate:
             self.execution_safety_counts,
             _as_dict(summary.get("executionSafety")).get("overall") or "unknown",
         )
+
+    def _add_provider_poll_utilization(self, venues: dict[str, Any]) -> None:
+        for venue, raw_payload in sorted(venues.items()):
+            payload = _as_dict(raw_payload)
+            venue_key = str(venue)
+            existing = self.provider_poll_utilization_by_venue.setdefault(
+                venue_key,
+                {
+                    "maxPollUtilizationRatio": 0.0,
+                    "maxFetchLatencyUtilizationRatio": 0.0,
+                    "maxConcurrencyUtilizationRatio": 0.0,
+                    "minCycleHeadroomSeconds": math.inf,
+                },
+            )
+            existing["maxPollUtilizationRatio"] = max(
+                existing["maxPollUtilizationRatio"],
+                _float_value(payload.get("pollUtilizationRatio")),
+            )
+            existing["maxFetchLatencyUtilizationRatio"] = max(
+                existing["maxFetchLatencyUtilizationRatio"],
+                _float_value(payload.get("fetchLatencyUtilizationRatio")),
+            )
+            existing["maxConcurrencyUtilizationRatio"] = max(
+                existing["maxConcurrencyUtilizationRatio"],
+                _float_value(payload.get("concurrencyUtilizationRatio")),
+            )
+            headroom = _float_value(payload.get("cycleHeadroomSeconds"))
+            existing["minCycleHeadroomSeconds"] = min(
+                existing["minCycleHeadroomSeconds"],
+                headroom,
+            )
 
     def _add_venue_coverage(self, coverage: dict[str, Any]) -> None:
         _merge_int_mapping(self.quote_subscription_counts, coverage.get("quoteSubscriptionCounts"))
@@ -678,6 +713,9 @@ class _SummaryAggregate:
             "latencySloStatusCounts": dict(sorted(self.latency_slo_counts.items())),
             "operatorHealthCounts": dict(sorted(self.health_counts.items())),
             "providerPollHealthCounts": dict(sorted(self.provider_poll_health_counts.items())),
+            "providerPollUtilizationByVenue": _finite_provider_poll_utilization(
+                self.provider_poll_utilization_by_venue,
+            ),
             "semanticCacheCorpusHealthCounts": dict(sorted(self.corpus_health_counts.items())),
             "venueCoverageHealthCounts": dict(sorted(self.venue_coverage_health_counts.items())),
             "executionSafetyCounts": dict(sorted(self.execution_safety_counts.items())),
@@ -739,6 +777,18 @@ def _merge_int_mapping(target: dict[str, int], value: Any) -> None:
 def _merge_nested_count_mapping(target: dict[str, int], value: Any) -> None:
     for key, raw_count in _as_dict(value).items():
         target[str(key)] = target.get(str(key), 0) + int(_numeric(raw_count))
+
+
+def _finite_provider_poll_utilization(
+    value: dict[str, dict[str, float]],
+) -> dict[str, dict[str, float]]:
+    rendered: dict[str, dict[str, float]] = {}
+    for venue, payload in sorted(value.items()):
+        rendered[venue] = {
+            key: round(raw_value, 4) if math.isfinite(raw_value) else 0.0
+            for key, raw_value in payload.items()
+        }
+    return rendered
 
 
 def _merge_provider_corpus_coverage(
@@ -1715,6 +1765,10 @@ def _format_provider_poll_health(value: Any) -> str:
             f"{venue}:status={payload.get('status')} "
             f"shards={payload.get('estimatedShardsForTarget', 1)} "
             f"headroom={payload.get('cycleHeadroomSeconds', 0)}s "
+            f"poll_util={payload.get('pollUtilizationRatio', 0)} "
+            f"fetch_util={payload.get('fetchLatencyUtilizationRatio', 0)} "
+            f"concurrency_util={payload.get('concurrencyUtilizationRatio', 0)} "
+            f"next_sleep={payload.get('nextPollSleepSeconds', 0)}s "
             f"fanout={payload.get('requestFanoutPerQuote', 0)} "
             f"yield={payload.get('quoteYieldRatio', 0)} "
             f"reasons={','.join(str(r) for r in reasons)}",
@@ -1774,6 +1828,7 @@ def _format_aggregate_line(aggregate: dict[str, Any]) -> str:
         f"health={aggregate['operatorHealthCounts']} "
         f"execution_safety={aggregate['executionSafetyCounts']} "
         f"provider_poll_health={aggregate['providerPollHealthCounts']} "
+        f"provider_poll_utilization={aggregate['providerPollUtilizationByVenue']} "
         f"corpus_health={aggregate['semanticCacheCorpusHealthCounts']} "
         f"venue_coverage_health={aggregate['venueCoverageHealthCounts']} "
         f"devig_methods={aggregate['devigMethodCounts']} "
@@ -2083,6 +2138,7 @@ def _provider_poll_health(provider_quote_poll_stats: dict[str, Any]) -> dict[str
         concurrency = _int_value(stats.get("concurrency"))
         max_concurrency = _int_value(stats.get("max_concurrency"))
         poll_target_cycle_secs = _float_value(stats.get("poll_target_cycle_secs"))
+        next_poll_sleep_secs = _float_value(stats.get("next_poll_sleep_secs"))
         max_fetch_latency_secs = _float_value(stats.get("max_fetch_latency_secs"))
         fetch_latency_p50_secs = _float_value(stats.get("fetch_latency_p50_secs"))
         fetch_latency_p95_secs = _float_value(stats.get("fetch_latency_p95_secs"))
@@ -2141,12 +2197,19 @@ def _provider_poll_health(provider_quote_poll_stats: dict[str, Any]) -> dict[str
             "requestsPerSecond": round(_ratio(request_count, cycle_elapsed_secs), 4),
             "quotesPerSecond": round(_ratio(quote_count, cycle_elapsed_secs), 4),
             "cycleHeadroomSeconds": round(cycle_headroom_secs, 4),
+            "pollUtilizationRatio": round(_ratio(cycle_elapsed_secs, poll_target_cycle_secs), 4),
+            "fetchLatencyUtilizationRatio": round(
+                _ratio(fetch_latency_p95_secs, max_fetch_latency_secs),
+                4,
+            ),
+            "concurrencyUtilizationRatio": round(_ratio(concurrency, max_concurrency), 4),
             "estimatedShardsForTarget": estimated_shards_for_target,
             "source": source,
             "concurrency": concurrency,
             "maxConcurrency": max_concurrency,
             "adaptiveConcurrency": bool(stats.get("adaptive_concurrency")),
             "pollTargetCycleSeconds": poll_target_cycle_secs,
+            "nextPollSleepSeconds": next_poll_sleep_secs,
             "maxFetchLatencySeconds": max_fetch_latency_secs,
             "fetchLatencyP50Seconds": fetch_latency_p50_secs,
             "fetchLatencyP95Seconds": fetch_latency_p95_secs,
