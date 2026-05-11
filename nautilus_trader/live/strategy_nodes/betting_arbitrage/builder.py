@@ -299,6 +299,8 @@ def _build_sxbet_data_importable(
         "order_book_poll_interval_secs": venue.order_book_poll_interval_secs,
         "order_book_poll_summary_interval_secs": venue.order_book_poll_summary_interval_secs,
         "order_book_concurrency": venue.order_book_concurrency,
+        "order_book_poll_mode": venue.order_book_poll_mode,
+        "order_book_best_odds_batch_size": venue.order_book_best_odds_batch_size,
         "routing": {"venues": [venue.venue]},
     }
     return ImportableConfig(
