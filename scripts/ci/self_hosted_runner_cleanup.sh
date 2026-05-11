@@ -55,6 +55,7 @@ monitor_log_max_mb="${RUNNER_MONITOR_LOG_MAX_MB:-1024}"
 docker_build_cache_until="${DOCKER_BUILD_CACHE_PRUNE_UNTIL:-48h}"
 prune_target_artifacts="${RUNNER_PRUNE_TARGET_ARTIFACTS:-false}"
 root_usage_prune_threshold="${ROOT_USAGE_PRUNE_THRESHOLD_PERCENT:-85}"
+root_usage_critical_prune_threshold="${ROOT_USAGE_CRITICAL_PRUNE_THRESHOLD_PERCENT:-95}"
 root_tmp_retention_days="${ROOT_TMP_RETENTION_DAYS:-2}"
 active_container_count=0
 active_worker_count=0
@@ -182,6 +183,17 @@ fi
 if docker_available && [[ "$root_usage_pct" -ge "$root_usage_prune_threshold" ]]; then
   docker image prune -af --filter "until=168h" > /dev/null 2>&1 || true
   docker volume prune -f > /dev/null 2>&1 || true
+  root_usage_pct="$(path_usage_pct /)"
+fi
+
+if docker_available && [[ "$root_usage_pct" -ge "$root_usage_critical_prune_threshold" ]]; then
+  # At critical root pressure, recent Docker layers are less valuable than preserving
+  # the runner. This remains conditional, so normal builds keep warm base layers.
+  docker container prune -f > /dev/null 2>&1 || true
+  docker image prune -af > /dev/null 2>&1 || true
+  docker builder prune -af > /dev/null 2>&1 || true
+  docker volume prune -f > /dev/null 2>&1 || true
+  root_usage_pct="$(path_usage_pct /)"
 fi
 
 if [[ -d "$runner_diag_root" ]]; then
