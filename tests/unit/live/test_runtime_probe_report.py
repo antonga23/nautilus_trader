@@ -393,6 +393,40 @@ def _runtime_status_payload() -> dict[str, object]:
                     "p99_ms": 190.0,
                     "max_ms": 200.0,
                 },
+                "by_venue": {
+                    "SXBET": {
+                        "quote_event_to_strategy": {
+                            "count": 4,
+                            "p50_ms": 8.0,
+                            "p95_ms": 16.0,
+                            "p99_ms": 18.0,
+                            "max_ms": 20.0,
+                        },
+                        "quote_fetch_latency": {
+                            "count": 4,
+                            "p50_ms": 120.0,
+                            "p95_ms": 280.0,
+                            "p99_ms": 280.0,
+                            "max_ms": 300.0,
+                        },
+                    },
+                    "POLYMARKET": {
+                        "quote_event_to_strategy": {
+                            "count": 4,
+                            "p50_ms": 5000.0,
+                            "p95_ms": 42000.0,
+                            "p99_ms": 43000.0,
+                            "max_ms": 44000.0,
+                        },
+                        "quote_fetch_latency": {
+                            "count": 4,
+                            "p50_ms": 0.0,
+                            "p95_ms": 0.0,
+                            "p99_ms": 0.0,
+                            "max_ms": 0.0,
+                        },
+                    },
+                },
                 "instrument_refresh_reconcile": {
                     "count": 2,
                     "p50_ms": 100.0,
@@ -487,6 +521,13 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
     assert summary["candidates"]["crossVenueCandidateCount"] == 2
     assert summary["latencyDiagnostics"]["quoteEventToStrategy"]["p95_ms"] == 25.0
     assert summary["latencyDiagnostics"]["quoteFetchLatency"]["p95_ms"] == 180.0
+    assert summary["latencyDiagnostics"]["byVenue"]["SXBET"]["quoteFetchLatency"]["p95_ms"] == (
+        280.0
+    )
+    assert (
+        summary["latencyDiagnostics"]["byVenue"]["POLYMARKET"]["quoteEventToStrategy"]["p95_ms"]
+        == 42000.0
+    )
     assert summary["latencyDiagnostics"]["graphScan"]["p95_ms"] == 3.1
     assert summary["latencyDiagnostics"]["instrumentRefreshReconcile"]["max_ms"] == 125.0
     assert summary["latencyDiagnostics"]["runtimeProbeCandidateDecision"]["count"] == 8
@@ -946,6 +987,8 @@ def test_runtime_probe_report_cli_outputs_json_and_text(tmp_path, monkeypatch, c
     assert "fee_impact fee_hurt=6" in text_output
     assert "raw_negative_fee_adjusted_positive=1" in text_output
     assert "strategy_latency quote_event_p95=25.0ms" in text_output
+    assert "strategy_latency_by_venue POLYMARKET:quote_event_p95=42000.0ms" in text_output
+    assert "SXBET:quote_event_p95=16.0ms quote_fetch_p95=280.0ms" in text_output
     assert "quote_fetch_p95=180.0ms" in text_output
     assert (
         "latency_slo overall=fail quote_age=pass fetch_latency=fail pair_skew=pass" in text_output
