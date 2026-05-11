@@ -39,6 +39,23 @@ DEFAULT_STRATEGY_VENUES = {
 
 
 @dataclass(frozen=True)
+class ProbeTarget:
+    url: str
+    method: str = "GET"
+    body: str | None = None
+    headers: dict[str, str] | None = None
+
+
+DEFAULT_TARGETS = {venue: ProbeTarget(url) for venue, url in DEFAULT_URLS.items()}
+DEFAULT_TARGETS["hyperliquid"] = ProbeTarget(
+    DEFAULT_URLS["hyperliquid"],
+    method="POST",
+    body='{"type":"allMids"}',
+    headers={"Content-Type": "application/json"},
+)
+
+
+@dataclass(frozen=True)
 class ProbeSample:
     ok: bool
     dns_ms: float
@@ -80,7 +97,14 @@ def summarize_samples(samples: list[ProbeSample]) -> dict[str, object]:
     return summary
 
 
-def probe_url(url: str, *, timeout_secs: float = 5.0) -> ProbeSample:
+def probe_url(
+    url: str,
+    *,
+    timeout_secs: float = 5.0,
+    method: str = "GET",
+    body: str | None = None,
+    headers: dict[str, str] | None = None,
+) -> ProbeSample:
     parsed = urlparse(url)
     host = parsed.hostname or ""
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
@@ -112,11 +136,11 @@ def probe_url(url: str, *, timeout_secs: float = 5.0) -> ProbeSample:
         connection = http.client.HTTPConnection(host, port, timeout=timeout_secs)
         connection.sock = sock
         request_started = time.perf_counter()
-        connection.request(
-            "GET",
-            path,
-            headers={"User-Agent": "cloudbet-market-maker-latency-probe"},
-        )
+        request_headers = {
+            "User-Agent": "cloudbet-market-maker-latency-probe",
+            **(headers or {}),
+        }
+        connection.request(method.upper(), path, body=body, headers=request_headers)
         response = connection.getresponse()
         first_byte_ms = (time.perf_counter() - request_started) * 1000
         read_started = time.perf_counter()
@@ -498,16 +522,26 @@ def main() -> int:
         print(text)
         return 0
 
-    targets = {venue: DEFAULT_URLS[venue] for venue in (args.venue or DEFAULT_URLS)}
+    target_names = args.venue or sorted(DEFAULT_TARGETS)
+    targets = {venue: DEFAULT_TARGETS[venue] for venue in target_names}
     for custom in args.url:
         name, _, url = custom.partition("=")
         if name and url:
-            targets[name.strip().lower()] = url.strip()
+            targets[name.strip().lower()] = ProbeTarget(url.strip())
 
     summaries: dict[str, dict[str, object]] = {}
     raw_samples: dict[str, list[dict[str, object]]] = {}
-    for venue, url in targets.items():
-        samples = [probe_url(url, timeout_secs=args.timeout_secs) for _ in range(args.samples)]
+    for venue, target in targets.items():
+        samples = [
+            probe_url(
+                target.url,
+                timeout_secs=args.timeout_secs,
+                method=target.method,
+                body=target.body,
+                headers=target.headers,
+            )
+            for _ in range(args.samples)
+        ]
         summaries[venue] = summarize_samples(samples)
         raw_samples[venue] = [asdict(sample) for sample in samples]
 
@@ -515,7 +549,13 @@ def main() -> int:
     payload = {
         "generatedAtNs": generated_at_ns,
         "region": args.region,
-        "targets": targets,
+        "targets": {
+            venue: {
+                "url": target.url,
+                "method": target.method,
+            }
+            for venue, target in targets.items()
+        },
         "summaries": summaries,
         "recommendation": _recommendation(summaries),
         "placementRecommendations": placement_recommendations(

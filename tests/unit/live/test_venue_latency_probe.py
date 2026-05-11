@@ -1,5 +1,6 @@
 # skipcq: PYL-C0114, PYL-C0116
 
+from scripts.strategy_nodes.venue_latency_probe import DEFAULT_TARGETS
 from scripts.strategy_nodes.venue_latency_probe import ProbeSample
 from scripts.strategy_nodes.venue_latency_probe import _error_summary
 from scripts.strategy_nodes.venue_latency_probe import compare_region_reports
@@ -35,6 +36,14 @@ def test_latency_probe_error_summary_keeps_short_sanitized_details():
     assert summary.startswith("RuntimeError: TLS failed while connecting ")
     assert "\n" not in summary
     assert len(summary) < 150
+
+
+def test_latency_probe_uses_safe_post_for_hyperliquid_info_target():
+    target = DEFAULT_TARGETS["hyperliquid"]
+
+    assert target.method == "POST"
+    assert target.body == '{"type":"allMids"}'
+    assert target.headers == {"Content-Type": "application/json"}
 
 
 def test_latency_probe_recommends_strategy_placement_by_worst_leg():
