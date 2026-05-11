@@ -2129,8 +2129,9 @@ def _quoted_event_keys_for_venue(
 
 def _zero_pair_sample_blocker(samples: list[dict[str, object]], fallback: object) -> str:
     fallback_reason = str(fallback or CoverageBlockerReason.NO_SEMANTIC_EDGE.value)
-    if fallback_reason == CoverageBlockerReason.FIXTURE_IDENTITY_MISMATCH.value:
-        return fallback_reason
+    fixture_identity_reason = _fixture_identity_fallback_reason(samples, fallback_reason)
+    if fixture_identity_reason is not None:
+        return fixture_identity_reason
     blocker_hints: Counter[str] = Counter()
     for sample in samples:
         blocker_hint = str(sample.get("blockerHint") or "")
@@ -2151,6 +2152,30 @@ def _zero_pair_sample_blocker(samples: list[dict[str, object]], fallback: object
     if blocker_hints:
         return blocker_hints.most_common(1)[0][0]
     return fallback_reason
+
+
+def _fixture_identity_fallback_reason(
+    samples: list[dict[str, object]],
+    fallback_reason: str,
+) -> str | None:
+    if fallback_reason == CoverageBlockerReason.NO_COMMON_FIXTURE.value:
+        return fallback_reason
+    if fallback_reason != CoverageBlockerReason.FIXTURE_IDENTITY_MISMATCH.value:
+        return None
+    if _only_start_time_fixture_mismatches(samples):
+        return CoverageBlockerReason.NO_COMMON_FIXTURE.value
+    return fallback_reason
+
+
+def _only_start_time_fixture_mismatches(samples: list[dict[str, object]]) -> bool:
+    fixture_blockers: Counter[str] = Counter()
+    for sample in samples:
+        fixture_proof = sample.get("fixtureIdentityProof")
+        if isinstance(fixture_proof, dict):
+            blocker = str(fixture_proof.get("blockerReason") or "")
+            if blocker:
+                fixture_blockers[blocker] += 1
+    return bool(fixture_blockers) and set(fixture_blockers) == {"start_time_mismatch"}
 
 
 def _zero_pair_sample_payload(strategy, source_node, target_node) -> dict[str, object]:

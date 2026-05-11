@@ -3164,7 +3164,7 @@ class TestBettingArbitrageNodeRunner:
         assert coverage["zeroCandidateFixtureProofBlockerCounts"] == {
             "start_time_mismatch": 2,
         }
-        assert report["blockerReason"] == "fixture_identity_mismatch"
+        assert report["blockerReason"] == "no_common_fixture"
         assert report["discoveryGapReason"] == "common_event_aliases_failed_fixture_proof"
         assert report["samples"][0]["fixtureIdentityProof"]["sameFixture"] is False
         assert report["samples"][0]["fixtureIdentityProof"]["reason"] == "start_time_mismatch"
