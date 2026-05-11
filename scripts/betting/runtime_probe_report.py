@@ -218,6 +218,10 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
             "zeroCandidateFixtureProofBlockerCounts": _zero_fixture_proof_blocker_counts(
                 venue_coverage.get("zeroCandidateVenuePairs"),
             ),
+            "fixtureOverlapDiagnostics": _fixture_overlap_diagnostics(
+                venue_coverage.get("zeroCandidateVenuePairs"),
+                top_limit=top_limit,
+            ),
             "topPositiveCandidates": (candidate_quality.get("topPositiveCandidates") or [])[
                 :top_limit
             ],
@@ -311,6 +315,51 @@ def _zero_fixture_proof_blocker_counts(value: Any) -> dict[str, int]:
             key = str(reason)
             counts[key] = counts.get(key, 0) + _int_value(count)
     return dict(sorted(counts.items()))
+
+
+def _fixture_overlap_diagnostics(value: Any, *, top_limit: int) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    diagnostics: list[dict[str, Any]] = []
+    for report in value:
+        if not isinstance(report, dict):
+            continue
+        samples = report.get("samples")
+        diagnostics.append(
+            {
+                "venuePair": report.get("venuePair"),
+                "reason": report.get("reason"),
+                "blockerReason": report.get("blockerReason"),
+                "discoveryGapReason": report.get("discoveryGapReason"),
+                "commonEventKeySamples": (report.get("commonEventKeySamples") or [])[:top_limit],
+                "sampleBlockerCounts": report.get("sampleBlockerCounts") or {},
+                "fixtureProofBlockerCounts": report.get("fixtureProofBlockerCounts") or {},
+                "sampleProofs": _fixture_overlap_sample_proofs(samples, top_limit=top_limit),
+            },
+        )
+    return diagnostics[:top_limit]
+
+
+def _fixture_overlap_sample_proofs(value: Any, *, top_limit: int) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    proofs: list[dict[str, Any]] = []
+    for sample in value[:top_limit]:
+        if not isinstance(sample, dict):
+            continue
+        proof = _as_dict(sample.get("fixtureIdentityProof"))
+        proofs.append(
+            {
+                "instrumentIdA": sample.get("instrumentIdA") or sample.get("instrument_a"),
+                "instrumentIdB": sample.get("instrumentIdB") or sample.get("instrument_b"),
+                "blockerHint": sample.get("blockerHint"),
+                "sameFixture": proof.get("sameFixture"),
+                "reason": proof.get("reason"),
+                "confidence": proof.get("confidence"),
+                "startTimeDeltaSeconds": proof.get("startTimeDeltaSeconds"),
+            },
+        )
+    return proofs
 
 
 def _normalized_latency_diagnostics(value: Any) -> dict[str, Any]:
@@ -1084,6 +1133,7 @@ def _format_text(path: Path, summary: dict[str, Any]) -> str:
     lines.extend(_format_semantic_cache_family_lines(summary.get("semanticCache")))
     lines.extend(_format_coverage_lines(graph))
     lines.extend(_format_quality_lines(quality))
+    lines.extend(_format_fixture_overlap_lines(quality.get("fixtureOverlapDiagnostics")))
     lines.extend(_format_latency_lines(summary.get("latencyDiagnostics")))
     provider_poll = _format_provider_poll_stats(summary.get("providerQuotePollStats"))
     if provider_poll:
@@ -1340,6 +1390,48 @@ def _format_coverage_book_devig_lines(value: Any) -> list[str]:
     if value_buckets:
         rendered = ", ".join(f"{key}={value}" for key, value in sorted(value_buckets.items()))
         lines.append(f"  coverage_book_value {rendered}")
+    return lines
+
+
+def _format_fixture_overlap_lines(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    lines: list[str] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        venue_pair = item.get("venuePair")
+        if not venue_pair:
+            continue
+        proof_counts = _as_dict(item.get("fixtureProofBlockerCounts"))
+        sample_counts = _as_dict(item.get("sampleBlockerCounts"))
+        common_samples = item.get("commonEventKeySamples")
+        common_rendered = ""
+        if isinstance(common_samples, list) and common_samples:
+            common_rendered = f" common={common_samples[:3]}"
+        lines.append(
+            "  fixture_overlap "
+            f"{venue_pair} "
+            f"reason={item.get('reason') or 'unknown'} "
+            f"blocker={item.get('blockerReason') or 'unknown'} "
+            f"discovery_gap={item.get('discoveryGapReason') or ''} "
+            f"sample_blockers={sample_counts} "
+            f"proof_blockers={proof_counts}"
+            f"{common_rendered}",
+        )
+        sample_proofs = item.get("sampleProofs")
+        if isinstance(sample_proofs, list) and sample_proofs:
+            proof = _as_dict(sample_proofs[0])
+            lines.append(
+                "  fixture_overlap_sample "
+                f"{venue_pair} "
+                f"reason={proof.get('reason')} "
+                f"same_fixture={proof.get('sameFixture')} "
+                f"confidence={proof.get('confidence')} "
+                f"start_delta={proof.get('startTimeDeltaSeconds')} "
+                f"a={proof.get('instrumentIdA')} "
+                f"b={proof.get('instrumentIdB')}",
+            )
     return lines
 
 
