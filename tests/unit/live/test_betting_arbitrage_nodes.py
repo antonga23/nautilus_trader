@@ -3397,7 +3397,9 @@ class TestBettingArbitrageNodeRunner:
 
     def test_resolution_horizon_payload_counts_near_term_quoted_edges(self):
         inside_start = (datetime.now(tz=UTC) + timedelta(hours=1)).isoformat()
+        recent_past_start = (datetime.now(tz=UTC) - timedelta(hours=1)).isoformat()
         outside_start = (datetime.now(tz=UTC) + timedelta(days=10)).isoformat()
+        stale_start = (datetime.now(tz=UTC) - timedelta(days=2)).isoformat()
         inside = _instrument(
             venue="SXBET",
             market_type="match_odds",
@@ -3412,6 +3414,13 @@ class TestBettingArbitrageNodeRunner:
             event_id="inside-b",
             start_time=inside_start,
         )
+        recent_past = _instrument(
+            venue="SXBET",
+            market_type="match_odds",
+            outcome="home",
+            event_id="recent-past",
+            start_time=recent_past_start,
+        )
         outside = _instrument(
             venue="POLYMARKET",
             market_type="match_odds",
@@ -3419,27 +3428,40 @@ class TestBettingArbitrageNodeRunner:
             event_id="outside",
             start_time=outside_start,
         )
+        stale = _instrument(
+            venue="POLYMARKET",
+            market_type="match_odds",
+            outcome="away",
+            event_id="stale",
+            start_time=stale_start,
+        )
         nodes = {
             "a": SimpleNamespace(instrument=inside),
             "b": SimpleNamespace(instrument=inside_other),
-            "c": SimpleNamespace(instrument=outside),
+            "c": SimpleNamespace(instrument=recent_past),
+            "d": SimpleNamespace(instrument=outside),
+            "e": SimpleNamespace(instrument=stale),
         }
 
         payload = node_runner._resolution_horizon_payload(
             {"max_resolution_horizon_hours": 48.0},
             nodes=nodes,
-            quotes={"a": object(), "b": object(), "c": object()},
+            quotes={"a": object(), "b": object(), "c": object(), "d": object(), "e": object()},
             edges=[
                 SimpleNamespace(source_node_id="a", target_node_id="b"),
                 SimpleNamespace(source_node_id="a", target_node_id="c"),
+                SimpleNamespace(source_node_id="a", target_node_id="d"),
+                SimpleNamespace(source_node_id="a", target_node_id="e"),
             ],
         )
 
         assert payload["enabled"] is True
         assert payload["eventsInsideHorizon"] == 1
+        assert payload["recentPastEvents"] == 1
         assert payload["eventsOutsideHorizon"] == 1
-        assert payload["quotedCandidatesInsideHorizon"] == 1
-        assert payload["blockedCandidatesDueHorizon"] == 1
+        assert payload["stalePastEvents"] == 1
+        assert payload["quotedCandidatesInsideHorizon"] == 2
+        assert payload["blockedCandidatesDueHorizon"] == 2
 
     def test_runtime_probe_candidate_samples_include_dry_run_provenance(self):
         instrument_a = _instrument(

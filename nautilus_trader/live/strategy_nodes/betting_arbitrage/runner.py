@@ -1218,10 +1218,18 @@ def _resolution_horizon_payload(
         horizon = timedelta(hours=48)
     now = datetime.now(tz=UTC)
     state_by_node: dict[Any, str] = {}
-    samples: dict[str, list[str]] = {"inside": [], "outside": [], "unknown": []}
+    samples: dict[str, list[str]] = {
+        "inside": [],
+        "recent_past": [],
+        "outside": [],
+        "stale_past": [],
+        "unknown": [],
+    }
     event_keys_by_state: dict[str, set[str]] = {
         "inside": set(),
+        "recent_past": set(),
         "outside": set(),
+        "stale_past": set(),
         "unknown": set(),
     }
     for node_id, node in nodes.items():
@@ -1241,20 +1249,24 @@ def _resolution_horizon_payload(
         if source not in quotes or target not in quotes:
             continue
         states = {state_by_node.get(source, "unknown"), state_by_node.get(target, "unknown")}
-        if states == {"inside"}:
+        if states <= {"inside", "recent_past"}:
             quoted_candidates_inside += 1
-        elif "outside" in states:
+        elif "outside" in states or "stale_past" in states:
             blocked_due_horizon += 1
     return {
         "enabled": True,
         "maxResolutionHorizonHours": float(horizon_hours),
         "eventsInsideHorizon": len(event_keys_by_state["inside"]),
+        "recentPastEvents": len(event_keys_by_state["recent_past"]),
         "eventsOutsideHorizon": len(event_keys_by_state["outside"]),
+        "stalePastEvents": len(event_keys_by_state["stale_past"]),
         "unknownResolutionEvents": len(event_keys_by_state["unknown"]),
         "quotedCandidatesInsideHorizon": quoted_candidates_inside,
         "blockedCandidatesDueHorizon": blocked_due_horizon,
         "insideHorizonEventSamples": samples["inside"],
+        "recentPastEventSamples": samples["recent_past"],
         "outsideHorizonEventSamples": samples["outside"],
+        "stalePastEventSamples": samples["stale_past"],
         "unknownResolutionEventSamples": samples["unknown"],
     }
 
@@ -1264,12 +1276,16 @@ def _empty_resolution_horizon_payload() -> dict[str, object]:
         "enabled": False,
         "maxResolutionHorizonHours": None,
         "eventsInsideHorizon": 0,
+        "recentPastEvents": 0,
         "eventsOutsideHorizon": 0,
+        "stalePastEvents": 0,
         "unknownResolutionEvents": 0,
         "quotedCandidatesInsideHorizon": 0,
         "blockedCandidatesDueHorizon": 0,
         "insideHorizonEventSamples": [],
+        "recentPastEventSamples": [],
         "outsideHorizonEventSamples": [],
+        "stalePastEventSamples": [],
         "unknownResolutionEventSamples": [],
     }
 
@@ -1283,6 +1299,11 @@ def _resolution_horizon_state(
     start_time = _probe_parsed_start_time(instrument)
     if start_time is None:
         return "unknown"
+    stale_grace = timedelta(hours=6)
+    if start_time < now - stale_grace:
+        return "stale_past"
+    if start_time < now:
+        return "recent_past"
     return "inside" if start_time <= now + horizon else "outside"
 
 
