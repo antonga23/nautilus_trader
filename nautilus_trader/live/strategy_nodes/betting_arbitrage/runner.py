@@ -1157,6 +1157,9 @@ def _collect_runtime_probe_payload(
             "marketFamilies": profitability["market_families"],
             "zeroCandidateVenuePairSamples": venue_coverage["zeroCandidateVenuePairs"],
             "zeroCandidateBlockerCounts": venue_coverage["zeroCandidateBlockerCounts"],
+            "zeroCandidateFixtureProofBlockerCounts": venue_coverage[
+                "zeroCandidateFixtureProofBlockerCounts"
+            ],
             "topPositiveCandidates": profitability["sample_candidates"],
             "topNegativeNearMisses": profitability["negative_near_misses"],
             "topValueEdgeCandidates": profitability["value_edge_candidates"],
@@ -1682,6 +1685,7 @@ def _empty_candidate_quality_payload() -> dict[str, object]:
         "marketFamilies": {},
         "zeroCandidateVenuePairSamples": [],
         "zeroCandidateBlockerCounts": {},
+        "zeroCandidateFixtureProofBlockerCounts": {},
         "topPositiveCandidates": [],
         "topNegativeNearMisses": [],
         "topValueEdgeCandidates": [],
@@ -1783,6 +1787,7 @@ def _venue_pair_coverage(
         for report in zero_pairs
         if isinstance(report, dict)
     )
+    zero_pair_fixture_proof_blocker_counts = _zero_pair_fixture_proof_blocker_counts(zero_pairs)
     cross_venue_candidate_count = sum(
         count for pair, count in candidate_counts.items() if _is_cross_venue_pair(pair)
     )
@@ -1858,6 +1863,9 @@ def _venue_pair_coverage(
         "candidateCounts": {pair: candidate_counts.get(pair, 0) for pair in all_pairs},
         "crossVenueCandidateCount": cross_venue_candidate_count,
         "zeroCandidateBlockerCounts": dict(sorted(zero_pair_blocker_counts.items())),
+        "zeroCandidateFixtureProofBlockerCounts": dict(
+            sorted(zero_pair_fixture_proof_blocker_counts.items()),
+        ),
         "crossVenuePairsWithCandidates": [
             pair
             for pair in all_pairs
@@ -1865,6 +1873,19 @@ def _venue_pair_coverage(
         ],
         "zeroCandidateVenuePairs": zero_pairs,
     }
+
+
+def _zero_pair_fixture_proof_blocker_counts(
+    zero_pairs: list[dict[str, object]],
+) -> Counter[str]:
+    counts: Counter[str] = Counter()
+    for report in zero_pairs:
+        fixture_proof_counts = report.get("fixtureProofBlockerCounts")
+        if not isinstance(fixture_proof_counts, dict):
+            continue
+        for reason, count in fixture_proof_counts.items():
+            counts[str(reason)] += int(count or 0)
+    return counts
 
 
 def _quote_subscription_counts_by_venue(strategy) -> Counter[str]:
@@ -2108,8 +2129,9 @@ def _quoted_event_keys_for_venue(
 
 def _zero_pair_sample_blocker(samples: list[dict[str, object]], fallback: object) -> str:
     fallback_reason = str(fallback or CoverageBlockerReason.NO_SEMANTIC_EDGE.value)
-    if fallback_reason == CoverageBlockerReason.FIXTURE_IDENTITY_MISMATCH.value:
-        return fallback_reason
+    fixture_identity_reason = _fixture_identity_fallback_reason(samples, fallback_reason)
+    if fixture_identity_reason is not None:
+        return fixture_identity_reason
     blocker_hints: Counter[str] = Counter()
     for sample in samples:
         blocker_hint = str(sample.get("blockerHint") or "")
@@ -2132,10 +2154,36 @@ def _zero_pair_sample_blocker(samples: list[dict[str, object]], fallback: object
     return fallback_reason
 
 
+def _fixture_identity_fallback_reason(
+    samples: list[dict[str, object]],
+    fallback_reason: str,
+) -> str | None:
+    if fallback_reason == CoverageBlockerReason.NO_COMMON_FIXTURE.value:
+        return fallback_reason
+    if fallback_reason != CoverageBlockerReason.FIXTURE_IDENTITY_MISMATCH.value:
+        return None
+    if _only_start_time_fixture_mismatches(samples):
+        return CoverageBlockerReason.NO_COMMON_FIXTURE.value
+    return fallback_reason
+
+
+def _only_start_time_fixture_mismatches(samples: list[dict[str, object]]) -> bool:
+    fixture_blockers: Counter[str] = Counter()
+    for sample in samples:
+        fixture_proof = sample.get("fixtureIdentityProof")
+        if isinstance(fixture_proof, dict):
+            blocker = str(fixture_proof.get("blockerReason") or "")
+            if blocker:
+                fixture_blockers[blocker] += 1
+    return bool(fixture_blockers) and set(fixture_blockers) == {"start_time_mismatch"}
+
+
 def _zero_pair_sample_payload(strategy, source_node, target_node) -> dict[str, object]:
     instrument_a = source_node.instrument
     instrument_b = target_node.instrument
     fixture_proof = DEFAULT_FIXTURE_IDENTITY_RESOLVER.resolve(instrument_a, instrument_b)
+    fixture_start_time_a = DEFAULT_FIXTURE_IDENTITY_RESOLVER.parsed_start_time(instrument_a)
+    fixture_start_time_b = DEFAULT_FIXTURE_IDENTITY_RESOLVER.parsed_start_time(instrument_b)
     pattern_a = _probe_pattern_payload(source_node)
     pattern_b = _probe_pattern_payload(target_node)
     matcher_suspect, suspect_reason = _strategy_matcher_suspect_reason(
@@ -2160,8 +2208,12 @@ def _zero_pair_sample_payload(strategy, source_node, target_node) -> dict[str, o
         "instrumentIdB": str(getattr(instrument_b, "id", "")),
         "eventKeyA": _probe_event_key_no_time(source_node),
         "eventKeyB": _probe_event_key_no_time(target_node),
+        "eventAliasKeysA": sorted(_probe_event_keys_no_time(source_node))[:5],
+        "eventAliasKeysB": sorted(_probe_event_keys_no_time(target_node))[:5],
         "canonicalEventKeyA": _canonical_probe_event_key_no_time(source_node),
         "canonicalEventKeyB": _canonical_probe_event_key_no_time(target_node),
+        "fixtureStartTimeA": _isoformat_utc(fixture_start_time_a),
+        "fixtureStartTimeB": _isoformat_utc(fixture_start_time_b),
         "patternA": pattern_a,
         "patternB": pattern_b,
         "matcherSuspect": matcher_suspect,
@@ -2180,6 +2232,12 @@ def _zero_pair_sample_payload(strategy, source_node, target_node) -> dict[str, o
         },
         "blockerHint": blocker_hint,
     }
+
+
+def _isoformat_utc(timestamp) -> str | None:
+    if timestamp is None:
+        return None
+    return timestamp.isoformat().replace("+00:00", "Z")
 
 
 def _strategy_matcher_suspect_reason(strategy, instrument_a, instrument_b) -> tuple[bool, str]:

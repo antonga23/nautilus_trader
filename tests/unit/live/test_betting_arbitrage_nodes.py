@@ -3161,10 +3161,17 @@ class TestBettingArbitrageNodeRunner:
         assert report["fullyQuotedCommonEventKeyCount"] >= 1
         assert report["verifiedCommonFixtureSampleCount"] == 0
         assert report["fixtureProofBlockerCounts"] == {"start_time_mismatch": 1}
-        assert report["blockerReason"] == "fixture_identity_mismatch"
+        assert coverage["zeroCandidateFixtureProofBlockerCounts"] == {
+            "start_time_mismatch": 2,
+        }
+        assert report["blockerReason"] == "no_common_fixture"
         assert report["discoveryGapReason"] == "common_event_aliases_failed_fixture_proof"
         assert report["samples"][0]["fixtureIdentityProof"]["sameFixture"] is False
         assert report["samples"][0]["fixtureIdentityProof"]["reason"] == "start_time_mismatch"
+        assert report["samples"][0]["fixtureStartTimeA"] == "2026-03-13T18:00:00Z"
+        assert report["samples"][0]["fixtureStartTimeB"] == "2026-03-26T08:00:00Z"
+        assert "soccer:leeds united:tottenham hotspur" in report["samples"][0]["eventAliasKeysA"]
+        assert "soccer:leeds united:tottenham hotspur" in report["samples"][0]["eventAliasKeysB"]
 
     def test_venue_pair_coverage_uses_fixture_aliases_for_noisy_polymarket_names(self):
         polymarket_instrument = _instrument(

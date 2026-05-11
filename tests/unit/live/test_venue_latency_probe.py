@@ -1,6 +1,7 @@
 # skipcq: PYL-C0114, PYL-C0116
 
 from scripts.strategy_nodes.venue_latency_probe import ProbeSample
+from scripts.strategy_nodes.venue_latency_probe import compare_region_reports
 from scripts.strategy_nodes.venue_latency_probe import placement_recommendations
 from scripts.strategy_nodes.venue_latency_probe import summarize_samples
 
@@ -58,6 +59,8 @@ def test_latency_probe_recommends_strategy_placement_by_worst_leg():
     assert cloudbet_sxbet["region"] == "tokyo"
     assert cloudbet_sxbet["venues"] == ["cloudbet", "sxbet"]
     assert cloudbet_sxbet["worstLegTotalP95Ms"] == 90.0
+    assert cloudbet_sxbet["venueTotalP95SkewMs"] == 45.0
+    assert cloudbet_sxbet["venueFirstByteP95SkewMs"] == 12.0
     assert cloudbet_sxbet["venueTotalP95Ms"] == {"cloudbet": 45.0, "sxbet": 90.0}
     assert cloudbet_sxbet["eligibleForPlacementComparison"] is True
     assert cloudbet_sxbet["blockers"] == []
@@ -85,3 +88,75 @@ def test_latency_probe_blocks_stale_or_missing_placement_samples():
     assert polymarket_sxbet["dataFresh"] is False
     assert polymarket_sxbet["eligibleForPlacementComparison"] is False
     assert polymarket_sxbet["blockers"] == ["missing_venue_samples", "stale_probe_data"]
+
+
+def test_latency_probe_compares_regions_by_worst_leg_then_skew():
+    tokyo = {
+        "region": "tokyo",
+        "generatedAtNs": 100,
+        "targets": {"cloudbet": "https://example.test/cloudbet"},
+        "placementRecommendations": {
+            "cloudbet_sxbet": {
+                "region": "tokyo",
+                "venues": ["cloudbet", "sxbet"],
+                "eligibleForPlacementComparison": True,
+                "worstLegTotalP95Ms": 80.0,
+                "venueTotalP95SkewMs": 35.0,
+                "worstLegFirstByteP95Ms": 50.0,
+                "venueFirstByteP95SkewMs": 20.0,
+                "worstLegErrorRate": 0.0,
+                "blockers": [],
+            },
+        },
+    }
+    virginia = {
+        "region": "virginia",
+        "generatedAtNs": 200,
+        "targets": {"cloudbet": "https://example.test/cloudbet"},
+        "placementRecommendations": {
+            "cloudbet_sxbet": {
+                "region": "virginia",
+                "venues": ["cloudbet", "sxbet"],
+                "eligibleForPlacementComparison": True,
+                "worstLegTotalP95Ms": 80.0,
+                "venueTotalP95SkewMs": 12.0,
+                "worstLegFirstByteP95Ms": 44.0,
+                "venueFirstByteP95SkewMs": 8.0,
+                "worstLegErrorRate": 0.0,
+                "blockers": [],
+            },
+        },
+    }
+
+    comparison = compare_region_reports([tokyo, virginia])
+
+    best = comparison["bestRegionByStrategy"]["cloudbet_sxbet"]
+    assert best["region"] == "virginia"
+    assert best["worstLegTotalP95Ms"] == 80.0
+    assert best["venueTotalP95SkewMs"] == 12.0
+    assert comparison["regions"]["tokyo"]["generatedAtNs"] == 100
+
+
+def test_latency_probe_compare_reports_blocked_regions_when_no_candidate_is_eligible():
+    comparison = compare_region_reports(
+        [
+            {
+                "region": "stale-region",
+                "placementRecommendations": {
+                    "polymarket_sxbet": {
+                        "region": "stale-region",
+                        "eligibleForPlacementComparison": False,
+                        "blockers": ["stale_probe_data"],
+                    },
+                },
+            },
+        ],
+    )
+
+    best = comparison["bestRegionByStrategy"]["polymarket_sxbet"]
+    assert best["region"] is None
+    assert best["eligibleForPlacementComparison"] is False
+    assert best["blockers"] == {"stale-region": ["stale_probe_data"]}
+    assert comparison["blockersByRegion"] == {
+        "stale-region": {"polymarket_sxbet": ["stale_probe_data"]},
+    }
