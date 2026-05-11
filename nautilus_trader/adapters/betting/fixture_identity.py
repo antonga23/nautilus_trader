@@ -141,6 +141,22 @@ class FixtureIdentityResolver:
             "west",
         },
     )
+    GENERIC_SINGLE_TOKEN_ALIASES = (
+        IGNORED_TEAM_TOKENS
+        | GEOGRAPHIC_PREFIX_TOKENS
+        | frozenset(
+            {
+                "city",
+                "county",
+                "east",
+                "north",
+                "south",
+                "state",
+                "town",
+                "united",
+            },
+        )
+    )
     PHRASE_ALIASES = {
         "cle cavaliers": "cleveland cavaliers",
         "cle cavs": "cleveland cavaliers",
@@ -489,11 +505,23 @@ class FixtureIdentityResolver:
             return 0.86, "prefix"
         left_tokens = set(left.split())
         right_tokens = set(right.split())
+        if FixtureIdentityResolver._is_specific_token_subset(left_tokens, right_tokens):
+            return 0.84, "token_subset"
+        if FixtureIdentityResolver._is_specific_token_subset(right_tokens, left_tokens):
+            return 0.84, "token_subset"
         overlap = left_tokens & right_tokens
         if len(overlap) >= 2:
             denominator = max(len(left_tokens), len(right_tokens), 1)
             return max(0.74, len(overlap) / denominator), "token_overlap"
         return 0.0, ""
+
+    @classmethod
+    def _is_specific_token_subset(cls, subset: set[str], superset: set[str]) -> bool:
+        if not subset or not superset or subset == superset:
+            return False
+        if not subset < superset:
+            return False
+        return not subset <= cls.GENERIC_SINGLE_TOKEN_ALIASES
 
     def _participant_prefix_alias(self, canonical: str) -> str:
         tokens = canonical.split()

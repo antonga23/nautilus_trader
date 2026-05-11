@@ -163,6 +163,51 @@ def test_fixture_identity_allows_harmless_suffix_drift_with_start_time_evidence(
     assert "basketball:cleveland:minnesota" in sxbet.event_alias_keys()
 
 
+def test_fixture_identity_allows_specific_nickname_only_drift_with_start_time_evidence():
+    resolver = FixtureIdentityResolver()
+    polymarket = _instrument(
+        venue="POLYMARKET",
+        event_name="Timberwolves v Spurs",
+        home_name="Timberwolves",
+        away_name="Spurs",
+        start_time="2026-05-10T19:00:00Z",
+    )
+    sxbet = _instrument(
+        venue="SXBET",
+        event_name="Minnesota Timberwolves vs San Antonio Spurs",
+        home_name="Minnesota Timberwolves",
+        away_name="San Antonio Spurs",
+        start_time="2026-05-10T19:30:00Z",
+    )
+
+    proof = resolver.resolve(polymarket, sxbet)
+
+    assert proof.same_fixture is True
+    assert proof.blocker_reason is None
+    assert "token_subset" in ",".join(proof.alias_hits)
+
+
+def test_fixture_identity_blocks_generic_subset_alias_without_specific_team_token():
+    resolver = FixtureIdentityResolver()
+    first = _instrument(
+        venue="POLYMARKET",
+        event_name="City v United",
+        home_name="City",
+        away_name="United",
+    )
+    second = _instrument(
+        venue="SXBET",
+        event_name="Manchester City v Manchester United",
+        home_name="Manchester City",
+        away_name="Manchester United",
+    )
+
+    proof = resolver.resolve(first, second)
+
+    assert proof.same_fixture is False
+    assert proof.blocker_reason == "participant_mismatch"
+
+
 def test_fixture_identity_strips_provider_market_group_suffix_noise():
     resolver = FixtureIdentityResolver()
     polymarket = _instrument(
