@@ -141,6 +141,22 @@ class FixtureIdentityResolver:
             "west",
         },
     )
+    GENERIC_SINGLE_TOKEN_ALIASES = (
+        IGNORED_TEAM_TOKENS
+        | GEOGRAPHIC_PREFIX_TOKENS
+        | frozenset(
+            {
+                "city",
+                "county",
+                "east",
+                "north",
+                "south",
+                "state",
+                "town",
+                "united",
+            },
+        )
+    )
     PHRASE_ALIASES = {
         "cle cavaliers": "cleveland cavaliers",
         "cle cavs": "cleveland cavaliers",
@@ -305,22 +321,39 @@ class FixtureIdentityResolver:
             key = self.event_key(instrument, include_start_time=include_start_time)
             return (key,) if key else ()
         home_aliases, away_aliases = participant_aliases[:2]
+        keys = self._participant_event_alias_keys(
+            sport,
+            home_aliases,
+            away_aliases,
+            suffix=self._event_alias_suffix(instrument, include_start_time=include_start_time),
+        )
+        exact = self.event_key(instrument, include_start_time=include_start_time)
+        if exact:
+            keys.add(exact)
+        return tuple(sorted(keys))
 
-        suffix = ""
+    def _event_alias_suffix(self, instrument: Any, *, include_start_time: bool) -> str:
         if include_start_time:
             start_time = self.parsed_start_time(instrument)
             if start_time is not None:
-                suffix = f":{start_time.strftime('%Y-%m-%dT%H')}"
+                return f":{start_time.strftime('%Y-%m-%dT%H')}"
+        return ""
+
+    @staticmethod
+    def _participant_event_alias_keys(
+        sport: str,
+        home_aliases: tuple[str, ...],
+        away_aliases: tuple[str, ...],
+        *,
+        suffix: str,
+    ) -> set[str]:
         keys: set[str] = set()
         for home_alias in home_aliases:
             for away_alias in away_aliases:
                 participants = sorted({home_alias, away_alias})
                 if len(participants) >= 2:
                     keys.add(f"{sport}:{participants[0]}:{participants[1]}{suffix}")
-        exact = self.event_key(instrument, include_start_time=include_start_time)
-        if exact:
-            keys.add(exact)
-        return tuple(sorted(keys))
+        return keys
 
     def event_key(self, instrument: Any, *, include_start_time: bool = True) -> str:
         parts = [self.normalize_sport(str(getattr(instrument, "sport_name", "") or ""))]
@@ -347,86 +380,136 @@ class FixtureIdentityResolver:
     def resolve(self, instrument_a: Any, instrument_b: Any) -> FixtureIdentityProof:
         key_a = self.event_key(instrument_a, include_start_time=False)
         key_b = self.event_key(instrument_b, include_start_time=False)
-        venue_a = str(getattr(getattr(instrument_a, "venue_name", ""), "value", "") or "")
-        venue_b = str(getattr(getattr(instrument_b, "venue_name", ""), "value", "") or "")
-        event_id_a = str(getattr(instrument_a, "event_id", "") or "")
-        event_id_b = str(getattr(instrument_b, "event_id", "") or "")
-
-        if venue_a and venue_a == venue_b and event_id_a and event_id_a == event_id_b:
-            return FixtureIdentityProof(
-                same_fixture=True,
-                reason="provider_event_id_match",
-                confidence=1.0,
-                canonical_event_key_a=key_a,
-                canonical_event_key_b=key_b,
-                matched_fields=("venue", "event_id"),
-            )
-
+        provider_match = self._provider_event_id_match_proof(
+            instrument_a,
+            instrument_b,
+            key_a,
+            key_b,
+        )
+        if provider_match is not None:
+            return provider_match
         sport_a = self.normalize_sport(str(getattr(instrument_a, "sport_name", "") or ""))
         sport_b = self.normalize_sport(str(getattr(instrument_b, "sport_name", "") or ""))
         if sport_a != sport_b:
-            return FixtureIdentityProof(
-                same_fixture=False,
-                reason="sport_mismatch",
-                confidence=0.0,
-                canonical_event_key_a=key_a,
-                canonical_event_key_b=key_b,
-                blocker_reason="sport_mismatch",
-            )
-
+            return self._blocked_fixture_proof(key_a, key_b, reason="sport_mismatch")
         participant_match = self._participants_match(
             self.team_key(instrument_a),
             self.team_key(instrument_b),
         )
         if not participant_match.matched:
-            return FixtureIdentityProof(
-                same_fixture=False,
-                reason=participant_match.reason,
-                confidence=participant_match.confidence,
-                canonical_event_key_a=key_a,
-                canonical_event_key_b=key_b,
-                alias_hits=participant_match.alias_hits,
-                blocker_reason="participant_mismatch",
-            )
+            return self._participant_mismatch_proof(key_a, key_b, participant_match)
+        start_delta = self._start_time_delta_secs(instrument_a, instrument_b)
+        if self._is_start_time_mismatch(start_delta):
+            return self._start_time_mismatch_proof(key_a, key_b, participant_match, start_delta)
+        return self._canonical_match_proof(
+            instrument_a,
+            instrument_b,
+            key_a,
+            key_b,
+            participant_match,
+            start_delta,
+        )
 
+    @staticmethod
+    def _provider_event_id_match_proof(
+        instrument_a: Any,
+        instrument_b: Any,
+        key_a: str,
+        key_b: str,
+    ) -> FixtureIdentityProof | None:
+        venue_a = str(getattr(getattr(instrument_a, "venue_name", ""), "value", "") or "")
+        venue_b = str(getattr(getattr(instrument_b, "venue_name", ""), "value", "") or "")
+        event_id_a = str(getattr(instrument_a, "event_id", "") or "")
+        event_id_b = str(getattr(instrument_b, "event_id", "") or "")
+        if not (venue_a and venue_a == venue_b and event_id_a and event_id_a == event_id_b):
+            return None
+        return FixtureIdentityProof(
+            same_fixture=True,
+            reason="provider_event_id_match",
+            confidence=1.0,
+            canonical_event_key_a=key_a,
+            canonical_event_key_b=key_b,
+            matched_fields=("venue", "event_id"),
+        )
+
+    @staticmethod
+    def _blocked_fixture_proof(key_a: str, key_b: str, *, reason: str) -> FixtureIdentityProof:
+        return FixtureIdentityProof(
+            same_fixture=False,
+            reason=reason,
+            confidence=0.0,
+            canonical_event_key_a=key_a,
+            canonical_event_key_b=key_b,
+            blocker_reason=reason,
+        )
+
+    @staticmethod
+    def _participant_mismatch_proof(
+        key_a: str,
+        key_b: str,
+        participant_match: ParticipantMatch,
+    ) -> FixtureIdentityProof:
+        return FixtureIdentityProof(
+            same_fixture=False,
+            reason=participant_match.reason,
+            confidence=participant_match.confidence,
+            canonical_event_key_a=key_a,
+            canonical_event_key_b=key_b,
+            alias_hits=participant_match.alias_hits,
+            blocker_reason="participant_mismatch",
+        )
+
+    def _start_time_delta_secs(self, instrument_a: Any, instrument_b: Any) -> float | None:
         start_a = self.parsed_start_time(instrument_a)
         start_b = self.parsed_start_time(instrument_b)
-        start_delta = (
+        return (
             abs((start_a - start_b).total_seconds())
             if start_a is not None and start_b is not None
             else None
         )
-        if start_delta is not None and start_delta > self.start_time_tolerance_secs:
-            return FixtureIdentityProof(
-                same_fixture=False,
-                reason="start_time_mismatch",
-                confidence=min(participant_match.confidence, 0.35),
-                canonical_event_key_a=key_a,
-                canonical_event_key_b=key_b,
-                alias_hits=participant_match.alias_hits,
-                start_time_delta_secs=start_delta,
-                blocker_reason="start_time_mismatch",
-            )
 
+    def _is_start_time_mismatch(self, start_delta_secs: float | None) -> bool:
+        return start_delta_secs is not None and start_delta_secs > self.start_time_tolerance_secs
+
+    @staticmethod
+    def _start_time_mismatch_proof(
+        key_a: str,
+        key_b: str,
+        participant_match: ParticipantMatch,
+        start_delta_secs: float | None,
+    ) -> FixtureIdentityProof:
+        return FixtureIdentityProof(
+            same_fixture=False,
+            reason="start_time_mismatch",
+            confidence=min(participant_match.confidence, 0.35),
+            canonical_event_key_a=key_a,
+            canonical_event_key_b=key_b,
+            alias_hits=participant_match.alias_hits,
+            start_time_delta_secs=start_delta_secs,
+            blocker_reason="start_time_mismatch",
+        )
+
+    def _canonical_match_proof(
+        self,
+        instrument_a: Any,
+        instrument_b: Any,
+        key_a: str,
+        key_b: str,
+        participant_match: ParticipantMatch,
+        start_delta_secs: float | None,
+    ) -> FixtureIdentityProof:
         matched_fields = ["sport", "participants"]
         confidence = participant_match.confidence
         reason = "canonical_fixture_match"
-        if start_delta is not None:
+        if start_delta_secs is not None:
             matched_fields.append("start_time")
             confidence = min(0.98, confidence + 0.04)
         else:
             reason = "canonical_fixture_match_missing_start_time"
             confidence = min(confidence, 0.86)
-        competition_a = self.normalize_event_component(
-            str(getattr(instrument_a, "competition_name", "") or ""),
-        )
-        competition_b = self.normalize_event_component(
-            str(getattr(instrument_b, "competition_name", "") or ""),
-        )
-        if competition_a and competition_b and competition_a == competition_b:
+        if self._competitions_match(instrument_a, instrument_b):
             matched_fields.append("competition")
             confidence = min(0.99, confidence + 0.01)
-
         return FixtureIdentityProof(
             same_fixture=True,
             reason=reason,
@@ -435,8 +518,17 @@ class FixtureIdentityResolver:
             canonical_event_key_b=key_b,
             alias_hits=participant_match.alias_hits,
             matched_fields=tuple(matched_fields),
-            start_time_delta_secs=start_delta,
+            start_time_delta_secs=start_delta_secs,
         )
+
+    def _competitions_match(self, instrument_a: Any, instrument_b: Any) -> bool:
+        competition_a = self.normalize_event_component(
+            str(getattr(instrument_a, "competition_name", "") or ""),
+        )
+        competition_b = self.normalize_event_component(
+            str(getattr(instrument_b, "competition_name", "") or ""),
+        )
+        return bool(competition_a and competition_b and competition_a == competition_b)
 
     def _participants_match(
         self,
@@ -452,15 +544,10 @@ class FixtureIdentityResolver:
         alias_hits: list[str] = []
         confidences: list[float] = []
         for participant in participants_a:
-            best_index = -1
-            best_confidence = 0.0
-            best_alias = ""
-            for index, candidate in enumerate(remaining):
-                confidence, alias = self._participant_similarity(participant, candidate)
-                if confidence > best_confidence:
-                    best_index = index
-                    best_confidence = confidence
-                    best_alias = alias
+            best_index, best_confidence, best_alias = self._best_participant_match(
+                participant,
+                remaining,
+            )
             if best_index < 0 or best_confidence < 0.72:
                 return ParticipantMatch(
                     False,
@@ -479,6 +566,22 @@ class FixtureIdentityResolver:
             reason="compatible_participants",
         )
 
+    def _best_participant_match(
+        self,
+        participant: str,
+        remaining: list[str],
+    ) -> tuple[int, float, str]:
+        best_index = -1
+        best_confidence = 0.0
+        best_alias = ""
+        for index, candidate in enumerate(remaining):
+            confidence, alias = self._participant_similarity(participant, candidate)
+            if confidence > best_confidence:
+                best_index = index
+                best_confidence = confidence
+                best_alias = alias
+        return best_index, best_confidence, best_alias
+
     @staticmethod
     def _participant_similarity(left: str, right: str) -> tuple[float, str]:
         if left == right:
@@ -489,11 +592,23 @@ class FixtureIdentityResolver:
             return 0.86, "prefix"
         left_tokens = set(left.split())
         right_tokens = set(right.split())
+        if FixtureIdentityResolver._is_specific_token_subset(left_tokens, right_tokens):
+            return 0.84, "token_subset"
+        if FixtureIdentityResolver._is_specific_token_subset(right_tokens, left_tokens):
+            return 0.84, "token_subset"
         overlap = left_tokens & right_tokens
         if len(overlap) >= 2:
             denominator = max(len(left_tokens), len(right_tokens), 1)
             return max(0.74, len(overlap) / denominator), "token_overlap"
         return 0.0, ""
+
+    @classmethod
+    def _is_specific_token_subset(cls, subset: set[str], superset: set[str]) -> bool:
+        if not subset or not superset or subset == superset:
+            return False
+        if not subset < superset:
+            return False
+        return not subset <= cls.GENERIC_SINGLE_TOKEN_ALIASES
 
     def _participant_prefix_alias(self, canonical: str) -> str:
         tokens = canonical.split()
