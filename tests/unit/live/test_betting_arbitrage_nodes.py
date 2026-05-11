@@ -3161,6 +3161,9 @@ class TestBettingArbitrageNodeRunner:
         assert report["fullyQuotedCommonEventKeyCount"] >= 1
         assert report["verifiedCommonFixtureSampleCount"] == 0
         assert report["fixtureProofBlockerCounts"] == {"start_time_mismatch": 1}
+        assert coverage["zeroCandidateFixtureProofBlockerCounts"] == {
+            "start_time_mismatch": 2,
+        }
         assert report["blockerReason"] == "fixture_identity_mismatch"
         assert report["discoveryGapReason"] == "common_event_aliases_failed_fixture_proof"
         assert report["samples"][0]["fixtureIdentityProof"]["sameFixture"] is False

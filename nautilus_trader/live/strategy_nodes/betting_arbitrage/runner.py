@@ -1157,6 +1157,9 @@ def _collect_runtime_probe_payload(
             "marketFamilies": profitability["market_families"],
             "zeroCandidateVenuePairSamples": venue_coverage["zeroCandidateVenuePairs"],
             "zeroCandidateBlockerCounts": venue_coverage["zeroCandidateBlockerCounts"],
+            "zeroCandidateFixtureProofBlockerCounts": venue_coverage[
+                "zeroCandidateFixtureProofBlockerCounts"
+            ],
             "topPositiveCandidates": profitability["sample_candidates"],
             "topNegativeNearMisses": profitability["negative_near_misses"],
             "topValueEdgeCandidates": profitability["value_edge_candidates"],
@@ -1682,6 +1685,7 @@ def _empty_candidate_quality_payload() -> dict[str, object]:
         "marketFamilies": {},
         "zeroCandidateVenuePairSamples": [],
         "zeroCandidateBlockerCounts": {},
+        "zeroCandidateFixtureProofBlockerCounts": {},
         "topPositiveCandidates": [],
         "topNegativeNearMisses": [],
         "topValueEdgeCandidates": [],
@@ -1783,6 +1787,7 @@ def _venue_pair_coverage(
         for report in zero_pairs
         if isinstance(report, dict)
     )
+    zero_pair_fixture_proof_blocker_counts = _zero_pair_fixture_proof_blocker_counts(zero_pairs)
     cross_venue_candidate_count = sum(
         count for pair, count in candidate_counts.items() if _is_cross_venue_pair(pair)
     )
@@ -1858,6 +1863,9 @@ def _venue_pair_coverage(
         "candidateCounts": {pair: candidate_counts.get(pair, 0) for pair in all_pairs},
         "crossVenueCandidateCount": cross_venue_candidate_count,
         "zeroCandidateBlockerCounts": dict(sorted(zero_pair_blocker_counts.items())),
+        "zeroCandidateFixtureProofBlockerCounts": dict(
+            sorted(zero_pair_fixture_proof_blocker_counts.items()),
+        ),
         "crossVenuePairsWithCandidates": [
             pair
             for pair in all_pairs
@@ -1865,6 +1873,19 @@ def _venue_pair_coverage(
         ],
         "zeroCandidateVenuePairs": zero_pairs,
     }
+
+
+def _zero_pair_fixture_proof_blocker_counts(
+    zero_pairs: list[dict[str, object]],
+) -> Counter[str]:
+    counts: Counter[str] = Counter()
+    for report in zero_pairs:
+        fixture_proof_counts = report.get("fixtureProofBlockerCounts")
+        if not isinstance(fixture_proof_counts, dict):
+            continue
+        for reason, count in fixture_proof_counts.items():
+            counts[str(reason)] += int(count or 0)
+    return counts
 
 
 def _quote_subscription_counts_by_venue(strategy) -> Counter[str]:
