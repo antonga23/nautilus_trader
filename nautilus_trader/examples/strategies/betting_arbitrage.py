@@ -731,6 +731,9 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._quote_event_to_strategy_latency_ns: list[int] = []
         self._quote_publish_to_strategy_latency_ns: list[int] = []
         self._quote_fetch_latency_ns: list[int] = []
+        self._quote_event_to_strategy_latency_ns_by_venue: dict[str, list[int]] = {}
+        self._quote_publish_to_strategy_latency_ns_by_venue: dict[str, list[int]] = {}
+        self._quote_fetch_latency_ns_by_venue: dict[str, list[int]] = {}
         self._instrument_refresh_reconcile_latency_ns: list[int] = []
         self._last_arbitrage_summary_at_ns = 0
 
@@ -1632,20 +1635,39 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._handle_search_quote_tick(tick, instrument)
 
     def _record_quote_receive_latency(self, tick: QuoteTick, strategy_received_ns: int) -> None:
+        venue = str(tick.instrument_id.venue).upper()
         if tick.ts_event > 0:
+            elapsed_ns = max(0, strategy_received_ns - int(tick.ts_event))
             self._record_latency_sample(
                 self._quote_event_to_strategy_latency_ns,
-                max(0, strategy_received_ns - int(tick.ts_event)),
+                elapsed_ns,
+            )
+            self._record_venue_latency_sample(
+                self._quote_event_to_strategy_latency_ns_by_venue,
+                venue,
+                elapsed_ns,
             )
         if tick.ts_init > 0:
+            elapsed_ns = max(0, strategy_received_ns - int(tick.ts_init))
             self._record_latency_sample(
                 self._quote_publish_to_strategy_latency_ns,
-                max(0, strategy_received_ns - int(tick.ts_init)),
+                elapsed_ns,
+            )
+            self._record_venue_latency_sample(
+                self._quote_publish_to_strategy_latency_ns_by_venue,
+                venue,
+                elapsed_ns,
             )
         if tick.ts_event > 0 and tick.ts_init > 0:
+            elapsed_ns = max(0, int(tick.ts_init) - int(tick.ts_event))
             self._record_latency_sample(
                 self._quote_fetch_latency_ns,
-                max(0, int(tick.ts_init) - int(tick.ts_event)),
+                elapsed_ns,
+            )
+            self._record_venue_latency_sample(
+                self._quote_fetch_latency_ns_by_venue,
+                venue,
+                elapsed_ns,
             )
 
     @staticmethod
@@ -4289,6 +4311,18 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             del samples[: len(samples) - LATENCY_SAMPLE_LIMIT]
 
     @staticmethod
+    def _record_venue_latency_sample(
+        samples_by_venue: dict[str, list[int]],
+        venue: str,
+        elapsed_ns: int,
+    ) -> None:
+        key = str(venue or "UNKNOWN").upper()
+        BettingArbitrageStrategy._record_latency_sample(
+            samples_by_venue.setdefault(key, []),
+            elapsed_ns,
+        )
+
+    @staticmethod
     def _latency_summary(samples: list[int]) -> dict[str, float | int]:
         if not samples:
             return {"count": 0, "p50_ms": 0.0, "p95_ms": 0.0, "p99_ms": 0.0, "max_ms": 0.0}
@@ -4310,6 +4344,16 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             "max_ms": round(ordered[-1] / 1_000_000, 6),
         }
 
+    @classmethod
+    def _latency_summary_by_venue(
+        cls,
+        samples_by_venue: dict[str, list[int]],
+    ) -> dict[str, dict[str, float | int]]:
+        return {
+            venue: cls._latency_summary(samples)
+            for venue, samples in sorted(samples_by_venue.items())
+        }
+
     @staticmethod
     def _latency_percentile_ms(ordered_samples: list[int], percentile: float) -> float:
         index = max(0, min(len(ordered_samples) - 1, int((len(ordered_samples) - 1) * percentile)))
@@ -4323,6 +4367,13 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         semantic_quote_limits = dict(
             sorted(self._config.semantic_quote_subscription_limit_by_venue.items()),
         )
+        event_to_strategy = self._latency_summary_by_venue(
+            self._quote_event_to_strategy_latency_ns_by_venue,
+        )
+        publish_to_strategy = self._latency_summary_by_venue(
+            self._quote_publish_to_strategy_latency_ns_by_venue,
+        )
+        fetch_latency = self._latency_summary_by_venue(self._quote_fetch_latency_ns_by_venue)
         return {
             "subscribed_instruments": len(self._subscribed_instruments),
             "quote_subscribed_instruments": len(self._quote_subscribed_instrument_ids),
@@ -4471,6 +4522,20 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                     self._order_construction_latency_ns,
                 ),
                 "order_submit": self._latency_summary(self._order_submit_latency_ns),
+                "by_venue": {
+                    venue: {
+                        "quote_event_to_strategy": event_to_strategy.get(venue, {}),
+                        "quote_publish_to_strategy": publish_to_strategy.get(venue, {}),
+                        "quote_fetch_latency": fetch_latency.get(venue, {}),
+                    }
+                    for venue in sorted(
+                        {
+                            *event_to_strategy,
+                            *publish_to_strategy,
+                            *fetch_latency,
+                        },
+                    )
+                },
             },
             "success_rate": (
                 self._opportunities_executed / self._opportunities_found
