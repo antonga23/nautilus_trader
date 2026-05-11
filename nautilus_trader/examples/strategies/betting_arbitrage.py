@@ -1320,6 +1320,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             node = self._opportunity_graph.nodes_by_id.get(node_id)
             if node is None:
                 continue
+            if not self._resolution_horizon_quote_allowed(node):
+                continue
             ranked.append((self._semantic_quote_subscription_priority(node_id, edge_ids), node))
         ranked.sort(key=lambda item: item[0])
         return [node for _, node in ranked]
@@ -1380,6 +1382,11 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             return 0
         horizon = now + timedelta(hours=float(horizon_hours))
         return -1 if start_time <= horizon else 2
+
+    def _resolution_horizon_quote_allowed(self, node: object | None) -> bool:
+        if self._config.max_resolution_horizon_hours is None:
+            return True
+        return self._resolution_horizon_priority(node) < 2
 
     @staticmethod
     def _node_venue_value(node: object | None) -> str:
