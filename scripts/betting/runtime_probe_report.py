@@ -366,11 +366,14 @@ def _normalized_candidate_decision_latency(
     diagnostics: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any], str]:
     runtime_probe_candidate_decision = _as_dict(
-        diagnostics.get("runtime_probe_candidate_decision")
-        or diagnostics.get("runtimeProbeCandidateDecision"),
+        _latency_field(
+            diagnostics,
+            "runtime_probe_candidate_decision",
+            "runtimeProbeCandidateDecision",
+        ),
     )
     strategy_candidate_decision = _as_dict(
-        diagnostics.get("candidate_decision") or diagnostics.get("candidateDecision"),
+        _latency_field(diagnostics, "candidate_decision", "candidateDecision"),
     )
     strategy_observed = _int_value(strategy_candidate_decision.get("count")) > 0
     candidate_decision = (
@@ -392,6 +395,15 @@ def _normalized_candidate_decision_latency(
     return candidate_decision, runtime_probe_candidate_decision, source
 
 
+def _latency_field(diagnostics: dict[str, Any], snake_key: str, camel_key: str) -> Any:
+    raw_value = diagnostics.get(snake_key)
+    return raw_value if raw_value else diagnostics.get(camel_key)
+
+
+def _latency_warnings(diagnostics: dict[str, Any]) -> list[str]:
+    return [str(item) for item in diagnostics.get("diagnosticWarnings") or []]
+
+
 def _normalized_latency_diagnostics(value: Any) -> dict[str, Any]:
     diagnostics = _as_dict(value)
     (
@@ -401,33 +413,33 @@ def _normalized_latency_diagnostics(value: Any) -> dict[str, Any]:
     ) = _normalized_candidate_decision_latency(diagnostics)
     return {
         "quoteEventToStrategy": _as_dict(
-            diagnostics.get("quote_event_to_strategy") or diagnostics.get("quoteEventToStrategy"),
+            _latency_field(diagnostics, "quote_event_to_strategy", "quoteEventToStrategy"),
         ),
         "quotePublishToStrategy": _as_dict(
-            diagnostics.get("quote_publish_to_strategy")
-            or diagnostics.get("quotePublishToStrategy"),
+            _latency_field(diagnostics, "quote_publish_to_strategy", "quotePublishToStrategy"),
         ),
         "quoteFetchLatency": _as_dict(
-            diagnostics.get("quote_fetch_latency") or diagnostics.get("quoteFetchLatency"),
+            _latency_field(diagnostics, "quote_fetch_latency", "quoteFetchLatency"),
         ),
         "instrumentRefreshReconcile": _as_dict(
-            diagnostics.get("instrument_refresh_reconcile")
-            or diagnostics.get("instrumentRefreshReconcile"),
+            _latency_field(
+                diagnostics,
+                "instrument_refresh_reconcile",
+                "instrumentRefreshReconcile",
+            ),
         ),
-        "graphScan": _as_dict(diagnostics.get("graph_scan") or diagnostics.get("graphScan")),
+        "graphScan": _as_dict(_latency_field(diagnostics, "graph_scan", "graphScan")),
         "candidateDecision": candidate_decision,
         "runtimeProbeCandidateDecision": runtime_probe_candidate_decision,
         "candidateDecisionSource": candidate_decision_source,
         "rawSloStatus": _as_dict(diagnostics.get("sloStatus")),
-        "rawDiagnosticWarnings": [
-            str(item) for item in diagnostics.get("diagnosticWarnings") or []
-        ],
+        "rawDiagnosticWarnings": _latency_warnings(diagnostics),
         "orderConstruction": _as_dict(
-            diagnostics.get("order_construction") or diagnostics.get("orderConstruction"),
+            _latency_field(diagnostics, "order_construction", "orderConstruction"),
         ),
-        "orderSubmit": _as_dict(diagnostics.get("order_submit") or diagnostics.get("orderSubmit")),
+        "orderSubmit": _as_dict(_latency_field(diagnostics, "order_submit", "orderSubmit")),
         "byVenue": _normalized_latency_by_venue(
-            diagnostics.get("by_venue") or diagnostics.get("byVenue"),
+            _latency_field(diagnostics, "by_venue", "byVenue"),
         ),
     }
 
