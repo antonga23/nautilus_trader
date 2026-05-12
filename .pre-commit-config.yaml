@@ -191,6 +191,13 @@ repos:
         types_or: [rust, python, cython]
         pass_filenames: false
 
+      - id: check-betting-brittleness
+        name: check betting brittleness seams
+        description: Prevents legacy betting matcher/risk seams from returning
+        entry: python3 scripts/betting/scan_betting_brittleness.py
+        language: system
+        pass_filenames: false
+
   ##############################################################################
   #  Rust formatting and linting
   ##############################################################################
