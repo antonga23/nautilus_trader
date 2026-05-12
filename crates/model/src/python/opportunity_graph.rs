@@ -864,18 +864,11 @@ impl OpportunityGraphCore {
             return;
         }
 
-        let hedge = if is_same_market_hedge(source, target) {
+        let Some((hedge_type, confidence)) = (if is_same_market_hedge(source, target) {
             Some(("same_market", 1.0))
         } else {
-            let confidence = cross_market_confidence(source, target);
-            if confidence > 0.0 {
-                Some(("cross_market", confidence))
-            } else {
-                None
-            }
-        };
-
-        let Some((hedge_type, confidence)) = hedge else {
+            None
+        }) else {
             return;
         };
         if confidence < self.min_confidence {
@@ -1510,103 +1503,6 @@ fn is_opposite_outcome(source: &NodeSnapshot, target: &NodeSnapshot) -> bool {
     )
 }
 
-fn cross_market_confidence(source: &NodeSnapshot, target: &NodeSnapshot) -> f64 {
-    if !can_hedge_market(&source.market_type, &target.market_type) {
-        return 0.0;
-    }
-
-    if let Some(confidence) = match_odds_double_chance_confidence(source, target) {
-        return confidence;
-    }
-    if let Some(confidence) = asian_handicap_confidence(source, target) {
-        return confidence;
-    }
-    if matches!(
-        source.market_type.as_str(),
-        "draw_no_bet" | "asian_handicap"
-    ) && matches!(
-        target.market_type.as_str(),
-        "draw_no_bet" | "asian_handicap"
-    ) && outcome_opposite(&source.outcome) == Some(target.outcome.as_str())
-    {
-        return 0.75;
-    }
-    0.0
-}
-
-fn can_hedge_market(source: &str, target: &str) -> bool {
-    match source {
-        "both_teams_to_score" => target == "both_teams_to_score",
-        "total_goals" => target == "total_goals",
-        "team_total_goals" => target == "team_total_goals",
-        "draw_no_bet" => target == "draw_no_bet",
-        "match_odds" => matches!(target, "double_chance" | "asian_handicap"),
-        "double_chance" => matches!(target, "asian_handicap" | "match_odds"),
-        "asian_handicap" => matches!(target, "asian_handicap" | "draw_no_bet" | "double_chance"),
-        "match_odds_period_first_half" => target == "asian_handicap_period_first_half",
-        "match_odds_period_second_half" => target == "asian_handicap_period_second_half",
-        "asian_handicap_period_first_half" => {
-            matches!(
-                target,
-                "match_odds_period_first_half" | "asian_handicap_period_first_half"
-            )
-        }
-        "team_total_goals_period_first_half" => target == "team_total_goals_period_first_half",
-        "team_total_goals_period_second_half" => target == "team_total_goals_period_second_half",
-        _ => false,
-    }
-}
-
-fn match_odds_double_chance_confidence(
-    source: &NodeSnapshot,
-    target: &NodeSnapshot,
-) -> Option<f64> {
-    match (
-        source.market_type.as_str(),
-        target.market_type.as_str(),
-        source.outcome.as_str(),
-        target.outcome.as_str(),
-    ) {
-        ("match_odds", "double_chance", "home", "away_draw")
-        | ("match_odds", "double_chance", "draw", "home_away")
-        | ("match_odds", "double_chance", "away", "home_draw")
-        | ("double_chance", "match_odds", "away_draw", "home")
-        | ("double_chance", "match_odds", "home_away", "draw")
-        | ("double_chance", "match_odds", "home_draw", "away") => Some(0.95),
-        ("match_odds", "double_chance", _, _) | ("double_chance", "match_odds", _, _) => Some(0.0),
-        _ => None,
-    }
-}
-
-fn asian_handicap_confidence(source: &NodeSnapshot, target: &NodeSnapshot) -> Option<f64> {
-    if source.market_type != "asian_handicap" || target.market_type != "asian_handicap" {
-        return None;
-    }
-    let source_handicap = source.handicap.unwrap_or_default();
-    let target_handicap = target.handicap.unwrap_or_default();
-    if (source_handicap + target_handicap).abs() < HANDICAP_TOLERANCE
-        && matches!(
-            (source.outcome.as_str(), target.outcome.as_str()),
-            ("home", "away") | ("away", "home")
-        )
-    {
-        return Some(0.85);
-    }
-    Some(0.0)
-}
-
-fn outcome_opposite(outcome: &str) -> Option<&'static str> {
-    match outcome {
-        "home" => Some("away"),
-        "away" => Some("home"),
-        "over" => Some("under"),
-        "under" => Some("over"),
-        "yes" => Some("no"),
-        "no" => Some("yes"),
-        _ => None,
-    }
-}
-
 fn profit_margin(odds_a: f64, odds_b: f64) -> f64 {
     1.0 / ((1.0 / odds_a) + (1.0 / odds_b)) - 1.0
 }
@@ -2146,7 +2042,7 @@ mod tests {
     }
 
     #[rstest]
-    fn cross_market_edges_obey_confidence_threshold() {
+    fn legacy_topology_rejects_cross_market_heuristic_edges() {
         let mut match_odds = node_with(
             "home",
             "SXBET",
@@ -2171,92 +2067,13 @@ mod tests {
         core.insert_node(match_odds.clone());
         core.insert_node(double_chance.clone());
         core.rebuild_edges();
-        assert_eq!(core.edge_count(), 1);
-        assert_approx_eq(core.edge_snapshots()[0].4, 0.95);
+        assert_eq!(core.edge_count(), 0);
 
         let mut filtered = OpportunityGraphCore::new(true, 0.96);
         filtered.insert_node(match_odds);
         filtered.insert_node(double_chance);
         filtered.rebuild_edges();
         assert_eq!(filtered.edge_count(), 0);
-    }
-
-    #[rstest]
-    fn cross_market_confidence_variants_are_covered() {
-        let mut asian_home = node_with(
-            "asian_home",
-            "SXBET",
-            "event-1",
-            "Asian Handicap",
-            "asian_handicap",
-            "home",
-        );
-        asian_home.handicap = Some(1.5);
-        let mut asian_away = node_with(
-            "asian_away",
-            "SXBET",
-            "event-1",
-            "Asian Handicap",
-            "asian_handicap",
-            "away",
-        );
-        asian_away.handicap = Some(-1.5);
-        let draw_no_bet = node_with(
-            "draw_no_bet",
-            "SXBET",
-            "event-1",
-            "Draw No Bet",
-            "draw_no_bet",
-            "away",
-        );
-        let total_goals = node("total", "over");
-
-        assert_eq!(
-            asian_handicap_confidence(&asian_home, &asian_away),
-            Some(0.85)
-        );
-        asian_away.handicap = Some(0.5);
-        assert_eq!(
-            asian_handicap_confidence(&asian_home, &asian_away),
-            Some(0.0)
-        );
-        assert_eq!(asian_handicap_confidence(&asian_home, &total_goals), None);
-        assert_approx_eq(cross_market_confidence(&asian_home, &draw_no_bet), 0.75);
-        assert_approx_eq(cross_market_confidence(&total_goals, &asian_home), 0.0);
-        assert_eq!(
-            match_odds_double_chance_confidence(&asian_home, &draw_no_bet),
-            None
-        );
-        assert_eq!(outcome_opposite("home"), Some("away"));
-        assert_eq!(outcome_opposite("away"), Some("home"));
-        assert_eq!(outcome_opposite("over"), Some("under"));
-        assert_eq!(outcome_opposite("under"), Some("over"));
-        assert_eq!(outcome_opposite("yes"), Some("no"));
-        assert_eq!(outcome_opposite("no"), Some("yes"));
-        assert_eq!(outcome_opposite("other"), None);
-        assert!(can_hedge_market("double_chance", "match_odds"));
-        assert!(can_hedge_market("asian_handicap", "double_chance"));
-        assert!(can_hedge_market(
-            "match_odds_period_first_half",
-            "asian_handicap_period_first_half"
-        ));
-        assert!(can_hedge_market(
-            "match_odds_period_second_half",
-            "asian_handicap_period_second_half"
-        ));
-        assert!(can_hedge_market(
-            "asian_handicap_period_first_half",
-            "match_odds_period_first_half"
-        ));
-        assert!(can_hedge_market(
-            "team_total_goals_period_first_half",
-            "team_total_goals_period_first_half"
-        ));
-        assert!(can_hedge_market(
-            "team_total_goals_period_second_half",
-            "team_total_goals_period_second_half"
-        ));
-        assert!(!can_hedge_market("unknown", "match_odds"));
     }
 
     #[rstest]

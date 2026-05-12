@@ -626,11 +626,15 @@ class OpportunityGraph:
             if source_node is None or target_node is None:
                 continue
 
-            hedge = self._best_public_hedge_candidate(
-                source_node.instrument,
-                target_node.instrument,
+            hedge = (
+                self._best_public_hedge_candidate(
+                    source_node.instrument,
+                    target_node.instrument,
+                )
+                if template_id
+                else None
             )
-            if hedge is None and not template_id:
+            if hedge is None and not template_id and market_relationship_type != "same_market":
                 continue
 
             edge = OpportunityEdge(
@@ -735,36 +739,14 @@ class OpportunityGraph:
             candidates=candidates,
             include_cross_venue=self._include_cross_venue,
         )
-        seen_target_ids: set[str] = set()
         for hedge in hedges:
             normalized_hedge = self._normalize_public_hedge(instrument, hedge)
             if normalized_hedge is None:
                 continue
-            seen_target_ids.add(str(normalized_hedge.instrument.id))
             self._upsert_edge(
                 source=instrument,
                 target=normalized_hedge.instrument,
                 hedge=normalized_hedge,
-            )
-
-        for candidate in candidates:
-            if candidate.id == instrument.id or str(candidate.id) in seen_target_ids:
-                continue
-            if not self._include_cross_venue and candidate.venue_name != instrument.venue_name:
-                continue
-            if not self._matcher._is_hedge_event_match(instrument, candidate, candidates):
-                continue
-            if self._matcher._is_same_market_hedge(instrument, candidate):
-                continue
-
-            legacy_hedge = self._legacy_cross_market_candidate(instrument, candidate)
-            if legacy_hedge is None:
-                continue
-
-            self._upsert_edge(
-                source=instrument,
-                target=candidate,
-                hedge=legacy_hedge,
             )
 
     def _normalize_public_hedge(
@@ -777,8 +759,6 @@ class OpportunityGraph:
             and not hedge.same_venue_execution_eligible
         ):
             return None
-        if self._matcher._is_same_market_hedge(source, hedge.instrument) and not hedge.push_capable:
-            return self._matcher._legacy_same_market_candidate(hedge.instrument)
         return hedge
 
     def _public_hedge_candidate(
@@ -790,8 +770,8 @@ class OpportunityGraph:
         if semantic_hedge is not None:
             return self._normalize_public_hedge(source, semantic_hedge)
         if self._matcher._is_same_market_hedge(source, target):
-            return self._matcher._legacy_same_market_candidate(target)
-        return self._legacy_cross_market_candidate(source, target)
+            return self._matcher._same_market_complement_candidate(target)
+        return None
 
     def _best_public_hedge_candidate(
         self,
@@ -931,37 +911,6 @@ class OpportunityGraph:
             raw_profit_margin=profit_margin,
         )
 
-    def _legacy_cross_market_candidate(
-        self,
-        source: CryptoBettingInstrument,
-        target: CryptoBettingInstrument,
-    ) -> HedgeCandidate | None:
-        market_a = MarketType.from_string(source.market_name)
-        market_b = MarketType.from_string(target.market_name)
-        outcome_a = Outcome.from_string(source.outcome)
-        outcome_b = Outcome.from_string(target.outcome)
-        confidence = self._matcher._calculate_cross_market_confidence(
-            market_a,
-            market_b,
-            outcome_a,
-            outcome_b,
-            source,
-            target,
-        )
-        if confidence < self._matcher.min_confidence:
-            return None
-
-        return HedgeCandidate(
-            instrument=target,
-            match_type="cross_market",
-            confidence=confidence,
-            relationship_type="COMPLEMENTARY_COVERAGE",
-            execution_safe=True,
-            same_venue_execution_eligible=False,
-            safety_tier="EXECUTION_SAFE",
-            promotion_status="PROMOTED",
-        )
-
     @classmethod
     def _node_from_instrument(cls, instrument: CryptoBettingInstrument) -> OpportunityNode:
         info = cls._safe_attr(instrument, "info", {})
@@ -1071,7 +1020,7 @@ class OpportunityGraph:
 
     @staticmethod
     def _event_alias_keys_payload(value: object) -> tuple[str, ...]:
-        if not isinstance(value, (list, tuple, set, frozenset)):
+        if not isinstance(value, list | tuple | set | frozenset):
             return ()
         return tuple(str(key) for key in value if str(key))
 

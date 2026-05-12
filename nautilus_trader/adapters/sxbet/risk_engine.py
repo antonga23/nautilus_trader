@@ -18,14 +18,14 @@ SX.bet risk engine.
 
 from decimal import Decimal
 
-from nautilus_trader.adapters.betting.risk_engine import BaseRiskEngine
+from nautilus_trader.adapters.betting.risk_engine import BettingVenueRiskPolicy
 from nautilus_trader.adapters.betting.risk_engine import MaxExposureRule
 from nautilus_trader.adapters.betting.risk_engine import OddsRequirementRule
 from nautilus_trader.adapters.betting.risk_engine import RiskEvaluation
 from nautilus_trader.adapters.betting.risk_engine import StakeLimitRule
 
 
-class SXBetRiskEngine(BaseRiskEngine):
+class SXBetRiskEngine(BettingVenueRiskPolicy):
     """
     Risk engine for SX.bet venue.
 

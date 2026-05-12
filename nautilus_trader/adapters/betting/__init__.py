@@ -16,7 +16,6 @@
 Betting adapter package for sports betting venues.
 """
 
-from nautilus_trader.adapters.betting.common.constants import MARKET_HEDGE_MAP
 from nautilus_trader.adapters.betting.common.constants import NULL_HANDICAP
 from nautilus_trader.adapters.betting.common.constants import SPORT_IDS
 from nautilus_trader.adapters.betting.common.enums import BetStatus
@@ -33,7 +32,7 @@ from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.betting.market_matcher import ArbitrageOpportunity
 from nautilus_trader.adapters.betting.market_matcher import HedgeCandidate
 from nautilus_trader.adapters.betting.market_matcher import MarketMatcher
-from nautilus_trader.adapters.betting.risk_engine import BaseRiskEngine
+from nautilus_trader.adapters.betting.risk_engine import BettingVenueRiskPolicy
 from nautilus_trader.adapters.betting.risk_engine import MaxExposureRule
 from nautilus_trader.adapters.betting.risk_engine import OddsRequirementRule
 from nautilus_trader.adapters.betting.risk_engine import RiskEvaluation
@@ -44,13 +43,12 @@ from nautilus_trader.adapters.betting.risk_engine import StakeLimitRule
 
 
 __all__ = [
-    "MARKET_HEDGE_MAP",
     "NULL_HANDICAP",
     "SPORT_IDS",
     "ArbitrageOpportunity",
-    "BaseRiskEngine",
     "BetStatus",
     "BettingMode",
+    "BettingVenueRiskPolicy",
     "CryptoBettingInstrument",
     "HedgeCandidate",
     "MarketMatcher",

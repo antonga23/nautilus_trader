@@ -357,6 +357,30 @@ def test_fixture_identity_splits_at_separator_without_confusing_player_hyphens()
     assert proof.canonical_event_key_a == proof.canonical_event_key_b
 
 
+def test_fixture_identity_folds_diacritics_across_provider_names():
+    resolver = FixtureIdentityResolver()
+    polymarket = _instrument(
+        venue="POLYMARKET",
+        event_name="São Paulo v Atlético Mineiro",
+        home_name="São Paulo",
+        away_name="Atlético Mineiro",
+        sport_name="soccer",
+    )
+    sxbet = _instrument(
+        venue="SXBET",
+        event_name="Sao Paulo vs Atletico Mineiro",
+        home_name="Sao Paulo",
+        away_name="Atletico Mineiro",
+        sport_name="soccer",
+    )
+
+    proof = resolver.resolve(polymarket, sxbet)
+
+    assert proof.same_fixture is True
+    assert proof.blocker_reason is None
+    assert proof.canonical_event_key_a == proof.canonical_event_key_b
+
+
 def test_portfolio_policy_treats_stablecoins_as_usd_with_haircut():
     policy = PortfolioCurrencyPolicy(stablecoin_haircut_bps=25)
 

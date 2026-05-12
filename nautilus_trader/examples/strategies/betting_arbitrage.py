@@ -3707,22 +3707,23 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         instrument_a: CryptoBettingInstrument,
         instrument_b: CryptoBettingInstrument,
     ) -> tuple[bool, str]:
-        if not instrument_a.matches_event(instrument_b):
-            return True, "event_mismatch"
+        if instrument_a.venue_name == instrument_b.venue_name:
+            if instrument_a.event_id != instrument_b.event_id:
+                if BettingArbitrageStrategy._is_trusted_same_venue_match_odds_pair(
+                    instrument_a,
+                    instrument_b,
+                ):
+                    return False, "none"
+                return True, "same_venue_event_id_mismatch"
+        else:
+            proof = DEFAULT_FIXTURE_IDENTITY_RESOLVER.resolve(instrument_a, instrument_b)
+            if not proof.same_fixture:
+                return True, proof.blocker_reason or "event_mismatch"
         if (
             instrument_a.market_name == instrument_b.market_name
             and instrument_a.params != instrument_b.params
         ):
             return True, "same_market_params_mismatch"
-        if instrument_a.venue_name == instrument_b.venue_name and (
-            instrument_a.event_id != instrument_b.event_id
-        ):
-            if BettingArbitrageStrategy._is_trusted_same_venue_match_odds_pair(
-                instrument_a,
-                instrument_b,
-            ):
-                return False, "none"
-            return True, "same_venue_event_id_mismatch"
         return False, "none"
 
     @staticmethod
@@ -3730,17 +3731,18 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         instrument_a: CryptoBettingInstrument,
         instrument_b: CryptoBettingInstrument,
     ) -> tuple[bool, str]:
-        if not instrument_a.matches_event(instrument_b):
-            return True, "event_mismatch"
-        if instrument_a.venue_name == instrument_b.venue_name and (
-            instrument_a.event_id != instrument_b.event_id
-        ):
+        if instrument_a.venue_name == instrument_b.venue_name:
+            if instrument_a.event_id == instrument_b.event_id:
+                return False, "none"
             if BettingArbitrageStrategy._is_trusted_same_venue_match_odds_pair(
                 instrument_a,
                 instrument_b,
             ):
                 return False, "none"
             return True, "same_venue_event_id_mismatch"
+        proof = DEFAULT_FIXTURE_IDENTITY_RESOLVER.resolve(instrument_a, instrument_b)
+        if not proof.same_fixture:
+            return True, proof.blocker_reason or "event_mismatch"
         return False, "none"
 
     @staticmethod

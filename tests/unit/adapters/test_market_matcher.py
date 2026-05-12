@@ -15,8 +15,6 @@ from decimal import DivisionByZero
 
 import pytest
 
-from nautilus_trader.adapters.betting.common.enums import MarketType
-from nautilus_trader.adapters.betting.common.enums import Outcome
 from nautilus_trader.adapters.betting.common.enums import SelectionSide
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.betting.market_matcher import ArbitrageOpportunity
@@ -736,12 +734,12 @@ class TestMarketMatcher:
 
         assert matches == []
 
-    def test_match_events_cross_venue_skips_missing_start_time_without_time_signal(
+    def test_match_events_cross_venue_allows_unique_missing_start_time_without_time_signal(
         self,
         market_matcher,
     ):
         """
-        Test missing-time events do not match when no parsed fixture time exists.
+        Test missing-time events can match when participant evidence is unique.
         """
         inst_a = CryptoBettingInstrument(
             venue=Venue("CLOUDBET"),
@@ -776,7 +774,7 @@ class TestMarketMatcher:
 
         matches = market_matcher.match_events_cross_venue([inst_a], [inst_b])
 
-        assert matches == []
+        assert matches == [(inst_a, inst_b)]
 
     def test_find_hedges_skips_ambiguous_cross_venue_missing_start_time(self, market_matcher):
         """
@@ -879,6 +877,39 @@ class TestMarketMatcher:
         )
 
         hedges = market_matcher.find_hedges(inst_b_missing_time, [inst_a])
+
+        assert len(hedges) == 1
+
+    def test_find_hedges_uses_fixture_proof_when_missing_start_time_event_keys_drift(
+        self,
+        market_matcher,
+    ):
+        """
+        Cross-venue discovery must not require exact no-time event keys after the
+        fixture resolver has already produced a single unambiguous proof.
+        """
+        cloudbet = make_instrument(
+            venue="CLOUDBET",
+            event_id="cloudbet-cle-min",
+            event_name="Cleveland v Minnesota",
+            home_name="Cleveland",
+            away_name="Minnesota",
+            sport_name="basketball",
+            outcome="over",
+            start_time=None,
+        )
+        sxbet = make_instrument(
+            venue="SXBET",
+            event_id="sxbet-cle-min",
+            event_name="Cleveland Bears v Minnesota Wolves",
+            home_name="Cleveland Bears",
+            away_name="Minnesota Wolves",
+            sport_name="basketball",
+            outcome="under",
+            start_time="2026-03-13T18:00:00Z",
+        )
+
+        hedges = market_matcher.find_hedges(cloudbet, [sxbet])
 
         assert len(hedges) == 1
 
@@ -1132,127 +1163,6 @@ class TestMarketMatcher:
         assert len(hedges) == 1
         assert hedges[0].match_type == "same_market"
 
-    def test_cross_market_confidence_helpers(self, market_matcher):
-        match_home = make_instrument(
-            market_name="match_odds",
-            market_type="match_odds",
-            outcome="home",
-        )
-        double_chance = make_instrument(
-            market_name="double_chance",
-            market_type="double_chance",
-            outcome="away_draw",
-        )
-        dnb_home = make_instrument(
-            market_name="draw_no_bet",
-            market_type="draw_no_bet",
-            outcome="home",
-        )
-        ah_away = make_instrument(
-            market_name="asian_handicap",
-            market_type="asian_handicap",
-            outcome="away",
-            params="line=0",
-            handicap=0.0,
-        )
-        ah_home = make_instrument(
-            market_name="asian_handicap",
-            market_type="asian_handicap",
-            outcome="home",
-            params="line=1.5",
-            handicap=1.5,
-        )
-        dangerous_home = make_instrument(
-            market_name="european_handicap",
-            market_type="european_handicap",
-            outcome="home",
-            params="line=1.5",
-            handicap=1.5,
-        )
-        ah_away_opposite = make_instrument(
-            market_name="asian_handicap",
-            market_type="asian_handicap",
-            outcome="away",
-            params="line=-1.5",
-            handicap=-1.5,
-        )
-
-        assert market_matcher._is_cross_market_hedge(match_home, double_chance) == 1.0
-        assert market_matcher._is_cross_market_hedge(ah_home, dangerous_home) == 0.0
-        assert (
-            market_matcher._calculate_cross_market_confidence(
-                MarketType.DRAW_NO_BET,
-                MarketType.ASIAN_HANDICAP,
-                Outcome.HOME,
-                Outcome.AWAY,
-                dnb_home,
-                ah_away,
-            )
-            == 0.75
-        )
-        assert (
-            market_matcher._calculate_cross_market_confidence(
-                MarketType.MATCH_ODDS,
-                MarketType.ASIAN_HANDICAP,
-                Outcome.HOME,
-                Outcome.AWAY,
-                match_home,
-                ah_away,
-            )
-            == 0.0
-        )
-        assert (
-            market_matcher._confidence_match_odds_double_chance(
-                MarketType.MATCH_ODDS,
-                MarketType.DOUBLE_CHANCE,
-                Outcome.HOME,
-                Outcome.HOME_DRAW,
-            )
-            == 0.0
-        )
-        assert (
-            market_matcher._confidence_match_odds_double_chance(
-                MarketType.DRAW_NO_BET,
-                MarketType.ASIAN_HANDICAP,
-                Outcome.HOME,
-                Outcome.AWAY,
-            )
-            is None
-        )
-        assert (
-            market_matcher._confidence_asian_handicap(
-                MarketType.MATCH_ODDS,
-                MarketType.DOUBLE_CHANCE,
-                Outcome.HOME,
-                Outcome.AWAY_DRAW,
-                match_home,
-                double_chance,
-            )
-            is None
-        )
-        assert (
-            market_matcher._confidence_asian_handicap(
-                MarketType.ASIAN_HANDICAP,
-                MarketType.ASIAN_HANDICAP,
-                Outcome.HOME,
-                Outcome.AWAY,
-                ah_home,
-                ah_away_opposite,
-            )
-            == 0.85
-        )
-        assert (
-            market_matcher._confidence_asian_handicap(
-                MarketType.ASIAN_HANDICAP,
-                MarketType.ASIAN_HANDICAP,
-                Outcome.HOME,
-                Outcome.HOME,
-                ah_home,
-                ah_home,
-            )
-            == 0.0
-        )
-
     def test_find_arbitrage_opportunities_deduplicates_and_sorts(self, market_matcher):
         event_one_over = make_instrument(
             venue="CLOUDBET",
@@ -1298,8 +1208,8 @@ class TestMarketMatcher:
     def test_event_and_team_name_normalizers(self, market_matcher):
         assert market_matcher.normalize_event_name("Arsenal vs Chelsea") == "arsenal chelsea"
         assert market_matcher.normalize_event_name("Team A @ Team B") == "team a team b"
-        assert market_matcher._normalize_team_name("Manchester City FC") == "manchester"
-        assert market_matcher._normalize_team_name("Leeds United") == "leeds"
+        assert market_matcher._normalize_team_name("Manchester City FC") == "manchester city"
+        assert market_matcher._normalize_team_name("Leeds United") == "leeds united"
 
     def test_are_matching_selections_rejects_param_and_market_mismatches(self, market_matcher):
         instrument_a = make_instrument(

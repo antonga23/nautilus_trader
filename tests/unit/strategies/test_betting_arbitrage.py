@@ -3886,6 +3886,64 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(suspect is False)
         ensure(reason == "none")
 
+    def test_arbitrage_diagnostics_uses_fixture_proof_for_cross_venue_alias_drift(self):
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(enabled_venues=frozenset(["CLOUDBET", "SXBET"])),
+        )
+        cloudbet = self._sxbet_instrument(
+            venue="CLOUDBET",
+            event_id="cloudbet-market-1",
+            event_name="MIN Timberwolves v SA Spurs",
+            home_name="MIN Timberwolves",
+            away_name="SA Spurs",
+            outcome="home",
+            market_name="draw_no_bet",
+            start_time="",
+        )
+        sxbet = self._sxbet_instrument(
+            venue="SXBET",
+            event_id="sxbet-market-1",
+            event_name="Minnesota Timberwolves v San Antonio Spurs",
+            home_name="Minnesota Timberwolves",
+            away_name="San Antonio Spurs",
+            outcome="away",
+            market_name="draw_no_bet",
+            start_time="",
+        )
+
+        suspect, reason = strategy._matcher_suspect_reason(cloudbet, sxbet)
+
+        ensure(suspect is False)
+        ensure(reason == "none")
+
+    def test_arbitrage_diagnostics_same_venue_event_id_is_authoritative_for_name_drift(self):
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(enabled_venues=frozenset(["SXBET"])),
+        )
+        instrument_a = self._sxbet_instrument(
+            event_id="fixture-1",
+            event_name="Cleveland v Minnesota",
+            home_name="Cleveland",
+            away_name="Minnesota",
+            outcome="home",
+            market_name="match_odds",
+            start_time="",
+        )
+        instrument_b = self._sxbet_instrument(
+            event_id="fixture-1",
+            event_name="Cleveland Bears v Minnesota Wolves",
+            home_name="Cleveland Bears",
+            away_name="Minnesota Wolves",
+            outcome="away",
+            market_name="match_odds",
+            start_time="",
+        )
+
+        suspect, reason = strategy._semantic_fixture_suspect_reason(instrument_a, instrument_b)
+
+        ensure(suspect is False)
+        ensure(reason == "none")
+
     def test_arbitrage_diagnostics_flags_liquidity_insufficient_candidates(self):
         strategy = BettingArbitrageStrategy(
             config=BettingArbitrageConfig(
