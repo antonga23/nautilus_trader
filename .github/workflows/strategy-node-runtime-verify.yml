@@ -448,7 +448,13 @@ jobs:
               raise SystemExit(f"heartbeat.json missing at field: {heartbeat_path}")
 
           heartbeat_history = [initial_heartbeat_at]
-          deadline = time.time() + 45
+          # Heartbeats are intentionally low-frequency compared with quote polling.
+          # When verification starts just after a heartbeat write, requiring two
+          # updates can legitimately take longer than 45s, especially while the
+          # node is refreshing venue catalogs. Keep this bounded, but scale the
+          # observation window with the requested update count.
+          heartbeat_wait_seconds = max(45, heartbeat_updates_required * 75)
+          deadline = time.time() + heartbeat_wait_seconds
           while time.time() < deadline and len(heartbeat_history) - 1 < heartbeat_updates_required:
               time.sleep(2)
               heartbeat_payload = load_json(heartbeat_path)
