@@ -53,6 +53,7 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
     execution_readiness = _as_dict(payload.get("executionReadiness"))
     candidate_quality = _as_dict(runtime.get("candidateQuality"))
     venue_coverage = _as_dict(runtime.get("venueCoverage"))
+    fx_policy = _as_dict(runtime.get("fxPolicy"))
     provider_quote_poll_stats = _as_dict(runtime.get("providerQuotePollStats"))
     instrument_refresh = _as_dict(runtime.get("instrumentRefresh"))
     coverage_diagnostics = _as_dict(runtime.get("coverageDiagnostics"))
@@ -169,6 +170,7 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
             "crossVenueCandidateCount": venue_coverage.get("crossVenueCandidateCount"),
         },
         "feePolicy": _as_dict(runtime.get("feePolicy")),
+        "fxPolicy": _fx_policy_summary(fx_policy),
         "latencyDiagnostics": latency_block,
         "candidateQuality": {
             "diagnosticWarnings": diagnostic_warnings,
@@ -290,6 +292,7 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
             ),
             "zeroCandidateVenuePairs": venue_coverage.get("zeroCandidateVenuePairs"),
             "zeroCandidateBlockerCounts": venue_coverage.get("zeroCandidateBlockerCounts"),
+            "quoteCapacityPressure": _quote_capacity_pressure(venue_coverage),
         },
         "venueCoverageHealth": _venue_coverage_health(venue_coverage),
         "operatorHealth": _operator_health(
@@ -315,6 +318,21 @@ def _zero_fixture_proof_blocker_counts(value: Any) -> dict[str, int]:
             key = str(reason)
             counts[key] = counts.get(key, 0) + _int_value(count)
     return dict(sorted(counts.items()))
+
+
+def _fx_policy_summary(value: dict[str, Any]) -> dict[str, Any]:
+    source_priority = [str(item) for item in value.get("sourcePriority") or [] if item]
+    stablecoins = [str(item).upper() for item in value.get("stablecoinCurrencies") or [] if item]
+    configured_pairs = [str(item).upper() for item in value.get("configuredFxRatePairs") or []]
+    return {
+        "baseCurrency": str(value.get("baseCurrency") or "USD").upper(),
+        "stablecoinCurrencies": sorted(stablecoins),
+        "stablecoinHaircutBps": _int_value(value.get("stablecoinHaircutBps")),
+        "maxAgeSeconds": _float_value(value.get("maxAgeSeconds")),
+        "sourcePriority": source_priority,
+        "configuredFxRatePairs": sorted(configured_pairs),
+        "requiresLiveFxForNonStablePairs": bool(source_priority or configured_pairs),
+    }
 
 
 def _fixture_overlap_diagnostics(value: Any, *, top_limit: int) -> list[dict[str, Any]]:
@@ -485,6 +503,8 @@ class _SummaryAggregate:
         self.corpus_health_counts: dict[str, int] = {}
         self.venue_coverage_health_counts: dict[str, int] = {}
         self.execution_safety_counts: dict[str, int] = {}
+        self.provider_poll_utilization_by_venue: dict[str, dict[str, float]] = {}
+        self.quote_capacity_pressure_by_venue: dict[str, dict[str, float]] = {}
         self.quote_subscription_counts: dict[str, int] = {}
         self.quoted_node_counts: dict[str, int] = {}
         self.semantic_matched_node_counts: dict[str, int] = {}
@@ -542,6 +562,9 @@ class _SummaryAggregate:
             self.provider_poll_health_counts,
             _as_dict(summary.get("providerPollHealth")).get("overall") or "unknown",
         )
+        self._add_provider_poll_utilization(
+            _as_dict(_as_dict(summary.get("providerPollHealth")).get("venues")),
+        )
         _increment_count(
             self.corpus_health_counts,
             _as_dict(summary.get("semanticCacheCorpusHealth")).get("overall") or "unknown",
@@ -555,6 +578,37 @@ class _SummaryAggregate:
             _as_dict(summary.get("executionSafety")).get("overall") or "unknown",
         )
 
+    def _add_provider_poll_utilization(self, venues: dict[str, Any]) -> None:
+        for venue, raw_payload in sorted(venues.items()):
+            payload = _as_dict(raw_payload)
+            venue_key = str(venue)
+            existing = self.provider_poll_utilization_by_venue.setdefault(
+                venue_key,
+                {
+                    "maxPollUtilizationRatio": 0.0,
+                    "maxFetchLatencyUtilizationRatio": 0.0,
+                    "maxConcurrencyUtilizationRatio": 0.0,
+                    "minCycleHeadroomSeconds": math.inf,
+                },
+            )
+            existing["maxPollUtilizationRatio"] = max(
+                existing["maxPollUtilizationRatio"],
+                _float_value(payload.get("pollUtilizationRatio")),
+            )
+            existing["maxFetchLatencyUtilizationRatio"] = max(
+                existing["maxFetchLatencyUtilizationRatio"],
+                _float_value(payload.get("fetchLatencyUtilizationRatio")),
+            )
+            existing["maxConcurrencyUtilizationRatio"] = max(
+                existing["maxConcurrencyUtilizationRatio"],
+                _float_value(payload.get("concurrencyUtilizationRatio")),
+            )
+            headroom = _float_value(payload.get("cycleHeadroomSeconds"))
+            existing["minCycleHeadroomSeconds"] = min(
+                existing["minCycleHeadroomSeconds"],
+                headroom,
+            )
+
     def _add_venue_coverage(self, coverage: dict[str, Any]) -> None:
         _merge_int_mapping(self.quote_subscription_counts, coverage.get("quoteSubscriptionCounts"))
         _merge_int_mapping(self.quoted_node_counts, coverage.get("quotedNodeCounts"))
@@ -566,12 +620,45 @@ class _SummaryAggregate:
             self.quoted_semantic_matched_node_counts,
             coverage.get("quotedSemanticMatchedNodeCounts"),
         )
+        self._add_quote_capacity_pressure(_as_dict(coverage.get("quoteCapacityPressure")))
         _merge_int_mapping(self.candidate_counts_by_venue_pair, coverage.get("candidateCounts"))
         _merge_int_mapping(self.edge_counts_by_venue_pair, coverage.get("edgeCounts"))
         _merge_int_mapping(
             self.quoted_edge_counts_by_venue_pair,
             coverage.get("quotedEdgeCounts"),
         )
+
+    def _add_quote_capacity_pressure(self, pressure_by_venue: dict[str, Any]) -> None:
+        for venue, raw_payload in sorted(pressure_by_venue.items()):
+            payload = _as_dict(raw_payload)
+            venue_key = str(venue)
+            existing = self.quote_capacity_pressure_by_venue.setdefault(
+                venue_key,
+                {
+                    "maxSubscriptionUtilizationRatio": 0.0,
+                    "minSemanticQuoteCoverageRatio": math.inf,
+                    "maxCapacityPressureScore": 0.0,
+                    "maxUnquotedSemanticMatchedNodes": 0.0,
+                },
+            )
+            existing["maxSubscriptionUtilizationRatio"] = max(
+                existing["maxSubscriptionUtilizationRatio"],
+                _float_value(payload.get("subscriptionUtilizationRatio")),
+            )
+            semantic_quote_coverage = _float_value(payload.get("semanticQuoteCoverageRatio"))
+            if semantic_quote_coverage > 0:
+                existing["minSemanticQuoteCoverageRatio"] = min(
+                    existing["minSemanticQuoteCoverageRatio"],
+                    semantic_quote_coverage,
+                )
+            existing["maxCapacityPressureScore"] = max(
+                existing["maxCapacityPressureScore"],
+                _float_value(payload.get("capacityPressureScore")),
+            )
+            existing["maxUnquotedSemanticMatchedNodes"] = max(
+                existing["maxUnquotedSemanticMatchedNodes"],
+                float(_int_value(payload.get("unquotedSemanticMatchedNodes"))),
+            )
 
     def _add_candidate_quality(self, quality: dict[str, Any]) -> None:
         _merge_nested_count_mapping(self.rejection_bucket_counts, quality.get("rejectionBuckets"))
@@ -678,6 +765,12 @@ class _SummaryAggregate:
             "latencySloStatusCounts": dict(sorted(self.latency_slo_counts.items())),
             "operatorHealthCounts": dict(sorted(self.health_counts.items())),
             "providerPollHealthCounts": dict(sorted(self.provider_poll_health_counts.items())),
+            "providerPollUtilizationByVenue": _finite_provider_poll_utilization(
+                self.provider_poll_utilization_by_venue,
+            ),
+            "quoteCapacityPressureByVenue": _finite_provider_poll_utilization(
+                self.quote_capacity_pressure_by_venue,
+            ),
             "semanticCacheCorpusHealthCounts": dict(sorted(self.corpus_health_counts.items())),
             "venueCoverageHealthCounts": dict(sorted(self.venue_coverage_health_counts.items())),
             "executionSafetyCounts": dict(sorted(self.execution_safety_counts.items())),
@@ -739,6 +832,18 @@ def _merge_int_mapping(target: dict[str, int], value: Any) -> None:
 def _merge_nested_count_mapping(target: dict[str, int], value: Any) -> None:
     for key, raw_count in _as_dict(value).items():
         target[str(key)] = target.get(str(key), 0) + int(_numeric(raw_count))
+
+
+def _finite_provider_poll_utilization(
+    value: dict[str, dict[str, float]],
+) -> dict[str, dict[str, float]]:
+    rendered: dict[str, dict[str, float]] = {}
+    for venue, payload in sorted(value.items()):
+        rendered[venue] = {
+            key: round(raw_value, 4) if math.isfinite(raw_value) else 0.0
+            for key, raw_value in payload.items()
+        }
+    return rendered
 
 
 def _merge_provider_corpus_coverage(
@@ -1177,6 +1282,7 @@ def _format_text_graph_lines(summary: dict[str, Any]) -> list[str]:
     if execution_safety:
         lines.append(execution_safety)
     lines.extend(_format_fee_policy_lines(summary.get("feePolicy")))
+    lines.extend(_format_fx_policy_lines(summary.get("fxPolicy")))
     lines.extend(_format_semantic_cache_family_lines(summary.get("semanticCache")))
     lines.extend(_format_coverage_lines(graph))
     return lines
@@ -1193,6 +1299,11 @@ def _format_text_runtime_health_lines(summary: dict[str, Any]) -> list[str]:
     venue_coverage_health = _format_venue_coverage_health(summary.get("venueCoverageHealth"))
     if venue_coverage_health:
         lines.append(f"  venue_coverage_health {venue_coverage_health}")
+    quote_capacity_pressure = _format_quote_capacity_pressure(
+        _as_dict(summary.get("venueCoverage")).get("quoteCapacityPressure"),
+    )
+    if quote_capacity_pressure:
+        lines.append(f"  quote_capacity_pressure {quote_capacity_pressure}")
     lines.extend(
         _format_semantic_cache_corpus_health_lines(summary.get("semanticCacheCorpusHealth")),
     )
@@ -1258,6 +1369,24 @@ def _format_fee_policy_lines(value: Any) -> list[str]:
         f"winning_profit={dict(sorted(winning.items()))} "
         f"basket_rebate={dict(sorted(basket_rebate.items()))} "
         f"basket_boost={dict(sorted(basket_boost.items()))}",
+    ]
+
+
+def _format_fx_policy_lines(value: Any) -> list[str]:
+    policy = value if isinstance(value, dict) else {}
+    if not policy:
+        return []
+    sources = ",".join(str(item) for item in policy.get("sourcePriority") or [])
+    stablecoins = ",".join(str(item) for item in policy.get("stablecoinCurrencies") or [])
+    configured_pairs = ",".join(str(item) for item in policy.get("configuredFxRatePairs") or [])
+    return [
+        "  fx_policy "
+        f"base={policy.get('baseCurrency')} "
+        f"stablecoins={stablecoins} "
+        f"haircut_bps={policy.get('stablecoinHaircutBps')} "
+        f"max_age={policy.get('maxAgeSeconds')}s "
+        f"sources={sources} "
+        f"configured_pairs={configured_pairs}",
     ]
 
 
@@ -1715,6 +1844,10 @@ def _format_provider_poll_health(value: Any) -> str:
             f"{venue}:status={payload.get('status')} "
             f"shards={payload.get('estimatedShardsForTarget', 1)} "
             f"headroom={payload.get('cycleHeadroomSeconds', 0)}s "
+            f"poll_util={payload.get('pollUtilizationRatio', 0)} "
+            f"fetch_util={payload.get('fetchLatencyUtilizationRatio', 0)} "
+            f"concurrency_util={payload.get('concurrencyUtilizationRatio', 0)} "
+            f"next_sleep={payload.get('nextPollSleepSeconds', 0)}s "
             f"fanout={payload.get('requestFanoutPerQuote', 0)} "
             f"yield={payload.get('quoteYieldRatio', 0)} "
             f"reasons={','.join(str(r) for r in reasons)}",
@@ -1757,6 +1890,25 @@ def _format_venue_coverage_health(value: Any) -> str:
     return f"overall={health.get('overall')} " + "; ".join(rendered)
 
 
+def _format_quote_capacity_pressure(value: Any) -> str:
+    venues = _as_dict(value)
+    if not venues:
+        return ""
+    rendered = []
+    for venue, raw_payload in sorted(venues.items()):
+        payload = _as_dict(raw_payload)
+        reasons = payload.get("reasons") or []
+        rendered.append(
+            f"{venue}:status={payload.get('status')} "
+            f"sub_util={payload.get('subscriptionUtilizationRatio', 0)} "
+            f"semantic_quote_coverage={payload.get('semanticQuoteCoverageRatio', 0)} "
+            f"pressure={payload.get('capacityPressureScore', 0)} "
+            f"unquoted_semantic={payload.get('unquotedSemanticMatchedNodes', 0)} "
+            f"reasons={','.join(str(r) for r in reasons)}",
+        )
+    return "; ".join(rendered)
+
+
 def _format_aggregate_line(aggregate: dict[str, Any]) -> str:
     return (
         "\naggregate: "
@@ -1774,6 +1926,8 @@ def _format_aggregate_line(aggregate: dict[str, Any]) -> str:
         f"health={aggregate['operatorHealthCounts']} "
         f"execution_safety={aggregate['executionSafetyCounts']} "
         f"provider_poll_health={aggregate['providerPollHealthCounts']} "
+        f"provider_poll_utilization={aggregate['providerPollUtilizationByVenue']} "
+        f"quote_capacity_pressure={aggregate['quoteCapacityPressureByVenue']} "
         f"corpus_health={aggregate['semanticCacheCorpusHealthCounts']} "
         f"venue_coverage_health={aggregate['venueCoverageHealthCounts']} "
         f"devig_methods={aggregate['devigMethodCounts']} "
@@ -2083,6 +2237,7 @@ def _provider_poll_health(provider_quote_poll_stats: dict[str, Any]) -> dict[str
         concurrency = _int_value(stats.get("concurrency"))
         max_concurrency = _int_value(stats.get("max_concurrency"))
         poll_target_cycle_secs = _float_value(stats.get("poll_target_cycle_secs"))
+        next_poll_sleep_secs = _float_value(stats.get("next_poll_sleep_secs"))
         max_fetch_latency_secs = _float_value(stats.get("max_fetch_latency_secs"))
         fetch_latency_p50_secs = _float_value(stats.get("fetch_latency_p50_secs"))
         fetch_latency_p95_secs = _float_value(stats.get("fetch_latency_p95_secs"))
@@ -2141,12 +2296,19 @@ def _provider_poll_health(provider_quote_poll_stats: dict[str, Any]) -> dict[str
             "requestsPerSecond": round(_ratio(request_count, cycle_elapsed_secs), 4),
             "quotesPerSecond": round(_ratio(quote_count, cycle_elapsed_secs), 4),
             "cycleHeadroomSeconds": round(cycle_headroom_secs, 4),
+            "pollUtilizationRatio": round(_ratio(cycle_elapsed_secs, poll_target_cycle_secs), 4),
+            "fetchLatencyUtilizationRatio": round(
+                _ratio(fetch_latency_p95_secs, max_fetch_latency_secs),
+                4,
+            ),
+            "concurrencyUtilizationRatio": round(_ratio(concurrency, max_concurrency), 4),
             "estimatedShardsForTarget": estimated_shards_for_target,
             "source": source,
             "concurrency": concurrency,
             "maxConcurrency": max_concurrency,
             "adaptiveConcurrency": bool(stats.get("adaptive_concurrency")),
             "pollTargetCycleSeconds": poll_target_cycle_secs,
+            "nextPollSleepSeconds": next_poll_sleep_secs,
             "maxFetchLatencySeconds": max_fetch_latency_secs,
             "fetchLatencyP50Seconds": fetch_latency_p50_secs,
             "fetchLatencyP95Seconds": fetch_latency_p95_secs,
@@ -2382,6 +2544,20 @@ def _recommended_actions(summary: dict[str, Any]) -> list[str]:
     )
     actions.extend(
         _actions_from_reason_payloads(
+            _as_dict(_as_dict(summary.get("venueCoverage")).get("quoteCapacityPressure")).values(),
+            {
+                "quote_capacity_near_full": "reserve_capacity_for_common_fixtures",
+                "semantic_matches_unquoted": "prioritize_semantic_matched_quotes",
+                "unquoted_semantic_matches": "prioritize_semantic_matched_quotes",
+                "capacity_bound_semantic_matches": "raise_or_rebalance_quote_capacity",
+                "subscriptions_without_quotes": "refresh_market_subscriptions",
+                "quote_subscription_gap": "increase_quote_subscription_limit_or_refresh_quotes",
+                "quote_subscription_limit_exceeded": "reduce_semantic_quote_subscription_load",
+            },
+        ),
+    )
+    actions.extend(
+        _actions_from_reason_payloads(
             _as_dict(_as_dict(summary.get("semanticCacheCorpusHealth")).get("providers")).values(),
             {
                 "no_corpus_sports": "inspect_provider_corpus_discovery",
@@ -2430,6 +2606,97 @@ def _actions_from_reason_names(
     mapping: dict[str, str],
 ) -> list[str]:
     return [action for reason, action in mapping.items() if _numeric(counts.get(reason)) > 0]
+
+
+def _quote_capacity_pressure(venue_coverage: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    enabled_venues = venue_coverage.get("enabledVenues") or []
+    quote_subscriptions = _as_dict(venue_coverage.get("quoteSubscriptionCounts"))
+    quote_subscription_limits = _as_dict(venue_coverage.get("quoteSubscriptionLimits"))
+    quote_limit_exceeded = _as_dict(venue_coverage.get("quoteSubscriptionLimitExceededCounts"))
+    quote_subscription_gaps = _as_dict(venue_coverage.get("quoteSubscriptionGapCounts"))
+    quoted_nodes = _as_dict(venue_coverage.get("quotedNodeCounts"))
+    semantic_matched_nodes = _as_dict(venue_coverage.get("semanticMatchedNodeCounts"))
+    quoted_semantic_nodes = _as_dict(venue_coverage.get("quotedSemanticMatchedNodeCounts"))
+    unquoted_semantic_nodes = _as_dict(venue_coverage.get("unquotedSemanticMatchedNodeCounts"))
+    pressure: dict[str, dict[str, Any]] = {}
+    for venue in sorted(str(item) for item in enabled_venues if item):
+        subscription_count = _int_value(quote_subscriptions.get(venue))
+        subscription_limit = _int_value(quote_subscription_limits.get(venue))
+        subscription_gap = _int_value(quote_subscription_gaps.get(venue))
+        subscription_limit_exceeded = _int_value(quote_limit_exceeded.get(venue))
+        quoted_node_count = _int_value(quoted_nodes.get(venue))
+        semantic_matched_count = _int_value(semantic_matched_nodes.get(venue))
+        quoted_semantic_count = _int_value(quoted_semantic_nodes.get(venue))
+        unquoted_semantic_count = _int_value(unquoted_semantic_nodes.get(venue))
+        subscription_utilization = _ratio(subscription_count, subscription_limit)
+        quote_yield = _ratio(quoted_node_count, subscription_count)
+        semantic_quote_coverage = _ratio(quoted_semantic_count, semantic_matched_count)
+        unquoted_semantic_ratio = (
+            1.0 - semantic_quote_coverage if semantic_matched_count > 0 else 0.0
+        )
+        capacity_pressure_score = max(subscription_utilization, unquoted_semantic_ratio)
+        reasons = _quote_capacity_pressure_reasons(
+            subscription_count=subscription_count,
+            subscription_limit=subscription_limit,
+            subscription_limit_exceeded=subscription_limit_exceeded,
+            subscription_gap=subscription_gap,
+            quoted_node_count=quoted_node_count,
+            semantic_matched_count=semantic_matched_count,
+            quoted_semantic_count=quoted_semantic_count,
+            unquoted_semantic_count=unquoted_semantic_count,
+            subscription_utilization=subscription_utilization,
+        )
+        pressure[venue] = {
+            "status": "warn" if reasons else "pass",
+            "reasons": reasons,
+            "subscriptionCount": subscription_count,
+            "subscriptionLimit": subscription_limit if subscription_limit > 0 else None,
+            "subscriptionUtilizationRatio": round(subscription_utilization, 4),
+            "subscriptionGap": subscription_gap,
+            "subscriptionLimitExceeded": subscription_limit_exceeded,
+            "quotedNodes": quoted_node_count,
+            "quoteYieldRatio": round(quote_yield, 4),
+            "semanticMatchedNodes": semantic_matched_count,
+            "quotedSemanticMatchedNodes": quoted_semantic_count,
+            "unquotedSemanticMatchedNodes": unquoted_semantic_count,
+            "semanticQuoteCoverageRatio": round(semantic_quote_coverage, 4),
+            "capacityPressureScore": round(capacity_pressure_score, 4),
+        }
+    return pressure
+
+
+def _quote_capacity_pressure_reasons(
+    *,
+    subscription_count: int,
+    subscription_limit: int,
+    subscription_limit_exceeded: int,
+    subscription_gap: int,
+    quoted_node_count: int,
+    semantic_matched_count: int,
+    quoted_semantic_count: int,
+    unquoted_semantic_count: int,
+    subscription_utilization: float,
+) -> list[str]:
+    reasons: list[str] = []
+    if subscription_limit_exceeded > 0:
+        reasons.append("quote_subscription_limit_exceeded")
+    if subscription_gap > 0:
+        reasons.append("quote_subscription_gap")
+    if subscription_limit > 0 and subscription_utilization >= 0.9:
+        reasons.append("quote_capacity_near_full")
+    if subscription_count > 0 and quoted_node_count <= 0:
+        reasons.append("subscriptions_without_quotes")
+    if semantic_matched_count > 0 and quoted_semantic_count <= 0:
+        reasons.append("semantic_matches_unquoted")
+    if unquoted_semantic_count > 0:
+        reasons.append("unquoted_semantic_matches")
+    if (
+        subscription_limit > 0
+        and subscription_count >= subscription_limit
+        and unquoted_semantic_count > 0
+    ):
+        reasons.append("capacity_bound_semantic_matches")
+    return reasons
 
 
 def _venue_coverage_health(venue_coverage: dict[str, Any]) -> dict[str, Any]:

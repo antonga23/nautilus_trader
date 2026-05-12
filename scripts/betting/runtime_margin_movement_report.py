@@ -114,6 +114,9 @@ def _snapshot_summary(payload: dict[str, Any], *, source: str) -> dict[str, Any]
     near_miss_margins = [
         margin for item in near_misses if (margin := _margin_value(item)) is not None
     ]
+    zero_candidate_blockers = coverage.get("zeroCandidateBlockerCounts")
+    if not isinstance(zero_candidate_blockers, dict):
+        zero_candidate_blockers = coverage.get("zeroPairBlockerCounts")
     return {
         "source": source,
         "nodeId": payload.get("nodeId"),
@@ -126,7 +129,7 @@ def _snapshot_summary(payload: dict[str, Any], *, source: str) -> dict[str, Any]
         "thresholdCandidates": _candidate_total(runtime.get("thresholdMarginCandidates")),
         "crossVenueCandidates": _cross_venue_candidate_count(runtime, quality),
         "venuePairCandidates": _venue_pair_candidate_counts(runtime, quality),
-        "zeroCandidateBlockers": _counter_payload(coverage.get("zeroPairBlockerCounts")),
+        "zeroCandidateBlockers": _counter_payload(zero_candidate_blockers),
         "nearTermQuotedCandidates": _int(horizon.get("quotedCandidatesInsideHorizon")),
         "insideHorizonEvents": _int(horizon.get("eventsInsideHorizon")),
         "outsideHorizonEvents": _int(horizon.get("eventsOutsideHorizon")),

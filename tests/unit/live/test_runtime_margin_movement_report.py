@@ -47,7 +47,7 @@ def _write_status(
                     "venueCoverage": {
                         "candidateCounts": {"POLYMARKET->SXBET": cross_venue},
                         "crossVenueCandidateCount": cross_venue,
-                        "zeroPairBlockerCounts": {
+                        "zeroCandidateBlockerCounts": {
                             "fixture_identity_mismatch": 2,
                             "no_semantic_edge": 1,
                         },

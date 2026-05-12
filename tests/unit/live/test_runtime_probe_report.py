@@ -107,6 +107,14 @@ def _runtime_status_payload() -> dict[str, object]:
                 "venueBasketRebateRates": {"SXBET": "0.01"},
                 "venueBasketBoostRates": {"CLOUDBET": "0.02"},
             },
+            "fxPolicy": {
+                "baseCurrency": "USD",
+                "stablecoinCurrencies": ["USD", "USDC", "USDT"],
+                "stablecoinHaircutBps": 10,
+                "maxAgeSeconds": 30.0,
+                "sourcePriority": ["hyperliquid", "pyth_hermes", "binance", "ecb_reference"],
+                "configuredFxRatePairs": ["EUR/USD"],
+            },
             "graphNodes": 40,
             "graphEdges": 22,
             "graphQuoteStates": 15,
@@ -133,10 +141,14 @@ def _runtime_status_payload() -> dict[str, object]:
                     "market_count": 10,
                     "quote_count": 8,
                     "cycle_elapsed_secs": 1.25,
-                    "max_fetch_latency_secs": 0.2,
+                    "poll_target_cycle_secs": 2.0,
+                    "next_poll_sleep_secs": 0.2,
+                    "max_fetch_latency_secs": 2.0,
                     "fetch_latency_p50_secs": 0.1,
                     "fetch_latency_p95_secs": 0.18,
                     "fetch_latency_p99_secs": 0.2,
+                    "concurrency": 1,
+                    "max_concurrency": 2,
                     "quote_event_timestamp_source": "request_started",
                     "quote_init_timestamp_source": "response_received",
                     "backlog_count": 6,
@@ -650,6 +662,15 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
     assert summary["feePolicy"]["venueMakerRebateRates"] == {"POLYMARKET": "0.0075"}
     assert summary["feePolicy"]["venueBasketRebateRates"] == {"SXBET": "0.01"}
     assert summary["feePolicy"]["venueBasketBoostRates"] == {"CLOUDBET": "0.02"}
+    assert summary["fxPolicy"] == {
+        "baseCurrency": "USD",
+        "stablecoinCurrencies": ["USD", "USDC", "USDT"],
+        "stablecoinHaircutBps": 10,
+        "maxAgeSeconds": 30.0,
+        "sourcePriority": ["hyperliquid", "pyth_hermes", "binance", "ecb_reference"],
+        "configuredFxRatePairs": ["EUR/USD"],
+        "requiresLiveFxForNonStablePairs": True,
+    }
     assert summary["candidateQuality"]["diagnosticWarnings"] == [
         "live_fetch_latency_slo_violations",
     ]
@@ -673,6 +694,22 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
         "CLOUDBET": 20,
         "SXBET": 10,
     }
+    assert summary["venueCoverage"]["quoteCapacityPressure"]["CLOUDBET"] == {
+        "status": "warn",
+        "reasons": ["quote_subscription_gap", "unquoted_semantic_matches"],
+        "subscriptionCount": 10,
+        "subscriptionLimit": 20,
+        "subscriptionUtilizationRatio": 0.5,
+        "subscriptionGap": 5,
+        "subscriptionLimitExceeded": 0,
+        "quotedNodes": 5,
+        "quoteYieldRatio": 0.5,
+        "semanticMatchedNodes": 7,
+        "quotedSemanticMatchedNodes": 5,
+        "unquotedSemanticMatchedNodes": 2,
+        "semanticQuoteCoverageRatio": 0.7143,
+        "capacityPressureScore": 0.5,
+    }
     assert summary["venueCoverage"]["unquotedSemanticMatchedNodeCounts"]["CLOUDBET"] == 2
     assert summary["venueCoverage"]["crossVenuePairsWithCandidates"] == ["CLOUDBET->SXBET"]
     assert summary["recommendedActions"] == [
@@ -685,6 +722,7 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
         "inspect_unresolved_provider_sport_targets",
         "inspect_zero_candidate_blockers",
         "inspect_zero_selection_target_sports",
+        "prioritize_semantic_matched_quotes",
         "reduce_poll_rate_or_add_backoff",
         "widen_provider_corpus_window_or_limits",
     ]
@@ -907,6 +945,18 @@ def test_runtime_probe_report_aggregates_multiple_artifacts():
         "fail": 1,
         "unknown": 1,
     }
+    assert aggregate["providerPollUtilizationByVenue"]["CLOUDBET"] == {
+        "maxPollUtilizationRatio": 0.625,
+        "maxFetchLatencyUtilizationRatio": 0.09,
+        "maxConcurrencyUtilizationRatio": 0.5,
+        "minCycleHeadroomSeconds": 0.75,
+    }
+    assert aggregate["quoteCapacityPressureByVenue"]["CLOUDBET"] == {
+        "maxSubscriptionUtilizationRatio": 0.5,
+        "minSemanticQuoteCoverageRatio": 0.7143,
+        "maxCapacityPressureScore": 0.5,
+        "maxUnquotedSemanticMatchedNodes": 2.0,
+    }
     assert aggregate["semanticCacheCorpusHealthCounts"] == {
         "unknown": 1,
         "warn": 1,
@@ -992,6 +1042,8 @@ def test_runtime_probe_report_cli_outputs_json_and_text(tmp_path, monkeypatch, c
     assert "coverage proofs=5367 hyperedges=482" in text_output
     assert "semantic_cache_execution_safe_families TOTALS + TOTALS=25" in text_output
     assert "coverage_blockers void_settlement=3" in text_output
+    assert "fx_policy base=USD stablecoins=USD,USDC,USDT" in text_output
+    assert "sources=hyperliquid,pyth_hermes,binance,ecb_reference" in text_output
     assert "candidates positive=3 threshold=2 cross_venue=2" in text_output
     assert "aggregate: artifacts=1 positive=3 threshold=2 cross_venue=2" in text_output
     assert "quoted_semantic=14" in text_output
@@ -999,6 +1051,9 @@ def test_runtime_probe_report_cli_outputs_json_and_text(tmp_path, monkeypatch, c
     assert "execution_safety={'pass': 1}" in text_output
     assert "health={'fail': 1}" in text_output
     assert "provider_poll_health={'fail': 1}" in text_output
+    assert "provider_poll_utilization={'CLOUDBET':" in text_output
+    assert "quote_capacity_pressure={'CLOUDBET':" in text_output
+    assert "quote_capacity_pressure CLOUDBET:status=warn" in text_output
     assert "corpus_health={'warn': 1}" in text_output
     assert "coverage_book_devig_quoted=2" in text_output
     assert "venue_coverage_health={'warn': 1}" in text_output
@@ -1022,6 +1077,10 @@ def test_runtime_probe_report_cli_outputs_json_and_text(tmp_path, monkeypatch, c
     assert "provider_poll CLOUDBET:cycle=12" in text_output
     assert "fetch_p95=0.18s" in text_output
     assert "provider_poll_health overall=fail CLOUDBET:status=fail" in text_output
+    assert "poll_util=0.625" in text_output
+    assert "fetch_util=0.09" in text_output
+    assert "concurrency_util=0.5" in text_output
+    assert "next_sleep=0.2s" in text_output
     assert "semantic_cache_corpus_health overall=warn SXBET:status=warn" in text_output
     assert (
         "corpus_coverage provider=SXBET mode=active_live sports=3/6 selections=842" in text_output
@@ -1145,7 +1204,9 @@ def test_provider_poll_health_explains_cloudbet_poll_fanout_bottlenecks():
                         "source": "rest_event_poll",
                         "cycle_elapsed_secs": 8.2,
                         "poll_target_cycle_secs": 4.0,
+                        "next_poll_sleep_secs": 0.0,
                         "max_fetch_latency_secs": 0.8,
+                        "fetch_latency_p95_secs": 0.72,
                         "request_count": 40,
                         "event_request_count": 10,
                         "line_request_count": 30,
@@ -1172,7 +1233,11 @@ def test_provider_poll_health_explains_cloudbet_poll_fanout_bottlenecks():
     assert cloudbet["requestsPerSecond"] == 4.878
     assert cloudbet["quotesPerSecond"] == 1.9512
     assert cloudbet["cycleHeadroomSeconds"] == -4.2
+    assert cloudbet["pollUtilizationRatio"] == 2.05
+    assert cloudbet["fetchLatencyUtilizationRatio"] == 0.9
+    assert cloudbet["concurrencyUtilizationRatio"] == 1.0
     assert cloudbet["estimatedShardsForTarget"] == 3
+    assert cloudbet["nextPollSleepSeconds"] == 0.0
     assert cloudbet["prunedSubscriptionCount"] == 3
     assert cloudbet["refilledSubscriptionCount"] == 0
     assert cloudbet["pollTargetCycleSeconds"] == 4.0
