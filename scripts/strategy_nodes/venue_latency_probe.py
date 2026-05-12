@@ -39,12 +39,30 @@ DEFAULT_STRATEGY_VENUES = {
 
 
 @dataclass(frozen=True)
+class ProbeTarget:
+    url: str
+    method: str = "GET"
+    body: str | None = None
+    headers: dict[str, str] | None = None
+
+
+DEFAULT_TARGETS = {venue: ProbeTarget(url) for venue, url in DEFAULT_URLS.items()}
+DEFAULT_TARGETS["hyperliquid"] = ProbeTarget(
+    DEFAULT_URLS["hyperliquid"],
+    method="POST",
+    body='{"type":"allMids"}',
+    headers={"Content-Type": "application/json"},
+)
+
+
+@dataclass(frozen=True)
 class ProbeSample:
     ok: bool
     dns_ms: float
     tcp_ms: float
     tls_ms: float
     first_byte_ms: float
+    read_ms: float
     total_ms: float
     status: int | None = None
     error: str | None = None
@@ -66,7 +84,7 @@ def summarize_samples(samples: list[ProbeSample]) -> dict[str, object]:
         "failed": len(samples) - len(successful),
         "errorRate": (len(samples) - len(successful)) / len(samples) if samples else 0.0,
     }
-    for field in ("dns_ms", "tcp_ms", "tls_ms", "first_byte_ms", "total_ms"):
+    for field in ("dns_ms", "tcp_ms", "tls_ms", "first_byte_ms", "read_ms", "total_ms"):
         values = [float(getattr(sample, field)) for sample in successful]
         summary[field] = {
             "median": round(statistics.median(values), 3) if values else 0.0,
@@ -79,7 +97,14 @@ def summarize_samples(samples: list[ProbeSample]) -> dict[str, object]:
     return summary
 
 
-def probe_url(url: str, *, timeout_secs: float = 5.0) -> ProbeSample:
+def probe_url(
+    url: str,
+    *,
+    timeout_secs: float = 5.0,
+    method: str = "GET",
+    body: str | None = None,
+    headers: dict[str, str] | None = None,
+) -> ProbeSample:
     parsed = urlparse(url)
     host = parsed.hostname or ""
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
@@ -105,20 +130,22 @@ def probe_url(url: str, *, timeout_secs: float = 5.0) -> ProbeSample:
             sock = _ssl_context().wrap_socket(sock, server_hostname=host)
             tls_ms = (time.perf_counter() - tls_started) * 1000
 
-        connection_cls = (
-            http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
-        )
-        connection = connection_cls(host, port, timeout=timeout_secs)
+        # The socket above already captures TCP and optional TLS timing. Use a
+        # plain HTTPConnection over that prepared socket to avoid a second TLS
+        # wrap inside HTTPSConnection.
+        connection = http.client.HTTPConnection(host, port, timeout=timeout_secs)
         connection.sock = sock
         request_started = time.perf_counter()
-        connection.request(
-            "GET",
-            path,
-            headers={"User-Agent": "cloudbet-market-maker-latency-probe"},
-        )
+        request_headers = {
+            "User-Agent": "cloudbet-market-maker-latency-probe",
+            **(headers or {}),
+        }
+        connection.request(method.upper(), path, body=body, headers=request_headers)
         response = connection.getresponse()
         first_byte_ms = (time.perf_counter() - request_started) * 1000
+        read_started = time.perf_counter()
         response.read(256)
+        read_ms = (time.perf_counter() - read_started) * 1000
         status = int(response.status)
         connection.close()
         return ProbeSample(
@@ -127,6 +154,7 @@ def probe_url(url: str, *, timeout_secs: float = 5.0) -> ProbeSample:
             tcp_ms=tcp_ms,
             tls_ms=tls_ms,
             first_byte_ms=first_byte_ms,
+            read_ms=read_ms,
             total_ms=(time.perf_counter() - started) * 1000,
             status=status,
         )
@@ -137,8 +165,9 @@ def probe_url(url: str, *, timeout_secs: float = 5.0) -> ProbeSample:
             tcp_ms=0.0,
             tls_ms=0.0,
             first_byte_ms=0.0,
+            read_ms=0.0,
             total_ms=(time.perf_counter() - started) * 1000,
-            error=type(e).__name__,
+            error=_error_summary(e),
         )
 
 
@@ -148,6 +177,13 @@ def _ssl_context() -> ssl.SSLContext:
     except ImportError:  # pragma: no cover - certifi is part of the normal dev env
         return ssl.create_default_context()
     return ssl.create_default_context(cafile=certifi.where())
+
+
+def _error_summary(error: Exception) -> str:
+    detail = str(error).replace("\n", " ").strip()
+    if len(detail) > 120:
+        detail = f"{detail[:117]}..."
+    return f"{type(error).__name__}: {detail}" if detail else type(error).__name__
 
 
 def _recommendation(summary_by_venue: dict[str, dict[str, object]]) -> dict[str, object]:
@@ -243,6 +279,7 @@ def _best_strategy_region(candidates: list[dict[str, object]]) -> dict[str, obje
     best = min(
         eligible,
         key=lambda item: (
+            _payload_float(item, "placementScoreMs"),
             _payload_float(item, "worstLegTotalP95Ms"),
             _payload_float(item, "venueTotalP95SkewMs"),
             _payload_float(item, "worstLegErrorRate"),
@@ -255,7 +292,14 @@ def _best_strategy_region(candidates: list[dict[str, object]]) -> dict[str, obje
         "venueTotalP95SkewMs": _payload_float(best, "venueTotalP95SkewMs"),
         "worstLegFirstByteP95Ms": _payload_float(best, "worstLegFirstByteP95Ms"),
         "venueFirstByteP95SkewMs": _payload_float(best, "venueFirstByteP95SkewMs"),
+        "worstLegReadP95Ms": _payload_float(best, "worstLegReadP95Ms"),
+        "venueReadP95SkewMs": _payload_float(best, "venueReadP95SkewMs"),
+        "worstLegTotalStddevMs": _payload_float(best, "worstLegTotalStddevMs"),
+        "worstLegFirstByteStddevMs": _payload_float(best, "worstLegFirstByteStddevMs"),
+        "worstLegReadStddevMs": _payload_float(best, "worstLegReadStddevMs"),
         "worstLegErrorRate": _payload_float(best, "worstLegErrorRate"),
+        "placementScoreMs": _payload_float(best, "placementScoreMs"),
+        "dominantLatencyVenue": best.get("dominantLatencyVenue"),
         "venues": best.get("venues") if isinstance(best.get("venues"), list) else [],
     }
 
@@ -286,11 +330,24 @@ def _strategy_placement_recommendation(
     missing_venues = [venue for venue in venues if venue not in venue_payloads]
     total_p95 = _venue_percentiles_ms(venue_payloads, "total_ms")
     first_byte_p95 = _venue_percentiles_ms(venue_payloads, "first_byte_ms")
+    read_p95 = _venue_percentiles_ms(venue_payloads, "read_ms")
+    total_stddev = _venue_metric_values(venue_payloads, "total_ms", "stddev")
+    first_byte_stddev = _venue_metric_values(venue_payloads, "first_byte_ms", "stddev")
+    read_stddev = _venue_metric_values(venue_payloads, "read_ms", "stddev")
     error_rates = _venue_error_rates(venue_payloads)
     worst_error_rate = max(error_rates.values()) if error_rates else 1.0
     blockers = _placement_blockers(
         missing_venues=missing_venues,
         data_fresh=data_fresh,
+        worst_error_rate=worst_error_rate,
+    )
+    worst_leg_total_p95 = max(total_p95.values()) if total_p95 else 0.0
+    total_skew = _metric_skew_ms(total_p95)
+    worst_total_stddev = max(total_stddev.values()) if total_stddev else 0.0
+    placement_score_ms = _placement_score_ms(
+        worst_leg_total_p95=worst_leg_total_p95,
+        venue_total_p95_skew_ms=total_skew,
+        worst_leg_total_stddev_ms=worst_total_stddev,
         worst_error_rate=worst_error_rate,
     )
     return {
@@ -299,13 +356,24 @@ def _strategy_placement_recommendation(
         "missingVenues": missing_venues,
         "dataAgeSecs": round(data_age_secs, 3),
         "dataFresh": data_fresh,
-        "worstLegTotalP95Ms": max(total_p95.values()) if total_p95 else 0.0,
+        "worstLegTotalP95Ms": worst_leg_total_p95,
         "worstLegFirstByteP95Ms": max(first_byte_p95.values()) if first_byte_p95 else 0.0,
-        "venueTotalP95SkewMs": _metric_skew_ms(total_p95),
+        "worstLegReadP95Ms": max(read_p95.values()) if read_p95 else 0.0,
+        "worstLegTotalStddevMs": worst_total_stddev,
+        "worstLegFirstByteStddevMs": max(first_byte_stddev.values()) if first_byte_stddev else 0.0,
+        "worstLegReadStddevMs": max(read_stddev.values()) if read_stddev else 0.0,
+        "venueTotalP95SkewMs": total_skew,
         "venueFirstByteP95SkewMs": _metric_skew_ms(first_byte_p95),
+        "venueReadP95SkewMs": _metric_skew_ms(read_p95),
         "worstLegErrorRate": worst_error_rate,
+        "placementScoreMs": placement_score_ms,
+        "dominantLatencyVenue": _dominant_latency_venue(total_p95),
         "venueTotalP95Ms": total_p95,
         "venueFirstByteP95Ms": first_byte_p95,
+        "venueReadP95Ms": read_p95,
+        "venueTotalStddevMs": total_stddev,
+        "venueFirstByteStddevMs": first_byte_stddev,
+        "venueReadStddevMs": read_stddev,
         "venueErrorRates": error_rates,
         "blockers": blockers,
         "eligibleForPlacementComparison": not blockers,
@@ -325,8 +393,16 @@ def _venue_percentiles_ms(
     venue_payloads: dict[str, dict[str, object]],
     metric: str,
 ) -> dict[str, float]:
+    return _venue_metric_values(venue_payloads, metric, "p95")
+
+
+def _venue_metric_values(
+    venue_payloads: dict[str, dict[str, object]],
+    metric: str,
+    statistic: str,
+) -> dict[str, float]:
     return {
-        venue: _summary_percentile_ms(summary, metric, "p95")
+        venue: _summary_percentile_ms(summary, metric, statistic)
         for venue, summary in venue_payloads.items()
     }
 
@@ -342,6 +418,29 @@ def _metric_skew_ms(values_by_venue: dict[str, float]) -> float:
     if len(values) < 2:
         return 0.0
     return round(max(values) - min(values), 3)
+
+
+def _dominant_latency_venue(values_by_venue: dict[str, float]) -> str | None:
+    if not values_by_venue:
+        return None
+    return max(sorted(values_by_venue), key=lambda venue: values_by_venue[venue])
+
+
+def _placement_score_ms(
+    *,
+    worst_leg_total_p95: float,
+    venue_total_p95_skew_ms: float,
+    worst_leg_total_stddev_ms: float,
+    worst_error_rate: float,
+) -> float:
+    error_penalty_ms = max(worst_error_rate, 0.0) * 1000.0
+    score = (
+        worst_leg_total_p95
+        + 0.25 * venue_total_p95_skew_ms
+        + 0.5 * worst_leg_total_stddev_ms
+        + error_penalty_ms
+    )
+    return round(score, 3)
 
 
 def _placement_blockers(
@@ -423,16 +522,26 @@ def main() -> int:
         print(text)
         return 0
 
-    targets = {venue: DEFAULT_URLS[venue] for venue in (args.venue or DEFAULT_URLS)}
+    target_names = args.venue or sorted(DEFAULT_TARGETS)
+    targets = {venue: DEFAULT_TARGETS[venue] for venue in target_names}
     for custom in args.url:
         name, _, url = custom.partition("=")
         if name and url:
-            targets[name.strip().lower()] = url.strip()
+            targets[name.strip().lower()] = ProbeTarget(url.strip())
 
     summaries: dict[str, dict[str, object]] = {}
     raw_samples: dict[str, list[dict[str, object]]] = {}
-    for venue, url in targets.items():
-        samples = [probe_url(url, timeout_secs=args.timeout_secs) for _ in range(args.samples)]
+    for venue, target in targets.items():
+        samples = [
+            probe_url(
+                target.url,
+                timeout_secs=args.timeout_secs,
+                method=target.method,
+                body=target.body,
+                headers=target.headers,
+            )
+            for _ in range(args.samples)
+        ]
         summaries[venue] = summarize_samples(samples)
         raw_samples[venue] = [asdict(sample) for sample in samples]
 
@@ -440,7 +549,13 @@ def main() -> int:
     payload = {
         "generatedAtNs": generated_at_ns,
         "region": args.region,
-        "targets": targets,
+        "targets": {
+            venue: {
+                "url": target.url,
+                "method": target.method,
+            }
+            for venue, target in targets.items()
+        },
         "summaries": summaries,
         "recommendation": _recommendation(summaries),
         "placementRecommendations": placement_recommendations(

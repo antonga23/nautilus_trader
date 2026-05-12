@@ -31,6 +31,13 @@ def _status_payload(*, positive: int = 0, negative_band: int = 2) -> dict[str, o
             "positiveMarginCandidates": {"total": positive},
             "thresholdMarginCandidates": {"total": positive},
             "venueCoverage": {
+                "enabledVenues": ["POLYMARKET", "SXBET"],
+                "quoteSubscriptionCounts": {"POLYMARKET": 2, "SXBET": 3},
+                "quoteSubscriptionLimits": {"POLYMARKET": 3, "SXBET": 4},
+                "quotedNodeCounts": {"POLYMARKET": 2, "SXBET": 3},
+                "semanticMatchedNodeCounts": {"POLYMARKET": 3, "SXBET": 4},
+                "quotedSemanticMatchedNodeCounts": {"POLYMARKET": 2, "SXBET": 3},
+                "unquotedSemanticMatchedNodeCounts": {"POLYMARKET": 1, "SXBET": 1},
                 "edgeCounts": {
                     "POLYMARKET->SXBET": 3,
                     "SXBET->POLYMARKET": 2,
@@ -69,7 +76,7 @@ def _status_payload(*, positive: int = 0, negative_band: int = 2) -> dict[str, o
                 "topNegativeNearMisses": [{"instrumentIdA": "poly-2"}],
                 "latencyHistograms": {
                     "quoteAgeSeconds": {"count": 10, "p95": 1.8},
-                    "quoteDeltaSeconds": {"count": 10, "p95": 0.4},
+                    "pairSkewSeconds": {"count": 10, "p95": 0.4},
                 },
             },
             "latencyDiagnostics": {
@@ -102,6 +109,8 @@ def test_evaluate_soak_passes_on_cross_venue_edges_blockers_and_latency(tmp_path
     assert result["latency"]["decisionP95"]["status"] == "pass"
     assert result["totals"]["crossVenueEdges"] == 10
     assert result["totals"]["quotedCandidatesInsideHorizon"] == 4
+    assert result["totals"]["maxQuoteCapacityPressureScore"] == 0.75
+    assert result["totals"]["unquotedSemanticMatchedNodes"] == 4
 
 
 def test_evaluate_soak_warns_when_latency_samples_are_missing(tmp_path):
