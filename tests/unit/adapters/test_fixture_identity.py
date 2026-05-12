@@ -283,6 +283,31 @@ def test_fixture_identity_expands_aliases_from_event_title_when_team_fields_miss
     assert "basketball:cleveland:minnesota" in sxbet.event_alias_keys()
 
 
+def test_fixture_identity_compacts_dotted_city_abbreviations():
+    resolver = FixtureIdentityResolver()
+    polymarket = _instrument(
+        venue="POLYMARKET",
+        event_name="L.A. Clippers v N.Y. Knicks",
+        home_name="L.A. Clippers",
+        away_name="N.Y. Knicks",
+        sport_name="basketball",
+    )
+    sxbet = _instrument(
+        venue="SXBET",
+        event_name="Los Angeles Clippers vs New York Knicks",
+        home_name="Los Angeles Clippers",
+        away_name="New York Knicks",
+        sport_name="basketball",
+    )
+
+    proof = resolver.resolve(polymarket, sxbet)
+
+    assert proof.same_fixture is True
+    assert proof.blocker_reason is None
+    assert proof.canonical_event_key_a == proof.canonical_event_key_b
+    assert "basketball:los angeles:new york" in polymarket.event_alias_keys()
+
+
 def test_portfolio_policy_treats_stablecoins_as_usd_with_haircut():
     policy = PortfolioCurrencyPolicy(stablecoin_haircut_bps=25)
 
