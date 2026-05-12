@@ -792,16 +792,18 @@ class PolymarketInstrumentProvider(InstrumentProvider):
         if not isinstance(sports_metadata, list):
             return []
 
-        selected_sports = _selected_sports_metadata(sports_metadata, sports_filter)
-        if not selected_sports:
+        tag_groups = _selected_sports_tag_groups(sports_metadata, sports_filter)
+        if not tag_groups:
             return []
 
-        per_sport_limit = _balanced_sport_limit(max_results, len(selected_sports))
+        per_sport_limit = _balanced_sport_limit(max_results, len(tag_groups))
         discovered_markets: dict[str, dict[str, Any]] = {}
         overflow_markets: dict[str, dict[str, Any]] = {}
-        for sport_metadata in selected_sports:
+        for canonical_sport, tag_group in tag_groups.items():
             sport_markets = await self._discover_sport_event_markets(
-                sport_metadata=sport_metadata,
+                canonical_sport=canonical_sport,
+                sport_codes=list(tag_group["sport_codes"]),
+                selected_tags=list(tag_group["tag_ids"]),
                 per_sport_limit=per_sport_limit,
                 max_results=max_results,
                 now=now,
@@ -825,16 +827,16 @@ class PolymarketInstrumentProvider(InstrumentProvider):
     async def _discover_sport_event_markets(
         self,
         *,
-        sport_metadata: dict[str, Any],
+        canonical_sport: str,
+        sport_codes: list[str],
+        selected_tags: list[str],
         per_sport_limit: int | None,
         max_results: int | None,
         now: datetime,
         horizon: timedelta | None,
     ) -> dict[str, dict[str, Any]]:
-        sport_code = str(sport_metadata.get("sport") or "")
-        canonical_sport = _canonical_polymarket_sport(sport_code)
-        selected_tags = _selected_sports_tag_ids(sport_metadata)
         sport_markets: dict[str, dict[str, Any]] = {}
+        sport_code = sport_codes[0] if sport_codes else canonical_sport
         for tag_id in selected_tags:
             events = await self._gamma_get_json(
                 "/events",

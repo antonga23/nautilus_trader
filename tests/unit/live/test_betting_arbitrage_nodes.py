@@ -863,6 +863,62 @@ class TestBettingArbitrageNodeBuilder:
         assert event_limits == [("11", 2), ("22", 2)]
         assert Counter(market["sport"] for market in markets) == {"soccer": 2, "tennis": 2}
 
+    def test_polymarket_gamma_sports_discovery_balances_canonical_sport_groups(self):
+        class Clock:
+            @staticmethod
+            def timestamp_ns() -> int:
+                return 123
+
+        provider = polymarket_providers.PolymarketInstrumentProvider(
+            client=Mock(),
+            clock=Clock(),
+            config=InstrumentProviderConfig(),
+        )
+        event_limits: list[tuple[str, int]] = []
+
+        def market_event(sport: str, index: int) -> dict[str, object]:
+            return {
+                "id": f"{sport}-event-{index}",
+                "title": f"{sport.title()} Team {index} vs Other",
+                "slug": f"{sport}-event-{index}",
+                "startDate": "2026-05-10T18:00:00Z",
+                "markets": [
+                    {
+                        "id": f"{sport}-market-{index}",
+                        "conditionId": f"{sport}-condition-{index}",
+                        "question": f"Will {sport} team {index} win?",
+                    },
+                ],
+            }
+
+        async def fake_gamma_get_json(endpoint, params=None):
+            if endpoint == "/sports":
+                return [
+                    {"sport": "soccer", "tags": "11"},
+                    {"sport": "epl", "tags": "12"},
+                    {"sport": "ucl", "tags": "13"},
+                    {"sport": "atp", "tags": "22"},
+                    {"sport": "wta", "tags": "23"},
+                ]
+            assert endpoint == "/events"
+            assert params is not None
+            tag_id = str(params["tag_id"])
+            event_limits.append((tag_id, int(params["limit"])))
+            sport = "soccer" if tag_id in {"11", "12", "13"} else "tennis"
+            return [market_event(sport, index) for index in range(6)]
+
+        provider._gamma_get_json = fake_gamma_get_json
+
+        markets = asyncio.run(
+            provider._load_sports_event_markets_using_gamma(
+                sports_filter={"soccer", "tennis"},
+                max_results=6,
+            ),
+        )
+
+        assert event_limits == [("11", 3), ("12", 3), ("13", 3), ("22", 3), ("23", 3)]
+        assert Counter(market["sport"] for market in markets) == {"soccer": 3, "tennis": 3}
+
     def test_polymarket_tag_market_discovery_finds_match_level_tennis(
         self,
         monkeypatch,
