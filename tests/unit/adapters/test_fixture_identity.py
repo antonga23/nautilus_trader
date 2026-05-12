@@ -308,6 +308,55 @@ def test_fixture_identity_compacts_dotted_city_abbreviations():
     assert "basketball:los angeles:new york" in polymarket.event_alias_keys()
 
 
+def test_fixture_identity_splits_provider_title_separators_when_team_fields_missing():
+    resolver = FixtureIdentityResolver()
+    sxbet = _instrument(
+        venue="SXBET",
+        event_name="Minnesota Timberwolves vs. San Antonio Spurs",
+        home_name="",
+        away_name="",
+        sport_name="basketball",
+    )
+    cloudbet = _instrument(
+        venue="CLOUDBET",
+        event_name="MIN Timberwolves - SA Spurs",
+        home_name="",
+        away_name="",
+        sport_name="basketball",
+    )
+
+    proof = resolver.resolve(sxbet, cloudbet)
+
+    assert proof.same_fixture is True
+    assert proof.blocker_reason is None
+    assert "basketball:minnesota timberwolves:san antonio spurs" in sxbet.event_alias_keys()
+    assert "basketball:minnesota:san antonio" in cloudbet.event_alias_keys()
+
+
+def test_fixture_identity_splits_at_separator_without_confusing_player_hyphens():
+    resolver = FixtureIdentityResolver()
+    polymarket = _instrument(
+        venue="POLYMARKET",
+        event_name="Felix Auger-Aliassime at Mariano Navone",
+        home_name="",
+        away_name="",
+        sport_name="tennis",
+    )
+    sxbet = _instrument(
+        venue="SXBET",
+        event_name="Felix Auger Aliassime v. Mariano Navone",
+        home_name="",
+        away_name="",
+        sport_name="tennis",
+    )
+
+    proof = resolver.resolve(polymarket, sxbet)
+
+    assert proof.same_fixture is True
+    assert proof.blocker_reason is None
+    assert proof.canonical_event_key_a == proof.canonical_event_key_b
+
+
 def test_portfolio_policy_treats_stablecoins_as_usd_with_haircut():
     policy = PortfolioCurrencyPolicy(stablecoin_haircut_bps=25)
 

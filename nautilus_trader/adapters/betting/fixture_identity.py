@@ -206,7 +206,10 @@ class FixtureIdentityResolver:
         "s d": "sd",
         "s f": "sf",
     }
-    EVENT_SPLIT_PATTERN = re.compile(r"\s+(?:v|vs|versus|@)\s+", re.IGNORECASE)
+    EVENT_SPLIT_PATTERN = re.compile(
+        r"\s+(?:v\.?|vs\.?|versus|@|at)\s+|\s+[-/]\s+",
+        re.IGNORECASE,
+    )
 
     def __init__(self, start_time_tolerance_secs: int = DEFAULT_START_TIME_TOLERANCE_SECS) -> None:
         self.start_time_tolerance_secs = start_time_tolerance_secs
