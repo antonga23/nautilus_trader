@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+from nautilus_trader.adapters.betting.market_matcher import MarketMatcher
 from nautilus_trader.adapters.cloudbet.client.util import generate_64bit_uuid
 from nautilus_trader.adapters.cloudbet.providers import CloudbetInstrumentProvider
 from nautilus_trader.common.providers import InstrumentProvider
@@ -15,32 +16,6 @@ from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
 from nautilus_trader.model.orderbook import OrderBook
 from nautilus_trader.trading.strategy import Strategy
-
-
-# TODO: complete mapping between all markets for all sports.
-# Some special cases will need one market to map to multiple related markets.
-
-MARKET_MAPPER: dict[str, list[str]] = {
-    "both_teams_to_score": ["both_teams_to_score"],
-    "total_goals": ["total_goals"],  # over/under markets
-    "team_total_goals": ["team_total_goals"],  # over/under markets
-    "draw_no_bet": ["draw_no_bet"],  # NB: Can result in PUSH in event of draw
-    "match_odds": ["double_chance"],
-    "double_chance": ["asian_handicap", "match_odds"],
-    "match_odds_period_first_half": ["asian_handicap_period_first_half"],
-    "match_odds_period_second_half": ["asian_handicap_period_second_half"],
-    "asian_handicap": ["asian_handicap", "draw_no_bet"],
-    "asian_handicap_period_first_half": [
-        "match_odds_period_first_half",
-        "asian_handicap_period_first_half",
-    ],
-    "team_total_goals_period_first_half": [
-        "team_total_goals_period_first_half",
-    ],  # over/under markets
-    "team_total_goals_period_second_half": [
-        "team_total_goals_period_second_half",
-    ],  # over/under markets
-}  # TODO: store and add to cache in case it has not been added.
 
 
 class BettingMarketMaker(Strategy):
@@ -96,6 +71,7 @@ class BettingMarketMaker(Strategy):
         self._instrument_to_book: dict[InstrumentId, BookOrder] = {}
         self._trigger_min_profit = trigger_min_profit
         self._trigger_min_size = trigger_min_size
+        self._market_matcher = MarketMatcher()
 
     def check_trigger(self) -> None:
         """
@@ -372,192 +348,16 @@ class BettingMarketMaker(Strategy):
         return
 
     def selection_matcher(self) -> list[CryptoBettingInstrument]:
-        # We need to find the matching selections for the current instrumentID
-        # and use the dataEngine to get the orderbook for matching selections
-        matching_markets: list[str] | None = MARKET_MAPPER.get(
-            self.instrument.market_name.split(".")[-1],
-        )
-        if not matching_markets:
+        """
+        Find hedge selections using the shared semantic matcher.
+        """
+        if not self.instrument or not self.instrument_provider:
             return []
-        search_results: list[CryptoBettingInstrument] | None = []
-        for market in matching_markets:
-            market_name = f"{self.instrument.sport_name.lower()}.{market}"  # TODO: set market type on CryptoBettingInstrument to market_name without sport name eg. market_name.split(".")[1]
-            instrument_filter = {
-                "event_name": self.instrument.event_name,  # TODO: use event_id instead
-                "market_name": market_name,
-                "sport_name": self.instrument.sport_name,
-            }
-            search_provider_result: list[CryptoBettingInstrument] | None = (
-                self.instrument_provider.search_instruments(instrument_filter)
-            )
-            if search_provider_result:
-                search_results.extend(search_provider_result)
-        # we need to filter matching instruments by the outcome
-        # in the case it is the same market, we just need to check the outcome is opposite
-        matching_instruments: list[CryptoBettingInstrument] | None = []
-        for instrument in search_results:
-            if instrument == self.instrument:
-                # self.instrument will be a match for itself and we don't want that
-                continue
-            # same market matcher
-            if instrument.market_name == self.instrument.market_name:
-                matching_instrument = self.match_same_market(instrument)
-                if matching_instrument:
-                    matching_instruments.append(matching_instrument)
-            else:
-                # cross market matcher
-                matching_instrument = self.match_cross_market(instrument)
-                if matching_instrument:
-                    matching_instruments.append(matching_instrument)
-
-        return matching_instruments
-
-    def match_same_market(
-        self,
-        instrument: CryptoBettingInstrument,
-    ) -> CryptoBettingInstrument | None:
-        matching_instruments: CryptoBettingInstrument | None = None
-        # handicap instruments
-        # TODO: add a better check using the handicap type/ENUM on CryptoBettingInstrument.
-        if "handicap" in self.instrument.market_name:
-            if instrument.outcome != self.instrument.outcome:  # i.e. opposite outcomes away != home
-                # we need to extract the handicap value from params
-                matching_instrument_handicap_value = instrument.params.split("=")[-1]
-                instrument_handicap_value = self.instrument.params.split("=")[-1]
-                # we need to exclude split-handicaps for now (essentially two bets between two outcomes)
-                # i.e. handicap_value must be a multiple of 0.5
-                if float(instrument_handicap_value) % 0.5 != 0:
-                    return matching_instruments
-                if matching_instrument_handicap_value == instrument_handicap_value:
-                    # same market, opposite outcome, same handicap values => match
-                    matching_instruments = instrument
-                    self.log.debug(
-                        f"Found matching Instrument: {instrument.id}  for {self.instrument.id}",
-                    )
-                    return matching_instruments
-                else:
-                    # same market, opposite outcome, but different handicap values => no match
-                    self.log.debug(
-                        f"No match. Instrument Handicap value: {instrument_handicap_value}  Matching Instrument Handicap value: {matching_instrument_handicap_value}",
-                    )
-                    return matching_instruments
-            else:
-                # same market, same outcome => no match
-                return matching_instruments
-        if (
-            "both_teams_to_score" in self.instrument.market_name
-            and instrument.outcome != self.instrument.outcome
-        ):  # i.e. opposite outcomes yes != no
-            # same market, opposite outcome => match
-            matching_instruments = instrument
-            self.log.debug(f"Found matching Instrument: {instrument.id}  for {self.instrument.id}")
-            return matching_instruments
-        # total_goals instruments
-        if (
-            "total_goals" in self.instrument.market_name
-            and instrument.outcome != self.instrument.outcome
-        ):  # i.e. opposite outcomes over != under
-            # TODO: exclude these total markets {exact_total_goals_period_first_half,....}
-            # same market, opposite outcome => match
-            matching_instrument_total_value = instrument.params.split("=")[-1]
-            instrument_total_value = self.instrument.params.split("=")[-1]
-            if matching_instrument_total_value == instrument_total_value:
-                matching_instruments = instrument
-                self.log.debug(
-                    f"Found matching Instrument: {instrument.id}  for {self.instrument.id}",
-                )
-                return matching_instruments
-        # draw_no_bet instruments
-        if "draw_no_bet" in self.instrument.market_name:
-            if instrument.outcome != self.instrument.outcome:  # i.e. opposite outcomes home != away
-                # same market, opposite outcome => match
-                matching_instruments = instrument
-            self.log.debug(f"Found matching Instrument: {instrument.id}  for {self.instrument.id}")
-            return matching_instruments
-
-        return matching_instruments
-
-    def match_cross_market(
-        self,
-        instrument: CryptoBettingInstrument,
-    ) -> CryptoBettingInstrument | None:
-        matching_instruments: CryptoBettingInstrument | None = None
-        # path for double_chance and match_odds
-        if (
-            "match_odds" in self.instrument.market_name
-            and "double_chance" in instrument.market_name
-        ) or (
-            "match_odds" in instrument.market_name
-            and "double_chance" in self.instrument.market_name
-        ):  # TODO: cater for all "match_odds type" markets eg. 1x2; 3-way; etc
-            # determine the match_odds instrument
-            match_odds_instrument = (
-                self.instrument if "match_odds" in self.instrument.market_name else instrument
-            )
-            # determine the double_chance instrument based on the result of the match_odds_instrument
-            double_chance_instrument = (
-                self.instrument if "double_chance" in self.instrument.market_name else instrument
-            )
-            # check if the match_odds_instrument_outcome is not a possible outcome of the double_chance_instrument
-            if match_odds_instrument.outcome not in double_chance_instrument.outcome.split("_"):
-                matching_instruments = instrument
-                self.log.debug(
-                    f"Found matching Instrument: {instrument.id}  for {self.instrument.id}",
-                )
-                return matching_instruments
-        # path for double chance and handicap
-        if (
-            "double_chance" in self.instrument.market_name and "handicap" in instrument.market_name
-        ) or (
-            "handicap" in self.instrument.market_name and "double_chance" in instrument.market_name
-        ):
-            # determine the double_chance instrument
-            double_chance_instrument = (
-                self.instrument if "double_chance" in self.instrument.market_name else instrument
-            )
-            # determine the handicap instrument
-            handicap_instrument = (
-                self.instrument if "handicap" in self.instrument.market_name else instrument
-            )
-            # we need to extract the handicap value from params
-            instrument_handicap_value = handicap_instrument.params.split("=")[-1]
-            # we need to exclude split-handicaps for now (essentially two bets between two outcomes)
-            # i.e. handicap_value must be a multiple of 0.5
-            if float(instrument_handicap_value) % 0.5 != 0:
-                return matching_instruments
-            # check if the handicap_instrument_outcome is not a possible outcome of the double_chance_instrument
-            if handicap_instrument.outcome not in double_chance_instrument.outcome.split("_"):
-                matching_instruments = instrument
-                self.log.debug(
-                    f"Found matching Instrument: {instrument.id}  for {self.instrument.id}",
-                )
-                return matching_instruments
-            # path for double chance and draw_no_bet
-            if (
-                "double_chance" in self.instrument.market_name
-                and "draw_no_bet" in instrument.market_name
-            ) or (
-                "draw_no_bet" in self.instrument.market_name
-                and "double_chance" in instrument.market_name
-            ):
-                # determine the double_chance instrument
-                double_chance_instrument = (
-                    self.instrument
-                    if "double_chance" in self.instrument.market_name
-                    else instrument
-                )
-                # determine the draw_no_bet instrument
-                draw_no_bet_instrument = (
-                    self.instrument if "draw_no_bet" in self.instrument.market_name else instrument
-                )
-                # check if the draw_no_bet_instrument_outcome is not a possible outcome of the double_chance_instrument
-                if draw_no_bet_instrument.outcome not in double_chance_instrument.outcome.split(
-                    "_",
-                ):
-                    matching_instruments = instrument
-                    self.log.debug(
-                        f"Found matching Instrument: {instrument.id}  for {self.instrument.id}",
-                    )
-                return matching_instruments
-            # path for handicap and draw_no_bet
-        return matching_instruments
+        instrument_filter = {"sport_name": self.instrument.sport_name}
+        search_results = self.instrument_provider.search_instruments(instrument_filter) or []
+        hedges = self._market_matcher.find_hedges(
+            self.instrument,
+            search_results,
+            include_cross_venue=False,
+        )
+        return [hedge.instrument for hedge in hedges]

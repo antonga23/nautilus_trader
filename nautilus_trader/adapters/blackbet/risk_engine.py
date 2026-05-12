@@ -18,14 +18,14 @@ Blackbet risk engine.
 
 from decimal import Decimal
 
-from nautilus_trader.adapters.betting.risk_engine import BaseRiskEngine
+from nautilus_trader.adapters.betting.risk_engine import BettingVenueRiskPolicy
 from nautilus_trader.adapters.betting.risk_engine import OddsRequirementRule
 from nautilus_trader.adapters.betting.risk_engine import RiskEvaluation
 from nautilus_trader.adapters.betting.risk_engine import RolloverRule
 from nautilus_trader.adapters.betting.risk_engine import StakeLimitRule
 
 
-class BlackBetRiskEngine(BaseRiskEngine):
+class BlackBetRiskEngine(BettingVenueRiskPolicy):
     """
     Risk engine for blackbet venue.
 

@@ -6,14 +6,14 @@
 
 from decimal import Decimal
 
-from nautilus_trader.adapters.betting.risk_engine import BaseRiskEngine
+from nautilus_trader.adapters.betting.risk_engine import BettingVenueRiskPolicy
 from nautilus_trader.adapters.betting.risk_engine import OddsRequirementRule
 from nautilus_trader.adapters.betting.risk_engine import RiskEvaluation
 from nautilus_trader.adapters.betting.risk_engine import RolloverRule
 from nautilus_trader.adapters.betting.risk_engine import StakeLimitRule
 
 
-class EasybetRiskEngine(BaseRiskEngine):
+class EasybetRiskEngine(BettingVenueRiskPolicy):
     """
     Risk engine for Easybet venue.
 

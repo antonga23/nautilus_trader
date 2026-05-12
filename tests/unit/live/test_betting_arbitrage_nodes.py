@@ -279,7 +279,7 @@ class TestBettingArbitrageNodeBuilder:
         assert config.strategies[0].config["auto_execute"] is False
         assert config.strategies[0].config["value_execution_enabled"] is False
         assert config.strategies[0].config["enabled_venues"] == ["SXBET"]
-        assert config.strategies[0].config["opportunity_graph_engine"] == "auto"
+        assert config.strategies[0].config["opportunity_graph_engine"] == "semantic_rust"
         assert (
             config.strategies[0].config["semantic_rule_cache_dir"]
             == "artifacts/semantic-rule-cache/sxbet-validation"

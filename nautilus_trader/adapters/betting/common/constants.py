@@ -16,27 +16,6 @@
 Constants for betting adapters.
 """
 
-# Market mapping for cross-market hedge detection
-# Maps market types to their potential hedge counterpart market types
-MARKET_HEDGE_MAP: dict[str, list[str]] = {
-    "both_teams_to_score": ["both_teams_to_score"],
-    "total_goals": ["total_goals"],
-    "team_total_goals": ["team_total_goals"],
-    "draw_no_bet": ["draw_no_bet"],
-    "match_odds": ["double_chance", "asian_handicap"],
-    "double_chance": ["asian_handicap", "match_odds"],
-    "match_odds_period_first_half": ["asian_handicap_period_first_half"],
-    "match_odds_period_second_half": ["asian_handicap_period_second_half"],
-    "asian_handicap": ["asian_handicap", "draw_no_bet", "double_chance"],
-    "asian_handicap_period_first_half": [
-        "match_odds_period_first_half",
-        "asian_handicap_period_first_half",
-    ],
-    "team_total_goals_period_first_half": ["team_total_goals_period_first_half"],
-    "team_total_goals_period_second_half": ["team_total_goals_period_second_half"],
-}
-
-
 # Common sports IDs used across venues for normalization
 SPORT_IDS: dict[str, str] = {
     "soccer": "1",

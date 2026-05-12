@@ -13,7 +13,12 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 """
-Base risk engine for betting adapters.
+Venue risk policies for betting adapters.
+
+Nautilus Trader owns the platform risk engine. These classes model venue-specific
+betting constraints which execution clients evaluate before a command reaches the
+platform risk engine.
+
 """
 
 from abc import ABC
@@ -190,11 +195,12 @@ class RiskEvaluation:
         return len(self.warnings) > 0
 
 
-class BaseRiskEngine(ABC):
+class BettingVenueRiskPolicy(ABC):
     """
-    Base risk engine for betting venues.
+    Venue-specific betting risk policy.
 
-    Enforces venue-specific risk rules for order submission.
+    Enforces venue-specific order constraints without replacing Nautilus Trader's
+    platform risk engine.
 
     """
 

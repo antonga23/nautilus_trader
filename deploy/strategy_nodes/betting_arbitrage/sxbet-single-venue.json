@@ -17,7 +17,7 @@
     "quote_freshness_profile": "pre_match",
     "instrument_refresh_interval_secs": 300.0,
     "rollover_aware": true,
-    "opportunity_graph_engine": "auto",
+    "opportunity_graph_engine": "semantic_rust",
     "devig_enabled": true,
     "devig_method": "auto",
     "value_diagnostics_enabled": true,

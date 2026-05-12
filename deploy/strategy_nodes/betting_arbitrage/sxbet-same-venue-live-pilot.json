@@ -41,7 +41,7 @@
     "instrument_refresh_interval_secs": 120.0,
     "duplicate_suppression_cooldown_secs": 15.0,
     "rollover_aware": true,
-    "opportunity_graph_engine": "auto",
+    "opportunity_graph_engine": "semantic_rust",
     "devig_enabled": true,
     "devig_method": "auto",
     "value_diagnostics_enabled": true,

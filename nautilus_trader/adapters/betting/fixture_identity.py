@@ -29,6 +29,7 @@ from datetime import UTC
 from datetime import datetime
 import re
 from typing import Any
+import unicodedata
 
 
 DEFAULT_START_TIME_TOLERANCE_SECS = 2 * 60 * 60
@@ -218,7 +219,8 @@ class FixtureIdentityResolver:
     def normalize_event_component(value: str | None) -> str:
         if not value:
             return ""
-        normalized = re.sub(r"[^a-z0-9]+", " ", value.lower())
+        folded = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
+        normalized = re.sub(r"[^a-z0-9]+", " ", folded.lower())
         return " ".join(normalized.split())
 
     def normalize_sport(self, sport: str | None) -> str:

@@ -20,9 +20,10 @@ from dataclasses import dataclass
 from dataclasses import replace
 from decimal import Decimal
 
-from nautilus_trader.adapters.betting.common.constants import MARKET_HEDGE_MAP
 from nautilus_trader.adapters.betting.common.enums import MarketType
-from nautilus_trader.adapters.betting.common.enums import Outcome
+from nautilus_trader.adapters.betting.fixture_identity import DEFAULT_FIXTURE_IDENTITY_RESOLVER
+from nautilus_trader.adapters.betting.fixture_identity import FixtureIdentityProof
+from nautilus_trader.adapters.betting.fixture_identity import FixtureIdentityResolver
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.betting.semantics import PromotionStatus
 from nautilus_trader.adapters.betting.semantics import RelationshipType
@@ -32,9 +33,6 @@ from nautilus_trader.adapters.betting.semantics import RuleStore
 from nautilus_trader.adapters.betting.semantics import MinedRule
 from nautilus_trader.adapters.betting.semantics import SafetyTier
 from nautilus_trader.adapters.betting.semantics import SemanticRuleTemplate
-
-
-HANDICAP_TOLERANCE = 0.01
 
 
 @dataclass
@@ -126,33 +124,19 @@ class MarketMatcher:
 
     """
 
-    # Deprecated: semantic rules now drive cross-market matching. Kept for
-    # backwards-compatible imports and diagnostics.
-    MARKET_MAPPER: dict[str, list[str]] = MARKET_HEDGE_MAP.copy()
     PUSH_CAPABLE_MARKETS = frozenset(
         {
             MarketType.DRAW_NO_BET,
             MarketType.ASIAN_HANDICAP,
         },
     )
-    MATCH_ODDS_DOUBLE_CHANCE_CONFIDENCE = {
-        (MarketType.MATCH_ODDS, MarketType.DOUBLE_CHANCE): {
-            (Outcome.HOME, Outcome.AWAY_DRAW): 0.95,
-            (Outcome.DRAW, Outcome.HOME_AWAY): 0.95,
-            (Outcome.AWAY, Outcome.HOME_DRAW): 0.95,
-        },
-        (MarketType.DOUBLE_CHANCE, MarketType.MATCH_ODDS): {
-            (Outcome.AWAY_DRAW, Outcome.HOME): 0.95,
-            (Outcome.HOME_AWAY, Outcome.DRAW): 0.95,
-            (Outcome.HOME_DRAW, Outcome.AWAY): 0.95,
-        },
-    }
 
     def __init__(
         self,
         min_confidence: float = 0.5,
         rule_classifier: RuleClassifier | None = None,
         rule_store: RuleStore | None = None,
+        fixture_identity_resolver: FixtureIdentityResolver | None = None,
         allow_unpromoted_topology: bool = True,
     ) -> None:
         """
@@ -166,6 +150,9 @@ class MarketMatcher:
             Semantic classifier for market settlement relationships.
         rule_store : RuleStore, optional
             Persisted semantic rules/templates used for runtime gating.
+        fixture_identity_resolver : FixtureIdentityResolver, optional
+            Venue-agnostic fixture identity resolver. Cross-venue matching uses
+            resolver proofs instead of raw event names or provider event IDs.
         allow_unpromoted_topology : bool, default True
             Whether candidate-only semantic edges can be exposed as non-executable topology.
 
@@ -173,6 +160,9 @@ class MarketMatcher:
         self.min_confidence = min_confidence
         self._rule_classifier = rule_classifier or RuleClassifier()
         self._rule_store = rule_store
+        self._fixture_identity_resolver = (
+            fixture_identity_resolver or DEFAULT_FIXTURE_IDENTITY_RESOLVER
+        )
         self._allow_unpromoted_topology = allow_unpromoted_topology
         self._promotion_policy = RulePromotionPolicy()
 
@@ -227,7 +217,7 @@ class MarketMatcher:
                 continue
 
             if self._is_same_market_hedge(instrument, candidate):
-                hedges.append(self._legacy_same_market_candidate(candidate))
+                hedges.append(self._same_market_complement_candidate(candidate))
 
         # Filter by confidence and sort
         hedges = [h for h in hedges if h.confidence >= self.min_confidence]
@@ -250,6 +240,12 @@ class MarketMatcher:
         if rule.confidence < self.min_confidence:
             return None
 
+        same_market_runtime_safe = self._same_market_rule_has_no_settlement_blockers(
+            rule,
+            instrument,
+            candidate,
+        )
+
         return HedgeCandidate(
             instrument=candidate,
             match_type=self._match_type_for_rule(instrument, candidate),
@@ -260,7 +256,9 @@ class MarketMatcher:
             caveats=rule.caveats,
             push_capable=rule.has_void,
             partial_settlement=rule.has_partial,
-            execution_safe=rule.safety_tier == SafetyTier.EXECUTION_SAFE.value,
+            execution_safe=(
+                rule.safety_tier == SafetyTier.EXECUTION_SAFE.value or same_market_runtime_safe
+            ),
             same_venue_execution_eligible=(
                 rule.safety_tier == SafetyTier.EXECUTION_SAFE_SAME_VENUE_ELIGIBLE.value
                 and instrument.venue_name == candidate.venue_name
@@ -324,7 +322,7 @@ class MarketMatcher:
         )
 
     @staticmethod
-    def _legacy_same_market_candidate(candidate: CryptoBettingInstrument) -> HedgeCandidate:
+    def _same_market_complement_candidate(candidate: CryptoBettingInstrument) -> HedgeCandidate:
         return HedgeCandidate(
             instrument=candidate,
             match_type="same_market",
@@ -354,7 +352,8 @@ class MarketMatcher:
         candidate: CryptoBettingInstrument,
         candidates: list[CryptoBettingInstrument],
     ) -> bool:
-        if not instrument.matches_event(candidate):
+        proof = self._fixture_identity_resolver.resolve(instrument, candidate)
+        if not proof.same_fixture:
             return False
 
         if instrument.venue_name == candidate.venue_name:
@@ -362,39 +361,69 @@ class MarketMatcher:
                 return True
             return self.is_trusted_same_venue_event_id_mismatch(instrument, candidate)
 
-        instrument_start = instrument.parsed_start_time()
-        candidate_start = candidate.parsed_start_time()
-        if instrument_start is not None and candidate_start is not None:
-            return True
-
-        event_key = instrument.event_key(include_start_time=False)
-        if event_key != candidate.event_key(include_start_time=False):
-            return False
-
-        bucket_a = [
-            item
-            for item in candidates
-            if item.venue_name == instrument.venue_name
-            and item.event_key(include_start_time=False) == event_key
-        ]
-        if instrument not in bucket_a:
-            bucket_a.append(instrument)
-
-        bucket_b = [
-            item
-            for item in candidates
-            if item.venue_name == candidate.venue_name
-            and item.event_key(include_start_time=False) == event_key
-        ]
-        if candidate not in bucket_b:
-            bucket_b.append(candidate)
-
-        return not self._has_ambiguous_missing_start_time(
+        return self._is_cross_venue_fixture_proof_safe(
+            proof,
             instrument,
             candidate,
-            bucket_a,
-            bucket_b,
+            candidates,
         )
+
+    def _is_cross_venue_fixture_proof_safe(
+        self,
+        proof: FixtureIdentityProof,
+        instrument: CryptoBettingInstrument,
+        candidate: CryptoBettingInstrument,
+        candidates: list[CryptoBettingInstrument],
+    ) -> bool:
+        if proof.ambiguous or proof.confidence < 0.72:
+            return False
+
+        if instrument.parsed_start_time() is not None and candidate.parsed_start_time() is not None:
+            return True
+
+        return not self._has_ambiguous_missing_fixture_evidence(
+            instrument,
+            candidate,
+            candidates,
+        )
+
+    def _has_ambiguous_missing_fixture_evidence(
+        self,
+        instrument_a: CryptoBettingInstrument,
+        instrument_b: CryptoBettingInstrument,
+        candidates: list[CryptoBettingInstrument],
+    ) -> bool:
+        bucket_a = self._fixture_bucket_for_pair(instrument_a, instrument_b, candidates)
+        bucket_b = self._fixture_bucket_for_pair(instrument_b, instrument_a, candidates)
+        return (
+            self._fixture_cluster_count(bucket_a) != 1 or self._fixture_cluster_count(bucket_b) != 1
+        )
+
+    def _fixture_bucket_for_pair(
+        self,
+        source: CryptoBettingInstrument,
+        target: CryptoBettingInstrument,
+        candidates: list[CryptoBettingInstrument],
+    ) -> list[CryptoBettingInstrument]:
+        bucket: list[CryptoBettingInstrument] = []
+        for item in [source, *candidates]:
+            if item.venue_name != source.venue_name:
+                continue
+            proof = self._fixture_identity_resolver.resolve(item, target)
+            if proof.same_fixture:
+                bucket.append(item)
+        return bucket
+
+    @staticmethod
+    def _fixture_cluster_count(instruments: list[CryptoBettingInstrument]) -> int:
+        keys: set[str] = set()
+        for instrument in instruments:
+            start = instrument.parsed_start_time()
+            key = instrument.event_key(include_start_time=False)
+            if start is not None:
+                key = f"{key}:{start.strftime('%Y-%m-%dT%H')}"
+            keys.add(key)
+        return len(keys)
 
     @staticmethod
     def _is_two_way_match_odds_market(instrument: CryptoBettingInstrument) -> bool:
@@ -412,7 +441,8 @@ class MarketMatcher:
             return False
         if str(instrument.venue_name) != "SXBET":
             return False
-        if not instrument.matches_event(candidate):
+        proof = DEFAULT_FIXTURE_IDENTITY_RESOLVER.resolve(instrument, candidate)
+        if not proof.same_fixture or proof.ambiguous or proof.confidence < 0.72:
             return False
         if instrument.market_name != candidate.market_name:
             return False
@@ -436,15 +466,16 @@ class MarketMatcher:
         Returns True if they're in the same market with opposite outcomes.
 
         """
-        # Must be same event
-        if not a.matches_event(b):
-            return False
         if (
             a.venue_name == b.venue_name
             and a.event_id != b.event_id
             and not MarketMatcher.is_trusted_same_venue_event_id_mismatch(a, b)
         ):
             return False
+        if a.venue_name != b.venue_name:
+            proof = DEFAULT_FIXTURE_IDENTITY_RESOLVER.resolve(a, b)
+            if not proof.same_fixture or proof.ambiguous or proof.confidence < 0.72:
+                return False
 
         # Must be same market type and params
         if a.market_name != b.market_name:
@@ -460,116 +491,6 @@ class MarketMatcher:
 
         # Must be opposite outcomes
         return a.is_opposite_outcome(b)
-
-    def _is_cross_market_hedge(
-        self,
-        a: CryptoBettingInstrument,
-        b: CryptoBettingInstrument,
-    ) -> float:
-        """
-        Check if instruments from different markets can hedge each other.
-
-        Returns confidence score (0-1) or 0 if not a hedge.
-
-        """
-        if not a.matches_event(b):
-            return 0.0
-
-        rule = self._resolve_rule(a, b)
-        if (
-            rule is None
-            or rule.relationship_type == RelationshipType.DANGEROUS_NON_EQUIVALENT.value
-        ):
-            return 0.0
-        return rule.confidence
-
-    def _calculate_cross_market_confidence(  # pylint: disable=too-many-arguments
-        self,
-        market_a: MarketType,
-        market_b: MarketType,
-        outcome_a: Outcome,
-        outcome_b: Outcome,
-        inst_a: CryptoBettingInstrument,
-        inst_b: CryptoBettingInstrument,
-    ) -> float:
-        """
-        Calculate confidence score for cross-market hedge.
-        """
-        # Match odds + Double chance (1X2 + 1X/X2/12)
-        result = self._confidence_match_odds_double_chance(
-            market_a,
-            market_b,
-            outcome_a,
-            outcome_b,
-        )
-        if result is not None:
-            return result
-
-        # Asian handicap hedging
-        result = self._confidence_asian_handicap(
-            market_a,
-            market_b,
-            outcome_a,
-            outcome_b,
-            inst_a,
-            inst_b,
-        )
-        if result is not None:
-            return result
-
-        # Draw no bet hedging
-        if (
-            market_a in (MarketType.DRAW_NO_BET, MarketType.ASIAN_HANDICAP)
-            and market_b in (MarketType.DRAW_NO_BET, MarketType.ASIAN_HANDICAP)
-            and outcome_a.opposite() == outcome_b
-        ):
-            return 0.75
-
-        return 0.0
-
-    @staticmethod
-    def _confidence_match_odds_double_chance(  # pylint: disable=too-many-return-statements
-        market_a: MarketType,
-        market_b: MarketType,
-        outcome_a: Outcome,
-        outcome_b: Outcome,
-    ) -> float | None:
-        """
-        Calculate confidence for match odds vs double chance hedges.
-        """
-        confidence_by_outcome = MarketMatcher.MATCH_ODDS_DOUBLE_CHANCE_CONFIDENCE.get(
-            (market_a, market_b),
-        )
-        if confidence_by_outcome is None:
-            return None
-
-        return confidence_by_outcome.get((outcome_a, outcome_b), 0.0)
-
-    @staticmethod
-    def _confidence_asian_handicap(  # pylint: disable=too-many-arguments
-        market_a: MarketType,
-        market_b: MarketType,
-        outcome_a: Outcome,
-        outcome_b: Outcome,
-        inst_a: CryptoBettingInstrument,
-        inst_b: CryptoBettingInstrument,
-    ) -> float | None:
-        """
-        Calculate confidence for asian handicap hedges.
-        """
-        if market_a != MarketType.ASIAN_HANDICAP or market_b != MarketType.ASIAN_HANDICAP:
-            return None
-
-        handicap_a = inst_a.handicap or 0
-        handicap_b = inst_b.handicap or 0
-
-        # Opposite handicaps (e.g., +1.5 vs -1.5)
-        if abs(handicap_a + handicap_b) < HANDICAP_TOLERANCE:
-            if outcome_a == Outcome.HOME and outcome_b == Outcome.AWAY:
-                return 0.85
-            if outcome_a == Outcome.AWAY and outcome_b == Outcome.HOME:
-                return 0.85
-        return 0.0
 
     def check_arbitrage(
         self,
@@ -606,30 +527,12 @@ class MarketMatcher:
 
         """
         rule = self._resolve_rule(instrument_a, instrument_b)
-        if rule is not None:
-            promoted_or_legacy = rule.execution_safe and (
-                self._rule_store is None or rule.promotion_status == PromotionStatus.PROMOTED.value
-            )
-            promoted_same_venue_eligible = (
-                allow_same_venue_execution_eligible
-                and rule.same_venue_execution_eligible
-                and instrument_a.venue_name == instrument_b.venue_name
-                and (
-                    self._rule_store is None
-                    or rule.promotion_status == PromotionStatus.PROMOTED.value
-                )
-            )
-            if not promoted_or_legacy and (
-                not promoted_same_venue_eligible
-                and (
-                    not self._is_same_market_hedge(instrument_a, instrument_b)
-                    or rule.has_void
-                    or rule.has_partial
-                    or rule.has_unknown
-                )
-            ):
-                return None
-        elif not self._is_same_market_hedge(instrument_a, instrument_b):
+        if not self._semantic_rule_allows_arbitrage(
+            rule,
+            instrument_a,
+            instrument_b,
+            allow_same_venue_execution_eligible=allow_same_venue_execution_eligible,
+        ):
             return None
 
         if odds_a is None:
@@ -644,15 +547,7 @@ class MarketMatcher:
         total_prob = prob_a + prob_b
         profit_margin = (Decimal(1) / total_prob) - Decimal(1)
 
-        # Determine match type
         is_same_venue = instrument_a.venue_name == instrument_b.venue_name
-
-        if instrument_a.market_name == instrument_b.market_name:
-            match_type = "same_market"
-        elif is_same_venue:
-            match_type = "cross_market"
-        else:
-            match_type = "cross_venue"
 
         return ArbitrageOpportunity(
             instrument_a=instrument_a,
@@ -664,12 +559,79 @@ class MarketMatcher:
             odds_a=odds_a,
             odds_b=odds_b,
             is_same_venue=is_same_venue,
-            match_type=match_type,
+            match_type=self._arbitrage_match_type(instrument_a, instrument_b),
             raw_probability_a=prob_a,
             raw_probability_b=prob_b,
             raw_total_probability=total_prob,
             raw_profit_margin=profit_margin,
         )
+
+    def _semantic_rule_allows_arbitrage(
+        self,
+        rule: MinedRule | None,
+        instrument_a: CryptoBettingInstrument,
+        instrument_b: CryptoBettingInstrument,
+        *,
+        allow_same_venue_execution_eligible: bool,
+    ) -> bool:
+        if rule is None:
+            return self._is_same_market_hedge(instrument_a, instrument_b)
+        if self._rule_is_execution_safe(rule):
+            return True
+        if self._rule_is_allowed_same_venue_eligible(
+            rule,
+            instrument_a,
+            instrument_b,
+            allow_same_venue_execution_eligible=allow_same_venue_execution_eligible,
+        ):
+            return True
+        return self._same_market_rule_has_no_settlement_blockers(rule, instrument_a, instrument_b)
+
+    def _rule_is_execution_safe(self, rule: MinedRule) -> bool:
+        return rule.execution_safe and (
+            self._rule_store is None or rule.promotion_status == PromotionStatus.PROMOTED.value
+        )
+
+    def _rule_is_allowed_same_venue_eligible(
+        self,
+        rule: MinedRule,
+        instrument_a: CryptoBettingInstrument,
+        instrument_b: CryptoBettingInstrument,
+        *,
+        allow_same_venue_execution_eligible: bool,
+    ) -> bool:
+        return (
+            allow_same_venue_execution_eligible
+            and rule.same_venue_execution_eligible
+            and instrument_a.venue_name == instrument_b.venue_name
+            and (
+                self._rule_store is None or rule.promotion_status == PromotionStatus.PROMOTED.value
+            )
+        )
+
+    def _same_market_rule_has_no_settlement_blockers(
+        self,
+        rule: MinedRule,
+        instrument_a: CryptoBettingInstrument,
+        instrument_b: CryptoBettingInstrument,
+    ) -> bool:
+        return (
+            self._is_same_market_hedge(instrument_a, instrument_b)
+            and not rule.has_void
+            and not rule.has_partial
+            and not rule.has_unknown
+        )
+
+    @staticmethod
+    def _arbitrage_match_type(
+        instrument_a: CryptoBettingInstrument,
+        instrument_b: CryptoBettingInstrument,
+    ) -> str:
+        if instrument_a.market_name == instrument_b.market_name:
+            return "same_market"
+        if instrument_a.venue_name == instrument_b.venue_name:
+            return "cross_market"
+        return "cross_venue"
 
     def find_arbitrage_opportunities(
         self,
@@ -768,91 +730,30 @@ class MarketMatcher:
         """
         matches: list[tuple[CryptoBettingInstrument, CryptoBettingInstrument]] = []
 
-        # Group instruments by normalized event identifiers
-        events_a: dict[str, list[CryptoBettingInstrument]] = {}
-        for inst in instruments_a:
-            key = self._make_event_key(inst)
-            events_a.setdefault(key, []).append(inst)
-
-        events_b: dict[str, list[CryptoBettingInstrument]] = {}
-        for inst in instruments_b:
-            key = self._make_event_key(inst)
-            events_b.setdefault(key, []).append(inst)
-
-        # Find matching events
-        for key_a, insts_a in events_a.items():
-            if key_a in events_b:
-                for inst_a in insts_a:
-                    matches.extend(
-                        (inst_a, inst_b)
-                        for inst_b in events_b[key_a]
-                        if not self._has_ambiguous_missing_start_time(
-                            inst_a,
-                            inst_b,
-                            insts_a,
-                            events_b[key_a],
-                        )
-                        if self._are_matching_selections(inst_a, inst_b)
-                    )
+        candidates = [*instruments_a, *instruments_b]
+        for inst_a in instruments_a:
+            for inst_b in instruments_b:
+                proof = self._fixture_identity_resolver.resolve(inst_a, inst_b)
+                if not proof.same_fixture:
+                    continue
+                if not self._is_cross_venue_fixture_proof_safe(
+                    proof,
+                    inst_a,
+                    inst_b,
+                    candidates,
+                ):
+                    continue
+                if self._are_matching_selections(inst_a, inst_b):
+                    matches.append((inst_a, inst_b))
 
         return matches
-
-    @staticmethod
-    def _make_event_key(instrument: CryptoBettingInstrument) -> str:
-        """
-        Create a normalized key for event matching.
-        """
-        return instrument.event_key(include_start_time=False)
-
-    @staticmethod
-    def _has_ambiguous_missing_start_time(
-        instrument_a: CryptoBettingInstrument,
-        instrument_b: CryptoBettingInstrument,
-        bucket_a: list[CryptoBettingInstrument],
-        bucket_b: list[CryptoBettingInstrument],
-    ) -> bool:
-        if (
-            instrument_a.parsed_start_time() is not None
-            and instrument_b.parsed_start_time() is not None
-        ):
-            return False
-
-        # Missing start times are only safe to match when the combined bucket
-        # still points at exactly one parsed fixture-time cluster.
-        return MarketMatcher._start_time_cluster_count([*bucket_a, *bucket_b]) != 1
-
-    @staticmethod
-    def _start_time_cluster_count(instruments: list[CryptoBettingInstrument]) -> int:
-        starts = sorted(
-            start
-            for instrument in instruments
-            if (start := instrument.parsed_start_time()) is not None
-        )
-        if not starts:
-            return 0
-
-        clusters = 1
-        cluster_anchor = starts[0]
-        for start in starts[1:]:
-            if (start - cluster_anchor).total_seconds() > 6 * 60 * 60:
-                clusters += 1
-                cluster_anchor = start
-
-        return clusters
 
     @staticmethod
     def _normalize_team_name(name: str) -> str:
         """
         Normalize team/participant name for matching.
         """
-        name = name.lower()
-
-        # Remove common prefixes/suffixes
-        for removal in ["fc", "afc", "sc", "cf", "united", "city"]:
-            name = name.replace(f" {removal}", "").replace(f"{removal} ", "")
-
-        # Remove extra whitespace
-        return " ".join(name.split())
+        return DEFAULT_FIXTURE_IDENTITY_RESOLVER.normalize_team_name(name)
 
     @staticmethod
     def _are_matching_selections(
@@ -862,9 +763,6 @@ class MarketMatcher:
         """
         Check if two selections from different venues match.
         """
-        if not a.matches_event(b):
-            return False
-
         if a.params != b.params:
             return False
 
@@ -875,4 +773,4 @@ class MarketMatcher:
         if market_a != market_b:
             return False
 
-        return a.matches_selection(b)
+        return a.selection_key() == b.selection_key()

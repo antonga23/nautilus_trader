@@ -16,6 +16,7 @@
     "market_timing_filter": "all",
     "quote_freshness_profile": "pre_match",
     "rollover_aware": true,
+    "opportunity_graph_engine": "semantic_rust",
     "auto_execute": false
   },
   "venues": [

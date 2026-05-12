@@ -249,6 +249,8 @@ def _build_strategy_importable_config(
         strategy_config["semantic_quote_subscription_limit_by_venue"] = semantic_quote_limits
     if manifest.semantic_rule_cache_dir:
         strategy_config["semantic_rule_cache_dir"] = manifest.semantic_rule_cache_dir
+        if strategy_config.get("opportunity_graph_engine") == "auto":
+            strategy_config["opportunity_graph_engine"] = "semantic_rust"
     if manifest.validation_mode:
         strategy_config["auto_execute"] = False
         strategy_config["value_execution_enabled"] = False
