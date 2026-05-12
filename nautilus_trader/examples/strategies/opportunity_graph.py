@@ -626,50 +626,59 @@ class OpportunityGraph:
             if source_node is None or target_node is None:
                 continue
 
-            hedge = (
-                self._best_public_hedge_candidate(
-                    source_node.instrument,
-                    target_node.instrument,
-                )
-                if template_id
-                else None
+            hedge = self._best_public_hedge_candidate(
+                source_node.instrument,
+                target_node.instrument,
             )
             if hedge is None and not template_id and market_relationship_type != "same_market":
                 continue
+            hedge_match_type: str | None = None
+            hedge_confidence: float | None = None
+            hedge_push_capable = rust_push_capable
+            hedge_execution_safe = rust_execution_safe
+            hedge_rule_id: str | None = None
+            hedge_template_id = template_id
+            hedge_relationship_type: str | None = None
+            hedge_caveats: tuple[str, ...] = ()
+            hedge_promotion_status = promotion_status
+            hedge_safety_tier = safety_tier
+            hedge_same_venue_execution_eligible = same_venue_execution_eligible
+            hedge_partial_settlement = partial_settlement
+            if hedge is not None:
+                hedge_match_type = hedge.match_type
+                hedge_confidence = hedge.confidence
+                hedge_push_capable = hedge.push_capable
+                hedge_relationship_type = hedge.relationship_type
+                hedge_caveats = hedge.caveats
+                hedge_partial_settlement = hedge.partial_settlement
+                if template_id or hedge.relationship_type is not None:
+                    hedge_execution_safe = hedge.execution_safe
+                if template_id:
+                    hedge_rule_id = hedge.rule_id
+                    hedge_template_id = hedge.template_id
+                    hedge_promotion_status = hedge.promotion_status
+                    hedge_safety_tier = hedge.safety_tier
+                    hedge_same_venue_execution_eligible = hedge.same_venue_execution_eligible
 
             edge = OpportunityEdge(
                 edge_id=edge_id,
                 source_node_id=source_node_id,
                 target_node_id=target_node_id,
-                hedge_type=hedge.match_type
-                if hedge is not None and hedge.match_type
-                else hedge_type,
-                confidence=hedge.confidence
-                if hedge is not None and hedge.confidence
-                else confidence,
+                hedge_type=hedge_match_type or hedge_type,
+                confidence=hedge_confidence or confidence,
                 same_venue=same_venue,
                 market_relationship_type=market_relationship_type,
-                push_capable=hedge.push_capable if hedge is not None else rust_push_capable,
-                execution_safe=(hedge.execution_safe if hedge is not None else rust_execution_safe),
-                rule_id=hedge.rule_id if hedge is not None else None,
-                template_id=hedge.template_id if hedge is not None else template_id,
-                relationship_type=(
-                    hedge.relationship_type if hedge is not None else relationship_type
-                ),
-                caveats=hedge.caveats if hedge is not None else caveats,
-                promotion_status=(
-                    hedge.promotion_status if hedge is not None else promotion_status
-                ),
-                safety_tier=hedge.safety_tier if hedge is not None else safety_tier,
-                same_venue_execution_eligible=(
-                    hedge.same_venue_execution_eligible
-                    if hedge is not None
-                    else same_venue_execution_eligible
-                ),
-                void_capable=hedge.push_capable if hedge is not None else rust_push_capable,
-                partial_settlement=(
-                    hedge.partial_settlement if hedge is not None else partial_settlement
-                ),
+                push_capable=hedge_push_capable,
+                execution_safe=hedge_execution_safe,
+                rule_id=hedge_rule_id,
+                template_id=hedge_template_id,
+                relationship_type=hedge_relationship_type or relationship_type,
+                caveats=hedge_caveats or caveats,
+                promotion_status=hedge_promotion_status,
+                safety_tier=hedge_safety_tier,
+                same_venue_execution_eligible=hedge_same_venue_execution_eligible,
+                void_capable=hedge_push_capable,
+                partial_settlement=hedge_partial_settlement,
                 last_margin=Decimal(str(last_margin)) if last_margin is not None else None,
                 last_evaluated_ns=last_evaluated_ns,
                 last_updated_ns=last_updated_ns,

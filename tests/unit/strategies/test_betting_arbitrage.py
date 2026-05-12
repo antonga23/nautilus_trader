@@ -3810,7 +3810,10 @@ class TestBettingArbitrageStrategy:  # skipcq
             params="line=2.5",
             venue="BLACKBET",
         )
-        ensure(strategy._matcher_suspect_reason(instrument_a, other_event)[1] == "event_mismatch")
+        ensure(
+            strategy._matcher_suspect_reason(instrument_a, other_event)[1]
+            == "participant_mismatch",
+        )
         param_mismatch = self._sxbet_instrument(
             event_id="market-1",
             outcome="under",

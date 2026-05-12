@@ -211,10 +211,6 @@ class MarketMatcher:
             if not self._is_hedge_event_match(instrument, candidate, candidates):
                 continue
 
-            if self._rule_store is None and self._is_same_market_hedge(instrument, candidate):
-                hedges.append(self._same_market_complement_candidate(candidate))
-                continue
-
             semantic_candidate = self._semantic_hedge_candidate(instrument, candidate)
             if semantic_candidate is not None:
                 hedges.append(semantic_candidate)
@@ -244,6 +240,12 @@ class MarketMatcher:
         if rule.confidence < self.min_confidence:
             return None
 
+        same_market_runtime_safe = self._same_market_rule_has_no_settlement_blockers(
+            rule,
+            instrument,
+            candidate,
+        )
+
         return HedgeCandidate(
             instrument=candidate,
             match_type=self._match_type_for_rule(instrument, candidate),
@@ -254,7 +256,9 @@ class MarketMatcher:
             caveats=rule.caveats,
             push_capable=rule.has_void,
             partial_settlement=rule.has_partial,
-            execution_safe=rule.safety_tier == SafetyTier.EXECUTION_SAFE.value,
+            execution_safe=(
+                rule.safety_tier == SafetyTier.EXECUTION_SAFE.value or same_market_runtime_safe
+            ),
             same_venue_execution_eligible=(
                 rule.safety_tier == SafetyTier.EXECUTION_SAFE_SAME_VENUE_ELIGIBLE.value
                 and instrument.venue_name == candidate.venue_name
@@ -600,7 +604,9 @@ class MarketMatcher:
             allow_same_venue_execution_eligible
             and rule.same_venue_execution_eligible
             and instrument_a.venue_name == instrument_b.venue_name
-            and (self._rule_store is None or rule.promotion_status == PromotionStatus.PROMOTED.value)
+            and (
+                self._rule_store is None or rule.promotion_status == PromotionStatus.PROMOTED.value
+            )
         )
 
     def _same_market_rule_has_no_settlement_blockers(
