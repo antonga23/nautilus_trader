@@ -239,6 +239,10 @@ def _build_strategy_importable_config(
     enabled_venues: list[BettingVenueManifest],
 ) -> ImportableStrategyConfig:
     strategy_config: dict[str, Any] = dict(manifest.strategy.json_primitives() or {})
+    if not bool(strategy_config.get("opportunity_graph_enabled", True)):
+        raise ValueError(
+            "Strategy-node manifests must keep opportunity_graph_enabled=true",
+        )
     requested_engine = str(strategy_config.get("opportunity_graph_engine") or "auto").lower()
     if requested_engine == "python":
         raise ValueError(

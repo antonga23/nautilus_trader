@@ -326,6 +326,26 @@ class TestBettingArbitrageNodeBuilder:
         with pytest.raises(ValueError, match="semantic_rust opportunity topology"):
             build_trading_node_config(manifest)
 
+    def test_manifest_rejects_disabled_opportunity_graph(self):
+        manifest = BettingArbitrageNodeManifest(
+            node_id="sxbet-validation",
+            trader_id="BETARB-TEST-001",
+            validation_mode=True,
+            allow_dummy_credentials=True,
+            strategy=BettingArbitrageConfig(
+                opportunity_graph_enabled=False,
+            ),
+            venues=[
+                BettingVenueManifest(
+                    venue="SXBET",
+                    client_key="SXBET_PRIMARY",
+                ),
+            ],
+        )
+
+        with pytest.raises(ValueError, match="opportunity_graph_enabled=true"):
+            build_trading_node_config(manifest)
+
     def test_semantic_cache_manifest_upgrades_legacy_rust_engine(self):
         manifest = BettingArbitrageNodeManifest(
             node_id="sxbet-validation",
