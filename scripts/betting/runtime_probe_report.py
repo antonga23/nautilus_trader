@@ -1190,7 +1190,7 @@ def _histogram_slo_status(
         observations = _int_value(ms_histogram.get("count"))
         p95 = _float_value(ms_histogram.get("p95_ms")) / 1000.0
         max_value = _float_value(ms_histogram.get("max_ms")) / 1000.0
-    violations = observations if observations > 0 and max(p95, max_value) > threshold_seconds else 0
+    violations = observations if observations > 0 and p95 > threshold_seconds else 0
     return {
         "status": "fail" if violations else "pass" if observations else "no_observations",
         "observations": observations,
@@ -1199,7 +1199,10 @@ def _histogram_slo_status(
         "thresholdSeconds": threshold_seconds,
         "minThresholdSeconds": None,
         "maxThresholdSeconds": None,
-        "thresholdMode": "histogram_p95_or_max",
+        "thresholdMode": "histogram_p95",
+        "p95Seconds": p95,
+        "maxObservedSeconds": max_value,
+        "outlierMaxExceeded": observations > 0 and max_value > threshold_seconds,
     }
 
 
@@ -1734,7 +1737,10 @@ def _format_latency_lines(value: Any) -> list[str]:
             f"overall={slo_status.get('overall')} "
             f"quote_age={quote_age.get('status')} "
             f"fetch_latency={fetch_latency.get('status')} "
-            f"pair_skew={pair_skew.get('status')}",
+            f"pair_skew={pair_skew.get('status')}"
+            f"{_latency_outlier_suffix('quote_age', quote_age)}"
+            f"{_latency_outlier_suffix('fetch_latency', fetch_latency)}"
+            f"{_latency_outlier_suffix('pair_skew', pair_skew)}",
         )
     reconcile = _as_dict(latency.get("instrumentRefreshReconcile"))
     if _int_value(reconcile.get("count")) > 0:
@@ -1745,6 +1751,12 @@ def _format_latency_lines(value: Any) -> list[str]:
             f"max={reconcile.get('max_ms', 0)}ms",
         )
     return lines
+
+
+def _latency_outlier_suffix(label: str, payload: dict[str, Any]) -> str:
+    if not payload.get("outlierMaxExceeded"):
+        return ""
+    return f" {label}_outlier_max={payload.get('maxObservedSeconds', 0)}s"
 
 
 def _format_refresh_lines(value: Any) -> list[str]:

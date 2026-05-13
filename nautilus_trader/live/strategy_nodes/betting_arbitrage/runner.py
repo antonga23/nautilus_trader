@@ -1555,7 +1555,7 @@ def _runtime_histogram_slo_status(
         observations = int(ms_histogram.get("count") or 0)
         p95 = float(ms_histogram.get("p95_ms") or 0.0) / 1000.0
         max_value = float(ms_histogram.get("max_ms") or 0.0) / 1000.0
-    violations = observations if observations > 0 and max(p95, max_value) > threshold_seconds else 0
+    violations = observations if observations > 0 and p95 > threshold_seconds else 0
     status = "unknown" if observations <= 0 else "warn" if violations else "pass"
     return {
         "status": status,
@@ -1565,7 +1565,10 @@ def _runtime_histogram_slo_status(
         "thresholdSeconds": threshold_seconds,
         "minThresholdSeconds": None,
         "maxThresholdSeconds": None,
-        "thresholdMode": "histogram_p95_or_max",
+        "thresholdMode": "histogram_p95",
+        "p95Seconds": p95,
+        "maxObservedSeconds": max_value,
+        "outlierMaxExceeded": observations > 0 and max_value > threshold_seconds,
     }
 
 
