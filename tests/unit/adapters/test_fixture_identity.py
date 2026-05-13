@@ -333,6 +333,32 @@ def test_fixture_identity_splits_provider_title_separators_when_team_fields_miss
     assert "basketball:minnesota:san antonio" in cloudbet.event_alias_keys()
 
 
+def test_fixture_identity_expands_common_us_team_abbreviations_from_titles():
+    resolver = FixtureIdentityResolver()
+    polymarket = _instrument(
+        venue="POLYMARKET",
+        event_name="OKC Thunder v LAL Lakers",
+        home_name="",
+        away_name="",
+        sport_name="basketball",
+    )
+    sxbet = _instrument(
+        venue="SXBET",
+        event_name="Oklahoma City Thunder vs Los Angeles Lakers",
+        home_name="Oklahoma City Thunder",
+        away_name="Los Angeles Lakers",
+        sport_name="basketball",
+    )
+
+    proof = resolver.resolve(polymarket, sxbet)
+
+    assert proof.same_fixture is True
+    assert proof.blocker_reason is None
+    assert proof.canonical_event_key_a == proof.canonical_event_key_b
+    assert "basketball:los angeles lakers:oklahoma city thunder" in polymarket.event_alias_keys()
+    assert "basketball:los angeles:oklahoma city" in polymarket.event_alias_keys()
+
+
 def test_fixture_identity_splits_at_separator_without_confusing_player_hyphens():
     resolver = FixtureIdentityResolver()
     polymarket = _instrument(
