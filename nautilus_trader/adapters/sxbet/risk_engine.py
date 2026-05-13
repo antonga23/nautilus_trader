@@ -115,4 +115,6 @@ class SXBetRiskEngine(BettingVenueRiskPolicy):
             approved=len(violations) == 0,
             violations=violations,
             warnings=warnings,
+            platform_risk_required=base_eval.platform_risk_required,
+            venue_policy=self.venue_name,
         )

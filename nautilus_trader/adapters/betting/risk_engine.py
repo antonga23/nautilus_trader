@@ -179,6 +179,8 @@ class RiskEvaluation:
     approved: bool
     violations: list[str]
     warnings: list[str]
+    platform_risk_required: bool = True
+    venue_policy: str | None = None
 
     @property
     def has_violations(self) -> bool:
@@ -193,6 +195,13 @@ class RiskEvaluation:
         Check if there are any warnings.
         """
         return len(self.warnings) > 0
+
+    @property
+    def requires_platform_risk_engine(self) -> bool:
+        """
+        Whether this venue preflight must still pass Nautilus Trader risk checks.
+        """
+        return self.platform_risk_required
 
 
 class BettingVenueRiskPolicy(ABC):
@@ -266,6 +275,8 @@ class BettingVenueRiskPolicy(ABC):
             approved=approved,
             violations=violations,
             warnings=warnings,
+            platform_risk_required=True,
+            venue_policy=self.venue_name,
         )
 
     @staticmethod

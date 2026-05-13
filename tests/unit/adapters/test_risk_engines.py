@@ -45,6 +45,8 @@ class TestSXBetRiskEngine:
             currency="USDC",
         )
         assert eval_result.approved is True
+        assert eval_result.requires_platform_risk_engine is True
+        assert eval_result.venue_policy == "SXBET"
 
     def test_odds_limits(self, risk_engine):
         """
