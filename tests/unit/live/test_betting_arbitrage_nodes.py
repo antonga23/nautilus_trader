@@ -285,6 +285,90 @@ class TestBettingArbitrageNodeBuilder:
             == "artifacts/semantic-rule-cache/sxbet-validation"
         )
 
+    def test_semantic_cache_manifest_rejects_python_opportunity_graph(self):
+        manifest = BettingArbitrageNodeManifest(
+            node_id="sxbet-validation",
+            trader_id="BETARB-TEST-001",
+            validation_mode=True,
+            semantic_rule_cache_dir="artifacts/semantic-rule-cache/sxbet-validation",
+            allow_dummy_credentials=True,
+            strategy=BettingArbitrageConfig(
+                opportunity_graph_engine="python",
+            ),
+            venues=[
+                BettingVenueManifest(
+                    venue="SXBET",
+                    client_key="SXBET_PRIMARY",
+                ),
+            ],
+        )
+
+        with pytest.raises(ValueError, match="semantic_rust opportunity topology"):
+            build_trading_node_config(manifest)
+
+    def test_manifest_rejects_python_opportunity_graph_without_semantic_cache(self):
+        manifest = BettingArbitrageNodeManifest(
+            node_id="sxbet-validation",
+            trader_id="BETARB-TEST-001",
+            validation_mode=True,
+            allow_dummy_credentials=True,
+            strategy=BettingArbitrageConfig(
+                opportunity_graph_engine="python",
+            ),
+            venues=[
+                BettingVenueManifest(
+                    venue="SXBET",
+                    client_key="SXBET_PRIMARY",
+                ),
+            ],
+        )
+
+        with pytest.raises(ValueError, match="semantic_rust opportunity topology"):
+            build_trading_node_config(manifest)
+
+    def test_semantic_cache_manifest_upgrades_legacy_rust_engine(self):
+        manifest = BettingArbitrageNodeManifest(
+            node_id="sxbet-validation",
+            trader_id="BETARB-TEST-001",
+            validation_mode=True,
+            semantic_rule_cache_dir="artifacts/semantic-rule-cache/sxbet-validation",
+            allow_dummy_credentials=True,
+            strategy=BettingArbitrageConfig(
+                opportunity_graph_engine="rust",
+            ),
+            venues=[
+                BettingVenueManifest(
+                    venue="SXBET",
+                    client_key="SXBET_PRIMARY",
+                ),
+            ],
+        )
+
+        config = build_trading_node_config(manifest)
+
+        assert config.strategies[0].config["opportunity_graph_engine"] == "semantic_rust"
+
+    def test_manifest_upgrades_auto_engine_without_semantic_cache(self):
+        manifest = BettingArbitrageNodeManifest(
+            node_id="sxbet-validation",
+            trader_id="BETARB-TEST-001",
+            validation_mode=True,
+            allow_dummy_credentials=True,
+            strategy=BettingArbitrageConfig(
+                opportunity_graph_engine="auto",
+            ),
+            venues=[
+                BettingVenueManifest(
+                    venue="SXBET",
+                    client_key="SXBET_PRIMARY",
+                ),
+            ],
+        )
+
+        config = build_trading_node_config(manifest)
+
+        assert config.strategies[0].config["opportunity_graph_engine"] == "semantic_rust"
+
     def test_sxbet_exec_client_uses_dummy_credentials(self, monkeypatch):
         monkeypatch.delenv("SXBET_API_KEY", raising=False)
         monkeypatch.delenv("SXBET_PRIVATE_KEY", raising=False)
