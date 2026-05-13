@@ -866,7 +866,10 @@ def test_runtime_probe_report_uses_latency_histograms_when_live_slo_missing():
         "thresholdSeconds": 5.0,
         "minThresholdSeconds": None,
         "maxThresholdSeconds": None,
-        "thresholdMode": "histogram_p95_or_max",
+        "thresholdMode": "histogram_p95",
+        "p95Seconds": 7.5,
+        "maxObservedSeconds": 8.0,
+        "outlierMaxExceeded": True,
     }
     assert slo["fetchLatency"]["status"] == "pass"
     assert slo["pairSkew"]["status"] == "pass"
@@ -902,6 +905,65 @@ def test_runtime_probe_report_uses_quote_fetch_latency_when_candidate_histogram_
     assert slo["fetchLatency"]["status"] == "pass"
     assert slo["fetchLatency"]["observations"] == 4
     assert slo["strategyLatency"]["providerLatencyObserved"] is True
+
+
+def test_runtime_probe_report_uses_p95_for_histogram_fallback_and_flags_outlier_max():
+    module = _load_module()
+
+    summary = module.summarize_payload(
+        {
+            "runtimeProbe": {
+                "quotedEdges": 4,
+                "candidateQuality": {
+                    "latencyHistograms": {
+                        "quoteAgeSeconds": {"count": 8, "p95": 1.0, "max": 1.1},
+                        "fetchLatencySeconds": {"count": 8, "p95": 0.5, "max": 0.7},
+                        "pairSkewSeconds": {"count": 8, "p95": 0.8, "max": 1.3},
+                    },
+                },
+                "latencyDiagnostics": {
+                    "graph_scan": {"count": 4},
+                    "quote_event_to_strategy": {"count": 4},
+                },
+            },
+        },
+    )
+
+    pair_skew = summary["latencyDiagnostics"]["sloStatus"]["pairSkew"]
+    assert pair_skew["status"] == "pass"
+    assert pair_skew["violations"] == 0
+    assert pair_skew["thresholdMode"] == "histogram_p95"
+    assert pair_skew["p95Seconds"] == 0.8
+    assert pair_skew["maxObservedSeconds"] == 1.3
+    assert pair_skew["outlierMaxExceeded"] is True
+
+
+def test_runtime_probe_report_formats_latency_outlier_suffix():
+    module = _load_module()
+
+    lines = module._format_latency_lines(
+        {
+            "sloStatus": {
+                "overall": "pass",
+                "quoteAge": {"status": "pass"},
+                "fetchLatency": {
+                    "status": "pass",
+                    "outlierMaxExceeded": True,
+                    "maxObservedSeconds": 5.6,
+                },
+                "pairSkew": {
+                    "status": "pass",
+                    "outlierMaxExceeded": True,
+                    "maxObservedSeconds": 1.3,
+                },
+            },
+        },
+    )
+
+    assert lines == [
+        "  latency_slo overall=pass quote_age=pass fetch_latency=pass pair_skew=pass "
+        "fetch_latency_outlier_max=5.6s pair_skew_outlier_max=1.3s",
+    ]
 
 
 def test_runtime_probe_report_aggregates_multiple_artifacts():

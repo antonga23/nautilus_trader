@@ -4022,6 +4022,33 @@ class TestBettingArbitrageNodeRunner:
         assert "provider_latency" not in quote_only_provider_latency["sloStatus"]["missingStages"]
         assert "missing_provider_latency" not in quote_only_provider_latency["diagnosticWarnings"]
 
+        p95_pass_with_max_outlier = node_runner._runtime_latency_diagnostics(
+            {
+                "latency_diagnostics": {
+                    "quote_event_to_strategy": {"count": 3},
+                    "graph_scan": {"count": 3},
+                    "candidate_decision": {"count": 3},
+                },
+            },
+            {
+                "quoted_edges": 2,
+                "positive_execution": 0,
+                "positive_same_venue": 0,
+                "threshold_execution": 0,
+                "threshold_same_venue": 0,
+                "live_timing_slo": {},
+                "latency_histograms": {
+                    "pair_skew_secs": {"count": 8, "p95": 0.8, "max": 1.4},
+                },
+                "candidate_decision_latency": {},
+            },
+        )
+        assert p95_pass_with_max_outlier["sloStatus"]["pairSkew"]["status"] == "pass"
+        assert p95_pass_with_max_outlier["sloStatus"]["pairSkew"]["thresholdMode"] == (
+            "histogram_p95"
+        )
+        assert p95_pass_with_max_outlier["sloStatus"]["pairSkew"]["outlierMaxExceeded"] is True
+
     def test_runtime_probe_aggregates_same_venue_dry_run_reasons(self):
         counters = node_runner.ProbeProfitabilityCounters()
         quality = {
