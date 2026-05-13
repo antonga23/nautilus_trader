@@ -91,7 +91,7 @@ class TenBetExecutionClient(LiveExecutionClient):
         self._browser_client = browser_client
         self._config = config
         self._account_id = AccountId(f"{TENBET_VENUE.value}-001")
-        self._risk_engine = TenBetRiskEngine(
+        self._venue_risk_policy = TenBetRiskEngine(
             max_stake_zar=config.max_stake_zar,
         )
         self._orders: dict[ClientOrderId, dict[str, Any]] = {}
@@ -158,7 +158,7 @@ class TenBetExecutionClient(LiveExecutionClient):
 
         stake = Decimal(str(order.quantity))
         odds = self._resolve_odds(order, instrument)
-        risk_eval = self._risk_engine.evaluate_order(
+        risk_eval = self._venue_risk_policy.evaluate_order(
             stake=stake,
             odds=odds,
             market_type=str(instrument.market_type),

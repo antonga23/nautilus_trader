@@ -55,8 +55,8 @@ class EasybetExecutionClient(LiveExecutionClient):
 
         self._config = config
 
-        # Risk engine
-        self._risk_engine = EasybetRiskEngine(
+        # Venue-specific order preflight policy
+        self._venue_risk_policy = EasybetRiskEngine(
             max_stake_zar=config.max_stake_zar,
             rollover_multiplier=config.rollover_multiplier,
             min_rollover_odds=config.min_rollover_odds,
@@ -96,14 +96,14 @@ class EasybetExecutionClient(LiveExecutionClient):
         market_type = "match_odds"  # Placeholder
 
         # Risk evaluation
-        eval_result = self._risk_engine.evaluate_order(
+        eval_result = self._venue_risk_policy.evaluate_order(
             stake=stake,
             odds=odds,
             market_type=market_type,
         )
 
         if not eval_result.approved:
-            self._log.error(f"Order rejected by risk engine: {eval_result.violations}")
+            self._log.error(f"Order rejected by venue risk policy: {eval_result.violations}")
             self.generate_order_rejected(
                 strategy_id=order.strategy_id,
                 instrument_id=order.instrument_id,
