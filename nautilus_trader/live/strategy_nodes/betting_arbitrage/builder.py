@@ -239,6 +239,13 @@ def _build_strategy_importable_config(
     enabled_venues: list[BettingVenueManifest],
 ) -> ImportableStrategyConfig:
     strategy_config: dict[str, Any] = dict(manifest.strategy.json_primitives() or {})
+    requested_engine = str(strategy_config.get("opportunity_graph_engine") or "auto").lower()
+    if requested_engine == "python":
+        raise ValueError(
+            "Strategy-node manifests must use semantic_rust opportunity topology",
+        )
+    if requested_engine in {"auto", "rust"}:
+        strategy_config["opportunity_graph_engine"] = "semantic_rust"
     strategy_config["enabled_venues"] = sorted({venue.venue for venue in enabled_venues})
     semantic_quote_limits = {
         venue.venue: int(venue.quote_subscription_limit)
@@ -249,8 +256,6 @@ def _build_strategy_importable_config(
         strategy_config["semantic_quote_subscription_limit_by_venue"] = semantic_quote_limits
     if manifest.semantic_rule_cache_dir:
         strategy_config["semantic_rule_cache_dir"] = manifest.semantic_rule_cache_dir
-        if strategy_config.get("opportunity_graph_engine") == "auto":
-            strategy_config["opportunity_graph_engine"] = "semantic_rust"
     if manifest.validation_mode:
         strategy_config["auto_execute"] = False
         strategy_config["value_execution_enabled"] = False
