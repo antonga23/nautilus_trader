@@ -19,6 +19,7 @@ Nautilus Trader owns the platform `RiskEngine`. Betting adapters add venue rule
 checks on top of that platform layer, but they do not replace or subclass the
 engine. Execution clients use these policies as a pre-submit filter before
 orders continue through the platform risk engine.
+
 """
 
 from abc import ABC
@@ -55,6 +56,7 @@ class RiskRule:
         Human-readable description.
     is_critical : bool
         If True, violation blocks order submission.
+
     """
 
     rule_type: RiskRuleType = field(init=False)
@@ -161,6 +163,7 @@ class BettingVenueRiskPolicy(ABC):
 
     Enforces venue-specific order constraints without replacing Nautilus Trader's
     platform risk engine.
+
     """
 
     def __init__(self, venue_name: str):

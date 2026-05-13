@@ -17,6 +17,7 @@ Compatibility re-export for venue risk policies.
 
 New code should import from `nautilus_trader.adapters.betting.venue_risk` so the
 adapter layer is not confused with Nautilus Trader's platform `RiskEngine`.
+
 """
 
 from nautilus_trader.adapters.betting.venue_risk import BettingVenueRiskPolicy
