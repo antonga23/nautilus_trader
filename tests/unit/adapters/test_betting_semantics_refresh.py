@@ -878,6 +878,44 @@ def test_polymarket_transform_strips_market_suffix_from_fixture_name():
     assert transformed.away_name == "Leeds United FC"
 
 
+def test_polymarket_transform_keeps_unsupported_score_and_half_markets_audit_only():
+    for suffix in ("Exact Score", "Halftime Result"):
+        question = f"Saudi Arabia vs. Senegal - {suffix}"
+        info = {
+            "condition_id": f"0xunsupported-{suffix.lower().replace(' ', '-')}",
+            "question": question,
+            "tokens": [
+                {"token_id": "yes-token", "outcome": "Yes", "price": 0.33},
+                {"token_id": "no-token", "outcome": "No", "price": 0.67},
+            ],
+            "selected_token_id": "yes-token",
+            "selected_outcome": "Yes",
+            "_gamma_original": {
+                "sport": "soccer",
+                "description": "This market resolves according to the listed special market.",
+                "outcomePrices": '["0.33","0.67"]',
+                "events": [
+                    {
+                        "title": question,
+                        "sport": "soccer",
+                        "startDate": "2026-05-13",
+                    },
+                ],
+            },
+        }
+
+        transformed = PolymarketSportsTransformer.to_crypto_betting_instrument(
+            polymarket_binary_option(
+                symbol=f"{suffix.lower().replace(' ', '-')}-token",
+                outcome="Yes",
+                question=question,
+                info=info,
+            ),
+        )
+
+        assert transformed is None
+
+
 def test_polymarket_transform_prefers_market_start_time_over_stale_event_time():
     info = {
         "condition_id": "0xtiafoe-buse",

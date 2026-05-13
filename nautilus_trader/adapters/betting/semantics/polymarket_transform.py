@@ -135,6 +135,14 @@ class PolymarketSportsTransformer:
         "first overall",
         "1st overall",
     )
+    UNSUPPORTED_FIXTURE_MARKET_TOKENS = (
+        "exact score",
+        "correct score",
+        "halftime result",
+        "half-time result",
+        "first half result",
+        "1st half result",
+    )
 
     @classmethod
     def canonical_sport(cls, raw_sport: str | None) -> str | None:
@@ -232,6 +240,12 @@ class PolymarketSportsTransformer:
             .strip()
             .lower()
         )
+        if cls._is_unsupported_fixture_market(
+            question=question,
+            event_title=event_title,
+            sports_market_type=sports_market_type,
+        ):
+            return None
         market_family, market_name, market_type, selection_role = cls._winner_market_semantics(
             sport=sport,
             target_role=target_role,
@@ -371,6 +385,19 @@ class PolymarketSportsTransformer:
         return normalized.startswith(invalid_prefixes) or any(
             token in normalized for token in invalid_tokens
         )
+
+    @classmethod
+    def _is_unsupported_fixture_market(
+        cls,
+        *,
+        question: str,
+        event_title: str,
+        sports_market_type: str,
+    ) -> bool:
+        combined = " ".join(
+            value.lower() for value in (question, event_title, sports_market_type) if value
+        )
+        return any(token in combined for token in cls.UNSUPPORTED_FIXTURE_MARKET_TOKENS)
 
     @classmethod
     def _winner_market_semantics(
@@ -550,7 +577,8 @@ class PolymarketSportsTransformer:
         cleaned = re.sub(
             r"\s+-\s+(?:more markets|total (?:corners|goals|points|sets)|"
             r"(?:game|match|set) (?:winner|spread|handicap)|"
-            r"(?:winner|spread|handicap|moneyline|odds))\b.*$",
+            r"(?:winner|spread|handicap|moneyline|odds)|"
+            r"(?:exact|correct) score|(?:half[- ]?time|first half|1st half) result)\b.*$",
             "",
             cleaned,
             flags=re.IGNORECASE,
