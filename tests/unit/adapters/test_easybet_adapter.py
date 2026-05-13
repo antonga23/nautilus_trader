@@ -27,7 +27,7 @@ from nautilus_trader.model.identifiers import Venue
 
 class TestEasybetVenueRiskPolicy:
     """
-    Comprehensive tests for Easybet risk engine.
+    Comprehensive tests for Easybet venue risk policy.
     """
 
     def test_venue_name_is_easybet(self):

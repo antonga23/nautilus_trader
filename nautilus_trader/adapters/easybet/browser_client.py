@@ -10,12 +10,20 @@ import asyncio
 import random
 import time
 from typing import Any
+from typing import TYPE_CHECKING
 
-from playwright.async_api import Browser
-from playwright.async_api import BrowserContext
-from playwright.async_api import Page
-from playwright.async_api import Playwright
-from playwright.async_api import async_playwright
+if TYPE_CHECKING:
+    from playwright.async_api import Browser
+    from playwright.async_api import BrowserContext
+    from playwright.async_api import Page
+    from playwright.async_api import Playwright
+else:
+    Browser = BrowserContext = Page = Playwright = Any
+
+try:
+    from playwright.async_api import async_playwright
+except ModuleNotFoundError:  # pragma: no cover - exercised when dependency is absent
+    async_playwright = None
 
 from nautilus_trader.adapters.easybet.constants import EASYBET_BASE_URL
 from nautilus_trader.adapters.easybet.constants import EASYBET_SPORTSBOOK_URL
@@ -111,6 +119,12 @@ class EasybetBrowserClient:
         """
         Initialize browser and create context.
         """
+        if async_playwright is None:
+            raise ModuleNotFoundError(
+                "playwright is required for EasybetBrowserClient.connect(); "
+                "install playwright to enable Easybet browser automation",
+            )
+
         self._playwright = await async_playwright().start()
 
         # Launch browser

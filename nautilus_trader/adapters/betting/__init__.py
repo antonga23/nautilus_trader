@@ -32,14 +32,14 @@ from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.betting.market_matcher import ArbitrageOpportunity
 from nautilus_trader.adapters.betting.market_matcher import HedgeCandidate
 from nautilus_trader.adapters.betting.market_matcher import MarketMatcher
-from nautilus_trader.adapters.betting.risk_engine import BettingVenueRiskPolicy
-from nautilus_trader.adapters.betting.risk_engine import MaxExposureRule
-from nautilus_trader.adapters.betting.risk_engine import OddsRequirementRule
-from nautilus_trader.adapters.betting.risk_engine import RiskEvaluation
-from nautilus_trader.adapters.betting.risk_engine import RiskRule
-from nautilus_trader.adapters.betting.risk_engine import RiskRuleType
-from nautilus_trader.adapters.betting.risk_engine import RolloverRule
-from nautilus_trader.adapters.betting.risk_engine import StakeLimitRule
+from nautilus_trader.adapters.betting.venue_risk import BettingVenueRiskPolicy
+from nautilus_trader.adapters.betting.venue_risk import MaxExposureRule
+from nautilus_trader.adapters.betting.venue_risk import OddsRequirementRule
+from nautilus_trader.adapters.betting.venue_risk import RiskEvaluation
+from nautilus_trader.adapters.betting.venue_risk import RiskRule
+from nautilus_trader.adapters.betting.venue_risk import RiskRuleType
+from nautilus_trader.adapters.betting.venue_risk import RolloverRule
+from nautilus_trader.adapters.betting.venue_risk import StakeLimitRule
 
 
 __all__ = [

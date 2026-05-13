@@ -30,7 +30,7 @@ from nautilus_trader.model.identifiers import Venue
 
 class TestTenBetVenueRiskPolicy:
     """
-    Comprehensive tests for 10bet risk engine.
+    Comprehensive tests for 10bet venue risk policy.
     """
 
     def test_initialization(self):

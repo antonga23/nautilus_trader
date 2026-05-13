@@ -13,21 +13,21 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 """
-SX.bet risk engine.
+SX.bet venue risk policy.
 """
 
 from decimal import Decimal
 
-from nautilus_trader.adapters.betting.risk_engine import BettingVenueRiskPolicy
-from nautilus_trader.adapters.betting.risk_engine import MaxExposureRule
-from nautilus_trader.adapters.betting.risk_engine import OddsRequirementRule
-from nautilus_trader.adapters.betting.risk_engine import RiskEvaluation
-from nautilus_trader.adapters.betting.risk_engine import StakeLimitRule
+from nautilus_trader.adapters.betting.venue_risk import BettingVenueRiskPolicy
+from nautilus_trader.adapters.betting.venue_risk import MaxExposureRule
+from nautilus_trader.adapters.betting.venue_risk import OddsRequirementRule
+from nautilus_trader.adapters.betting.venue_risk import RiskEvaluation
+from nautilus_trader.adapters.betting.venue_risk import StakeLimitRule
 
 
 class SXBetVenueRiskPolicy(BettingVenueRiskPolicy):
     """
-    Risk engine for SX.bet venue.
+    Venue risk policy for SX.bet.
 
     Implements SX.bet-specific risk rules:
     - Minimum bet size (5 USDC)

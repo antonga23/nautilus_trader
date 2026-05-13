@@ -8,19 +8,25 @@ from decimal import Decimal
 
 import pytest
 
+from nautilus_trader.adapters.betting.risk_engine import BettingVenueRiskPolicy as ShimBettingVenueRiskPolicy
+from nautilus_trader.adapters.betting.venue_risk import BettingVenueRiskPolicy
 from nautilus_trader.adapters.sxbet.risk_engine import SXBetVenueRiskPolicy
 from nautilus_trader.adapters.tenbet.risk_engine import TenBetVenueRiskPolicy
 
 
+def test_betting_risk_engine_module_reexports_venue_policy():
+    assert ShimBettingVenueRiskPolicy is BettingVenueRiskPolicy
+
+
 class TestSXBetVenueRiskPolicy:
     """
-    Test SX.bet risk engine.
+    Test SX.bet venue risk policy.
     """
 
     @pytest.fixture
     def risk_engine(self):
         """
-        Create SX.bet risk engine.
+        Create SX.bet venue risk policy.
         """
         return SXBetVenueRiskPolicy()
 
@@ -64,7 +70,7 @@ class TestSXBetVenueRiskPolicy:
 
 class TestTenBetVenueRiskPolicy:
     """
-    Test 10bet risk engine.
+    Test 10bet venue risk policy.
     """
 
     @pytest.fixture

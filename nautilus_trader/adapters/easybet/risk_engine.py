@@ -1,16 +1,16 @@
 # -------------------------------------------------------------------------------------------------
 #  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
 #
-#  Easybet risk engine.
+#  Easybet venue risk policy.
 # -------------------------------------------------------------------------------------------------
 
 from decimal import Decimal
 
-from nautilus_trader.adapters.betting.risk_engine import BettingVenueRiskPolicy
-from nautilus_trader.adapters.betting.risk_engine import OddsRequirementRule
-from nautilus_trader.adapters.betting.risk_engine import RiskEvaluation
-from nautilus_trader.adapters.betting.risk_engine import RolloverRule
-from nautilus_trader.adapters.betting.risk_engine import StakeLimitRule
+from nautilus_trader.adapters.betting.venue_risk import BettingVenueRiskPolicy
+from nautilus_trader.adapters.betting.venue_risk import OddsRequirementRule
+from nautilus_trader.adapters.betting.venue_risk import RiskEvaluation
+from nautilus_trader.adapters.betting.venue_risk import RolloverRule
+from nautilus_trader.adapters.betting.venue_risk import StakeLimitRule
 
 
 class EasybetVenueRiskPolicy(BettingVenueRiskPolicy):
