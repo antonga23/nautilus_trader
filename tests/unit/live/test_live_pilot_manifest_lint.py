@@ -114,3 +114,14 @@ def test_cli_fails_on_issue(tmp_path, monkeypatch, capsys):
 
     assert module.main() == 2
     assert "max_daily_loss_above_tiny_pilot_limit" in capsys.readouterr().out
+
+
+def test_betting_node_manifests_pin_semantic_rust_topology() -> None:
+    manifest_paths = sorted(Path("deploy/strategy_nodes/betting_arbitrage").glob("*.json"))
+
+    assert manifest_paths
+    for path in manifest_paths:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        strategy = payload.get("strategy")
+        assert isinstance(strategy, dict), path
+        assert strategy.get("opportunity_graph_engine") == "semantic_rust", path
