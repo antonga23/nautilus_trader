@@ -13,7 +13,7 @@
         "market_timing_filter": "all",
         "rollover_aware": false,
         "opportunity_graph_engine": "semantic_rust",
-        "auto_execute": false,
+        "auto_execute": false
     },
     "venues": [
         {
@@ -25,8 +25,8 @@
             "load_all_instruments": false,
             "instrument_ids": [
                 "0x4319532e181605cb15b1bd677759a3bc7f7394b2fdf145195b700eeaedfd5221-60487116984468020978247225474488676749601001829886755968952521846780452448915.POLYMARKET"
-            ],
+            ]
         }
     ],
-    "metadata": {"phase": "polymarket-phase-1", "track": "polymarket"},
+    "metadata": {"phase": "polymarket-phase-1", "track": "polymarket"}
 }
