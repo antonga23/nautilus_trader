@@ -290,6 +290,7 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
             "crossVenuePairsWithCandidates": venue_coverage.get(
                 "crossVenuePairsWithCandidates",
             ),
+            "crossVenueQuoteReadiness": venue_coverage.get("crossVenueQuoteReadiness"),
             "zeroCandidateVenuePairs": venue_coverage.get("zeroCandidateVenuePairs"),
             "zeroCandidateBlockerCounts": venue_coverage.get("zeroCandidateBlockerCounts"),
             "quoteCapacityPressure": _quote_capacity_pressure(venue_coverage),
@@ -1299,6 +1300,11 @@ def _format_text_runtime_health_lines(summary: dict[str, Any]) -> list[str]:
     venue_coverage_health = _format_venue_coverage_health(summary.get("venueCoverageHealth"))
     if venue_coverage_health:
         lines.append(f"  venue_coverage_health {venue_coverage_health}")
+    cross_venue_readiness = _format_cross_venue_quote_readiness(
+        _as_dict(summary.get("venueCoverage")).get("crossVenueQuoteReadiness"),
+    )
+    if cross_venue_readiness:
+        lines.append(f"  cross_venue_quote_readiness {cross_venue_readiness}")
     quote_capacity_pressure = _format_quote_capacity_pressure(
         _as_dict(summary.get("venueCoverage")).get("quoteCapacityPressure"),
     )
@@ -1339,6 +1345,27 @@ def _format_text_footer_lines(summary: dict[str, Any]) -> list[str]:
             "  recommended_actions " + ", ".join(str(action) for action in recommended_actions),
         )
     return lines
+
+
+def _format_cross_venue_quote_readiness(value: Any) -> str:
+    if not isinstance(value, list) or not value:
+        return ""
+    parts: list[str] = []
+    for item in value[:5]:
+        if not isinstance(item, dict):
+            continue
+        pair = str(item.get("venuePair") or "")
+        status = str(item.get("status") or "")
+        common = _int_value(item.get("commonEventKeyCount"))
+        quoted_common = _int_value(item.get("fullyQuotedCommonEventKeyCount"))
+        quoted_edges = _int_value(item.get("quotedEdgeCount"))
+        candidates = _int_value(item.get("candidateCount"))
+        if pair:
+            parts.append(
+                f"{pair}:{status}:common={common}:quoted_common={quoted_common}:"
+                f"quoted_edges={quoted_edges}:candidates={candidates}",
+            )
+    return ", ".join(parts)
 
 
 def _format_operator_health_line(value: Any) -> str:

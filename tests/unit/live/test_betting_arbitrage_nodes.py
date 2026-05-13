@@ -3002,6 +3002,13 @@ class TestBettingArbitrageNodeRunner:
         assert coverage["quotedEdgeCounts"]["SXBET->CLOUDBET"] == 0
         assert coverage["candidateCounts"]["SXBET->SXBET"] == 1
         assert coverage["crossVenueCandidateCount"] == 0
+        readiness = {item["venuePair"]: item for item in coverage["crossVenueQuoteReadiness"]}
+        assert readiness["SXBET->CLOUDBET"]["status"] == "common_fixture_unquoted"
+        assert readiness["SXBET->CLOUDBET"]["commonEventKeyCount"] >= 1
+        assert readiness["SXBET->CLOUDBET"]["fullyQuotedCommonEventKeyCount"] == 0
+        assert readiness["SXBET->CLOUDBET"]["quotedEdgeCount"] == 0
+        assert readiness["SXBET->CLOUDBET"]["candidateCount"] == 0
+        assert readiness["CLOUDBET->POLYMARKET"]["status"] == "missing_instruments"
         zero_reasons = {
             item["venuePair"]: item["reason"] for item in coverage["zeroCandidateVenuePairs"]
         }
