@@ -125,6 +125,16 @@ def _check_execution_mode(
 
 def _check_execution_safety(manifest: dict[str, Any], issues: list[str]) -> None:
     strategy = _as_dict(manifest.get("strategy"))
+    _add_if(
+        not bool(strategy.get("opportunity_graph_enabled", True)),
+        issues,
+        "opportunity_graph_disabled",
+    )
+    _add_if(
+        str(strategy.get("opportunity_graph_engine") or "").lower() != "semantic_rust",
+        issues,
+        "opportunity_graph_engine_not_semantic_rust",
+    )
     _add_if(bool(manifest.get("validation_mode")), issues, "live_pilot_manifest_in_validation_mode")
     _add_if(
         not bool(strategy.get("auto_execute")),

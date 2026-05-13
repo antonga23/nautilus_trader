@@ -1428,7 +1428,7 @@ fn is_same_market_hedge(source: &NodeSnapshot, target: &NodeSnapshot) -> bool {
     {
         return false;
     }
-    if source.market_name != target.market_name || source.params != target.params {
+    if source.market_name != target.market_name || !same_market_params_match(source, target) {
         return false;
     }
     if source.market_type == "match_odds" && !(source.two_way_market && target.two_way_market) {
@@ -1444,7 +1444,7 @@ fn is_trusted_same_venue_event_id_mismatch(source: &NodeSnapshot, target: &NodeS
     if !event_aliases_overlap(source, target) {
         return false;
     }
-    if source.market_name != target.market_name || source.params != target.params {
+    if source.market_name != target.market_name || !same_market_params_match(source, target) {
         return false;
     }
     if source.market_type != "match_odds" || target.market_type != "match_odds" {
@@ -1454,6 +1454,16 @@ fn is_trusted_same_venue_event_id_mismatch(source: &NodeSnapshot, target: &NodeS
         return false;
     }
     is_opposite_outcome(source, target)
+}
+
+fn same_market_params_match(source: &NodeSnapshot, target: &NodeSnapshot) -> bool {
+    if source.params != target.params {
+        return false;
+    }
+    match (source.handicap, target.handicap) {
+        (Some(left), Some(right)) => approx_eq(left, right),
+        _ => true,
+    }
 }
 
 fn event_bucket_keys_for_node(node: &NodeSnapshot) -> Vec<String> {

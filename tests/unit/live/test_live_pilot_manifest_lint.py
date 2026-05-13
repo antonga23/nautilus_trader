@@ -45,6 +45,8 @@ def _manifest(*, mode: str = "cross_venue") -> dict[str, object]:
         "strategy": {
             "auto_execute": True,
             "live_execution_armed": True,
+            "opportunity_graph_enabled": True,
+            "opportunity_graph_engine": "semantic_rust",
             "execution_venue_mode": mode,
             "allow_same_venue_live_execution": mode == "same_venue",
             "allow_cross_currency_live_execution": False,
@@ -98,6 +100,21 @@ def test_lint_manifest_blocks_cross_currency_without_gate(tmp_path):
 
     assert result["status"] == "fail"
     assert "CLOUDBET:non_usd_live_currency_without_cross_currency_gate" in result["issues"]
+
+
+def test_lint_manifest_requires_semantic_rust_runtime(tmp_path):
+    module = _load_module()
+    manifest = _manifest()
+    manifest["strategy"]["opportunity_graph_engine"] = "auto"
+    manifest["strategy"]["opportunity_graph_enabled"] = False
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = module.lint_manifest(path)
+
+    assert result["status"] == "fail"
+    assert "opportunity_graph_disabled" in result["issues"]
+    assert "opportunity_graph_engine_not_semantic_rust" in result["issues"]
 
 
 def test_cli_fails_on_issue(tmp_path, monkeypatch, capsys):
