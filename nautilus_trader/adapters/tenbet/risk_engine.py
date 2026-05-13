@@ -25,7 +25,7 @@ from nautilus_trader.adapters.betting.risk_engine import RolloverRule
 from nautilus_trader.adapters.betting.risk_engine import StakeLimitRule
 
 
-class TenBetRiskEngine(BettingVenueRiskPolicy):
+class TenBetVenueRiskPolicy(BettingVenueRiskPolicy):
     """
     Risk engine for 10bet venue.
 
@@ -172,3 +172,8 @@ class TenBetRiskEngine(BettingVenueRiskPolicy):
                 else Decimal(100)
             ),
         }
+
+
+# Backward-compatible alias while adapter call sites migrate away from the
+# misleading RiskEngine name.
+TenBetRiskEngine = TenBetVenueRiskPolicy

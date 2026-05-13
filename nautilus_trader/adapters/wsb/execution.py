@@ -22,7 +22,7 @@ from nautilus_trader.adapters.wsb.browser_client import WSBBrowserClient
 from nautilus_trader.adapters.wsb.config import WSBExecClientConfig
 from nautilus_trader.adapters.wsb.constants import WSB_VENUE
 from nautilus_trader.adapters.wsb.providers import WSBInstrumentProvider
-from nautilus_trader.adapters.wsb.risk_engine import WSBRiskEngine
+from nautilus_trader.adapters.wsb.risk_engine import WSBVenueRiskPolicy
 from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.component import Logger
@@ -88,7 +88,7 @@ class WSBExecutionClient(LiveExecutionClient):
         self._account_id = AccountId(f"{WSB_VENUE.value}-001")  # Placeholder
 
         # Venue-specific order preflight policy
-        self._venue_risk_policy = WSBRiskEngine(
+        self._venue_risk_policy = WSBVenueRiskPolicy(
             max_stake_zar=config.max_stake_zar,
         )
 

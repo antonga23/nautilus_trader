@@ -19,13 +19,13 @@ from nautilus_trader.adapters.easybet.execution import EasybetExecutionClient as
 from nautilus_trader.adapters.easybet.providers import EasybetInstrumentProvider
 from nautilus_trader.adapters.easybet.providers import EasybetInstrumentProvider as Provider
 from nautilus_trader.adapters.easybet.risk_engine import EasybetRiskEngine
-from nautilus_trader.adapters.easybet.risk_engine import EasybetRiskEngine as Engine
+from nautilus_trader.adapters.easybet.risk_engine import EasybetVenueRiskPolicy
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import Symbol
 from nautilus_trader.model.identifiers import Venue
 
 
-class TestEasybetRiskEngine:
+class TestEasybetVenueRiskPolicy:
     """
     Comprehensive tests for Easybet risk engine.
     """
@@ -34,7 +34,7 @@ class TestEasybetRiskEngine:
         """
         Test venue is EASYBET (naming validation).
         """
-        engine = EasybetRiskEngine()
+        engine = EasybetVenueRiskPolicy()
 
         assert engine.venue_name == "EASYBET"
         assert "10BET" not in engine.venue_name
@@ -44,7 +44,7 @@ class TestEasybetRiskEngine:
         """
         Test Easybet-specific defaults.
         """
-        engine = EasybetRiskEngine()
+        engine = EasybetVenueRiskPolicy()
 
         # Easybet has 8x rollover (not 5x like 10bet/BlackBet)
         assert engine._max_stake_zar == Decimal(2000)  # R2000 max
@@ -55,7 +55,7 @@ class TestEasybetRiskEngine:
         """
         Test custom initialization.
         """
-        engine = EasybetRiskEngine(
+        engine = EasybetVenueRiskPolicy(
             max_stake_zar=Decimal(3000),
             rollover_multiplier=Decimal(10),
             min_rollover_odds=Decimal("1.80"),
@@ -71,7 +71,7 @@ class TestEasybetRiskEngine:
         """
         Test R2000 default stake limit.
         """
-        engine = EasybetRiskEngine()
+        engine = EasybetVenueRiskPolicy()
 
         # R1500 - approved
         result = engine.evaluate_order(
@@ -93,7 +93,7 @@ class TestEasybetRiskEngine:
         """
         Test 8x rollover multiplier (Easybet-specific).
         """
-        engine = EasybetRiskEngine(
+        engine = EasybetVenueRiskPolicy(
             bonus_amount=Decimal(100),
             rollover_multiplier=Decimal(8),
         )
@@ -107,7 +107,7 @@ class TestEasybetRiskEngine:
         """
         Test 1.50 minimum odds requirement.
         """
-        engine = EasybetRiskEngine(
+        engine = EasybetVenueRiskPolicy(
             bonus_amount=Decimal(100),
             min_rollover_odds=Decimal("1.50"),
         )
@@ -137,7 +137,7 @@ class TestEasybetRiskEngine:
         """
         Test Easybet-specific market exclusions.
         """
-        engine = EasybetRiskEngine(bonus_amount=Decimal(100))
+        engine = EasybetVenueRiskPolicy(bonus_amount=Decimal(100))
 
         # Excluded markets
         for market in ["total_goals", "over_under", "handicap"]:
@@ -201,11 +201,11 @@ class TestEasybetNamingConsistency:
 
     def test_risk_engine_class_name(self):
         """
-        Ensure class is EasybetRiskEngine.
+        Ensure the compatibility alias still resolves to the canonical policy.
         """
-        assert Engine.__name__ == "EasybetRiskEngine"
-        assert "TenBet" not in Engine.__name__
-        assert "BlackBet" not in Engine.__name__
+        assert EasybetRiskEngine is EasybetVenueRiskPolicy
+        assert "TenBet" not in EasybetVenueRiskPolicy.__name__
+        assert "BlackBet" not in EasybetVenueRiskPolicy.__name__
 
     def test_provider_class_name(self):
         """

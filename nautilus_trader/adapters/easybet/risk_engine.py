@@ -13,7 +13,7 @@ from nautilus_trader.adapters.betting.risk_engine import RolloverRule
 from nautilus_trader.adapters.betting.risk_engine import StakeLimitRule
 
 
-class EasybetRiskEngine(BettingVenueRiskPolicy):
+class EasybetVenueRiskPolicy(BettingVenueRiskPolicy):
     """
     Risk engine for Easybet venue.
 
@@ -144,3 +144,8 @@ class EasybetRiskEngine(BettingVenueRiskPolicy):
                 else Decimal(100)
             ),
         }
+
+
+# Backward-compatible alias while adapter call sites migrate away from the
+# misleading RiskEngine name.
+EasybetRiskEngine = EasybetVenueRiskPolicy

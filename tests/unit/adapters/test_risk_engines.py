@@ -8,11 +8,11 @@ from decimal import Decimal
 
 import pytest
 
-from nautilus_trader.adapters.sxbet.risk_engine import SXBetRiskEngine
-from nautilus_trader.adapters.tenbet.risk_engine import TenBetRiskEngine
+from nautilus_trader.adapters.sxbet.risk_engine import SXBetVenueRiskPolicy
+from nautilus_trader.adapters.tenbet.risk_engine import TenBetVenueRiskPolicy
 
 
-class TestSXBetRiskEngine:
+class TestSXBetVenueRiskPolicy:
     """
     Test SX.bet risk engine.
     """
@@ -22,7 +22,7 @@ class TestSXBetRiskEngine:
         """
         Create SX.bet risk engine.
         """
-        return SXBetRiskEngine()
+        return SXBetVenueRiskPolicy()
 
     def test_minimum_stake_enforcement(self, risk_engine):
         """
@@ -62,7 +62,7 @@ class TestSXBetRiskEngine:
         assert eval_result.approved is False
 
 
-class TestTenBetRiskEngine:
+class TestTenBetVenueRiskPolicy:
     """
     Test 10bet risk engine.
     """
@@ -72,7 +72,7 @@ class TestTenBetRiskEngine:
         """
         Create 10bet risk engine with bonus.
         """
-        return TenBetRiskEngine(bonus_amount=Decimal(1000))
+        return TenBetVenueRiskPolicy(bonus_amount=Decimal(1000))
 
     def test_rollover_tracking(self, risk_engine):
         """

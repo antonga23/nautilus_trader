@@ -19,7 +19,7 @@ from nautilus_trader.adapters.tenbet.execution import TenBetExecutionClient
 from nautilus_trader.adapters.tenbet.browser_client import TenBetBrowserClient
 from nautilus_trader.adapters.tenbet.constants import TENBET_BASE_URL
 from nautilus_trader.adapters.tenbet.providers import TenBetInstrumentProvider
-from nautilus_trader.adapters.tenbet.risk_engine import TenBetRiskEngine
+from nautilus_trader.adapters.tenbet.risk_engine import TenBetVenueRiskPolicy
 from nautilus_trader.test_kit.stubs.commands import TestCommandStubs
 from nautilus_trader.test_kit.stubs.execution import TestExecStubs
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
@@ -28,7 +28,7 @@ from nautilus_trader.model.identifiers import Symbol
 from nautilus_trader.model.identifiers import Venue
 
 
-class TestTenBetRiskEngine:
+class TestTenBetVenueRiskPolicy:
     """
     Comprehensive tests for 10bet risk engine.
     """
@@ -37,7 +37,7 @@ class TestTenBetRiskEngine:
         """
         Test risk engine initializes with correct venue.
         """
-        engine = TenBetRiskEngine()
+        engine = TenBetVenueRiskPolicy()
 
         assert engine.venue_name == "10BET"
         assert engine._max_stake_zar == Decimal(1000)
@@ -48,7 +48,7 @@ class TestTenBetRiskEngine:
         """
         Test custom risk parameters.
         """
-        engine = TenBetRiskEngine(
+        engine = TenBetVenueRiskPolicy(
             max_stake_zar=Decimal(2000),
             rollover_multiplier=Decimal(10),
             min_rollover_odds=Decimal("2.0"),
@@ -64,7 +64,7 @@ class TestTenBetRiskEngine:
         """
         Test maximum stake limit is enforced.
         """
-        engine = TenBetRiskEngine(max_stake_zar=Decimal(1000))
+        engine = TenBetVenueRiskPolicy(max_stake_zar=Decimal(1000))
 
         # Under limit - approved
         result = engine.evaluate_order(
@@ -87,7 +87,7 @@ class TestTenBetRiskEngine:
         """
         Test rollover progress tracking.
         """
-        engine = TenBetRiskEngine(
+        engine = TenBetVenueRiskPolicy(
             bonus_amount=Decimal(100),
             rollover_multiplier=Decimal(5),
         )
@@ -113,7 +113,7 @@ class TestTenBetRiskEngine:
         """
         Test excluded markets don't contribute to rollover.
         """
-        engine = TenBetRiskEngine(bonus_amount=Decimal(100))
+        engine = TenBetVenueRiskPolicy(bonus_amount=Decimal(100))
 
         # over_under market is excluded
         engine.update_rollover(
@@ -129,7 +129,7 @@ class TestTenBetRiskEngine:
         """
         Test odds below minimum don't contribute.
         """
-        engine = TenBetRiskEngine(
+        engine = TenBetVenueRiskPolicy(
             bonus_amount=Decimal(100),
             min_rollover_odds=Decimal("1.60"),
         )

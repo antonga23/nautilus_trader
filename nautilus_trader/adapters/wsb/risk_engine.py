@@ -25,7 +25,7 @@ from nautilus_trader.adapters.betting.risk_engine import RolloverRule
 from nautilus_trader.adapters.betting.risk_engine import StakeLimitRule
 
 
-class WSBRiskEngine(BettingVenueRiskPolicy):
+class WSBVenueRiskPolicy(BettingVenueRiskPolicy):
     """
     Risk engine for WSB venue.
 
@@ -170,3 +170,8 @@ class WSBRiskEngine(BettingVenueRiskPolicy):
                 else Decimal(100)
             ),
         }
+
+
+# Backward-compatible alias while adapter call sites migrate away from the
+# misleading RiskEngine name.
+WSBRiskEngine = WSBVenueRiskPolicy

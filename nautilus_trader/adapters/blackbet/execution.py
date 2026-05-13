@@ -22,7 +22,7 @@ from nautilus_trader.adapters.blackbet.browser_client import BlackBetBrowserClie
 from nautilus_trader.adapters.blackbet.config import BlackBetExecClientConfig
 from nautilus_trader.adapters.blackbet.constants import BLACKBET_VENUE
 from nautilus_trader.adapters.blackbet.providers import BlackBetInstrumentProvider
-from nautilus_trader.adapters.blackbet.risk_engine import BlackBetRiskEngine
+from nautilus_trader.adapters.blackbet.risk_engine import BlackBetVenueRiskPolicy
 from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.component import Logger
@@ -88,7 +88,7 @@ class BlackBetExecutionClient(LiveExecutionClient):
         self._account_id = AccountId(f"{BLACKBET_VENUE.value}-001")  # Placeholder
 
         # Venue-specific order preflight policy
-        self._venue_risk_policy = BlackBetRiskEngine(
+        self._venue_risk_policy = BlackBetVenueRiskPolicy(
             max_stake_zar=config.max_stake_zar,
         )
 

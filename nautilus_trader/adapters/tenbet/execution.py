@@ -28,7 +28,7 @@ from nautilus_trader.adapters.tenbet.config import TenBetExecClientConfig
 from nautilus_trader.adapters.tenbet.constants import TENBET_BASE_URL
 from nautilus_trader.adapters.tenbet.constants import TENBET_VENUE
 from nautilus_trader.adapters.tenbet.providers import TenBetInstrumentProvider
-from nautilus_trader.adapters.tenbet.risk_engine import TenBetRiskEngine
+from nautilus_trader.adapters.tenbet.risk_engine import TenBetVenueRiskPolicy
 from nautilus_trader.adapters.tenbet.selectors import TenBetSelectors
 from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.component import LiveClock
@@ -91,7 +91,7 @@ class TenBetExecutionClient(LiveExecutionClient):
         self._browser_client = browser_client
         self._config = config
         self._account_id = AccountId(f"{TENBET_VENUE.value}-001")
-        self._venue_risk_policy = TenBetRiskEngine(
+        self._venue_risk_policy = TenBetVenueRiskPolicy(
             max_stake_zar=config.max_stake_zar,
         )
         self._orders: dict[ClientOrderId, dict[str, Any]] = {}

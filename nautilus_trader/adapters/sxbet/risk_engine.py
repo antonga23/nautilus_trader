@@ -25,7 +25,7 @@ from nautilus_trader.adapters.betting.risk_engine import RiskEvaluation
 from nautilus_trader.adapters.betting.risk_engine import StakeLimitRule
 
 
-class SXBetRiskEngine(BettingVenueRiskPolicy):
+class SXBetVenueRiskPolicy(BettingVenueRiskPolicy):
     """
     Risk engine for SX.bet venue.
 
@@ -118,3 +118,8 @@ class SXBetRiskEngine(BettingVenueRiskPolicy):
             platform_risk_required=base_eval.platform_risk_required,
             venue_policy=self.venue_name,
         )
+
+
+# Backward-compatible alias while adapter call sites migrate away from the
+# misleading RiskEngine name.
+SXBetRiskEngine = SXBetVenueRiskPolicy

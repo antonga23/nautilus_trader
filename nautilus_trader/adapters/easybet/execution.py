@@ -8,7 +8,7 @@ from decimal import Decimal
 
 from nautilus_trader.adapters.easybet.browser_client import EasybetBrowserClient
 from nautilus_trader.adapters.easybet.config import EasybetExecClientConfig
-from nautilus_trader.adapters.easybet.risk_engine import EasybetRiskEngine
+from nautilus_trader.adapters.easybet.risk_engine import EasybetVenueRiskPolicy
 from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.component import Logger
@@ -56,7 +56,7 @@ class EasybetExecutionClient(LiveExecutionClient):
         self._config = config
 
         # Venue-specific order preflight policy
-        self._venue_risk_policy = EasybetRiskEngine(
+        self._venue_risk_policy = EasybetVenueRiskPolicy(
             max_stake_zar=config.max_stake_zar,
             rollover_multiplier=config.rollover_multiplier,
             min_rollover_odds=config.min_rollover_odds,

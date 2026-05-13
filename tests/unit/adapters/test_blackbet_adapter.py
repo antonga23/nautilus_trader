@@ -17,18 +17,18 @@ from nautilus_trader.adapters.blackbet.constants import BLACKBET_VENUE
 from nautilus_trader.adapters.blackbet.providers import BlackBetInstrumentProvider
 from nautilus_trader.adapters.blackbet.providers import BlackBetInstrumentProvider as Provider
 from nautilus_trader.adapters.blackbet.risk_engine import BlackBetRiskEngine
-from nautilus_trader.adapters.blackbet.risk_engine import BlackBetRiskEngine as Engine
+from nautilus_trader.adapters.blackbet.risk_engine import BlackBetVenueRiskPolicy
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import Symbol
 from nautilus_trader.model.identifiers import Venue
 
 
-class TestBlackBetRiskEngine:
+class TestBlackBetVenueRiskPolicy:
     """Comprehensive tests for BlackBet risk engine - ensures correct naming."""
 
     def test_venue_name_is_blackbet(self):
         """CRITICAL: Test venue is BLACKBET not 10BET (catches naming bug)."""
-        engine = BlackBetRiskEngine()
+        engine = BlackBetVenueRiskPolicy()
 
         # This test would have caught the copy-paste bug!
         assert engine.venue_name == "BLACKBET"
@@ -38,7 +38,7 @@ class TestBlackBetRiskEngine:
         """
         Test default initialization parameters.
         """
-        engine = BlackBetRiskEngine()
+        engine = BlackBetVenueRiskPolicy()
 
         assert engine._max_stake_zar == Decimal(1000)
         assert engine._rollover_multiplier == Decimal(5)
@@ -49,7 +49,7 @@ class TestBlackBetRiskEngine:
         """
         Test custom risk parameters.
         """
-        engine = BlackBetRiskEngine(
+        engine = BlackBetVenueRiskPolicy(
             max_stake_zar=Decimal(5000),
             rollover_multiplier=Decimal(3),
             min_rollover_odds=Decimal("1.80"),
@@ -65,7 +65,7 @@ class TestBlackBetRiskEngine:
         """
         Test stake over limit is rejected.
         """
-        engine = BlackBetRiskEngine(max_stake_zar=Decimal(1000))
+        engine = BlackBetVenueRiskPolicy(max_stake_zar=Decimal(1000))
 
         result = engine.evaluate_order(
             stake=Decimal(2000),
@@ -80,7 +80,7 @@ class TestBlackBetRiskEngine:
         """
         Test stake under limit is approved.
         """
-        engine = BlackBetRiskEngine(max_stake_zar=Decimal(1000))
+        engine = BlackBetVenueRiskPolicy(max_stake_zar=Decimal(1000))
 
         result = engine.evaluate_order(
             stake=Decimal(500),
@@ -94,7 +94,7 @@ class TestBlackBetRiskEngine:
         """
         Test rollover requirement calculation.
         """
-        engine = BlackBetRiskEngine(
+        engine = BlackBetVenueRiskPolicy(
             bonus_amount=Decimal(200),
             rollover_multiplier=Decimal(5),
         )
@@ -111,7 +111,7 @@ class TestBlackBetRiskEngine:
         """
         Test valid bet updates rollover.
         """
-        engine = BlackBetRiskEngine(
+        engine = BlackBetVenueRiskPolicy(
             bonus_amount=Decimal(100),
             rollover_multiplier=Decimal(5),
             min_rollover_odds=Decimal("1.60"),
@@ -131,7 +131,7 @@ class TestBlackBetRiskEngine:
         """
         Test excluded markets don't update rollover.
         """
-        engine = BlackBetRiskEngine(
+        engine = BlackBetVenueRiskPolicy(
             bonus_amount=Decimal(100),
             rollover_multiplier=Decimal(5),
         )
@@ -150,7 +150,7 @@ class TestBlackBetRiskEngine:
         """
         Test low odds don't count toward rollover.
         """
-        engine = BlackBetRiskEngine(
+        engine = BlackBetVenueRiskPolicy(
             bonus_amount=Decimal(100),
             min_rollover_odds=Decimal("1.60"),
         )
@@ -231,10 +231,10 @@ class TestBlackBetNamingConsistency:
 
     def test_risk_engine_class_name(self):
         """
-        Ensure class is named BlackBetRiskEngine not TenBetRiskEngine.
+        Ensure the compatibility alias still resolves to the canonical policy.
         """
-        assert Engine.__name__ == "BlackBetRiskEngine"
-        assert "TenBet" not in Engine.__name__
+        assert BlackBetRiskEngine is BlackBetVenueRiskPolicy
+        assert "TenBet" not in BlackBetVenueRiskPolicy.__name__
 
     def test_provider_class_name(self):
         """
