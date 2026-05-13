@@ -834,6 +834,15 @@ class TestMarketMatcher:
         )
 
         assert hedges == []
+        diagnostics = market_matcher.explain_hedge_event_match(
+            inst_b_missing_time,
+            inst_a_early,
+            [inst_a_late],
+        )
+        assert diagnostics["matched"] is False
+        assert diagnostics["reason"] == "ambiguous_missing_start_time"
+        assert diagnostics["sameFixture"] is True
+        assert diagnostics["sameVenue"] is False
 
     def test_find_hedges_allows_cross_venue_missing_start_time_with_single_fixture_cluster(
         self,
@@ -879,6 +888,9 @@ class TestMarketMatcher:
         hedges = market_matcher.find_hedges(inst_b_missing_time, [inst_a])
 
         assert len(hedges) == 1
+        diagnostics = market_matcher.explain_hedge_event_match(inst_b_missing_time, inst_a, [])
+        assert diagnostics["matched"] is True
+        assert diagnostics["reason"] == "cross_venue_unique_missing_start_time"
 
     def test_find_hedges_uses_fixture_proof_when_missing_start_time_event_keys_drift(
         self,
