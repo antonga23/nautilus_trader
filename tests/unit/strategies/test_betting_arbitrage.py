@@ -1880,6 +1880,23 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(subscribed_count == 1)
         ensure(quoted_ids == {live_polymarket.id})
 
+    def test_resolution_horizon_allows_polymarket_date_only_same_day_fixture(
+        self,
+    ) -> None:  # skipcq
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["POLYMARKET"]),
+                max_resolution_horizon_hours=48.0,
+            ),
+        )
+        today = datetime.now(tz=UTC).date().isoformat()
+        option = self._polymarket_sports_binary_option(start_time=today)
+        transformed = strategy._coerce_betting_instrument(option)
+
+        assert transformed is not None
+        ensure(strategy._instrument_resolution_horizon_priority(transformed) < 2)
+        ensure(strategy._should_process_instrument(transformed) is True)
+
     def test_semantic_unmatched_probe_precomputes_fixture_aliases(
         self,
         tmp_path: Path,
