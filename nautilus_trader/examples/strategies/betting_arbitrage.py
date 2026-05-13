@@ -1372,33 +1372,46 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         instrument = getattr(node, "instrument", None)
         if instrument is None:
             return 1
-        start_time = getattr(instrument, "parsed_start_time", lambda: None)()
-        if start_time is None:
+        return self._instrument_resolution_horizon_priority(instrument)
+
+    def _instrument_resolution_horizon_priority(self, instrument: BettingInstrument) -> int:
+        horizon_hours = self._config.max_resolution_horizon_hours
+        if horizon_hours is None:
+            return 0
+        window = self._instrument_resolution_horizon_window(instrument)
+        if window is None:
             return 1
+        start_time, end_time = window
         now = datetime.now(tz=UTC)
         stale_grace = timedelta(hours=RESOLUTION_HORIZON_STALE_GRACE_HOURS)
-        if start_time < now - stale_grace:
+        if end_time < now - stale_grace:
             return 3
         if start_time < now:
             return 0
         horizon = now + timedelta(hours=float(horizon_hours))
         return -1 if start_time <= horizon else 2
 
-    def _instrument_resolution_horizon_priority(self, instrument: BettingInstrument) -> int:
-        horizon_hours = self._config.max_resolution_horizon_hours
-        if horizon_hours is None:
-            return 0
+    @staticmethod
+    def _instrument_resolution_horizon_window(
+        instrument: BettingInstrument,
+    ) -> tuple[datetime, datetime] | None:
         start_time = instrument.parsed_start_time()
         if start_time is None:
-            return 1
-        now = datetime.now(tz=UTC)
-        stale_grace = timedelta(hours=RESOLUTION_HORIZON_STALE_GRACE_HOURS)
-        if start_time < now - stale_grace:
-            return 3
-        if start_time < now:
-            return 0
-        horizon = now + timedelta(hours=float(horizon_hours))
-        return -1 if start_time <= horizon else 2
+            return None
+        raw_start = str(getattr(instrument, "start_time", "") or "").strip()
+        if (
+            len(raw_start) == 10
+            and raw_start[4] == "-"
+            and raw_start[7] == "-"
+            and raw_start[:4].isdigit()
+            and raw_start[5:7].isdigit()
+            and raw_start[8:].isdigit()
+        ):
+            # Polymarket Gamma commonly emits only a fixture date. Treat it as
+            # active for the full UTC date so same-day markets do not become
+            # stale immediately after midnight.
+            return start_time, start_time + timedelta(days=1)
+        return start_time, start_time
 
     def _resolution_horizon_quote_allowed(self, node: object | None) -> bool:
         if self._config.max_resolution_horizon_hours is None:
