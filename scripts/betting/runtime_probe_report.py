@@ -290,7 +290,14 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
             "crossVenuePairsWithCandidates": venue_coverage.get(
                 "crossVenuePairsWithCandidates",
             ),
-            "crossVenueQuoteReadiness": venue_coverage.get("crossVenueQuoteReadiness"),
+            "crossVenueQuoteReadiness": _cross_venue_quote_readiness_details(
+                venue_coverage,
+                top_limit=top_limit,
+            ),
+            "crossVenueQuoteReadinessWarnings": _cross_venue_quote_readiness_warnings(
+                venue_coverage,
+                top_limit=top_limit,
+            ),
             "zeroCandidateVenuePairs": venue_coverage.get("zeroCandidateVenuePairs"),
             "zeroCandidateBlockerCounts": venue_coverage.get("zeroCandidateBlockerCounts"),
             "quoteCapacityPressure": _quote_capacity_pressure(venue_coverage),
@@ -319,6 +326,70 @@ def _zero_fixture_proof_blocker_counts(value: Any) -> dict[str, int]:
             key = str(reason)
             counts[key] = counts.get(key, 0) + _int_value(count)
     return dict(sorted(counts.items()))
+
+
+def _cross_venue_quote_readiness_warnings(
+    venue_coverage: dict[str, Any],
+    *,
+    top_limit: int,
+) -> list[dict[str, Any]]:
+    readiness = _cross_venue_quote_readiness_details(venue_coverage, top_limit=top_limit)
+    if not isinstance(readiness, list) or not readiness:
+        return []
+
+    warnings: list[dict[str, Any]] = []
+    for item in readiness:
+        if str(item.get("health") or "").lower() != "warn":
+            continue
+        warnings.append(dict(item))
+        if len(warnings) >= top_limit:
+            break
+    return warnings
+
+
+def _cross_venue_quote_readiness_details(
+    venue_coverage: dict[str, Any],
+    *,
+    top_limit: int,
+) -> list[dict[str, Any]]:
+    readiness = venue_coverage.get("crossVenueQuoteReadiness")
+    if not isinstance(readiness, list):
+        return []
+    zero_pair_by_venue = _zero_candidate_pair_reports_by_venue(
+        venue_coverage.get("zeroCandidateVenuePairs"),
+    )
+
+    detailed: list[dict[str, Any]] = []
+    for item in readiness:
+        if not isinstance(item, dict):
+            continue
+        enriched = dict(item)
+        pair = str(enriched.get("venuePair") or "")
+        pair_report = zero_pair_by_venue.get(pair, {})
+        if pair_report:
+            enriched.setdefault("blockerReason", pair_report.get("blockerReason"))
+            enriched.setdefault("discoveryGapReason", pair_report.get("discoveryGapReason"))
+            enriched.setdefault(
+                "fixtureProofBlockerCounts",
+                pair_report.get("fixtureProofBlockerCounts"),
+            )
+            enriched.setdefault("sampleBlockerCounts", pair_report.get("sampleBlockerCounts"))
+            enriched.setdefault("samples", (pair_report.get("samples") or [])[:top_limit])
+        detailed.append(enriched)
+    return detailed
+
+
+def _zero_candidate_pair_reports_by_venue(value: Any) -> dict[str, dict[str, Any]]:
+    if not isinstance(value, list):
+        return {}
+    reports: dict[str, dict[str, Any]] = {}
+    for report in value:
+        if not isinstance(report, dict):
+            continue
+        pair = str(report.get("venuePair") or "")
+        if pair:
+            reports[pair] = report
+    return reports
 
 
 def _fx_policy_summary(value: dict[str, Any]) -> dict[str, Any]:
@@ -1363,11 +1434,18 @@ def _format_cross_venue_quote_readiness(value: Any) -> str:
         quoted_common = _int_value(item.get("fullyQuotedCommonEventKeyCount"))
         quoted_edges = _int_value(item.get("quotedEdgeCount"))
         candidates = _int_value(item.get("candidateCount"))
+        blocker = str(item.get("blockerReason") or "")
+        discovery_gap = str(item.get("discoveryGapReason") or "")
         if pair:
-            parts.append(
+            entry = (
                 f"{pair}:{status}:common={common}:quoted_common={quoted_common}:"
-                f"quoted_edges={quoted_edges}:candidates={candidates}",
+                f"quoted_edges={quoted_edges}:candidates={candidates}"
             )
+            if blocker:
+                entry += f":blocker={blocker}"
+            if discovery_gap:
+                entry += f":gap={discovery_gap}"
+            parts.append(entry)
     return ", ".join(parts)
 
 
