@@ -220,6 +220,24 @@ def _runtime_status_payload() -> dict[str, object]:
                 "quotedEdgeCounts": {"CLOUDBET->SXBET": 3, "SXBET->SXBET": 1},
                 "candidateCounts": {"CLOUDBET->SXBET": 2, "SXBET->SXBET": 1},
                 "crossVenuePairsWithCandidates": ["CLOUDBET->SXBET"],
+                "crossVenueQuoteReadiness": [
+                    {
+                        "venuePair": "CLOUDBET->SXBET",
+                        "status": "cross_venue_candidates_observed",
+                        "commonEventKeyCount": 3,
+                        "fullyQuotedCommonEventKeyCount": 2,
+                        "quotedEdgeCount": 3,
+                        "candidateCount": 2,
+                    },
+                    {
+                        "venuePair": "POLYMARKET->SXBET",
+                        "status": "common_fixture_unquoted",
+                        "commonEventKeyCount": 1,
+                        "fullyQuotedCommonEventKeyCount": 0,
+                        "quotedEdgeCount": 0,
+                        "candidateCount": 0,
+                    },
+                ],
                 "zeroCandidateBlockerCounts": {"fixture_identity_mismatch": 2},
                 "zeroCandidateVenuePairs": [
                     {
@@ -712,6 +730,9 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
     }
     assert summary["venueCoverage"]["unquotedSemanticMatchedNodeCounts"]["CLOUDBET"] == 2
     assert summary["venueCoverage"]["crossVenuePairsWithCandidates"] == ["CLOUDBET->SXBET"]
+    assert summary["venueCoverage"]["crossVenueQuoteReadiness"][0]["status"] == (
+        "cross_venue_candidates_observed"
+    )
     assert summary["recommendedActions"] == [
         "audit_fixture_identity_normalization",
         "increase_poll_concurrency_or_reduce_subscriptions",
@@ -1078,6 +1099,8 @@ def test_runtime_probe_report_cli_outputs_json_and_text(tmp_path, monkeypatch, c
     assert "fetch_p95=0.18s" in text_output
     assert "provider_poll_health overall=fail CLOUDBET:status=fail" in text_output
     assert "poll_util=0.625" in text_output
+    assert "cross_venue_quote_readiness CLOUDBET->SXBET:" in text_output
+    assert "POLYMARKET->SXBET:common_fixture_unquoted" in text_output
     assert "fetch_util=0.09" in text_output
     assert "concurrency_util=0.5" in text_output
     assert "next_sleep=0.2s" in text_output

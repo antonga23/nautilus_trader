@@ -1930,6 +1930,15 @@ def _venue_pair_coverage(
         )
         for venue in venues
     }
+    cross_venue_quote_readiness = _cross_venue_quote_readiness(
+        all_pairs=all_pairs,
+        nodes=nodes,
+        quotes=quotes,
+        node_counts=node_counts,
+        edge_counts=edge_counts,
+        quoted_edge_counts=quoted_edge_counts,
+        candidate_counts=candidate_counts,
+    )
 
     return {
         "enabledVenues": venues,
@@ -1977,6 +1986,7 @@ def _venue_pair_coverage(
             if _is_cross_venue_pair(pair) and candidate_counts.get(pair, 0) > 0
         ],
         "zeroCandidateVenuePairs": zero_pairs,
+        "crossVenueQuoteReadiness": cross_venue_quote_readiness,
     }
 
 
@@ -2059,6 +2069,72 @@ def _zero_pair_fixture_proof_blocker_counts(
         for reason, count in fixture_proof_counts.items():
             counts[str(reason)] += int(count or 0)
     return counts
+
+
+def _cross_venue_quote_readiness(
+    *,
+    all_pairs: list[str],
+    nodes: dict[Any, object],
+    quotes: dict[Any, object],
+    node_counts: Counter[str],
+    edge_counts: Counter[str],
+    quoted_edge_counts: Counter[str],
+    candidate_counts: dict[str, int],
+) -> list[dict[str, object]]:
+    reports: list[dict[str, object]] = []
+    for pair in all_pairs:
+        if not _is_cross_venue_pair(pair):
+            continue
+        source, target = pair.split("->", maxsplit=1)
+        source_event_keys = _event_keys_for_venue(nodes, source)
+        target_event_keys = _event_keys_for_venue(nodes, target)
+        common_event_keys = sorted((source_event_keys & target_event_keys) - {""})
+        quote_coverage = _common_event_quote_coverage(
+            source=source,
+            target=target,
+            nodes=nodes,
+            quotes=quotes,
+            common_event_keys=set(common_event_keys),
+        )
+        common_count = len(common_event_keys)
+        fully_quoted_count = int(quote_coverage.get("fullyQuotedCommonEventKeyCount") or 0)
+        edge_count = int(edge_counts.get(pair, 0) or 0)
+        quoted_edge_count = int(quoted_edge_counts.get(pair, 0) or 0)
+        candidate_count = int(candidate_counts.get(pair, 0) or 0)
+        if node_counts.get(source, 0) == 0 or node_counts.get(target, 0) == 0:
+            status = "missing_instruments"
+            health = "warn"
+        elif common_count == 0:
+            status = "no_common_fixture"
+            health = "warn"
+        elif fully_quoted_count == 0:
+            status = "common_fixture_unquoted"
+            health = "warn"
+        elif quoted_edge_count == 0:
+            status = "quoted_common_fixture_no_quoted_semantic_edge"
+            health = "warn"
+        elif candidate_count == 0:
+            status = "quoted_cross_venue_no_candidate"
+            health = "pass"
+        else:
+            status = "cross_venue_candidates_observed"
+            health = "pass"
+        reports.append(
+            {
+                "venuePair": pair,
+                "status": status,
+                "health": health,
+                "sourceNodeCount": int(node_counts.get(source, 0) or 0),
+                "targetNodeCount": int(node_counts.get(target, 0) or 0),
+                "commonEventKeyCount": common_count,
+                "commonEventKeySamples": common_event_keys[:5],
+                "edgeCount": edge_count,
+                "quotedEdgeCount": quoted_edge_count,
+                "candidateCount": candidate_count,
+                **quote_coverage,
+            },
+        )
+    return reports
 
 
 def _quote_subscription_counts_by_venue(strategy) -> Counter[str]:
