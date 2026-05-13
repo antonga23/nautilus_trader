@@ -232,6 +232,7 @@ def _runtime_status_payload() -> dict[str, object]:
                     {
                         "venuePair": "POLYMARKET->SXBET",
                         "status": "common_fixture_unquoted",
+                        "health": "warn",
                         "commonEventKeyCount": 1,
                         "fullyQuotedCommonEventKeyCount": 0,
                         "quotedEdgeCount": 0,
@@ -733,6 +734,34 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
     assert summary["venueCoverage"]["crossVenueQuoteReadiness"][0]["status"] == (
         "cross_venue_candidates_observed"
     )
+    assert summary["venueCoverage"]["crossVenueQuoteReadinessWarnings"] == [
+        {
+            "venuePair": "POLYMARKET->SXBET",
+            "status": "common_fixture_unquoted",
+            "health": "warn",
+            "commonEventKeyCount": 1,
+            "fullyQuotedCommonEventKeyCount": 0,
+            "quotedEdgeCount": 0,
+            "candidateCount": 0,
+            "blockerReason": "no_common_fixture",
+            "discoveryGapReason": "no_common_fixture_loaded",
+            "fixtureProofBlockerCounts": {"start_time_mismatch": 2},
+            "sampleBlockerCounts": {"no_common_fixture": 2},
+            "samples": [
+                {
+                    "instrumentIdA": "poly-tiafoe",
+                    "instrumentIdB": "sxbet-buse",
+                    "blockerHint": "no_common_fixture",
+                    "fixtureIdentityProof": {
+                        "sameFixture": False,
+                        "reason": "start_time_mismatch",
+                        "confidence": 0.62,
+                        "startTimeDeltaSeconds": 86400,
+                    },
+                },
+            ],
+        },
+    ]
     assert summary["recommendedActions"] == [
         "audit_fixture_identity_normalization",
         "increase_poll_concurrency_or_reduce_subscriptions",
@@ -795,6 +824,13 @@ def test_runtime_probe_report_formats_execution_readiness_line():
     ) in rendered
     assert "semantic_cache_execution_safe_families TOTALS + TOTALS=25" in rendered
     assert "corpus_coverage provider=SXBET mode=active_live sports=3/6 selections=842" in rendered
+    assert (
+        "cross_venue_quote_readiness "
+        "CLOUDBET->SXBET:cross_venue_candidates_observed:common=3:quoted_common=2:"
+        "quoted_edges=3:candidates=2, "
+        "POLYMARKET->SXBET:common_fixture_unquoted:common=1:quoted_common=0:"
+        "quoted_edges=0:candidates=0:blocker=no_common_fixture:gap=no_common_fixture_loaded"
+    ) in rendered
 
 
 def test_runtime_probe_report_flags_legacy_semantic_blocked_artifacts():
