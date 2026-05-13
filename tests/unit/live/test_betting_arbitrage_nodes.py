@@ -3033,6 +3033,60 @@ class TestBettingArbitrageNodeRunner:
             "MATCH_ODDS + MATCH_ODDS"
         )
 
+    def test_runtime_probe_quote_observation_state_flags_subscribed_without_quotes(self):
+        venue_coverage = {
+            "quoteSubscriptionCounts": {
+                "CLOUDBET": 80,
+                "POLYMARKET": 92,
+                "SXBET": 120,
+            },
+            "quotedNodeCounts": {
+                "CLOUDBET": 0,
+                "POLYMARKET": 0,
+                "SXBET": 0,
+            },
+            "quoteSubscriptionGapCounts": {
+                "CLOUDBET": 80,
+                "POLYMARKET": 92,
+                "SXBET": 120,
+            },
+            "quotedSemanticMatchedNodeCounts": {
+                "CLOUDBET": 0,
+                "POLYMARKET": 0,
+                "SXBET": 0,
+            },
+            "unquotedSemanticMatchedNodeCounts": {
+                "CLOUDBET": 1815,
+                "POLYMARKET": 92,
+                "SXBET": 328,
+            },
+            "venuesWithSubscriptionQuoteGap": ["CLOUDBET", "POLYMARKET", "SXBET"],
+            "unquotedSemanticMatchedNodeSamples": {
+                "POLYMARKET": [{"instrumentId": "poly-1"}],
+            },
+        }
+        stats = {
+            "provider_quote_poll_stats": {
+                "CLOUDBET": {"polls": 0},
+                "SXBET": {"polls": 0},
+            },
+            "opportunity_graph_quote_states": 0,
+            "subscribed_instruments": 292,
+        }
+
+        state = node_runner._probe_quote_observation_state(stats, venue_coverage)
+
+        assert state["status"] == "subscribed_but_no_quotes"
+        assert state["health"] == "fail"
+        assert state["totalQuoteSubscriptions"] == 292
+        assert state["totalQuotedNodes"] == 0
+        assert state["totalQuoteSubscriptionGaps"] == 292
+        assert state["venuesWithSubscriptionQuoteGap"] == ["CLOUDBET", "POLYMARKET", "SXBET"]
+        assert state["providerQuotePollStats"]["CLOUDBET"] == {"polls": 0}
+        assert state["unquotedSemanticMatchedNodeSamples"]["POLYMARKET"][0]["instrumentId"] == (
+            "poly-1"
+        )
+
     def test_venue_pair_coverage_reports_no_common_fixture_without_false_pair_samples(self):
         sxbet_instrument = _instrument(
             venue="SXBET",
@@ -4716,6 +4770,8 @@ class TestBettingArbitrageNodeRunner:
         assert "runtime-report.json" in workflow
         assert "Evaluate deployed runtime report" in workflow
         assert "scripts/betting/runtime_probe_report.py" in workflow
+        tmp_artifact_dir = "/" + "tmp/artifacts/strategy-nodes"
+        assert tmp_artifact_dir in workflow
         assert "--require-auto-execute-false" in workflow
         assert "--require-validation-mode" in workflow
         assert "--require-rust-semantic" in workflow

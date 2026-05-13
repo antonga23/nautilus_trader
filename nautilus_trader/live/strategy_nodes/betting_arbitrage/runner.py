@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 from collections.abc import Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from dataclasses import field
 from dataclasses import replace
@@ -833,6 +834,11 @@ def _probe_runtime(
         min_profit_margin=min_profit_margin,
         elapsed_seconds=0.0,
     )
+    latest_payload["nodeLifecycle"] = _probe_node_lifecycle_state(
+        node,
+        run_thread=run_thread,
+        run_error=run_error,
+    )
 
     try:
         while time.monotonic() - started_at < timeout_seconds:
@@ -840,6 +846,11 @@ def _probe_runtime(
                 strategy,
                 min_profit_margin=min_profit_margin,
                 elapsed_seconds=time.monotonic() - started_at,
+            )
+            latest_payload["nodeLifecycle"] = _probe_node_lifecycle_state(
+                node,
+                run_thread=run_thread,
+                run_error=run_error,
             )
             _write_status(
                 status_path,
@@ -885,8 +896,24 @@ def _probe_runtime(
     if run_error:
         raise run_error[0]
 
+    with suppress(Exception):
+        _write_status(
+            status_path,
+            manifest=manifest,
+            status="probe_failed",
+            semantic_cache=semantic_cache,
+            manifest_snapshot=manifest_snapshot,
+            rendered_config_path=rendered_config_path,
+            heartbeat_path=heartbeat_path,
+            runtime_probe=latest_payload,
+            startedAt=_utc_now(),
+            failedAt=_utc_now(),
+        )
+
     semantic_diagnostics = latest_payload.get("semanticDiagnostics", {})
     candidate_quality = latest_payload.get("candidateQuality", {})
+    quote_observation = latest_payload.get("quoteObservationState", {})
+    node_lifecycle = latest_payload.get("nodeLifecycle", {})
     diagnostics_json = json.dumps(
         semantic_diagnostics,
         sort_keys=True,
@@ -899,6 +926,18 @@ def _probe_runtime(
         default=str,
         separators=(",", ":"),
     )[:4000]
+    quote_observation_json = json.dumps(
+        quote_observation,
+        sort_keys=True,
+        default=str,
+        separators=(",", ":"),
+    )[:2000]
+    node_lifecycle_json = json.dumps(
+        node_lifecycle,
+        sort_keys=True,
+        default=str,
+        separators=(",", ":"),
+    )[:1200]
     raise RuntimeProbeCoverageError(
         "Runtime probe did not observe the required semantic coverage "
         f"(connected_nodes={latest_payload['connectedNodes']}, "
@@ -911,6 +950,8 @@ def _probe_runtime(
         f"graph_engine={latest_payload.get('graphEngine')}, "
         f"topology_source={latest_payload.get('topologySource')}, "
         f"semantic_template_count={latest_payload.get('semanticTemplateCount')}, "
+        f"quote_observation={quote_observation_json}, "
+        f"node_lifecycle={node_lifecycle_json}, "
         f"venue_coverage={json.dumps(latest_payload.get('venueCoverage') or {}, sort_keys=True, default=str)[:2000]}, "
         f"semantic_diagnostics={diagnostics_json}, "
         f"candidate_quality={candidate_quality_json})",
@@ -925,6 +966,41 @@ def _resolve_betting_strategy(node):
         if isinstance(strategy, BettingArbitrageStrategy):
             return strategy
     raise RuntimeError("Trading node did not register a BettingArbitrageStrategy")
+
+
+def _probe_node_lifecycle_state(
+    node: object,
+    *,
+    run_thread: threading.Thread,
+    run_error: Sequence[BaseException],
+) -> dict[str, object]:
+    kernel = getattr(node, "kernel", None)
+    data_engine = getattr(kernel, "data_engine", None)
+    exec_engine = getattr(kernel, "exec_engine", None)
+    trader = getattr(kernel, "trader", None)
+    loop = getattr(kernel, "loop", None)
+    return {
+        "kernelRunning": bool(_safe_call(kernel, "is_running")),
+        "kernelStopping": bool(getattr(kernel, "_is_stopping", False)),
+        "traderRunning": bool(getattr(trader, "is_running", False)),
+        "runThreadAlive": run_thread.is_alive(),
+        "runErrorCount": len(run_error),
+        "dataEngineDisconnected": _safe_call(data_engine, "check_disconnected"),
+        "execEngineDisconnected": _safe_call(exec_engine, "check_disconnected"),
+        "loopRunning": bool(_safe_call(loop, "is_running")),
+    }
+
+
+def _safe_call(target: object | None, method_name: str) -> object:
+    if target is None:
+        return None
+    method = getattr(target, method_name, None)
+    if not callable(method):
+        return None
+    try:
+        return method()
+    except Exception:
+        return None
 
 
 def _collect_runtime_probe_payload(
@@ -986,6 +1062,10 @@ def _collect_runtime_probe_payload(
             "latencyDiagnostics": latency_diagnostics,
             "semanticDiagnostics": semantic_diagnostics,
             "providerQuotePollStats": stats.get("provider_quote_poll_stats", {}),
+            "quoteObservationState": _probe_quote_observation_state(
+                stats,
+                venue_coverage,
+            ),
             "fxPolicy": stats.get("fx_policy", {}),
             "venueCoverage": venue_coverage,
             "resolutionHorizon": _resolution_horizon_payload(
@@ -1169,6 +1249,10 @@ def _collect_runtime_probe_payload(
         "strategyStats": stats,
         "latencyDiagnostics": latency_diagnostics,
         "providerQuotePollStats": stats.get("provider_quote_poll_stats", {}),
+        "quoteObservationState": _probe_quote_observation_state(
+            stats,
+            venue_coverage,
+        ),
         "semanticDiagnostics": semantic_diagnostics,
         "fxPolicy": stats.get("fx_policy", {}),
         "venueCoverage": venue_coverage,
@@ -1894,6 +1978,74 @@ def _venue_pair_coverage(
         ],
         "zeroCandidateVenuePairs": zero_pairs,
     }
+
+
+def _probe_quote_observation_state(
+    stats: dict[str, object],
+    venue_coverage: dict[str, object],
+) -> dict[str, object]:
+    quote_subscription_counts = _int_mapping(venue_coverage.get("quoteSubscriptionCounts"))
+    quoted_node_counts = _int_mapping(venue_coverage.get("quotedNodeCounts"))
+    quote_gap_counts = _int_mapping(venue_coverage.get("quoteSubscriptionGapCounts"))
+    quoted_semantic_counts = _int_mapping(venue_coverage.get("quotedSemanticMatchedNodeCounts"))
+    unquoted_semantic_counts = _int_mapping(venue_coverage.get("unquotedSemanticMatchedNodeCounts"))
+    total_subscriptions = sum(quote_subscription_counts.values())
+    total_quoted_nodes = sum(quoted_node_counts.values())
+    total_quote_gaps = sum(quote_gap_counts.values())
+    total_quoted_semantic_nodes = sum(quoted_semantic_counts.values())
+
+    if total_subscriptions <= 0:
+        status = "no_quote_subscriptions"
+        health = "warn"
+    elif total_quoted_nodes <= 0:
+        status = "subscribed_but_no_quotes"
+        health = "fail"
+    elif total_quote_gaps > 0:
+        status = "partial_subscription_quote_gap"
+        health = "warn"
+    else:
+        status = "quotes_observed"
+        health = "pass"
+
+    return {
+        "status": status,
+        "reason": status,
+        "health": health,
+        "totalQuoteSubscriptions": total_subscriptions,
+        "totalQuotedNodes": total_quoted_nodes,
+        "totalQuotedSemanticNodes": total_quoted_semantic_nodes,
+        "totalQuoteSubscriptionGaps": total_quote_gaps,
+        "quoteSubscriptionCounts": quote_subscription_counts,
+        "quotedNodeCounts": quoted_node_counts,
+        "quoteSubscriptionGapCounts": quote_gap_counts,
+        "quotedSemanticMatchedNodeCounts": quoted_semantic_counts,
+        "unquotedSemanticMatchedNodeCounts": unquoted_semantic_counts,
+        "venuesWithSubscriptionQuoteGap": list(
+            venue_coverage.get("venuesWithSubscriptionQuoteGap") or [],
+        ),
+        "quoteSubscriptionLimitExceededCounts": _int_mapping(
+            venue_coverage.get("quoteSubscriptionLimitExceededCounts"),
+        ),
+        "unquotedSemanticMatchedNodeSamples": venue_coverage.get(
+            "unquotedSemanticMatchedNodeSamples",
+            {},
+        ),
+        "providerQuotePollStats": stats.get("provider_quote_poll_stats", {}),
+        "graphQuoteStates": stats.get("opportunity_graph_quote_states", {}),
+        "subscribedInstruments": int(stats.get("subscribed_instruments") or 0),
+    }
+
+
+def _int_mapping(value: object) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, int] = {}
+    for key, count in value.items():
+        try:
+            result[str(key)] = int(count or 0)
+        except (TypeError, ValueError):
+            result[str(key)] = 0
+    return result
 
 
 def _zero_pair_fixture_proof_blocker_counts(

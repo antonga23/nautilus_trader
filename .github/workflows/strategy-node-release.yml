@@ -375,6 +375,10 @@ jobs:
             bash scripts/ci/ci_transient_artifacts.sh \
               put artifacts/strategy-nodes diagnostics/strategy-nodes
           fi
+          if [ -d /tmp/artifacts/strategy-nodes ]; then
+            bash scripts/ci/ci_transient_artifacts.sh \
+              put /tmp/artifacts/strategy-nodes diagnostics/strategy-nodes
+          fi
 
   check-deploy-runner:
     name: check-ec2-deploy-runner

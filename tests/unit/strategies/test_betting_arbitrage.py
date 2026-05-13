@@ -1880,6 +1880,60 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(subscribed_count == 1)
         ensure(quoted_ids == {live_polymarket.id})
 
+    def test_semantic_unmatched_probe_precomputes_fixture_aliases(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:  # skipcq
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["POLYMARKET", "SXBET"]),
+                opportunity_graph_engine="python",
+                semantic_unmatched_quote_probe_venues=frozenset({"POLYMARKET"}),
+                semantic_unmatched_quote_probe_limit_per_venue=2,
+            ),
+        )
+        strategy._matcher.set_rule_store(RuleStore(FileRuleCache(tmp_path / "rules")))
+        strategy.subscribe_quote_ticks = Mock()
+        instruments: list[CryptoBettingInstrument] = []
+        aliases_by_id: dict[str, set[str]] = {}
+        for idx in range(8):
+            home = f"Team {idx} A"
+            away = f"Team {idx} B"
+            polymarket = self._polymarket_sports_binary_option(
+                symbol_value=f"pm-{idx}",
+                event_name=f"{home} vs {away}",
+                home_name=home,
+                away_name=away,
+            )
+            transformed = strategy._coerce_betting_instrument(polymarket)
+            sxbet = self._sxbet_instrument(
+                event_id=f"sxbet-{idx}",
+                outcome="home",
+                event_name=f"{home} vs {away}",
+                home_name=home,
+                away_name=away,
+                market_name="match_odds",
+                sport_name="basketball",
+            )
+            assert transformed is not None
+            instruments.extend([transformed, sxbet])
+            aliases_by_id[str(transformed.id)] = {f"fixture-{idx}"}
+            aliases_by_id[str(sxbet.id)] = {f"fixture-{idx}"}
+
+        strategy._subscribed_instruments.update(instruments)
+        strategy._opportunity_graph.build(instruments)
+        strategy._opportunity_graph.edge_ids_by_node_id = {
+            node_id: set() for node_id in strategy._opportunity_graph.nodes_by_id
+        }
+        alias_probe = Mock(side_effect=lambda instrument: aliases_by_id[str(instrument.id)])
+        monkeypatch.setattr(strategy, "_instrument_event_alias_keys", alias_probe)
+
+        subscribed_count = strategy._subscribe_semantic_unmatched_quote_probe_ticks()
+
+        ensure(subscribed_count == 2)
+        ensure(alias_probe.call_count == len(instruments))
+
     def test_on_quote_tick_remaps_polymarket_binary_option_to_betting_instrument(self):
         strategy = BettingArbitrageStrategy(
             config=BettingArbitrageConfig(enabled_venues=frozenset(["POLYMARKET"])),
