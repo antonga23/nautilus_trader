@@ -10,6 +10,7 @@ execution-control plane: arming state, kill switch, risk caps, FX freshness,
 latency status, and order lifecycle health. It is designed for unarmed pilot
 soaks where execution must be ready enough to explain why it would submit, but
 still blocked by an explicit gate until the pilot is intentionally armed.
+
 """
 
 from __future__ import annotations
