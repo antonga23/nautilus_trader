@@ -413,7 +413,7 @@ def _collect_sports_event_markets(
                     "title": event.get("title"),
                     "slug": event.get("slug"),
                     "startDate": event.get("startDate"),
-                    "startDateIso": event.get("startDate"),
+                    "startDateIso": event.get("startDateIso") or event.get("startDate"),
                     "sport": canonical_sport,
                 },
             ]
