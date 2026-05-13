@@ -8,7 +8,9 @@ from decimal import Decimal
 
 import pytest
 
-from nautilus_trader.adapters.betting.risk_engine import BettingVenueRiskPolicy as ShimBettingVenueRiskPolicy
+from nautilus_trader.adapters.betting.risk_engine import (
+    BettingVenueRiskPolicy as ShimBettingVenueRiskPolicy,
+)
 from nautilus_trader.adapters.betting.venue_risk import BettingVenueRiskPolicy
 from nautilus_trader.adapters.sxbet.risk_engine import SXBetVenueRiskPolicy
 from nautilus_trader.adapters.tenbet.risk_engine import TenBetVenueRiskPolicy
