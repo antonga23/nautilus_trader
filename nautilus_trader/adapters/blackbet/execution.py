@@ -22,7 +22,7 @@ from nautilus_trader.adapters.blackbet.browser_client import BlackBetBrowserClie
 from nautilus_trader.adapters.blackbet.config import BlackBetExecClientConfig
 from nautilus_trader.adapters.blackbet.constants import BLACKBET_VENUE
 from nautilus_trader.adapters.blackbet.providers import BlackBetInstrumentProvider
-from nautilus_trader.adapters.blackbet.risk_engine import BlackBetRiskEngine
+from nautilus_trader.adapters.blackbet.risk_engine import BlackBetVenueRiskPolicy
 from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.component import Logger
@@ -52,7 +52,7 @@ class BlackBetExecutionClient(LiveExecutionClient):
     - Can navigate to markets and view bet slip without authentication
     - Actual bet placement requires login (placeholder for future)
 
-    Integrates with BlackBetRiskEngine for rollover validation.
+    Integrates with the venue-specific BlackBet risk policy for order preflight.
 
     NOTE: This is a placeholder implementation. Full bet placement
     requires authentication which will be implemented later.
@@ -87,8 +87,8 @@ class BlackBetExecutionClient(LiveExecutionClient):
         self._config = config
         self._account_id = AccountId(f"{BLACKBET_VENUE.value}-001")  # Placeholder
 
-        # Risk engine
-        self._risk_engine = BlackBetRiskEngine(
+        # Venue-specific order preflight policy
+        self._venue_risk_policy = BlackBetVenueRiskPolicy(
             max_stake_zar=config.max_stake_zar,
         )
 
@@ -168,7 +168,7 @@ class BlackBetExecutionClient(LiveExecutionClient):
             Decimal(str(order.price)) if hasattr(order, "price") and order.price else Decimal("2.0")
         )
 
-        risk_eval = self._risk_engine.evaluate_order(
+        risk_eval = self._venue_risk_policy.evaluate_order(
             stake=stake,
             odds=odds,
             market_type=str(instrument.market_type)

@@ -13,19 +13,19 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 """
-WSB risk engine.
+WSB venue risk policy.
 """
 
 from decimal import Decimal
 
-from nautilus_trader.adapters.betting.risk_engine import BettingVenueRiskPolicy
-from nautilus_trader.adapters.betting.risk_engine import OddsRequirementRule
-from nautilus_trader.adapters.betting.risk_engine import RiskEvaluation
-from nautilus_trader.adapters.betting.risk_engine import RolloverRule
-from nautilus_trader.adapters.betting.risk_engine import StakeLimitRule
+from nautilus_trader.adapters.betting.venue_risk import BettingVenueRiskPolicy
+from nautilus_trader.adapters.betting.venue_risk import OddsRequirementRule
+from nautilus_trader.adapters.betting.venue_risk import RiskEvaluation
+from nautilus_trader.adapters.betting.venue_risk import RolloverRule
+from nautilus_trader.adapters.betting.venue_risk import StakeLimitRule
 
 
-class WSBRiskEngine(BettingVenueRiskPolicy):
+class WSBVenueRiskPolicy(BettingVenueRiskPolicy):
     """
     Risk engine for WSB venue.
 
@@ -170,3 +170,8 @@ class WSBRiskEngine(BettingVenueRiskPolicy):
                 else Decimal(100)
             ),
         }
+
+
+# Backward-compatible alias while adapter call sites migrate away from the
+# misleading RiskEngine name.
+WSBRiskEngine = WSBVenueRiskPolicy

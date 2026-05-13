@@ -8,21 +8,29 @@ from decimal import Decimal
 
 import pytest
 
-from nautilus_trader.adapters.sxbet.risk_engine import SXBetRiskEngine
-from nautilus_trader.adapters.tenbet.risk_engine import TenBetRiskEngine
+from nautilus_trader.adapters.betting.risk_engine import (
+    BettingVenueRiskPolicy as ShimBettingVenueRiskPolicy,
+)
+from nautilus_trader.adapters.betting.venue_risk import BettingVenueRiskPolicy
+from nautilus_trader.adapters.sxbet.risk_engine import SXBetVenueRiskPolicy
+from nautilus_trader.adapters.tenbet.risk_engine import TenBetVenueRiskPolicy
 
 
-class TestSXBetRiskEngine:
+def test_betting_risk_engine_module_reexports_venue_policy():
+    assert ShimBettingVenueRiskPolicy is BettingVenueRiskPolicy
+
+
+class TestSXBetVenueRiskPolicy:
     """
-    Test SX.bet risk engine.
+    Test SX.bet venue risk policy.
     """
 
     @pytest.fixture
     def risk_engine(self):
         """
-        Create SX.bet risk engine.
+        Create SX.bet venue risk policy.
         """
-        return SXBetRiskEngine()
+        return SXBetVenueRiskPolicy()
 
     def test_minimum_stake_enforcement(self, risk_engine):
         """
@@ -45,6 +53,8 @@ class TestSXBetRiskEngine:
             currency="USDC",
         )
         assert eval_result.approved is True
+        assert eval_result.requires_platform_risk_engine is True
+        assert eval_result.venue_policy == "SXBET"
 
     def test_odds_limits(self, risk_engine):
         """
@@ -60,9 +70,9 @@ class TestSXBetRiskEngine:
         assert eval_result.approved is False
 
 
-class TestTenBetRiskEngine:
+class TestTenBetVenueRiskPolicy:
     """
-    Test 10bet risk engine.
+    Test 10bet venue risk policy.
     """
 
     @pytest.fixture
@@ -70,7 +80,7 @@ class TestTenBetRiskEngine:
         """
         Create 10bet risk engine with bonus.
         """
-        return TenBetRiskEngine(bonus_amount=Decimal(1000))
+        return TenBetVenueRiskPolicy(bonus_amount=Decimal(1000))
 
     def test_rollover_tracking(self, risk_engine):
         """

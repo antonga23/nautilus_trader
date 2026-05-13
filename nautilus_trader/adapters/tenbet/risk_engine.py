@@ -13,19 +13,19 @@
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
 """
-10bet risk engine.
+10bet venue risk policy.
 """
 
 from decimal import Decimal
 
-from nautilus_trader.adapters.betting.risk_engine import BettingVenueRiskPolicy
-from nautilus_trader.adapters.betting.risk_engine import OddsRequirementRule
-from nautilus_trader.adapters.betting.risk_engine import RiskEvaluation
-from nautilus_trader.adapters.betting.risk_engine import RolloverRule
-from nautilus_trader.adapters.betting.risk_engine import StakeLimitRule
+from nautilus_trader.adapters.betting.venue_risk import BettingVenueRiskPolicy
+from nautilus_trader.adapters.betting.venue_risk import OddsRequirementRule
+from nautilus_trader.adapters.betting.venue_risk import RiskEvaluation
+from nautilus_trader.adapters.betting.venue_risk import RolloverRule
+from nautilus_trader.adapters.betting.venue_risk import StakeLimitRule
 
 
-class TenBetRiskEngine(BettingVenueRiskPolicy):
+class TenBetVenueRiskPolicy(BettingVenueRiskPolicy):
     """
     Risk engine for 10bet venue.
 
@@ -130,6 +130,8 @@ class TenBetRiskEngine(BettingVenueRiskPolicy):
             approved=len(violations) == 0,
             violations=violations,
             warnings=warnings,
+            platform_risk_required=base_eval.platform_risk_required,
+            venue_policy=self.venue_name,
         )
 
     def update_rollover(self, stake: Decimal, odds: Decimal, market_type: str) -> None:
@@ -170,3 +172,8 @@ class TenBetRiskEngine(BettingVenueRiskPolicy):
                 else Decimal(100)
             ),
         }
+
+
+# Backward-compatible alias while adapter call sites migrate away from the
+# misleading RiskEngine name.
+TenBetRiskEngine = TenBetVenueRiskPolicy

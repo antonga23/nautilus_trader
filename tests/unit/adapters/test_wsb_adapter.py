@@ -8,7 +8,7 @@ from decimal import Decimal
 
 from nautilus_trader.adapters.wsb.constants import WSB_BASE_URL
 from nautilus_trader.adapters.wsb.constants import WSB_VENUE
-from nautilus_trader.adapters.wsb.risk_engine import WSBRiskEngine
+from nautilus_trader.adapters.wsb.risk_engine import WSBVenueRiskPolicy
 
 
 def test_wsb_constants():
@@ -17,7 +17,7 @@ def test_wsb_constants():
 
 
 def test_wsb_risk_engine_initialization():
-    engine = WSBRiskEngine()
+    engine = WSBVenueRiskPolicy()
 
     assert engine.venue_name == "WSB"
     assert engine._max_stake_zar == Decimal(1000)
