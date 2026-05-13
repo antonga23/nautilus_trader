@@ -1442,9 +1442,16 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         subscribed_by_venue = self._quote_subscription_counts_by_venue()
         subscribed_count = 0
 
-        candidate_instruments = sorted(
-            self._subscribed_instruments,
-            key=self._semantic_unmatched_quote_probe_priority,
+        candidate_instruments = list(self._subscribed_instruments)
+        alias_keys_by_instrument_id, alias_venues_by_key = (
+            self._semantic_unmatched_quote_probe_alias_index(candidate_instruments)
+        )
+        candidate_instruments.sort(
+            key=lambda instrument: self._semantic_unmatched_quote_probe_priority(
+                instrument,
+                alias_keys_by_instrument_id=alias_keys_by_instrument_id,
+                alias_venues_by_key=alias_venues_by_key,
+            ),
         )
         for instrument in candidate_instruments:
             venue = instrument.id.venue.value.upper()
@@ -1469,9 +1476,26 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             )
         return subscribed_count
 
+    def _semantic_unmatched_quote_probe_alias_index(
+        self,
+        instruments: list[BettingInstrument],
+    ) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+        alias_keys_by_instrument_id: dict[str, set[str]] = {}
+        alias_venues_by_key: dict[str, set[str]] = {}
+        for instrument in instruments:
+            aliases = self._instrument_event_alias_keys(instrument)
+            alias_keys_by_instrument_id[str(instrument.id)] = aliases
+            venue = instrument.id.venue.value.upper()
+            for alias in aliases:
+                alias_venues_by_key.setdefault(alias, set()).add(venue)
+        return alias_keys_by_instrument_id, alias_venues_by_key
+
     def _semantic_unmatched_quote_probe_priority(
         self,
         instrument: BettingInstrument,
+        *,
+        alias_keys_by_instrument_id: dict[str, set[str]] | None = None,
+        alias_venues_by_key: dict[str, set[str]] | None = None,
     ) -> tuple[int, int, int, str]:
         """
         Rank unmatched audit probes toward near-term cross-venue fixture evidence.
@@ -1482,9 +1506,19 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
 
         """
         venue = instrument.id.venue.value.upper()
-        aliases = self._instrument_event_alias_keys(instrument)
+        aliases = (
+            alias_keys_by_instrument_id.get(str(instrument.id), set())
+            if alias_keys_by_instrument_id is not None
+            else self._instrument_event_alias_keys(instrument)
+        )
         other_venue_alias_hit = 1
-        if aliases:
+        if aliases and alias_venues_by_key is not None:
+            for alias in aliases:
+                venues = alias_venues_by_key.get(alias, set())
+                if any(alias_venue != venue for alias_venue in venues):
+                    other_venue_alias_hit = 0
+                    break
+        elif aliases:
             for other in self._subscribed_instruments:
                 if other.id.venue.value.upper() == venue:
                     continue
