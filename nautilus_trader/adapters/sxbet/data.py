@@ -241,7 +241,11 @@ class SXBetDataClient(LiveMarketDataClient):
             return
 
         cycle_started_at = time.perf_counter()
-        results = await self._fetch_order_book_results(market_hashes)
+        cycle_started_ns = self._clock.timestamp_ns()
+        results = await self._fetch_order_book_results(
+            market_hashes,
+            cycle_started_ns=cycle_started_ns,
+        )
         quote_count = 0
         order_count = 0
         empty_count = 0
@@ -295,6 +299,7 @@ class SXBetDataClient(LiveMarketDataClient):
             rate_limit_count=rate_limit_count,
             backoff_secs=float(rate_limit_count),
             last_error=last_error,
+            quote_event_timestamp_source="poll_cycle_started",
         )
         self._log_poll_summary(
             market_count=len(market_hashes),
@@ -309,11 +314,15 @@ class SXBetDataClient(LiveMarketDataClient):
 
     async def _poll_best_odds_batches_once(self, market_hashes: set[str]) -> None:
         cycle_started_at = time.perf_counter()
+        cycle_started_ns = self._clock.timestamp_ns()
         market_hash_batches = [
             sorted(market_hashes)[start : start + self._best_odds_batch_size]
             for start in range(0, len(market_hashes), self._best_odds_batch_size)
         ]
-        results = await self._fetch_best_odds_batch_results(market_hash_batches)
+        results = await self._fetch_best_odds_batch_results(
+            market_hash_batches,
+            cycle_started_ns=cycle_started_ns,
+        )
         quote_count = 0
         order_count = 0
         empty_count = 0
@@ -366,6 +375,7 @@ class SXBetDataClient(LiveMarketDataClient):
             rate_limit_count=rate_limit_count,
             backoff_secs=float(rate_limit_count),
             last_error=last_error,
+            quote_event_timestamp_source="poll_cycle_started",
         )
         self._log_poll_summary(
             market_count=len(market_hashes),
@@ -389,6 +399,8 @@ class SXBetDataClient(LiveMarketDataClient):
     async def _fetch_order_book_results(
         self,
         market_hashes: set[str],
+        *,
+        cycle_started_ns: int | None = None,
     ) -> list[tuple[int, int, bool, bool, float, bool, bool, str | None]]:
         semaphore = asyncio.Semaphore(max(1, self._order_book_concurrency))
 
@@ -396,13 +408,18 @@ class SXBetDataClient(LiveMarketDataClient):
             market_hash: str,
         ) -> tuple[int, int, bool, bool, float, bool, bool, str | None]:
             async with semaphore:
-                return await self._fetch_and_publish_quote_stats(market_hash)
+                return await self._fetch_and_publish_quote_stats(
+                    market_hash,
+                    quote_event_ns=cycle_started_ns,
+                )
 
         return await asyncio.gather(*[_fetch(market_hash) for market_hash in sorted(market_hashes)])
 
     async def _fetch_best_odds_batch_results(
         self,
         market_hash_batches: list[list[str]],
+        *,
+        cycle_started_ns: int | None = None,
     ) -> list[tuple[int, int, int, int, int, float, bool, bool, str | None]]:
         semaphore = asyncio.Semaphore(max(1, self._order_book_concurrency))
 
@@ -410,7 +427,10 @@ class SXBetDataClient(LiveMarketDataClient):
             market_hash_batch: list[str],
         ) -> tuple[int, int, int, int, int, float, bool, bool, str | None]:
             async with semaphore:
-                return await self._fetch_and_publish_best_odds_batch_stats(market_hash_batch)
+                return await self._fetch_and_publish_best_odds_batch_stats(
+                    market_hash_batch,
+                    quote_event_ns=cycle_started_ns,
+                )
 
         return await asyncio.gather(*[_fetch(batch) for batch in market_hash_batches])
 
@@ -524,6 +544,7 @@ class SXBetDataClient(LiveMarketDataClient):
         backoff_secs: float = 0.0,
         last_error: str | None = None,
         next_poll_sleep_secs: float | None = None,
+        quote_event_timestamp_source: str = "request_started",
     ) -> None:
         self._quote_poll_cycle_id += 1
         work_unit_count = int(request_count if request_count is not None else market_count)
@@ -560,7 +581,7 @@ class SXBetDataClient(LiveMarketDataClient):
                 min_concurrency=self._order_book_min_concurrency,
                 max_concurrency=self._order_book_max_concurrency,
                 adaptive_concurrency=self._order_book_adaptive_concurrency,
-                quote_event_timestamp_source="request_started",
+                quote_event_timestamp_source=quote_event_timestamp_source,
                 quote_init_timestamp_source="response_received",
                 failure_count=failure_count,
                 rate_limit_count=rate_limit_count,
@@ -572,6 +593,8 @@ class SXBetDataClient(LiveMarketDataClient):
     async def _fetch_and_publish_best_odds_batch_stats(
         self,
         market_hashes: list[str],
+        *,
+        quote_event_ns: int | None = None,
     ) -> tuple[int, int, int, int, int, float, bool, bool, str | None]:
         started_at = time.perf_counter()
         request_started_ns = self._clock.timestamp_ns()
@@ -607,7 +630,7 @@ class SXBetDataClient(LiveMarketDataClient):
                     quote = self._build_best_odds_quote(
                         instrument,
                         entry,
-                        request_started_ns=request_started_ns,
+                        request_started_ns=quote_event_ns or request_started_ns,
                         response_received_ns=response_received_ns,
                     )
                     if quote is None:
@@ -746,6 +769,8 @@ class SXBetDataClient(LiveMarketDataClient):
     async def _fetch_and_publish_quote_stats(
         self,
         market_hash: str,
+        *,
+        quote_event_ns: int | None = None,
     ) -> tuple[int, int, bool, bool, float, bool, bool, str | None]:
         """
         Fetch and publish quotes for a market with liquidity statistics.
@@ -785,7 +810,7 @@ class SXBetDataClient(LiveMarketDataClient):
                     ask_price=Price(best_ask, precision=2),
                     bid_size=Quantity.from_int(100) if best_bid > 0 else Quantity.zero(),
                     ask_size=Quantity.from_int(100) if best_ask > 0 else Quantity.zero(),
-                    ts_event=request_started_ns,
+                    ts_event=quote_event_ns or request_started_ns,
                     ts_init=response_received_ns,
                 )
                 self._handle_data(quote)

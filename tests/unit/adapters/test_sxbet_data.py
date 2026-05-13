@@ -38,13 +38,14 @@ EXPECTED_ONE_SIDED_ODDS = 2.0
 
 def _make_instrument(
     *,
+    event_id: str = "fixture-1",
     market_hash: str = "market-1",
     outcome: str = "home",
     outcome_one: bool = True,
 ) -> CryptoBettingInstrument:
     return CryptoBettingInstrument(
         venue=Venue("SXBET"),
-        event_id="fixture-1",
+        event_id=event_id,
         event_name="Team A vs Team B",
         home_name="Team A",
         away_name="Team B",
@@ -315,15 +316,36 @@ async def test_poll_order_books_once_records_provider_poll_stats():
 async def test_poll_order_books_once_can_use_batched_best_odds_for_live_latency():
     instrument_one = _make_instrument(outcome="home", outcome_one=True)
     instrument_two = _make_instrument(outcome="away", outcome_one=False)
+    instrument_three = _make_instrument(
+        event_id="fixture-2",
+        market_hash="market-2",
+        outcome="home",
+        outcome_one=True,
+    )
+    instrument_four = _make_instrument(
+        event_id="fixture-2",
+        market_hash="market-2",
+        outcome="away",
+        outcome_one=False,
+    )
 
     http_client = Mock()
     http_client.get_order_book = AsyncMock()
-    http_client.get_best_odds = AsyncMock(
-        return_value={
+
+    async def get_best_odds(
+        *,
+        market_hashes: list[str],
+        base_token: str,
+        log_api_error: bool,
+    ) -> dict[str, dict[str, list[dict[str, object]]]]:
+        assert base_token == SXBET_TOKENS["USDC"]
+        assert log_api_error is False
+        market_hash = market_hashes[0]
+        return {
             "data": {
                 "bestOdds": [
                     {
-                        "marketHash": "market-1",
+                        "marketHash": market_hash,
                         "outcomeOne": {
                             "percentageOdds": str(decimal_odds_to_percentage(2.0)),
                         },
@@ -333,15 +355,22 @@ async def test_poll_order_books_once_can_use_batched_best_odds_for_live_latency(
                     },
                 ],
             },
-        },
-    )
+        }
+
+    http_client.get_best_odds = AsyncMock(side_effect=get_best_odds)
     instrument_provider = _make_provider()
     instruments_by_id = {
         instrument_one.id: instrument_one,
         instrument_two.id: instrument_two,
+        instrument_three.id: instrument_three,
+        instrument_four.id: instrument_four,
+    }
+    instruments_by_market = {
+        "market-1": [instrument_one, instrument_two],
+        "market-2": [instrument_three, instrument_four],
     }
     instrument_provider.find = Mock(side_effect=instruments_by_id.get)
-    instrument_provider.find_by_market_hash = Mock(return_value=[instrument_one, instrument_two])
+    instrument_provider.find_by_market_hash = Mock(side_effect=instruments_by_market.get)
     cache = TestComponentStubs.cache()
     client = SXBetDataClient(
         loop=get_event_loop(),
@@ -354,38 +383,44 @@ async def test_poll_order_books_once_can_use_batched_best_odds_for_live_latency(
         config=SXBetDataClientConfig(
             order_book_concurrency=4,
             order_book_poll_mode="best_odds_batch",
-            order_book_best_odds_batch_size=30,
+            order_book_best_odds_batch_size=1,
             order_book_min_concurrency=2,
             order_book_max_concurrency=8,
             order_book_target_cycle_secs=3.0,
             order_book_adaptive_concurrency=True,
         ),
     )
-    client._subscribed_instruments = {instrument_one.id, instrument_two.id}
+    client._subscribed_instruments = {
+        instrument_one.id,
+        instrument_two.id,
+        instrument_three.id,
+        instrument_four.id,
+    }
     client._handle_data = Mock()
 
     await client._poll_order_books_once()
 
     http_client.get_order_book.assert_not_awaited()
-    http_client.get_best_odds.assert_awaited_once_with(
-        market_hashes=["market-1"],
-        base_token=SXBET_TOKENS["USDC"],
-        log_api_error=False,
-    )
+    assert http_client.get_best_odds.await_count == 2
     stats = decode_venue_quote_poll_stats(cache.get(venue_quote_poll_stats_key("SXBET")))
     assert stats is not None
     assert stats.source == "rest_best_odds_batch"
-    assert stats.market_count == 1
-    assert stats.request_count == 1
+    assert stats.market_count == 2
+    assert stats.request_count == 2
     assert stats.backlog_count == 0
     assert stats.min_concurrency == 2
     assert stats.max_concurrency == 8
     assert stats.poll_target_cycle_secs == 3.0
     assert stats.adaptive_concurrency is True
-    assert stats.quote_count == 2
+    assert stats.quote_event_timestamp_source == "poll_cycle_started"
+    assert stats.quote_init_timestamp_source == "response_received"
+    assert stats.quote_count == 4
     assert stats.order_count == 0
-    assert stats.two_sided_market_count == 1
-    assert client._handle_data.call_count == 2
+    assert stats.two_sided_market_count == 2
+    assert client._handle_data.call_count == 4
+    quotes = [call.args[0] for call in client._handle_data.call_args_list]
+    assert len({quote.ts_event for quote in quotes}) == 1
+    assert all(quote.ts_init >= quote.ts_event for quote in quotes)
 
 
 def test_adaptive_poll_sleep_removes_dead_time_and_raises_slow_concurrency():
