@@ -147,6 +147,20 @@ class PolymarketSportsTransformer:
     def _canonical_sport(cls, raw_sport: str | None) -> str | None:
         return cls.canonical_sport(raw_sport)
 
+    @staticmethod
+    def _fixture_start_time(original: dict[str, Any], event: dict[str, Any]) -> str:
+        for value in (
+            original.get("startDateIso"),
+            original.get("startDate"),
+            original.get("gameStartTime"),
+            event.get("startDateIso"),
+            event.get("startDate"),
+            event.get("gameStartTime"),
+        ):
+            if value not in (None, ""):
+                return str(value)
+        return ""
+
     @classmethod
     def _infer_sports_market(  # noqa: C901
         cls,
@@ -262,7 +276,7 @@ class PolymarketSportsTransformer:
             "event_name": event_title or question,
             "competition_name": event_title or "Polymarket Sports",
             "event_id": str(info.get("condition_id") or instrument.id.symbol.value),
-            "start_time": str(event.get("startDateIso") or event.get("startDate") or ""),
+            "start_time": cls._fixture_start_time(original, event),
             "params": params,
             "resolution_policy": cls._resolution_policy(
                 question,
@@ -317,7 +331,7 @@ class PolymarketSportsTransformer:
             "event_name": event_title or str(original.get("title") or question),
             "competition_name": event_title or "Polymarket Sports Futures",
             "event_id": str(event.get("id") or event.get("slug") or info.get("condition_id") or ""),
-            "start_time": str(event.get("startDateIso") or event.get("startDate") or ""),
+            "start_time": cls._fixture_start_time(original, event),
             "params": {"subject": subject},
             "resolution_policy": cls._resolution_policy(
                 question,

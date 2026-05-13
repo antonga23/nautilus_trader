@@ -1071,6 +1071,60 @@ class TestBettingArbitrageNodeBuilder:
         assert any(call["filters"]["tag_id"] == "864" for call in list_calls)
         assert all(call["filters"]["order"] == "volume24hr" for call in list_calls)
 
+    def test_polymarket_tag_market_discovery_preserves_event_start_date_iso(self, monkeypatch):
+        class Clock:
+            @staticmethod
+            def timestamp_ns() -> int:
+                return 123
+
+        provider = polymarket_providers.PolymarketInstrumentProvider(
+            client=Mock(),
+            clock=Clock(),
+            config=InstrumentProviderConfig(),
+        )
+
+        async def fake_gamma_get_json(endpoint, params=None):
+            assert endpoint == "/sports"
+            return [{"sport": "atp", "tags": "1,864,100639,101232"}]
+
+        async def fake_list_markets(*, http_client, filters, max_results=None, **kwargs):
+            del http_client, filters, max_results, kwargs
+            return [
+                {
+                    "id": "market-iso",
+                    "conditionId": "condition-iso",
+                    "question": "Internazionali BNL d'Italia: Frances Tiafoe vs Ignacio Buse",
+                    "slug": "atp-tiafoe-buse-2026-05-13",
+                    "active": True,
+                    "closed": False,
+                    "archived": False,
+                    "outcomes": '["Yes", "No"]',
+                    "outcomePrices": '["0.38", "0.62"]',
+                    "clobTokenIds": '["yes-token", "no-token"]',
+                    "events": [
+                        {
+                            "title": "Frances Tiafoe vs Ignacio Buse",
+                            "slug": "tiafoe-buse",
+                            "startDateIso": "2026-05-13T19:00:00Z",
+                        },
+                    ],
+                },
+            ]
+
+        provider._gamma_get_json = fake_gamma_get_json
+        monkeypatch.setattr(polymarket_providers, "list_markets", fake_list_markets)
+
+        markets = asyncio.run(
+            provider._load_sport_tag_markets_using_gamma(
+                filters={"is_active": True},
+                sports_filter={"tennis"},
+                max_results=4,
+            ),
+        )
+
+        assert len(markets) == 1
+        assert markets[0]["events"][0]["startDateIso"] == "2026-05-13T19:00:00Z"
+
     def test_polymarket_gamma_discovery_prioritizes_event_markets_before_tags(self):
         class Clock:
             @staticmethod

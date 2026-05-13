@@ -878,6 +878,45 @@ def test_polymarket_transform_strips_market_suffix_from_fixture_name():
     assert transformed.away_name == "Leeds United FC"
 
 
+def test_polymarket_transform_prefers_market_start_time_over_stale_event_time():
+    info = {
+        "condition_id": "0xtiafoe-buse",
+        "question": "Internazionali BNL d'Italia: Frances Tiafoe vs Ignacio Buse",
+        "tokens": [
+            {"token_id": "tiafoe-token", "outcome": "Frances Tiafoe", "price": 0.62},
+            {"token_id": "buse-token", "outcome": "Ignacio Buse", "price": 0.38},
+        ],
+        "selected_token_id": "tiafoe-token",
+        "selected_outcome": "Frances Tiafoe",
+        "_gamma_original": {
+            "sport": "atp",
+            "startDateIso": "2026-05-13T19:00:00Z",
+            "description": "This market resolves to the match winner.",
+            "events": [
+                {
+                    "title": "Frances Tiafoe vs Ignacio Buse",
+                    "sport": "tennis",
+                    "startDateIso": "2026-03-08T06:09:18.793534Z",
+                },
+            ],
+        },
+    }
+
+    transformed = PolymarketSportsTransformer.to_crypto_betting_instrument(
+        polymarket_binary_option(
+            symbol="tiafoe-token",
+            outcome="Frances Tiafoe",
+            question=info["question"],
+            info=info,
+        ),
+    )
+
+    assert transformed is not None
+    assert transformed.start_time == "2026-05-13T19:00:00Z"
+    normalized = MarketNormalizer().normalize(transformed)
+    assert normalized.event_key == "tennis|frances_tiafoe|ignacio_buse|2026-05-13T19:00:00Z"
+
+
 def test_polymarket_spread_token_outcomes_map_to_team_roles():
     info = {
         "condition_id": "0xsoccer-spread",
@@ -1314,6 +1353,56 @@ def test_polymarket_corpus_persists_gamma_fixture_markets_through_real_parser():
     }
     assert market_names == {"basketball.winner"}
     assert {record.selection.selection for record in records} == {"HOME", "AWAY"}
+
+
+def test_polymarket_corpus_uses_market_start_time_when_event_time_is_stale():
+    from nautilus_trader.adapters.polymarket.common.gamma_markets import (
+        normalize_gamma_market_to_clob_format,
+    )
+    from nautilus_trader.adapters.polymarket.common.parsing import parse_polymarket_instrument
+
+    ingestor = SnapshotIngestor(RuleStore(DictCache()))
+    market = {
+        "id": "gamma-market-stale-event",
+        "conditionId": "conditiontennis1",
+        "questionID": "questiontennis1",
+        "question": "Internazionali BNL d'Italia: Frances Tiafoe vs Ignacio Buse",
+        "description": "This market resolves to the match winner.",
+        "slug": "tiafoe-buse",
+        "sport": "atp",
+        "sportsTag": "atp",
+        "clobTokenIds": json.dumps(["yes", "no"]),
+        "outcomes": json.dumps(["Yes", "No"]),
+        "outcomePrices": json.dumps(["0.38", "0.62"]),
+        "active": True,
+        "closed": False,
+        "archived": False,
+        "startDateIso": "2026-05-13T19:00:00Z",
+        "endDateIso": "2026-05-13T23:00:00Z",
+        "orderPriceMinTickSize": "0.001",
+        "orderMinSize": 5,
+        "events": [
+            {
+                "id": "event-tennis-stale",
+                "title": "Frances Tiafoe vs Ignacio Buse",
+                "slug": "frances-tiafoe-vs-ignacio-buse",
+                "sport": "tennis",
+                "startDateIso": "2026-03-08T06:09:18.793534Z",
+            },
+        ],
+    }
+
+    records, sports, event_keys, market_names = ingestor._polymarket_normalized_records(
+        discovered_markets={"gamma-market-stale-event": market},
+        normalize_gamma_market_to_clob_format=normalize_gamma_market_to_clob_format,
+        parse_polymarket_instrument=parse_polymarket_instrument,
+        transformer=PolymarketSportsTransformer,
+    )
+
+    assert len(records) == 2
+    assert sports == {"tennis"}
+    assert event_keys == {"tennis|frances_tiafoe|ignacio_buse|2026-05-13T19:00:00Z"}
+    assert market_names == {"tennis.winner_binary"}
 
 
 def test_polymarket_team_future_preserves_subject_specific_yes_no_states():

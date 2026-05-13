@@ -1235,7 +1235,7 @@ class SnapshotIngestor:
                         "title": event.get("title"),
                         "slug": event.get("slug"),
                         "startDate": event.get("startDate"),
-                        "startDateIso": event.get("startDate"),
+                        "startDateIso": event.get("startDateIso") or event.get("startDate"),
                         "endDate": event.get("endDate"),
                         "sport": canonical_sport,
                     },
