@@ -1381,6 +1381,7 @@ class TestBettingArbitrageNodeBuilder:
             "SXBET",
         ]
         assert config.strategies[0].config["quote_freshness_profile"] == "pre_match"
+        assert config.strategies[0].config["max_resolution_horizon_hours"] == 48.0
         assert config.strategies[0].config["semantic_unmatched_quote_probe_venues"] == [
             "POLYMARKET",
         ]
@@ -1418,6 +1419,7 @@ class TestBettingArbitrageNodeBuilder:
             "is_active": True,
             "limit": 80,
             "max_results": 80,
+            "max_resolution_horizon_hours": 48.0,
             "sports": [
                 "american_football",
                 "baseball",
