@@ -525,7 +525,8 @@ class MarketMatcher:
             allow_start_time_conflicts=True,
         )
         return (
-            self._fixture_cluster_count(bucket_a) == 1 and self._fixture_cluster_count(bucket_b) == 1
+            self._fixture_cluster_count(bucket_a) == 1
+            and self._fixture_cluster_count(bucket_b) == 1
         )
 
     def _fixture_bucket_for_pair(
