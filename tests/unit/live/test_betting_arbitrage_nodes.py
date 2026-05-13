@@ -3475,6 +3475,61 @@ class TestBettingArbitrageNodeRunner:
         assert "soccer:leeds united:tottenham hotspur" in report["samples"][0]["eventAliasKeysA"]
         assert "soccer:leeds united:tottenham hotspur" in report["samples"][0]["eventAliasKeysB"]
 
+    def test_venue_pair_coverage_allows_cross_venue_short_start_time_drift(self):
+        polymarket_instrument = _instrument(
+            venue="POLYMARKET",
+            market_type="moneyline_2way",
+            outcome="no",
+            event_id="poly-felix-navone",
+            event_name="Felix Auger-Aliassime vs Mariano Navone",
+            home_name="Felix Auger-Aliassime",
+            away_name="Mariano Navone",
+            sport_name="tennis",
+            start_time="2026-03-13T18:00:00Z",
+        )
+        sxbet_instrument = _instrument(
+            venue="SXBET",
+            market_type="match_odds",
+            outcome="home",
+            event_id="sxbet-felix-navone",
+            event_name="Felix Auger Aliassime vs Mariano Navone",
+            home_name="Felix Auger Aliassime",
+            away_name="Mariano Navone",
+            sport_name="tennis",
+            start_time="2026-03-13T22:00:00Z",
+        )
+        strategy = SimpleNamespace(
+            _config=SimpleNamespace(enabled_venues=frozenset({"POLYMARKET", "SXBET"})),
+            _quote_subscribed_instrument_ids={polymarket_instrument.id, sxbet_instrument.id},
+        )
+
+        coverage = node_runner._venue_pair_coverage(
+            strategy,
+            edges=[],
+            nodes={
+                "poly-node": SimpleNamespace(instrument=polymarket_instrument),
+                "sxbet-node": SimpleNamespace(instrument=sxbet_instrument),
+            },
+            quotes={"poly-node": object(), "sxbet-node": object()},
+            matched_node_ids=set(),
+            candidate_venue_pairs={},
+        )
+
+        report = {item["venuePair"]: item for item in coverage["zeroCandidateVenuePairs"]}[
+            "POLYMARKET->SXBET"
+        ]
+        assert report["commonEventKeyCount"] >= 1
+        assert report["fullyQuotedCommonEventKeyCount"] >= 1
+        assert report["verifiedCommonFixtureSampleCount"] >= 1
+        assert report["fixtureProofBlockerCounts"] == {}
+        assert coverage["zeroCandidateFixtureProofBlockerCounts"] == {}
+        assert report["blockerReason"] == "no_semantic_edge"
+        assert report["samples"][0]["fixtureIdentityProof"]["sameFixture"] is True
+        assert (
+            report["samples"][0]["fixtureIdentityProof"]["reason"]
+            == "canonical_fixture_match_start_time_conflict"
+        )
+
     def test_venue_pair_coverage_uses_fixture_aliases_for_noisy_polymarket_names(self):
         polymarket_instrument = _instrument(
             venue="POLYMARKET",

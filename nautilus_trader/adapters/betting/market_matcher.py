@@ -394,6 +394,26 @@ class MarketMatcher:
     ) -> HedgeEventMatchDecision:
         proof = self._fixture_identity_resolver.resolve(instrument, candidate)
         same_venue = instrument.venue_name == candidate.venue_name
+        if (
+            not same_venue
+            and proof.same_fixture
+            and proof.reason == "canonical_fixture_match_start_time_conflict"
+        ):
+            unique_conflict = self._is_cross_venue_unique_start_time_conflict(
+                instrument,
+                candidate,
+                candidates,
+            )
+            return HedgeEventMatchDecision(
+                matched=unique_conflict,
+                reason=(
+                    "cross_venue_unique_start_time_conflict"
+                    if unique_conflict
+                    else "ambiguous_start_time_conflict"
+                ),
+                proof=proof,
+                same_venue=False,
+            )
         if not proof.same_fixture:
             if not same_venue and proof.blocker_reason == "start_time_mismatch":
                 unique_conflict = self._is_cross_venue_unique_start_time_conflict(
@@ -484,6 +504,13 @@ class MarketMatcher:
     ) -> bool:
         if proof.ambiguous or proof.confidence < 0.72:
             return False
+
+        if proof.reason == "canonical_fixture_match_start_time_conflict":
+            return self._is_cross_venue_unique_start_time_conflict(
+                instrument,
+                candidate,
+                candidates,
+            )
 
         if instrument.parsed_start_time() is not None and candidate.parsed_start_time() is not None:
             return True
