@@ -106,6 +106,18 @@ class HedgeCandidate:
     promotion_status: str = PromotionStatus.CANDIDATE.value
 
 
+@dataclass(frozen=True)
+class HedgeEventMatchDecision:
+    """
+    Fixture identity decision used before semantic hedge classification.
+    """
+
+    matched: bool
+    reason: str
+    proof: FixtureIdentityProof
+    same_venue: bool
+
+
 class MarketMatcher:
     """
     Finds hedging opportunities across selections and venues.
@@ -352,20 +364,115 @@ class MarketMatcher:
         candidate: CryptoBettingInstrument,
         candidates: list[CryptoBettingInstrument],
     ) -> bool:
+        return self._hedge_event_match_decision(instrument, candidate, candidates).matched
+
+    def explain_hedge_event_match(
+        self,
+        instrument: CryptoBettingInstrument,
+        candidate: CryptoBettingInstrument,
+        candidates: list[CryptoBettingInstrument] | None = None,
+    ) -> dict[str, object]:
+        decision = self._hedge_event_match_decision(instrument, candidate, candidates or [])
+        return {
+            "matched": decision.matched,
+            "reason": decision.reason,
+            "sameVenue": decision.same_venue,
+            "sameFixture": decision.proof.same_fixture,
+            "confidence": decision.proof.confidence,
+            "ambiguous": decision.proof.ambiguous,
+            "blockerReason": decision.proof.blocker_reason,
+            "aliasHits": list(decision.proof.alias_hits),
+            "matchedFields": list(decision.proof.matched_fields),
+            "startTimeDeltaSeconds": decision.proof.start_time_delta_secs,
+        }
+
+    def _hedge_event_match_decision(
+        self,
+        instrument: CryptoBettingInstrument,
+        candidate: CryptoBettingInstrument,
+        candidates: list[CryptoBettingInstrument],
+    ) -> HedgeEventMatchDecision:
         proof = self._fixture_identity_resolver.resolve(instrument, candidate)
+        same_venue = instrument.venue_name == candidate.venue_name
         if not proof.same_fixture:
-            return False
+            if not same_venue and proof.blocker_reason == "start_time_mismatch":
+                unique_conflict = self._is_cross_venue_unique_start_time_conflict(
+                    instrument,
+                    candidate,
+                    candidates,
+                )
+                return HedgeEventMatchDecision(
+                    matched=unique_conflict,
+                    reason=(
+                        "cross_venue_unique_start_time_conflict"
+                        if unique_conflict
+                        else "ambiguous_start_time_conflict"
+                    ),
+                    proof=proof,
+                    same_venue=False,
+                )
+            return HedgeEventMatchDecision(
+                matched=False,
+                reason=proof.blocker_reason or proof.reason or "fixture_identity_mismatch",
+                proof=proof,
+                same_venue=same_venue,
+            )
 
-        if instrument.venue_name == candidate.venue_name:
+        if same_venue:
             if instrument.event_id == candidate.event_id:
-                return True
-            return self.is_trusted_same_venue_event_id_mismatch(instrument, candidate)
+                return HedgeEventMatchDecision(
+                    matched=True,
+                    reason="same_venue_event_id_match",
+                    proof=proof,
+                    same_venue=True,
+                )
+            trusted = self.is_trusted_same_venue_event_id_mismatch(instrument, candidate)
+            return HedgeEventMatchDecision(
+                matched=trusted,
+                reason=(
+                    "trusted_same_venue_event_id_mismatch"
+                    if trusted
+                    else "same_venue_event_id_mismatch"
+                ),
+                proof=proof,
+                same_venue=True,
+            )
 
-        return self._is_cross_venue_fixture_proof_safe(
-            proof,
+        if proof.ambiguous:
+            return HedgeEventMatchDecision(
+                matched=False,
+                reason="ambiguous_fixture",
+                proof=proof,
+                same_venue=False,
+            )
+        if proof.confidence < 0.72:
+            return HedgeEventMatchDecision(
+                matched=False,
+                reason="low_fixture_confidence",
+                proof=proof,
+                same_venue=False,
+            )
+        if instrument.parsed_start_time() is not None and candidate.parsed_start_time() is not None:
+            return HedgeEventMatchDecision(
+                matched=True,
+                reason="cross_venue_fixture_proof",
+                proof=proof,
+                same_venue=False,
+            )
+        ambiguous_missing_time = self._has_ambiguous_missing_fixture_evidence(
             instrument,
             candidate,
             candidates,
+        )
+        return HedgeEventMatchDecision(
+            matched=not ambiguous_missing_time,
+            reason=(
+                "ambiguous_missing_start_time"
+                if ambiguous_missing_time
+                else "cross_venue_unique_missing_start_time"
+            ),
+            proof=proof,
+            same_venue=False,
         )
 
     def _is_cross_venue_fixture_proof_safe(
@@ -399,18 +506,48 @@ class MarketMatcher:
             self._fixture_cluster_count(bucket_a) != 1 or self._fixture_cluster_count(bucket_b) != 1
         )
 
+    def _is_cross_venue_unique_start_time_conflict(
+        self,
+        instrument_a: CryptoBettingInstrument,
+        instrument_b: CryptoBettingInstrument,
+        candidates: list[CryptoBettingInstrument],
+    ) -> bool:
+        bucket_a = self._fixture_bucket_for_pair(
+            instrument_a,
+            instrument_b,
+            candidates,
+            allow_start_time_conflicts=True,
+        )
+        bucket_b = self._fixture_bucket_for_pair(
+            instrument_b,
+            instrument_a,
+            candidates,
+            allow_start_time_conflicts=True,
+        )
+        return (
+            self._fixture_cluster_count(bucket_a) == 1
+            and self._fixture_cluster_count(bucket_b) == 1
+        )
+
     def _fixture_bucket_for_pair(
         self,
         source: CryptoBettingInstrument,
         target: CryptoBettingInstrument,
         candidates: list[CryptoBettingInstrument],
+        *,
+        allow_start_time_conflicts: bool = False,
     ) -> list[CryptoBettingInstrument]:
         bucket: list[CryptoBettingInstrument] = []
         for item in [source, *candidates]:
             if item.venue_name != source.venue_name:
                 continue
             proof = self._fixture_identity_resolver.resolve(item, target)
-            if proof.same_fixture:
+            if proof.same_fixture or (
+                allow_start_time_conflicts
+                and proof.blocker_reason == "start_time_mismatch"
+                and proof.canonical_event_key_a
+                and proof.canonical_event_key_a == proof.canonical_event_key_b
+            ):
                 bucket.append(item)
         return bucket
 
