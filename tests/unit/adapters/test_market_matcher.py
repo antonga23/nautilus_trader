@@ -925,6 +925,119 @@ class TestMarketMatcher:
 
         assert len(hedges) == 1
 
+    def test_find_hedges_allows_unique_cross_venue_start_time_conflict(
+        self,
+        market_matcher,
+    ):
+        cloudbet = CryptoBettingInstrument(
+            venue=Venue("CLOUDBET"),
+            event_id="event-1",
+            event_name="Minnesota Timberwolves vs San Antonio Spurs",
+            home_name="Minnesota Timberwolves",
+            away_name="San Antonio Spurs",
+            sport_name="basketball",
+            competition_name="NBA",
+            market_name="Match Odds",
+            market_type="match_odds",
+            outcome="home",
+            side=SelectionSide.BACK,
+            price=2.0,
+            currency=Currency.from_str("USDT"),
+            start_time="2026-03-13T10:00:00Z",
+            info={"is_two_way_market": True},
+        )
+        sxbet = CryptoBettingInstrument(
+            venue=Venue("SXBET"),
+            event_id="event-2",
+            event_name="MIN Timberwolves v SA Spurs",
+            home_name="MIN Timberwolves",
+            away_name="SA Spurs",
+            sport_name="basketball",
+            competition_name="NBA",
+            market_name="Match Odds",
+            market_type="match_odds",
+            outcome="away",
+            side=SelectionSide.BACK,
+            price=2.0,
+            currency=Currency.from_str("USDT"),
+            start_time="2026-03-13T14:00:00Z",
+            info={"is_two_way_market": True},
+        )
+
+        hedges = market_matcher.find_hedges(sxbet, [cloudbet])
+
+        assert len(hedges) == 1
+        diagnostics = market_matcher.explain_hedge_event_match(sxbet, cloudbet, [])
+        assert diagnostics["matched"] is True
+        assert diagnostics["reason"] == "cross_venue_unique_start_time_conflict"
+
+    def test_find_hedges_rejects_ambiguous_cross_venue_start_time_conflict(
+        self,
+        market_matcher,
+    ):
+        cloudbet_early = CryptoBettingInstrument(
+            venue=Venue("CLOUDBET"),
+            event_id="event-1",
+            event_name="Minnesota Timberwolves vs San Antonio Spurs",
+            home_name="Minnesota Timberwolves",
+            away_name="San Antonio Spurs",
+            sport_name="basketball",
+            competition_name="NBA",
+            market_name="Match Odds",
+            market_type="match_odds",
+            outcome="home",
+            side=SelectionSide.BACK,
+            price=2.0,
+            currency=Currency.from_str("USDT"),
+            start_time="2026-03-13T10:00:00Z",
+            info={"is_two_way_market": True},
+        )
+        cloudbet_late = CryptoBettingInstrument(
+            venue=Venue("CLOUDBET"),
+            event_id="event-2",
+            event_name="Minnesota Timberwolves vs San Antonio Spurs",
+            home_name="Minnesota Timberwolves",
+            away_name="San Antonio Spurs",
+            sport_name="basketball",
+            competition_name="NBA",
+            market_name="Match Odds",
+            market_type="match_odds",
+            outcome="home",
+            side=SelectionSide.BACK,
+            price=2.0,
+            currency=Currency.from_str("USDT"),
+            start_time="2026-03-13T18:00:00Z",
+            info={"is_two_way_market": True},
+        )
+        sxbet = CryptoBettingInstrument(
+            venue=Venue("SXBET"),
+            event_id="event-3",
+            event_name="MIN Timberwolves v SA Spurs",
+            home_name="MIN Timberwolves",
+            away_name="SA Spurs",
+            sport_name="basketball",
+            competition_name="NBA",
+            market_name="Match Odds",
+            market_type="match_odds",
+            outcome="away",
+            side=SelectionSide.BACK,
+            price=2.0,
+            currency=Currency.from_str("USDT"),
+            start_time="2026-03-13T14:00:00Z",
+            info={"is_two_way_market": True},
+        )
+
+        hedges = market_matcher.find_hedges(sxbet, [cloudbet_early, cloudbet_late])
+
+        assert hedges == []
+        diagnostics = market_matcher.explain_hedge_event_match(
+            sxbet,
+            cloudbet_early,
+            [cloudbet_late],
+        )
+        assert diagnostics["matched"] is False
+        assert diagnostics["reason"] == "ambiguous_start_time_conflict"
+
     def test_crypto_betting_instrument_min_price_is_not_snapshot_floor(self, sample_instrument_a):
         """
         Test betting instruments do not use the initial odds snapshot as min_price.

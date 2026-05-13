@@ -395,6 +395,22 @@ class MarketMatcher:
         proof = self._fixture_identity_resolver.resolve(instrument, candidate)
         same_venue = instrument.venue_name == candidate.venue_name
         if not proof.same_fixture:
+            if not same_venue and proof.blocker_reason == "start_time_mismatch":
+                unique_conflict = self._is_cross_venue_unique_start_time_conflict(
+                    instrument,
+                    candidate,
+                    candidates,
+                )
+                return HedgeEventMatchDecision(
+                    matched=unique_conflict,
+                    reason=(
+                        "cross_venue_unique_start_time_conflict"
+                        if unique_conflict
+                        else "ambiguous_start_time_conflict"
+                    ),
+                    proof=proof,
+                    same_venue=False,
+                )
             return HedgeEventMatchDecision(
                 matched=False,
                 reason=proof.blocker_reason or proof.reason or "fixture_identity_mismatch",
@@ -490,18 +506,47 @@ class MarketMatcher:
             self._fixture_cluster_count(bucket_a) != 1 or self._fixture_cluster_count(bucket_b) != 1
         )
 
+    def _is_cross_venue_unique_start_time_conflict(
+        self,
+        instrument_a: CryptoBettingInstrument,
+        instrument_b: CryptoBettingInstrument,
+        candidates: list[CryptoBettingInstrument],
+    ) -> bool:
+        bucket_a = self._fixture_bucket_for_pair(
+            instrument_a,
+            instrument_b,
+            candidates,
+            allow_start_time_conflicts=True,
+        )
+        bucket_b = self._fixture_bucket_for_pair(
+            instrument_b,
+            instrument_a,
+            candidates,
+            allow_start_time_conflicts=True,
+        )
+        return (
+            self._fixture_cluster_count(bucket_a) == 1 and self._fixture_cluster_count(bucket_b) == 1
+        )
+
     def _fixture_bucket_for_pair(
         self,
         source: CryptoBettingInstrument,
         target: CryptoBettingInstrument,
         candidates: list[CryptoBettingInstrument],
+        *,
+        allow_start_time_conflicts: bool = False,
     ) -> list[CryptoBettingInstrument]:
         bucket: list[CryptoBettingInstrument] = []
         for item in [source, *candidates]:
             if item.venue_name != source.venue_name:
                 continue
             proof = self._fixture_identity_resolver.resolve(item, target)
-            if proof.same_fixture:
+            if proof.same_fixture or (
+                allow_start_time_conflicts
+                and proof.blocker_reason == "start_time_mismatch"
+                and proof.canonical_event_key_a
+                and proof.canonical_event_key_a == proof.canonical_event_key_b
+            ):
                 bucket.append(item)
         return bucket
 
