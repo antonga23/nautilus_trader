@@ -116,7 +116,7 @@ def test_fixture_identity_blocks_ambiguous_cross_sport_match():
     assert proof.blocker_reason == "sport_mismatch"
 
 
-def test_fixture_identity_blocks_same_teams_when_start_times_are_far_apart():
+def test_fixture_identity_allows_cross_venue_start_time_drift_when_participants_are_strong():
     resolver = FixtureIdentityResolver()
     first = _instrument(
         venue="CLOUDBET",
@@ -127,7 +127,32 @@ def test_fixture_identity_blocks_same_teams_when_start_times_are_far_apart():
     )
     second = _instrument(
         venue="SXBET",
+        event_name="Cleveland Bears v Minnesota Wolves - rescheduled",
+        home_name="Cleveland Bears",
+        away_name="Minnesota Wolves",
+        start_time="2026-05-10T16:00:00Z",
+    )
+
+    proof = resolver.resolve(first, second)
+
+    assert proof.same_fixture is True
+    assert proof.reason == "canonical_fixture_match_start_time_conflict"
+    assert proof.blocker_reason is None
+    assert proof.start_time_delta_secs == 4 * 60 * 60
+
+
+def test_fixture_identity_keeps_same_venue_start_time_drift_strict():
+    resolver = FixtureIdentityResolver()
+    first = _instrument(
+        venue="SXBET",
         event_name="Cleveland Bears v Minnesota Wolves",
+        home_name="Cleveland Bears",
+        away_name="Minnesota Wolves",
+        start_time="2026-05-10T12:00:00Z",
+    )
+    second = _instrument(
+        venue="SXBET",
+        event_name="Cleveland Bears v Minnesota Wolves - rescheduled",
         home_name="Cleveland Bears",
         away_name="Minnesota Wolves",
         start_time="2026-05-10T16:00:00Z",

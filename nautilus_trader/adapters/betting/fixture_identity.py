@@ -33,6 +33,7 @@ import unicodedata
 
 
 DEFAULT_START_TIME_TOLERANCE_SECS = 2 * 60 * 60
+DEFAULT_SOFT_CROSS_VENUE_START_TIME_TOLERANCE_SECS = 12 * 60 * 60
 
 
 @dataclass(frozen=True)
@@ -236,8 +237,15 @@ class FixtureIdentityResolver:
         re.IGNORECASE,
     )
 
-    def __init__(self, start_time_tolerance_secs: int = DEFAULT_START_TIME_TOLERANCE_SECS) -> None:
+    def __init__(
+        self,
+        start_time_tolerance_secs: int = DEFAULT_START_TIME_TOLERANCE_SECS,
+        soft_cross_venue_start_time_tolerance_secs: int = (
+            DEFAULT_SOFT_CROSS_VENUE_START_TIME_TOLERANCE_SECS
+        ),
+    ) -> None:
         self.start_time_tolerance_secs = start_time_tolerance_secs
+        self.soft_cross_venue_start_time_tolerance_secs = soft_cross_venue_start_time_tolerance_secs
 
     @staticmethod
     def normalize_event_component(value: str | None) -> str:
@@ -456,7 +464,29 @@ class FixtureIdentityResolver:
             return self._participant_mismatch_proof(key_a, key_b, participant_match)
         start_delta = self._start_time_delta_secs(instrument_a, instrument_b)
         if self._is_start_time_mismatch(start_delta):
-            return self._start_time_mismatch_proof(key_a, key_b, participant_match, start_delta)
+            if not self._allow_cross_venue_start_time_conflict(
+                instrument_a,
+                instrument_b,
+                key_a=key_a,
+                key_b=key_b,
+                participant_match=participant_match,
+                start_delta_secs=start_delta,
+            ):
+                return self._start_time_mismatch_proof(
+                    key_a,
+                    key_b,
+                    participant_match,
+                    start_delta,
+                )
+            return self._canonical_match_proof(
+                instrument_a,
+                instrument_b,
+                key_a,
+                key_b,
+                participant_match,
+                start_delta,
+                start_time_conflict=True,
+            )
         return self._canonical_match_proof(
             instrument_a,
             instrument_b,
@@ -545,6 +575,30 @@ class FixtureIdentityResolver:
             blocker_reason="start_time_mismatch",
         )
 
+    def _allow_cross_venue_start_time_conflict(
+        self,
+        instrument_a: Any,
+        instrument_b: Any,
+        *,
+        key_a: str,
+        key_b: str,
+        participant_match: ParticipantMatch,
+        start_delta_secs: float | None,
+    ) -> bool:
+        if start_delta_secs is None:
+            return False
+        venue_a = str(getattr(getattr(instrument_a, "venue_name", ""), "value", "") or "")
+        venue_b = str(getattr(getattr(instrument_b, "venue_name", ""), "value", "") or "")
+        if venue_a and venue_a == venue_b:
+            return False
+        if start_delta_secs > self.soft_cross_venue_start_time_tolerance_secs:
+            return False
+        if participant_match.confidence < 0.84:
+            return False
+        if self._competitions_match(instrument_a, instrument_b):
+            return True
+        return bool(key_a and key_a == key_b and participant_match.confidence >= 0.9)
+
     def _canonical_match_proof(
         self,
         instrument_a: Any,
@@ -553,13 +607,18 @@ class FixtureIdentityResolver:
         key_b: str,
         participant_match: ParticipantMatch,
         start_delta_secs: float | None,
+        *,
+        start_time_conflict: bool = False,
     ) -> FixtureIdentityProof:
         matched_fields = ["sport", "participants"]
         confidence = participant_match.confidence
         reason = "canonical_fixture_match"
-        if start_delta_secs is not None:
+        if start_delta_secs is not None and not start_time_conflict:
             matched_fields.append("start_time")
             confidence = min(0.98, confidence + 0.04)
+        elif start_time_conflict:
+            reason = "canonical_fixture_match_start_time_conflict"
+            confidence = min(0.9, confidence)
         else:
             reason = "canonical_fixture_match_missing_start_time"
             confidence = min(confidence, 0.86)
