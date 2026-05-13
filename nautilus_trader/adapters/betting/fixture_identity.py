@@ -148,6 +148,7 @@ class FixtureIdentityResolver:
             "las",
             "los",
             "new",
+            "oklahoma",
             "san",
             "st",
             "tampa",
