@@ -20,6 +20,10 @@ strategy-node deploy, runtime, lifecycle, health, and log inspection work.
 - Keep the result diagnostic only; this is not a formal merge gate.
 - Preserve the GCP/EC2 split: CI/build/test work on GCP, deploy/runtime work on
   EC2.
+- Do not run pre-commit, pytest, ruff, Rust, wheel, Docker, semantic
+  completion, or image-build workloads on the local Mac. If the GCP runner is
+  unavailable, use the dedicated remote code-dev VM or GitHub Actions rather
+  than falling back to local validation.
 
 ## Required Files
 

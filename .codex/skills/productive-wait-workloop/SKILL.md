@@ -19,6 +19,9 @@ likely to last several minutes.
   known.
 - The side work is independent from the watched branch, workflow, deployed
   runtime, and secrets surface.
+- The side worktree and any validation/build/test/pre-commit workload are on a
+  dedicated remote code-dev VM, GCP runner, or GitHub Actions. The local Mac is
+  edit/light-inspection only.
 
 ## Workflow
 
@@ -29,7 +32,7 @@ likely to last several minutes.
    - original task to resume,
    - side task and worktree.
 2. Post a Linear comment before switching context.
-3. Work only on a separate worktree or a clearly disjoint file set.
+3. Work only on a separate remote worktree or a clearly disjoint file set.
 4. Keep the side task bounded to one clean stopping point: diagnostics, tests,
    docs, a small stacked branch, or an isolated implementation slice.
 5. Do not dispatch a second workflow for the watched release surface while the
@@ -45,5 +48,7 @@ likely to last several minutes.
   time.
 - Keep `auto_execute=false` for trading-node validation.
 - Do not print or commit secrets.
+- Do not run local build, pre-commit, pytest, ruff, semantic completion, Rust,
+  wheel, Docker, or image-build workloads from the Mac.
 - Use GCP runners for CI/build/test/image work and EC2 only for deployed node
   runtime inspection.

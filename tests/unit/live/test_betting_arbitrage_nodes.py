@@ -925,7 +925,7 @@ class TestBettingArbitrageNodeBuilder:
             clock=Clock(),
             config=InstrumentProviderConfig(),
         )
-        event_limits: list[tuple[str, int]] = []
+        event_limits: list[tuple[str, str, int]] = []
 
         def market_event(sport: str, index: int) -> dict[str, object]:
             return {
@@ -951,7 +951,7 @@ class TestBettingArbitrageNodeBuilder:
             assert endpoint == "/events"
             assert params is not None
             tag_id = str(params["tag_id"])
-            event_limits.append((tag_id, int(params["limit"])))
+            event_limits.append((tag_id, str(params["order"]), int(params["limit"])))
             sport = "soccer" if tag_id == "11" else "tennis"
             return [market_event(sport, index) for index in range(4)]
 
@@ -964,7 +964,12 @@ class TestBettingArbitrageNodeBuilder:
             ),
         )
 
-        assert event_limits == [("11", 2), ("22", 2)]
+        assert event_limits == [
+            ("11", "volume24hr", 2),
+            ("11", "volume", 2),
+            ("22", "volume24hr", 2),
+            ("22", "volume", 2),
+        ]
         assert Counter(market["sport"] for market in markets) == {"soccer": 2, "tennis": 2}
 
     def test_polymarket_gamma_sports_discovery_balances_canonical_sport_groups(self):
@@ -978,7 +983,7 @@ class TestBettingArbitrageNodeBuilder:
             clock=Clock(),
             config=InstrumentProviderConfig(),
         )
-        event_limits: list[tuple[str, int]] = []
+        event_limits: list[tuple[str, str, int]] = []
 
         def market_event(sport: str, index: int) -> dict[str, object]:
             return {
@@ -1007,7 +1012,7 @@ class TestBettingArbitrageNodeBuilder:
             assert endpoint == "/events"
             assert params is not None
             tag_id = str(params["tag_id"])
-            event_limits.append((tag_id, int(params["limit"])))
+            event_limits.append((tag_id, str(params["order"]), int(params["limit"])))
             sport = "soccer" if tag_id in {"11", "12", "13"} else "tennis"
             return [market_event(sport, index) for index in range(6)]
 
@@ -1020,7 +1025,18 @@ class TestBettingArbitrageNodeBuilder:
             ),
         )
 
-        assert event_limits == [("11", 3), ("12", 3), ("13", 3), ("22", 3), ("23", 3)]
+        assert event_limits == [
+            ("11", "volume24hr", 3),
+            ("11", "volume", 3),
+            ("12", "volume24hr", 3),
+            ("12", "volume", 3),
+            ("13", "volume24hr", 3),
+            ("13", "volume", 3),
+            ("22", "volume24hr", 3),
+            ("22", "volume", 3),
+            ("23", "volume24hr", 3),
+            ("23", "volume", 3),
+        ]
         assert Counter(market["sport"] for market in markets) == {"soccer": 3, "tennis": 3}
 
     def test_polymarket_tag_market_discovery_finds_match_level_tennis(
@@ -1385,9 +1401,10 @@ class TestBettingArbitrageNodeBuilder:
         assert config.strategies[0].config["semantic_unmatched_quote_probe_venues"] == [
             "POLYMARKET",
         ]
-        assert config.strategies[0].config["semantic_unmatched_quote_probe_limit_per_venue"] == 20
+        assert config.strategies[0].config["semantic_unmatched_quote_probe_limit_per_venue"] == 80
         assert config.strategies[0].config["semantic_quote_subscription_limit_by_venue"] == {
             "CLOUDBET": 80,
+            "POLYMARKET": 180,
             "SXBET": 120,
         }
         assert (
@@ -1417,8 +1434,8 @@ class TestBettingArbitrageNodeBuilder:
             "filters"
         ] == {
             "is_active": True,
-            "limit": 80,
-            "max_results": 80,
+            "limit": 240,
+            "max_results": 240,
             "max_resolution_horizon_hours": 48.0,
             "sports": [
                 "american_football",

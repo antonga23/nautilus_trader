@@ -49,6 +49,12 @@ Escalate only for irreversible destructive action, material unapproved cost incr
 - During long watcher waits, continue bounded independent work in a separate
   worktree when available, then pause that side work and return to the original
   task as soon as the watcher fires.
+- Treat the local Mac checkout as edit/light-inspection only. Do not run
+  resource-heavy build, pre-commit, pytest, ruff, semantic completion, Rust,
+  wheel, Docker, or strategy-node image workloads locally.
+- Run validation/build/test/pre-commit work on a dedicated remote code-dev VM,
+  the GCP CI runner, or GitHub Actions. Substantial new worktrees should be
+  created on the remote code-dev VM, not under the local Codex worktree tree.
 - Use GCP CI runners for pre-commit, tests, wheel builds, Rust policy, and strategy-node image builds.
 - Use EC2 only for strategy-node deploy/runtime/lifecycle/health/logs.
 - Prefer `ci-preflight` before spending GitHub Actions runs when the GCP runner is reachable.

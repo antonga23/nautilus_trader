@@ -432,6 +432,31 @@ def test_fixture_identity_folds_diacritics_across_provider_names():
     assert proof.canonical_event_key_a == proof.canonical_event_key_b
 
 
+def test_fixture_identity_strips_competition_prefix_when_team_fields_missing():
+    resolver = FixtureIdentityResolver()
+    polymarket = _instrument(
+        venue="POLYMARKET",
+        event_name="Internazionali BNL d'Italia: Frances Tiafoe vs Ignacio Buse",
+        home_name="",
+        away_name="",
+        sport_name="tennis",
+    )
+    sxbet = _instrument(
+        venue="SXBET",
+        event_name="Frances Tiafoe v Ignacio Buse",
+        home_name="",
+        away_name="",
+        sport_name="tennis",
+    )
+
+    proof = resolver.resolve(polymarket, sxbet)
+
+    assert proof.same_fixture is True
+    assert proof.blocker_reason is None
+    assert proof.canonical_event_key_a == "tennis:frances tiafoe:ignacio buse"
+    assert proof.canonical_event_key_a == proof.canonical_event_key_b
+
+
 def test_portfolio_policy_treats_stablecoins_as_usd_with_haircut():
     policy = PortfolioCurrencyPolicy(stablecoin_haircut_bps=25)
 
