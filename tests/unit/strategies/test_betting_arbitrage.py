@@ -1951,6 +1951,49 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(subscribed_count == 2)
         ensure(alias_probe.call_count == len(instruments))
 
+    def test_semantic_unmatched_probe_limit_ignores_existing_subscriptions(
+        self,
+        tmp_path: Path,
+    ) -> None:  # skipcq
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["POLYMARKET"]),
+                opportunity_graph_engine="python",
+                semantic_unmatched_quote_probe_venues=frozenset({"POLYMARKET"}),
+                semantic_unmatched_quote_probe_limit_per_venue=1,
+            ),
+        )
+        strategy._matcher.set_rule_store(RuleStore(FileRuleCache(tmp_path / "rules")))
+        strategy.subscribe_quote_ticks = Mock()
+        already_quoted = self._polymarket_sports_binary_option(
+            symbol_value="aaa-already-quoted",
+            event_name="Team A vs Team B",
+            home_name="Team A",
+            away_name="Team B",
+        )
+        candidate = self._polymarket_sports_binary_option(
+            symbol_value="zzz-candidate",
+            event_name="Team C vs Team D",
+            home_name="Team C",
+            away_name="Team D",
+        )
+        transformed_already = strategy._coerce_betting_instrument(already_quoted)
+        transformed_candidate = strategy._coerce_betting_instrument(candidate)
+        assert transformed_already is not None
+        assert transformed_candidate is not None
+        strategy._subscribed_instruments.update({transformed_already, transformed_candidate})
+        strategy._opportunity_graph.build([transformed_already, transformed_candidate])
+        strategy._opportunity_graph.edge_ids_by_node_id = {
+            node_id: set() for node_id in strategy._opportunity_graph.nodes_by_id
+        }
+        strategy._quote_subscribed_instrument_ids.add(str(already_quoted.id))
+
+        subscribed_count = strategy._subscribe_semantic_unmatched_quote_probe_ticks()
+
+        quoted_ids = {call.args[0] for call in strategy.subscribe_quote_ticks.call_args_list}
+        ensure(subscribed_count == 1)
+        ensure(quoted_ids == {candidate.id})
+
     def test_on_quote_tick_remaps_polymarket_binary_option_to_betting_instrument(self):
         strategy = BettingArbitrageStrategy(
             config=BettingArbitrageConfig(enabled_venues=frozenset(["POLYMARKET"])),
@@ -2572,6 +2615,21 @@ class TestBettingArbitrageStrategy:  # skipcq
         stats = strategy.get_stats()
         ensure(stats["latency_diagnostics"]["quote_event_to_strategy"]["p50_ms"] == 500.0)
         ensure(stats["latency_diagnostics"]["quote_publish_to_strategy"]["p50_ms"] == 300.0)
+
+    def test_polymarket_provider_timestamp_does_not_count_as_fetch_latency(self):  # skipcq
+        polymarket_quote = Mock(
+            instrument_id=InstrumentId(Symbol("market-token"), Venue("POLYMARKET")),
+            ts_event=1_000_000_000,
+            ts_init=11_000_000_000,
+        )
+        sxbet_quote = Mock(
+            instrument_id=InstrumentId(Symbol("market-token"), Venue("SXBET")),
+            ts_event=1_000_000_000,
+            ts_init=11_000_000_000,
+        )
+
+        ensure(BettingArbitrageStrategy.quote_fetch_latency_secs(polymarket_quote) == 0.0)
+        ensure(BettingArbitrageStrategy.quote_fetch_latency_secs(sxbet_quote) == 10.0)
 
     def test_arbitrage_diagnostics_flags_fetch_latency(self):  # skipcq
         strategy = BettingArbitrageStrategy(

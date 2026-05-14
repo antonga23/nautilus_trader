@@ -22,7 +22,7 @@
     "semantic_unmatched_quote_probe_venues": [
       "POLYMARKET"
     ],
-    "semantic_unmatched_quote_probe_limit_per_venue": 20,
+    "semantic_unmatched_quote_probe_limit_per_venue": 80,
     "devig_enabled": true,
     "devig_method": "auto",
     "devig_reference_venues": [
@@ -105,7 +105,8 @@
         "ice_hockey",
         "baseball"
       ],
-      "instrument_load_limit": 80
+      "instrument_load_limit": 240,
+      "quote_subscription_limit": 180
     }
   ],
   "metadata": {

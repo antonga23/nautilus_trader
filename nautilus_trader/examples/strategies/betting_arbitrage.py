@@ -1453,6 +1453,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
 
         connected_instrument_ids = self._semantic_connected_instrument_ids()
         subscribed_by_venue = self._quote_subscription_counts_by_venue()
+        unmatched_probe_subscribed_by_venue: Counter[str] = Counter()
         subscribed_count = 0
 
         candidate_instruments = list(self._subscribed_instruments)
@@ -1474,10 +1475,11 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 continue
             if not self._instrument_resolution_horizon_quote_allowed(instrument):
                 continue
-            if subscribed_by_venue[venue] >= per_venue_limit:
+            if unmatched_probe_subscribed_by_venue[venue] >= per_venue_limit:
                 continue
             if self._subscribe_quote_ticks_for_instrument(instrument):
                 subscribed_by_venue[venue] += 1
+                unmatched_probe_subscribed_by_venue[venue] += 1
                 subscribed_count += 1
 
         if subscribed_count:
@@ -1789,16 +1791,16 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 venue,
                 elapsed_ns,
             )
-        if tick.ts_event > 0 and tick.ts_init > 0:
-            elapsed_ns = max(0, int(tick.ts_init) - int(tick.ts_event))
+        fetch_latency_ns = self._quote_fetch_latency_measurement_ns(tick)
+        if fetch_latency_ns is not None:
             self._record_latency_sample(
                 self._quote_fetch_latency_ns,
-                elapsed_ns,
+                fetch_latency_ns,
             )
             self._record_venue_latency_sample(
                 self._quote_fetch_latency_ns_by_venue,
                 venue,
-                elapsed_ns,
+                fetch_latency_ns,
             )
 
     @staticmethod
@@ -3281,9 +3283,19 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
 
     @staticmethod
     def quote_fetch_latency_secs(quote: QuoteTick | None) -> float:
-        if quote is None or quote.ts_event <= 0 or quote.ts_init <= 0:
+        latency_ns = BettingArbitrageStrategy._quote_fetch_latency_measurement_ns(quote)
+        if latency_ns is None:
             return 0.0
-        return max(0.0, (int(quote.ts_init) - int(quote.ts_event)) / NANOSECONDS_PER_SECOND)
+        return max(0.0, latency_ns / NANOSECONDS_PER_SECOND)
+
+    @staticmethod
+    def _quote_fetch_latency_measurement_ns(quote: QuoteTick | None) -> int | None:
+        if quote is None or quote.ts_event <= 0 or quote.ts_init <= 0:
+            return None
+        venue = str(getattr(getattr(quote, "instrument_id", None), "venue", "") or "").upper()
+        if venue == "POLYMARKET":
+            return None
+        return max(0, int(quote.ts_init) - int(quote.ts_event))
 
     @staticmethod
     def _quote_cycle_id(quote: QuoteTick) -> str:

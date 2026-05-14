@@ -32,6 +32,12 @@ watched task.
   instructed otherwise by a human.
 - Do not persist secrets in committed files, logs, skill files, PR bodies, or
   Linear comments. Use approved secret stores or local secret files.
+- Treat the local Mac checkout as edit/light-inspection only. Do not run
+  build, pre-commit, pytest, ruff, semantic completion, Rust, wheel, Docker, or
+  image-build workloads locally.
+- Create substantial experimental worktrees on the dedicated remote code-dev VM
+  or a runner host. Keep only minimal local patch state when remote access is
+  temporarily unavailable.
 - Use GCP runners for CI/build/test/image work and EC2 only for deployed
   strategy-node runtime inspection.
 
@@ -66,8 +72,8 @@ Requirements:
 
 1. Record the primary watcher run id or command, branch, terminal condition, and
    durable log path before starting side work.
-2. Create a separate worktree from the appropriate base branch. Do not mutate
-   the watched branch, deployed runtime, or release artifacts.
+2. Create a separate remote worktree from the appropriate base branch. Do not
+   mutate the watched branch, deployed runtime, or release artifacts.
 3. Pick work that is independent of the watched gate and can be stopped after a
    single command or patch if the watcher fires.
 4. Do not merge, arm live execution, dispatch a conflicting deploy, or mark the
@@ -85,7 +91,8 @@ Requirements:
 4. Keep provider-specific behavior isolated behind existing adapters,
    normalizers, strategy config, or risk-gating seams.
 5. Add tests at the boundary the experiment changes.
-6. Before pushing, run the narrow local validation slice.
+6. Before pushing, run the narrow validation slice on the remote code-dev VM,
+   GCP runner, or GitHub Actions, not on the local Mac.
 
 ## While A Monitor Runs
 
