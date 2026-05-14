@@ -329,13 +329,14 @@ class FixtureIdentityResolver:
         if participants:
             return tuple(participants)
         event_name = str(getattr(instrument, "event_name", "") or "")
-        split_names = [
-            self.normalize_team_name(part)
-            for part in self.EVENT_SPLIT_PATTERN.split(event_name, maxsplit=1)
-        ]
-        split_participants = sorted(set(split_names) - {""})
-        if len(split_participants) >= 2:
-            return tuple(split_participants[:2])
+        for title in self._fixture_title_candidates(event_name):
+            split_names = [
+                self.normalize_team_name(part)
+                for part in self.EVENT_SPLIT_PATTERN.split(title, maxsplit=1)
+            ]
+            split_participants = sorted(set(split_names) - {""})
+            if len(split_participants) >= 2:
+                return tuple(split_participants[:2])
         normalized_event = self.normalize_event_component(event_name)
         return (normalized_event,) if normalized_event else ()
 
@@ -364,14 +365,37 @@ class FixtureIdentityResolver:
             return (home_aliases, away_aliases)
 
         event_name = str(getattr(instrument, "event_name", "") or "")
-        split_names = [
-            self.team_aliases(part)
-            for part in self.EVENT_SPLIT_PATTERN.split(event_name, maxsplit=1)
-        ]
-        split_aliases = tuple(alias_set for alias_set in split_names if alias_set)
-        if len(split_aliases) >= 2:
-            return split_aliases[:2]
+        for title in self._fixture_title_candidates(event_name):
+            split_names = [
+                self.team_aliases(part)
+                for part in self.EVENT_SPLIT_PATTERN.split(title, maxsplit=1)
+            ]
+            split_aliases = tuple(alias_set for alias_set in split_names if alias_set)
+            if len(split_aliases) >= 2:
+                return split_aliases[:2]
         return ()
+
+    def _fixture_title_candidates(self, event_name: str) -> tuple[str, ...]:
+        """
+        Prefer fixture-looking title segments over provider competition prefixes.
+
+        Polymarket/Gamma often labels events as
+        ``Tournament: Player A vs Player B``. If explicit home/away fields are
+        missing, splitting the full title would incorrectly include the
+        tournament as part of Player A. Keep the original as a fallback, but try
+        the trailing colon segment first when it contains a fixture separator.
+
+        """
+        title = str(event_name or "").strip()
+        if not title:
+            return ()
+        candidates: list[str] = []
+        if ":" in title:
+            suffix = title.rsplit(":", maxsplit=1)[-1].strip()
+            if suffix and self.EVENT_SPLIT_PATTERN.search(suffix):
+                candidates.append(suffix)
+        candidates.append(title)
+        return tuple(dict.fromkeys(candidates))
 
     def event_alias_keys(
         self,

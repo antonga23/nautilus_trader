@@ -12,6 +12,14 @@
 - Runner ownership is strict:
   - GCP self-hosted runners are the primary CI surface for pre-commit, Python
     tests, Rust policy checks, wheel builds, and strategy-node image builds.
+  - Dedicated remote code-dev VMs are the only acceptable surface for manual
+    build/test/pre-commit/semantic-completion work when a runner workflow is not
+    appropriate.
+  - The local Mac is edit/light-inspection only. Do not run resource-heavy
+    build, pre-commit, pytest, ruff, Rust, wheel, Docker, semantic completion,
+    or strategy-node image workloads locally.
+  - Substantial Codex worktrees should be created on the remote code-dev VM
+    rather than under the local Codex worktree tree.
   - EC2 is the deploy/trading host only. Use it for strategy-node release,
     runtime, lifecycle, health, and log inspection work.
 - Do not move pre-commit, build, test, or image-build work to EC2 as a fallback

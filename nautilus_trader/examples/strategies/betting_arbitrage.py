@@ -1453,6 +1453,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
 
         connected_instrument_ids = self._semantic_connected_instrument_ids()
         subscribed_by_venue = self._quote_subscription_counts_by_venue()
+        unmatched_probe_subscribed_by_venue: Counter[str] = Counter()
         subscribed_count = 0
 
         candidate_instruments = list(self._subscribed_instruments)
@@ -1474,10 +1475,11 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 continue
             if not self._instrument_resolution_horizon_quote_allowed(instrument):
                 continue
-            if subscribed_by_venue[venue] >= per_venue_limit:
+            if unmatched_probe_subscribed_by_venue[venue] >= per_venue_limit:
                 continue
             if self._subscribe_quote_ticks_for_instrument(instrument):
                 subscribed_by_venue[venue] += 1
+                unmatched_probe_subscribed_by_venue[venue] += 1
                 subscribed_count += 1
 
         if subscribed_count:
@@ -1789,16 +1791,16 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 venue,
                 elapsed_ns,
             )
-        if tick.ts_event > 0 and tick.ts_init > 0:
-            elapsed_ns = max(0, int(tick.ts_init) - int(tick.ts_event))
+        fetch_latency_ns = self._quote_fetch_latency_measurement_ns(tick)
+        if fetch_latency_ns is not None:
             self._record_latency_sample(
                 self._quote_fetch_latency_ns,
-                elapsed_ns,
+                fetch_latency_ns,
             )
             self._record_venue_latency_sample(
                 self._quote_fetch_latency_ns_by_venue,
                 venue,
-                elapsed_ns,
+                fetch_latency_ns,
             )
 
     @staticmethod
@@ -2230,9 +2232,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         match_type = self._opportunity_match_type(inst_a, inst_b)
         quote_age_a_secs = self._quote_age_secs(now_ns, quote_a)
         quote_age_b_secs = self._quote_age_secs(now_ns, quote_b)
-        quote_delta_secs = abs(int(quote_a.ts_event) - int(quote_b.ts_event)) / (
-            NANOSECONDS_PER_SECOND
-        )
+        quote_delta_secs = self._quote_pair_skew_secs(quote_a, quote_b)
         return (
             inst_a,
             inst_b,
@@ -3155,9 +3155,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         )
         quote_age_a_secs = self._quote_age_secs(now_ns, quote_a)
         quote_age_b_secs = self._quote_age_secs(now_ns, quote_b)
-        quote_delta_secs = abs(int(quote_a.ts_event) - int(quote_b.ts_event)) / (
-            NANOSECONDS_PER_SECOND
-        )
+        quote_delta_secs = self._quote_pair_skew_secs(quote_a, quote_b)
         fetch_latency_a_secs = self._quote_fetch_latency_secs(quote_a)
         fetch_latency_b_secs = self._quote_fetch_latency_secs(quote_b)
         freshness = self._quote_freshness_thresholds(inst_a, inst_b)
@@ -3217,8 +3215,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             venue_b=str(inst_b.id.venue),
             odds_a=opportunity.odds_a,
             odds_b=opportunity.odds_b,
-            quote_ts_a=int(quote_a.ts_event),
-            quote_ts_b=int(quote_b.ts_event),
+            quote_ts_a=self._quote_decision_timestamp_ns(quote_a),
+            quote_ts_b=self._quote_decision_timestamp_ns(quote_b),
             quote_cycle_id_a=self._quote_cycle_id(quote_a),
             quote_cycle_id_b=self._quote_cycle_id(quote_b),
             quote_age_a_secs=quote_age_a_secs,
@@ -3271,9 +3269,18 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
 
     @staticmethod
     def quote_age_secs(now_ns: int, quote: QuoteTick) -> float:
-        if quote.ts_event <= 0:
+        timestamp_ns = BettingArbitrageStrategy._quote_decision_timestamp_ns(quote)
+        if timestamp_ns <= 0:
             return 0.0
-        return max(0.0, (now_ns - int(quote.ts_event)) / NANOSECONDS_PER_SECOND)
+        return max(0.0, (now_ns - timestamp_ns) / NANOSECONDS_PER_SECOND)
+
+    @staticmethod
+    def _quote_pair_skew_secs(quote_a: QuoteTick, quote_b: QuoteTick) -> float:
+        timestamp_a = BettingArbitrageStrategy._quote_decision_timestamp_ns(quote_a)
+        timestamp_b = BettingArbitrageStrategy._quote_decision_timestamp_ns(quote_b)
+        if timestamp_a <= 0 or timestamp_b <= 0:
+            return 0.0
+        return abs(timestamp_a - timestamp_b) / NANOSECONDS_PER_SECOND
 
     @staticmethod
     def _quote_fetch_latency_secs(quote: QuoteTick | None) -> float:
@@ -3281,15 +3288,35 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
 
     @staticmethod
     def quote_fetch_latency_secs(quote: QuoteTick | None) -> float:
-        if quote is None or quote.ts_event <= 0 or quote.ts_init <= 0:
+        latency_ns = BettingArbitrageStrategy._quote_fetch_latency_measurement_ns(quote)
+        if latency_ns is None:
             return 0.0
-        return max(0.0, (int(quote.ts_init) - int(quote.ts_event)) / NANOSECONDS_PER_SECOND)
+        return max(0.0, latency_ns / NANOSECONDS_PER_SECOND)
+
+    @staticmethod
+    def _quote_fetch_latency_measurement_ns(quote: QuoteTick | None) -> int | None:
+        if quote is None or quote.ts_event <= 0 or quote.ts_init <= 0:
+            return None
+        venue = str(getattr(getattr(quote, "instrument_id", None), "venue", "") or "").upper()
+        if venue == "POLYMARKET":
+            return None
+        return max(0, int(quote.ts_init) - int(quote.ts_event))
+
+    @staticmethod
+    def _quote_decision_timestamp_ns(quote: QuoteTick | None) -> int:
+        if quote is None:
+            return 0
+        venue = str(getattr(getattr(quote, "instrument_id", None), "venue", "") or "").upper()
+        if venue == "POLYMARKET" and quote.ts_init > 0:
+            return int(quote.ts_init)
+        return int(quote.ts_event or 0)
 
     @staticmethod
     def _quote_cycle_id(quote: QuoteTick) -> str:
-        if quote.ts_event <= 0:
+        timestamp_ns = BettingArbitrageStrategy._quote_decision_timestamp_ns(quote)
+        if timestamp_ns <= 0:
             return "unknown"
-        return str(int(quote.ts_event) // NANOSECONDS_PER_SECOND)
+        return str(timestamp_ns // NANOSECONDS_PER_SECOND)
 
     def _quote_freshness_thresholds(
         self,
@@ -4108,9 +4135,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         now_ns = self.clock.timestamp_ns()
         quote_age_a_secs = self._quote_age_secs(now_ns, quote_a)
         quote_age_b_secs = self._quote_age_secs(now_ns, quote_b)
-        quote_delta_secs = (
-            abs(int(quote_a.ts_event) - int(quote_b.ts_event)) / NANOSECONDS_PER_SECOND
-        )
+        quote_delta_secs = self._quote_pair_skew_secs(quote_a, quote_b)
         fetch_latency_a_secs = self._quote_fetch_latency_secs(quote_a)
         fetch_latency_b_secs = self._quote_fetch_latency_secs(quote_b)
         stake_odds_a, stake_odds_b = self._stake_pricing_odds(opportunity)

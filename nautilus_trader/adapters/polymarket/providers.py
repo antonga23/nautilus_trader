@@ -838,36 +838,37 @@ class PolymarketInstrumentProvider(InstrumentProvider):
         sport_markets: dict[str, dict[str, Any]] = {}
         sport_code = sport_codes[0] if sport_codes else canonical_sport
         for tag_id in selected_tags:
-            events = await self._gamma_get_json(
-                "/events",
-                params=_with_horizon_date_filters(
-                    {
-                        "tag_id": tag_id,
-                        "related_tags": "true",
-                        "active": "true",
-                        "closed": "false",
-                        "archived": "false",
-                        "limit": _horizon_fetch_limit(
-                            per_sport_limit or max_results or 100,
-                            horizon,
-                        ),
-                        "order": "volume",
-                        "ascending": "false",
-                    },
-                    now=now,
-                    horizon=horizon,
-                ),
-            )
-            if not isinstance(events, list):
-                continue
-            _collect_sports_event_markets(
-                canonical_sport=canonical_sport,
-                sport_code=sport_code,
-                selected_tags=selected_tags,
-                events=events,
-                discovered_markets=sport_markets,
-                max_markets_per_event=POLYMARKET_DEFAULT_MAX_MARKETS_PER_EVENT,
-            )
+            for order in ("volume24hr", "volume"):
+                events = await self._gamma_get_json(
+                    "/events",
+                    params=_with_horizon_date_filters(
+                        {
+                            "tag_id": tag_id,
+                            "related_tags": "true",
+                            "active": "true",
+                            "closed": "false",
+                            "archived": "false",
+                            "limit": _horizon_fetch_limit(
+                                per_sport_limit or max_results or 100,
+                                horizon,
+                            ),
+                            "order": order,
+                            "ascending": "false",
+                        },
+                        now=now,
+                        horizon=horizon,
+                    ),
+                )
+                if not isinstance(events, list):
+                    continue
+                _collect_sports_event_markets(
+                    canonical_sport=canonical_sport,
+                    sport_code=sport_code,
+                    selected_tags=selected_tags,
+                    events=events,
+                    discovered_markets=sport_markets,
+                    max_markets_per_event=POLYMARKET_DEFAULT_MAX_MARKETS_PER_EVENT,
+                )
         return sport_markets
 
     async def _load_sport_tag_markets_using_gamma(
