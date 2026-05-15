@@ -1070,6 +1070,38 @@ async def test_sxbet_provider_uses_placeholder_prices_when_best_odds_missing():
 
 
 @pytest.mark.asyncio
+async def test_sxbet_provider_uses_placeholder_prices_when_best_odds_not_executable():
+    provider = SXBetInstrumentProvider(
+        http_client=object(),
+        config=SXBetInstrumentProviderConfig(),
+    )
+
+    await provider._process_market(
+        {
+            "marketHash": "market-1",
+            "teamOneName": "Team A",
+            "teamTwoName": "Team B",
+            "sportId": 1,
+            "leagueName": "Premier League",
+            "type": 52,
+            "outcomeOneName": "Team A",
+            "outcomeTwoName": "Team B",
+            "bestOdds": {
+                "outcomeOne": {"percentageOdds": str(decimal_odds_to_percentage(1.0))},
+                "outcomeTwo": {"percentageOdds": str(decimal_odds_to_percentage(2.1))},
+            },
+        },
+    )
+
+    instruments = list(provider.get_all().values())
+    home, away = instruments
+    assert home.price == 2.0
+    assert home.info["has_best_odds"] is False
+    assert away.price == 2.1
+    assert away.info["has_best_odds"] is True
+
+
+@pytest.mark.asyncio
 async def test_sxbet_provider_load_all_continues_when_best_odds_hydration_fails():
     class RecordingHttpClient:
         async def get_markets(

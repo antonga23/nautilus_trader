@@ -715,7 +715,7 @@ class SXBetDataClient(LiveMarketDataClient):
         if percentage_odds in (None, ""):
             return False
         try:
-            return int(str(percentage_odds)) > 0
+            return percentage_to_decimal_odds(int(str(percentage_odds))) > 1
         except ValueError:
             return False
 
@@ -737,7 +737,7 @@ class SXBetDataClient(LiveMarketDataClient):
             return None
 
         best_bid = percentage_to_decimal_odds(int(str(percentage_odds)))
-        if best_bid <= 0:
+        if best_bid <= 1:
             return None
 
         return QuoteTick(
