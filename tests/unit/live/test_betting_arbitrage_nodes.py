@@ -499,6 +499,7 @@ class TestBettingArbitrageNodeBuilder:
                     client_key="CLOUDBET_PRIMARY",
                     sport_keys=frozenset({"soccer", "basketball"}),
                     instrument_load_limit=40,
+                    prefer_liquid_markets=True,
                     auto_subscribe_quote_ticks=True,
                     quote_subscription_limit=60,
                     order_book_poll_interval_secs=7.0,
@@ -523,6 +524,8 @@ class TestBettingArbitrageNodeBuilder:
             "basketball",
             "soccer",
         ]
+        assert "totals" in data_client.config["instrument_provider"]["filters"]["market_name"]
+        assert "draw_no_bet" in data_client.config["instrument_provider"]["filters"]["market_name"]
         assert data_client.config["instrument_provider"]["filters"]["limit"] == 40
         assert data_client.config["auto_subscribe_quote_ticks"] is False
         assert data_client.config["quote_subscription_limit"] == 60
@@ -1403,7 +1406,7 @@ class TestBettingArbitrageNodeBuilder:
         ]
         assert config.strategies[0].config["semantic_unmatched_quote_probe_limit_per_venue"] == 80
         assert config.strategies[0].config["semantic_quote_subscription_limit_by_venue"] == {
-            "CLOUDBET": 80,
+            "CLOUDBET": 120,
             "POLYMARKET": 180,
             "SXBET": 120,
         }
@@ -1412,8 +1415,10 @@ class TestBettingArbitrageNodeBuilder:
             == "artifacts/semantic-rule-cache/multi-venue-validation"
         )
         cloudbet_config = config.data_clients["CLOUDBET_PRIMARY"].config
+        assert cloudbet_config["instrument_provider"]["filters"]["limit"] == 80
+        assert "match_odds" in cloudbet_config["instrument_provider"]["filters"]["market_name"]
         assert cloudbet_config["quote_poll_interval_secs"] == 1.0
-        assert cloudbet_config["quote_poll_concurrency"] == 12
+        assert cloudbet_config["quote_poll_concurrency"] == 16
         assert cloudbet_config["quote_poll_min_concurrency"] == 4
         assert cloudbet_config["quote_poll_max_concurrency"] == 16
         assert cloudbet_config["quote_poll_target_cycle_secs"] == 4.0
@@ -4503,6 +4508,7 @@ class TestBettingArbitrageNodeRunner:
                 BettingArbitrageStrategy.semantic_fixture_suspect_reason
             ),
             quote_age_secs=lambda _observed_ns, _quote: 0.1,
+            _quote_pair_skew_secs=lambda _quote_a, _quote_b: 0.0,
             quote_fetch_latency_secs=lambda _quote: 0.1,
             quote_available_size=lambda _quote: Decimal(100),
             quote_freshness_thresholds=lambda _instrument_a, _instrument_b: SimpleNamespace(
@@ -4569,6 +4575,75 @@ class TestBettingArbitrageNodeRunner:
         assert quality["makerRebateRateA"] == "0"
         assert quality["makerRebateRateB"] == "0"
 
+    def test_runtime_probe_candidate_quality_uses_strategy_pair_skew(self):
+        instrument_a = _instrument(
+            venue="CLOUDBET",
+            market_type="match_odds",
+            outcome="home",
+        )
+        instrument_b = _instrument(
+            venue="SXBET",
+            market_type="match_odds",
+            outcome="away",
+        )
+        strategy = SimpleNamespace(
+            fee_adjusted_opportunity=lambda opportunity: opportunity,
+            matcher_suspect_reason=BettingArbitrageStrategy.matcher_suspect_reason,
+            semantic_fixture_suspect_reason=(
+                BettingArbitrageStrategy.semantic_fixture_suspect_reason
+            ),
+            quote_age_secs=lambda _observed_ns, _quote: 0.1,
+            _quote_pair_skew_secs=lambda _quote_a, _quote_b: 0.2,
+            quote_fetch_latency_secs=lambda _quote: 0.1,
+            quote_available_size=lambda _quote: Decimal(100),
+            quote_freshness_thresholds=lambda _instrument_a, _instrument_b: SimpleNamespace(
+                profile="pre_match",
+                max_quote_age_secs=30.0,
+                max_pair_skew_secs=5.0,
+                max_fetch_latency_secs=10.0,
+            ),
+        )
+        edge = SimpleNamespace(
+            rule_id="rule-1",
+            template_id="template-1",
+            relationship_type="COMPLEMENTARY_COVERAGE",
+            safety_tier="EXECUTION_SAFE",
+            execution_safe=True,
+            same_venue_execution_eligible=False,
+        )
+        quote_a = SimpleNamespace(
+            odds=Decimal("2.20"),
+            received_ns=20_000_000_000,
+            quote=SimpleNamespace(ts_event=1_000_000_000, size=Decimal(100)),
+        )
+        quote_b = SimpleNamespace(
+            odds=Decimal("2.20"),
+            received_ns=20_000_000_000,
+            quote=SimpleNamespace(ts_event=11_000_000_000, size=Decimal(100)),
+        )
+
+        quality = node_runner._probe_candidate_quality(
+            strategy,
+            edge=edge,
+            source_node=SimpleNamespace(
+                instrument=instrument_a,
+                market_name="match_odds",
+                outcome="home",
+            ),
+            target_node=SimpleNamespace(
+                instrument=instrument_b,
+                market_name="match_odds",
+                outcome="away",
+            ),
+            quote_a=quote_a,
+            quote_b=quote_b,
+            min_profit_margin=Decimal("0.02"),
+            allow_same_venue=False,
+        )
+
+        assert quality["quoteDeltaSeconds"] == 0.2
+        assert quality["rejectionBucket"] == "positive"
+
     def test_runtime_probe_devig_diagnostics_classifies_value_without_execution(self):
         instrument_a = _instrument(
             venue="CLOUDBET",
@@ -4598,6 +4673,7 @@ class TestBettingArbitrageNodeRunner:
                 BettingArbitrageStrategy.semantic_fixture_suspect_reason
             ),
             quote_age_secs=lambda _observed_ns, _quote: 0.1,
+            _quote_pair_skew_secs=lambda _quote_a, _quote_b: 0.0,
             quote_fetch_latency_secs=lambda _quote: 0.1,
             quote_available_size=lambda _quote: Decimal(100),
             quote_freshness_thresholds=lambda _instrument_a, _instrument_b: SimpleNamespace(
@@ -4693,6 +4769,7 @@ class TestBettingArbitrageNodeRunner:
                 BettingArbitrageStrategy.semantic_fixture_suspect_reason
             ),
             quote_age_secs=lambda _observed_ns, _quote: 0.1,
+            _quote_pair_skew_secs=lambda _quote_a, _quote_b: 0.0,
             quote_fetch_latency_secs=lambda _quote: 0.1,
             quote_available_size=lambda _quote: Decimal(100),
             quote_freshness_thresholds=lambda _instrument_a, _instrument_b: SimpleNamespace(
@@ -4773,6 +4850,7 @@ class TestBettingArbitrageNodeRunner:
                 BettingArbitrageStrategy.semantic_fixture_suspect_reason
             ),
             quote_age_secs=lambda _observed_ns, _quote: 0.1,
+            _quote_pair_skew_secs=lambda _quote_a, _quote_b: 0.0,
             quote_fetch_latency_secs=lambda _quote: 0.1,
             quote_available_size=lambda _quote: Decimal(100),
             quote_freshness_thresholds=lambda _instrument_a, _instrument_b: SimpleNamespace(
