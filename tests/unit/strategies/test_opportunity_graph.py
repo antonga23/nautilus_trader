@@ -749,6 +749,14 @@ def test_node_payload_fallbacks_cover_missing_helper_methods() -> None:  # skipc
     ensure(payload["start_time_ns"] is None)
 
 
+def test_node_payload_treats_date_only_start_as_imprecise() -> None:  # skipcq
+    instrument = _instrument(start_time="2026-05-14")
+    node = OpportunityGraph._node_from_instrument(instrument)
+    payload = OpportunityGraph._node_payload_from_node(node, instrument)
+
+    ensure(payload["start_time_ns"] is None)
+
+
 def test_node_payload_ignores_non_iterable_alias_helper_return() -> None:  # skipcq
     template = _instrument()
 

@@ -2282,6 +2282,123 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(subscribed == 2)
         ensure(quoted_ids == {cloudbet_cross.id, polymarket_cross.id})
 
+    def test_cross_venue_common_fixture_subscriptions_reserve_quote_slots(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:  # skipcq
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["CLOUDBET", "SXBET"]),
+                semantic_quote_subscription_limit_by_venue={"CLOUDBET": 1, "SXBET": 1},
+                semantic_unmatched_quote_probe_limit_per_venue=2,
+            ),
+        )
+        strategy.subscribe_quote_ticks = Mock()
+        cloudbet_common = self._sxbet_instrument(
+            event_id="cb-common",
+            venue="CLOUDBET",
+            outcome="home",
+            event_name="Cleveland Cavaliers v Detroit Pistons",
+            home_name="Cleveland Cavaliers",
+            away_name="Detroit Pistons",
+            market_name="match_odds",
+            sport_name="Basketball",
+        )
+        sxbet_common = self._sxbet_instrument(
+            event_id="sx-common",
+            venue="SXBET",
+            outcome="away",
+            event_name="Cleveland vs Detroit",
+            home_name="Cleveland",
+            away_name="Detroit",
+            market_name="match_odds",
+            sport_name="Basketball",
+        )
+        cloudbet_filler = self._sxbet_instrument(
+            event_id="cb-filler",
+            venue="CLOUDBET",
+            outcome="over",
+            event_name="Only Cloudbet A v Only Cloudbet B",
+            home_name="Only Cloudbet A",
+            away_name="Only Cloudbet B",
+        )
+        sxbet_filler = self._sxbet_instrument(
+            event_id="sx-filler",
+            venue="SXBET",
+            outcome="under",
+            event_name="Only SXBET A v Only SXBET B",
+            home_name="Only SXBET A",
+            away_name="Only SXBET B",
+        )
+        instruments = {cloudbet_common, sxbet_common, cloudbet_filler, sxbet_filler}
+        strategy._subscribed_instruments.update(instruments)
+        common_ids = {str(cloudbet_common.id), str(sxbet_common.id)}
+        monkeypatch.setattr(
+            strategy,
+            "_instrument_event_alias_keys",
+            lambda instrument: (
+                {"basketball:cleveland cavaliers:detroit pistons"}
+                if str(instrument.id) in common_ids
+                else {str(instrument.id)}
+            ),
+        )
+
+        subscribed = strategy._subscribe_cross_venue_common_fixture_quote_ticks()
+        quoted_ids = {call.args[0] for call in strategy.subscribe_quote_ticks.call_args_list}
+
+        ensure(subscribed == 2)
+        ensure(quoted_ids == {cloudbet_common.id, sxbet_common.id})
+
+    def test_cross_venue_common_fixture_quote_slots_prefer_compatible_families(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:  # skipcq
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["CLOUDBET", "SXBET"]),
+                semantic_quote_subscription_limit_by_venue={"CLOUDBET": 1, "SXBET": 1},
+                semantic_unmatched_quote_probe_limit_per_venue=2,
+            ),
+        )
+        strategy.subscribe_quote_ticks = Mock()
+        cloudbet_scope_mismatch = self._sxbet_instrument(
+            event_id="cb-scope",
+            venue="CLOUDBET",
+            outcome="no",
+            market_name="basketball.team_to_lead_by_points",
+            params="point=22&team=away",
+            sport_name="Basketball",
+        )
+        cloudbet_match_odds = self._sxbet_instrument(
+            event_id="cb-match",
+            venue="CLOUDBET",
+            outcome="home",
+            market_name="match_odds",
+            sport_name="Basketball",
+        )
+        sxbet_match_odds = self._sxbet_instrument(
+            event_id="sx-match",
+            venue="SXBET",
+            outcome="away",
+            market_name="match_odds",
+            sport_name="Basketball",
+        )
+        instruments = {cloudbet_scope_mismatch, cloudbet_match_odds, sxbet_match_odds}
+        strategy._subscribed_instruments.update(instruments)
+        monkeypatch.setattr(
+            strategy,
+            "_instrument_event_alias_keys",
+            lambda instrument: {"basketball:cleveland cavaliers:detroit pistons"},
+        )
+
+        subscribed = strategy._subscribe_cross_venue_common_fixture_quote_ticks()
+        quoted_ids = {call.args[0] for call in strategy.subscribe_quote_ticks.call_args_list}
+
+        ensure(subscribed == 2)
+        ensure(cloudbet_match_odds.id in quoted_ids)
+        ensure(sxbet_match_odds.id in quoted_ids)
+        ensure(cloudbet_scope_mismatch.id not in quoted_ids)
+
     def test_resolution_horizon_priority_demotes_stale_past_fixtures(self) -> None:  # skipcq
         strategy = BettingArbitrageStrategy(
             config=BettingArbitrageConfig(max_resolution_horizon_hours=48.0),
