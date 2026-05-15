@@ -726,6 +726,44 @@ async def test_fetch_and_publish_best_odds_uses_market_hash_batch():
 
 
 @pytest.mark.asyncio
+async def test_fetch_and_publish_best_odds_skips_non_executable_decimal_odds():
+    instrument = _make_instrument(market_hash="market-1", outcome_one=True)
+    http_client = Mock()
+    http_client.get_best_odds = AsyncMock(
+        return_value={
+            "data": {
+                "bestOdds": [
+                    {
+                        "marketHash": "market-1",
+                        "outcomeOne": {
+                            "percentageOdds": str(decimal_odds_to_percentage(1.0)),
+                        },
+                    },
+                ],
+            },
+        },
+    )
+    instrument_provider = _make_provider()
+    instrument_provider.find_by_market_hash = Mock(return_value=[instrument])
+    client = SXBetDataClient(
+        loop=get_event_loop(),
+        http_client=http_client,
+        instrument_provider=instrument_provider,
+        msgbus=TestComponentStubs.msgbus(),
+        cache=TestComponentStubs.cache(),
+        clock=TestComponentStubs.clock(),
+        logger=Logger(name="test-sxbet-data"),
+        config=SXBetDataClientConfig(),
+    )
+    client._subscribed_instruments = {instrument.id}
+    client._handle_data = Mock()
+
+    await client._fetch_and_publish_best_odds({"market-1"})
+
+    client._handle_data.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_fetch_and_publish_best_odds_uses_outcome_two_and_skips_unsubscribed():
     subscribed = CryptoBettingInstrument(
         venue=Venue("SXBET"),

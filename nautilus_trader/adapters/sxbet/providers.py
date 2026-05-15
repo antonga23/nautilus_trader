@@ -561,6 +561,13 @@ class SXBetInstrumentProvider(InstrumentProvider):
                 self.add(instrument)
 
     @staticmethod
+    def _executable_decimal_odds_from_percentage(percentage_odds: object) -> float:
+        if percentage_odds in (None, ""):
+            return 0.0
+        best_odds = percentage_to_decimal_odds(int(str(percentage_odds)))
+        return best_odds if best_odds > 1 else 0.0
+
+    @staticmethod
     def _extract_best_odds(market: dict, outcome_one: bool) -> float:
         """
         Extract best available odds from market.
@@ -570,9 +577,9 @@ class SXBetInstrumentProvider(InstrumentProvider):
             key = "outcomeOne" if outcome_one else "outcomeTwo"
             payload = best_odds_entry.get(key, {})
             if isinstance(payload, dict):
-                percentage_odds = payload.get("percentageOdds")
-                if percentage_odds not in (None, ""):
-                    return percentage_to_decimal_odds(int(str(percentage_odds)))
+                return SXBetInstrumentProvider._executable_decimal_odds_from_percentage(
+                    payload.get("percentageOdds"),
+                )
 
         # Check if there are orders in the market
         orders = market.get("orders", [])
@@ -582,10 +589,10 @@ class SXBetInstrumentProvider(InstrumentProvider):
             if order.get("isMakerBettingOutcomeOne") != outcome_one:
                 # This order is betting against our desired outcome
                 # So we can take the opposite side
-                percentage_odds = int(order.get("percentageOdds", 0))
-                if percentage_odds > 0:
-                    odds = percentage_to_decimal_odds(percentage_odds)
-                    best_odds = max(best_odds, odds)
+                odds = SXBetInstrumentProvider._executable_decimal_odds_from_percentage(
+                    order.get("percentageOdds", 0),
+                )
+                best_odds = max(best_odds, odds)
 
         # If no orders, use implied odds from market
         if best_odds <= 0:
@@ -594,7 +601,7 @@ class SXBetInstrumentProvider(InstrumentProvider):
             else:
                 implied = market.get("outcomeTwoProbability", 0)
 
-            if implied and implied > 0:
+            if implied and 0 < implied < 1:
                 best_odds = 1 / implied
 
         return best_odds
