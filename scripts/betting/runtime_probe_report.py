@@ -373,8 +373,16 @@ def _cross_venue_quote_readiness_details(
                 "fixtureProofBlockerCounts",
                 pair_report.get("fixtureProofBlockerCounts"),
             )
+            enriched.setdefault(
+                "fixtureDiscoveryBlockerCounts",
+                pair_report.get("fixtureDiscoveryBlockerCounts"),
+            )
             enriched.setdefault("sampleBlockerCounts", pair_report.get("sampleBlockerCounts"))
             enriched.setdefault("samples", (pair_report.get("samples") or [])[:top_limit])
+            enriched.setdefault(
+                "fixtureDiscoverySamples",
+                (pair_report.get("fixtureDiscoverySamples") or [])[:top_limit],
+            )
         detailed.append(enriched)
     return detailed
 
@@ -415,6 +423,7 @@ def _fixture_overlap_diagnostics(value: Any, *, top_limit: int) -> list[dict[str
         if not isinstance(report, dict):
             continue
         samples = report.get("samples")
+        discovery_samples = report.get("fixtureDiscoverySamples")
         diagnostics.append(
             {
                 "venuePair": report.get("venuePair"),
@@ -424,7 +433,15 @@ def _fixture_overlap_diagnostics(value: Any, *, top_limit: int) -> list[dict[str
                 "commonEventKeySamples": (report.get("commonEventKeySamples") or [])[:top_limit],
                 "sampleBlockerCounts": report.get("sampleBlockerCounts") or {},
                 "fixtureProofBlockerCounts": report.get("fixtureProofBlockerCounts") or {},
+                "fixtureDiscoveryBlockerCounts": report.get(
+                    "fixtureDiscoveryBlockerCounts",
+                )
+                or {},
                 "sampleProofs": _fixture_overlap_sample_proofs(samples, top_limit=top_limit),
+                "discoveryProofs": _fixture_overlap_sample_proofs(
+                    discovery_samples,
+                    top_limit=top_limit,
+                ),
             },
         )
     return diagnostics[:top_limit]
@@ -1726,11 +1743,18 @@ def _format_fixture_overlap_lines(value: Any) -> list[str]:
         sample_line = _format_fixture_overlap_sample_line(str(venue_pair), item.get("sampleProofs"))
         if sample_line:
             lines.append(sample_line)
+        discovery_line = _format_fixture_overlap_discovery_line(
+            str(venue_pair),
+            item.get("discoveryProofs"),
+        )
+        if discovery_line:
+            lines.append(discovery_line)
     return lines
 
 
 def _format_fixture_overlap_summary_line(venue_pair: str, item: dict[str, Any]) -> str:
     proof_counts = _as_dict(item.get("fixtureProofBlockerCounts"))
+    discovery_counts = _as_dict(item.get("fixtureDiscoveryBlockerCounts"))
     sample_counts = _as_dict(item.get("sampleBlockerCounts"))
     return (
         "  fixture_overlap "
@@ -1739,7 +1763,8 @@ def _format_fixture_overlap_summary_line(venue_pair: str, item: dict[str, Any]) 
         f"blocker={item.get('blockerReason') or 'unknown'} "
         f"discovery_gap={item.get('discoveryGapReason') or ''} "
         f"sample_blockers={sample_counts} "
-        f"proof_blockers={proof_counts}"
+        f"proof_blockers={proof_counts} "
+        f"discovery_blockers={discovery_counts}"
         f"{_fixture_common_event_suffix(item.get('commonEventKeySamples'))}"
     )
 
@@ -1756,6 +1781,22 @@ def _format_fixture_overlap_sample_line(venue_pair: str, value: Any) -> str:
     proof = _as_dict(value[0])
     return (
         "  fixture_overlap_sample "
+        f"{venue_pair} "
+        f"reason={proof.get('reason')} "
+        f"same_fixture={proof.get('sameFixture')} "
+        f"confidence={proof.get('confidence')} "
+        f"start_delta={proof.get('startTimeDeltaSeconds')} "
+        f"a={proof.get('instrumentIdA')} "
+        f"b={proof.get('instrumentIdB')}"
+    )
+
+
+def _format_fixture_overlap_discovery_line(venue_pair: str, value: Any) -> str:
+    if not isinstance(value, list) or not value:
+        return ""
+    proof = _as_dict(value[0])
+    return (
+        "  fixture_discovery_sample "
         f"{venue_pair} "
         f"reason={proof.get('reason')} "
         f"same_fixture={proof.get('sameFixture')} "
