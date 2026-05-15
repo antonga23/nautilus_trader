@@ -1416,7 +1416,7 @@ class TestBettingArbitrageNodeBuilder:
         )
         cloudbet_config = config.data_clients["CLOUDBET_PRIMARY"].config
         assert cloudbet_config["instrument_provider"]["filters"]["limit"] == 80
-        assert "match_odds" in cloudbet_config["instrument_provider"]["filters"]["market_name"]
+        assert "market_name" not in cloudbet_config["instrument_provider"]["filters"]
         assert cloudbet_config["quote_poll_interval_secs"] == 1.0
         assert cloudbet_config["quote_poll_concurrency"] == 16
         assert cloudbet_config["quote_poll_min_concurrency"] == 4

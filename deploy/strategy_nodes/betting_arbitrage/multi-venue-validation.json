@@ -78,7 +78,6 @@
       ],
       "instrument_load_limit": 80,
       "market_discovery_limit": 80,
-      "prefer_liquid_markets": true,
       "auto_subscribe_quote_ticks": true,
       "quote_subscription_limit": 120,
       "order_book_poll_interval_secs": 1.0,
