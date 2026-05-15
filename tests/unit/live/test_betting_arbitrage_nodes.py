@@ -3333,6 +3333,10 @@ class TestBettingArbitrageNodeRunner:
         assert report["targetEventSportCounts"] == {"basketball": 1}
         assert report["sampleBlockerCounts"] == {}
         assert report["samples"] == []
+        assert report["fixtureDiscoveryBlockerCounts"]
+        assert report["fixtureDiscoverySamples"][0]["fixtureIdentityProof"]["sameFixture"] is False
+        assert report["fixtureDiscoverySamples"][0]["eventKeyA"] == "soccer:a:b"
+        assert report["fixtureDiscoverySamples"][0]["eventKeyB"] == "basketball:c:d"
 
     def test_venue_pair_coverage_canonicalizes_provider_fixture_aliases(self):
         sxbet_instrument = _instrument(

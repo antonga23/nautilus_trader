@@ -249,6 +249,19 @@ def _runtime_status_payload() -> dict[str, object]:
                         "commonEventKeySamples": ["tennis:frances tiafoe:ignacio buse"],
                         "sampleBlockerCounts": {"no_common_fixture": 2},
                         "fixtureProofBlockerCounts": {"start_time_mismatch": 2},
+                        "fixtureDiscoveryBlockerCounts": {"different_participants": 3},
+                        "fixtureDiscoverySamples": [
+                            {
+                                "instrumentIdA": "poly-navone",
+                                "instrumentIdB": "sxbet-tiafoe",
+                                "fixtureIdentityProof": {
+                                    "sameFixture": False,
+                                    "reason": "different_participants",
+                                    "confidence": 0.21,
+                                    "startTimeDeltaSeconds": None,
+                                },
+                            },
+                        ],
                         "samples": [
                             {
                                 "instrumentIdA": "poly-tiafoe",
@@ -746,6 +759,7 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
             "blockerReason": "no_common_fixture",
             "discoveryGapReason": "no_common_fixture_loaded",
             "fixtureProofBlockerCounts": {"start_time_mismatch": 2},
+            "fixtureDiscoveryBlockerCounts": {"different_participants": 3},
             "sampleBlockerCounts": {"no_common_fixture": 2},
             "samples": [
                 {
@@ -757,6 +771,18 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
                         "reason": "start_time_mismatch",
                         "confidence": 0.62,
                         "startTimeDeltaSeconds": 86400,
+                    },
+                },
+            ],
+            "fixtureDiscoverySamples": [
+                {
+                    "instrumentIdA": "poly-navone",
+                    "instrumentIdB": "sxbet-tiafoe",
+                    "fixtureIdentityProof": {
+                        "sameFixture": False,
+                        "reason": "different_participants",
+                        "confidence": 0.21,
+                        "startTimeDeltaSeconds": None,
                     },
                 },
             ],
@@ -1181,6 +1207,8 @@ def test_runtime_probe_report_cli_outputs_json_and_text(tmp_path, monkeypatch, c
     assert "zero_candidate_blockers fixture_identity_mismatch=2" in text_output
     assert "zero_candidate_fixture_proof_blockers" in text_output
     assert "start_time_mismatch=2" in text_output
+    assert "discovery_blockers={'different_participants': 3}" in text_output
+    assert "fixture_discovery_sample POLYMARKET->SXBET reason=different_participants" in text_output
     assert "fee_impact fee_hurt=6" in text_output
     assert "raw_negative_fee_adjusted_positive=1" in text_output
     assert "strategy_latency quote_event_p95=25.0ms" in text_output

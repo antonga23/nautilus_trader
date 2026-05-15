@@ -2274,6 +2274,14 @@ def _zero_venue_pair_report(
         report["marketFamilyPairs"] = {}
         report["sampleBlockerCounts"] = {}
         report["samples"] = []
+        report.update(
+            _fixture_discovery_probe_report(
+                strategy=strategy,
+                nodes=nodes,
+                source=source,
+                target=target,
+            ),
+        )
         return report
 
     source_nodes = _sample_probe_nodes_for_venue(
@@ -2317,6 +2325,40 @@ def _zero_venue_pair_report(
     if reason == "no_semantic_edge" and samples:
         report["blockerReason"] = _zero_pair_sample_blocker(samples, report["blockerReason"])
     return report
+
+
+def _fixture_discovery_probe_report(
+    *,
+    strategy,
+    nodes: dict[Any, object],
+    source: str,
+    target: str,
+) -> dict[str, object]:
+    source_nodes = _sample_probe_nodes_for_venue(nodes, source)
+    target_nodes = _sample_probe_nodes_for_venue(nodes, target)
+    fixture_probe_pairs = _sample_zero_pair_nodes_fallback(
+        source_nodes,
+        target_nodes,
+        limit=8,
+    )
+    samples: list[dict[str, object]] = []
+    blockers: Counter[str] = Counter()
+    for source_node, target_node in fixture_probe_pairs:
+        payload = _zero_pair_sample_payload(strategy, source_node, target_node)
+        proof = payload.get("fixtureIdentityProof")
+        if isinstance(proof, dict):
+            blocker = str(
+                proof.get("blockerReason")
+                or proof.get("reason")
+                or CoverageBlockerReason.FIXTURE_IDENTITY_MISMATCH.value,
+            )
+            blockers[blocker] += 1
+        if len(samples) < 5:
+            samples.append(payload)
+    return {
+        "fixtureDiscoveryBlockerCounts": dict(sorted(blockers.items())),
+        "fixtureDiscoverySamples": samples,
+    }
 
 
 def _verified_fixture_sample_pairs(
