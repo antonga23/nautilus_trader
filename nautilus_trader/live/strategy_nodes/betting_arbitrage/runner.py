@@ -3456,9 +3456,7 @@ def _probe_candidate_quality(
     observed_ns = max(int(quote_a.received_ns), int(quote_b.received_ns))
     quote_age_a_secs = strategy.quote_age_secs(observed_ns, quote_a.quote)
     quote_age_b_secs = strategy.quote_age_secs(observed_ns, quote_b.quote)
-    quote_delta_secs = abs(int(quote_a.quote.ts_event) - int(quote_b.quote.ts_event)) / (
-        1_000_000_000
-    )
+    quote_delta_secs = strategy._quote_pair_skew_secs(quote_a.quote, quote_b.quote)
     fetch_latency_a_secs = strategy.quote_fetch_latency_secs(quote_a.quote)
     fetch_latency_b_secs = strategy.quote_fetch_latency_secs(quote_b.quote)
     available_size_a = strategy.quote_available_size(quote_a.quote)

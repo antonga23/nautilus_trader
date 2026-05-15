@@ -489,6 +489,21 @@ def _cloudbet_selection_filters(venue: BettingVenueManifest) -> dict[str, Any]:
         filters["live"] = "true"
     else:
         filters["live"] = "false"
+    if venue.prefer_liquid_markets:
+        filters["market_name"] = [
+            "asian_handicap",
+            "draw_no_bet",
+            "handicap",
+            "match_odds",
+            "match_winner",
+            "moneyline",
+            "point_spread",
+            "spread",
+            "team_totals",
+            "total_goals",
+            "totals",
+            "winner",
+        ]
     if venue.instrument_load_limit is not None:
         filters["limit"] = int(venue.instrument_load_limit)
     return filters
