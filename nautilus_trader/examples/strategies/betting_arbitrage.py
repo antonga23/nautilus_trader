@@ -1112,6 +1112,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._instrument_refresh_graph_rebuilds += 1
         self._instrument_refresh_graph_rebuilds_by_venue[venue_value] += 1
         if self._semantic_quote_priority_enabled():
+            self._subscribe_cross_venue_common_fixture_quote_ticks()
             self._subscribe_semantic_connected_quote_ticks()
             self._subscribe_semantic_unmatched_quote_probe_ticks()
             return
@@ -1213,6 +1214,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         if self._config.opportunity_graph_enabled and self._config.graph_rebuild_on_new_instrument:
             self._opportunity_graph.add_instrument(betting_instrument)
         if self._semantic_quote_priority_enabled():
+            self._subscribe_cross_venue_common_fixture_quote_ticks()
             self._subscribe_semantic_connected_quote_ticks()
             self._subscribe_semantic_unmatched_quote_probe_ticks()
         else:
@@ -1269,6 +1271,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             return
 
         self._opportunity_graph.build(list(self._subscribed_instruments))
+        self._subscribe_cross_venue_common_fixture_quote_ticks()
         self._subscribe_semantic_connected_quote_ticks()
         self._subscribe_semantic_unmatched_quote_probe_ticks()
         self._log_graph_topology_summary()
@@ -1303,6 +1306,146 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 f"{dict(sorted(self._quote_subscription_counts_by_venue().items()))}",
             )
         return subscribed_count
+
+    def _subscribe_cross_venue_common_fixture_quote_ticks(self) -> int:
+        """
+        Reserve quote slots for loaded fixtures shared across enabled venues.
+
+        Semantic topology can contain many same-venue edges. If those edges consume
+        venue quote limits first, runtime can correctly discover a common
+        cross-venue fixture but still report it as ``common_fixture_unquoted``. This
+        pass runs before graph-connected subscriptions and spends a bounded reserve
+        on instruments whose fixture aliases are present on another venue. It does
+        not create semantic edges or execution authority; it only ensures the
+        runtime can observe prices for already loaded shared fixtures.
+
+        """
+        per_venue_limit = self._config.semantic_unmatched_quote_probe_limit_per_venue
+        if per_venue_limit <= 0 or len(self._config.enabled_venues) < 2:
+            return 0
+
+        candidate_instruments = [
+            instrument
+            for instrument in self._subscribed_instruments
+            if instrument.id.venue.value.upper() in self._config.enabled_venues
+            and self._instrument_resolution_horizon_quote_allowed(instrument)
+        ]
+        if not candidate_instruments:
+            return 0
+
+        alias_keys_by_instrument_id, alias_venues_by_key = (
+            self._semantic_unmatched_quote_probe_alias_index(candidate_instruments)
+        )
+        ranked = [
+            (
+                self._cross_venue_common_fixture_quote_priority(
+                    instrument,
+                    alias_keys_by_instrument_id=alias_keys_by_instrument_id,
+                    alias_venues_by_key=alias_venues_by_key,
+                ),
+                instrument,
+            )
+            for instrument in candidate_instruments
+            if self._instrument_has_cross_venue_fixture_alias(
+                instrument,
+                alias_keys_by_instrument_id=alias_keys_by_instrument_id,
+                alias_venues_by_key=alias_venues_by_key,
+            )
+        ]
+        if not ranked:
+            return 0
+
+        ranked.sort(key=lambda item: item[0])
+        subscribed_by_venue = self._quote_subscription_counts_by_venue()
+        reserved_by_venue: Counter[str] = Counter()
+        subscribed_count = 0
+        for _, instrument in ranked:
+            venue = instrument.id.venue.value.upper()
+            venue_limit = self._config.semantic_quote_subscription_limit_by_venue.get(venue)
+            if venue_limit is not None and subscribed_by_venue[venue] >= venue_limit:
+                continue
+            if reserved_by_venue[venue] >= per_venue_limit:
+                continue
+            if self._subscribe_quote_ticks_for_instrument(instrument):
+                subscribed_by_venue[venue] += 1
+                reserved_by_venue[venue] += 1
+                subscribed_count += 1
+
+        if subscribed_count:
+            self.log.info(
+                "Subscribed cross-venue common-fixture quote streams: "
+                f"new={subscribed_count} "
+                f"total={len(self._quote_subscribed_instrument_ids)} "
+                "by_venue="
+                f"{dict(sorted(reserved_by_venue.items()))}",
+            )
+        return subscribed_count
+
+    def _cross_venue_common_fixture_quote_priority(
+        self,
+        instrument: BettingInstrument,
+        *,
+        alias_keys_by_instrument_id: dict[str, set[str]],
+        alias_venues_by_key: dict[str, set[str]],
+    ) -> tuple[int, int, int, int, str]:
+        aliases = alias_keys_by_instrument_id.get(str(instrument.id), set())
+        other_venue_count = 0
+        venue = instrument.id.venue.value.upper()
+        for alias in aliases:
+            alias_venues = alias_venues_by_key.get(alias, set())
+            other_venue_count = max(
+                other_venue_count,
+                len({alias_venue for alias_venue in alias_venues if alias_venue != venue}),
+            )
+        return (
+            -other_venue_count,
+            self._instrument_resolution_horizon_priority(instrument),
+            self._instrument_market_family_quote_priority(instrument),
+            0 if aliases else 1,
+            str(instrument.id),
+        )
+
+    @staticmethod
+    def _instrument_market_family_quote_priority(instrument: BettingInstrument) -> int:
+        raw_family = " ".join(
+            str(value or "")
+            for value in (
+                getattr(instrument, "market_type", ""),
+                getattr(instrument, "market_name", ""),
+            )
+        ).lower()
+        if any(
+            token in raw_family
+            for token in (
+                "draw_no_bet",
+                "match_odds",
+                "moneyline",
+                "money_line",
+                "winner",
+                "match_winner",
+            )
+        ):
+            return 0
+        if any(token in raw_family for token in ("spread", "handicap", "point_spread")):
+            return 1
+        if any(token in raw_family for token in ("total", "over_under")):
+            return 2
+        return 3
+
+    @staticmethod
+    def _instrument_has_cross_venue_fixture_alias(
+        instrument: BettingInstrument,
+        *,
+        alias_keys_by_instrument_id: dict[str, set[str]],
+        alias_venues_by_key: dict[str, set[str]],
+    ) -> bool:
+        venue = instrument.id.venue.value.upper()
+        aliases = alias_keys_by_instrument_id.get(str(instrument.id), set())
+        for alias in aliases:
+            venues = alias_venues_by_key.get(alias, set())
+            if any(alias_venue != venue for alias_venue in venues):
+                return True
+        return False
 
     def _semantic_connected_quote_nodes(self) -> list[Any]:
         """
