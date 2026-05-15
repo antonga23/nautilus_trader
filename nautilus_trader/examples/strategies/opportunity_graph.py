@@ -1499,6 +1499,17 @@ class OpportunityGraph:
 
     @classmethod
     def _start_time_ns(cls, instrument: CryptoBettingInstrument) -> int | None:
+        raw_start = str(cls._safe_attr(instrument, "start_time", "") or "").strip()
+        if (
+            len(raw_start) == 10
+            and raw_start[4] == "-"
+            and raw_start[7] == "-"
+            and raw_start[:4].isdigit()
+            and raw_start[5:7].isdigit()
+            and raw_start[8:].isdigit()
+        ):
+            return None
+
         parsed_start_time_func = cls._safe_attr(instrument, "parsed_start_time", None)
         if not callable(parsed_start_time_func):
             return None
