@@ -4670,6 +4670,82 @@ class TestBettingArbitrageNodeRunner:
         assert quality["basketRebateRate"] == "0"
         assert quality["basketBoostRate"] == "0"
 
+    def test_runtime_probe_candidate_quality_records_fee_adjustment_error(self):
+        instrument_a = _instrument(
+            venue="SXBET",
+            market_type="match_odds",
+            outcome="home",
+        )
+        instrument_b = _instrument(
+            venue="SXBET",
+            market_type="match_odds",
+            outcome="away",
+        )
+
+        def fee_adjusted_opportunity(_opportunity):
+            msg = "Decimal odds must be greater than 1, got 1"
+            raise ValueError(msg)
+
+        strategy = SimpleNamespace(
+            fee_adjusted_opportunity=fee_adjusted_opportunity,
+            matcher_suspect_reason=BettingArbitrageStrategy.matcher_suspect_reason,
+            semantic_fixture_suspect_reason=(
+                BettingArbitrageStrategy.semantic_fixture_suspect_reason
+            ),
+            quote_age_secs=lambda _observed_ns, _quote: 0.1,
+            quote_fetch_latency_secs=lambda _quote: 0.1,
+            quote_available_size=lambda _quote: Decimal(100),
+            quote_freshness_thresholds=lambda _instrument_a, _instrument_b: SimpleNamespace(
+                profile="pre_match",
+                max_quote_age_secs=30.0,
+                max_pair_skew_secs=5.0,
+                max_fetch_latency_secs=10.0,
+            ),
+        )
+        edge = SimpleNamespace(
+            rule_id="rule-1",
+            template_id="template-1",
+            relationship_type="COMPLEMENTARY_COVERAGE",
+            safety_tier="EXECUTION_SAFE",
+            execution_safe=True,
+            same_venue_execution_eligible=False,
+        )
+        quote_a = SimpleNamespace(
+            odds=Decimal(1),
+            received_ns=10_000_000_000,
+            quote=SimpleNamespace(ts_event=9_900_000_000, size=Decimal(100)),
+        )
+        quote_b = SimpleNamespace(
+            odds=Decimal("2.20"),
+            received_ns=10_000_000_000,
+            quote=SimpleNamespace(ts_event=9_900_000_000, size=Decimal(100)),
+        )
+
+        quality = node_runner._probe_candidate_quality(
+            strategy,
+            edge=edge,
+            source_node=SimpleNamespace(
+                instrument=instrument_a,
+                market_name="match_odds",
+                outcome="home",
+            ),
+            target_node=SimpleNamespace(
+                instrument=instrument_b,
+                market_name="match_odds",
+                outcome="away",
+            ),
+            quote_a=quote_a,
+            quote_b=quote_b,
+            min_profit_margin=Decimal("0.02"),
+            allow_same_venue=False,
+        )
+
+        assert quality["rejectionBucket"] == "invalid_odds"
+        assert quality["feeAdjusted"] is False
+        assert quality["feeAdjustmentError"] == "Decimal odds must be greater than 1, got 1"
+        assert quality["feeAdjustedOddsA"] == "1"
+        assert quality["feeAdjustedOddsB"] == "2.20"
+
     def test_runtime_probe_devig_does_not_label_topology_edge_locked_arbitrage(self):
         instrument_a = _instrument(
             venue="CLOUDBET",

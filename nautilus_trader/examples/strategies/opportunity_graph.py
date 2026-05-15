@@ -1273,8 +1273,9 @@ class OpportunityGraph:
         if len(hyperedge_payloads) <= limit:
             return hyperedge_payloads
 
-        active_providers = {node.venue.upper() for node in self.nodes_by_id.values()}
-        active_event_keys = self._coverage_active_event_keys()
+        active_nodes = tuple(self.nodes_by_id.values())
+        active_providers = {node.venue.upper() for node in active_nodes}
+        active_event_keys = self._coverage_active_event_keys(active_nodes)
         if not active_providers and not active_event_keys:
             return hyperedge_payloads[:limit]
 
@@ -1329,9 +1330,12 @@ class OpportunityGraph:
             score += 1
         return score
 
-    def _coverage_active_event_keys(self) -> set[str]:
+    def _coverage_active_event_keys(
+        self,
+        active_nodes: tuple[OpportunityNode, ...] | None = None,
+    ) -> set[str]:
         keys: set[str] = set()
-        for node in self.nodes_by_id.values():
+        for node in active_nodes or tuple(self.nodes_by_id.values()):
             keys.add(self._coverage_event_key_no_time(node.canonical_event_key))
             event_key = self._safe_attr(node.instrument, "event_key", None)
             if callable(event_key):

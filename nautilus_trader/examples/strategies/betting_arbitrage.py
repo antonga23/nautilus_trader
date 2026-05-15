@@ -1137,9 +1137,10 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         venue_value: str,
         active_instrument_ids: set[str],
     ) -> int:
+        subscribed_snapshot = tuple(self._subscribed_instruments)
         to_remove = [
             instrument
-            for instrument in self._subscribed_instruments
+            for instrument in subscribed_snapshot
             if instrument.id.venue.value == venue_value
             and (
                 str(instrument.id) not in active_instrument_ids
@@ -1324,9 +1325,10 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         if per_venue_limit <= 0 or len(self._config.enabled_venues) < 2:
             return 0
 
+        subscribed_snapshot = tuple(self._subscribed_instruments)
         candidate_instruments = [
             instrument
-            for instrument in self._subscribed_instruments
+            for instrument in subscribed_snapshot
             if instrument.id.venue.value.upper() in self._config.enabled_venues
             and self._instrument_resolution_horizon_quote_allowed(instrument)
         ]
@@ -1599,7 +1601,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         unmatched_probe_subscribed_by_venue: Counter[str] = Counter()
         subscribed_count = 0
 
-        candidate_instruments = list(self._subscribed_instruments)
+        subscribed_snapshot = tuple(self._subscribed_instruments)
+        candidate_instruments = list(subscribed_snapshot)
         alias_keys_by_instrument_id, alias_venues_by_key = (
             self._semantic_unmatched_quote_probe_alias_index(candidate_instruments)
         )
@@ -1677,7 +1680,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                     other_venue_alias_hit = 0
                     break
         elif aliases:
-            for other in self._subscribed_instruments:
+            for other in tuple(self._subscribed_instruments):
                 if other.id.venue.value.upper() == venue:
                     continue
                 if aliases.intersection(self._instrument_event_alias_keys(other)):
@@ -2650,7 +2653,9 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         instrument: CryptoBettingInstrument,
     ) -> None:
         # Find arbitrage opportunities
-        candidates = [inst for inst in self._subscribed_instruments if inst.id != instrument.id]
+        candidates = [
+            inst for inst in tuple(self._subscribed_instruments) if inst.id != instrument.id
+        ]
 
         hedges = self._matcher.find_hedges(
             instrument=instrument,

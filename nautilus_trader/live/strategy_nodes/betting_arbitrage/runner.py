@@ -3358,7 +3358,12 @@ def _probe_edge_profitability(
             )
             if opportunity is None:
                 continue
-            opportunity = _strategy_fee_adjusted_opportunity(strategy, opportunity)
+            opportunity, fee_adjustment_error = _try_strategy_fee_adjusted_opportunity(
+                strategy,
+                opportunity,
+            )
+            if fee_adjustment_error is not None:
+                continue
 
             _record_probe_opportunity(
                 counters,
@@ -3412,24 +3417,25 @@ def _probe_candidate_quality(
     raw_total_probability = raw_probability_a + raw_probability_b
     raw_profit_margin = (Decimal(1) / raw_total_probability) - Decimal(1)
     match_type = _probe_match_type(source_node.instrument, target_node.instrument)
-    opportunity = _strategy_fee_adjusted_opportunity(
+    raw_opportunity = ArbitrageOpportunity(
+        instrument_a=source_node.instrument,
+        instrument_b=target_node.instrument,
+        probability_a=raw_probability_a,
+        probability_b=raw_probability_b,
+        total_probability=raw_total_probability,
+        profit_margin=raw_profit_margin,
+        odds_a=odds_a,
+        odds_b=odds_b,
+        is_same_venue=source_node.instrument.venue_name == target_node.instrument.venue_name,
+        match_type=match_type,
+        raw_probability_a=raw_probability_a,
+        raw_probability_b=raw_probability_b,
+        raw_total_probability=raw_total_probability,
+        raw_profit_margin=raw_profit_margin,
+    )
+    opportunity, fee_adjustment_error = _try_strategy_fee_adjusted_opportunity(
         strategy,
-        ArbitrageOpportunity(
-            instrument_a=source_node.instrument,
-            instrument_b=target_node.instrument,
-            probability_a=raw_probability_a,
-            probability_b=raw_probability_b,
-            total_probability=raw_total_probability,
-            profit_margin=raw_profit_margin,
-            odds_a=odds_a,
-            odds_b=odds_b,
-            is_same_venue=source_node.instrument.venue_name == target_node.instrument.venue_name,
-            match_type=match_type,
-            raw_probability_a=raw_probability_a,
-            raw_probability_b=raw_probability_b,
-            raw_total_probability=raw_total_probability,
-            raw_profit_margin=raw_profit_margin,
-        ),
+        raw_opportunity,
     )
     devig_diagnostics = _probe_devig_diagnostics(
         strategy,
@@ -3474,6 +3480,8 @@ def _probe_candidate_quality(
         max_pair_skew_secs=freshness.max_pair_skew_secs,
         max_fetch_latency_secs=freshness.max_fetch_latency_secs,
     )
+    if fee_adjustment_error is not None:
+        rejection_bucket = "invalid_odds"
     same_venue = source_node.instrument.venue_name == target_node.instrument.venue_name
     matcher_suspect, suspect_reason = strategy.matcher_suspect_reason(
         source_node.instrument,
@@ -3541,6 +3549,7 @@ def _probe_candidate_quality(
         "feeDrag": str(opportunity.fee_drag),
         "feeAdjustedOddsA": str(opportunity.fee_adjusted_odds_a or opportunity.odds_a),
         "feeAdjustedOddsB": str(opportunity.fee_adjusted_odds_b or opportunity.odds_b),
+        "feeAdjustmentError": fee_adjustment_error,
         "devig": devig_diagnostics,
         "candidateValueClassification": devig_diagnostics.get("valueClassification"),
         "takerFeeRateA": str(opportunity.taker_fee_rate_a),
@@ -3601,6 +3610,16 @@ def _strategy_fee_adjusted_opportunity(strategy, opportunity: ArbitrageOpportuni
     if callable(adjuster):
         return adjuster(opportunity)
     return opportunity
+
+
+def _try_strategy_fee_adjusted_opportunity(
+    strategy,
+    opportunity: ArbitrageOpportunity,
+) -> tuple[ArbitrageOpportunity, str | None]:
+    try:
+        return _strategy_fee_adjusted_opportunity(strategy, opportunity), None
+    except (ArithmeticError, ValueError) as exc:
+        return opportunity, str(exc)
 
 
 def _probe_devig_diagnostics(
