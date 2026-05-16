@@ -1155,6 +1155,7 @@ jobs:
           fi
           if [ "$MANIFEST_PATH" = "deploy/strategy_nodes/betting_arbitrage/multi-venue-validation.json" ]; then
             report_args+=(--min-cross-venue-candidates 1)
+            report_args+=(--require-cross-venue-candidates-or-blockers)
           fi
           python3 scripts/betting/runtime_probe_report.py \
             artifacts/strategy-node-deploy/status.json \

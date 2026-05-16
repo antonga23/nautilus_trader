@@ -5160,6 +5160,7 @@ class TestBettingArbitrageNodeRunner:
             in workflow
         )
         assert "require_cross_venue_candidates_or_blockers=true" in workflow
+        assert "report_args+=(--require-cross-venue-candidates-or-blockers)" in workflow
         assert "wait_timeout_seconds=1800" in workflow
         assert '--timeout-seconds "$wait_timeout_seconds"' in workflow
         assert '--min-positive-margin-candidates "$min_positive_margin_candidates"' in workflow
