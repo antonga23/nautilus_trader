@@ -600,7 +600,7 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
     assert summary["latencyDiagnostics"]["runtimeProbeCandidateDecision"]["count"] == 8
     assert summary["latencyDiagnostics"]["candidateDecisionSource"] == "strategy"
     assert summary["latencyDiagnostics"]["sloStatus"] == {
-        "overall": "fail",
+        "overall": "warn",
         "quoteAge": {
             "status": "pass",
             "observations": 8,
@@ -612,7 +612,7 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
             "thresholdMode": None,
         },
         "fetchLatency": {
-            "status": "fail",
+            "status": "warn",
             "observations": 8,
             "violations": 1,
             "violationRate": 0.125,
@@ -638,6 +638,7 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
             "quoteReceiveObserved": True,
             "providerLatencyObserved": True,
         },
+        "missingStages": [],
     }
     assert summary["latencyDiagnostics"]["diagnosticWarnings"] == []
     assert summary["candidateQuality"]["topRejectionBuckets"] == [
@@ -706,8 +707,8 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
     assert summary["candidateQuality"]["diagnosticWarnings"] == [
         "live_fetch_latency_slo_violations",
     ]
-    assert summary["operatorHealth"]["overall"] == "fail"
-    assert "latency_slo_failed" in summary["operatorHealth"]["reasons"]
+    assert summary["operatorHealth"]["overall"] == "warn"
+    assert "latency_slo_warn" in summary["operatorHealth"]["reasons"]
     assert "candidate:live_fetch_latency_slo_violations" in summary["operatorHealth"]["reasons"]
     assert summary["providerQuotePollStats"]["CLOUDBET"]["cycle_id"] == 12
     assert summary["providerPollHealth"]["overall"] == "fail"
@@ -919,9 +920,9 @@ def test_runtime_probe_report_uses_latency_histograms_when_live_slo_missing():
     )
 
     slo = summary["latencyDiagnostics"]["sloStatus"]
-    assert slo["overall"] == "fail"
+    assert slo["overall"] == "warn"
     assert slo["quoteAge"] == {
-        "status": "fail",
+        "status": "warn",
         "observations": 8,
         "violations": 8,
         "violationRate": 1.0,
@@ -998,6 +999,48 @@ def test_runtime_probe_report_uses_p95_for_histogram_fallback_and_flags_outlier_
     assert pair_skew["p95Seconds"] == 0.8
     assert pair_skew["maxObservedSeconds"] == 1.3
     assert pair_skew["outlierMaxExceeded"] is True
+
+
+def test_runtime_probe_report_preserves_runtime_latency_warn_status():
+    module = _load_module()
+
+    summary = module.summarize_payload(
+        {
+            "runtimeProbe": {
+                "quotedEdges": 4,
+                "candidateQuality": {
+                    "latencyHistograms": {
+                        "quoteAgeSeconds": {"count": 8, "p95": 1.0, "max": 1.1},
+                        "fetchLatencySeconds": {"count": 8, "p95": 0.5, "max": 0.7},
+                        "pairSkewSeconds": {"count": 8, "p95": 1.4, "max": 2.0},
+                    },
+                },
+                "latencyDiagnostics": {
+                    "sloStatus": {
+                        "overall": "warn",
+                        "quoteAge": {"status": "pass", "observations": 8, "violations": 0},
+                        "fetchLatency": {"status": "pass", "observations": 8, "violations": 0},
+                        "pairSkew": {
+                            "status": "warn",
+                            "observations": 8,
+                            "violations": 8,
+                            "p95Seconds": 1.4,
+                            "maxObservedSeconds": 2.0,
+                        },
+                        "missingStages": [],
+                    },
+                    "graph_scan": {"count": 4},
+                    "quote_event_to_strategy": {"count": 4},
+                },
+            },
+        },
+    )
+
+    slo = summary["latencyDiagnostics"]["sloStatus"]
+    assert slo["overall"] == "warn"
+    assert slo["pairSkew"]["status"] == "warn"
+    assert summary["operatorHealth"]["overall"] == "warn"
+    assert "latency_slo_warn" in summary["operatorHealth"]["reasons"]
 
 
 def test_runtime_probe_report_formats_latency_outlier_suffix():
@@ -1079,12 +1122,11 @@ def test_runtime_probe_report_aggregates_multiple_artifacts():
         "missing_strategy_latency_diagnostics": 1,
     }
     assert aggregate["latencySloStatusCounts"] == {
-        "fail": 1,
-        "no_observations": 1,
+        "unknown": 1,
+        "warn": 1,
     }
     assert aggregate["operatorHealthCounts"] == {
-        "fail": 1,
-        "warn": 1,
+        "warn": 2,
     }
     assert aggregate["providerPollHealthCounts"] == {
         "fail": 1,
@@ -1183,7 +1225,7 @@ def test_runtime_probe_report_cli_outputs_json_and_text(tmp_path, monkeypatch, c
     assert module.main() == 0
     text_output = capsys.readouterr().out
     assert "graph=rust/rust_semantic" in text_output
-    assert "operator_health overall=fail" in text_output
+    assert "operator_health overall=warn" in text_output
     assert "coverage proofs=5367 hyperedges=482" in text_output
     assert "semantic_cache_execution_safe_families TOTALS + TOTALS=25" in text_output
     assert "coverage_blockers void_settlement=3" in text_output
@@ -1218,7 +1260,7 @@ def test_runtime_probe_report_cli_outputs_json_and_text(tmp_path, monkeypatch, c
     assert "fixture_overlap_sample POLYMARKET->SXBET reason=start_time_mismatch" in text_output
     assert "quote_fetch_p95=180.0ms" in text_output
     assert (
-        "latency_slo overall=fail quote_age=pass fetch_latency=fail pair_skew=pass" in text_output
+        "latency_slo overall=warn quote_age=pass fetch_latency=warn pair_skew=pass" in text_output
     )
     assert "refresh_reconcile_latency p95=120.0ms" in text_output
     assert "provider_poll CLOUDBET:cycle=12" in text_output
@@ -1579,7 +1621,7 @@ def test_runtime_probe_report_cli_can_fail_on_live_latency_slo(
 
     assert module.main() == 3
     payload = json.loads(capsys.readouterr().out)
-    assert payload[0]["latencyDiagnostics"]["sloStatus"]["overall"] == "fail"
+    assert payload[0]["latencyDiagnostics"]["sloStatus"]["overall"] == "warn"
 
 
 def test_runtime_probe_report_cli_can_fail_on_operator_health(
@@ -1599,7 +1641,7 @@ def test_runtime_probe_report_cli_can_fail_on_operator_health(
 
     assert module.main() == 4
     payload = json.loads(capsys.readouterr().out)
-    assert payload[0]["operatorHealth"]["overall"] == "fail"
+    assert payload[0]["operatorHealth"]["overall"] == "warn"
 
 
 def test_runtime_probe_report_cli_can_fail_on_provider_poll_health(

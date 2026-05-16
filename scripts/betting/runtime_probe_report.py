@@ -1137,6 +1137,9 @@ def _latency_slo_status(
     candidate_quality: dict[str, Any],
     latency: dict[str, Any],
 ) -> dict[str, Any]:
+    raw_status = _normalized_raw_latency_slo_status(
+        _as_dict(latency.get("rawSloStatus")),
+    )
     live_timing = _as_dict(candidate_quality.get("liveTimingSlo"))
     histograms = _as_dict(candidate_quality.get("latencyHistograms"))
     quote_age = _slo_section_status(
@@ -1145,6 +1148,7 @@ def _latency_slo_status(
             _as_dict(histograms.get("quoteAgeSeconds")),
             threshold_seconds=5.0,
         ),
+        raw=raw_status.get("quoteAge"),
     )
     fetch_latency = _slo_section_status(
         _as_dict(live_timing.get("fetchLatency")),
@@ -1153,6 +1157,7 @@ def _latency_slo_status(
             threshold_seconds=5.0,
             ms_histogram=_as_dict(latency.get("quoteFetchLatency")),
         ),
+        raw=raw_status.get("fetchLatency"),
     )
     pair_skew = _slo_section_status(
         _as_dict(live_timing.get("pairSkew")),
@@ -1160,6 +1165,7 @@ def _latency_slo_status(
             _as_dict(histograms.get("pairSkewSeconds")),
             threshold_seconds=1.0,
         ),
+        raw=raw_status.get("pairSkew"),
     )
     strategy_latency = {
         "graphScanObserved": _int_value(_as_dict(latency.get("graphScan")).get("count")) > 0,
@@ -1184,16 +1190,33 @@ def _latency_slo_status(
     ]
     if any(status == "fail" for status in statuses):
         overall = "fail"
+    elif raw_status.get("overall") in {"pass", "warn", "fail", "unknown"}:
+        overall = str(raw_status["overall"])
+    elif any(status == "warn" for status in statuses):
+        overall = "warn"
     elif any(status == "pass" for status in statuses):
         overall = "pass"
     else:
-        overall = "no_observations"
+        overall = "unknown"
     return {
         "overall": overall,
         "quoteAge": quote_age,
         "fetchLatency": fetch_latency,
         "pairSkew": pair_skew,
         "strategyLatency": strategy_latency,
+        "missingStages": raw_status.get("missingStages", []),
+    }
+
+
+def _normalized_raw_latency_slo_status(raw: dict[str, Any]) -> dict[str, Any]:
+    if not raw:
+        return {}
+    return {
+        "overall": str(raw.get("overall") or "unknown"),
+        "quoteAge": _as_dict(raw.get("quoteAge")),
+        "fetchLatency": _as_dict(raw.get("fetchLatency")),
+        "pairSkew": _as_dict(raw.get("pairSkew")),
+        "missingStages": [str(item) for item in raw.get("missingStages") or []],
     }
 
 
@@ -1208,6 +1231,8 @@ def _operator_health(
     reasons: list[str] = []
     if latency_slo_status.get("overall") == "fail":
         reasons.append("latency_slo_failed")
+    elif latency_slo_status.get("overall") == "warn":
+        reasons.append("latency_slo_warn")
     execution_safety = _as_dict(execution_safety_status)
     if execution_safety.get("overall") in {"warn", "fail"}:
         reasons.extend(f"execution:{reason}" for reason in execution_safety.get("reasons") or [])
@@ -1284,7 +1309,7 @@ def _histogram_slo_status(
         max_value = _float_value(ms_histogram.get("max_ms")) / 1000.0
     violations = observations if observations > 0 and p95 > threshold_seconds else 0
     return {
-        "status": "fail" if violations else "pass" if observations else "no_observations",
+        "status": "warn" if violations else "pass" if observations else "unknown",
         "observations": observations,
         "violations": violations,
         "violationRate": 1.0 if violations else 0.0,
@@ -1302,15 +1327,22 @@ def _slo_section_status(
     section: dict[str, Any],
     *,
     fallback: dict[str, Any] | None = None,
+    raw: Any = None,
 ) -> dict[str, Any]:
+    raw_payload = _as_dict(raw)
+    if raw_payload:
+        return {
+            **raw_payload,
+            "status": str(raw_payload.get("status") or "unknown"),
+        }
     observations = _int_value(section.get("observations"))
     if observations <= 0 and fallback is not None and _int_value(fallback.get("observations")) > 0:
         return fallback
     violations = _int_value(section.get("violations"))
     if observations <= 0:
-        status = "no_observations"
+        status = "unknown"
     elif violations > 0:
-        status = "fail"
+        status = "warn"
     else:
         status = "pass"
     return {
@@ -2367,7 +2399,7 @@ def _has_candidate_warnings(summaries: list[dict[str, Any]]) -> bool:
 
 def _has_latency_slo_failure(summaries: list[dict[str, Any]]) -> bool:
     return any(
-        _as_dict(item["latencyDiagnostics"].get("sloStatus")).get("overall") == "fail"
+        _as_dict(item["latencyDiagnostics"].get("sloStatus")).get("overall") in {"warn", "fail"}
         for item in summaries
     )
 
@@ -2714,7 +2746,7 @@ def _recommended_actions(summary: dict[str, Any]) -> list[str]:
     if execution_safety.get("overall") == "fail":
         actions.append("disable_auto_execute_until_approved")
     latency_slo = _as_dict(_as_dict(summary.get("latencyDiagnostics")).get("sloStatus"))
-    if latency_slo.get("overall") == "fail":
+    if latency_slo.get("overall") in {"warn", "fail"}:
         actions.append("inspect_live_latency_slo_violations")
     latency_warnings = set(
         _as_list_of_strings(_as_dict(summary.get("latencyDiagnostics")).get("diagnosticWarnings")),
