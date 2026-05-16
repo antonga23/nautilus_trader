@@ -2427,25 +2427,53 @@ def _zero_pair_sample_blocker(samples: list[dict[str, object]], fallback: object
     if fixture_identity_reason is not None:
         return fixture_identity_reason
     blocker_hints: Counter[str] = Counter()
+    derived_blockers: Counter[str] = Counter()
     for sample in samples:
         blocker_hint = str(sample.get("blockerHint") or "")
         if blocker_hint:
             blocker_hints[blocker_hint] += 1
-        pattern_a = sample.get("patternA")
-        pattern_b = sample.get("patternB")
-        if not isinstance(pattern_a, dict) or not isinstance(pattern_b, dict):
             continue
-        if pattern_a.get("scope") != pattern_b.get("scope"):
-            return CoverageBlockerReason.SCOPE_MISMATCH.value
-        if _semantic_pattern_subject(pattern_a) != _semantic_pattern_subject(pattern_b):
-            return CoverageBlockerReason.PROVIDER_SCOPE_MISMATCH.value
-        if pattern_a.get("marketFamily") == pattern_b.get("marketFamily") and pattern_a.get(
-            "paramsKey",
-        ) != pattern_b.get("paramsKey"):
-            return CoverageBlockerReason.SAME_MARKET_PARAMS_MISMATCH.value
+        derived = _zero_pair_sample_derived_blocker(sample)
+        if derived:
+            derived_blockers[derived] += 1
     if blocker_hints:
-        return blocker_hints.most_common(1)[0][0]
+        return _prioritized_zero_pair_blocker(blocker_hints)
+    if derived_blockers:
+        return _prioritized_zero_pair_blocker(derived_blockers)
     return fallback_reason
+
+
+def _prioritized_zero_pair_blocker(blockers: Counter[str]) -> str:
+    for blocker in (
+        CoverageBlockerReason.SAME_MARKET_PARAMS_MISMATCH.value,
+        CoverageBlockerReason.PROVIDER_SCOPE_MISMATCH.value,
+        CoverageBlockerReason.SCOPE_MISMATCH.value,
+        CoverageBlockerReason.FIXTURE_IDENTITY_MISMATCH.value,
+        CoverageBlockerReason.NO_SEMANTIC_EDGE.value,
+        CoverageBlockerReason.UNSUPPORTED_MARKET_FAMILY.value,
+    ):
+        if blockers.get(blocker, 0) > 0:
+            return blocker
+    return blockers.most_common(1)[0][0]
+
+
+def _zero_pair_sample_derived_blocker(sample: dict[str, object]) -> str:
+    pattern_a = sample.get("patternA")
+    pattern_b = sample.get("patternB")
+    if not isinstance(pattern_a, dict) or not isinstance(pattern_b, dict):
+        return ""
+    family_relation = _market_family_relation(pattern_a, pattern_b)
+    if family_relation == "unsupported":
+        return CoverageBlockerReason.UNSUPPORTED_MARKET_FAMILY.value
+    if pattern_a.get("scope") != pattern_b.get("scope"):
+        return CoverageBlockerReason.SCOPE_MISMATCH.value
+    if _semantic_pattern_subject(pattern_a) != _semantic_pattern_subject(pattern_b):
+        return CoverageBlockerReason.PROVIDER_SCOPE_MISMATCH.value
+    if pattern_a.get("marketFamily") == pattern_b.get("marketFamily") and pattern_a.get(
+        "paramsKey",
+    ) != pattern_b.get("paramsKey"):
+        return CoverageBlockerReason.SAME_MARKET_PARAMS_MISMATCH.value
+    return ""
 
 
 def _fixture_identity_fallback_reason(
@@ -2564,15 +2592,47 @@ def _zero_pair_blocker_hint(
         if _semantic_pattern_subject(pattern_a) != _semantic_pattern_subject(pattern_b):
             return CoverageBlockerReason.PROVIDER_SCOPE_MISMATCH.value
         return CoverageBlockerReason.SAME_MARKET_PARAMS_MISMATCH.value
+    family_relation = _market_family_relation(pattern_a, pattern_b)
+    if family_relation == "unsupported":
+        return CoverageBlockerReason.UNSUPPORTED_MARKET_FAMILY.value
     if pattern_a.get("scope") != pattern_b.get("scope"):
         return CoverageBlockerReason.SCOPE_MISMATCH.value
     if _semantic_pattern_subject(pattern_a) != _semantic_pattern_subject(pattern_b):
         return CoverageBlockerReason.PROVIDER_SCOPE_MISMATCH.value
-    if pattern_a.get("marketFamily") == pattern_b.get("marketFamily") and pattern_a.get(
+    if family_relation in {"same_family", "directional_family"} and pattern_a.get(
         "paramsKey",
     ) != pattern_b.get("paramsKey"):
         return CoverageBlockerReason.SAME_MARKET_PARAMS_MISMATCH.value
     return ""
+
+
+_DIRECTIONAL_MARKET_FAMILIES = frozenset(
+    {
+        "WINNER",
+        "MATCH_ODDS",
+        "DRAW_NO_BET",
+        "ASIAN_HANDICAP",
+        "POINT_SPREAD",
+    },
+)
+_TOTAL_MARKET_FAMILIES = frozenset({"TOTALS", "TEAM_TOTALS"})
+
+
+def _market_family_relation(
+    pattern_a: dict[str, object],
+    pattern_b: dict[str, object],
+) -> str:
+    family_a = str(pattern_a.get("marketFamily") or pattern_a.get("marketType") or "").upper()
+    family_b = str(pattern_b.get("marketFamily") or pattern_b.get("marketType") or "").upper()
+    if not family_a or not family_b:
+        return "unknown"
+    if family_a == family_b:
+        return "same_family"
+    if family_a in _DIRECTIONAL_MARKET_FAMILIES and family_b in _DIRECTIONAL_MARKET_FAMILIES:
+        return "directional_family"
+    if family_a in _TOTAL_MARKET_FAMILIES and family_b in _TOTAL_MARKET_FAMILIES:
+        return "same_family"
+    return "unsupported"
 
 
 def _semantic_pattern_subject(pattern: dict[str, object]) -> str:
@@ -2687,7 +2747,7 @@ def _sample_zero_pair_nodes_for_common_events(
     common_event_keys: set[str],
     limit: int,
 ) -> list[tuple[object, object]]:
-    pairs: list[tuple[object, object]] = []
+    scored_pairs: list[tuple[tuple[int, int, int, str, str], object, object]] = []
     for source_node in source_nodes:
         source_keys = _probe_event_keys_no_time(source_node) & common_event_keys
         if not source_keys:
@@ -2695,10 +2755,36 @@ def _sample_zero_pair_nodes_for_common_events(
         for target_node in target_nodes:
             if not (_probe_event_keys_no_time(target_node) & source_keys):
                 continue
-            pairs.append((source_node, target_node))
-            if len(pairs) >= limit:
-                return pairs
-    return pairs
+            scored_pairs.append(
+                (
+                    _zero_pair_sample_priority(source_node, target_node),
+                    source_node,
+                    target_node,
+                ),
+            )
+    scored_pairs.sort(key=lambda item: item[0])
+    return [(source_node, target_node) for _, source_node, target_node in scored_pairs[:limit]]
+
+
+def _zero_pair_sample_priority(source_node, target_node) -> tuple[int, int, int, str, str]:
+    pattern_a = _probe_pattern_payload(source_node)
+    pattern_b = _probe_pattern_payload(target_node)
+    relation = _market_family_relation(pattern_a, pattern_b)
+    relation_rank = {
+        "same_family": 0,
+        "directional_family": 1,
+        "unknown": 2,
+        "unsupported": 3,
+    }.get(relation, 3)
+    scope_rank = 0 if pattern_a.get("scope") == pattern_b.get("scope") else 1
+    params_rank = 0 if pattern_a.get("paramsKey") == pattern_b.get("paramsKey") else 1
+    return (
+        relation_rank,
+        scope_rank,
+        params_rank,
+        str(getattr(source_node, "instrument_id", "") or getattr(source_node, "id", "")),
+        str(getattr(target_node, "instrument_id", "") or getattr(target_node, "id", "")),
+    )
 
 
 def _sample_zero_pair_nodes_fallback(

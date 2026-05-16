@@ -3748,6 +3748,70 @@ class TestBettingArbitrageNodeRunner:
         assert report["samples"][0]["blockerHint"] == "same_market_params_mismatch"
         assert report["samples"][0]["matcherSuspectReason"] == "same_market_params_mismatch"
 
+    def test_venue_pair_coverage_prioritizes_comparable_common_fixture_samples(self):
+        polymarket_spread = _instrument(
+            venue="POLYMARKET",
+            market_type="basketball.spread",
+            market_name="basketball.spread_binary",
+            outcome="home",
+            params="line=-7.5",
+            sport_name="basketball",
+        )
+        polymarket_total = _instrument(
+            venue="POLYMARKET",
+            market_type="totals",
+            market_name="TOTALS",
+            outcome="over",
+            params="line=174.5",
+            sport_name="basketball",
+        )
+        sxbet_period_winner = _instrument(
+            venue="SXBET",
+            market_type="match_odds",
+            market_name="MATCH_ODDS",
+            outcome="home",
+            params="period=p1",
+            sport_name="basketball",
+        )
+        sxbet_total = _instrument(
+            venue="SXBET",
+            market_type="totals",
+            market_name="TOTALS",
+            outcome="under",
+            params="line=171",
+            sport_name="basketball",
+        )
+        strategy = SimpleNamespace(
+            _config=SimpleNamespace(enabled_venues=frozenset({"POLYMARKET", "SXBET"})),
+            _quote_subscribed_instrument_ids={
+                polymarket_spread.id,
+                polymarket_total.id,
+                sxbet_period_winner.id,
+                sxbet_total.id,
+            },
+        )
+
+        coverage = node_runner._venue_pair_coverage(
+            strategy,
+            edges=[],
+            nodes={
+                "poly-spread": SimpleNamespace(instrument=polymarket_spread),
+                "sxbet-period-winner": SimpleNamespace(instrument=sxbet_period_winner),
+                "poly-total": SimpleNamespace(instrument=polymarket_total),
+                "sxbet-total": SimpleNamespace(instrument=sxbet_total),
+            },
+            quotes={},
+            matched_node_ids=set(),
+            candidate_venue_pairs={},
+        )
+
+        report = {item["venuePair"]: item for item in coverage["zeroCandidateVenuePairs"]}[
+            "POLYMARKET->SXBET"
+        ]
+        assert report["blockerReason"] == "same_market_params_mismatch"
+        assert report["samples"][0]["marketFamily"] == "TOTALS + TOTALS"
+        assert report["samples"][0]["blockerHint"] == "same_market_params_mismatch"
+
     def test_venue_pair_coverage_reports_polymarket_corners_as_provider_scope_mismatch(self):
         polymarket_instrument = _instrument(
             venue="POLYMARKET",
