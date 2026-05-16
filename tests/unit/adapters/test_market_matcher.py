@@ -1084,6 +1084,51 @@ class TestMarketMatcher:
         assert diagnostics["matched"] is False
         assert diagnostics["reason"] == "ambiguous_start_time_conflict"
 
+    def test_find_hedges_uses_fixture_alias_keys_for_cross_venue_missing_start_time(
+        self,
+        market_matcher,
+    ):
+        """
+        Test alias-proven fixtures are not rejected by exact event-key drift.
+        """
+        cloudbet = make_instrument(
+            venue="CLOUDBET",
+            event_id="cloudbet-event",
+            event_name="Cleveland Cavaliers v Minnesota Timberwolves",
+            home_name="Cleveland Cavaliers",
+            away_name="Minnesota Timberwolves",
+            outcome="over",
+            params="2.5",
+            start_time="2026-03-13T18:00:00Z",
+            sport_name="basketball",
+        )
+        cloudbet_alias = make_instrument(
+            venue="CLOUDBET",
+            event_id="cloudbet-event-alias",
+            event_name="CLE Cavs v MIN Timberwolves",
+            home_name="CLE Cavs",
+            away_name="MIN Timberwolves",
+            outcome="over",
+            params="2.5",
+            start_time="2026-03-13T18:00:00Z",
+            sport_name="basketball",
+        )
+        sxbet = make_instrument(
+            venue="SXBET",
+            event_id="sxbet-event",
+            event_name="CLE Cavs @ MIN Timberwolves",
+            home_name="CLE Cavs",
+            away_name="MIN Timberwolves",
+            outcome="under",
+            params="2.5",
+            start_time=None,
+            sport_name="basketball",
+        )
+
+        hedges = market_matcher.find_hedges(sxbet, [cloudbet, cloudbet_alias])
+
+        assert len(hedges) == 2
+
     def test_crypto_betting_instrument_min_price_is_not_snapshot_floor(self, sample_instrument_a):
         """
         Test betting instruments do not use the initial odds snapshot as min_price.

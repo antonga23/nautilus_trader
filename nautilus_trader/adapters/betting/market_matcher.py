@@ -12,6 +12,9 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
+# skipcq
+# Large matcher surface retained for backward-compatible public APIs while fixture-identity
+# logic moves into dedicated helpers.
 """
 MarketMatcher - Cross-venue market matching for arbitrage detection.
 """
@@ -580,14 +583,41 @@ class MarketMatcher:
 
     @staticmethod
     def _fixture_cluster_count(instruments: list[CryptoBettingInstrument]) -> int:
-        keys: set[str] = set()
+        clusters: list[set[str]] = []
         for instrument in instruments:
-            start = instrument.parsed_start_time()
-            key = instrument.event_key(include_start_time=False)
-            if start is not None:
-                key = f"{key}:{start.strftime('%Y-%m-%dT%H')}"
-            keys.add(key)
-        return len(keys)
+            MarketMatcher._merge_fixture_alias_cluster(
+                clusters,
+                MarketMatcher._fixture_cluster_aliases(instrument),
+            )
+        return len(clusters)
+
+    @staticmethod
+    def _fixture_cluster_aliases(instrument: CryptoBettingInstrument) -> set[str]:
+        aliases = set(
+            DEFAULT_FIXTURE_IDENTITY_RESOLVER.event_alias_keys(
+                instrument,
+                include_start_time=False,
+            ),
+        )
+        if not aliases:
+            aliases = {instrument.event_key(include_start_time=False)}
+        start = instrument.parsed_start_time()
+        if start is None:
+            return aliases
+        suffix = start.strftime("%Y-%m-%dT%H")
+        return {f"{alias}:{suffix}" for alias in aliases}
+
+    @staticmethod
+    def _merge_fixture_alias_cluster(clusters: list[set[str]], aliases: set[str]) -> None:
+        matching_indexes = [index for index, cluster in enumerate(clusters) if cluster & aliases]
+        if not matching_indexes:
+            clusters.append(set(aliases))
+            return
+
+        primary_index = matching_indexes[0]
+        clusters[primary_index].update(aliases)
+        for index in reversed(matching_indexes[1:]):
+            clusters[primary_index].update(clusters.pop(index))
 
     @staticmethod
     def _is_two_way_match_odds_market(instrument: CryptoBettingInstrument) -> bool:
