@@ -73,6 +73,7 @@ class ProbeProfitabilityCounters:
     quote_age_samples_secs: list[float] = field(default_factory=list)
     fetch_latency_samples_secs: list[float] = field(default_factory=list)
     pair_skew_samples_secs: list[float] = field(default_factory=list)
+    pair_skew_samples_by_venue_pair: dict[str, list[float]] = field(default_factory=dict)
     live_quote_age_slo_secs: float = 5.0
     live_quote_age_observations: int = 0
     live_quote_age_violations: int = 0
@@ -142,6 +143,10 @@ class ProbeProfitabilityCounters:
                 "quote_age_secs": _percentile_payload(self.quote_age_samples_secs),
                 "fetch_latency_secs": _percentile_payload(self.fetch_latency_samples_secs),
                 "pair_skew_secs": _percentile_payload(self.pair_skew_samples_secs),
+            },
+            "pair_skew_by_venue_pair": {
+                venue_pair: _percentile_payload(samples)
+                for venue_pair, samples in sorted(self.pair_skew_samples_by_venue_pair.items())
             },
             "live_quote_age_slo": {
                 "max_quote_age_secs": self.live_quote_age_slo_secs,
@@ -1168,6 +1173,7 @@ def _collect_runtime_probe_payload(
                 "fetchLatencySeconds": profitability["latency_histograms"]["fetch_latency_secs"],
                 "pairSkewSeconds": profitability["latency_histograms"]["pair_skew_secs"],
             },
+            "pairSkewByVenuePair": profitability["pair_skew_by_venue_pair"],
             "liveQuoteAgeSlo": {
                 "maxQuoteAgeSeconds": profitability["live_quote_age_slo"]["max_quote_age_secs"],
                 "observations": profitability["live_quote_age_slo"]["observations"],
@@ -4062,6 +4068,7 @@ def _record_probe_quality(
     counters.quote_age_samples_secs.extend([quote_age_a_secs, quote_age_b_secs])
     counters.fetch_latency_samples_secs.extend([fetch_latency_a_secs, fetch_latency_b_secs])
     counters.pair_skew_samples_secs.append(quote_delta_secs)
+    counters.pair_skew_samples_by_venue_pair.setdefault(venue_pair, []).append(quote_delta_secs)
     if str(quality.get("freshnessProfile") or "") == "live":
         _record_live_timing_slo(
             counters,

@@ -4054,6 +4054,7 @@ class TestBettingArbitrageNodeRunner:
         assert payload["latency_histograms"]["quote_age_secs"]["count"] == 2
         assert payload["latency_histograms"]["fetch_latency_secs"]["max"] == 0.1
         assert payload["latency_histograms"]["pair_skew_secs"]["count"] == 1
+        assert payload["pair_skew_by_venue_pair"]["CLOUDBET->POLYMARKET"]["max"] == 0.0
         assert payload["live_quote_age_slo"]["observations"] == 0
         assert payload["live_timing_slo"]["fetch_latency"]["observations"] == 0
         assert payload["live_timing_slo"]["pair_skew"]["observations"] == 0
