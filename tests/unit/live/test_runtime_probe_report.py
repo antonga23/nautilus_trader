@@ -316,6 +316,9 @@ def _runtime_status_payload() -> dict[str, object]:
                     },
                     "pairSkewSeconds": {"count": 4, "p50": 0.2, "p95": 0.7, "p99": 0.8, "max": 0.9},
                 },
+                "pairSkewByVenuePair": {
+                    "CLOUDBET->SXBET": {"count": 3, "p50": 0.3, "p95": 0.7, "p99": 0.8, "max": 0.9},
+                },
                 "liveQuoteAgeSlo": {
                     "maxQuoteAgeSeconds": 5.0,
                     "observations": 8,
@@ -661,6 +664,7 @@ def test_runtime_probe_report_summarizes_candidate_and_blocker_counts():
         "start_time_mismatch": 2,
     }
     assert summary["candidateQuality"]["latencyHistograms"]["quoteAgeSeconds"]["p95"] == 1.2
+    assert summary["candidateQuality"]["pairSkewByVenuePair"]["CLOUDBET->SXBET"]["p95"] == 0.7
     assert summary["candidateQuality"]["liveQuoteAgeSlo"]["violations"] == 0
     assert summary["candidateQuality"]["liveTimingSlo"]["fetchLatency"]["violations"] == 1
     assert summary["candidateQuality"]["sameVenueDryRun"]["passes"] == 2

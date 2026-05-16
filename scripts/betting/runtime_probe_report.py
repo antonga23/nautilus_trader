@@ -185,6 +185,7 @@ def summarize_payload(payload: dict[str, Any], *, top_limit: int = 5) -> dict[st
             "venuePairs": candidate_quality.get("venuePairs"),
             "marketFamilies": candidate_quality.get("marketFamilies"),
             "latencyHistograms": candidate_quality.get("latencyHistograms"),
+            "pairSkewByVenuePair": candidate_quality.get("pairSkewByVenuePair"),
             "liveQuoteAgeSlo": candidate_quality.get("liveQuoteAgeSlo"),
             "liveTimingSlo": candidate_quality.get("liveTimingSlo"),
             "sameVenueDryRun": candidate_quality.get("sameVenueDryRun"),
