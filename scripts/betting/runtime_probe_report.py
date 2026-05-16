@@ -23,6 +23,10 @@ def _as_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _as_list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
 def _top_items(mapping: dict[str, Any], *, limit: int) -> list[dict[str, Any]]:
     items = sorted(mapping.items(), key=lambda item: (-_numeric(item[1]), item[0]))
     return [{"key": key, "value": value} for key, value in items[:limit]]
@@ -2182,6 +2186,14 @@ def _parse_args() -> argparse.Namespace:
         help="Return non-zero unless aggregate cross-venue candidates meet this count",
     )
     parser.add_argument(
+        "--require-cross-venue-candidates-or-blockers",
+        action="store_true",
+        help=(
+            "Return non-zero unless cross-venue candidates are observed or exact "
+            "cross-venue blocker samples are present"
+        ),
+    )
+    parser.add_argument(
         "--min-quoted-semantic-instruments",
         type=int,
         default=None,
@@ -2283,7 +2295,17 @@ def _gate_exit_code(
         ),
         (
             13,
-            args.min_cross_venue_candidates is not None,
+            args.require_cross_venue_candidates_or_blockers,
+            not _has_cross_venue_candidates_or_blockers(
+                summaries,
+                aggregate=aggregate,
+                min_count=args.min_cross_venue_candidates,
+            ),
+        ),
+        (
+            13,
+            args.min_cross_venue_candidates is not None
+            and not args.require_cross_venue_candidates_or_blockers,
             aggregate["crossVenueCandidates"] < (args.min_cross_venue_candidates or 0),
         ),
         (
@@ -2297,6 +2319,46 @@ def _gate_exit_code(
         if enabled and failed:
             return code
     return 0
+
+
+def _has_cross_venue_candidates_or_blockers(
+    summaries: list[dict[str, Any]],
+    *,
+    aggregate: dict[str, Any],
+    min_count: int | None,
+) -> bool:
+    required_count = max(1, min_count or 0)
+    if int(aggregate.get("crossVenueCandidates") or 0) >= required_count:
+        return True
+
+    for summary in summaries:
+        venue_coverage = _as_dict(summary.get("venueCoverage"))
+        candidate_quality = _as_dict(summary.get("candidateQuality"))
+        reports = list(_as_list(venue_coverage.get("zeroCandidateVenuePairs")))
+        reports.extend(_as_list(candidate_quality.get("zeroCandidateVenuePairSamples")))
+        for report in reports:
+            if not _is_cross_venue_blocker_report(report):
+                continue
+            return True
+    return False
+
+
+def _is_cross_venue_blocker_report(raw_report: Any) -> bool:
+    report = _as_dict(raw_report)
+    venue_pair = str(report.get("venuePair") or "")
+    if "->" not in venue_pair:
+        return False
+    source, target = (part.strip() for part in venue_pair.split("->", 1))
+    if not source or not target or source == target:
+        return False
+
+    blocker = str(
+        report.get("blockerReason")
+        or report.get("discoveryGapReason")
+        or report.get("reason")
+        or "",
+    ).strip()
+    return bool(blocker and blocker != "missing_instruments")
 
 
 def _has_candidate_warnings(summaries: list[dict[str, Any]]) -> bool:

@@ -1676,6 +1676,75 @@ def test_runtime_probe_report_cli_can_enforce_runtime_acceptance_gates(
     assert json.loads(capsys.readouterr().out)[0]["graph"]["engine"] == "rust"
 
 
+def test_runtime_probe_report_cli_accepts_cross_venue_blocker_gate(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    module = _load_module()
+    payload = _runtime_status_payload()
+    payload["runtimeProbe"]["venueCoverage"]["crossVenueCandidateCount"] = 0
+    payload["runtimeProbe"]["venueCoverage"]["crossVenuePairsWithCandidates"] = []
+    payload["runtimeProbe"]["venueCoverage"]["candidateCounts"] = {
+        "POLYMARKET->SXBET": 0,
+    }
+    payload["runtimeProbe"]["venueCoverage"]["zeroCandidateVenuePairs"] = [
+        {
+            "venuePair": "POLYMARKET->SXBET",
+            "reason": "no_semantic_edge",
+            "blockerReason": "scope_mismatch",
+            "sampleBlockerCounts": {"scope_mismatch": 2},
+            "samples": [{"instrumentIdA": "poly-1", "instrumentIdB": "sx-1"}],
+        },
+    ]
+    status_path = tmp_path / "status.json"
+    status_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(SCRIPT_PATH),
+            str(status_path),
+            "--min-cross-venue-candidates",
+            "1",
+            "--require-cross-venue-candidates-or-blockers",
+        ],
+    )
+
+    assert module.main() == 0
+    assert json.loads(capsys.readouterr().out)[0]["candidates"]["crossVenueCandidateCount"] == 0
+
+
+def test_runtime_probe_report_cli_fails_cross_venue_gate_without_blockers(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    module = _load_module()
+    payload = _runtime_status_payload()
+    payload["runtimeProbe"]["venueCoverage"]["crossVenueCandidateCount"] = 0
+    payload["runtimeProbe"]["venueCoverage"]["crossVenuePairsWithCandidates"] = []
+    payload["runtimeProbe"]["venueCoverage"]["zeroCandidateVenuePairs"] = []
+    status_path = tmp_path / "status.json"
+    status_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(SCRIPT_PATH),
+            str(status_path),
+            "--min-cross-venue-candidates",
+            "1",
+            "--require-cross-venue-candidates-or-blockers",
+        ],
+    )
+
+    assert module.main() == 13
+    assert json.loads(capsys.readouterr().out)[0]["candidates"]["crossVenueCandidateCount"] == 0
+
+
 def test_runtime_probe_report_cli_fails_auto_execute_gate(
     tmp_path,
     monkeypatch,
