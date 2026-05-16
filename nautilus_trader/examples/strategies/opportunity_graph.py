@@ -17,9 +17,10 @@
 """
 Persistent opportunity graph for betting arbitrage strategies.
 
-The graph keeps betting-domain hedge topology out of the quote hot path. Market matching rules
-still come from :class:`MarketMatcher`, but they are applied when instruments are loaded or added.
-Quote ticks only update node state and re-evaluate edges adjacent to the changed instrument.
+The graph keeps betting-domain hedge topology out of the quote hot path. In semantic Rust mode,
+topology comes only from promoted semantic payloads loaded from :class:`MarketMatcher`'s rule
+store. Quote ticks only update node state and re-evaluate edges adjacent to the changed
+instrument.
 
 """
 
@@ -1442,9 +1443,11 @@ class OpportunityGraph:
         return str(params or "")
 
     def _should_use_semantic_rust(self, semantic_templates: list[dict[str, object]]) -> bool:
-        return self._rust_core_supports_semantic_topology() and (
-            self._engine == "semantic_rust" or (self._engine == "auto" and bool(semantic_templates))
-        )
+        if not self._rust_core_supports_semantic_topology():
+            return False
+        if self._engine == "semantic_rust":
+            return True
+        return self._engine == "auto" and bool(semantic_templates)
 
     def _should_use_legacy_rust(self) -> bool:
         return self._rust_core is not None and (
