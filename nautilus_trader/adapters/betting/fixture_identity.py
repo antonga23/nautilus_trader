@@ -615,6 +615,14 @@ class FixtureIdentityResolver:
         venue_b = str(getattr(getattr(instrument_b, "venue_name", ""), "value", "") or "")
         if venue_a and venue_a == venue_b:
             return False
+        if self._is_date_only_cross_venue_start_time_match(
+            instrument_a,
+            instrument_b,
+            key_a=key_a,
+            key_b=key_b,
+            participant_match=participant_match,
+        ):
+            return True
         if start_delta_secs > self.soft_cross_venue_start_time_tolerance_secs:
             return False
         if participant_match.confidence < 0.84:
@@ -622,6 +630,31 @@ class FixtureIdentityResolver:
         if self._competitions_match(instrument_a, instrument_b):
             return True
         return bool(key_a and key_a == key_b and participant_match.confidence >= 0.9)
+
+    def _is_date_only_cross_venue_start_time_match(
+        self,
+        instrument_a: Any,
+        instrument_b: Any,
+        *,
+        key_a: str,
+        key_b: str,
+        participant_match: ParticipantMatch,
+    ) -> bool:
+        if participant_match.confidence < 0.9:
+            return False
+        if not (key_a and key_a == key_b):
+            return False
+        start_a = self.parsed_start_time(instrument_a)
+        start_b = self.parsed_start_time(instrument_b)
+        if start_a is None or start_b is None:
+            return False
+        if start_a.date() != start_b.date():
+            return False
+        return self._is_date_only_midnight(start_a) or self._is_date_only_midnight(start_b)
+
+    @staticmethod
+    def _is_date_only_midnight(value: datetime) -> bool:
+        return value.hour == 0 and value.minute == 0 and value.second == 0
 
     def _canonical_match_proof(
         self,

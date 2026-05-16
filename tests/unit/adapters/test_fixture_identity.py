@@ -141,6 +141,58 @@ def test_fixture_identity_allows_cross_venue_start_time_drift_when_participants_
     assert proof.start_time_delta_secs == 4 * 60 * 60
 
 
+def test_fixture_identity_allows_cross_venue_date_only_start_time():
+    resolver = FixtureIdentityResolver()
+    polymarket = _instrument(
+        venue="POLYMARKET",
+        event_name="Baltimore Orioles v Washington Nationals",
+        home_name="Baltimore Orioles",
+        away_name="Washington Nationals",
+        sport_name="baseball",
+        start_time="2026-05-15T00:00:00Z",
+    )
+    sxbet = _instrument(
+        venue="SXBET",
+        event_name="Baltimore Orioles vs Washington Nationals",
+        home_name="Baltimore Orioles",
+        away_name="Washington Nationals",
+        sport_name="baseball",
+        start_time="2026-05-15T22:45:00Z",
+    )
+
+    proof = resolver.resolve(polymarket, sxbet)
+
+    assert proof.same_fixture is True
+    assert proof.reason == "canonical_fixture_match_start_time_conflict"
+    assert proof.blocker_reason is None
+    assert proof.start_time_delta_secs == 22.75 * 60 * 60
+
+
+def test_fixture_identity_blocks_date_only_start_time_on_different_utc_date():
+    resolver = FixtureIdentityResolver()
+    polymarket = _instrument(
+        venue="POLYMARKET",
+        event_name="Baltimore Orioles v Washington Nationals",
+        home_name="Baltimore Orioles",
+        away_name="Washington Nationals",
+        sport_name="baseball",
+        start_time="2026-05-15T00:00:00Z",
+    )
+    sxbet = _instrument(
+        venue="SXBET",
+        event_name="Baltimore Orioles vs Washington Nationals",
+        home_name="Baltimore Orioles",
+        away_name="Washington Nationals",
+        sport_name="baseball",
+        start_time="2026-05-16T22:45:00Z",
+    )
+
+    proof = resolver.resolve(polymarket, sxbet)
+
+    assert proof.same_fixture is False
+    assert proof.blocker_reason == "start_time_mismatch"
+
+
 def test_fixture_identity_keeps_same_venue_start_time_drift_strict():
     resolver = FixtureIdentityResolver()
     first = _instrument(

@@ -971,6 +971,52 @@ class TestMarketMatcher:
         assert diagnostics["matched"] is True
         assert diagnostics["reason"] == "cross_venue_unique_start_time_conflict"
 
+    def test_find_hedges_allows_unique_cross_venue_date_only_start_time_conflict(
+        self,
+        market_matcher,
+    ):
+        polymarket = CryptoBettingInstrument(
+            venue=Venue("POLYMARKET"),
+            event_id="event-1",
+            event_name="Baltimore Orioles vs Washington Nationals",
+            home_name="Baltimore Orioles",
+            away_name="Washington Nationals",
+            sport_name="baseball",
+            competition_name="MLB",
+            market_name="Match Odds",
+            market_type="match_odds",
+            outcome="home",
+            side=SelectionSide.BACK,
+            price=2.0,
+            currency=Currency.from_str("USDC"),
+            start_time="2026-05-15T00:00:00Z",
+            info={"is_two_way_market": True},
+        )
+        sxbet = CryptoBettingInstrument(
+            venue=Venue("SXBET"),
+            event_id="event-2",
+            event_name="Baltimore Orioles v Washington Nationals",
+            home_name="Baltimore Orioles",
+            away_name="Washington Nationals",
+            sport_name="baseball",
+            competition_name="MLB",
+            market_name="Match Odds",
+            market_type="match_odds",
+            outcome="away",
+            side=SelectionSide.BACK,
+            price=2.0,
+            currency=Currency.from_str("USDC"),
+            start_time="2026-05-15T22:45:00Z",
+            info={"is_two_way_market": True},
+        )
+
+        hedges = market_matcher.find_hedges(sxbet, [polymarket])
+
+        assert len(hedges) == 1
+        diagnostics = market_matcher.explain_hedge_event_match(sxbet, polymarket, [])
+        assert diagnostics["matched"] is True
+        assert diagnostics["reason"] == "cross_venue_unique_start_time_conflict"
+
     def test_find_hedges_rejects_ambiguous_cross_venue_start_time_conflict(
         self,
         market_matcher,
