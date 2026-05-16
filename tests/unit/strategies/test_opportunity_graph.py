@@ -403,6 +403,21 @@ def test_semantic_rust_ignores_scope_only_period_params(tmp_path: Path) -> None:
     ensure(graph.edge_count == 1)
 
 
+def test_semantic_rust_does_not_fall_back_to_public_matcher_without_templates() -> None:  # skipcq
+    instruments = [_instrument(outcome="over"), _instrument(outcome="under")]
+    try:
+        graph = OpportunityGraph(MarketMatcher(), engine="semantic_rust")
+    except ImportError:
+        pytest.skip("Rust OpportunityGraphCore is unavailable")
+
+    graph.build(instruments)
+
+    ensure(graph.graph_engine == "rust")
+    ensure(graph.topology_source == "rust_semantic")
+    ensure(graph.semantic_template_count == 0)
+    ensure(graph.edge_count == 0)
+
+
 def test_venue_agnostic_polymarket_template_builds_cross_venue_edge(
     tmp_path: Path,
 ) -> None:  # skipcq

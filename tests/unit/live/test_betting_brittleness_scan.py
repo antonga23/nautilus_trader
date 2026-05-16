@@ -34,6 +34,14 @@ def test_brittleness_scan_passes_clean_fixture(tmp_path: Path) -> None:
     assert findings == []
 
 
+def test_brittleness_scan_default_repo_paths_are_clean() -> None:
+    scanner = load_scanner()
+
+    findings = scanner.scan(scanner.DEFAULT_SCAN_PATHS)
+
+    assert findings == []
+
+
 def test_brittleness_scan_flags_legacy_mapper_symbol(tmp_path: Path) -> None:
     brittle = tmp_path / "brittle.py"
     brittle.write_text("MARKET_MAPPER = {}\n", encoding="utf-8")
