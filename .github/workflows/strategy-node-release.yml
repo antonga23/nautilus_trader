@@ -561,8 +561,8 @@ jobs:
       - name: Log in to GHCR
         if: >-
           github.event_name != 'workflow_dispatch' ||
-          github.event.inputs.deploy_enabled != 'true' ||
-          github.event.inputs.image_transport != 'archive'
+          (github.event.inputs.deploy_enabled == 'true' &&
+          github.event.inputs.image_transport != 'archive')
         uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
         with:
           registry: ghcr.io
@@ -625,8 +625,8 @@ jobs:
         if: >-
           ${{ steps.image-archive-cache.outputs.archive_exists != 'true' &&
           (github.event_name != 'workflow_dispatch' ||
-          github.event.inputs.deploy_enabled != 'true' ||
-          github.event.inputs.image_transport != 'archive') }}
+          (github.event.inputs.deploy_enabled == 'true' &&
+          github.event.inputs.image_transport != 'archive')) }}
         env:
           IMAGE_REF: ${{ steps.meta.outputs.image_ref }}
         run: |

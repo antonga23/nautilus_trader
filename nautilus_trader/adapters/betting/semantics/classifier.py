@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+from decimal import Decimal
+from decimal import InvalidOperation
 
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.betting.semantics.normalization import MarketNormalizer
@@ -70,7 +72,21 @@ class RuleClassifier:
         vector_a: PayoffVector,
         vector_b: PayoffVector,
     ) -> MinedRule | None:
-        relationship_type = self._relationship_type(selection_a, selection_b, vector_a, vector_b)
+        alternate_totals = self._alternate_totals_coverage_vectors(
+            selection_a,
+            selection_b,
+        )
+        relationship_type: RelationshipType | None
+        if alternate_totals is not None:
+            vector_a, vector_b = alternate_totals
+            relationship_type = RelationshipType.COMPLEMENTARY_COVERAGE
+        else:
+            relationship_type = self._relationship_type(
+                selection_a,
+                selection_b,
+                vector_a,
+                vector_b,
+            )
         if relationship_type is None:
             return None
 
@@ -142,6 +158,48 @@ class RuleClassifier:
         return None
 
     @staticmethod
+    def _alternate_totals_coverage_vectors(
+        selection_a: NormalizedSelection,
+        selection_b: NormalizedSelection,
+    ) -> tuple[PayoffVector, PayoffVector] | None:
+        line_pair = _alternate_totals_line_pair(selection_a, selection_b)
+        if line_pair is None:
+            return None
+        low_line, high_line, over_selection, under_selection = line_pair
+        states = (
+            f"TOTAL_BELOW_{_line_key(low_line)}",
+            f"TOTAL_BETWEEN_{_line_key(low_line)}_{_line_key(high_line)}",
+            f"TOTAL_ABOVE_{_line_key(high_line)}",
+        )
+        over_vector = PayoffVector(
+            sport=over_selection.sport,
+            market_type=over_selection.market_type,
+            selection=over_selection.selection,
+            params=over_selection.params,
+            result_states=states,
+            settlement=(
+                SettlementState.LOSE.value,
+                SettlementState.WIN.value,
+                SettlementState.WIN.value,
+            ),
+        )
+        under_vector = PayoffVector(
+            sport=under_selection.sport,
+            market_type=under_selection.market_type,
+            selection=under_selection.selection,
+            params=under_selection.params,
+            result_states=states,
+            settlement=(
+                SettlementState.WIN.value,
+                SettlementState.WIN.value,
+                SettlementState.LOSE.value,
+            ),
+        )
+        if selection_a.selection == "OVER":
+            return over_vector, under_vector
+        return under_vector, over_vector
+
+    @staticmethod
     def _dangerous_handicap_pair(
         selection_a: NormalizedSelection,
         selection_b: NormalizedSelection,
@@ -205,9 +263,18 @@ class RuleClassifier:
             caveats.add("partial_settlement_present")
         if vector_a.has_unknown or vector_b.has_unknown:
             caveats.add("unknown_settlement_present")
+        if RuleClassifier._has_state_where_both_win(vector_a, vector_b):
+            caveats.add("overlapping_coverage")
         caveats.update(selection_a.rules_flags)
         caveats.update(selection_b.rules_flags)
         return tuple(sorted(caveats))
+
+    @staticmethod
+    def _has_state_where_both_win(vector_a: PayoffVector, vector_b: PayoffVector) -> bool:
+        return any(
+            state_a == SettlementState.WIN.value and state_b == SettlementState.WIN.value
+            for state_a, state_b in zip(vector_a.settlement, vector_b.settlement, strict=True)
+        )
 
     @staticmethod
     def _rule_id(
@@ -246,3 +313,69 @@ class RuleClassifier:
         }
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()[:24]
+
+
+def _decimal_param(selection: NormalizedSelection, name: str) -> Decimal | None:
+    raw = selection.param(name)
+    if raw in (None, ""):
+        return None
+    try:
+        return Decimal(str(raw))
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _alternate_totals_line_pair(
+    selection_a: NormalizedSelection,
+    selection_b: NormalizedSelection,
+) -> tuple[Decimal, Decimal, NormalizedSelection, NormalizedSelection] | None:
+    if not _same_totals_market_scope(selection_a, selection_b):
+        return None
+    if {selection_a.selection, selection_b.selection} != {"OVER", "UNDER"}:
+        return None
+    line_a = _decimal_param(selection_a, "line")
+    line_b = _decimal_param(selection_b, "line")
+    if line_a is None or line_b is None or line_a == line_b:
+        return None
+    if not _is_half_point_line(line_a) or not _is_half_point_line(line_b):
+        return None
+    return _ordered_alternate_total_pair(selection_a, selection_b, line_a, line_b)
+
+
+def _same_totals_market_scope(
+    selection_a: NormalizedSelection,
+    selection_b: NormalizedSelection,
+) -> bool:
+    return (
+        selection_a.market_type == CanonicalMarketType.TOTALS.value
+        and selection_b.market_type == CanonicalMarketType.TOTALS.value
+        and selection_a.scope == selection_b.scope
+        and selection_a.sport == selection_b.sport
+    )
+
+
+def _ordered_alternate_total_pair(
+    selection_a: NormalizedSelection,
+    selection_b: NormalizedSelection,
+    line_a: Decimal,
+    line_b: Decimal,
+) -> tuple[Decimal, Decimal, NormalizedSelection, NormalizedSelection] | None:
+    low_line = min(line_a, line_b)
+    high_line = max(line_a, line_b)
+    over_selection = selection_a if selection_a.selection == "OVER" else selection_b
+    under_selection = selection_a if selection_a.selection == "UNDER" else selection_b
+    if _decimal_param(over_selection, "line") != low_line:
+        return None
+    if _decimal_param(under_selection, "line") != high_line:
+        return None
+    return low_line, high_line, over_selection, under_selection
+
+
+def _is_half_point_line(line: Decimal) -> bool:
+    return abs(line % Decimal(1)) == Decimal("0.5")
+
+
+def _line_key(line: Decimal) -> str:
+    if line == 0:
+        return "0"
+    return format(line.normalize(), "f").replace("-", "minus_").replace(".", "_")
