@@ -3812,6 +3812,67 @@ class TestBettingArbitrageNodeRunner:
         assert report["samples"][0]["marketFamily"] == "TOTALS + TOTALS"
         assert report["samples"][0]["blockerHint"] == "same_market_params_mismatch"
 
+    def test_venue_pair_coverage_samples_deep_common_fixture_market_families(self):
+        polymarket_decoys = [
+            _instrument(
+                venue="POLYMARKET",
+                market_type="basketball.spread",
+                market_name="basketball.spread_binary",
+                outcome="home",
+                params=f"line=-{index + 1}.5",
+                handicap=-(index + 1.5),
+                sport_name="basketball",
+            )
+            for index in range(45)
+        ]
+        polymarket_total = _instrument(
+            venue="POLYMARKET",
+            market_type="totals",
+            market_name="TOTALS",
+            outcome="over",
+            params="line=174.5",
+            sport_name="basketball",
+        )
+        sxbet_total = _instrument(
+            venue="SXBET",
+            market_type="totals",
+            market_name="TOTALS",
+            outcome="under",
+            params="line=171",
+            sport_name="basketball",
+        )
+        strategy = SimpleNamespace(
+            _config=SimpleNamespace(enabled_venues=frozenset({"POLYMARKET", "SXBET"})),
+            _quote_subscribed_instrument_ids={
+                *(instrument.id for instrument in polymarket_decoys),
+                polymarket_total.id,
+                sxbet_total.id,
+            },
+        )
+        nodes = {
+            **{
+                f"poly-spread-{index}": SimpleNamespace(instrument=instrument)
+                for index, instrument in enumerate(polymarket_decoys)
+            },
+            "poly-total": SimpleNamespace(instrument=polymarket_total),
+            "sxbet-total": SimpleNamespace(instrument=sxbet_total),
+        }
+
+        coverage = node_runner._venue_pair_coverage(
+            strategy,
+            edges=[],
+            nodes=nodes,
+            quotes={},
+            matched_node_ids=set(),
+            candidate_venue_pairs={},
+        )
+
+        report = {item["venuePair"]: item for item in coverage["zeroCandidateVenuePairs"]}[
+            "POLYMARKET->SXBET"
+        ]
+        assert report["samples"][0]["marketFamily"] == "TOTALS + TOTALS"
+        assert report["samples"][0]["blockerHint"] == "same_market_params_mismatch"
+
     def test_venue_pair_coverage_reports_polymarket_corners_as_provider_scope_mismatch(self):
         polymarket_instrument = _instrument(
             venue="POLYMARKET",

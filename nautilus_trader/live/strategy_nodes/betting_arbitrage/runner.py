@@ -38,6 +38,9 @@ from nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache import
 )
 
 
+ZERO_PAIR_SAMPLE_NODE_LIMIT = 160
+
+
 @dataclass(frozen=True)
 class RunnerContext:
     manifest: Any
@@ -2287,11 +2290,13 @@ def _zero_venue_pair_report(
     source_nodes = _sample_probe_nodes_for_venue(
         nodes,
         source,
+        limit=ZERO_PAIR_SAMPLE_NODE_LIMIT,
         preferred_event_keys=set(common_event_keys),
     )
     target_nodes = _sample_probe_nodes_for_venue(
         nodes,
         target,
+        limit=ZERO_PAIR_SAMPLE_NODE_LIMIT,
         preferred_event_keys=set(common_event_keys),
     )
     sample_pairs = _sample_zero_pair_nodes(
