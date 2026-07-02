@@ -134,17 +134,17 @@
     "deposit": 7500,
     "bonus": 7500,
     "wr": 5,
-    "base": "unknown",
-    "minOdds": 1,
+    "base": "b",
+    "minOdds": 2.0,
     "hedge": null,
     "maxStake": null,
-    "maxPayout": null,
-    "minDeposit": 100,
-    "expiry": 30,
-    "confidence": "med",
-    "sourceType": "review",
-    "notes": "New-customer SPORTS welcome: 100% first-deposit match up to R7,500 (+ up to 100 free spins after FICA approval; some sources say 50 FS), promo code SHOPPROMO/STYVIP. TURNOVER: 5x, but sources CONFLICT on basis - soccer-shop.co.za review says '5x is calculated on your first deposit amount, not the bonus' (deposit-only), while other reviews say '5x the value of your first deposit' at odds >=1/1; hence base marked 'unknown' (likely deposit-based, possibly deposit+bonus). Min qualifying odds 1/1 = 1.00 (evens) or greater; only bets at evens+ count. Min deposit conflicts across sources: R50, R100 (used R100 as most-cited to activate) and R200 (one source ties R200 to the wagering-qualification bet). Wagering must...",
-    "source": "https://soccer-shop.co.za/bonus/"
+    "maxPayout": 10000,
+    "minDeposit": 50,
+    "expiry": 7,
+    "confidence": "high",
+    "sourceType": "official",
+    "notes": "OFFICIAL (browser-rendered, soccershop.bet — old soccer-shop.co.za domain is dead). 100% 1st deposit match up to R7,500 in Bonus Bets (bonus wallet). Rollover = 5x the 1st DEPOSIT at odds 1/1 (2.0 dec) or greater; real-money funds must also turn over 1x at 2.0+. Bonus-wallet WIN LIMIT R10,000 (maxPayout). Stakes are SNR (bonus stake not returned; only profit credited). Min deposit R50; wallet valid 1 week. Equal-chance markets (odd/even, toss) excluded from rollover. HARD ANTI-ARB: backing both outcomes of a match (bonus, real or both) voids bets + winnings, incl. downstream bets. Sports/live/racing/lucky numbers/greyhounds only. MER-licensed (Kalmia Trading).",
+    "source": "https://soccershop.bet/page/promotions"
   },
   {
     "name": "Betting World (Betfred South Africa)",
@@ -227,7 +227,7 @@
     "expiry": 30,
     "confidence": "med",
     "sourceType": "review",
-    "notes": "First-deposit match (promo PROMOBET/NEWBONUS/MAXBONUS/GETMAX vary by source). 150% up to R5,000, sometimes offered as an alternative to 100 free spins. WAGERING BASIS IS DEPOSIT-ONLY: 'wager your deposit 4x at odds of 2.0 (1/1) or higher' — not the classic deposit+bonus; encoded base=db/wr=4 as nearest fit but note it is 4x the DEPOSIT amount. A minority of sources cite 3.0 min odds; majority say 2.0. Pre-match, in-play and Lucky Numbers bets count; singles and multiples qualify. Bonus bets usable on sports single bets only, cannot be combined with real money, and CANNOT be cashed out. Complete wagering within 30 days of registration (some sources say bonus expires 10-14 days after crediting). Min deposit co...",
+    "notes": "First-deposit match (promo PROMOBET/NEWBONUS/MAXBONUS/GETMAX vary by source). 150% up to R5,000, sometimes offered as an alternative to 100 free spins. WAGERING BASIS IS DEPOSIT-ONLY: 'wager your deposit 4x at odds of 2.0 (1/1) or higher' — not the classic deposit+bonus; encoded base=db/wr=4 as nearest fit but note it is 4x the DEPOSIT amount. A minority of sources cite 3.0 min | BROWSER CHECK: easybet.co.za public /promotions route 404s (promos live in-app behind login); review data retained.",
     "source": "https://efirbet.com/za/easybet-bonus-code/"
   },
   {
@@ -437,8 +437,8 @@
     "expiry": 30,
     "confidence": "med",
     "sourceType": "review",
-    "notes": "SPORTS welcome bonus (this is the SA offer, NOT the UK 'bet GBP10 get GBP20 free bets' - Virgin Bet launched in SA March 2026, licensed by the Mpumalanga Economic Regulator, bookmaker licence 9-2-1-09938, VB South Africa (Pty) Ltd, all ZAR). Offer: 100% first-deposit MATCH up to R3,000; min deposit R10; deposit within ~14-30 days of signup (sources differ 14 vs 30); promo code BETS (auto-applies). SPORTSBOOK wagering = bonus-only turnover; multiplier disputed across reviews: bets.co.za says 8x with min odds 2.00 singles / 1.40 per leg on multis (total >=2.00), while thegambler.co.za says 6x with min odds 1.80 singles / 1.40 legs (total 1.80). Recorded wr=8 / minOdds=2.00 as the more conservative EV figure - ...",
-    "source": "https://www.bets.co.za/sports-betting-sites/virgin-bet/ , https://www.thegambler.co.za/bonuses/virgin-bet-south-africa-welcome-bonus-offers-explained/ , https://www.bettingapps.co.za/en/reviews/virginbet/ (official ZA T&C at virginbet.co.za is JS-rendered/inaccessible to fetch)"
+    "notes": "SPORTS welcome bonus (this is the SA offer, NOT the UK 'bet GBP10 get GBP20 free bets' - Virgin Bet launched in SA March 2026, licensed by the Mpumalanga Economic Regulator, bookmaker licence 9-2-1-09938, VB South Africa (Pty) Ltd, all ZAR). Offer: 100% first-deposit MATCH up to R3,000; min deposit R10; deposit within ~14-30 days of signup (sources differ 14 vs 30); promo code BETS (auto-applies). | PARTIAL OFFICIAL VERIFY (browser): virginbet.co.za promotions New Customer tab confirms 'Sports Deposit Match Welcome Offer — 100% First Deposit Match Bonus when you deposit up to R3000'. Offer DETAIL body does not render publicly (login-gated), so WR (6x vs 8x conflict) remains review-sourced.",
+    "source": "https://www.virginbet.co.za/promotions"
   },
   {
     "name": "Apex Bets",
@@ -479,7 +479,7 @@
     "expiry": 15,
     "confidence": "med",
     "sourceType": "review",
-    "notes": "SPORTS first-deposit bonus: 100% match up to R3,000, min deposit R20. Turnover 10x on (deposit+bonus) at min odds 1.50 per selection; bets MUST be multiples/accumulators with 3+ selections (blocks singles and simple two-sided arbs). Bonus validity 15 days. SOURCE CONFLICT on the multiplier: sportsboom.co.za (quotes verbatim 'Wagering is set at 10x (deposit + bonus)', '3 selections', '15 days') vs topbets.africa which states 5x turnover AND a max payout of 5x(deposit+bonus). Reported the better-attested 10x here; if the topbets 5x version is current then wr=5 and maxPayout=5x(deposit+bonus). maxPayout left null because the 10x-source does not state a cap and the two sources disagree; do not treat as uncapped....",
+    "notes": "SPORTS first-deposit bonus: 100% match up to R3,000, min deposit R20. Turnover 10x on (deposit+bonus) at min odds 1.50 per selection; bets MUST be multiples/accumulators with 3+ selections (blocks singles and simple two-sided arbs). Bonus validity 15 days. SOURCE CONFLICT on the multiplier: sportsboom.co.za (quotes verbatim 'Wagering is set at 10x (deposit + bonus)', '3 selecti | BROWSER CHECK: kingbets.co.za renders a blank canvas SPA (no text, blank screenshot) — terms not publicly extractable; review data retained.",
     "source": "https://www.sportsboom.co.za/betting/reviews/kingbets"
   },
   {
@@ -759,21 +759,21 @@
     "name": "Sportingbet South Africa",
     "region": "ZA",
     "currency": "ZAR",
-    "kind": "sports",
+    "kind": "casino",
     "bonusType": "deposit_match",
-    "deposit": 1000,
-    "bonus": 1000,
-    "wr": 10,
+    "deposit": 5000,
+    "bonus": 5000,
+    "wr": 40,
     "base": "b",
-    "minOdds": 1.7,
+    "minOdds": null,
     "hedge": null,
-    "maxStake": 200,
+    "maxStake": 1000,
     "maxPayout": null,
     "minDeposit": 50,
     "expiry": 60,
     "confidence": "high",
     "sourceType": "official",
-    "notes": "SPORTS first-deposit welcome: 100% match up to R1,000 + 100 free spins; min deposit R50 within 72h of registration. Rollover = 10x the BONUS amount (bonus-only basis) at min odds 1.70; max single wager while clearing = 20% of total bonus funds (=~R200 at the R1,000 cap, hence maxStake). 60-day window. Edit-My-Bet, early cash-out and cancelled bets do NOT count toward rollover. Withdrawing before rollover completes forfeits bonus+winnings. Also runs 2nd deposit 50% up to R1,000 and 3rd deposit 75% (each 48h window). SEPARATE 'Triple Welcome Bonus up to R15,000 + 300 spins' is a CASINO bonus (40x playthrough, cannot be used on sports bets) — NOT the sports offer. maxPayout not published. Licensed ZA operator (...",
+    "notes": "OFFICIAL (browser-rendered T&C). The entire R15,000 welcome (3 deposits: 100%/50%/75% up to R5,000 each + 300 spins) is a CASINO bonus. VERBATIM: 'Sports: Bonus funds can not be used on sports bets. Casino: Bonus funds will need to be played through 40 times.' Max bet with bonus funds < 20% of bonus balance. 60 days to clear; withdrawing forfeits active bonus. Slots contribute 100%, roulette/baccarat/craps 0%. EXPLICIT ANTI-ARB: 'any use in arbitrage betting patterns or two-tier betting strategies' -> bonus+winnings removed. Prior review data (sports 10x @1.70) was WRONG - reclassified casino. Min dep R50 within 7 days; 1Voucher excluded. WCGRB-licensed (Greatodds/Entain).",
     "source": "https://www.sportingbet.co.za/en/p/promotions/welcome-bonus-15k/triple-welcome"
   },
   {
@@ -864,7 +864,7 @@
     "name": "AllStars Bet",
     "region": "ZA",
     "currency": "ZAR",
-    "kind": "sports",
+    "kind": "unverified",
     "bonusType": "deposit_match",
     "deposit": 1000,
     "bonus": 1000,
@@ -878,7 +878,7 @@
     "expiry": 14,
     "confidence": "low",
     "sourceType": "review",
-    "notes": "100% first-deposit match up to R1,000, promo code STARS, valid 14 days. Min deposit R30 for immediate bank transfer (R100 for cash deposits). Bonus credited only after you 'play out your deposit first'; reviews say 'wagering requirements apply before transferring winnings to main wallet' but the EXACT rollover multiplier, turnover basis (db vs b) and min qualifying odds are NOT stated on any source found — set to null, do NOT assume. maxPayout: sports welcome reviews state 'maximum winnings per game capped at R50,000'. CAUTION/conflict: one review (betsty) also describes a R500 winnings cap + 'max bet with bonus funds R5 per spin or game' — that R5/R500 profile reads like a casino/free-spin or no-deposit bon...",
+    "notes": "100% first-deposit match up to R1,000, promo code STARS, valid 14 days. Min deposit R30 for immediate bank transfer (R100 for cash deposits). Bonus credited only after you 'play out your deposit first'; reviews say 'wagering requirements apply before transferring winnings to main wallet' but the EXA | BROWSER CHECK: allstarsbet.co.za unreachable (error page). Unverified/possibly defunct.",
     "source": "https://betsty.com/allstars-bet/ ; https://betafr.com/allstars-bet/"
   },
   {
@@ -906,7 +906,7 @@
     "name": "Betbounce",
     "region": "Intl",
     "currency": "ZAR",
-    "kind": "sports",
+    "kind": "unverified",
     "bonusType": "other",
     "deposit": null,
     "bonus": null,
@@ -920,14 +920,14 @@
     "expiry": null,
     "confidence": "low",
     "sourceType": "review",
-    "notes": "UNVERIFIABLE — no confirmed sportsbook or bonus found. No resolving domain (betbounce.co.za, betbounce.bet both fail DNS/ENOTFOUND), no South African provincial licence listing, and no review/aggregator coverage under any spelling tried (Betbounce, Bet Bounce, Bounce Bet). Not present on major SA bonus aggregators (LiveScore ZA lists Betway, Tic Tac Bets, ZARBet, Virgin Bet, Easybet, 10bet, Mzansibet, Playa Bets, Apex Bets, Pantherbet, Bettabets, Betfred, Hollywoodbets, Lulabet, Supabets — no Betbounce). Similarly-named books exist (BetBoom, Curacao-licensed) but are not this brand. Cannot confirm it operates as a South-African-facing sportsbook; all bonus fields null. Recommend the requester re-confirm the ...",
+    "notes": "UNVERIFIABLE — no confirmed sportsbook or bonus found. No resolving domain (betbounce.co.za, betbounce.bet both fail DNS/ENOTFOUND), no South African provincial licence listing, and no review/aggregator coverage under any spelling tried (Betbounce, Bet Bounce, Bounce Bet). Not present on major SA bo | BROWSER CHECK: betbounce.co.za unreachable (error page). Unverified/possibly defunct.",
     "source": "https://www.livescore.com/en-za/betting-sites/offers/"
   },
   {
     "name": "VBET",
     "region": "ZA",
     "currency": "ZAR",
-    "kind": "sports",
+    "kind": "unverified",
     "bonusType": "other",
     "deposit": null,
     "bonus": null,
@@ -941,7 +941,7 @@
     "expiry": null,
     "confidence": "low",
     "sourceType": "review",
-    "notes": "NO ACTIVE SA SPORTSBOOK/BONUS. VBET (vbet.co.za) no longer accepts South African players; review states 'VBET CASINO NO LONGER ACCEPTS SOUTH AFRICAN PLAYERS' and lists the site as Inactive. Own domain vbet.co.za hard-blocks all access (SSL handshake failure via fetch; browser error page via Chrome on root/promotions/sportsbook/terms). VBET is absent from the top100bookmakers.com comprehensive 41-bookmaker SA index (July 2026). Historical offers were EUR-denominated, NOT ZAR: sports welcome = free bet matching first wager up to EUR20 within 14 days; casino 1st deposit 100% up to EUR100 + 100 free spins at 35x wagering, 30-day expiry. All money fields null (no verifiable current ZAR terms). Do NOT confuse with...",
+    "notes": "NO ACTIVE SA SPORTSBOOK/BONUS. VBET (vbet.co.za) no longer accepts South African players; review states 'VBET CASINO NO LONGER ACCEPTS SOUTH AFRICAN PLAYERS' and lists the site as Inactive. Own domain vbet.co.za hard-blocks all access (SSL handshake failure via fetch; browser error page via Chrome o | BROWSER CHECK: vbet.co.za unreachable (error page). Unverified for SA.",
     "source": "https://www.playcasino.co.za/vbet-casino-sportsbook-review"
   },
   {
@@ -1002,10 +1002,10 @@
     "maxPayout": null,
     "minDeposit": null,
     "expiry": null,
-    "confidence": "low",
-    "sourceType": "review",
-    "notes": "NO traditional new-customer welcome / first-deposit sports bonus found. Soccer6 is a TAB soccer-POOL betting product (Soccer 6 / Soccer 10 pools, Soccer 13 jackpots), not a fixed-odds sportsbook with a deposit-match. Promotions are pool prizes/add-ins only: continuous R5 million Mega Win, periodic R100,000 pool add-ins; site headline 'R50 MILLION PAID OUT EVERY MONTH'. Min stakes R6 (Soccer 1/4/6) or R2 (Soccer 10). Official site (soccer6.co.za) is JS-rendered; account signup routes to 'OPEN TAB ACCOUNT'. Licensed in South Africa (TAB property). No sign-up bonus terms to capture — all bonus fields null. Any EV model should treat this book as having no first-deposit sports bonus.",
-    "source": "https://www.soccer6.co.za/ ; https://betsty.com/soccer6/"
+    "confidence": "high",
+    "sourceType": "official",
+    "notes": "OFFICIAL (browser-rendered): Soccer6 is POOL/TOTE betting (S10/S6 pools, e.g. R871k pool) — no deposit bonus or welcome offer product exists. Not applicable for bonus clearance.",
+    "source": "https://www.soccer6.co.za/"
   },
   {
     "name": "Tabgold",
@@ -1191,9 +1191,9 @@
     "maxPayout": null,
     "minDeposit": 10,
     "expiry": 30,
-    "confidence": "high",
+    "confidence": "low",
     "sourceType": "official",
-    "notes": "Flagship welcome = 'First Loss Reload Bonus' (risk-free/insurance, NOT a straight deposit match). Official modal text: open account, make qualifying deposit of at least R10, place a LOSING bet using the entire qualifying deposit as stake, and get a bonus = 100% of that deposit. Only on your first deposit into a newly opened account; new customers only. Max bonus R20,000 (capped even if deposit/loss exceeds this). Customers choose ONE reload: sports OR casino (cannot get both). SPORTS rollover = 1x the value of the Reload Bonus on sports fixed-odd contingencies, and 'winning stakes will not be returned on this bonus' (SNR / bonus-only turnover) -> base=b. (Casino reload rollover = 55x.) Min qualifying odds 1....",
+    "notes": "Flagship welcome = 'First Loss Reload Bonus' (risk-free/insurance, NOT a straight deposit match). Official modal text: open account, make qualifying deposit of at least R10, place a LOSING bet using the entire qualifying deposit as stake, and get a bonus = 100% of that deposit. Only on your first deposit into a newly opened account; new customers only. Max bonus R20,000 (capped | BROWSER CHECK 2026-07-02: betxchange.co.za unreachable (error page on root + /promotions) — brand may be down or migrated; treat the R20,000 risk-free offer as UNVERIFIED until the site is reachable.",
     "source": "https://betxchange.com/page/Promotions (Reload Bonus T&C modal) + https://betxchange.com/page/terms-and-conditions (Part D)"
   },
   {
@@ -1277,7 +1277,7 @@
     "expiry": 7,
     "confidence": "high",
     "sourceType": "review",
-    "notes": "Mzansibet (South Africa). The SPORTS welcome bonus is a NO-WAGERING free/extra bet, NOT a deposit match: 'Bet R50, Get R50' extra bet. Qualify by depositing >=R50 and placing a first sports bet of >=R50 at min odds 2.00; the R50 Extra Bet is then credited win OR loss, with no wagering requirement ('you keep everything you win'). Extra Bet must be used within 7 days, at min odds 2.00 and max odds 20, and cannot be used with the Bet Builder feature. wr=0, base n/a (unknown) because free-bet winnings are cash with no rollover. capZAR=50 (size of the free bet); no explicit max payout stated (null). Must pass automatic FICA verification to claim; one per person/household/IP; ~30 days from registration to complete...",
+    "notes": "Mzansibet (South Africa). The SPORTS welcome bonus is a NO-WAGERING free/extra bet, NOT a deposit match: 'Bet R50, Get R50' extra bet. Qualify by depositing >=R50 and placing a first sports bet of >=R50 at min odds 2.00; the R50 Extra Bet is then credited win OR loss, with no wagering requirement ('you keep everything you win'). Extra Bet must be used within 7 days, at min odds | BROWSER CHECK: official domain is mzansibet.com (mzansibet.co.za unreachable); homepage headlines 'UP TO R21,000 + 300 BONUS SPINS' multi-deposit package; per-tier terms behind JS tiles — R1,000/5x first-deposit record kept from review.",
     "source": "https://nostrabet.com/za/mzansibet-bonus-code/"
   },
   {
@@ -1290,16 +1290,16 @@
     "bonus": 50,
     "wr": 5,
     "base": "b",
-    "minOdds": 1.5,
+    "minOdds": 1.9,
     "hedge": null,
     "maxStake": null,
-    "maxPayout": 500,
+    "maxPayout": 2500,
     "minDeposit": 50,
     "expiry": 7,
-    "confidence": "med",
-    "sourceType": "review",
-    "notes": "The SPORTS welcome bonus is a R50 sign-up FREE BET (not a deposit match). Terms corroborated across sportsboom, sportytrader and Goal.com: 5x turnover on the bonus/winnings (bonus-only basis) at min odds 1.5, max WIN capped at R500, valid 7 days; requires a min deposit of R50 and completed FIC verification before bonus winnings can be withdrawn. Some sources historically list this as R25 (older promo) — current consensus is R50. SEPARATE from the sports bonus, Betshezi runs a CASINO welcome package: 100% deposit match up to R10,000 (some reviews R2,500 first deposit) + 100 bonus spins at 20x turnover, min deposit R100, 3-14 day expiry — that match is casino-oriented, NOT a sports first-deposit bonus, so it i...",
-    "source": "https://www.sportytrader.com/en-za/betting-sites/betshezi/bonus/"
+    "confidence": "high",
+    "sourceType": "official",
+    "notes": "OFFICIAL sports-bonus T&C (browser-rendered). CRITICAL: max value converted into real cash = bonus value CAPPED AT R2,500 — so the advertised 'up to R10,000' welcome can only ever cash out R2,500 (maxPayout binds hard). Deposited funds receiving a bonus must be staked at odds 1.90+. Withdrawal before WR met forfeits bonus+winnings. Min R100 deposited before bonus winnings withdrawable; FIC verification required. HARD ANTI-ARB: no wagering both markets in same event, no opposite betting — bonus revoked + winnings removed. Cash-out bets don't count. Exact WR multiplier not stated on this page (review-cited 5x retained).",
+    "source": "https://www.betshezi.com/en/help/811887/sports-bonus-terms-and-conditions"
   },
   {
     "name": "Lucky Fish",
@@ -1317,10 +1317,10 @@
     "maxPayout": null,
     "minDeposit": null,
     "expiry": 1,
-    "confidence": "med",
-    "sourceType": "review",
-    "notes": "Sign-up bonus is a R50 NO-DEPOSIT free bet + 25 free spins. There is NO first-deposit match on the sports side (only 25 bonus spins on a R100+ deposit, which is casino). Wagering is 1x the bonus (bonus-only) and the full R50 must be staked in a SINGLE bet at min odds 1.50, within 24 hours of activation (expiryDays=1). Usable on sports, horse racing and Lucky Numbers; free spins tied to Habanero slots (Hot Hot Fruit / Wild Trucks / Candy Tower). One bonus per person/household/IP. Bonus activates only after FICA verification. maxPayout (max winnings from the free bet) and maxStake not published in any source -> null; note the single-bet R50 stake effectively caps exposure. matchPct null (fixed free bet). Promo...",
-    "source": "https://www.bets.co.za/sports-betting-sites/lucky-fish/"
+    "confidence": "high",
+    "sourceType": "official",
+    "notes": "Sign-up bonus is a R50 NO-DEPOSIT free bet + 25 free spins. There is NO first-deposit match on the sports side (only 25 bonus spins on a R100+ deposit, which is casino). Wagering is 1x the bonus (bonus-only) and the full R50 must be staked in a SINGLE bet at min odds 1.50, within 24 hours of activation (expiryDays=1). Usable on sports, horse racing and Lucky Numbers; free spins tied to Habanero sl | VERIFIED: official promotions page lists ONLY 'Sign-up and get R50 Bonus and 25 Bonus Spins' — no deposit match exists; record confirmed.",
+    "source": "https://www.luckyfish.co.za/promotions"
   },
   {
     "name": "Hollywoodbets",
@@ -1809,7 +1809,7 @@
     "name": "Goldrush",
     "region": "ZA",
     "currency": "ZAR",
-    "kind": "unverified",
+    "kind": "casino",
     "bonusType": "deposit_match",
     "deposit": 10000,
     "bonus": 10000,
@@ -1823,8 +1823,8 @@
     "expiry": 7,
     "confidence": "high",
     "sourceType": "official",
-    "notes": "NO SPORTS WELCOME/FIRST-DEPOSIT BONUS. Goldrush's only welcome offer is CASINO/SLOTS-ONLY. Official T&C states explicitly: 'The First Deposit Slots Bonus can only be used on Slots games.' Its current /promos page lists only slots tournaments, jackpot draws, and 'Biggest Welcome Deal in SA' (the slots journey) plus a free-to-play 'Goldrush Predictor' - there is NO sports-specific matched-deposit offer. FIGURES SHOWN ARE THE CASINO 1ST-DEPOSIT LEG for reference only (do NOT treat as a sports bonus): 100% up to R10,000 + 100 free spins on Gates of Olympus, min deposit R25, 30x turnover on bonus issued (bonus-only, base=b), max payout = 5x bonus issued capped at R50,000, expires 7 days after registration; no wit...",
-    "source": "https://www.goldrush.co.za/welcome-journey-terms-and-conditions + https://www.goldrush.co.za/promos"
+    "notes": "OFFICIAL (browser-rendered). CASINO/SLOTS-ONLY — 'The First Deposit Slots Bonus can only be used on Slots games' → NOT sports-hedgeable. 1st deposit 100% up to R10,000 + 100 spins; 30x turnover on bonus; payout = 5x bonus capped R50,000; min dep R25; offer expires 7 days after registration. 4-deposit journey totals up to R25,000+R28,000 caps (2nd 75%/R3,000, 3rd 100%/R5,000 25x, 4th 100%/R10,000 30x). Reclassified from sports-unknown to casino.",
+    "source": "https://www.goldrush.co.za/articles/biggest-welcome-deal-in-sa-7"
   },
   {
     "name": "Powerbets",
