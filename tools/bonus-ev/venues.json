@@ -280,9 +280,9 @@
     "bonusType": "deposit_match",
     "deposit": 5000,
     "bonus": 5000,
-    "wr": 5,
-    "base": "unknown",
-    "minOdds": 3,
+    "wr": 3,
+    "base": "db",
+    "minOdds": 3.0,
     "hedge": null,
     "maxStake": null,
     "maxPayout": 5000,
@@ -290,7 +290,7 @@
     "expiry": 14,
     "confidence": "high",
     "sourceType": "official",
-    "notes": "SPORTS welcome bonus, verified verbatim from TicTac Bets' own official promotions page (rendered). 100% match up to R5,000, min deposit R50. WAGERING (two-stage, deposit-based not standard db/b): to UNLOCK bonus you must wager the initial DEPOSIT 5x at min odds 3.0 (2/1) in pre-match sports (e.g. deposit R1,000 -> turn over R5,000); THEN to WITHDRAW you must wager the credited bonus funds 1x at odds >=3.0. So total turnover = 5x deposit + 1x bonus, both at odds >=3.0 -- wr field set to 5 (the dominant deposit multiplier); note the extra 1x-bonus playthrough. base=unknown because the primary requirement is a DEPOSIT multiple (not deposit+bonus and not bonus-only). maxPayout: max withdrawal from the SPORTS bon...",
+    "notes": "OFFICIAL (browser-rendered T&C). Sports first-deposit: 100% match up to R5,000. Qualify by wagering the DEPOSIT 5x at min odds 3.00 (pre-match sports/dog racing), then wager the bonus 1x at odds >=3.00 to withdraw (modelled as ~3x deposit+bonus). Max withdrawal from the sports bonus wallet R5,000. Min deposit R50. Must be claimed manually via support within 8 days of registration; 14 days to complete wagering. Anti-arb clause: covering >50% of a 2-way market (or >33.33% of 3-way) voids bonus+winnings. Min odds 3.00 makes low-margin hedging hard. Licensed by Northern Cape Gambling & Liquor Board (Vengies Gaming, NCGLB-BM.2025/01). Separate slots bonus = 35x, R15,000 cap.",
     "source": "https://tictacbets.co.za/page/promotions/1st-dep-bonus"
   },
   {
