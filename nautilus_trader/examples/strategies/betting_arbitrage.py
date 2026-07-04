@@ -4726,9 +4726,9 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         Handle order canceled events.
 
         A canceled leg (venue-side or operator) after its sibling filled is the same
-        unhedged-exposure hazard as a rejection, so halt live execution and count it.
-        A cancel the strategy itself issued to unwind a pair is risk-reducing
-        confirmation instead, and must not halt, count, or recurse into the unwind.
+        unhedged-exposure hazard as a rejection, so halt live execution and count it. A
+        cancel the strategy itself issued to unwind a pair is risk-reducing confirmation
+        instead, and must not halt, count, or recurse into the unwind.
 
         """
         self._record_order_lifecycle_event(event, "canceled")
