@@ -128,6 +128,8 @@ class TestBettingArbitrageConfig:  # skipcq
         ensure(config.stablecoin_haircut_bps == 10)
         ensure(config.max_resolution_horizon_hours is None)
         ensure(config.execution_price_change_policy == "better")
+        ensure(config.unwind_filled_leg_enabled is False)
+        ensure(config.unwind_max_slippage_bps == 50)
         # execution_max_retry_count / execution_retry_slippage_bps were removed: they were
         # declared and validated but never read by any execution path (no retry existed).
         ensure(not hasattr(config, "execution_max_retry_count"))
@@ -212,6 +214,17 @@ class TestBettingArbitrageConfig:  # skipcq
 
         with pytest.raises(ValueError, match="stale_quote_refresh_cooldown_secs"):
             BettingArbitrageConfig(stale_quote_refresh_cooldown_secs=0.0)
+
+    def test_unwind_config_validation(self):  # skipcq
+        config = BettingArbitrageConfig(
+            unwind_filled_leg_enabled=True,
+            unwind_max_slippage_bps=0,
+        )
+        ensure(config.unwind_filled_leg_enabled is True)
+        ensure(config.unwind_max_slippage_bps == 0)
+
+        with pytest.raises(ValueError, match="unwind_max_slippage_bps"):
+            BettingArbitrageConfig(unwind_max_slippage_bps=-1)
 
     def test_venue_fee_rate_validation(self):  # skipcq
         config = BettingArbitrageConfig(
