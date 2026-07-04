@@ -103,8 +103,45 @@ def test_doubleheader_fixtures_stay_separate(tmp_path) -> None:
     assert rules == []
 
 
+def test_date_only_cutoff_joins_same_date_cluster(tmp_path) -> None:
+    # Some venues publish only the fixture date; a date-only cutoff must join the
+    # (single) exact-time cluster on that UTC date even though midnight is far
+    # outside the start-time tolerance.
+    records = [
+        _record(
+            record_id="cb-over",
+            venue="CLOUDBET",
+            event_key="soccer|team a|team b|2026-07-04T18:00:00Z",
+            selection="OVER",
+        ),
+        _record(
+            record_id="pm-under",
+            venue="POLYMARKET",
+            event_key="soccer|team a|team b|2026-07-04",
+            selection="UNDER",
+        ),
+    ]
+    rules = _miner(tmp_path).mine_event_candidates(records, persist=False)
+    assert len(rules) == 1
+
+    # With a doubleheader (two clusters on the same date) the date-only record is
+    # ambiguous and must not pair with either leg.
+    ambiguous = [
+        *records,
+        _record(
+            record_id="cb-over-late",
+            venue="CLOUDBET",
+            event_key="soccer|team a|team b|2026-07-04T23:30:00Z",
+            selection="OVER",
+        ),
+    ]
+    rules = _miner(tmp_path).mine_event_candidates(ambiguous, persist=False)
+    assert rules == []
+
+
 def test_timeless_record_joins_only_unambiguous_family(tmp_path) -> None:
-    # A record without a parseable start time joins a single-cluster family...
+    # A record whose key carries no time segment at all joins a single-cluster
+    # family...
     unambiguous = [
         _record(
             record_id="cb-over",
@@ -115,7 +152,7 @@ def test_timeless_record_joins_only_unambiguous_family(tmp_path) -> None:
         _record(
             record_id="pm-under",
             venue="POLYMARKET",
-            event_key="soccer|team a|team b|date-only",
+            event_key="soccer|team a|team b",
             selection="UNDER",
         ),
     ]

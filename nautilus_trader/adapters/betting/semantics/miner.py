@@ -28,6 +28,7 @@ from datetime import datetime
 import hashlib
 from itertools import combinations
 import json
+import re
 
 from nautilus_trader.adapters.betting.semantics.classifier import RuleClassifier
 from nautilus_trader.adapters.betting.semantics.coverage import CoverageEngine
@@ -53,17 +54,39 @@ def _utc_now() -> str:
 _CROSS_VENUE_START_TOLERANCE_SECS = 7_200
 
 
-def _split_event_key_time(event_key: str) -> tuple[str, datetime | None]:
+_DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _split_event_key_time(event_key: str) -> tuple[str, datetime | None, str]:
+    """
+    Split a composed event key into (family key, start time, precision).
+
+    Precision is "exact" for full timestamps, "date" for date-only cutoffs (some venues
+    publish only the fixture date), and "none" when no trailing time segment exists.
+
+    """
     head, sep, tail = event_key.rpartition("|")
     if not sep or not head:
-        return event_key, None
+        return event_key, None, "none"
+    raw = tail.strip()
+    if _DATE_ONLY_RE.match(raw):
+        return head, datetime.fromisoformat(raw).replace(tzinfo=UTC), "date"
     try:
-        parsed = datetime.fromisoformat(tail.strip().replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
     except ValueError:
-        return event_key, None
+        return event_key, None, "none"
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
-    return head, parsed
+    return head, parsed, "exact"
+
+
+@dataclass
+class _TimeCluster:
+    times: list[datetime]
+    records: list[NormalizedSelectionRecord]
+
+    def dates(self) -> set:
+        return {moment.date() for moment in self.times}
 
 
 def _tolerant_event_buckets(
@@ -76,42 +99,58 @@ def _tolerant_event_buckets(
 
     families: dict[
         tuple[str, str, str],
-        list[tuple[datetime | None, list[NormalizedSelectionRecord]]],
+        list[tuple[datetime | None, str, list[NormalizedSelectionRecord]]],
     ] = defaultdict(list)
     for (sport, event_key, scope), bucket in exact.items():
-        no_time_key, start_time = _split_event_key_time(event_key)
-        families[(sport, no_time_key, scope)].append((start_time, bucket))
+        family_key, start_time, precision = _split_event_key_time(event_key)
+        families[(sport, family_key, scope)].append((start_time, precision, bucket))
 
     merged: list[list[NormalizedSelectionRecord]] = []
     for members in families.values():
-        timed = sorted(
-            (item for item in members if item[0] is not None),
+        exact_members = sorted(
+            (item for item in members if item[1] == "exact"),
             key=lambda item: item[0],
         )
-        timeless = [bucket for start_time, bucket in members if start_time is None]
+        date_members = [item for item in members if item[1] == "date"]
+        timeless = [bucket for _, precision, bucket in members if precision == "none"]
 
-        clusters: list[list[NormalizedSelectionRecord]] = []
+        clusters: list[_TimeCluster] = []
         cluster_anchor: datetime | None = None
-        for start_time, bucket in timed:
+        for start_time, _, bucket in exact_members:
             if (
                 cluster_anchor is not None
                 and (start_time - cluster_anchor).total_seconds()
                 <= _CROSS_VENUE_START_TOLERANCE_SECS
             ):
-                clusters[-1].extend(bucket)
+                clusters[-1].times.append(start_time)
+                clusters[-1].records.extend(bucket)
             else:
-                clusters.append(list(bucket))
+                clusters.append(_TimeCluster(times=[start_time], records=list(bucket)))
             cluster_anchor = start_time
 
-        if timeless and len(clusters) == 1:
-            # Unambiguous: one time cluster in the family, so a record without a
-            # parseable start time can only mean that fixture.
-            for bucket in timeless:
-                clusters[0].extend(bucket)
-        else:
-            clusters.extend(list(bucket) for bucket in timeless)
+        # Date-only cutoffs join the cluster on the same UTC date when that is
+        # unambiguous; otherwise (0 or 2+ clusters on the date) they group by date.
+        unmatched_dates: dict[object, _TimeCluster] = {}
+        for start_time, _, bucket in date_members:
+            day = start_time.date()
+            matching = [cluster for cluster in clusters if day in cluster.dates()]
+            if len(matching) == 1:
+                matching[0].records.extend(bucket)
+            elif day in unmatched_dates:
+                unmatched_dates[day].records.extend(bucket)
+            else:
+                unmatched_dates[day] = _TimeCluster(times=[start_time], records=list(bucket))
+        clusters.extend(unmatched_dates.values())
 
-        merged.extend(clusters)
+        if timeless and len(clusters) == 1:
+            # Unambiguous: one cluster in the family, so a record without any start
+            # time can only mean that fixture.
+            for bucket in timeless:
+                clusters[0].records.extend(bucket)
+            merged.extend(cluster.records for cluster in clusters)
+        else:
+            merged.extend(cluster.records for cluster in clusters)
+            merged.extend(list(bucket) for bucket in timeless)
 
     return merged
 
@@ -391,8 +430,8 @@ class RuleMiner:
             # Cross-venue records of one fixture carry differing exact keys (timestamp
             # precision); the shared no-time family key is the fixture identity, so
             # cross-venue evidence still accumulates event_count toward promotion.
-            left_family, _ = _split_event_key_time(left.selection.event_key)
-            right_family, _ = _split_event_key_time(right.selection.event_key)
+            left_family, _, _ = _split_event_key_time(left.selection.event_key)
+            right_family, _, _ = _split_event_key_time(right.selection.event_key)
             evidence_event_key = left_family if left_family == right_family else None
         return replace(
             rule,
