@@ -1288,12 +1288,27 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
 
     def _subscribe_semantic_connected_quote_ticks(self) -> int:
         subscribed_by_venue = self._quote_subscription_counts_by_venue()
+        # A cross-venue reserve only makes sense with 2+ enabled venues; a single-venue
+        # config has no cross-venue counterpart to protect (#215).
+        cross_venue_reserve = (
+            max(0, self._config.semantic_unmatched_quote_probe_limit_per_venue)
+            if len(self._config.enabled_venues) >= 2
+            else 0
+        )
         subscribed_count = 0
-        for node in self._semantic_connected_quote_nodes():
+        for is_cross_venue, node in self._semantic_connected_quote_nodes():
             venue = node.instrument.id.venue.value.upper()
             venue_limit = self._config.semantic_quote_subscription_limit_by_venue.get(venue)
-            if venue_limit is not None and subscribed_by_venue[venue] >= venue_limit:
-                continue
+            if venue_limit is not None:
+                # Cross-venue-connected nodes may use the full venue ceiling; same-venue-
+                # only nodes stop short of a reserved cross-venue sub-budget so they
+                # cannot permanently occupy the limit across refresh cycles and starve a
+                # later cross-venue counterpart. Cap the reserve at half the ceiling so a
+                # small limit is never fully starved; the ceiling itself is never exceeded.
+                reserve = min(cross_venue_reserve, venue_limit // 2)
+                effective_limit = venue_limit if is_cross_venue else max(0, venue_limit - reserve)
+                if subscribed_by_venue[venue] >= effective_limit:
+                    continue
             if self._subscribe_quote_ticks_for_instrument(node.instrument):
                 subscribed_by_venue[venue] += 1
                 subscribed_count += 1
@@ -1448,9 +1463,9 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 return True
         return False
 
-    def _semantic_connected_quote_nodes(self) -> list[Any]:
+    def _semantic_connected_quote_nodes(self) -> list[tuple[bool, Any]]:
         """
-        Return semantically connected nodes in quote-subscription priority order.
+        Return (is_cross_venue, node) pairs in quote-subscription priority order.
 
         Multi-venue validation can have thousands of same-venue edges and only a handful
         of cross-venue edges. Venue quote limits should therefore spend their first
@@ -1467,9 +1482,13 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 continue
             if not self._resolution_horizon_quote_allowed(node):
                 continue
-            ranked.append((self._semantic_quote_subscription_priority(node_id, edge_ids), node))
+            priority = self._semantic_quote_subscription_priority(node_id, edge_ids)
+            ranked.append((priority, node))
         ranked.sort(key=lambda item: item[0])
-        return [node for _, node in ranked]
+        # priority[0] is -cross_venue_edges; < 0 means the node participates in at least
+        # one cross-venue edge. Surfaced so the subscription pass can protect a reserve
+        # for cross-venue nodes from same-venue-only saturation (issue #215).
+        return [(priority[0] < 0, node) for priority, node in ranked]
 
     def _semantic_quote_subscription_priority(
         self,
