@@ -1728,11 +1728,25 @@ mod tests {
         Python::attach(|py| {
             let over = py_payload(
                 py,
-                &node_with("a", "SXBET", "event-1", "Total Goals", "total_goals", "over"),
+                &node_with(
+                    "a",
+                    "SXBET",
+                    "event-1",
+                    "Total Goals",
+                    "total_goals",
+                    "over",
+                ),
             );
             let under = py_payload(
                 py,
-                &node_with("b", "CLOUDBET", "event-2", "Total Goals", "total_goals", "under"),
+                &node_with(
+                    "b",
+                    "CLOUDBET",
+                    "event-2",
+                    "Total Goals",
+                    "total_goals",
+                    "under",
+                ),
             );
             let nodes = PyList::empty(py);
             nodes.append(&over).unwrap();
@@ -1740,15 +1754,21 @@ mod tests {
 
             // Listed first: matches, higher confidence, but push-capable / not execution-safe.
             let push_template = py_semantic_template(py, vec!["SXBET", "CLOUDBET"], true);
-            push_template.set_item("template_id", "template-push").unwrap();
-            push_template.set_item("safety_tier", "TOPOLOGY_SAFE").unwrap();
+            push_template
+                .set_item("template_id", "template-push")
+                .unwrap();
+            push_template
+                .set_item("safety_tier", "TOPOLOGY_SAFE")
+                .unwrap();
             push_template.set_item("push_capable", true).unwrap();
             push_template.set_item("execution_safe", false).unwrap();
             push_template.set_item("confidence", 0.95).unwrap();
 
             // Listed second: matches, lower confidence, execution-safe.
             let exec_template = py_semantic_template(py, vec!["SXBET", "CLOUDBET"], true);
-            exec_template.set_item("template_id", "template-exec").unwrap();
+            exec_template
+                .set_item("template_id", "template-exec")
+                .unwrap();
             exec_template.set_item("confidence", 0.80).unwrap();
 
             let templates = PyList::empty(py);
@@ -1788,11 +1808,25 @@ mod tests {
         Python::attach(|py| {
             let over = py_payload(
                 py,
-                &node_with("a", "SXBET", "event-1", "Total Goals", "total_goals", "over"),
+                &node_with(
+                    "a",
+                    "SXBET",
+                    "event-1",
+                    "Total Goals",
+                    "total_goals",
+                    "over",
+                ),
             );
             let under = py_payload(
                 py,
-                &node_with("b", "CLOUDBET", "event-2", "Total Goals", "total_goals", "under"),
+                &node_with(
+                    "b",
+                    "CLOUDBET",
+                    "event-2",
+                    "Total Goals",
+                    "total_goals",
+                    "under",
+                ),
             );
             let nodes = PyList::empty(py);
             nodes.append(&over).unwrap();
@@ -1990,13 +2024,27 @@ mod tests {
             same_venue_nodes
                 .append(py_payload(
                     py,
-                    &node_with("c", "BLACKBET", "event-3", "Total Goals", "total_goals", "over"),
+                    &node_with(
+                        "c",
+                        "BLACKBET",
+                        "event-3",
+                        "Total Goals",
+                        "total_goals",
+                        "over",
+                    ),
                 ))
                 .unwrap();
             same_venue_nodes
                 .append(py_payload(
                     py,
-                    &node_with("d", "BLACKBET", "event-3", "Total Goals", "total_goals", "under"),
+                    &node_with(
+                        "d",
+                        "BLACKBET",
+                        "event-3",
+                        "Total Goals",
+                        "total_goals",
+                        "under",
+                    ),
                 ))
                 .unwrap();
             let mut same_venue_core = OpportunityGraphCore::new(true, 0.5);
