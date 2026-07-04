@@ -4314,9 +4314,10 @@ def _probe_rag_band(profit_margin: Decimal) -> str:
     """
     Coarse RAG rollup of a candidate's profit margin, for at-a-glance triage.
 
-    green = profitable (> 0); amber = slightly unprofitable (0% to -5%);
-    red = unprofitable (< -5%). Applies to same-venue and cross-venue candidates
-    alike, so unprofitable cross-venue candidates are surfaced (not just executable ones).
+    green = profitable (> 0); amber = slightly unprofitable (0% to -5%); red =
+    unprofitable (< -5%). Applies to same-venue and cross-venue candidates alike, so
+    unprofitable cross-venue candidates are surfaced (not just executable ones).
+
     """
     if profit_margin > 0:
         return "green"

@@ -23,7 +23,7 @@ def test_probe_rag_band_classifies_green_amber_red() -> None:
     assert _probe_rag_band(Decimal("0.05")) == "green"
     assert _probe_rag_band(Decimal("0.0001")) == "green"
     # slightly unprofitable (0% to -5%, inclusive) -> amber
-    assert _probe_rag_band(Decimal("0")) == "amber"
+    assert _probe_rag_band(Decimal(0)) == "amber"
     assert _probe_rag_band(Decimal("-0.03")) == "amber"
     assert _probe_rag_band(Decimal("-0.05")) == "amber"
     # unprofitable (worse than -5%) -> red
