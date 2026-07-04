@@ -622,6 +622,12 @@ class OpportunityGraph:
             )
             partial_settlement = bool(metadata.get("partial_settlement"))
             caveats = self._metadata_str_tuple(metadata, "caveats")
+            # A cross-venue topology-only edge (Rust decoupled venue scope for
+            # observability) must NEVER be re-flagged executable by the public-hedge
+            # mirror path — it exists purely to feed crossVenueCandidateCount/RAG.
+            rust_topology_only = not rust_execution_safe and (
+                safety_tier == "TOPOLOGY_SAFE" or "cross_venue_topology_only" in caveats
+            )
             source_node = self.nodes_by_id.get(source_node_id)
             target_node = self.nodes_by_id.get(target_node_id)
             if source_node is None or target_node is None:
@@ -660,6 +666,14 @@ class OpportunityGraph:
                     hedge_promotion_status = hedge.promotion_status
                     hedge_safety_tier = hedge.safety_tier
                     hedge_same_venue_execution_eligible = hedge.same_venue_execution_eligible
+
+            if rust_topology_only:
+                hedge_execution_safe = False
+                hedge_same_venue_execution_eligible = False
+                hedge_safety_tier = safety_tier or "TOPOLOGY_SAFE"
+                hedge_caveats = tuple(
+                    dict.fromkeys((*hedge_caveats, *caveats, "cross_venue_topology_only")),
+                )
 
             edge = OpportunityEdge(
                 edge_id=edge_id,

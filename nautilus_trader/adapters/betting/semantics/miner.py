@@ -72,6 +72,11 @@ def _split_event_key_time(event_key: str) -> tuple[str, datetime | None, str]:
     raw = tail.strip()
     if _DATE_ONLY_RE.match(raw):
         return head, datetime.fromisoformat(raw).replace(tzinfo=UTC), "date"
+    # Require an explicit time separator: Python 3.11+ parses bare "YYYYMMDD" (and
+    # would misread a trailing event-id segment as a midnight timestamp), which would
+    # silently change family membership.
+    if "T" not in raw:
+        return event_key, None, "none"
     try:
         parsed = datetime.fromisoformat(raw)
     except ValueError:
@@ -83,14 +88,19 @@ def _split_event_key_time(event_key: str) -> tuple[str, datetime | None, str]:
 
 @dataclass
 class _TimeCluster:
+    # Stable per-fixture bucket identity: family (venue-independent sport|home|away) +
+    # cluster anchor. Used as the evidence key so event_count = distinct fixtures, not
+    # distinct (venue x timestamp-precision) keys.
+    key: str
     times: list[datetime]
     records: list[NormalizedSelectionRecord]
 
     def dates(self) -> set[date]:
-        return {moment.date() for moment in self.times}
+        return {moment.astimezone(UTC).date() for moment in self.times}
 
 
 def _cluster_exact_members(
+    family_prefix: str,
     members: list[tuple[datetime | None, str, list[NormalizedSelectionRecord]]],
 ) -> list[_TimeCluster]:
     exact_members: list[tuple[datetime, list[NormalizedSelectionRecord]]] = sorted(
@@ -105,18 +115,28 @@ def _cluster_exact_members(
     cluster_anchor: datetime | None = None
     for start_time, bucket in exact_members:
         if (
-            cluster_anchor is not None
+            clusters
+            and cluster_anchor is not None
             and (start_time - cluster_anchor).total_seconds() <= _CROSS_VENUE_START_TOLERANCE_SECS
         ):
             clusters[-1].times.append(start_time)
             clusters[-1].records.extend(bucket)
         else:
-            clusters.append(_TimeCluster(times=[start_time], records=list(bucket)))
-        cluster_anchor = start_time
+            # Anchor stays fixed at the cluster's first member (matches the Rust runtime
+            # graph's clustering) so membership is not transitive/chained.
+            cluster_anchor = start_time
+            clusters.append(
+                _TimeCluster(
+                    key=f"{family_prefix}@{start_time.astimezone(UTC).isoformat()}",
+                    times=[start_time],
+                    records=list(bucket),
+                ),
+            )
     return clusters
 
 
 def _join_date_members(
+    family_prefix: str,
     clusters: list[_TimeCluster],
     members: list[tuple[datetime | None, str, list[NormalizedSelectionRecord]]],
 ) -> None:
@@ -126,35 +146,44 @@ def _join_date_members(
     for start_time, precision, bucket in members:
         if precision != "date" or start_time is None:
             continue
-        day = start_time.date()
+        day = start_time.astimezone(UTC).date()
         matching = [cluster for cluster in clusters if day in cluster.dates()]
         if len(matching) == 1:
             matching[0].records.extend(bucket)
         elif day in unmatched_dates:
             unmatched_dates[day].records.extend(bucket)
         else:
-            unmatched_dates[day] = _TimeCluster(times=[start_time], records=list(bucket))
+            unmatched_dates[day] = _TimeCluster(
+                key=f"{family_prefix}@date:{day.isoformat()}",
+                times=[start_time],
+                records=list(bucket),
+            )
     clusters.extend(unmatched_dates.values())
 
 
 def _family_buckets(
+    family_prefix: str,
     members: list[tuple[datetime | None, str, list[NormalizedSelectionRecord]]],
-) -> list[list[NormalizedSelectionRecord]]:
-    clusters = _cluster_exact_members(members)
-    _join_date_members(clusters, members)
+) -> list[tuple[str, list[NormalizedSelectionRecord]]]:
+    clusters = _cluster_exact_members(family_prefix, members)
+    _join_date_members(family_prefix, clusters, members)
     timeless = [bucket for _, precision, bucket in members if precision == "none"]
     if timeless and len(clusters) == 1:
         # Unambiguous: one cluster in the family, so a record without any start time
         # can only mean that fixture.
         for bucket in timeless:
             clusters[0].records.extend(bucket)
-        return [cluster.records for cluster in clusters]
-    return [cluster.records for cluster in clusters] + [list(bucket) for bucket in timeless]
+        return [(cluster.key, cluster.records) for cluster in clusters]
+    result = [(cluster.key, cluster.records) for cluster in clusters]
+    # Timeless records that cannot be attributed to a unique fixture form their own
+    # bucket keyed on the family alone.
+    result += [(family_prefix, list(bucket)) for bucket in timeless]
+    return result
 
 
 def _tolerant_event_buckets(
     records: Iterable[NormalizedSelectionRecord],
-) -> list[list[NormalizedSelectionRecord]]:
+) -> list[tuple[str, list[NormalizedSelectionRecord]]]:
     exact: dict[tuple[str, str, str], list[NormalizedSelectionRecord]] = defaultdict(list)
     for record in records:
         selection = record.selection
@@ -168,9 +197,12 @@ def _tolerant_event_buckets(
         family_key, start_time, precision = _split_event_key_time(event_key)
         families[(sport, family_key, scope)].append((start_time, precision, bucket))
 
-    merged: list[list[NormalizedSelectionRecord]] = []
-    for members in families.values():
-        merged.extend(_family_buckets(members))
+    merged: list[tuple[str, list[NormalizedSelectionRecord]]] = []
+    for (_sport, family_key, scope), members in families.items():
+        # family_key already embeds the sport (event_key is sport|home|away|...) or is a
+        # globally-unique raw event id; scope disambiguates period markets.
+        family_prefix = f"{family_key}|{scope}"
+        merged.extend(_family_buckets(family_prefix, members))
     return merged
 
 
@@ -249,7 +281,7 @@ class RuleMiner:
         Mine event-scoped relationship evidence before template generalization.
         """
         discovered: list[MinedRule] = []
-        for bucket in _tolerant_event_buckets(records):
+        for bucket_key, bucket in _tolerant_event_buckets(records):
             prepared = self._prepare_bucket(bucket)
             grouped_by_result_states: dict[tuple[str, ...], list[_PreparedRecord]] = defaultdict(
                 list,
@@ -266,7 +298,7 @@ class RuleMiner:
                     )
                     if rule is None:
                         continue
-                    rule = self._with_evidence(rule, left.record, right.record)
+                    rule = self._with_evidence(rule, bucket_key, left.record, right.record)
                     discovered.append(rule)
 
         if persist:
@@ -320,7 +352,7 @@ class RuleMiner:
         """
         proof_by_id: dict[str, CoverageProof] = {}
         hyperedge_by_id: dict[str, CoverageHyperedge] = {}
-        for bucket in _tolerant_event_buckets(records):
+        for _bucket_key, bucket in _tolerant_event_buckets(records):
             proofs, hyperedges = self._coverage_engine.discover_event_coverage(bucket)
             for proof in proofs:
                 proof_by_id[proof.proof_id] = proof
@@ -439,25 +471,21 @@ class RuleMiner:
     @staticmethod
     def _with_evidence(
         rule: MinedRule,
+        bucket_key: str,
         left: NormalizedSelectionRecord,
         right: NormalizedSelectionRecord,
     ) -> MinedRule:
+        # The tolerant bucket key is the fixture identity (family + cluster anchor),
+        # shared by all records of one physical fixture across venues and timestamp
+        # precisions. Using it for every pair makes template event_count equal the
+        # number of distinct fixtures — the diversity gate that guards EXECUTION_SAFE
+        # promotion — rather than distinct (venue x timestamp) keys.
         template_id = SemanticRuleTemplate.from_rule(rule).template_id
-        evidence_event_key: str | None
-        if left.selection.event_key == right.selection.event_key:
-            evidence_event_key = left.selection.event_key
-        else:
-            # Cross-venue records of one fixture carry differing exact keys (timestamp
-            # precision); the shared no-time family key is the fixture identity, so
-            # cross-venue evidence still accumulates event_count toward promotion.
-            left_family, _, _ = _split_event_key_time(left.selection.event_key)
-            right_family, _, _ = _split_event_key_time(right.selection.event_key)
-            evidence_event_key = left_family if left_family == right_family else None
         return replace(
             rule,
-            rule_id=RuleMiner._event_candidate_rule_id(rule, evidence_event_key, left, right),
+            rule_id=RuleMiner._event_candidate_rule_id(rule, bucket_key, left, right),
             template_id=template_id,
-            evidence_event_key=evidence_event_key,
+            evidence_event_key=bucket_key,
             evidence_record_ids=(left.record_id, right.record_id),
         )
 

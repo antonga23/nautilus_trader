@@ -1960,12 +1960,18 @@ def test_event_candidates_keep_distinct_fixture_observations_for_same_template_s
     assert all(candidate is not None for candidate in candidates)
     assert len({candidate.rule_id for candidate in candidates if candidate is not None}) == 2
     assert len({candidate.template_id for candidate in candidates if candidate is not None}) == 1
-    assert {candidate.evidence_event_key for candidate in candidates if candidate is not None} == {
-        "american-football-event-0",
-        "american-football-event-1",
+    # Evidence keys are the tolerant fixture-bucket identity (family + scope/anchor);
+    # distinct fixtures must still yield two distinct keys, each carrying its event id.
+    evidence_keys = {
+        candidate.evidence_event_key for candidate in candidates if candidate is not None
     }
+    assert len(evidence_keys) == 2
+    assert any("american-football-event-0" in key for key in evidence_keys)
+    assert any("american-football-event-1" in key for key in evidence_keys)
     assert len(templates) == 1
     assert templates[0].support.observed_count == 2
+    # Two distinct fixtures -> event_count 2 (the diversity gate is not inflated).
+    assert templates[0].support.event_count == 2
     assert templates[0].support.event_count == 2
 
 

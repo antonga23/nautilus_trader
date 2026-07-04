@@ -1728,6 +1728,7 @@ def _empty_candidate_quality_payload() -> dict[str, object]:
     return {
         "quotedEdges": 0,
         "marginBands": {},
+        "ragBands": {},
         "rejectionBuckets": {},
         "timingFlags": {},
         "freshnessProfiles": {},
