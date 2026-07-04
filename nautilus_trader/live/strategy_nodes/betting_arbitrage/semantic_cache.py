@@ -170,19 +170,95 @@ def ensure_semantic_cache_ready(
 
     path = Path(cache_dir)
     path.mkdir(parents=True, exist_ok=True)
-    status = semantic_cache_status(path, manifest=manifest)
+
+    mode = manifest.semantic_rule_cache_mode
+    default_root = (manifest.semantic_rule_cache_default_root or "").strip()
+
+    if mode == "reuse":
+        return _ensure_reuse_cache(path, manifest=manifest, logger=logger)
+
+    if mode == "default" and default_root:
+        return _ensure_default_mine(
+            path,
+            default_root,
+            manifest=manifest,
+            logger=logger,
+        )
+
+    if mode == "default" and logger is not None:
+        logger.warning(
+            "semantic_rule_cache_mode='default' without "
+            "semantic_rule_cache_default_root; mining fresh instead",
+        )
+
+    # "fresh" (default): never reuse or seed — always re-mine from the live
+    # venue corpus so a deploy reflects the current market, not a stale cache.
+    status = _bootstrap_fresh(path, manifest=manifest, logger=logger)
+    if default_root:
+        _register_default_mine(path, default_root, manifest=manifest, logger=logger)
+    return status
+
+
+def _ensure_reuse_cache(
+    cache_dir: Path,
+    *,
+    manifest: BettingArbitrageNodeManifest,
+    logger: Logger | None,
+) -> SemanticCacheStatus:
+    status = semantic_cache_status(cache_dir, manifest=manifest)
     if status.ready and status.compatible:
         return status
     if status.ready and not status.compatible:
-        _reset_semantic_cache_dir(path)
+        _reset_semantic_cache_dir(cache_dir)
 
-    seeded_status = _try_seed_semantic_cache(path, manifest=manifest, logger=logger)
+    seeded_status = _try_seed_semantic_cache(cache_dir, manifest=manifest, logger=logger)
     if seeded_status is not None:
         return seeded_status
 
-    _run_bootstrap(manifest=manifest, cache_dir=path, logger=logger)
-    _write_semantic_cache_compatibility(path, manifest=manifest)
-    status = semantic_cache_status(path, source="bootstrapped", manifest=manifest)
+    _run_bootstrap(manifest=manifest, cache_dir=cache_dir, logger=logger)
+    _write_semantic_cache_compatibility(cache_dir, manifest=manifest)
+    status = semantic_cache_status(cache_dir, source="bootstrapped", manifest=manifest)
+    if not status.ready:
+        raise RuntimeError(
+            "Semantic cache bootstrap completed without a usable cache "
+            f"(manifests={status.manifest_count}, "
+            f"promoted_templates={status.promoted_template_count})",
+        )
+    return status
+
+
+def _ensure_default_mine(
+    cache_dir: Path,
+    default_root: str,
+    *,
+    manifest: BettingArbitrageNodeManifest,
+    logger: Logger | None,
+) -> SemanticCacheStatus:
+    reused = _try_use_default_mine(
+        cache_dir,
+        default_root,
+        manifest=manifest,
+        max_age_hours=manifest.semantic_rule_cache_max_age_hours,
+        logger=logger,
+    )
+    if reused is not None:
+        return reused
+
+    status = _bootstrap_fresh(cache_dir, manifest=manifest, logger=logger)
+    _register_default_mine(cache_dir, default_root, manifest=manifest, logger=logger)
+    return status
+
+
+def _bootstrap_fresh(
+    cache_dir: Path,
+    *,
+    manifest: BettingArbitrageNodeManifest,
+    logger: Logger | None,
+) -> SemanticCacheStatus:
+    _reset_semantic_cache_dir(cache_dir)
+    _run_bootstrap(manifest=manifest, cache_dir=cache_dir, logger=logger)
+    _write_semantic_cache_compatibility(cache_dir, manifest=manifest)
+    status = semantic_cache_status(cache_dir, source="bootstrapped", manifest=manifest)
     if not status.ready:
         raise RuntimeError(
             "Semantic cache bootstrap completed without a usable cache "
@@ -227,6 +303,89 @@ def _try_seed_semantic_cache(
             logger.info(
                 "Seeded semantic cache from compatible source: "
                 f"source={seed_dir} target={cache_dir}",
+            )
+        return status
+    return None
+
+
+def _default_mine_dir(default_root: str, manifest: BettingArbitrageNodeManifest) -> Path:
+    scope_key = _semantic_cache_scope_key(manifest) or "unscoped"
+    return Path(default_root).expanduser() / scope_key
+
+
+def _register_default_mine(
+    cache_dir: Path,
+    default_root: str,
+    *,
+    manifest: BettingArbitrageNodeManifest,
+    logger: Logger | None,
+) -> None:
+    registry_dir = _default_mine_dir(default_root, manifest)
+    if registry_dir.resolve() == cache_dir.resolve():
+        return
+    _reset_semantic_cache_dir(registry_dir)
+    shutil.copytree(cache_dir, registry_dir, dirs_exist_ok=True)
+    if logger is not None:
+        logger.info(
+            "Registered default semantic mine for config signature: "
+            f"source={cache_dir} target={registry_dir}",
+        )
+
+
+def _default_mine_age_secs(registry_dir: Path) -> float | None:
+    summary = _read_semantic_cache_summary(registry_dir)
+    generated_at = summary.get("generated_at_unix_secs") if summary is not None else None
+    if isinstance(generated_at, int | float):
+        return max(0.0, time.time() - float(generated_at))
+    marker = registry_dir / SEMANTIC_CACHE_COMPATIBILITY_FILE
+    if marker.exists():
+        return max(0.0, time.time() - os.path.getmtime(marker))
+    return None
+
+
+def _try_use_default_mine(
+    cache_dir: Path,
+    default_root: str,
+    *,
+    manifest: BettingArbitrageNodeManifest,
+    max_age_hours: float | None,
+    logger: Logger | None,
+) -> SemanticCacheStatus | None:
+    registry_dir = _default_mine_dir(default_root, manifest)
+    if not registry_dir.is_dir():
+        return None
+    if registry_dir.resolve() == cache_dir.resolve():
+        return None
+
+    registry_status = semantic_cache_status(registry_dir, manifest=manifest)
+    if not registry_status.ready or not registry_status.compatible:
+        if logger is not None:
+            logger.warning(
+                "Ignoring unusable default semantic mine: "
+                f"path={registry_dir} ready={registry_status.ready} "
+                f"compatible={registry_status.compatible}",
+            )
+        return None
+
+    if max_age_hours is not None:
+        age_secs = _default_mine_age_secs(registry_dir)
+        if age_secs is not None and age_secs > max_age_hours * 3600.0:
+            if logger is not None:
+                logger.info(
+                    "Ignoring stale default semantic mine: "
+                    f"path={registry_dir} age_secs={age_secs:.0f} "
+                    f"max_age_hours={max_age_hours}",
+                )
+            return None
+
+    _reset_semantic_cache_dir(cache_dir)
+    shutil.copytree(registry_dir, cache_dir, dirs_exist_ok=True)
+    status = semantic_cache_status(cache_dir, source="default-mine", manifest=manifest)
+    if status.ready and status.compatible:
+        if logger is not None:
+            logger.info(
+                "Reused default semantic mine for config signature: "
+                f"source={registry_dir} target={cache_dir}",
             )
         return status
     return None

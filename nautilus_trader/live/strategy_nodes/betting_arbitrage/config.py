@@ -115,9 +115,29 @@ class BettingVenueManifest(NautilusConfig, frozen=True):
             )
 
 
+SUPPORTED_SEMANTIC_CACHE_MODES = frozenset({"fresh", "reuse", "default"})
+
+
 class BettingArbitrageNodeManifest(NautilusConfig, frozen=True):
     """
     Manifest for a deployable betting arbitrage trading node.
+
+    Parameters
+    ----------
+    semantic_rule_cache_mode : str, default 'fresh'
+        How the semantic rule cache is provisioned. ``'fresh'`` always re-mines
+        from the live venue corpus and never reuses an existing cache;
+        ``'reuse'`` reuses an existing compatible cache (seeding then mining as a
+        fallback); ``'default'`` reuses a config-signature-keyed default mine from
+        ``semantic_rule_cache_default_root`` when one exists and is fresh enough,
+        otherwise mines fresh and registers the result.
+    semantic_rule_cache_default_root : str, optional
+        Root directory for the config-signature-keyed default-mine registry used
+        by ``'default'`` mode (and populated by ``'fresh'`` mode when set).
+    semantic_rule_cache_max_age_hours : float, optional
+        Maximum age of a registered default mine that ``'default'`` mode will
+        reuse. ``None`` disables the age check.
+
     """
 
     node_id: str
@@ -125,6 +145,9 @@ class BettingArbitrageNodeManifest(NautilusConfig, frozen=True):
     strategy: BettingArbitrageConfig = BettingArbitrageConfig(auto_execute=False)
     semantic_rule_cache_dir: str | None = None
     semantic_rule_cache_seed_dir: str | None = None
+    semantic_rule_cache_mode: str = "fresh"
+    semantic_rule_cache_default_root: str | None = None
+    semantic_rule_cache_max_age_hours: float | None = None
     venues: list[BettingVenueManifest] = []
     validation_mode: bool = True
     allow_dummy_credentials: bool = True
@@ -173,11 +196,30 @@ class BettingArbitrageNodeManifest(NautilusConfig, frozen=True):
                 "semantic_rule_cache_seed_dir",
                 self.semantic_rule_cache_seed_dir.strip(),
             )
+        normalized_cache_mode = self.semantic_rule_cache_mode.strip().lower()
+        if normalized_cache_mode not in SUPPORTED_SEMANTIC_CACHE_MODES:
+            raise ValueError(
+                f"Unsupported semantic_rule_cache_mode {normalized_cache_mode!r}. "
+                f"Supported modes: {sorted(SUPPORTED_SEMANTIC_CACHE_MODES)}",
+            )
+        msgspec.structs.force_setattr(self, "semantic_rule_cache_mode", normalized_cache_mode)
+        if self.semantic_rule_cache_default_root is not None:
+            msgspec.structs.force_setattr(
+                self,
+                "semantic_rule_cache_default_root",
+                self.semantic_rule_cache_default_root.strip(),
+            )
+        if (
+            self.semantic_rule_cache_max_age_hours is not None
+            and self.semantic_rule_cache_max_age_hours <= 0
+        ):
+            raise ValueError("semantic_rule_cache_max_age_hours must be positive when set")
 
 
 __all__ = [
     "BLOCKED_SPORTSBOOK_VENUES",
     "SUPPORTED_BETTING_NODE_VENUES",
+    "SUPPORTED_SEMANTIC_CACHE_MODES",
     "SUPPORTED_VENUE_ENVIRONMENTS",
     "VENUE_ENVIRONMENT_ALIASES",
     "BettingArbitrageNodeManifest",

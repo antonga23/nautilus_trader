@@ -19,6 +19,7 @@ from decimal import Decimal
 import os
 from pathlib import Path
 import subprocess
+import time
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -202,6 +203,9 @@ def _manifest(
     *,
     cache_dir: Path | None = None,
     seed_dir: Path | None = None,
+    cache_mode: str = "fresh",
+    cache_default_root: Path | None = None,
+    cache_max_age_hours: float | None = None,
 ) -> BettingArbitrageNodeManifest:
     return BettingArbitrageNodeManifest(
         node_id="sxbet-node",
@@ -210,6 +214,11 @@ def _manifest(
         allow_dummy_credentials=True,
         semantic_rule_cache_dir=str(cache_dir) if cache_dir is not None else None,
         semantic_rule_cache_seed_dir=str(seed_dir) if seed_dir is not None else None,
+        semantic_rule_cache_mode=cache_mode,
+        semantic_rule_cache_default_root=(
+            str(cache_default_root) if cache_default_root is not None else None
+        ),
+        semantic_rule_cache_max_age_hours=cache_max_age_hours,
         rendered_config_path=str(tmp_path / "trading-node-config.json"),
         status_path=str(tmp_path / "status.json"),
         heartbeat_path=str(tmp_path / "heartbeat.json"),
@@ -1564,7 +1573,7 @@ class TestSemanticCacheBootstrap:
 
     def test_reuses_existing_semantic_cache_without_bootstrap(self, tmp_path, monkeypatch):
         cache_dir = tmp_path / "semantic-cache"
-        manifest = _manifest(tmp_path, cache_dir=cache_dir)
+        manifest = _manifest(tmp_path, cache_dir=cache_dir, cache_mode="reuse")
         _seed_promoted_template(cache_dir, manifest=manifest)
 
         monkeypatch.setattr(
@@ -1589,6 +1598,7 @@ class TestSemanticCacheBootstrap:
             validation_mode=True,
             allow_dummy_credentials=True,
             semantic_rule_cache_dir=str(cache_dir),
+            semantic_rule_cache_mode="reuse",
             rendered_config_path=str(tmp_path / "trading-node-config.json"),
             status_path=str(tmp_path / "status.json"),
             heartbeat_path=str(tmp_path / "heartbeat.json"),
@@ -1623,7 +1633,7 @@ class TestSemanticCacheBootstrap:
 
     def test_rebuilds_ready_cache_when_compatibility_marker_is_stale(self, tmp_path, monkeypatch):
         cache_dir = tmp_path / "semantic-cache"
-        manifest = _manifest(tmp_path, cache_dir=cache_dir)
+        manifest = _manifest(tmp_path, cache_dir=cache_dir, cache_mode="reuse")
         _seed_promoted_template(cache_dir, manifest=manifest)
         (cache_dir / node_cache.SEMANTIC_CACHE_COMPATIBILITY_FILE).write_text("stale\n")
         stale_file = cache_dir / "stale.bin"
@@ -1646,7 +1656,7 @@ class TestSemanticCacheBootstrap:
 
     def test_bootstraps_missing_semantic_cache(self, tmp_path, monkeypatch):
         cache_dir = tmp_path / "semantic-cache"
-        manifest = _manifest(tmp_path, cache_dir=cache_dir)
+        manifest = _manifest(tmp_path, cache_dir=cache_dir, cache_mode="reuse")
 
         def fake_bootstrap(*, cache_dir, **_):
             _seed_promoted_template(cache_dir)
@@ -1666,7 +1676,7 @@ class TestSemanticCacheBootstrap:
     def test_seeds_missing_semantic_cache_before_bootstrap(self, tmp_path, monkeypatch):
         cache_dir = tmp_path / "semantic-cache"
         seed_dir = tmp_path / "seed-cache"
-        manifest = _manifest(tmp_path, cache_dir=cache_dir)
+        manifest = _manifest(tmp_path, cache_dir=cache_dir, cache_mode="reuse")
         seed_dir.mkdir()
         (seed_dir / "marker").write_text("seeded", encoding="utf-8")
         monkeypatch.setenv(node_cache.SEMANTIC_CACHE_SEED_DIR_ENV, str(seed_dir))
@@ -1719,7 +1729,12 @@ class TestSemanticCacheBootstrap:
         cache_dir = tmp_path / "semantic-cache"
         manifest_seed_dir = tmp_path / "manifest-seed-cache"
         env_seed_dir = tmp_path / "env-seed-cache"
-        manifest = _manifest(tmp_path, cache_dir=cache_dir, seed_dir=manifest_seed_dir)
+        manifest = _manifest(
+            tmp_path,
+            cache_dir=cache_dir,
+            seed_dir=manifest_seed_dir,
+            cache_mode="reuse",
+        )
         manifest_seed_dir.mkdir()
         env_seed_dir.mkdir()
         (manifest_seed_dir / "marker").write_text("manifest-seed", encoding="utf-8")
@@ -1780,6 +1795,190 @@ class TestSemanticCacheBootstrap:
 
         with pytest.raises(RuntimeError, match="usable cache"):
             ensure_semantic_cache_ready(manifest)
+
+    def test_fresh_mode_remines_even_when_compatible_cache_exists(self, tmp_path, monkeypatch):
+        cache_dir = tmp_path / "semantic-cache"
+        manifest = _manifest(tmp_path, cache_dir=cache_dir, cache_mode="fresh")
+        _seed_promoted_template(cache_dir, manifest=manifest)
+        assert node_cache.semantic_cache_status(cache_dir, manifest=manifest).ready is True
+
+        bootstrapped: list[Path] = []
+
+        def fake_bootstrap(*, cache_dir, **_):
+            bootstrapped.append(cache_dir)
+            _seed_promoted_template(cache_dir, manifest=manifest)
+
+        monkeypatch.setattr(
+            "nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache._run_bootstrap",
+            fake_bootstrap,
+        )
+
+        status = ensure_semantic_cache_ready(manifest)
+
+        assert bootstrapped == [cache_dir]
+        assert status.source == "bootstrapped"
+        assert status.ready is True
+        assert status.compatible is True
+
+    def test_reuse_mode_returns_existing_cache_without_bootstrap(self, tmp_path, monkeypatch):
+        cache_dir = tmp_path / "semantic-cache"
+        manifest = _manifest(tmp_path, cache_dir=cache_dir, cache_mode="reuse")
+        _seed_promoted_template(cache_dir, manifest=manifest)
+
+        monkeypatch.setattr(
+            "nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache._run_bootstrap",
+            lambda **_: (_ for _ in ()).throw(AssertionError("bootstrap should not run")),
+        )
+
+        status = ensure_semantic_cache_ready(manifest)
+
+        assert status.source == "existing"
+        assert status.ready is True
+        assert status.compatible is True
+
+    def test_fresh_mode_registers_default_mine(self, tmp_path, monkeypatch):
+        cache_dir = tmp_path / "semantic-cache"
+        default_root = tmp_path / "default-mines"
+        manifest = _manifest(
+            tmp_path,
+            cache_dir=cache_dir,
+            cache_mode="fresh",
+            cache_default_root=default_root,
+        )
+
+        def fake_bootstrap(*, cache_dir, **_):
+            _seed_promoted_template(cache_dir, manifest=manifest)
+
+        monkeypatch.setattr(
+            "nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache._run_bootstrap",
+            fake_bootstrap,
+        )
+
+        status = ensure_semantic_cache_ready(manifest)
+
+        assert status.source == "bootstrapped"
+        registry_dir = node_cache._default_mine_dir(str(default_root), manifest)
+        assert registry_dir.parent == default_root
+        assert node_cache.semantic_cache_status(registry_dir, manifest=manifest).ready is True
+
+    def test_default_mode_reuses_registered_mine_without_bootstrap(self, tmp_path, monkeypatch):
+        cache_dir = tmp_path / "semantic-cache"
+        default_root = tmp_path / "default-mines"
+        manifest = _manifest(
+            tmp_path,
+            cache_dir=cache_dir,
+            cache_mode="default",
+            cache_default_root=default_root,
+        )
+        registry_dir = node_cache._default_mine_dir(str(default_root), manifest)
+        _seed_promoted_template(registry_dir, manifest=manifest)
+
+        monkeypatch.setattr(
+            "nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache._run_bootstrap",
+            lambda **_: (_ for _ in ()).throw(AssertionError("bootstrap should not run")),
+        )
+
+        status = ensure_semantic_cache_ready(manifest)
+
+        assert status.source == "default-mine"
+        assert status.ready is True
+        assert status.compatible is True
+
+    def test_default_mode_mines_and_registers_when_registry_empty(self, tmp_path, monkeypatch):
+        cache_dir = tmp_path / "semantic-cache"
+        default_root = tmp_path / "default-mines"
+        manifest = _manifest(
+            tmp_path,
+            cache_dir=cache_dir,
+            cache_mode="default",
+            cache_default_root=default_root,
+        )
+        bootstrapped: list[Path] = []
+
+        def fake_bootstrap(*, cache_dir, **_):
+            bootstrapped.append(cache_dir)
+            _seed_promoted_template(cache_dir, manifest=manifest)
+
+        monkeypatch.setattr(
+            "nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache._run_bootstrap",
+            fake_bootstrap,
+        )
+
+        status = ensure_semantic_cache_ready(manifest)
+
+        assert bootstrapped == [cache_dir]
+        assert status.source == "bootstrapped"
+        registry_dir = node_cache._default_mine_dir(str(default_root), manifest)
+        assert node_cache.semantic_cache_status(registry_dir, manifest=manifest).ready is True
+
+    def test_default_mode_ignores_stale_registry_entry(self, tmp_path, monkeypatch):
+        cache_dir = tmp_path / "semantic-cache"
+        default_root = tmp_path / "default-mines"
+        manifest = _manifest(
+            tmp_path,
+            cache_dir=cache_dir,
+            cache_mode="default",
+            cache_default_root=default_root,
+            cache_max_age_hours=1.0,
+        )
+        registry_dir = node_cache._default_mine_dir(str(default_root), manifest)
+        _seed_promoted_template(registry_dir, manifest=manifest)
+        # Materialize the summary (carries generated_at_unix_secs) then backdate it.
+        assert node_cache.semantic_cache_status(registry_dir, manifest=manifest).ready is True
+        stale = time.time() - 7200.0
+        summary_path = registry_dir / node_cache.SEMANTIC_CACHE_SUMMARY_FILE
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        summary["generated_at_unix_secs"] = stale
+        summary_path.write_text(json.dumps(summary, sort_keys=True), encoding="utf-8")
+        os.utime(registry_dir / node_cache.SEMANTIC_CACHE_COMPATIBILITY_FILE, (stale, stale))
+
+        bootstrapped: list[Path] = []
+
+        def fake_bootstrap(*, cache_dir, **_):
+            bootstrapped.append(cache_dir)
+            _seed_promoted_template(cache_dir, manifest=manifest)
+
+        monkeypatch.setattr(
+            "nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache._run_bootstrap",
+            fake_bootstrap,
+        )
+
+        status = ensure_semantic_cache_ready(manifest)
+
+        assert bootstrapped == [cache_dir]
+        assert status.source == "bootstrapped"
+
+    def test_default_mode_without_default_root_mines_fresh(self, tmp_path, monkeypatch):
+        cache_dir = tmp_path / "semantic-cache"
+        manifest = _manifest(tmp_path, cache_dir=cache_dir, cache_mode="default")
+        bootstrapped: list[Path] = []
+
+        def fake_bootstrap(*, cache_dir, **_):
+            bootstrapped.append(cache_dir)
+            _seed_promoted_template(cache_dir, manifest=manifest)
+
+        monkeypatch.setattr(
+            "nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache._run_bootstrap",
+            fake_bootstrap,
+        )
+
+        status = ensure_semantic_cache_ready(manifest)
+
+        assert bootstrapped == [cache_dir]
+        assert status.source == "bootstrapped"
+
+    def test_invalid_semantic_cache_mode_rejected(self, tmp_path):
+        with pytest.raises(ValueError, match="Unsupported semantic_rule_cache_mode"):
+            _manifest(tmp_path, cache_dir=tmp_path / "semantic-cache", cache_mode="stale")
+
+    def test_non_positive_semantic_cache_max_age_hours_rejected(self, tmp_path):
+        with pytest.raises(ValueError, match="max_age_hours must be positive"):
+            _manifest(
+                tmp_path,
+                cache_dir=tmp_path / "semantic-cache",
+                cache_mode="default",
+                cache_max_age_hours=0.0,
+            )
 
     def test_semantic_cache_status_counts_missing_and_same_venue_templates(
         self,
