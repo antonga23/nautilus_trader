@@ -24,6 +24,7 @@ logs/
 # Secrets and environment files
 *.key
 *.key_secret
+*.pem
 *.env
 
 # Compressed files
