@@ -922,7 +922,9 @@ def test_semantic_node_payload_marks_unnormalized_and_warns(monkeypatch, caplog)
 
     monkeypatch.setattr(MarketNormalizer, "normalize", staticmethod(_raise))
 
-    with caplog.at_level(logging.WARNING, logger="nautilus_trader.examples.strategies.opportunity_graph"):
+    with caplog.at_level(
+        logging.WARNING, logger="nautilus_trader.examples.strategies.opportunity_graph"
+    ):
         payload = OpportunityGraph._semantic_node_payload(instrument)
 
     assert payload["semantic_scope"] == "unnormalized"
@@ -944,12 +946,18 @@ def test_semantic_coverage_summary_logs_malformed_rust_json(caplog):
 
     graph._rust_core = _MalformedRustCore()
 
-    with caplog.at_level(logging.WARNING, logger="nautilus_trader.examples.strategies.opportunity_graph"):
+    with caplog.at_level(
+        logging.WARNING, logger="nautilus_trader.examples.strategies.opportunity_graph"
+    ):
         summary = graph.semantic_coverage_summary()
 
     assert summary == graph._empty_coverage_summary()
     warning = next(
-        (r for r in caplog.records if r.levelno == logging.WARNING and "malformed payload" in r.getMessage()),
+        (
+            r
+            for r in caplog.records
+            if r.levelno == logging.WARNING and "malformed payload" in r.getMessage()
+        ),
         None,
     )
     assert warning is not None

@@ -497,15 +497,12 @@ def test_cross_venue_binary_complement_produces_distinct_cross_venue_basket():
     proofs, _ = CoverageEngine().discover_event_coverage(records)
 
     cross_venue = [
-        proof
-        for proof in proofs
-        if proof.complete and len(proof.coverage_set.provider_scope) == 2
+        proof for proof in proofs if proof.complete and len(proof.coverage_set.provider_scope) == 2
     ]
     assert cross_venue, "expected a genuine cross-venue OVER/UNDER coverage basket"
     assert any(proof.execution_safe for proof in cross_venue)
     assert any(
-        proof.coverage_set.provider_scope == ("CLOUDBET", "POLYMARKET")
-        for proof in cross_venue
+        proof.coverage_set.provider_scope == ("CLOUDBET", "POLYMARKET") for proof in cross_venue
     )
 
 
