@@ -37,6 +37,19 @@ on:
         description: Explicitly arm live execution for manifests that also opt in
         required: false
         default: 'false'
+      semantic_cache_mode:
+        description: >-
+          Override the node semantic_rule_cache_mode for this deploy
+          (fresh|reuse|default). Empty keeps the manifest's declared value
+          (node default is fresh = re-mine, never silently reuse a stale cache).
+        required: false
+        default: ''
+      semantic_cache_default_root:
+        description: >-
+          Config-signature default-mine registry root for semantic_rule_cache_mode=default
+          (mine once per trading-node config, reuse across deploys). Empty keeps the manifest value.
+        required: false
+        default: ''
 
 permissions:
   actions: read
@@ -820,6 +833,8 @@ jobs:
         id: deploy-assets
         env:
           INPUT_MANIFEST_PATH: ${{ github.event.inputs.manifest_path }}
+          SEMANTIC_CACHE_MODE: ${{ github.event.inputs.semantic_cache_mode }}
+          SEMANTIC_CACHE_DEFAULT_ROOT: ${{ github.event.inputs.semantic_cache_default_root }}
         run: |
           deploy_tmp="${RUNNER_TEMP:-/tmp}/strategy-node-release-${GITHUB_RUN_ID}"
           rm -rf "$deploy_tmp"
@@ -838,6 +853,23 @@ jobs:
           esac
           test -f "$manifest_path"
           cp "$manifest_path" "$deploy_tmp/strategy-node-manifest.json"
+
+          # Optional deploy-time override of the semantic cache mode/registry, applied to the
+          # deployed copy only: the version-controlled manifest is untouched and its declared
+          # value wins when no override is passed (node default stays fresh = always re-mine).
+          case "$SEMANTIC_CACHE_MODE" in
+            ""|fresh|reuse|default) ;;
+            *)
+              echo "semantic_cache_mode must be fresh|reuse|default, got $SEMANTIC_CACHE_MODE" >&2
+              exit 1
+              ;;
+          esac
+          if [ -n "$SEMANTIC_CACHE_MODE" ] || [ -n "$SEMANTIC_CACHE_DEFAULT_ROOT" ]; then
+            python3 scripts/deploy/strategy_nodes/apply_semantic_cache_override.py \
+              "$deploy_tmp/strategy-node-manifest.json" \
+              "$SEMANTIC_CACHE_MODE" \
+              "$SEMANTIC_CACHE_DEFAULT_ROOT"
+          fi
           cp \
             scripts/deploy/strategy_nodes/deploy_betting_strategy_node.sh \
             "$deploy_tmp/deploy_betting_strategy_node.sh"

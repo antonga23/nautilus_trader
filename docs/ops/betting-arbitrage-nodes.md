@@ -162,6 +162,20 @@ The runtime node uses the host-mounted semantic cache at:
 - `/opt/cloudbet/strategy-nodes/<container-name>/semantic-rule-cache` on the deploy host
 - `/var/lib/nautilus-node/semantic-rule-cache` inside the container
 
+### Semantic cache mining mode
+
+`BettingArbitrageNodeManifest.semantic_rule_cache_mode` controls how the node populates that cache at startup. It **defaults to `fresh`** so a deploy always mines against the current live market instead of silently reusing a stale cache (a reused pre-classifier cache masks classifier/topology changes — promoted templates, not code, drive runtime cross-venue edge formation).
+
+| Mode | Behavior |
+| --- | --- |
+| `fresh` (default) | Reset the cache and re-mine the corpus every boot. If `semantic_rule_cache_default_root` is set, the freshly mined cache is registered there under the config signature. |
+| `reuse` | Reuse `semantic_rule_cache_dir` when ready + compatible; else seed; else mine. (Pre-existing behavior — pin this to keep a baked cache.) |
+| `default` | Reuse the config-signature entry under `semantic_rule_cache_default_root` when present, compatible, and newer than `semantic_rule_cache_max_age_hours`; otherwise mine fresh and register it. Mine once per trading-node config, reuse across deploys/restarts. |
+
+The signature is `_semantic_cache_scope_key` (enabled venues + sport/league coverage + limits), so `default` shares a mine across deploys of the same config but never across differing configs. A cold single-pass mine promotes fewer templates than an accumulated corpus (`manifest_count` grows across passes), so `default` also preserves accumulated richness between deploys.
+
+Override per deploy via `strategy-node-release` inputs `semantic_cache_mode` / `semantic_cache_default_root` (applied to the deployed manifest copy only; empty keeps the manifest's declared value).
+
 Semantic corpus and promotion workflow:
 
 ```bash
