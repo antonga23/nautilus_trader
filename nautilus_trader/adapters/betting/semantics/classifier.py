@@ -25,13 +25,30 @@ from decimal import InvalidOperation
 
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.betting.semantics.normalization import MarketNormalizer
+from nautilus_trader.adapters.betting.semantics.payoffs import THREE_WAY_STATES
 from nautilus_trader.adapters.betting.semantics.payoffs import PayoffVectorBuilder
+from nautilus_trader.adapters.betting.semantics.polymarket_transform import (
+    PolymarketSportsTransformer,
+)
 from nautilus_trader.adapters.betting.semantics.types import CanonicalMarketType
 from nautilus_trader.adapters.betting.semantics.types import MinedRule
 from nautilus_trader.adapters.betting.semantics.types import NormalizedSelection
 from nautilus_trader.adapters.betting.semantics.types import PayoffVector
 from nautilus_trader.adapters.betting.semantics.types import RelationshipType
 from nautilus_trader.adapters.betting.semantics.types import SettlementState
+
+
+TWO_WAY_RESULT_STATES = ("HOME_WIN", "AWAY_WIN")
+CROSS_FAMILY_PROJECTION_CAVEAT = "cross_family_partition_projection"
+_HALF_POINT_LINE = Decimal("0.5")
+_WIN_LOSE = frozenset({SettlementState.WIN.value, SettlementState.LOSE.value})
+_NO_DRAW_SPORTS = PolymarketSportsTransformer.NO_DRAW_SPORTS
+_CROSS_FAMILY_TWO_WAY_MARKETS = frozenset(
+    {
+        CanonicalMarketType.WINNER.value,
+        CanonicalMarketType.POINT_SPREAD.value,
+    },
+)
 
 
 class RuleClassifier:
@@ -76,11 +93,20 @@ class RuleClassifier:
             selection_a,
             selection_b,
         )
+        projected_two_way: tuple[PayoffVector, PayoffVector] | None = None
         relationship_type: RelationshipType | None
         if alternate_totals is not None:
             vector_a, vector_b = alternate_totals
             relationship_type = RelationshipType.COMPLEMENTARY_COVERAGE
         else:
+            projected_two_way = self._cross_family_two_way_vectors(
+                selection_a,
+                selection_b,
+                vector_a,
+                vector_b,
+            )
+            if projected_two_way is not None:
+                vector_a, vector_b = projected_two_way
             relationship_type = self._relationship_type(
                 selection_a,
                 selection_b,
@@ -92,6 +118,8 @@ class RuleClassifier:
 
         confidence = self._confidence(relationship_type)
         caveats = self._caveats(selection_a, selection_b, vector_a, vector_b)
+        if projected_two_way is not None:
+            caveats = tuple(sorted({*caveats, CROSS_FAMILY_PROJECTION_CAVEAT}))
         rule_id = self._rule_id(selection_a, selection_b, vector_a, vector_b, relationship_type)
         return MinedRule(
             rule_id=rule_id,
@@ -121,6 +149,80 @@ class RuleClassifier:
         if isinstance(item, NormalizedSelection):
             return item
         return self._normalizer.normalize(item)
+
+    @classmethod
+    def cross_family_partition_states(
+        cls,
+        selection: NormalizedSelection,
+        vector: PayoffVector,
+    ) -> tuple[str, ...] | None:
+        projected = cls._two_way_partition_vector(selection, vector)
+        if projected is None:
+            return None
+        return projected.result_states
+
+    @classmethod
+    def _cross_family_two_way_vectors(
+        cls,
+        selection_a: NormalizedSelection,
+        selection_b: NormalizedSelection,
+        vector_a: PayoffVector,
+        vector_b: PayoffVector,
+    ) -> tuple[PayoffVector, PayoffVector] | None:
+        if vector_a.result_states == vector_b.result_states:
+            return None
+        if {selection_a.market_type, selection_b.market_type} != _CROSS_FAMILY_TWO_WAY_MARKETS:
+            return None
+        if selection_a.sport != selection_b.sport or selection_a.scope != selection_b.scope:
+            return None
+        projected_a = cls._two_way_partition_vector(selection_a, vector_a)
+        if projected_a is None:
+            return None
+        projected_b = cls._two_way_partition_vector(selection_b, vector_b)
+        if projected_b is None:
+            return None
+        return projected_a, projected_b
+
+    @classmethod
+    def _two_way_partition_vector(
+        cls,
+        selection: NormalizedSelection,
+        vector: PayoffVector,
+    ) -> PayoffVector | None:
+        # Only partitions provably identical to the two-way fixture-winner partition
+        # project: WINNER HOME/AWAY (already on it) and POINT_SPREAD at exactly +/-0.5
+        # in a sport that cannot draw (DRAW is unreachable, so dropping it is exact).
+        # Binary EVENT_TRUE/EVENT_FALSE states never project: the canonical fields
+        # cannot prove which fixture outcome the event maps to (WINNER-family markets
+        # like win-to-nil share the same YES/NO vector shape).
+        if selection.sport not in _NO_DRAW_SPORTS:
+            return None
+        if selection.selection not in {"HOME", "AWAY"}:
+            return None
+        if any(state not in _WIN_LOSE for state in vector.settlement):
+            return None
+        if selection.market_type == CanonicalMarketType.WINNER.value:
+            if vector.result_states != TWO_WAY_RESULT_STATES:
+                return None
+            return vector
+        if selection.market_type != CanonicalMarketType.POINT_SPREAD.value:
+            return None
+        line = _decimal_param(selection, "line")
+        if line is None or abs(line) != _HALF_POINT_LINE:
+            return None
+        if vector.result_states != THREE_WAY_STATES:
+            return None
+        settlement = (vector.settlement[0], vector.settlement[2])
+        if set(settlement) != _WIN_LOSE:
+            return None
+        return PayoffVector(
+            sport=vector.sport,
+            market_type=vector.market_type,
+            selection=vector.selection,
+            params=vector.params,
+            result_states=TWO_WAY_RESULT_STATES,
+            settlement=settlement,
+        )
 
     @classmethod
     def _relationship_type(

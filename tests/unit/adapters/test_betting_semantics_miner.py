@@ -22,6 +22,8 @@ def _record(
     event_key: str,
     selection: str,
     line: str = "2.5",
+    sport: str = "soccer",
+    market_type: str = CanonicalMarketType.TOTALS.value,
 ) -> NormalizedSelectionRecord:
     return NormalizedSelectionRecord(
         record_id=record_id,
@@ -29,14 +31,14 @@ def _record(
         selection=NormalizedSelection(
             venue=venue,
             instrument_id=record_id,
-            sport="soccer",
+            sport=sport,
             event_key=event_key,
             period="full_time",
             scope="full_time",
-            market_type=CanonicalMarketType.TOTALS.value,
-            market_family=CanonicalMarketType.TOTALS.value,
+            market_type=market_type,
+            market_family=market_type,
             selection=selection,
-            params=(("line", line),),
+            params=(("line", line),) if line else (),
             raw_market_name="Total Goals",
             raw_market_type="totals",
             raw_outcome=selection,
@@ -277,6 +279,72 @@ def test_chained_clusters_do_not_transitively_merge(tmp_path) -> None:
     assert len(complementary) == 1
     keys = {r.evidence_event_key for r in complementary}
     assert len(keys) == 1
+
+
+def test_miner_pairs_winner_with_half_point_spread_across_venues(tmp_path) -> None:
+    # WINNER and +/-0.5 POINT_SPREAD never share a raw result_states bucket; the
+    # cross-family partition projection must still pair them for the same fixture.
+    records = [
+        _record(
+            record_id="cb-moneyline-home",
+            venue="CLOUDBET",
+            event_key="basketball|team a|team b|2026-07-04T18:00:00Z",
+            selection="HOME",
+            line="",
+            sport="basketball",
+            market_type=CanonicalMarketType.WINNER.value,
+        ),
+        _record(
+            record_id="sx-spread-away",
+            venue="SXBET",
+            event_key="basketball|team a|team b|2026-07-04T18:30:00Z",
+            selection="AWAY",
+            line="0.5",
+            sport="basketball",
+            market_type=CanonicalMarketType.POINT_SPREAD.value,
+        ),
+    ]
+
+    rules = _miner(tmp_path).mine_event_candidates(records, persist=False)
+
+    assert len(rules) == 1
+    assert rules[0].relationship_type == RelationshipType.COMPLEMENTARY_COVERAGE.value
+    assert rules[0].venue_scope == ("CLOUDBET", "SXBET")
+    assert rules[0].result_states == ("HOME_WIN", "AWAY_WIN")
+    assert "cross_family_partition_projection" in rules[0].caveats
+
+
+def test_miner_does_not_double_pair_same_family_half_point_spreads(tmp_path) -> None:
+    # Both legs project onto the two-way partition AND share a raw result_states
+    # bucket; the projection loop must not re-emit the same-bucket pair (which would
+    # inflate template observed_count) or change its raw three-way rule content.
+    records = [
+        _record(
+            record_id="cb-spread-home",
+            venue="CLOUDBET",
+            event_key="basketball|team a|team b|2026-07-04T18:00:00Z",
+            selection="HOME",
+            line="-0.5",
+            sport="basketball",
+            market_type=CanonicalMarketType.POINT_SPREAD.value,
+        ),
+        _record(
+            record_id="sx-spread-away",
+            venue="SXBET",
+            event_key="basketball|team a|team b|2026-07-04T18:30:00Z",
+            selection="AWAY",
+            line="0.5",
+            sport="basketball",
+            market_type=CanonicalMarketType.POINT_SPREAD.value,
+        ),
+    ]
+
+    rules = _miner(tmp_path).mine_event_candidates(records, persist=False)
+
+    assert len(rules) == 1
+    assert rules[0].relationship_type == RelationshipType.COMPLEMENTARY_COVERAGE.value
+    assert rules[0].result_states == ("HOME_WIN", "DRAW", "AWAY_WIN")
+    assert "cross_family_partition_projection" not in rules[0].caveats
 
 
 def test_two_hour_boundary_is_inclusive(tmp_path) -> None:

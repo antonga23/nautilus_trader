@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Iterable
+from collections.abc import Iterator
 from dataclasses import dataclass
 from dataclasses import replace
 from datetime import UTC
@@ -283,23 +284,17 @@ class RuleMiner:
         discovered: list[MinedRule] = []
         for bucket_key, bucket in _tolerant_event_buckets(records):
             prepared = self._prepare_bucket(bucket)
-            grouped_by_result_states: dict[tuple[str, ...], list[_PreparedRecord]] = defaultdict(
-                list,
-            )
-            for item in prepared:
-                grouped_by_result_states[item.result_states].append(item)
-            for prepared_bucket in grouped_by_result_states.values():
-                for left, right in combinations(prepared_bucket, 2):
-                    rule = self._classifier.classify_precomputed(
-                        left.record.selection,
-                        right.record.selection,
-                        left.vector,
-                        right.vector,
-                    )
-                    if rule is None:
-                        continue
-                    rule = self._with_evidence(rule, bucket_key, left.record, right.record)
-                    discovered.append(rule)
+            for left, right in self._candidate_pairs(prepared):
+                rule = self._classifier.classify_precomputed(
+                    left.record.selection,
+                    right.record.selection,
+                    left.vector,
+                    right.vector,
+                )
+                if rule is None:
+                    continue
+                rule = self._with_evidence(rule, bucket_key, left.record, right.record)
+                discovered.append(rule)
 
         if persist:
             self._store.save_candidates(discovered)
@@ -373,6 +368,33 @@ class RuleMiner:
     ) -> tuple[list[CoverageProof], list[CoverageHyperedge]]:
         records = self.load_records(provider=provider, manifest_id=manifest_id)
         return self.mine_coverage(records, persist=persist)
+
+    def _candidate_pairs(
+        self,
+        prepared: list[_PreparedRecord],
+    ) -> Iterator[tuple[_PreparedRecord, _PreparedRecord]]:
+        grouped_by_result_states: dict[tuple[str, ...], list[_PreparedRecord]] = defaultdict(
+            list,
+        )
+        for item in prepared:
+            grouped_by_result_states[item.result_states].append(item)
+        for prepared_bucket in grouped_by_result_states.values():
+            yield from combinations(prepared_bucket, 2)
+        # Cross-family pairs (e.g. WINNER vs +/-0.5 POINT_SPREAD) never share a raw
+        # result_states bucket; pair them when the classifier projects both onto the
+        # same canonical partition, skipping pairs already yielded above.
+        projectable: dict[tuple[str, ...], list[_PreparedRecord]] = defaultdict(list)
+        for item in prepared:
+            partition = self._classifier.cross_family_partition_states(
+                item.record.selection,
+                item.vector,
+            )
+            if partition is not None:
+                projectable[partition].append(item)
+        for partition_bucket in projectable.values():
+            for left, right in combinations(partition_bucket, 2):
+                if left.result_states != right.result_states:
+                    yield left, right
 
     def _prepare_bucket(
         self,
