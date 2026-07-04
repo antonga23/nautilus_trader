@@ -903,17 +903,34 @@ impl OpportunityGraphCore {
             return;
         }
 
-        let Some(template_match) = self
-            .semantic_templates
-            .iter()
-            .find_map(|template| template.matches_pair(source, target))
-        else {
+        // Consider every matching template, not just the first (find_map stopped at
+        // the first hit, so a push-capable / non-execution-safe template could shadow
+        // an execution-safe one for the same pair and yield a quoted-but-uncandidatable
+        // edge). Apply the confidence floor per-template, then prefer execution-safe,
+        // then higher confidence.
+        let mut best: Option<SemanticTemplateMatch> = None;
+        for template in &self.semantic_templates {
+            let Some(candidate) = template.matches_pair(source, target) else {
+                continue;
+            };
+            if candidate.confidence < self.min_confidence {
+                continue;
+            }
+            let replace = match &best {
+                None => true,
+                Some(current) => {
+                    (candidate.execution_safe && !current.execution_safe)
+                        || (candidate.execution_safe == current.execution_safe
+                            && candidate.confidence > current.confidence)
+                }
+            };
+            if replace {
+                best = Some(candidate);
+            }
+        }
+        let Some(template_match) = best else {
             return;
         };
-
-        if template_match.confidence < self.min_confidence {
-            return;
-        }
 
         self.upsert_semantic_edge(source_id, target_id, template_match, pair_id);
     }
@@ -1669,6 +1686,66 @@ mod tests {
         dict.set_item("execution_safe", true).unwrap();
         dict.set_item("matcher_suspect", false).unwrap();
         dict
+    }
+
+    #[rstest]
+    fn best_template_beats_first_push_capable_match() {
+        // Regression for the find_map first-match bug: a push-capable / non-execution-safe
+        // template could shadow an execution-safe one for the same cross-venue pair,
+        // producing a quoted edge that emits zero candidates. The pair must bind the
+        // execution-safe template regardless of template ordering.
+        pyo3::Python::initialize();
+        Python::attach(|py| {
+            let over = py_payload(
+                py,
+                &node_with("a", "SXBET", "event-1", "Total Goals", "total_goals", "over"),
+            );
+            let under = py_payload(
+                py,
+                &node_with("b", "CLOUDBET", "event-2", "Total Goals", "total_goals", "under"),
+            );
+            let nodes = PyList::empty(py);
+            nodes.append(&over).unwrap();
+            nodes.append(&under).unwrap();
+
+            // Listed first: matches, higher confidence, but push-capable / not execution-safe.
+            let push_template = py_semantic_template(py, vec!["SXBET", "CLOUDBET"], true);
+            push_template.set_item("template_id", "template-push").unwrap();
+            push_template.set_item("safety_tier", "TOPOLOGY_SAFE").unwrap();
+            push_template.set_item("push_capable", true).unwrap();
+            push_template.set_item("execution_safe", false).unwrap();
+            push_template.set_item("confidence", 0.95).unwrap();
+
+            // Listed second: matches, lower confidence, execution-safe.
+            let exec_template = py_semantic_template(py, vec!["SXBET", "CLOUDBET"], true);
+            exec_template.set_item("template_id", "template-exec").unwrap();
+            exec_template.set_item("confidence", 0.80).unwrap();
+
+            let templates = PyList::empty(py);
+            templates.append(&push_template).unwrap();
+            templates.append(&exec_template).unwrap();
+
+            let mut core = OpportunityGraphCore::new(true, 0.5);
+            core.build_semantic(nodes.as_any(), templates.as_any())
+                .unwrap();
+
+            assert_eq!(
+                core.edge_count(),
+                1,
+                "cross-venue over/under pair should form exactly one edge",
+            );
+            assert!(core.update_quote("a", 2.4, 10, 10));
+            assert!(core.update_quote("b", 2.55, 11, 11));
+
+            // First-match selection binds the push-capable template and evaluate yields
+            // nothing; best-template selection binds the execution-safe one and emits a candidate.
+            let candidates = core.evaluate_connected_edges("a", 0.01, 12);
+            assert_eq!(
+                candidates.len(),
+                1,
+                "execution-safe template must win over the first push-capable match",
+            );
+        });
     }
 
     #[rstest]
