@@ -28,8 +28,6 @@
     "stablecoin_haircut_bps": 10,
     "fx_quote_max_age_secs": 30.0,
     "execution_price_change_policy": "better",
-    "execution_max_retry_count": 1,
-    "execution_retry_slippage_bps": 25,
     "sport_filter": null,
     "market_timing_filter": "all",
     "quote_freshness_profile": "live",

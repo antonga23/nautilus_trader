@@ -290,10 +290,6 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         explicit FX/currency-risk policy.
     execution_price_change_policy : str, default "better"
         Venue price-change policy for live execution.
-    execution_max_retry_count : int, default 1
-        Maximum retry attempts for live execution recovery paths.
-    execution_retry_slippage_bps : int, default 25
-        Slippage tolerance for venue retry payloads.
     live_execution_kill_switch_path : str | None, default None
         Optional file path which halts live execution when present.
 
@@ -349,8 +345,6 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
     fx_quote_max_age_secs: float = 30.0
     configured_fx_rates: dict[str, Decimal] = {}
     execution_price_change_policy: str = "better"
-    execution_max_retry_count: int = 1
-    execution_retry_slippage_bps: int = 25
     live_execution_kill_switch_path: str | None = None
 
     def __post_init__(self) -> None:
@@ -564,12 +558,6 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
             raise ValueError(msg)
         if self.max_daily_loss < 0:
             msg = "max_daily_loss must be non-negative"
-            raise ValueError(msg)
-        if self.execution_max_retry_count < 0:
-            msg = "execution_max_retry_count must be non-negative"
-            raise ValueError(msg)
-        if self.execution_retry_slippage_bps < 0:
-            msg = "execution_retry_slippage_bps must be non-negative"
             raise ValueError(msg)
         self._validate_portfolio_currency_config(stablecoin_currencies)
 
@@ -1028,6 +1016,11 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._instrument_refresh_reconciles += 1
         self._instrument_refresh_reconciles_by_venue[venue_value] += 1
         active_cached = self._active_cached_venue_instruments(venue_value)
+        if active_cached is None:
+            # Cache read failed: abort reconcile for this venue rather than treating the
+            # venue as having zero active instruments, which would mass-remove every
+            # subscribed instrument and collapse cross-venue topology.
+            return
         active_ids = {str(instrument.id) for instrument in active_cached}
         added_instruments = self._add_refreshed_active_instruments(active_cached)
         removed = self._remove_inactive_or_delisted_instruments(
@@ -1050,11 +1043,17 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             f"subscribed={len(self._subscribed_instruments)}",
         )
 
-    def _active_cached_venue_instruments(self, venue_value: str) -> list[BettingInstrument]:
+    def _active_cached_venue_instruments(
+        self,
+        venue_value: str,
+    ) -> list[BettingInstrument] | None:
         try:
             cached_instruments = list(self.cache.instruments())
-        except Exception:
-            return []
+        except Exception as exc:
+            # Return None (not []) so the caller distinguishes "read failed" from
+            # "genuinely no active instruments" and skips removal on failure.
+            self.log.warning(f"Instrument cache read failed for venue={venue_value}: {exc!r}")
+            return None
 
         current_active_ids = self._current_active_refresh_ids(venue_value)
         active_cached: list[BettingInstrument] = []
@@ -1841,13 +1840,16 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 return prediction_price
             return None
 
-        if venue == "SXBET" and bid_price > 0:
+        # Decimal odds must be > 1 (a "price" of 1.0 or a mis-scaled sub-1 quote is
+        # degenerate); returning it would raise ValueError downstream in
+        # fee_adjusted_odds and abort the whole quote-handling callback for the tick.
+        if venue == "SXBET" and bid_price > 1:
             return bid_price
 
-        if ask_price > 0:
+        if ask_price > 1:
             return ask_price
 
-        if bid_price > 0:
+        if bid_price > 1:
             return bid_price
 
         return None
@@ -4294,6 +4296,14 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         )
 
         reasons: list[str] = []
+        # Fail closed on an undated quote: a missing/zero decision timestamp yields a
+        # deceptive 0.0 age/skew, so the stale/cross-cycle checks below would pass an
+        # arbitrarily stale quote straight to live submission. Block it explicitly.
+        if (
+            self._quote_decision_timestamp_ns(quote_a) <= 0
+            or self._quote_decision_timestamp_ns(quote_b) <= 0
+        ):
+            reasons.append("final_quote_missing_timestamp")
         if (
             quote_age_a_secs > freshness.max_quote_age_secs
             or quote_age_b_secs > freshness.max_quote_age_secs
@@ -4603,6 +4613,38 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             self._live_execution_unhedged_exposures += 1
             self._live_execution_block_reasons["order_rejected"] += 1
         msg = f"Order rejected: {event}"
+        self.log.warning(msg)
+
+    def on_order_denied(self, event: Event) -> None:
+        """
+        Handle order denied events (e.g. a local RiskEngine denial).
+
+        submit_order enqueues asynchronously and does not raise on a local denial, so a
+        denied leg is otherwise swallowed by the base no-op while its sibling may be
+        resting or filled — leaving naked directional exposure. Mirror the rejected path
+        so a denial halts live execution and is counted as unhedged exposure.
+        """
+        self._record_order_lifecycle_event(event, "denied")
+        if self._config.live_execution_armed:
+            self._live_execution_halt_reason = "order_denied"
+            self._live_execution_unhedged_exposures += 1
+            self._live_execution_block_reasons["order_denied"] += 1
+        msg = f"Order denied: {event}"
+        self.log.warning(msg)
+
+    def on_order_canceled(self, event: Event) -> None:
+        """
+        Handle order canceled events.
+
+        A canceled leg (venue-side or operator) after its sibling filled is the same
+        unhedged-exposure hazard as a rejection, so halt live execution and count it.
+        """
+        self._record_order_lifecycle_event(event, "canceled")
+        if self._config.live_execution_armed:
+            self._live_execution_halt_reason = "order_canceled"
+            self._live_execution_unhedged_exposures += 1
+            self._live_execution_block_reasons["order_canceled"] += 1
+        msg = f"Order canceled: {event}"
         self.log.warning(msg)
 
     def _record_order_lifecycle_event(self, event: Event, lifecycle: str) -> None:

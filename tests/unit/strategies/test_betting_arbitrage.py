@@ -119,8 +119,10 @@ class TestBettingArbitrageConfig:  # skipcq
         ensure(config.stablecoin_haircut_bps == 10)
         ensure(config.max_resolution_horizon_hours is None)
         ensure(config.execution_price_change_policy == "better")
-        ensure(config.execution_max_retry_count == 1)
-        ensure(config.execution_retry_slippage_bps == 25)
+        # execution_max_retry_count / execution_retry_slippage_bps were removed: they were
+        # declared and validated but never read by any execution path (no retry existed).
+        ensure(not hasattr(config, "execution_max_retry_count"))
+        ensure(not hasattr(config, "execution_retry_slippage_bps"))
 
     def test_custom_venues(self):  # skipcq
         """
@@ -3958,6 +3960,61 @@ class TestBettingArbitrageStrategy:  # skipcq
         _refreshed, reasons = strategy._live_execution_refresh_opportunity(opportunity)
 
         ensure("final_quote_stale" in reasons)
+
+    def test_live_execution_final_quote_check_blocks_undated_quotes(self, monkeypatch):  # skipcq
+        # An undated quote (ts_event=0) has a deceptive 0.0 age/skew; the final live
+        # gate must fail closed rather than fast-track an arbitrarily stale quote.
+        monkeypatch.setenv("BETTING_LIVE_EXECUTION_ARMED", "1")
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["CLOUDBET", "SXBET"]),
+                auto_execute=True,
+                live_execution_armed=True,
+                quote_freshness_profile="live",
+                max_total_stake=Decimal(25),
+            ),
+        )
+        strategy.register(
+            trader_id=TraderId("TESTER-000"),
+            portfolio=TestComponentStubs.portfolio(),
+            msgbus=TestComponentStubs.msgbus(),
+            cache=TestComponentStubs.cache(),
+            clock=TestComponentStubs.clock(),
+        )
+        cloudbet = self._sxbet_instrument(event_id="event-1", venue="CLOUDBET", outcome="over")
+        sxbet = self._sxbet_instrument(event_id="event-1", venue="SXBET", outcome="under")
+        strategy._latest_quotes[str(cloudbet.id)] = TestDataStubs.quote_tick(
+            instrument=cloudbet,
+            bid_price=0.0,
+            ask_price=3.0,
+            ask_size=100.0,
+            ts_event=0,
+            ts_init=0,
+        )
+        strategy._latest_quotes[str(sxbet.id)] = TestDataStubs.quote_tick(
+            instrument=sxbet,
+            bid_price=3.2,
+            ask_price=0.0,
+            bid_size=100.0,
+            ts_event=0,
+            ts_init=0,
+        )
+        opportunity = ArbitrageOpportunity(
+            instrument_a=cloudbet,
+            instrument_b=sxbet,
+            probability_a=Decimal("0.50"),
+            probability_b=Decimal("0.50"),
+            total_probability=Decimal("1.00"),
+            profit_margin=Decimal("0.00"),
+            odds_a=Decimal(2),
+            odds_b=Decimal(2),
+            is_same_venue=False,
+            match_type="cross_venue",
+        )
+
+        _refreshed, reasons = strategy._live_execution_refresh_opportunity(opportunity)
+
+        ensure("final_quote_missing_timestamp" in reasons)
 
     def test_live_execution_blocks_tiny_pilot_cap_breach(self, monkeypatch):  # skipcq
         monkeypatch.setenv("BETTING_LIVE_EXECUTION_ARMED", "1")
