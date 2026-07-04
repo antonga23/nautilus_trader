@@ -96,9 +96,18 @@ class TestBettingArbitrageConfig:  # skipcq
         ensure(config.quote_max_fetch_latency_secs is None)
         ensure(config.instrument_refresh_interval_secs is None)
         ensure(config.stale_quote_refresh_cooldown_secs == 60.0)
-        ensure(config.venue_taker_fee_rates == {"POLYMARKET": Decimal("0.03")})
+        ensure(
+            config.venue_taker_fee_rates
+            == {
+                "CLOUDBET": Decimal(0),
+                "POLYMARKET": Decimal("0.03"),
+                "SXBET": Decimal(0),
+            },
+        )
         ensure(config.venue_maker_rebate_rates == {})
-        ensure(config.venue_winning_profit_fee_rates == {})
+        # SX.bet's 4% net-winnings commission is modeled by default so unconfigured
+        # cross-venue margins are not fee-adjusted with zero cost (#233).
+        ensure(config.venue_winning_profit_fee_rates == {"SXBET": Decimal("0.04")})
         ensure(config.venue_basket_rebate_rates == {})
         ensure(config.venue_basket_boost_rates == {})
         ensure(config.devig_enabled is True)
@@ -119,8 +128,10 @@ class TestBettingArbitrageConfig:  # skipcq
         ensure(config.stablecoin_haircut_bps == 10)
         ensure(config.max_resolution_horizon_hours is None)
         ensure(config.execution_price_change_policy == "better")
-        ensure(config.execution_max_retry_count == 1)
-        ensure(config.execution_retry_slippage_bps == 25)
+        # execution_max_retry_count / execution_retry_slippage_bps were removed: they were
+        # declared and validated but never read by any execution path (no retry existed).
+        ensure(not hasattr(config, "execution_max_retry_count"))
+        ensure(not hasattr(config, "execution_retry_slippage_bps"))
 
     def test_custom_venues(self):  # skipcq
         """
@@ -213,10 +224,17 @@ class TestBettingArbitrageConfig:  # skipcq
 
         ensure(
             config.venue_taker_fee_rates
-            == {"POLYMARKET": Decimal("0.02"), "SXBET": Decimal("0.01")},
+            == {
+                "CLOUDBET": Decimal(0),
+                "POLYMARKET": Decimal("0.02"),
+                "SXBET": Decimal("0.01"),
+            },
         )
         ensure(config.venue_maker_rebate_rates == {"POLYMARKET": Decimal("0.0075")})
-        ensure(config.venue_winning_profit_fee_rates == {"CLOUDBET": Decimal("0.005")})
+        ensure(
+            config.venue_winning_profit_fee_rates
+            == {"CLOUDBET": Decimal("0.005"), "SXBET": Decimal("0.04")},
+        )
         ensure(config.venue_basket_rebate_rates == {"SXBET": Decimal("0.02")})
         ensure(config.venue_basket_boost_rates == {"CLOUDBET": Decimal("0.015")})
 
@@ -700,9 +718,11 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure("quote_subscription_counts_by_venue" in stats)
         ensure("semantic_quote_subscription_limit_by_venue" in stats)
         ensure("semantic_quote_subscription_limit_exceeded_by_venue" in stats)
-        ensure(stats["venue_taker_fee_rates"] == {"POLYMARKET": "0.03"})
+        ensure(
+            stats["venue_taker_fee_rates"] == {"CLOUDBET": "0", "POLYMARKET": "0.03", "SXBET": "0"},
+        )
         ensure(stats["venue_maker_rebate_rates"] == {})
-        ensure(stats["venue_winning_profit_fee_rates"] == {})
+        ensure(stats["venue_winning_profit_fee_rates"] == {"SXBET": "0.04"})
         ensure(stats["venue_basket_rebate_rates"] == {})
         ensure(stats["venue_basket_boost_rates"] == {})
         ensure("instrument_refresh_by_venue" in stats)
@@ -2399,6 +2419,89 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(sxbet_match_odds.id in quoted_ids)
         ensure(cloudbet_scope_mismatch.id not in quoted_ids)
 
+    def _common_fixture_reserve_strategy(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        reserve_limit: int | None,
+    ) -> BettingArbitrageStrategy:
+        # Two common fixtures per venue with a tiny probe limit: the reserve must be
+        # sized independently of semantic_unmatched_quote_probe_limit_per_venue (#227).
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["CLOUDBET", "SXBET"]),
+                semantic_quote_subscription_limit_by_venue={"CLOUDBET": 3, "SXBET": 3},
+                semantic_unmatched_quote_probe_limit_per_venue=1,
+                cross_venue_common_fixture_quote_reserve_limit_per_venue=reserve_limit,
+            ),
+        )
+        strategy.subscribe_quote_ticks = Mock()
+        alias_by_instrument_id: dict[str, set[str]] = {}
+        for fixture, (home, away) in {
+            "cavs-pistons": ("Cleveland Cavaliers", "Detroit Pistons"),
+            "lakers-celtics": ("Los Angeles Lakers", "Boston Celtics"),
+        }.items():
+            for venue in ("CLOUDBET", "SXBET"):
+                instrument = self._sxbet_instrument(
+                    event_id=f"{venue.lower()}-{fixture}",
+                    venue=venue,
+                    outcome="home" if venue == "CLOUDBET" else "away",
+                    event_name=f"{home} v {away}",
+                    home_name=home,
+                    away_name=away,
+                    market_name="match_odds",
+                    sport_name="Basketball",
+                )
+                strategy._subscribed_instruments.add(instrument)
+                alias_by_instrument_id[str(instrument.id)] = {f"basketball:{fixture}"}
+        monkeypatch.setattr(
+            strategy,
+            "_instrument_event_alias_keys",
+            lambda instrument: alias_by_instrument_id[str(instrument.id)],
+        )
+        return strategy
+
+    def test_cross_venue_common_fixture_reserve_not_capped_by_probe_limit(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:  # skipcq
+        strategy = self._common_fixture_reserve_strategy(monkeypatch, reserve_limit=None)
+
+        subscribed = strategy._subscribe_cross_venue_common_fixture_quote_ticks()
+
+        ensure(subscribed == 4)
+
+    def test_cross_venue_common_fixture_reserve_explicit_limit_caps_per_venue(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:  # skipcq
+        strategy = self._common_fixture_reserve_strategy(monkeypatch, reserve_limit=1)
+
+        subscribed = strategy._subscribe_cross_venue_common_fixture_quote_ticks()
+
+        ensure(subscribed == 2)
+
+    def test_cross_venue_common_fixture_reserve_zero_disables_pass(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:  # skipcq
+        strategy = self._common_fixture_reserve_strategy(monkeypatch, reserve_limit=0)
+
+        subscribed = strategy._subscribe_cross_venue_common_fixture_quote_ticks()
+
+        ensure(subscribed == 0)
+        ensure(strategy.subscribe_quote_ticks.call_args_list == [])
+
+    def test_cross_venue_common_fixture_reserve_limit_rejects_negative(self) -> None:  # skipcq
+        with pytest.raises(
+            ValueError,
+            match="cross_venue_common_fixture_quote_reserve_limit_per_venue",
+        ):
+            BettingArbitrageConfig(
+                enabled_venues=frozenset(["CLOUDBET", "SXBET"]),
+                cross_venue_common_fixture_quote_reserve_limit_per_venue=-1,
+            )
+
     def test_resolution_horizon_priority_demotes_stale_past_fixtures(self) -> None:  # skipcq
         strategy = BettingArbitrageStrategy(
             config=BettingArbitrageConfig(max_resolution_horizon_hours=48.0),
@@ -3340,6 +3443,9 @@ class TestBettingArbitrageStrategy:  # skipcq
                 min_profit_margin=Decimal("0.02"),
                 enabled_venues=frozenset(["SXBET"]),
                 opportunity_log_manual_instructions=False,
+                # A fee-less pair is the case that must not materialize; zero out the
+                # SXBET net-winnings default so the fast path stays fee-free (#233).
+                venue_winning_profit_fee_rates={"SXBET": "0"},
             ),
         )
         _, _, snapshot = self._fast_candidate_snapshot(strategy)
@@ -3958,6 +4064,61 @@ class TestBettingArbitrageStrategy:  # skipcq
         _refreshed, reasons = strategy._live_execution_refresh_opportunity(opportunity)
 
         ensure("final_quote_stale" in reasons)
+
+    def test_live_execution_final_quote_check_blocks_undated_quotes(self, monkeypatch):  # skipcq
+        # An undated quote (ts_event=0) has a deceptive 0.0 age/skew; the final live
+        # gate must fail closed rather than fast-track an arbitrarily stale quote.
+        monkeypatch.setenv("BETTING_LIVE_EXECUTION_ARMED", "1")
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["CLOUDBET", "SXBET"]),
+                auto_execute=True,
+                live_execution_armed=True,
+                quote_freshness_profile="live",
+                max_total_stake=Decimal(25),
+            ),
+        )
+        strategy.register(
+            trader_id=TraderId("TESTER-000"),
+            portfolio=TestComponentStubs.portfolio(),
+            msgbus=TestComponentStubs.msgbus(),
+            cache=TestComponentStubs.cache(),
+            clock=TestComponentStubs.clock(),
+        )
+        cloudbet = self._sxbet_instrument(event_id="event-1", venue="CLOUDBET", outcome="over")
+        sxbet = self._sxbet_instrument(event_id="event-1", venue="SXBET", outcome="under")
+        strategy._latest_quotes[str(cloudbet.id)] = TestDataStubs.quote_tick(
+            instrument=cloudbet,
+            bid_price=0.0,
+            ask_price=3.0,
+            ask_size=100.0,
+            ts_event=0,
+            ts_init=0,
+        )
+        strategy._latest_quotes[str(sxbet.id)] = TestDataStubs.quote_tick(
+            instrument=sxbet,
+            bid_price=3.2,
+            ask_price=0.0,
+            bid_size=100.0,
+            ts_event=0,
+            ts_init=0,
+        )
+        opportunity = ArbitrageOpportunity(
+            instrument_a=cloudbet,
+            instrument_b=sxbet,
+            probability_a=Decimal("0.50"),
+            probability_b=Decimal("0.50"),
+            total_probability=Decimal("1.00"),
+            profit_margin=Decimal("0.00"),
+            odds_a=Decimal(2),
+            odds_b=Decimal(2),
+            is_same_venue=False,
+            match_type="cross_venue",
+        )
+
+        _refreshed, reasons = strategy._live_execution_refresh_opportunity(opportunity)
+
+        ensure("final_quote_missing_timestamp" in reasons)
 
     def test_live_execution_blocks_tiny_pilot_cap_breach(self, monkeypatch):  # skipcq
         monkeypatch.setenv("BETTING_LIVE_EXECUTION_ARMED", "1")

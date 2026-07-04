@@ -126,6 +126,7 @@ class CloudbetDataClient(LiveMarketDataClient):
         self._updates_received: int = 0  # Counter to track the number of updates
         self._update_event = asyncio.Event()  # native asyncio flag to track cycles/events
         self._subscribed_quote_instruments: set[InstrumentId] = set()
+        self._requested_quote_instruments: set[InstrumentId] = set()
         self._quote_polling_task: asyncio.Task | None = None
         self._quote_polling_enabled = bool(
             getattr(self._config, "auto_subscribe_quote_ticks", False),
@@ -229,6 +230,7 @@ class CloudbetDataClient(LiveMarketDataClient):
         self._update_instruments_task = None
         self._quote_polling_running = False
         self._subscribed_quote_instruments.clear()
+        self._requested_quote_instruments.clear()
         self._quote_poll_missing_counts.clear()
         if self._quote_polling_task is not None:
             self._quote_polling_task.cancel()
@@ -377,6 +379,7 @@ class CloudbetDataClient(LiveMarketDataClient):
     async def _subscribe_quote_ticks(self, command: SubscribeQuoteTicks) -> None:
         instrument_id = command.instrument_id
         self._subscribed_quote_instruments.add(instrument_id)
+        self._requested_quote_instruments.add(instrument_id)
         self._quote_poll_missing_counts.pop(instrument_id, None)
         self._log.debug(f"Subscribed to quote ticks: {instrument_id}")
         self._start_quote_polling()
@@ -384,6 +387,7 @@ class CloudbetDataClient(LiveMarketDataClient):
     async def _unsubscribe_quote_ticks(self, command: UnsubscribeQuoteTicks) -> None:
         instrument_id = command.instrument_id
         self._subscribed_quote_instruments.discard(instrument_id)
+        self._requested_quote_instruments.discard(instrument_id)
         self._quote_poll_missing_counts.pop(instrument_id, None)
         self._log.debug(f"Unsubscribed from quote ticks: {instrument_id}")
         if not self._subscribed_quote_instruments:
@@ -751,6 +755,14 @@ class CloudbetDataClient(LiveMarketDataClient):
 
     def _record_missing_quote_subscription(self, instrument_id: InstrumentId) -> bool:
         if instrument_id not in self._subscribed_quote_instruments:
+            return False
+        if instrument_id in self._requested_quote_instruments:
+            # DataEngine/strategy explicitly requested this instrument (e.g. a cross-venue
+            # counterpart). Never prune it on transient missing quotes: the strategy has no
+            # re-subscription path, and silently swapping in an unrelated size-ranked
+            # instrument would leave the requested leg permanently dark. Hold the miss count
+            # at zero so it keeps being polled when the market un-suspends.
+            self._quote_poll_missing_counts.pop(instrument_id, None)
             return False
         missing_count = self._quote_poll_missing_counts[instrument_id] + 1
         if missing_count < self._quote_poll_missing_prune_threshold:

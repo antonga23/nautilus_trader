@@ -28,6 +28,26 @@ from nautilus_trader.adapters.betting.semantics.types import RelationshipType
 from nautilus_trader.adapters.betting.semantics.types import RuleValidationStats
 from nautilus_trader.adapters.betting.semantics.types import SafetyTier
 from nautilus_trader.adapters.betting.semantics.types import SemanticRuleTemplate
+from nautilus_trader.adapters.betting.semantics.types import SettlementState
+
+
+def _deterministic_complementary_partition(template: SemanticRuleTemplate) -> bool:
+    # An exhaustive WIN/LOSE partition over every result state is provably complementary
+    # regardless of observation count, so execution safety is a topology guarantee rather
+    # than a statistical one — provided support is deterministic and uncontradicted.
+    settlement_a = template.settlement_a
+    settlement_b = template.settlement_b
+    if not settlement_a or len(settlement_a) != len(settlement_b):
+        return False
+    if len(settlement_a) != len(template.result_states):
+        return False
+    win_lose = {SettlementState.WIN.value, SettlementState.LOSE.value}
+    if not all(
+        {state_a, state_b} == win_lose
+        for state_a, state_b in zip(settlement_a, settlement_b, strict=True)
+    ):
+        return False
+    return template.support.deterministic and template.support.mismatch_rate <= 0.01
 
 
 class RulePromotionPolicy:
@@ -140,6 +160,40 @@ class RulePromotionPolicy:
         store.save_promoted(promoted)
         return store.load_promoted(rule.rule_id)
 
+    def _template_execution_safe_reasons(
+        self,
+        template: SemanticRuleTemplate,
+        *,
+        allowlisted: bool,
+        venue_agnostic: bool,
+    ) -> tuple[str, ...]:
+        if (
+            template.relationship_type != RelationshipType.COMPLEMENTARY_COVERAGE.value
+            or template.has_void
+            or template.has_partial
+            or template.has_unknown
+        ):
+            return ()
+        execution_scope_ok = (
+            allowlisted or template.provider_scope in self._allowlisted_venue_scopes
+        )
+        multi_provider_ok = template.support.provider_count >= 2 or execution_scope_ok
+        if venue_agnostic and not multi_provider_ok:
+            return ()
+        if template.support.catalog_promotable:
+            return ("execution_safe_complementary_coverage",)
+        # Only cross-venue templates get the topology bypass: cross-venue mining is too
+        # starved to ever meet catalog_promotable thresholds (#224), while same-venue
+        # templates must still earn promotion through settled observations.
+        if template.support.provider_count >= 2 and _deterministic_complementary_partition(
+            template,
+        ):
+            return (
+                "deterministic_complementary_partition",
+                "execution_safe_complementary_coverage",
+            )
+        return ()
+
     def classify_template_tier(
         self,
         template: SemanticRuleTemplate,
@@ -166,20 +220,14 @@ class RulePromotionPolicy:
             if template.has_partial:
                 reasons.append("partial_settlement_present")
 
-        execution_scope_ok = (
-            allowlisted or template.provider_scope in self._allowlisted_venue_scopes
+        execution_reasons = self._template_execution_safe_reasons(
+            template,
+            allowlisted=allowlisted,
+            venue_agnostic=venue_agnostic,
         )
-        multi_provider_ok = template.support.provider_count >= 2 or execution_scope_ok
-        if (
-            template.relationship_type == RelationshipType.COMPLEMENTARY_COVERAGE.value
-            and not template.has_void
-            and not template.has_partial
-            and not template.has_unknown
-            and template.support.catalog_promotable
-            and (multi_provider_ok or not venue_agnostic)
-        ):
+        if execution_reasons:
             tier = SafetyTier.EXECUTION_SAFE
-            reasons.append("execution_safe_complementary_coverage")
+            reasons.extend(execution_reasons)
         elif (
             tier == SafetyTier.VENUE_SAFE
             and template.relationship_type == RelationshipType.COMPLEMENTARY_COVERAGE.value

@@ -51,3 +51,110 @@ reason = "unic-ucd-ident unmaintained, transitive via pyo3-stub-gen (dev tool on
 [[IgnoredVulns]]
 id = "GHSA-wj6h-64fc-37mp"
 reason = "ecdsa Minerva timing attack on P-256, maintainers consider sidechannel attacks out of scope, only affects optional dYdX adapter"
+
+# 2026-07 OSV advisory-DB refresh — inherited upstream dependency advisories, kept in
+# sync with the deny.toml waiver set (see there for per-crate detail).
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2025-0141"
+reason = "temporary CI waiver for inherited bincode 1.x lifecycle advisory pending migration planning"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2025-0143"
+reason = "temporary CI waiver for inherited capnp advisory pending upstream dependency updates"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0001"
+reason = "inherited upstream (Nautilus fork) dependency advisory surfaced by 2026-07 OSV DB refresh; tracked in deny.toml waiver set pending dependency upgrades"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0002"
+reason = "temporary CI waiver for inherited lru advisory pending upstream dependency updates"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0007"
+reason = "temporary CI waiver for inherited bytes advisory pending upstream dependency updates"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0009"
+reason = "temporary CI waiver for inherited time advisory pending upstream dependency updates"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0012"
+reason = "temporary CI waiver for inherited keccak advisory pending upstream dependency updates"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0037"
+reason = "inherited upstream (Nautilus fork) dependency advisory surfaced by 2026-07 OSV DB refresh; tracked in deny.toml waiver set pending dependency upgrades"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0041"
+reason = "temporary CI waiver for inherited lz4_flex advisory pending upstream dependency updates"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0044"
+reason = "temporary CI waiver for inherited aws-lc-sys advisory cluster pending dependency upgrades"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0045"
+reason = "temporary CI waiver for inherited aws-lc-sys advisory cluster pending dependency upgrades"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0046"
+reason = "temporary CI waiver for inherited aws-lc-sys advisory cluster pending dependency upgrades"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0047"
+reason = "temporary CI waiver for inherited aws-lc-sys advisory cluster pending dependency upgrades"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0048"
+reason = "temporary CI waiver for inherited aws-lc-sys advisory cluster pending dependency upgrades"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0049"
+reason = "temporary CI waiver for inherited rustls-webpki advisory pending upstream dependency updates"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0097"
+reason = "temporary CI waiver for inherited rand advisory pending upstream dependency updates"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0098"
+reason = "temporary CI waiver for inherited rustls-webpki advisory pending upstream dependency updates"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0099"
+reason = "temporary CI waiver for inherited rustls-webpki advisory pending upstream dependency updates"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0104"
+reason = "temporary CI waiver for inherited rustls-webpki advisory pending upstream dependency updates"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0173"
+reason = "temporary CI waiver for inherited pyo3 advisory pending pyo3 upgrade"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0176"
+reason = "temporary CI waiver for inherited pyo3 advisory pending pyo3 upgrade"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0177"
+reason = "temporary CI waiver for inherited pyo3 advisory pending pyo3 upgrade"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0185"
+reason = "inherited upstream (Nautilus fork) dependency advisory surfaced by 2026-07 OSV DB refresh; tracked in deny.toml waiver set pending dependency upgrades"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0190"
+reason = "temporary CI waiver for inherited quick-xml advisory pending upstream dependency updates"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0194"
+reason = "temporary CI waiver for inherited quick-xml advisory pending upstream dependency updates"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0195"
+reason = "temporary CI waiver for inherited anyhow advisory pending upstream dependency updates"

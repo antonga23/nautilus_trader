@@ -594,3 +594,112 @@ def test_portfolio_policy_uses_inverse_bid_for_conservative_fx_cost():
     assert conversion.is_available
     assert conversion.rate == Decimal(1) / Decimal("0.9240")
     assert conversion.converted_amount == Decimal(10) / Decimal("0.9240")
+
+
+def test_fixture_identity_matches_distinctive_single_token_club_short_name():
+    # Issue 221: a venue emits "United" for "Manchester United"; the shared
+    # distinctive nickname token must still reach the token_subset path (0.84)
+    # instead of being force-rejected as generic.
+    resolver = FixtureIdentityResolver()
+    polymarket = _instrument(
+        venue="POLYMARKET",
+        event_name="United v Liverpool",
+        home_name="United",
+        away_name="Liverpool",
+        sport_name="soccer",
+    )
+    sxbet = _instrument(
+        venue="SXBET",
+        event_name="Manchester United vs Liverpool",
+        home_name="Manchester United",
+        away_name="Liverpool",
+        sport_name="soccer",
+    )
+
+    proof = resolver.resolve(polymarket, sxbet)
+
+    assert proof.same_fixture is True
+    assert proof.blocker_reason is None
+    assert "token_subset" in ",".join(proof.alias_hits)
+
+
+def test_fixture_identity_keeps_geographic_single_token_non_distinctive():
+    # Issue 221 (conservative bound): a bare geographic descriptor such as "City"
+    # must NOT collapse onto "New York City", which would create a same-metro
+    # false positive on the token_subset path.
+    resolver = FixtureIdentityResolver()
+    first = _instrument(
+        venue="POLYMARKET",
+        event_name="City v Rangers",
+        home_name="City",
+        away_name="Rangers",
+        sport_name="soccer",
+    )
+    second = _instrument(
+        venue="SXBET",
+        event_name="New York City v Rangers",
+        home_name="New York City",
+        away_name="Rangers",
+        sport_name="soccer",
+    )
+
+    proof = resolver.resolve(first, second)
+
+    assert proof.same_fixture is False
+    assert proof.blocker_reason == "participant_mismatch"
+
+
+def test_fixture_identity_rejects_same_metro_prefix_only_token_overlap():
+    # Issue 222: two distinct same-metro teams share only geographic-prefix tokens
+    # ("new york") and must not be accepted as the same participant via the
+    # token_overlap 0.74 floor.
+    resolver = FixtureIdentityResolver()
+    knicks_liberty = _instrument(
+        venue="POLYMARKET",
+        event_name="New York Knicks v New York Liberty",
+        home_name="New York Knicks",
+        away_name="New York Liberty",
+        sport_name="basketball",
+    )
+    knicks_red_bulls = _instrument(
+        venue="SXBET",
+        event_name="New York Knicks v New York Red Bulls",
+        home_name="New York Knicks",
+        away_name="New York Red Bulls",
+        sport_name="basketball",
+    )
+
+    proof = resolver.resolve(knicks_liberty, knicks_red_bulls)
+
+    assert proof.same_fixture is False
+    assert proof.blocker_reason == "participant_mismatch"
+
+
+def test_fixture_identity_reconciles_venue_specific_soccer_labels():
+    # Issue 234: divergent soccer sport labels across venues must normalize to the
+    # same sport instead of hard-blocking with sport_mismatch before participants
+    # are compared.
+    resolver = FixtureIdentityResolver()
+    assert resolver.normalize_sport("Football (Soccer)") == "soccer"
+    assert resolver.normalize_sport("Association Football") == "soccer"
+    assert resolver.normalize_sport("Futbol") == "soccer"
+
+    polymarket = _instrument(
+        venue="POLYMARKET",
+        event_name="Arsenal v Chelsea",
+        home_name="Arsenal",
+        away_name="Chelsea",
+        sport_name="Football (Soccer)",
+    )
+    sxbet = _instrument(
+        venue="SXBET",
+        event_name="Arsenal vs Chelsea",
+        home_name="Arsenal",
+        away_name="Chelsea",
+        sport_name="Soccer",
+    )
+
+    proof = resolver.resolve(polymarket, sxbet)
+
+    assert proof.same_fixture is True
+    assert proof.blocker_reason is None

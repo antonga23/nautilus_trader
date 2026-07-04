@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from decimal import InvalidOperation
 import hashlib
+from itertools import product
 import json
 
 from nautilus_trader.adapters.betting.semantics.payoffs import PayoffVectorBuilder
@@ -507,15 +508,15 @@ class CoverageEngine:
 def _coverage_candidates(
     predicates: list[SelectionPredicate],
 ) -> Iterable[tuple[SelectionPredicate, ...]]:
-    by_selection: dict[str, SelectionPredicate] = {
-        predicate.selection: predicate for predicate in predicates
-    }
+    by_selection: dict[str, list[SelectionPredicate]] = defaultdict(list)
+    for predicate in predicates:
+        by_selection[predicate.selection].append(predicate)
     selection_set = frozenset(by_selection)
     market_family = predicates[0].market_family if predicates else ""
 
     for binary_set in _BINARY_SELECTION_GROUPS:
         if binary_set.issubset(selection_set):
-            yield tuple(by_selection[selection] for selection in sorted(binary_set))
+            yield from _selection_combinations(by_selection, sorted(binary_set))
 
     if market_family in {
         CanonicalMarketType.MATCH_ODDS.value,
@@ -525,7 +526,7 @@ def _coverage_candidates(
     }:
         three_way = ("HOME", "DRAW", "AWAY")
         if all(selection in by_selection for selection in three_way):
-            yield tuple(by_selection[selection] for selection in three_way)
+            yield from _selection_combinations(by_selection, list(three_way))
 
     range_predicates = [
         predicate for predicate in predicates if _range_param(predicate) is not None
@@ -534,6 +535,16 @@ def _coverage_candidates(
         yield tuple(sorted(range_predicates, key=_range_sort_key))
     elif _bucket_market_group(predicates):
         yield tuple(sorted(predicates, key=lambda predicate: predicate.selection))
+
+
+def _selection_combinations(
+    by_selection: dict[str, list[SelectionPredicate]],
+    selections: list[str],
+) -> Iterable[tuple[SelectionPredicate, ...]]:
+    # Each selection label may be quoted by more than one provider; yield the cross-product
+    # across providers so cross-venue baskets (e.g. Cloudbet OVER + Polymarket UNDER) are
+    # kept as distinct candidates instead of collapsing to a single arbitrary venue's leg.
+    yield from product(*(by_selection[selection] for selection in selections))
 
 
 def _coverage_group_params(predicate: SelectionPredicate) -> tuple[tuple[str, str], ...]:

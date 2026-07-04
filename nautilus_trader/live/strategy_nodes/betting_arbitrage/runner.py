@@ -59,6 +59,7 @@ class ProbeProfitabilityCounters:
     threshold_execution: int = 0
     threshold_same_venue: int = 0
     margin_bands: Counter[str] = field(default_factory=Counter)
+    rag_bands: Counter[str] = field(default_factory=Counter)
     rejection_buckets: Counter[str] = field(default_factory=Counter)
     timing_flags: Counter[str] = field(default_factory=Counter)
     freshness_profiles: Counter[str] = field(default_factory=Counter)
@@ -120,6 +121,7 @@ class ProbeProfitabilityCounters:
             "threshold_execution": self.threshold_execution,
             "threshold_same_venue": self.threshold_same_venue,
             "margin_bands": dict(self.margin_bands),
+            "rag_bands": dict(self.rag_bands),
             "rejection_buckets": dict(self.rejection_buckets),
             "timing_flags": dict(self.timing_flags),
             "freshness_profiles": dict(self.freshness_profiles),
@@ -1161,6 +1163,7 @@ def _collect_runtime_probe_payload(
         "candidateQuality": {
             "quotedEdges": profitability["quoted_edges"],
             "marginBands": profitability["margin_bands"],
+            "ragBands": profitability["rag_bands"],
             "rejectionBuckets": profitability["rejection_buckets"],
             "timingFlags": profitability["timing_flags"],
             "freshnessProfiles": profitability["freshness_profiles"],
@@ -1725,6 +1728,7 @@ def _empty_candidate_quality_payload() -> dict[str, object]:
     return {
         "quotedEdges": 0,
         "marginBands": {},
+        "ragBands": {},
         "rejectionBuckets": {},
         "timingFlags": {},
         "freshnessProfiles": {},
@@ -2617,14 +2621,16 @@ def _zero_pair_blocker_hint(
     return ""
 
 
-_DIRECTIONAL_MARKET_FAMILIES = frozenset(
-    {
-        "WINNER",
-        "MATCH_ODDS",
-        "DRAW_NO_BET",
-        "ASIAN_HANDICAP",
-        "POINT_SPREAD",
-    },
+# Cross-family pairs the diagnostic treats as matchable. MATCH_ODDS/DRAW_NO_BET share
+# THREE_WAY_STATES and ASIAN_HANDICAP/POINT_SPREAD share handicap margin states
+# (classifier.py:136). WINNER belongs with the moneyline group: the normalizer emits
+# WINNER vs MATCH_ODDS for the same raw market based solely on the is_two_way_market
+# flag (normalization.py), so a WINNER cross-pair there is a semantic-edge gap, not an
+# unsupported family. Moneyline<->spread pairs stay unmatchable so the blocker hint
+# surfaces the real limitation (#235).
+_DIRECTIONAL_MARKET_FAMILY_GROUPS = (
+    frozenset({"WINNER", "MATCH_ODDS", "DRAW_NO_BET"}),
+    frozenset({"ASIAN_HANDICAP", "POINT_SPREAD"}),
 )
 _TOTAL_MARKET_FAMILIES = frozenset({"TOTALS", "TEAM_TOTALS"})
 
@@ -2639,7 +2645,7 @@ def _market_family_relation(
         return "unknown"
     if family_a == family_b:
         return "same_family"
-    if family_a in _DIRECTIONAL_MARKET_FAMILIES and family_b in _DIRECTIONAL_MARKET_FAMILIES:
+    if any(family_a in group and family_b in group for group in _DIRECTIONAL_MARKET_FAMILY_GROUPS):
         return "directional_family"
     if family_a in _TOTAL_MARKET_FAMILIES and family_b in _TOTAL_MARKET_FAMILIES:
         return "same_family"
@@ -4051,6 +4057,7 @@ def _record_probe_quality(
     venue_pair = str(quality["venuePair"])
     market_family = str(quality["marketFamily"])
     counters.margin_bands[margin_band] += 1
+    counters.rag_bands[_probe_rag_band(margin)] += 1
     counters.rejection_buckets[rejection_bucket] += 1
     counters.freshness_profiles[str(quality.get("freshnessProfile") or "unknown")] += 1
     if quality.get("feeAdjusted"):
@@ -4304,6 +4311,22 @@ def _probe_margin_band(profit_margin: Decimal) -> str:
     if profit_margin >= Decimal("-0.05"):
         return "-2% to -5%"
     return "< -5%"
+
+
+def _probe_rag_band(profit_margin: Decimal) -> str:
+    """
+    Coarse RAG rollup of a candidate's profit margin, for at-a-glance triage.
+
+    green = profitable (> 0); amber = slightly unprofitable (0% to -5%); red =
+    unprofitable (< -5%). Applies to same-venue and cross-venue candidates alike, so
+    unprofitable cross-venue candidates are surfaced (not just executable ones).
+
+    """
+    if profit_margin > 0:
+        return "green"
+    if profit_margin >= Decimal("-0.05"):
+        return "amber"
+    return "red"
 
 
 def _probe_market_family(source_node, target_node) -> str:

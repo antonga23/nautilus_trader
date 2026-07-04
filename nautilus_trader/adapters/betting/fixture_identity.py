@@ -172,6 +172,11 @@ class FixtureIdentityResolver:
             },
         )
     )
+    # Tokens that live in GENERIC_SINGLE_TOKEN_ALIASES yet are the distinctive short
+    # name a venue emits for a full club ("United" for "Manchester United"/"West Ham
+    # United"). Geographic descriptors such as "city"/"state" stay non-distinctive so
+    # "New York City"/"Kansas City" cannot collapse onto a bare "City".
+    DISTINCTIVE_SUBSET_TOKENS = frozenset({"united"})
     PHRASE_ALIASES = {
         "cle cavaliers": "cleveland cavaliers",
         "cle cavs": "cleveland cavaliers",
@@ -220,6 +225,10 @@ class FixtureIdentityResolver:
     SPORT_ALIASES = {
         "american football": "american_football",
         "football": "soccer",
+        "football soccer": "soccer",
+        "association football": "soccer",
+        "futbol": "soccer",
+        "soccer football": "soccer",
         "ice hockey": "ice_hockey",
         "hockey": "ice_hockey",
     }
@@ -770,6 +779,9 @@ class FixtureIdentityResolver:
             return 0.84, "token_subset"
         overlap = left_tokens & right_tokens
         if len(overlap) >= 2:
+            distinctive_overlap = overlap - FixtureIdentityResolver.GEOGRAPHIC_PREFIX_TOKENS
+            if len(distinctive_overlap) < 2:
+                return 0.0, ""
             denominator = max(len(left_tokens), len(right_tokens), 1)
             return max(0.74, len(overlap) / denominator), "token_overlap"
         return 0.0, ""
@@ -780,7 +792,9 @@ class FixtureIdentityResolver:
             return False
         if not subset < superset:
             return False
-        return not subset <= cls.GENERIC_SINGLE_TOKEN_ALIASES
+        if not subset <= cls.GENERIC_SINGLE_TOKEN_ALIASES:
+            return True
+        return bool(subset & cls.DISTINCTIVE_SUBSET_TOKENS)
 
     def _participant_prefix_alias(self, canonical: str) -> str:
         tokens = canonical.split()

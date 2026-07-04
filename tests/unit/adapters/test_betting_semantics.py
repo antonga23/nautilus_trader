@@ -6,6 +6,7 @@
 
 from dataclasses import replace
 from decimal import Decimal
+import logging
 
 from nautilus_trader.adapters.betting.common.enums import SelectionSide
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
@@ -367,6 +368,39 @@ def test_promotion_policy_marks_complementary_rule_as_execution_safe():
     )
 
     assert tier == SafetyTier.EXECUTION_SAFE
+    assert "execution_safe_complementary_coverage" in reasons
+
+
+def test_deterministic_complementary_partition_is_execution_safe_without_statistical_support():
+    rule = RuleClassifier().classify(
+        betting_instrument(market_name="match_odds", market_type="match_odds", outcome="home"),
+        betting_instrument(
+            market_name="double_chance",
+            market_type="double_chance",
+            outcome="away_draw",
+        ),
+    )
+    assert rule is not None
+    assert rule.relationship_type == RelationshipType.COMPLEMENTARY_COVERAGE.value
+
+    starved_support = TemplateSupportStats(
+        template_id="cross-venue-starved",
+        observed_count=1,
+        event_count=1,
+        provider_count=2,
+        providers=("CLOUDBET", "POLYMARKET"),
+        sports=("soccer",),
+        mismatch_count=0,
+        confidence=1.0,
+    )
+    template = SemanticRuleTemplate.from_rule(rule, support=starved_support)
+
+    assert template.support.catalog_promotable is False
+
+    tier, reasons = RulePromotionPolicy().classify_template_tier(template, venue_agnostic=True)
+
+    assert tier == SafetyTier.EXECUTION_SAFE
+    assert "deterministic_complementary_partition" in reasons
     assert "execution_safe_complementary_coverage" in reasons
 
 
@@ -872,3 +906,61 @@ def test_template_promotion_policy_handles_audit_only_and_partial_templates():
     assert unknown_reasons == ("unknown_settlement_present",)
     assert partial_tier == SafetyTier.EXECUTION_SAFE_SAME_VENUE_ELIGIBLE
     assert "partial_settlement_present" in partial_reasons
+
+
+def test_semantic_node_payload_marks_unnormalized_and_warns(monkeypatch, caplog):
+    # Issues #230 / #219: a failed normalization must NOT masquerade as a full_time
+    # semantic identity, and the failure must be logged rather than silently swallowed.
+    instrument = betting_instrument(
+        market_name="match_odds",
+        market_type="match_odds",
+        outcome="home",
+    )
+
+    def _raise(_item):
+        raise ValueError("synthetic normalization failure")
+
+    monkeypatch.setattr(MarketNormalizer, "normalize", staticmethod(_raise))
+
+    with caplog.at_level(
+        logging.WARNING,
+        logger="nautilus_trader.examples.strategies.opportunity_graph",
+    ):
+        payload = OpportunityGraph._semantic_node_payload(instrument)
+
+    assert payload["semantic_scope"] == "unnormalized"
+    assert payload["semantic_scope"] != "full_time"
+    assert any(
+        record.levelno == logging.WARNING and "normalize failed" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_semantic_coverage_summary_logs_malformed_rust_json(caplog):
+    # Issue #241: a malformed Rust coverage payload must be logged (with a sample of the
+    # raw string) so it is distinguishable from genuinely-empty coverage during diagnostics.
+    graph = OpportunityGraph(MarketMatcher(), engine="python")
+
+    class _MalformedRustCore:
+        def semantic_coverage_summary_json(self):  # skipcq
+            return "{not valid json at all"
+
+    graph._rust_core = _MalformedRustCore()
+
+    with caplog.at_level(
+        logging.WARNING,
+        logger="nautilus_trader.examples.strategies.opportunity_graph",
+    ):
+        summary = graph.semantic_coverage_summary()
+
+    assert summary == graph._empty_coverage_summary()
+    warning = next(
+        (
+            r
+            for r in caplog.records
+            if r.levelno == logging.WARNING and "malformed payload" in r.getMessage()
+        ),
+        None,
+    )
+    assert warning is not None
+    assert "not valid json" in warning.getMessage()

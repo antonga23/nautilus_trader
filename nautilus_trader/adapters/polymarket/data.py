@@ -132,6 +132,7 @@ class PolymarketDataClient(LiveMarketDataClient):
         # WebSocket API
         self._ws_clients: list[PolymarketWebSocketClient] = []
         self._ws_client_pending_connection: PolymarketWebSocketClient | None = None
+        self._ws_client_limit_warned: bool = False
 
         self._decoder_market_msg = msgspec.json.Decoder(MARKET_WS_MESSAGE)
 
@@ -278,6 +279,19 @@ class PolymarketDataClient(LiveMarketDataClient):
                 or len(self._ws_client_pending_connection.asset_subscriptions()) >= 500
                 or self._ws_client_pending_connection.is_connected()
             ):
+                # A new client is required. Enforce the configured ceiling before creating one so
+                # a large/refreshing subscription set cannot open clients without bound.
+                max_ws_clients = self._config.max_ws_clients
+                if max_ws_clients is not None and len(self._ws_clients) >= max_ws_clients:
+                    if not self._ws_client_limit_warned:
+                        self._log.warning(
+                            f"Reached max_ws_clients={max_ws_clients} "
+                            f"({max_ws_clients * 500} subscriptions); "
+                            f"skipping subscription for {instrument_id}",
+                        )
+                        self._ws_client_limit_warned = True
+                    return
+
                 # Create new client if: no pending client, client is full (>=500 subs), or already connected
                 self._ws_client_pending_connection = self._create_websocket_client()
                 ws_client = self._ws_client_pending_connection
@@ -291,6 +305,7 @@ class PolymarketDataClient(LiveMarketDataClient):
                 return  # Already subscribed
 
             self._ws_client_pending_connection.subscribe_book(token_id)
+            self._ws_client_limit_warned = False
 
         # End of critical section: no need to lock to create task
         if ws_client is not None:
