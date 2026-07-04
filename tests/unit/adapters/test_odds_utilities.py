@@ -251,7 +251,7 @@ class TestFeeAdjustedOdds:
         # rate * min(p, 1 - p) / p collapses to the raw rate.
         assert adjusted.taker_cost_fraction == Decimal("0.03")
 
-    def test_polymarket_taker_fee_matches_protocol_formula_by_side(self):
+    def test_polymarket_taker_fee_matches_protocol_formula_by_side(self):  # skipcq
         # Favorite: price p = 0.8 (odds 1.25), min(p, 1 - p) = 1 - p = 0.2.
         # Protocol per-stake fee = rate * (1 - p) / p = 0.03 * 0.2 / 0.8 = 0.0075.
         favorite = fee_adjusted_odds(Decimal("1.25"), taker_fee_rate=Decimal("0.03"))
@@ -264,7 +264,7 @@ class TestFeeAdjustedOdds:
         assert underdog.raw_probability == Decimal("0.2")
         assert underdog.taker_cost_fraction == Decimal("0.03")
 
-    def test_winning_profit_fee_reduces_net_return(self):
+    def test_winning_profit_fee_reduces_net_return(self):  # skipcq
         adjusted = fee_adjusted_odds(Decimal("3.00"), winning_profit_fee_rate=Decimal("0.10"))
 
         assert adjusted.effective_odds == Decimal("2.80")

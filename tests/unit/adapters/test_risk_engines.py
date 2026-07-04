@@ -153,7 +153,7 @@ class TestAggregateExposure:
     Aggregate exposure accounting (issue #225).
     """
 
-    def test_second_order_rejected_once_cumulative_stake_exceeds_max(self):
+    def test_second_order_rejected_once_cumulative_stake_exceeds_max(self):  # skipcq
         policy = _ExposureOnlyPolicy(max_exposure=Decimal(100))
 
         first = policy.evaluate_order(
@@ -185,7 +185,7 @@ class TestAggregateExposure:
         )
         assert third.approved is True
 
-    def test_explicit_current_exposure_arg_gates_aggregate(self):
+    def test_explicit_current_exposure_arg_gates_aggregate(self):  # skipcq
         policy = _ExposureOnlyPolicy(max_exposure=Decimal(100))
 
         # Caller supplies open exposure explicitly without mutating state.
@@ -198,7 +198,7 @@ class TestAggregateExposure:
         )
         assert result.approved is False
 
-    def test_default_call_preserves_per_order_behavior(self):
+    def test_default_call_preserves_per_order_behavior(self):  # skipcq
         policy = _ExposureOnlyPolicy(max_exposure=Decimal(100))
 
         # No prior exposure and no explicit arg: single-order stake under cap approves.
@@ -216,7 +216,7 @@ class TestCurrencyMismatchGating:
     Stake/exposure limits must not compare across currencies (issue #238).
     """
 
-    def test_stake_limit_rejects_on_currency_mismatch(self):
+    def test_stake_limit_rejects_on_currency_mismatch(self):  # skipcq
         # SX.bet stake limit is denominated in USDC; a USD order must not be
         # compared as raw magnitudes.
         policy = SXBetVenueRiskPolicy()
@@ -229,7 +229,7 @@ class TestCurrencyMismatchGating:
         assert result.approved is False
         assert any("currency mismatch" in v.lower() for v in result.violations)
 
-    def test_max_exposure_rejects_on_currency_mismatch(self):
+    def test_max_exposure_rejects_on_currency_mismatch(self):  # skipcq
         policy = _ExposureOnlyPolicy(max_exposure=Decimal(100), currency="USDC")
         result = policy.evaluate_order(
             stake=Decimal(10),
@@ -240,7 +240,7 @@ class TestCurrencyMismatchGating:
         assert result.approved is False
         assert any("currency mismatch" in v.lower() for v in result.violations)
 
-    def test_matching_currency_still_compares_magnitudes(self):
+    def test_matching_currency_still_compares_magnitudes(self):  # skipcq
         policy = _ExposureOnlyPolicy(max_exposure=Decimal(100), currency="USDC")
         result = policy.evaluate_order(
             stake=Decimal(150),

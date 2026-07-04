@@ -181,7 +181,7 @@ def _family_buckets(
     return result
 
 
-def _tolerant_event_buckets(
+def _tolerant_event_buckets(  # skipcq: PY-R1000
     records: Iterable[NormalizedSelectionRecord],
 ) -> list[tuple[str, list[NormalizedSelectionRecord]]]:
     exact: dict[tuple[str, str, str], list[NormalizedSelectionRecord]] = defaultdict(list)

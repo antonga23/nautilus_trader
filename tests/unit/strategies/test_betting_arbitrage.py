@@ -719,8 +719,7 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure("semantic_quote_subscription_limit_by_venue" in stats)
         ensure("semantic_quote_subscription_limit_exceeded_by_venue" in stats)
         ensure(
-            stats["venue_taker_fee_rates"]
-            == {"CLOUDBET": "0", "POLYMARKET": "0.03", "SXBET": "0"},
+            stats["venue_taker_fee_rates"] == {"CLOUDBET": "0", "POLYMARKET": "0.03", "SXBET": "0"},
         )
         ensure(stats["venue_maker_rebate_rates"] == {})
         ensure(stats["venue_winning_profit_fee_rates"] == {"SXBET": "0.04"})

@@ -1886,7 +1886,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 return prediction_price
             return None
 
-        # Decimal odds must be > 1 (a "price" of 1.0 or a mis-scaled sub-1 quote is
+        # Decimal odds must be > 1 (a "price" of 1.0 or a wrongly scaled sub-1 quote is
         # degenerate); returning it would raise ValueError downstream in
         # fee_adjusted_odds and abort the whole quote-handling callback for the tick.
         if venue == "SXBET" and bid_price > 1:

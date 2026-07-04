@@ -923,7 +923,8 @@ def test_semantic_node_payload_marks_unnormalized_and_warns(monkeypatch, caplog)
     monkeypatch.setattr(MarketNormalizer, "normalize", staticmethod(_raise))
 
     with caplog.at_level(
-        logging.WARNING, logger="nautilus_trader.examples.strategies.opportunity_graph"
+        logging.WARNING,
+        logger="nautilus_trader.examples.strategies.opportunity_graph",
     ):
         payload = OpportunityGraph._semantic_node_payload(instrument)
 
@@ -941,13 +942,14 @@ def test_semantic_coverage_summary_logs_malformed_rust_json(caplog):
     graph = OpportunityGraph(MarketMatcher(), engine="python")
 
     class _MalformedRustCore:
-        def semantic_coverage_summary_json(self):
+        def semantic_coverage_summary_json(self):  # skipcq
             return "{not valid json at all"
 
     graph._rust_core = _MalformedRustCore()
 
     with caplog.at_level(
-        logging.WARNING, logger="nautilus_trader.examples.strategies.opportunity_graph"
+        logging.WARNING,
+        logger="nautilus_trader.examples.strategies.opportunity_graph",
     ):
         summary = graph.semantic_coverage_summary()
 

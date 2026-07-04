@@ -2645,9 +2645,7 @@ def _market_family_relation(
         return "unknown"
     if family_a == family_b:
         return "same_family"
-    if any(
-        family_a in group and family_b in group for group in _DIRECTIONAL_MARKET_FAMILY_GROUPS
-    ):
+    if any(family_a in group and family_b in group for group in _DIRECTIONAL_MARKET_FAMILY_GROUPS):
         return "directional_family"
     if family_a in _TOTAL_MARKET_FAMILIES and family_b in _TOTAL_MARKET_FAMILIES:
         return "same_family"
