@@ -5546,3 +5546,16 @@ class TestBettingArbitrageNodeRunner:
         )
 
         assert result.returncode == 0, result.stderr
+
+
+def test_probe_rag_band_classifies_green_amber_red() -> None:
+    # profitable -> green
+    assert node_runner._probe_rag_band(Decimal("0.05")) == "green"
+    assert node_runner._probe_rag_band(Decimal("0.0001")) == "green"
+    # slightly unprofitable (0% to -5%, inclusive) -> amber
+    assert node_runner._probe_rag_band(Decimal(0)) == "amber"
+    assert node_runner._probe_rag_band(Decimal("-0.03")) == "amber"
+    assert node_runner._probe_rag_band(Decimal("-0.05")) == "amber"
+    # unprofitable (worse than -5%) -> red
+    assert node_runner._probe_rag_band(Decimal("-0.0501")) == "red"
+    assert node_runner._probe_rag_band(Decimal("-0.20")) == "red"
