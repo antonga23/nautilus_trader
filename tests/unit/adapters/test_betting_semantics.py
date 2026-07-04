@@ -43,6 +43,7 @@ def betting_instrument(
     market_name: str,
     market_type: str,
     outcome: str,
+    sport: str = "soccer",
     params: str = "",
     venue: str = "SXBET",
     price: float = 2.1,
@@ -55,7 +56,7 @@ def betting_instrument(
         event_name="Team A vs Team B",
         home_name="Team A",
         away_name="Team B",
-        sport_name="soccer",
+        sport_name=sport,
         competition_name="Test League",
         market_name=market_name,
         market_type=market_type,
@@ -273,6 +274,136 @@ def test_european_handicap_and_asian_handicap_same_line_are_dangerous():
     assert rule is not None
     assert rule.relationship_type == RelationshipType.DANGEROUS_NON_EQUIVALENT.value
     assert rule.execution_safe is False
+
+
+def test_winner_and_half_point_spread_project_to_equivalent_in_no_draw_sport():
+    classifier = RuleClassifier()
+    moneyline_home = betting_instrument(
+        sport="basketball",
+        market_name="moneyline_2way",
+        market_type="moneyline_2way",
+        outcome="home",
+        venue="CLOUDBET",
+    )
+    spread_home_half = betting_instrument(
+        sport="basketball",
+        market_name="point_spread",
+        market_type="point_spread",
+        outcome="home",
+        params="line=-0.5",
+        handicap=-0.5,
+    )
+
+    rule = classifier.classify(moneyline_home, spread_home_half)
+
+    assert rule is not None
+    assert rule.relationship_type == RelationshipType.EQUIVALENT_SELECTION.value
+    assert rule.confidence == 1.0
+    assert rule.result_states == ("HOME_WIN", "AWAY_WIN")
+    assert rule.settlement_a == ("WIN", "LOSE")
+    assert rule.settlement_b == ("WIN", "LOSE")
+    assert "cross_family_partition_projection" in rule.caveats
+    assert rule.has_void is False
+    assert rule.has_partial is False
+    assert rule.execution_safe is False
+
+
+def test_winner_and_half_point_spread_opposite_sides_are_complementary():
+    classifier = RuleClassifier()
+    moneyline_home = betting_instrument(
+        sport="basketball",
+        market_name="moneyline_2way",
+        market_type="moneyline_2way",
+        outcome="home",
+        venue="CLOUDBET",
+    )
+    spread_away_half = betting_instrument(
+        sport="basketball",
+        market_name="point_spread",
+        market_type="point_spread",
+        outcome="away",
+        params="line=0.5",
+        handicap=0.5,
+    )
+
+    rule = classifier.classify(moneyline_home, spread_away_half)
+
+    assert rule is not None
+    assert rule.relationship_type == RelationshipType.COMPLEMENTARY_COVERAGE.value
+    assert rule.result_states == ("HOME_WIN", "AWAY_WIN")
+    assert rule.settlement_a == ("WIN", "LOSE")
+    assert rule.settlement_b == ("LOSE", "WIN")
+    assert "cross_family_partition_projection" in rule.caveats
+    assert rule.execution_safe is False
+
+
+def test_winner_and_half_point_spread_stay_rejected_in_draw_capable_sport():
+    classifier = RuleClassifier()
+    moneyline_home = betting_instrument(
+        market_name="moneyline_2way",
+        market_type="moneyline_2way",
+        outcome="home",
+        venue="CLOUDBET",
+    )
+    spread_home_half = betting_instrument(
+        market_name="point_spread",
+        market_type="point_spread",
+        outcome="home",
+        params="line=-0.5",
+        handicap=-0.5,
+    )
+
+    assert classifier.classify(moneyline_home, spread_home_half) is None
+
+
+def test_winner_and_spread_projection_requires_exact_half_point_line():
+    classifier = RuleClassifier()
+    moneyline_home = betting_instrument(
+        sport="basketball",
+        market_name="moneyline_2way",
+        market_type="moneyline_2way",
+        outcome="home",
+        venue="CLOUDBET",
+    )
+
+    for line in ("-1.5", "0", "-0.25"):
+        spread = betting_instrument(
+            sport="basketball",
+            market_name="point_spread",
+            market_type="point_spread",
+            outcome="home",
+            params=f"line={line}",
+            handicap=float(line),
+        )
+        assert classifier.classify(moneyline_home, spread) is None
+
+
+def test_binary_event_partitions_do_not_project_onto_winner_states():
+    classifier = RuleClassifier()
+    moneyline_home = betting_instrument(
+        sport="basketball",
+        market_name="moneyline_2way",
+        market_type="moneyline_2way",
+        outcome="home",
+        venue="CLOUDBET",
+    )
+    bare_binary_yes = betting_instrument(
+        sport="basketball",
+        market_name="binary_option",
+        market_type="binary_option",
+        outcome="yes",
+        venue="POLYMARKET",
+    )
+    team_winner_yes = betting_instrument(
+        sport="basketball",
+        market_name="moneyline_2way",
+        market_type="moneyline_2way",
+        outcome="yes",
+        params="team=home&period=ft",
+    )
+
+    assert classifier.classify(moneyline_home, bare_binary_yes) is None
+    assert classifier.classify(moneyline_home, team_winner_yes) is None
 
 
 def test_rule_store_persists_candidates_promotions_and_validation_stats():
