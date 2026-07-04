@@ -1749,6 +1749,55 @@ mod tests {
     }
 
     #[rstest]
+    fn unprofitable_cross_venue_candidate_is_surfaced() {
+        // The runtime probe must be able to OBSERVE unprofitable cross-venue candidates
+        // (for RAG amber/red triage), not only profitable ones. A negative-margin
+        // cross-venue pair carrying a venue-agnostic template is still surfaced when the
+        // caller passes a negative min-margin (the observability path the probe uses).
+        pyo3::Python::initialize();
+        Python::attach(|py| {
+            let over = py_payload(
+                py,
+                &node_with("a", "SXBET", "event-1", "Total Goals", "total_goals", "over"),
+            );
+            let under = py_payload(
+                py,
+                &node_with("b", "CLOUDBET", "event-2", "Total Goals", "total_goals", "under"),
+            );
+            let nodes = PyList::empty(py);
+            nodes.append(&over).unwrap();
+            nodes.append(&under).unwrap();
+
+            let template = py_semantic_template(py, vec!["SXBET", "CLOUDBET"], true);
+            let templates = PyList::empty(py);
+            templates.append(&template).unwrap();
+
+            let mut core = OpportunityGraphCore::new(true, 0.5);
+            core.build_semantic(nodes.as_any(), templates.as_any())
+                .unwrap();
+            assert_eq!(core.edge_count(), 1, "cross-venue edge should form");
+
+            // Unprofitable prices: 1/1.8 + 1/1.9 = 1.082 > 1 -> negative arbitrage margin.
+            assert!(core.update_quote("a", 1.8, 10, 10));
+            assert!(core.update_quote("b", 1.9, 11, 11));
+
+            // A profit-only floor would drop it; the observability floor (negative) keeps it.
+            assert!(core.evaluate_connected_edges("a", 0.01, 12).is_empty());
+            let observed = core.evaluate_connected_edges("a", -1.0, 13);
+            assert_eq!(
+                observed.len(),
+                1,
+                "unprofitable cross-venue candidate must still be surfaced for observability",
+            );
+            assert!(
+                observed[0].3 < 0.0,
+                "expected a negative (unprofitable) cross-venue margin, got {}",
+                observed[0].3,
+            );
+        });
+    }
+
+    #[rstest]
     fn same_market_opposite_outcomes_connect() {
         let mut core = OpportunityGraphCore::new(true, 0.5);
         core.insert_node(node("a", "over"));

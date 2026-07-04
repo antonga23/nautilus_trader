@@ -56,6 +56,16 @@ ignore = [
   { id = "RUSTSEC-2026-0099", reason = "temporary CI waiver for inherited rustls-webpki advisory pending upstream dependency updates" },
   { id = "RUSTSEC-2026-0104", reason = "temporary CI waiver for inherited rustls-webpki advisory pending upstream dependency updates" },
 
+  # 2026-07 advisory-DB refresh surfaced these on the inherited upstream Nautilus dependency
+  # tree (pyo3 / quick-xml / anyhow / proc-macro-error). Live execution is disarmed and
+  # rust-policy is non-gating (private repo, no branch protection); waived pending a dep bump.
+  { id = "RUSTSEC-2024-0370", reason = "proc-macro-error unmaintained, transitive via upstream Nautilus macro deps" },
+  { id = "RUSTSEC-2026-0173", reason = "temporary CI waiver for inherited pyo3 advisory pending pyo3 upgrade" },
+  { id = "RUSTSEC-2026-0176", reason = "temporary CI waiver for inherited pyo3 advisory pending pyo3 upgrade" },
+  { id = "RUSTSEC-2026-0177", reason = "temporary CI waiver for inherited pyo3 advisory pending pyo3 upgrade" },
+  { id = "RUSTSEC-2026-0190", reason = "temporary CI waiver for inherited quick-xml advisory pending upstream dependency updates" },
+  { id = "RUSTSEC-2026-0194", reason = "temporary CI waiver for inherited quick-xml advisory pending upstream dependency updates" },
+  { id = "RUSTSEC-2026-0195", reason = "temporary CI waiver for inherited anyhow advisory pending upstream dependency updates" },
 ]
 
 # =============================================================================

@@ -59,6 +59,7 @@ class ProbeProfitabilityCounters:
     threshold_execution: int = 0
     threshold_same_venue: int = 0
     margin_bands: Counter[str] = field(default_factory=Counter)
+    rag_bands: Counter[str] = field(default_factory=Counter)
     rejection_buckets: Counter[str] = field(default_factory=Counter)
     timing_flags: Counter[str] = field(default_factory=Counter)
     freshness_profiles: Counter[str] = field(default_factory=Counter)
@@ -120,6 +121,7 @@ class ProbeProfitabilityCounters:
             "threshold_execution": self.threshold_execution,
             "threshold_same_venue": self.threshold_same_venue,
             "margin_bands": dict(self.margin_bands),
+            "rag_bands": dict(self.rag_bands),
             "rejection_buckets": dict(self.rejection_buckets),
             "timing_flags": dict(self.timing_flags),
             "freshness_profiles": dict(self.freshness_profiles),
@@ -1161,6 +1163,7 @@ def _collect_runtime_probe_payload(
         "candidateQuality": {
             "quotedEdges": profitability["quoted_edges"],
             "marginBands": profitability["margin_bands"],
+            "ragBands": profitability["rag_bands"],
             "rejectionBuckets": profitability["rejection_buckets"],
             "timingFlags": profitability["timing_flags"],
             "freshnessProfiles": profitability["freshness_profiles"],
@@ -4051,6 +4054,7 @@ def _record_probe_quality(
     venue_pair = str(quality["venuePair"])
     market_family = str(quality["marketFamily"])
     counters.margin_bands[margin_band] += 1
+    counters.rag_bands[_probe_rag_band(margin)] += 1
     counters.rejection_buckets[rejection_bucket] += 1
     counters.freshness_profiles[str(quality.get("freshnessProfile") or "unknown")] += 1
     if quality.get("feeAdjusted"):
@@ -4304,6 +4308,21 @@ def _probe_margin_band(profit_margin: Decimal) -> str:
     if profit_margin >= Decimal("-0.05"):
         return "-2% to -5%"
     return "< -5%"
+
+
+def _probe_rag_band(profit_margin: Decimal) -> str:
+    """
+    Coarse RAG rollup of a candidate's profit margin, for at-a-glance triage.
+
+    green = profitable (> 0); amber = slightly unprofitable (0% to -5%);
+    red = unprofitable (< -5%). Applies to same-venue and cross-venue candidates
+    alike, so unprofitable cross-venue candidates are surfaced (not just executable ones).
+    """
+    if profit_margin > 0:
+        return "green"
+    if profit_margin >= Decimal("-0.05"):
+        return "amber"
+    return "red"
 
 
 def _probe_market_family(source_node, target_node) -> str:
