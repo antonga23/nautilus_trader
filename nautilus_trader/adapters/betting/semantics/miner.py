@@ -46,6 +46,76 @@ def _utc_now() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+# Cross-venue records of the same fixture rarely share an exact event_key because venue
+# cutoff timestamps differ in precision (date-only vs to-the-second). Buckets within this
+# tolerance of each other describe the same fixture (mirrors FixtureIdentityResolver's
+# start-time tolerance); farther apart (doubleheaders, rematches) they stay separate.
+_CROSS_VENUE_START_TOLERANCE_SECS = 7_200
+
+
+def _split_event_key_time(event_key: str) -> tuple[str, datetime | None]:
+    head, sep, tail = event_key.rpartition("|")
+    if not sep or not head:
+        return event_key, None
+    try:
+        parsed = datetime.fromisoformat(tail.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return event_key, None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return head, parsed
+
+
+def _tolerant_event_buckets(
+    records: Iterable[NormalizedSelectionRecord],
+) -> list[list[NormalizedSelectionRecord]]:
+    exact: dict[tuple[str, str, str], list[NormalizedSelectionRecord]] = defaultdict(list)
+    for record in records:
+        selection = record.selection
+        exact[(selection.sport, selection.event_key, selection.scope)].append(record)
+
+    families: dict[
+        tuple[str, str, str],
+        list[tuple[datetime | None, list[NormalizedSelectionRecord]]],
+    ] = defaultdict(list)
+    for (sport, event_key, scope), bucket in exact.items():
+        no_time_key, start_time = _split_event_key_time(event_key)
+        families[(sport, no_time_key, scope)].append((start_time, bucket))
+
+    merged: list[list[NormalizedSelectionRecord]] = []
+    for members in families.values():
+        timed = sorted(
+            (item for item in members if item[0] is not None),
+            key=lambda item: item[0],
+        )
+        timeless = [bucket for start_time, bucket in members if start_time is None]
+
+        clusters: list[list[NormalizedSelectionRecord]] = []
+        cluster_anchor: datetime | None = None
+        for start_time, bucket in timed:
+            if (
+                cluster_anchor is not None
+                and (start_time - cluster_anchor).total_seconds()
+                <= _CROSS_VENUE_START_TOLERANCE_SECS
+            ):
+                clusters[-1].extend(bucket)
+            else:
+                clusters.append(list(bucket))
+            cluster_anchor = start_time
+
+        if timeless and len(clusters) == 1:
+            # Unambiguous: one time cluster in the family, so a record without a
+            # parseable start time can only mean that fixture.
+            for bucket in timeless:
+                clusters[0].extend(bucket)
+        else:
+            clusters.extend(list(bucket) for bucket in timeless)
+
+        merged.extend(clusters)
+
+    return merged
+
+
 @dataclass
 class _TemplateAccumulator:
     rule: MinedRule
@@ -120,13 +190,8 @@ class RuleMiner:
         """
         Mine event-scoped relationship evidence before template generalization.
         """
-        grouped: dict[tuple[str, str, str], list[NormalizedSelectionRecord]] = defaultdict(list)
-        for record in records:
-            selection = record.selection
-            grouped[(selection.sport, selection.event_key, selection.scope)].append(record)
-
         discovered: list[MinedRule] = []
-        for bucket in grouped.values():
+        for bucket in _tolerant_event_buckets(records):
             prepared = self._prepare_bucket(bucket)
             grouped_by_result_states: dict[tuple[str, ...], list[_PreparedRecord]] = defaultdict(
                 list,
@@ -195,14 +260,9 @@ class RuleMiner:
         """
         Mine generalized event coverage proofs and hyperedges from normalized records.
         """
-        grouped: dict[tuple[str, str, str], list[NormalizedSelectionRecord]] = defaultdict(list)
-        for record in records:
-            selection = record.selection
-            grouped[(selection.sport, selection.event_key, selection.scope)].append(record)
-
         proof_by_id: dict[str, CoverageProof] = {}
         hyperedge_by_id: dict[str, CoverageHyperedge] = {}
-        for bucket in grouped.values():
+        for bucket in _tolerant_event_buckets(records):
             proofs, hyperedges = self._coverage_engine.discover_event_coverage(bucket)
             for proof in proofs:
                 proof_by_id[proof.proof_id] = proof
@@ -325,11 +385,15 @@ class RuleMiner:
         right: NormalizedSelectionRecord,
     ) -> MinedRule:
         template_id = SemanticRuleTemplate.from_rule(rule).template_id
-        evidence_event_key = (
-            left.selection.event_key
-            if left.selection.event_key == right.selection.event_key
-            else None
-        )
+        if left.selection.event_key == right.selection.event_key:
+            evidence_event_key = left.selection.event_key
+        else:
+            # Cross-venue records of one fixture carry differing exact keys (timestamp
+            # precision); the shared no-time family key is the fixture identity, so
+            # cross-venue evidence still accumulates event_count toward promotion.
+            left_family, _ = _split_event_key_time(left.selection.event_key)
+            right_family, _ = _split_event_key_time(right.selection.event_key)
+            evidence_event_key = left_family if left_family == right_family else None
         return replace(
             rule,
             rule_id=RuleMiner._event_candidate_rule_id(rule, evidence_event_key, left, right),

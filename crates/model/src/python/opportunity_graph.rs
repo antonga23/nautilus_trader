@@ -317,7 +317,20 @@ impl SemanticTemplateSnapshot {
         {
             return None;
         }
-        if !self.applies_to_venues(source, target) {
+        let venue_authorized = self.applies_to_venues(source, target);
+        // Venue scope authorizes EXECUTION; topology applicability is broader. A
+        // deterministic complementary-coverage template observed on one venue still
+        // proves the cross-venue relationship shape (patterns are venue-independent),
+        // so form a NON-executable topology edge for observability instead of no edge
+        // (crossVenueCandidateCount stayed 0 because these pairs never bound at all).
+        // Same-venue pairs keep the strict scope gate unchanged.
+        let cross_venue_topology_fallback = !venue_authorized
+            && source.venue != target.venue
+            && self.relationship_type == "COMPLEMENTARY_COVERAGE"
+            && !self.partial_settlement
+            && (self.provider_scope.contains(&source.venue)
+                || self.provider_scope.contains(&target.venue));
+        if !venue_authorized && !cross_venue_topology_fallback {
             return None;
         }
         if !self.patterns_match(source, target) {
@@ -330,6 +343,23 @@ impl SemanticTemplateSnapshot {
         } else {
             "cross_market"
         };
+        if cross_venue_topology_fallback {
+            let mut caveats = self.caveats.clone();
+            caveats.push("cross_venue_topology_only".to_string());
+            return Some(SemanticTemplateMatch {
+                hedge_type: hedge_type.to_string(),
+                confidence: self.confidence,
+                push_capable: self.push_capable,
+                execution_safe: false,
+                template_id: self.template_id.clone(),
+                relationship_type: self.relationship_type.clone(),
+                promotion_status: self.promotion_status.clone(),
+                safety_tier: "TOPOLOGY_SAFE".to_string(),
+                same_venue_execution_eligible: false,
+                partial_settlement: self.partial_settlement,
+                caveats,
+            });
+        }
         Some(SemanticTemplateMatch {
             hedge_type: hedge_type.to_string(),
             confidence: self.confidence,
@@ -1943,8 +1973,39 @@ mod tests {
             let mut core = OpportunityGraphCore::new(true, 0.5);
             core.build_semantic(nodes.as_any(), templates.as_any())
                 .unwrap();
-            assert_eq!(core.edge_count(), 0);
+            // Venue scope no longer suppresses the cross-venue edge entirely: a
+            // deterministic complementary template observed on one of the two venues
+            // forms a TOPOLOGY-ONLY edge (observable, never executable).
+            assert_eq!(core.edge_count(), 1);
+            assert!(core.update_quote("a", 2.4, 10, 10));
+            assert!(core.update_quote("b", 2.55, 11, 11));
+            assert!(
+                core.evaluate_connected_edges("a", 0.01, 12).is_empty(),
+                "topology-only cross-venue edge must never emit an executable candidate",
+            );
 
+            // Same-venue pairs keep the strict scope gate: two BLACKBET nodes with an
+            // SXBET-scoped template still form no edge at all.
+            let same_venue_nodes = PyList::empty(py);
+            same_venue_nodes
+                .append(py_payload(
+                    py,
+                    &node_with("c", "BLACKBET", "event-3", "Total Goals", "total_goals", "over"),
+                ))
+                .unwrap();
+            same_venue_nodes
+                .append(py_payload(
+                    py,
+                    &node_with("d", "BLACKBET", "event-3", "Total Goals", "total_goals", "under"),
+                ))
+                .unwrap();
+            let mut same_venue_core = OpportunityGraphCore::new(true, 0.5);
+            same_venue_core
+                .build_semantic(same_venue_nodes.as_any(), templates.as_any())
+                .unwrap();
+            assert_eq!(same_venue_core.edge_count(), 0);
+
+            // A venue-agnostic template restores full (executable) matching.
             let venue_agnostic = PyList::empty(py);
             venue_agnostic
                 .append(py_semantic_template(py, vec![], true))
@@ -1952,6 +2013,13 @@ mod tests {
             core.build_semantic(nodes.as_any(), venue_agnostic.as_any())
                 .unwrap();
             assert_eq!(core.edge_count(), 1);
+            assert!(core.update_quote("a", 2.4, 20, 20));
+            assert!(core.update_quote("b", 2.55, 21, 21));
+            assert_eq!(
+                core.evaluate_connected_edges("a", 0.01, 22).len(),
+                1,
+                "venue-agnostic template must remain fully executable",
+            );
         });
     }
 
