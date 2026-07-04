@@ -865,8 +865,10 @@ jobs:
               ;;
           esac
           if [ -n "$SEMANTIC_CACHE_MODE" ] || [ -n "$SEMANTIC_CACHE_DEFAULT_ROOT" ]; then
-            python3 -c "import json,sys; p,m,r=sys.argv[1:4]; d=json.load(open(p)); m and d.__setitem__('semantic_rule_cache_mode',m); r and d.__setitem__('semantic_rule_cache_default_root',r); json.dump(d,open(p,'w'),indent=2)" "$deploy_tmp/strategy-node-manifest.json" "$SEMANTIC_CACHE_MODE" "$SEMANTIC_CACHE_DEFAULT_ROOT"
-            echo "semantic cache override: mode=${SEMANTIC_CACHE_MODE:-(manifest)} default_root=${SEMANTIC_CACHE_DEFAULT_ROOT:-(manifest)}"
+            python3 scripts/deploy/strategy_nodes/apply_semantic_cache_override.py \
+              "$deploy_tmp/strategy-node-manifest.json" \
+              "$SEMANTIC_CACHE_MODE" \
+              "$SEMANTIC_CACHE_DEFAULT_ROOT"
           fi
           cp \
             scripts/deploy/strategy_nodes/deploy_betting_strategy_node.sh \
