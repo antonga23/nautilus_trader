@@ -24,6 +24,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from dataclasses import replace
 from datetime import UTC
+from datetime import date
 from datetime import datetime
 import hashlib
 from itertools import combinations
@@ -72,7 +73,7 @@ def _split_event_key_time(event_key: str) -> tuple[str, datetime | None, str]:
     if _DATE_ONLY_RE.match(raw):
         return head, datetime.fromisoformat(raw).replace(tzinfo=UTC), "date"
     try:
-        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(raw)
     except ValueError:
         return event_key, None, "none"
     if parsed.tzinfo is None:
@@ -85,8 +86,70 @@ class _TimeCluster:
     times: list[datetime]
     records: list[NormalizedSelectionRecord]
 
-    def dates(self) -> set:
+    def dates(self) -> set[date]:
         return {moment.date() for moment in self.times}
+
+
+def _cluster_exact_members(
+    members: list[tuple[datetime | None, str, list[NormalizedSelectionRecord]]],
+) -> list[_TimeCluster]:
+    exact_members: list[tuple[datetime, list[NormalizedSelectionRecord]]] = sorted(
+        (
+            (start_time, bucket)
+            for start_time, precision, bucket in members
+            if precision == "exact" and start_time is not None
+        ),
+        key=lambda item: item[0],
+    )
+    clusters: list[_TimeCluster] = []
+    cluster_anchor: datetime | None = None
+    for start_time, bucket in exact_members:
+        if (
+            cluster_anchor is not None
+            and (start_time - cluster_anchor).total_seconds() <= _CROSS_VENUE_START_TOLERANCE_SECS
+        ):
+            clusters[-1].times.append(start_time)
+            clusters[-1].records.extend(bucket)
+        else:
+            clusters.append(_TimeCluster(times=[start_time], records=list(bucket)))
+        cluster_anchor = start_time
+    return clusters
+
+
+def _join_date_members(
+    clusters: list[_TimeCluster],
+    members: list[tuple[datetime | None, str, list[NormalizedSelectionRecord]]],
+) -> None:
+    # Date-only cutoffs join the cluster on the same UTC date when that is
+    # unambiguous; otherwise (0 or 2+ clusters on the date) they group by date.
+    unmatched_dates: dict[date, _TimeCluster] = {}
+    for start_time, precision, bucket in members:
+        if precision != "date" or start_time is None:
+            continue
+        day = start_time.date()
+        matching = [cluster for cluster in clusters if day in cluster.dates()]
+        if len(matching) == 1:
+            matching[0].records.extend(bucket)
+        elif day in unmatched_dates:
+            unmatched_dates[day].records.extend(bucket)
+        else:
+            unmatched_dates[day] = _TimeCluster(times=[start_time], records=list(bucket))
+    clusters.extend(unmatched_dates.values())
+
+
+def _family_buckets(
+    members: list[tuple[datetime | None, str, list[NormalizedSelectionRecord]]],
+) -> list[list[NormalizedSelectionRecord]]:
+    clusters = _cluster_exact_members(members)
+    _join_date_members(clusters, members)
+    timeless = [bucket for _, precision, bucket in members if precision == "none"]
+    if timeless and len(clusters) == 1:
+        # Unambiguous: one cluster in the family, so a record without any start time
+        # can only mean that fixture.
+        for bucket in timeless:
+            clusters[0].records.extend(bucket)
+        return [cluster.records for cluster in clusters]
+    return [cluster.records for cluster in clusters] + [list(bucket) for bucket in timeless]
 
 
 def _tolerant_event_buckets(
@@ -107,51 +170,7 @@ def _tolerant_event_buckets(
 
     merged: list[list[NormalizedSelectionRecord]] = []
     for members in families.values():
-        exact_members = sorted(
-            (item for item in members if item[1] == "exact"),
-            key=lambda item: item[0],
-        )
-        date_members = [item for item in members if item[1] == "date"]
-        timeless = [bucket for _, precision, bucket in members if precision == "none"]
-
-        clusters: list[_TimeCluster] = []
-        cluster_anchor: datetime | None = None
-        for start_time, _, bucket in exact_members:
-            if (
-                cluster_anchor is not None
-                and (start_time - cluster_anchor).total_seconds()
-                <= _CROSS_VENUE_START_TOLERANCE_SECS
-            ):
-                clusters[-1].times.append(start_time)
-                clusters[-1].records.extend(bucket)
-            else:
-                clusters.append(_TimeCluster(times=[start_time], records=list(bucket)))
-            cluster_anchor = start_time
-
-        # Date-only cutoffs join the cluster on the same UTC date when that is
-        # unambiguous; otherwise (0 or 2+ clusters on the date) they group by date.
-        unmatched_dates: dict[object, _TimeCluster] = {}
-        for start_time, _, bucket in date_members:
-            day = start_time.date()
-            matching = [cluster for cluster in clusters if day in cluster.dates()]
-            if len(matching) == 1:
-                matching[0].records.extend(bucket)
-            elif day in unmatched_dates:
-                unmatched_dates[day].records.extend(bucket)
-            else:
-                unmatched_dates[day] = _TimeCluster(times=[start_time], records=list(bucket))
-        clusters.extend(unmatched_dates.values())
-
-        if timeless and len(clusters) == 1:
-            # Unambiguous: one cluster in the family, so a record without any start
-            # time can only mean that fixture.
-            for bucket in timeless:
-                clusters[0].records.extend(bucket)
-            merged.extend(cluster.records for cluster in clusters)
-        else:
-            merged.extend(cluster.records for cluster in clusters)
-            merged.extend(list(bucket) for bucket in timeless)
-
+        merged.extend(_family_buckets(members))
     return merged
 
 
@@ -424,6 +443,7 @@ class RuleMiner:
         right: NormalizedSelectionRecord,
     ) -> MinedRule:
         template_id = SemanticRuleTemplate.from_rule(rule).template_id
+        evidence_event_key: str | None
         if left.selection.event_key == right.selection.event_key:
             evidence_event_key = left.selection.event_key
         else:
