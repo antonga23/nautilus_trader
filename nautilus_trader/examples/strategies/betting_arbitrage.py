@@ -33,6 +33,7 @@ from typing import Any
 import msgspec
 
 from nautilus_trader.adapters.betting.common.fees import DEFAULT_TAKER_FEE_RATES
+from nautilus_trader.adapters.betting.common.fees import DEFAULT_WINNING_PROFIT_FEE_RATES
 from nautilus_trader.adapters.betting.common.fees import FeeAdjustedCoverageBasket
 from nautilus_trader.adapters.betting.common.fees import fee_adjusted_basket_margin
 from nautilus_trader.adapters.betting.common.fees import fee_adjusted_coverage_basket
@@ -232,6 +233,10 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         subscriptions in semantic mode for audit/runtime diagnostics.
     semantic_unmatched_quote_probe_limit_per_venue : int, default 20
         Maximum unmatched quote probes per venue when semantic quote priority is active.
+    cross_venue_common_fixture_quote_reserve_limit_per_venue : int | None, default None
+        Maximum reserved cross-venue common-fixture quote subscriptions per venue.
+        ``None`` sizes the reserve to the common fixtures actually loaded (still bounded
+        by ``semantic_quote_subscription_limit_by_venue``); ``0`` disables the reserve.
     quote_freshness_profile : str, default "pre_match"
         Quote timing policy: "pre_match", "live", or "custom".
     quote_max_pair_skew_secs : float | None, default None
@@ -244,15 +249,18 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         Optional timer interval for requesting refreshed venue instrument catalogs.
     stale_quote_refresh_cooldown_secs : float | None, default 60.0
         Minimum interval between stale-quote-triggered catalog refresh requests per venue.
-    venue_taker_fee_rates : dict[str, Decimal], default {"POLYMARKET": Decimal("0.03")}
+    venue_taker_fee_rates : dict[str, Decimal], default DEFAULT_TAKER_FEE_RATES
         Venue-level taker fee-rate parameters. Prediction-market venues use the
-        protocol formula ``shares * rate * price * (1 - price)``.
+        protocol formula ``rate * shares * min(price, 1 - price)``. Defaults cover
+        POLYMARKET (3%) plus explicit zeros for CLOUDBET (margin embedded in odds)
+        and SXBET (commission charged on net winnings instead).
     venue_maker_rebate_rates : dict[str, Decimal], default {}
         Venue-level maker rebate-rate parameters. These use the same
         prediction-market curve as taker fees, but reduce effective stake cost
         for passive fills.
-    venue_winning_profit_fee_rates : dict[str, Decimal], default {}
-        Venue-level fee rates applied only to winning profit.
+    venue_winning_profit_fee_rates : dict[str, Decimal], default DEFAULT_WINNING_PROFIT_FEE_RATES
+        Venue-level fee rates applied only to winning profit. Defaults cover the
+        SX.bet 4% net-winnings taker commission.
     venue_basket_rebate_rates : dict[str, Decimal], default {}
         Venue-level basket reward/cashback rate applied to the covered set,
         useful for parlay-style or temporary promotion accounting.
@@ -314,6 +322,7 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
     semantic_quote_subscription_limit_by_venue: dict[str, int] = {}
     semantic_unmatched_quote_probe_venues: frozenset[str] = frozenset({"POLYMARKET"})
     semantic_unmatched_quote_probe_limit_per_venue: int = 20
+    cross_venue_common_fixture_quote_reserve_limit_per_venue: int | None = None
     quote_freshness_profile: str = "pre_match"
     quote_max_pair_skew_secs: float | None = None
     quote_max_fetch_latency_secs: float | None = None
@@ -381,6 +390,7 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         )
         venue_winning_profit_fee_rates = normalize_venue_fee_rates(
             self.venue_winning_profit_fee_rates,
+            defaults=DEFAULT_WINNING_PROFIT_FEE_RATES,
         )
         venue_basket_rebate_rates = normalize_venue_fee_rates(
             self.venue_basket_rebate_rates,
@@ -529,6 +539,15 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
             raise ValueError(msg)
         if self.semantic_unmatched_quote_probe_limit_per_venue < 0:
             msg = "semantic_unmatched_quote_probe_limit_per_venue must be non-negative"
+            raise ValueError(msg)
+        if (
+            self.cross_venue_common_fixture_quote_reserve_limit_per_venue is not None
+            and self.cross_venue_common_fixture_quote_reserve_limit_per_venue < 0
+        ):
+            msg = (
+                "cross_venue_common_fixture_quote_reserve_limit_per_venue "
+                "must be non-negative when set"
+            )
             raise ValueError(msg)
 
     def _validate_live_execution_config(
@@ -790,6 +809,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             f"{sorted(self._config.semantic_unmatched_quote_probe_venues)} "
             "semantic_unmatched_quote_probe_limit_per_venue="
             f"{self._config.semantic_unmatched_quote_probe_limit_per_venue} "
+            "cross_venue_common_fixture_quote_reserve_limit_per_venue="
+            f"{self._config.cross_venue_common_fixture_quote_reserve_limit_per_venue} "
             f"instrument_refresh_interval_secs={self._config.instrument_refresh_interval_secs} "
             "stale_quote_refresh_cooldown_secs="
             f"{self._config.stale_quote_refresh_cooldown_secs} "
@@ -1335,8 +1356,14 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         runtime can observe prices for already loaded shared fixtures.
 
         """
-        per_venue_limit = self._config.semantic_unmatched_quote_probe_limit_per_venue
-        if per_venue_limit <= 0 or len(self._config.enabled_venues) < 2:
+        # The reserve has its own limit: the unmatched-probe limit is sized for
+        # Polymarket audit probes (default 20) and is far too small for shared-fixture
+        # coverage (#227). None sizes the reserve to the common fixtures actually
+        # loaded; the per-venue quote ceiling still bounds every subscription.
+        per_venue_limit = self._config.cross_venue_common_fixture_quote_reserve_limit_per_venue
+        if per_venue_limit is not None and per_venue_limit <= 0:
+            return 0
+        if len(self._config.enabled_venues) < 2:
             return 0
 
         subscribed_snapshot = tuple(self._subscribed_instruments)
@@ -1380,7 +1407,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             venue_limit = self._config.semantic_quote_subscription_limit_by_venue.get(venue)
             if venue_limit is not None and subscribed_by_venue[venue] >= venue_limit:
                 continue
-            if reserved_by_venue[venue] >= per_venue_limit:
+            if per_venue_limit is not None and reserved_by_venue[venue] >= per_venue_limit:
                 continue
             if self._subscribe_quote_ticks_for_instrument(instrument):
                 subscribed_by_venue[venue] += 1
@@ -4642,6 +4669,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         denied leg is otherwise swallowed by the base no-op while its sibling may be
         resting or filled — leaving naked directional exposure. Mirror the rejected path
         so a denial halts live execution and is counted as unhedged exposure.
+
         """
         self._record_order_lifecycle_event(event, "denied")
         if self._config.live_execution_armed:
@@ -4657,6 +4685,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
 
         A canceled leg (venue-side or operator) after its sibling filled is the same
         unhedged-exposure hazard as a rejection, so halt live execution and count it.
+
         """
         self._record_order_lifecycle_event(event, "canceled")
         if self._config.live_execution_armed:

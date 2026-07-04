@@ -477,6 +477,38 @@ def test_winning_margin_bucket_market_mines_complete_hyperedge(tmp_path):
     assert len(hyperedges) == 1
 
 
+def test_cross_venue_binary_complement_produces_distinct_cross_venue_basket():
+    records = [
+        NormalizedSelectionRecord(
+            record_id=f"{provider.lower()}-{selection.lower()}",
+            provider=provider,
+            selection=_selection(
+                instrument_id=f"{provider.lower()}-{selection.lower()}-25",
+                market_type=CanonicalMarketType.TOTALS.value,
+                selection=selection,
+                params=(("line", "2.5"),),
+                venue=provider,
+            ),
+        )
+        for provider in ("CLOUDBET", "POLYMARKET")
+        for selection in ("OVER", "UNDER")
+    ]
+
+    proofs, _ = CoverageEngine().discover_event_coverage(records)
+
+    cross_venue = [
+        proof
+        for proof in proofs
+        if proof.complete and len(proof.coverage_set.provider_scope) == 2
+    ]
+    assert cross_venue, "expected a genuine cross-venue OVER/UNDER coverage basket"
+    assert any(proof.execution_safe for proof in cross_venue)
+    assert any(
+        proof.coverage_set.provider_scope == ("CLOUDBET", "POLYMARKET")
+        for proof in cross_venue
+    )
+
+
 def test_coverage_proofs_round_trip_through_rule_store(tmp_path):
     home = SelectionPredicateBuilder.from_selection(
         _selection(

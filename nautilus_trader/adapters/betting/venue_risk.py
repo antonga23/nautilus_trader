@@ -185,6 +185,7 @@ class BettingVenueRiskPolicy(ABC):
         odds: Decimal,
         market_type: str,
         currency: str = "USD",
+        current_exposure: Decimal | None = None,
     ) -> RiskEvaluation:
         violations: list[str] = []
         warnings: list[str] = []
@@ -195,7 +196,14 @@ class BettingVenueRiskPolicy(ABC):
             elif isinstance(rule, OddsRequirementRule):
                 self._evaluate_odds_requirement(rule, odds, violations, warnings)
             elif isinstance(rule, MaxExposureRule):
-                self._evaluate_max_exposure(rule, stake, currency, violations, warnings)
+                self._evaluate_max_exposure(
+                    rule,
+                    stake,
+                    currency,
+                    violations,
+                    warnings,
+                    current_exposure=current_exposure,
+                )
 
         approved = len(violations) == 0
         return RiskEvaluation(
@@ -214,6 +222,17 @@ class BettingVenueRiskPolicy(ABC):
         violations: list[str],
         warnings: list[str],
     ) -> None:
+        if currency != rule.currency:
+            msg = (
+                f"Cannot compare stake {stake} {currency} against limit "
+                f"{rule.max_stake} {rule.currency}: currency mismatch with no FX conversion"
+            )
+            if rule.is_critical:
+                violations.append(msg)
+            else:
+                warnings.append(msg)
+            return
+
         if stake > rule.max_stake:
             msg = f"Stake {stake} {currency} exceeds maximum {rule.max_stake} {rule.currency}"
             if rule.is_critical:
@@ -249,8 +268,21 @@ class BettingVenueRiskPolicy(ABC):
         currency: str,
         violations: list[str],
         warnings: list[str],
+        current_exposure: Decimal | None = None,
     ) -> None:
-        potential_exposure = self._current_exposure + stake
+        if currency != rule.currency:
+            msg = (
+                f"Cannot compare exposure in {currency} against limit "
+                f"{rule.max_exposure} {rule.currency}: currency mismatch with no FX conversion"
+            )
+            if rule.is_critical:
+                violations.append(msg)
+            else:
+                warnings.append(msg)
+            return
+
+        open_exposure = self._current_exposure if current_exposure is None else current_exposure
+        potential_exposure = open_exposure + stake
         if potential_exposure > rule.max_exposure:
             msg = (
                 f"Potential exposure {potential_exposure} {currency} "

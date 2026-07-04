@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 import json
+import logging
 import os
 from typing import Any
 
@@ -53,6 +54,9 @@ except (ImportError, ModuleNotFoundError):
     _OPPORTUNITY_GRAPH_CORE_CLS = None
 else:
     _OPPORTUNITY_GRAPH_CORE_CLS = _pyo3_opportunity_graph_core_cls
+
+
+logger = logging.getLogger(__name__)
 
 
 FastCandidateSnapshot = tuple[
@@ -572,10 +576,18 @@ class OpportunityGraph:
             self._rust_core,
             "semantic_coverage_summary_json",
         ):
+            raw_summary = self._rust_core.semantic_coverage_summary_json()
             try:
-                payload = json.loads(self._rust_core.semantic_coverage_summary_json())
-            except (TypeError, ValueError, json.JSONDecodeError):
-                payload = {}
+                payload = json.loads(raw_summary)
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                logger.warning(
+                    "Rust semantic_coverage_summary_json returned malformed payload (%s: %s); "
+                    "falling back to python coverage summary. Raw sample: %.200r",
+                    type(exc).__name__,
+                    exc,
+                    raw_summary,
+                )
+                return dict(self._coverage_summary_payload)
             if isinstance(payload, dict):
                 # Rust owns the hot-path counts, while Python retains predicate metadata
                 # needed by runtime diagnostics to map semantic cache legs back to nodes.
@@ -1052,14 +1064,21 @@ class OpportunityGraph:
     def _semantic_node_payload(cls, instrument: CryptoBettingInstrument) -> dict[str, object]:
         try:
             normalized = MarketNormalizer.normalize(instrument)
-        except (AttributeError, TypeError, ValueError):
+        except (AttributeError, TypeError, ValueError) as exc:
             raw_market_type = str(cls._safe_attr(instrument, "market_type", ""))
             market_type = MarketType.from_string(
                 raw_market_type or str(cls._safe_attr(instrument, "market_name", "")),
             ).value
+            logger.warning(
+                "MarketNormalizer.normalize failed for instrument %s (%s: %s); "
+                "emitting unnormalized semantic identity so it cannot masquerade as a full_time match",
+                cls._safe_attr(instrument, "id", "<unknown>"),
+                type(exc).__name__,
+                exc,
+            )
             return {
                 "semantic_sport": str(cls._safe_attr(instrument, "sport_name", "")).lower(),
-                "semantic_scope": "full_time",
+                "semantic_scope": "unnormalized",
                 "semantic_market_type": market_type,
                 "semantic_market_family": market_type,
                 "semantic_selection": Outcome.from_string(

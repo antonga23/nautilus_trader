@@ -91,6 +91,7 @@ class SXBetVenueRiskPolicy(BettingVenueRiskPolicy):
         odds: Decimal,
         market_type: str,
         currency: str = "USDC",
+        current_exposure: Decimal | None = None,
     ) -> RiskEvaluation:
         """
         Override to add minimum stake check.
@@ -105,7 +106,13 @@ class SXBetVenueRiskPolicy(BettingVenueRiskPolicy):
             )
 
         # Run base evaluation
-        base_eval = super().evaluate_order(stake, odds, market_type, currency)
+        base_eval = super().evaluate_order(
+            stake,
+            odds,
+            market_type,
+            currency,
+            current_exposure=current_exposure,
+        )
 
         # Combine results
         violations.extend(base_eval.violations)

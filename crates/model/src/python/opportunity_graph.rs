@@ -1417,30 +1417,73 @@ fn semantic_edge_metadata(edge: &EdgeSnapshot) -> String {
     .to_string()
 }
 
+// A side classified by whether both its pattern and node carry a single line param.
+enum LineSide {
+    // Neither pattern nor node has a line param (e.g. a WINNER selection with params_key "[]").
+    Absent,
+    // Both pattern and node carry a single line param.
+    Present { pattern: f64, node: f64 },
+}
+
+// Returns None when the pattern/node are structurally inconsistent (only one side has a line, or a
+// side carries params that are not a single line pair), which is treated as incompatible so this
+// stays as strict as the original all-four-lines requirement for those cases.
+fn line_side(pattern_params_key: &str, node_params_key: &str) -> Option<LineSide> {
+    match (
+        only_line_param(pattern_params_key),
+        only_line_param(node_params_key),
+    ) {
+        (Some(pattern), Some(node)) => Some(LineSide::Present { pattern, node }),
+        (None, None) if has_no_params(pattern_params_key) && has_no_params(node_params_key) => {
+            Some(LineSide::Absent)
+        }
+        _ => None,
+    }
+}
+
 fn line_params_compatible(
     pattern_a: &SemanticPatternSnapshot,
     node_a: &NodeSnapshot,
     pattern_b: &SemanticPatternSnapshot,
     node_b: &NodeSnapshot,
 ) -> bool {
-    let Some(pattern_line_a) = only_line_param(&pattern_a.params_key) else {
-        return false;
-    };
-    let Some(pattern_line_b) = only_line_param(&pattern_b.params_key) else {
-        return false;
-    };
-    let Some(node_line_a) = only_line_param(&node_a.semantic_params_key) else {
-        return false;
-    };
-    let Some(node_line_b) = only_line_param(&node_b.semantic_params_key) else {
+    let (Some(side_a), Some(side_b)) = (
+        line_side(&pattern_a.params_key, &node_a.semantic_params_key),
+        line_side(&pattern_b.params_key, &node_b.semantic_params_key),
+    ) else {
         return false;
     };
 
-    if approx_eq(pattern_line_a, pattern_line_b) && approx_eq(node_line_a, node_line_b) {
-        return true;
+    match (side_a, side_b) {
+        // A WINNER+POINT_SPREAD template (one side has no line) previously bailed to false here,
+        // never applying even at the mined line. Skip the line constraint for the no-line side and
+        // require only that the line-carrying side's pattern and node lines agree. This does not
+        // admit an arbitrary spread line -- the line still has to match the mined one.
+        (LineSide::Absent, LineSide::Present { pattern, node })
+        | (LineSide::Present { pattern, node }, LineSide::Absent) => approx_eq(pattern, node),
+        (
+            LineSide::Present {
+                pattern: pattern_line_a,
+                node: node_line_a,
+            },
+            LineSide::Present {
+                pattern: pattern_line_b,
+                node: node_line_b,
+            },
+        ) => {
+            (approx_eq(pattern_line_a, pattern_line_b) && approx_eq(node_line_a, node_line_b))
+                || (approx_eq(pattern_line_a + pattern_line_b, 0.0)
+                    && approx_eq(node_line_a + node_line_b, 0.0))
+        }
+        (LineSide::Absent, LineSide::Absent) => false,
     }
+}
 
-    approx_eq(pattern_line_a + pattern_line_b, 0.0) && approx_eq(node_line_a + node_line_b, 0.0)
+fn has_no_params(params_key: &str) -> bool {
+    match serde_json::from_str::<Value>(params_key) {
+        Ok(Value::Array(pairs)) => pairs.is_empty(),
+        _ => params_key.trim().is_empty(),
+    }
 }
 
 fn only_line_param(params_key: &str) -> Option<f64> {
@@ -1475,13 +1518,26 @@ fn is_same_market_hedge(source: &NodeSnapshot, target: &NodeSnapshot) -> bool {
     {
         return false;
     }
-    if source.market_name != target.market_name || !same_market_params_match(source, target) {
+    if !same_market_identity_match(source, target) {
         return false;
     }
     if source.market_type == "match_odds" && !(source.two_way_market && target.two_way_market) {
         return false;
     }
     is_opposite_outcome(source, target)
+}
+
+// Raw market_name/params are venue-specific display strings (e.g. Cloudbet "Winner" vs
+// Polymarket "Moneyline"), so they are only comparable within a venue. Same-venue pairs keep the
+// exact raw comparison; cross-venue pairs compare the canonical semantic market type + params key
+// (which fall back to the raw values when absent, so the check still fails closed).
+fn same_market_identity_match(source: &NodeSnapshot, target: &NodeSnapshot) -> bool {
+    if source.venue == target.venue {
+        source.market_name == target.market_name && same_market_params_match(source, target)
+    } else {
+        source.semantic_market_type == target.semantic_market_type
+            && source.semantic_params_key == target.semantic_params_key
+    }
 }
 
 fn is_trusted_same_venue_event_id_mismatch(source: &NodeSnapshot, target: &NodeSnapshot) -> bool {
@@ -1870,6 +1926,102 @@ mod tests {
 
         assert_eq!(core.edge_count(), 1);
         assert_eq!(core.connected_edge_count("a"), 1);
+    }
+
+    #[rstest]
+    fn cross_venue_same_market_hedge_uses_semantic_identity() {
+        // Issue #218: the legacy heuristic gated cross-venue same-market hedges on the raw,
+        // venue-specific market_name/params, so a pair carrying the same canonical market
+        // under different display names never formed an edge. It must now bind on the shared
+        // semantic_market_type + semantic_params_key.
+        let mut core = OpportunityGraphCore::new(true, 0.5);
+        let mut source = node_with("a", "CLOUDBET", "cb-1", "Winner Totals", "totals", "over");
+        let mut target = node_with(
+            "b",
+            "POLYMARKET",
+            "pm-1",
+            "Over/Under",
+            "total_points",
+            "under",
+        );
+        // Diverging raw display strings, identical canonical semantic identity.
+        source.params = "line=2.5;book=cloudbet".to_string();
+        target.params = "threshold=2.5".to_string();
+        source.semantic_market_type = "total_goals".to_string();
+        target.semantic_market_type = "total_goals".to_string();
+        source.semantic_params_key = "line=2.5".to_string();
+        target.semantic_params_key = "line=2.5".to_string();
+        core.insert_node(source);
+        core.insert_node(target);
+        core.rebuild_edges();
+        assert_eq!(core.edge_count(), 1);
+
+        // A divergent semantic market type must still be rejected (no over-matching).
+        let mut core = OpportunityGraphCore::new(true, 0.5);
+        let mut source = node_with("a", "CLOUDBET", "cb-1", "Winner Totals", "totals", "over");
+        let mut target = node_with(
+            "b",
+            "POLYMARKET",
+            "pm-1",
+            "Over/Under",
+            "total_points",
+            "under",
+        );
+        source.semantic_market_type = "total_goals".to_string();
+        target.semantic_market_type = "total_corners".to_string();
+        source.semantic_params_key = "line=2.5".to_string();
+        target.semantic_params_key = "line=2.5".to_string();
+        core.insert_node(source);
+        core.insert_node(target);
+        core.rebuild_edges();
+        assert_eq!(core.edge_count(), 0);
+    }
+
+    #[rstest]
+    fn line_params_compatible_handles_mixed_line_and_no_line_sides() {
+        // Issue #220: a WINNER side (no line param) previously forced the whole comparison to
+        // false, blocking WINNER+POINT_SPREAD templates. The no-line side is now unconstrained
+        // while the spread side still has to match the mined line.
+        let winner_pattern = SemanticPatternSnapshot {
+            sport: "soccer".to_string(),
+            scope: "full_time".to_string(),
+            market_type: "winner".to_string(),
+            market_family: "winner".to_string(),
+            selection: "home".to_string(),
+            params_key: "[]".to_string(),
+        };
+        let spread_pattern = SemanticPatternSnapshot {
+            params_key: "[[\"line\", \"-3.5\"]]".to_string(),
+            ..winner_pattern.clone()
+        };
+        let mut winner_node = node("w", "home");
+        winner_node.semantic_params_key = "[]".to_string();
+        let mut spread_at_line = node("s", "home");
+        spread_at_line.semantic_params_key = "[[\"line\", \"-3.5\"]]".to_string();
+        let mut spread_off_line = node("s2", "home");
+        spread_off_line.semantic_params_key = "[[\"line\", \"-4.5\"]]".to_string();
+
+        // Mixed WINNER (no line) + POINT_SPREAD at the mined line -> compatible.
+        assert!(line_params_compatible(
+            &winner_pattern,
+            &winner_node,
+            &spread_pattern,
+            &spread_at_line,
+        ));
+        // Conservative: a spread node off the mined line stays incompatible.
+        assert!(!line_params_compatible(
+            &winner_pattern,
+            &winner_node,
+            &spread_pattern,
+            &spread_off_line,
+        ));
+        // Both sides no-line: this fallback has nothing to assert -> incompatible.
+        assert!(!line_params_compatible(
+            &winner_pattern,
+            &winner_node,
+            &winner_pattern,
+            &winner_node,
+        ));
     }
 
     #[rstest]

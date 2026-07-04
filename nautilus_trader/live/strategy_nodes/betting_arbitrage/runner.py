@@ -2621,14 +2621,16 @@ def _zero_pair_blocker_hint(
     return ""
 
 
-_DIRECTIONAL_MARKET_FAMILIES = frozenset(
-    {
-        "WINNER",
-        "MATCH_ODDS",
-        "DRAW_NO_BET",
-        "ASIAN_HANDICAP",
-        "POINT_SPREAD",
-    },
+# Cross-family pairs the diagnostic treats as matchable. MATCH_ODDS/DRAW_NO_BET share
+# THREE_WAY_STATES and ASIAN_HANDICAP/POINT_SPREAD share handicap margin states
+# (classifier.py:136). WINNER belongs with the moneyline group: the normalizer emits
+# WINNER vs MATCH_ODDS for the same raw market based solely on the is_two_way_market
+# flag (normalization.py), so a WINNER cross-pair there is a semantic-edge gap, not an
+# unsupported family. Moneyline<->spread pairs stay unmatchable so the blocker hint
+# surfaces the real limitation (#235).
+_DIRECTIONAL_MARKET_FAMILY_GROUPS = (
+    frozenset({"WINNER", "MATCH_ODDS", "DRAW_NO_BET"}),
+    frozenset({"ASIAN_HANDICAP", "POINT_SPREAD"}),
 )
 _TOTAL_MARKET_FAMILIES = frozenset({"TOTALS", "TEAM_TOTALS"})
 
@@ -2643,7 +2645,9 @@ def _market_family_relation(
         return "unknown"
     if family_a == family_b:
         return "same_family"
-    if family_a in _DIRECTIONAL_MARKET_FAMILIES and family_b in _DIRECTIONAL_MARKET_FAMILIES:
+    if any(
+        family_a in group and family_b in group for group in _DIRECTIONAL_MARKET_FAMILY_GROUPS
+    ):
         return "directional_family"
     if family_a in _TOTAL_MARKET_FAMILIES and family_b in _TOTAL_MARKET_FAMILIES:
         return "same_family"

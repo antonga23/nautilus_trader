@@ -81,11 +81,18 @@ class EasybetVenueRiskPolicy(BettingVenueRiskPolicy):
         odds: Decimal,
         market_type: str,
         currency: str = "ZAR",
+        current_exposure: Decimal | None = None,
     ) -> RiskEvaluation:
         """
         Override to add rollover-specific checks.
         """
-        base_eval = super().evaluate_order(stake, odds, market_type, currency)
+        base_eval = super().evaluate_order(
+            stake,
+            odds,
+            market_type,
+            currency,
+            current_exposure=current_exposure,
+        )
         violations = list(base_eval.violations)
         warnings = list(base_eval.warnings)
 

@@ -247,9 +247,22 @@ class TestFeeAdjustedOdds:
         assert adjusted.raw_odds == Decimal("2.02")
         assert adjusted.effective_odds < adjusted.raw_odds
         assert adjusted.effective_probability > adjusted.raw_probability
-        assert adjusted.taker_cost_fraction == Decimal("0.03") * (
-            Decimal(1) - (Decimal(1) / Decimal("2.02"))
-        )
+        # p = 1/2.02 < 0.5 so min(p, 1 - p) = p and the per-stake protocol fee
+        # rate * min(p, 1 - p) / p collapses to the raw rate.
+        assert adjusted.taker_cost_fraction == Decimal("0.03")
+
+    def test_polymarket_taker_fee_matches_protocol_formula_by_side(self):
+        # Favorite: price p = 0.8 (odds 1.25), min(p, 1 - p) = 1 - p = 0.2.
+        # Protocol per-stake fee = rate * (1 - p) / p = 0.03 * 0.2 / 0.8 = 0.0075.
+        favorite = fee_adjusted_odds(Decimal("1.25"), taker_fee_rate=Decimal("0.03"))
+        assert favorite.raw_probability == Decimal("0.8")
+        assert favorite.taker_cost_fraction == Decimal("0.0075")
+
+        # Underdog: price p = 0.2 (odds 5), min(p, 1 - p) = p = 0.2.
+        # Protocol per-stake fee = rate * p / p = rate = 0.03.
+        underdog = fee_adjusted_odds(Decimal(5), taker_fee_rate=Decimal("0.03"))
+        assert underdog.raw_probability == Decimal("0.2")
+        assert underdog.taker_cost_fraction == Decimal("0.03")
 
     def test_winning_profit_fee_reduces_net_return(self):
         adjusted = fee_adjusted_odds(Decimal("3.00"), winning_profit_fee_rate=Decimal("0.10"))

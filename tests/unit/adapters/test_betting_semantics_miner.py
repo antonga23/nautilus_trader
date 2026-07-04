@@ -77,8 +77,10 @@ def test_cross_venue_timestamp_skew_pairs_same_fixture(tmp_path) -> None:
     assert len(complementary) == 1
     assert complementary[0].venue_scope == ("CLOUDBET", "SXBET")
     # Both venues' records share one fixture-bucket identity (family + cluster anchor).
-    assert complementary[0].evidence_event_key.startswith("soccer|team a|team b|")
-    assert "@" in complementary[0].evidence_event_key
+    evidence_key = complementary[0].evidence_event_key
+    assert evidence_key is not None
+    assert evidence_key.startswith("soccer|team a|team b|")
+    assert "@" in evidence_key
 
 
 def test_doubleheader_fixtures_stay_separate(tmp_path) -> None:
