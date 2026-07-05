@@ -32,7 +32,12 @@ def _favorite_longshot_odds(
     # inflated more for low-probability outcomes (they are over-bet in real books),
     # so quoted decimal odds are shorter than fair for longshots. margin_i grows as
     # fair prob p_i shrinks. This matches none of the pure devig models exactly.
-    inflated = [p * (1.0 + base_margin * (1.0 + skew * (1.0 - p))) for p in fair]
+    # Cap each inflated implied probability just below 1.0: a single outcome never
+    # reaches implied 1.0 in a real book (decimal odds stay > 1), and without the cap an
+    # extreme margin+skew on a strong favorite would synthesise an invalid (odds <= 1) book.
+    inflated = [
+        min(p * (1.0 + base_margin * (1.0 + skew * (1.0 - p))), 0.98) for p in fair
+    ]
     overround = sum(inflated)
     quoted_odds = [1.0 / implied for implied in inflated]
     return quoted_odds, overround
