@@ -85,6 +85,7 @@ Swept `base_margin ∈ {0.03, 0.06, 0.12}` × `skew ∈ {0.0, 0.8, 2.0}` (9 regi
 **Model-dependent finding (caveat):** `proportional` ranks first, but the ground truth is a *synthetic* favorite-longshot model; its near-uniform vig at low skew favors `proportional`, and real books may carry structure that favors `shin`. Recovery accuracy against **real closing-line-vs-outcome frequencies** is required before treating "proportional is best" as definitive.
 
 **Recommendation:**
+
 1. Narrow `auto`'s `logarithmic` trigger (raise the odds thresholds so only genuinely extreme books use it) and prefer `proportional`/`shin` for normal books — a plausibly-safe accuracy win.
 2. **Do not change the production devig default on synthetic evidence alone** (it is a money-path input to value-edge detection). Validate a candidate `auto` policy against real market data first.
 3. Ship `scripts/betting/devig_accuracy_benchmark.py` as a reusable devig-accuracy gate for that validation.
