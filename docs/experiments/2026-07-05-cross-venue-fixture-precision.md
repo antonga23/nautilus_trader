@@ -70,18 +70,22 @@ The `doubleheader_both_times` scenario matched (`matched=True`, reason `cross_ve
 ## Iteration 1
 
 ### Hypothesis
+
 **Claim:** Calling the existing set-level ambiguity check (`_has_ambiguous_missing_fixture_evidence`, which already counts start-time-aware fixture clusters) on the both-start-times cross-venue branch eliminates the doubleheader false match with no recall loss.
 **What changed:** `market_matcher._hedge_event_match_decision` — the `matched=True` "cross_venue_fixture_proof" branch now returns `matched=False, reason="ambiguous_fixture"` with `replace(proof, ambiguous=True)` when the target is ambiguous across ≥2 source-venue start-time clusters.
 **Should improve:** precision / doubleheaderFalseMatches. **Should NOT regress:** recall, unit suites.
 
 ### Design
+
 Single variable: the ambiguity guard on the both-times branch (market_matcher.py). No change to the resolver, the missing-time branch, or the start-time-conflict branch. `proof.ambiguous` is now populated on this path (resolving the #237 dead-guard on the branch that actually needed it).
 
 ### Execution
+
 - Applied to `nautilus_trader/adapters/betting/market_matcher.py` (+15 −5). Added regression test `test_match_events_cross_venue_skips_same_day_doubleheader_with_start_times`.
 - Baseline verification: ✅ 67 passed (66 prior + new test).
 
 ### Verification
+
 **Command:** `fixture_match_benchmark.py` + `pytest test_fixture_identity.py test_market_matcher.py`
 **Runs:** deterministic (no timing variance)
 
@@ -96,6 +100,7 @@ Single variable: the ambiguity guard on the both-times branch (market_matcher.py
 **Verdict:** PASS
 
 ### Analysis
+
 **Decision:** KEEP. **Reasoning:** primary metric hit target (0 doubleheader false matches), precision +0.25, recall held at 1.0, zero regressions, and the change resolves #231 (start-time-aware cluster count now consulted on the both-times branch) and the live half of #237 (`proof.ambiguous` populated where it governs a real match decision).
 **Abort conditions:** none fired; success threshold met on iteration 1.
 
