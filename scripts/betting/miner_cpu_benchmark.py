@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 from collections.abc import Callable
 from collections.abc import Sequence
+from contextlib import nullcontext
 import cProfile
 from datetime import UTC
 from datetime import datetime
@@ -192,8 +193,13 @@ def build_corpus(
 
 def populate_store(records: list[NormalizedSelectionRecord], store_dir: Path) -> float:
     store = RuleStore(FileRuleCache(store_dir))
+    # Mirror the real bootstrap: defer index writes and, when available, use bulk_writes
+    # (defers per-record fsync — see the FileRuleCache fsync fix) so population reflects
+    # the production path rather than dominating the profile with fsync latency.
+    bulk_writes = getattr(store, "bulk_writes", None)
+    bulk_context = bulk_writes() if callable(bulk_writes) else nullcontext()
     started = time.perf_counter()
-    with store.defer_index_writes():
+    with bulk_context, store.defer_index_writes():
         for record in records:
             store.save_normalized_selection(record)
     return time.perf_counter() - started
