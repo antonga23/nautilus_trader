@@ -2,12 +2,13 @@
 """
 Devig (margin-removal) method accuracy + robustness benchmark.
 
-Continuous-experimentation harness. Generates quoted odds from known fair
-probabilities using a favorite-longshot-biased margin model (a documented
-real-world vig structure that matches no single devig method's assumption, so
-the comparison is not circular), then scores each method on fair-probability
-recovery error (MAE / max abs error) and robustness (sum-to-1 error,
-convergence failures) across a grid of 2-way and 3-way markets.
+Continuous-experimentation harness. Generates quoted odds from known fair probabilities
+using a favorite-longshot-biased margin model (a documented real-world vig structure
+that matches no single devig method's assumption, so the comparison is not circular),
+then scores each method on fair-probability recovery error (MAE / max abs error) and
+robustness (sum-to-1 error, convergence failures) across a grid of 2-way and 3-way
+markets.
+
 """
 
 from __future__ import annotations
@@ -35,9 +36,7 @@ def _favorite_longshot_odds(
     # Cap each inflated implied probability just below 1.0: a single outcome never
     # reaches implied 1.0 in a real book (decimal odds stay > 1), and without the cap an
     # extreme margin+skew on a strong favorite would synthesise an invalid (odds <= 1) book.
-    inflated = [
-        min(p * (1.0 + base_margin * (1.0 + skew * (1.0 - p))), 0.98) for p in fair
-    ]
+    inflated = [min(p * (1.0 + base_margin * (1.0 + skew * (1.0 - p))), 0.98) for p in fair]
     overround = sum(inflated)
     quoted_odds = [1.0 / implied for implied in inflated]
     return quoted_odds, overround
@@ -57,7 +56,7 @@ def _fair_grids() -> list[list[float]]:
 
 
 def _mae(recovered: list[float], fair: list[float]) -> float:
-    return sum(abs(r - f) for r, f in zip(recovered, fair)) / len(fair)
+    return sum(abs(r - f) for r, f in zip(recovered, fair, strict=False)) / len(fair)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -81,7 +80,7 @@ def main(argv: list[str] | None = None) -> int:
             book = devig_probabilities([str(o) for o in odds], method=method)
             recovered = [float(p) for p in book.no_vig_probabilities]
             maes.append(_mae(recovered, fair))
-            max_errs.append(max(abs(r - f) for r, f in zip(recovered, fair)))
+            max_errs.append(max(abs(r - f) for r, f in zip(recovered, fair, strict=False)))
             sum_errs.append(abs(sum(recovered) - 1.0))
             if str(book.convergence_status) == "failed":
                 failures += 1
