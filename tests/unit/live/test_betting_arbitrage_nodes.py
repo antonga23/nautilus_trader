@@ -15,6 +15,7 @@ from datetime import datetime
 from datetime import timedelta
 import hashlib
 import json
+import logging
 from decimal import Decimal
 import os
 from pathlib import Path
@@ -3288,6 +3289,81 @@ class TestBettingArbitrageNodeRunner:
         assert diagnostics["unsupportedProviderPatternSamples"][0]["samples"][0][
             "instrumentId"
         ] == str(unsupported_instrument.id)
+
+    def test_probe_graph_snapshot_retries_transient_mutation_error(self, monkeypatch):  # skipcq
+        # A large graph being rebuilt races the probe into "dictionary changed size during
+        # iteration"; the snapshot must retry rather than collapse to an empty payload.
+        class _FlakyDict(dict):
+            def __init__(self, *args, fail_times=0, **kwargs):
+                super().__init__(*args, **kwargs)
+                self._fail_remaining = fail_times
+
+            def values(self):
+                if self._fail_remaining > 0:
+                    self._fail_remaining -= 1
+                    raise RuntimeError("dictionary changed size during iteration")
+                return super().values()
+
+        graph = SimpleNamespace(
+            edges_by_id=_FlakyDict({"e1": object()}, fail_times=2),
+            nodes_by_id={"n1": object()},
+            quotes_by_node_id={},
+            edge_ids_by_node_id={"n1": {"e1"}},
+        )
+        monkeypatch.setattr(node_runner.time, "sleep", lambda *_: None)
+
+        snapshot = node_runner._snapshot_probe_graph_state(graph, attempts=5)
+
+        assert snapshot is not None
+        assert len(list(snapshot["edges"])) == 1
+
+    def test_probe_graph_snapshot_gives_up_after_attempts(self, monkeypatch, caplog):  # skipcq
+        class _AlwaysFlakyDict(dict):
+            def values(self):
+                raise RuntimeError("dictionary changed size during iteration")
+
+        graph = SimpleNamespace(
+            edges_by_id=_AlwaysFlakyDict({"e1": object()}),
+            nodes_by_id={"n1": object()},
+            quotes_by_node_id={},
+            edge_ids_by_node_id={},
+        )
+        monkeypatch.setattr(node_runner.time, "sleep", lambda *_: None)
+
+        with caplog.at_level(logging.WARNING, logger=node_runner.__name__):
+            snapshot = node_runner._snapshot_probe_graph_state(graph, attempts=3)
+
+        assert snapshot is None
+        assert "failed after 3 attempts" in caplog.text
+
+    def test_runtime_probe_writer_survives_collection_error(self, tmp_path, monkeypatch):  # skipcq
+        # A daemon-thread exception would freeze status.json; the writer must swallow a
+        # collection error, log it, and stay alive for the next cycle.
+        class _WaitOnceEvent:
+            def __init__(self):
+                self._calls = 0
+
+            def wait(self, _timeout):
+                self._calls += 1
+                return self._calls > 1  # run the body once, then stop
+
+        def _raise_collect(*_args, **_kwargs):
+            raise RuntimeError("collection boom")
+
+        monkeypatch.setattr(node_runner, "_collect_runtime_probe_payload", _raise_collect)
+        writer = node_runner.RuntimeProbeStatusWriter(
+            status_path=tmp_path / "status.json",
+            manifest=SimpleNamespace(strategy=SimpleNamespace(min_profit_margin="0.02")),
+            strategy=SimpleNamespace(),
+            semantic_cache=None,
+            manifest_snapshot=tmp_path / "manifest.json",
+            rendered_config_path=tmp_path / "rendered.json",
+            heartbeat_path=tmp_path / "heartbeat.json",
+            interval_secs=0.0,
+            stop_event=_WaitOnceEvent(),
+        )
+
+        writer.run()  # must return without propagating the collection error
 
     def test_runtime_probe_venue_coverage_explains_zero_cross_venue_pairs(self):
         sxbet_instrument = _instrument(
