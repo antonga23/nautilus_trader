@@ -59,7 +59,27 @@ class FileRuleCache:
         self._lock = threading.RLock()
         self._key_index = self._load_key_index()
         self._dirty_key_index_entries = 0
+        self._bulk_depth = 0
         atexit.register(self.flush_key_index)
+
+    @contextmanager
+    def bulk_writes(self) -> Iterator[FileRuleCache]:
+        # Skip the per-record fsync during a bulk rebuild (e.g. a fresh mine writing
+        # thousands of artifacts) and fsync the directory once on exit. The cache is a
+        # derived artifact — os.replace keeps each file atomically visible, and a crash
+        # mid-bulk simply triggers a re-mine — so per-record durability is unnecessary and
+        # the fsync-per-file cost dominates mine wall time (~80x on EBS).
+        with self._lock:
+            self._bulk_depth += 1
+        try:
+            yield self
+        finally:
+            with self._lock:
+                self._bulk_depth -= 1
+                if self._bulk_depth <= 0:
+                    self._bulk_depth = 0
+                    self.flush_key_index()
+                    self._fsync_dir()
 
     def add(self, key: str, value: bytes) -> None:
         cache_path = self._cache_path(key)
@@ -107,11 +127,24 @@ class FileRuleCache:
             with os.fdopen(fd, "wb") as handle:
                 handle.write(payload)
                 handle.flush()
-                os.fsync(handle.fileno())
+                # In a bulk rebuild the per-record fsync is deferred to a single
+                # directory fsync at bulk_writes() exit; os.replace still gives atomic
+                # visibility, so a partially written temp file is never observed.
+                if self._bulk_depth <= 0:
+                    os.fsync(handle.fileno())
             os.replace(temp_path, path)
         finally:
             if temp_path.exists():
                 temp_path.unlink()
+
+    def _fsync_dir(self) -> None:
+        if not self._path.exists():
+            return
+        dir_fd = os.open(str(self._path), os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
 
     def _cache_path(self, key: str) -> Path:
         digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
@@ -165,6 +198,17 @@ class RuleStore:
             if self._deferred_index_write_depth <= 0:
                 self._deferred_index_write_depth = 0
                 self.flush_indexes()
+
+    @contextmanager
+    def bulk_writes(self) -> Iterator[RuleStore]:
+        # Delegate to the backing cache's bulk mode (defers per-record fsync) when it
+        # supports one; a no-op otherwise. Pairs with defer_index_writes for bulk mines.
+        cache_bulk = getattr(self._cache, "bulk_writes", None)
+        if callable(cache_bulk):
+            with cache_bulk():
+                yield self
+        else:
+            yield self
 
     def flush_indexes(self) -> None:
         if not self._dirty_index_keys:
