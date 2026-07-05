@@ -368,3 +368,41 @@ def test_two_hour_boundary_is_inclusive(tmp_path) -> None:
         r for r in rules if r.relationship_type == RelationshipType.COMPLEMENTARY_COVERAGE.value
     ]
     assert len(complementary) == 1
+
+
+def test_file_rule_cache_bulk_writes_defers_fsync_and_preserves_content(tmp_path, monkeypatch):
+    # bulk_writes() must skip the per-record fsync (deferring to one directory fsync at
+    # exit) while leaving byte-identical, readable cache content (#perf mine throughput).
+    from nautilus_trader.adapters.betting.semantics import store as store_mod
+
+    calls = {"n": 0}
+    real_fsync = store_mod.os.fsync
+
+    def _counting_fsync(fd):
+        calls["n"] += 1
+        return real_fsync(fd)
+
+    monkeypatch.setattr(store_mod.os, "fsync", _counting_fsync)
+
+    bulk_cache = FileRuleCache(tmp_path / "bulk")
+    with bulk_cache.bulk_writes():
+        for i in range(50):
+            bulk_cache.add(f"betting:semantic_rules:candidate:{i}", b"payload-bytes")
+    bulk_fsyncs = calls["n"]
+
+    calls["n"] = 0
+    normal_cache = FileRuleCache(tmp_path / "normal")
+    for i in range(50):
+        normal_cache.add(f"betting:semantic_rules:candidate:{i}", b"payload-bytes")
+    normal_cache.flush_key_index()
+    normal_fsyncs = calls["n"]
+
+    # normal fsyncs once per record; bulk defers to a single directory fsync (+ final index).
+    assert normal_fsyncs >= 50
+    assert bulk_fsyncs <= 3
+    assert bulk_fsyncs < normal_fsyncs
+    # content is identical and readable after either path.
+    for i in range(50):
+        key = f"betting:semantic_rules:candidate:{i}"
+        assert bulk_cache.get(key) == b"payload-bytes"
+        assert normal_cache.get(key) == bulk_cache.get(key)

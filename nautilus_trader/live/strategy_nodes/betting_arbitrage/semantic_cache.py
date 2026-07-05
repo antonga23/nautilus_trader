@@ -1052,8 +1052,10 @@ async def _bootstrap_semantic_cache(
 
     defer_index_writes = getattr(store, "defer_index_writes", None)
     index_context = defer_index_writes() if callable(defer_index_writes) else nullcontext()
+    bulk_writes = getattr(store, "bulk_writes", None)
+    bulk_context = bulk_writes() if callable(bulk_writes) else nullcontext()
     total_started = time.perf_counter()
-    with index_context:
+    with bulk_context, index_context:
         await _timed_async_phase(
             "refresh_sxbet_corpus",
             phase_timings_secs,
