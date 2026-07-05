@@ -1,0 +1,392 @@
+<title>Nodeops — strategy node dashboard</title>
+<style>
+  :root{
+    --ground:#0E1512; --panel:#16201C; --panel2:#1E2B26; --line:#2C3A34; --line2:#3A4C44;
+    --ink:#C9D3CE; --muted:#8A968F; --faint:#5E6B63;
+    --gold:#E8C26B;
+    --pos:#46B17E; --neg:#CF5C45; --warn:#E0913C; --info:#5FA8C2;
+    --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+    --sans:ui-sans-serif,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--sans);
+    font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
+  a{color:var(--info)}
+  header{padding:20px clamp(16px,3vw,36px);border-bottom:1px solid var(--line);
+    display:flex;align-items:baseline;gap:16px;flex-wrap:wrap}
+  header h1{margin:0;font-size:18px;font-weight:600;letter-spacing:.02em}
+  header .meta{color:var(--muted);font-size:12px;font-family:var(--mono)}
+  .ro-badge{font-size:11px;padding:2px 8px;border-radius:4px;border:1px solid var(--line2);
+    color:var(--warn);text-transform:uppercase;letter-spacing:.08em}
+  main{padding:clamp(12px,3vw,28px)}
+  .wrap{max-width:1360px;margin:0 auto}
+  table{border-collapse:collapse;width:100%;font-size:13px}
+  .table-scroll{overflow-x:auto;border:1px solid var(--line);border-radius:8px}
+  th,td{padding:9px 12px;text-align:left;white-space:nowrap;border-bottom:1px solid var(--line)}
+  th{color:var(--muted);font-weight:500;font-size:11px;text-transform:uppercase;
+    letter-spacing:.06em;background:var(--panel);position:sticky;top:0}
+  tbody tr{cursor:pointer}
+  tbody tr:hover{background:var(--panel)}
+  td.num,th.num{text-align:right;font-family:var(--mono)}
+  .chip{display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;
+    font-family:var(--mono);border:1px solid var(--line2)}
+  .chip.running{color:var(--pos);border-color:var(--pos)}
+  .chip.exited,.chip.dead{color:var(--neg);border-color:var(--neg)}
+  .chip.restarting,.chip.paused,.chip.created{color:var(--warn);border-color:var(--warn)}
+  .chip.unknown{color:var(--muted)}
+  .rag{font-family:var(--mono);font-size:12px}
+  .rag .g{color:var(--pos)} .rag .a{color:var(--warn)} .rag .r{color:var(--neg)}
+  .stale{color:var(--neg)}
+  .muted{color:var(--muted)}
+  /* drawer */
+  #scrim{position:fixed;inset:0;background:#0007;display:none}
+  #scrim.open{display:block}
+  #drawer{position:fixed;top:0;right:0;height:100vh;width:min(720px,96vw);
+    background:var(--panel);border-left:1px solid var(--line);transform:translateX(100%);
+    transition:transform .18s ease;overflow-y:auto;padding:22px clamp(16px,2.5vw,28px)}
+  #drawer.open{transform:translateX(0)}
+  #drawer h2{margin:0 0 4px;font-size:16px;font-weight:600}
+  #drawer .sub{color:var(--muted);font-family:var(--mono);font-size:12px;margin-bottom:16px}
+  .close{position:absolute;top:16px;right:18px;background:none;border:none;color:var(--muted);
+    font-size:22px;cursor:pointer;line-height:1}
+  .section{margin:18px 0;border-top:1px solid var(--line);padding-top:14px}
+  .section h3{margin:0 0 10px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;
+    color:var(--muted);font-weight:500}
+  .charts{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px}
+  .chart{border:1px solid var(--line);border-radius:6px;padding:8px 10px;background:var(--ground)}
+  .chart .label{font-size:11px;color:var(--muted);display:flex;justify-content:space-between}
+  .chart .val{font-family:var(--mono);color:var(--ink)}
+  .chart svg{display:block;width:100%;height:46px;margin-top:4px}
+  .windows{display:inline-flex;gap:6px;margin-left:8px}
+  .windows button,.actions button{font:inherit;font-size:12px;padding:3px 10px;border-radius:5px;
+    border:1px solid var(--line2);background:var(--panel2);color:var(--ink);cursor:pointer}
+  .windows button.active{border-color:var(--gold);color:var(--gold)}
+  .actions{display:flex;gap:8px;flex-wrap:wrap}
+  .actions button:hover:not(:disabled){border-color:var(--gold)}
+  .actions button.danger{color:var(--neg);border-color:var(--neg)}
+  button:disabled{opacity:.4;cursor:not-allowed}
+  pre.manifest{background:var(--ground);border:1px solid var(--line);border-radius:6px;
+    padding:12px;overflow:auto;max-height:320px;font-family:var(--mono);font-size:12px;color:var(--ink)}
+  .deploy-form{display:grid;gap:8px;max-width:520px}
+  .deploy-form input{font:inherit;font-family:var(--mono);font-size:12px;padding:6px 9px;
+    border-radius:5px;border:1px solid var(--line2);background:var(--ground);color:var(--ink)}
+  .deploy-form label{font-size:11px;color:var(--muted)}
+  #job{margin-top:10px;font-family:var(--mono);font-size:12px;white-space:pre-wrap}
+  .hidden{display:none}
+  .empty{padding:40px;text-align:center;color:var(--muted)}
+</style>
+
+<header>
+  <h1>Nodeops</h1>
+  <span class="meta" id="summary">loading…</span>
+  <span class="ro-badge hidden" id="roBadge">read-only</span>
+</header>
+<main><div class="wrap">
+  <div class="table-scroll">
+    <table>
+      <thead><tr>
+        <th>Node</th><th>State</th><th class="num">HB age</th><th>Image</th>
+        <th class="num">Instr</th><th class="num">Edges</th><th class="num">Quoted</th>
+        <th class="num">xVenue</th><th>RAG</th>
+        <th class="num">Raw</th><th class="num">Valid</th><th class="num">Exec</th><th class="num">Done</th>
+      </tr></thead>
+      <tbody id="rows"><tr><td colspan="13" class="empty">loading…</td></tr></tbody>
+    </table>
+  </div>
+</div></main>
+
+<div id="scrim"></div>
+<aside id="drawer" aria-hidden="true"></aside>
+
+<script>
+"use strict";
+const REFRESH_MS = 15000;
+const state = { readonly: true, current: null, window: 6, timer: null };
+
+async function api(path, opts) {
+  const res = await fetch(path, Object.assign({ credentials: "same-origin" }, opts || {}));
+  if (!res.ok) {
+    let detail = res.statusText;
+    try { detail = (await res.json()).error || detail; } catch (e) { /* ignore */ }
+    throw new Error(detail + " (" + res.status + ")");
+  }
+  return res.json();
+}
+
+function esc(v) {
+  return String(v == null ? "" : v).replace(/[&<>"']/g, c => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+  ));
+}
+function shortImage(image) {
+  if (!image) return "—";
+  const tail = String(image).split("/").pop();
+  const at = tail.indexOf("@sha256:");
+  if (at >= 0) return tail.slice(0, at) + "@" + tail.slice(at + 8, at + 15);
+  return tail.length > 22 ? tail.slice(0, 21) + "…" : tail;
+}
+function fmtAge(secs) {
+  if (secs == null) return { text: "—", stale: false };
+  const s = Math.round(secs);
+  const text = s < 90 ? s + "s" : s < 5400 ? Math.round(s / 60) + "m" : Math.round(s / 3600) + "h";
+  return { text, stale: s > 180 };
+}
+function num(v) { return v == null ? "—" : v; }
+
+function stateChip(st) {
+  const key = (st || "unknown").toLowerCase();
+  return '<span class="chip ' + esc(key) + '">' + esc(st || "unknown") + "</span>";
+}
+function ragCell(s) {
+  if (!s) return '<span class="muted">—</span>';
+  return '<span class="rag"><span class="g">' + num(s.rag_green) + '</span>/' +
+    '<span class="a">' + num(s.rag_amber) + '</span>/' +
+    '<span class="r">' + num(s.rag_red) + "</span></span>";
+}
+
+async function loadNodes() {
+  try {
+    const data = await api("/api/nodes");
+    state.readonly = data.readonly;
+    document.getElementById("roBadge").classList.toggle("hidden", !data.readonly);
+    const rows = document.getElementById("rows");
+    if (!data.nodes.length) {
+      rows.innerHTML = '<tr><td colspan="13" class="empty">no nodes under nodes root</td></tr>';
+    } else {
+      rows.innerHTML = data.nodes.map(renderRow).join("");
+      for (const tr of rows.querySelectorAll("tr[data-node]")) {
+        tr.addEventListener("click", () => openDrawer(tr.dataset.node));
+      }
+    }
+    const running = data.nodes.filter(n => (n.latest || {}).container_state === "running").length;
+    document.getElementById("summary").textContent =
+      data.nodes.length + " nodes · " + running + " running · updated " +
+      new Date().toLocaleTimeString();
+  } catch (e) {
+    document.getElementById("summary").textContent = "error: " + e.message;
+  }
+}
+
+function renderRow(n) {
+  const s = n.latest || {};
+  const age = fmtAge(s.heartbeat_age_secs);
+  return '<tr data-node="' + esc(n.node) + '">' +
+    "<td>" + esc(n.node) + "</td>" +
+    "<td>" + stateChip(s.container_state) + "</td>" +
+    '<td class="num ' + (age.stale ? "stale" : "") + '">' + age.text + "</td>" +
+    '<td class="mono">' + esc(shortImage(s.image)) + "</td>" +
+    '<td class="num">' + num(s.subscribed_instruments) + "</td>" +
+    '<td class="num">' + num(s.graph_edges) + "</td>" +
+    '<td class="num">' + num(s.quoted_edges) + "</td>" +
+    '<td class="num">' + num(s.cross_venue_candidate_count) + "</td>" +
+    "<td>" + ragCell(s) + "</td>" +
+    '<td class="num">' + num(s.raw_detections) + "</td>" +
+    '<td class="num">' + num(s.valid_opportunities) + "</td>" +
+    '<td class="num">' + num(s.executable_candidates) + "</td>" +
+    '<td class="num">' + num(s.executed) + "</td>" +
+    "</tr>";
+}
+
+// -- sparkline: tiny inline-SVG polyline chart --------------------------------
+function sparkline(points, key) {
+  const W = 200, H = 46, pad = 3;
+  const vals = points.map(p => p[key]).filter(v => v != null);
+  if (vals.length < 2) return '<svg viewBox="0 0 ' + W + " " + H + '"></svg>';
+  const min = Math.min(...vals), max = Math.max(...vals);
+  const span = max - min || 1;
+  const n = points.length;
+  const coords = points.map((p, i) => {
+    const v = p[key] == null ? min : p[key];
+    const x = pad + (i / (n - 1)) * (W - 2 * pad);
+    const y = H - pad - ((v - min) / span) * (H - 2 * pad);
+    return x.toFixed(1) + "," + y.toFixed(1);
+  }).join(" ");
+  const last = vals[vals.length - 1];
+  const lastPt = coords.split(" ").pop().split(",");
+  return '<svg viewBox="0 0 ' + W + " " + H + '" preserveAspectRatio="none">' +
+    '<polyline fill="none" stroke="var(--info)" stroke-width="1.5" points="' + coords + '"/>' +
+    '<circle cx="' + lastPt[0] + '" cy="' + lastPt[1] + '" r="2" fill="var(--gold)"/>' +
+    "</svg>";
+}
+
+const CHART_METRICS = [
+  ["graph_edges", "graph edges"],
+  ["quoted_edges", "quoted edges"],
+  ["cross_venue_candidate_count", "cross-venue cand"],
+  ["valid_opportunities", "valid opps"],
+  ["mem_mb", "mem (MiB)"],
+];
+
+async function openDrawer(node) {
+  state.current = node;
+  const drawer = document.getElementById("drawer");
+  document.getElementById("scrim").classList.add("open");
+  drawer.classList.add("open");
+  drawer.setAttribute("aria-hidden", "false");
+  drawer.innerHTML = '<button class="close" id="closeBtn">&times;</button>' +
+    "<h2>" + esc(node) + '</h2><div class="sub">loading…</div>';
+  document.getElementById("closeBtn").addEventListener("click", closeDrawer);
+  await renderDrawer(node);
+}
+function closeDrawer() {
+  state.current = null;
+  document.getElementById("scrim").classList.remove("open");
+  const drawer = document.getElementById("drawer");
+  drawer.classList.remove("open");
+  drawer.setAttribute("aria-hidden", "true");
+}
+
+async function renderDrawer(node) {
+  const drawer = document.getElementById("drawer");
+  let detail;
+  try {
+    detail = await api("/api/nodes/" + encodeURIComponent(node));
+  } catch (e) {
+    drawer.querySelector(".sub").textContent = "error: " + e.message;
+    return;
+  }
+  const s = detail.latest || {};
+  const ro = detail.readonly;
+  const disabled = ro ? "disabled" : "";
+  const html = [];
+  html.push('<button class="close" id="closeBtn">&times;</button>');
+  html.push("<h2>" + esc(node) + "</h2>");
+  html.push('<div class="sub">' + stateChip(s.container_state) + " · " +
+    esc(shortImage(s.image)) + "</div>");
+
+  html.push('<div class="section"><h3>Metrics history' +
+    '<span class="windows" id="windows"></span></h3>');
+  html.push('<div class="charts" id="charts"><span class="muted">loading…</span></div></div>');
+
+  html.push('<div class="section"><h3>Manifest</h3>');
+  html.push('<pre class="manifest">' +
+    esc(detail.manifest ? JSON.stringify(detail.manifest, null, 2) : "no manifest.runtime.json") +
+    "</pre></div>");
+
+  html.push('<div class="section"><h3>Actions' +
+    (ro ? ' <span class="muted">(read-only)</span>' : "") + "</h3>");
+  html.push('<div class="actions">');
+  html.push('<button data-act="restart" ' + disabled + ">Restart</button>");
+  html.push('<button data-act="stop" ' + disabled + ">Stop</button>");
+  html.push('<button data-act="start" ' + disabled + ">Start</button>");
+  html.push('<button class="danger" data-act="delete" ' + disabled + ">Delete</button>");
+  html.push("</div>");
+  html.push('<div id="job"></div>');
+  html.push('<form class="deploy-form ' + (ro ? "hidden" : "") + '" id="deployForm">' +
+    '<label>Deploy / redeploy (runs deploy script)</label>' +
+    '<input name="container_name" placeholder="container_name" value="' + esc(node) + '" required>' +
+    '<input name="image" placeholder="image ref (registry/name:tag or @sha256:…)" required>' +
+    '<input name="manifest_path" placeholder="deploy/strategy_nodes/…/manifest.json" required>' +
+    "<button type=submit " + disabled + ">Deploy</button></form>");
+  html.push("</div>");
+
+  drawer.innerHTML = html.join("");
+  document.getElementById("closeBtn").addEventListener("click", closeDrawer);
+  renderWindows();
+  wireActions(node, ro);
+  loadCharts(node);
+}
+
+function renderWindows() {
+  const el = document.getElementById("windows");
+  const opts = [[1, "1h"], [6, "6h"], [24, "24h"]];
+  el.innerHTML = opts.map(([h, label]) =>
+    '<button data-h="' + h + '" class="' + (state.window === h ? "active" : "") + '">' +
+    label + "</button>").join("");
+  for (const b of el.querySelectorAll("button")) {
+    b.addEventListener("click", () => {
+      state.window = Number(b.dataset.h);
+      renderWindows();
+      loadCharts(state.current);
+    });
+  }
+}
+
+async function loadCharts(node) {
+  const charts = document.getElementById("charts");
+  if (!charts) return;
+  const metrics = CHART_METRICS.map(m => m[0]).join(",");
+  let data;
+  try {
+    data = await api("/api/nodes/" + encodeURIComponent(node) +
+      "/history?hours=" + state.window + "&metrics=" + metrics);
+  } catch (e) {
+    charts.innerHTML = '<span class="muted">history error: ' + esc(e.message) + "</span>";
+    return;
+  }
+  const pts = data.points || [];
+  if (!pts.length) {
+    charts.innerHTML = '<span class="muted">no samples in window yet</span>';
+    return;
+  }
+  charts.innerHTML = CHART_METRICS.map(([key, label]) => {
+    const last = pts[pts.length - 1][key];
+    return '<div class="chart"><div class="label"><span>' + esc(label) +
+      '</span><span class="val">' + (last == null ? "—" : last) + "</span></div>" +
+      sparkline(pts, key) + "</div>";
+  }).join("");
+}
+
+function wireActions(node, ro) {
+  const jobEl = document.getElementById("job");
+  for (const btn of document.querySelectorAll(".actions button")) {
+    btn.addEventListener("click", async () => {
+      if (ro) return;
+      const act = btn.dataset.act;
+      if (act === "delete" && !confirm("Archive and delete node " + node + "? This removes the container and node dir.")) return;
+      jobEl.textContent = act + "…";
+      try {
+        if (act === "delete") {
+          const r = await api("/api/nodes/" + encodeURIComponent(node), { method: "DELETE" });
+          pollJob(r.job_id, jobEl);
+        } else {
+          const r = await api("/api/nodes/" + encodeURIComponent(node) + "/" + act, { method: "POST" });
+          jobEl.textContent = act + ": ok";
+          setTimeout(loadNodes, 1000);
+        }
+      } catch (e) {
+        jobEl.textContent = act + " failed: " + e.message;
+      }
+    });
+  }
+  const form = document.getElementById("deployForm");
+  if (form && !ro) {
+    form.addEventListener("submit", async ev => {
+      ev.preventDefault();
+      const fd = new FormData(form);
+      jobEl.textContent = "deploying…";
+      try {
+        const r = await api("/api/nodes", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            container_name: fd.get("container_name"),
+            image: fd.get("image"),
+            manifest_path: fd.get("manifest_path"),
+          }),
+        });
+        pollJob(r.job_id, jobEl);
+      } catch (e) {
+        jobEl.textContent = "deploy failed: " + e.message;
+      }
+    });
+  }
+}
+
+async function pollJob(jobId, el) {
+  for (let i = 0; i < 240; i++) {
+    let job;
+    try { job = await api("/api/jobs/" + jobId); } catch (e) { el.textContent = "job error: " + e.message; return; }
+    el.textContent = "job " + job.kind + " [" + job.state + "]" +
+      (job.returncode != null ? " rc=" + job.returncode : "") +
+      (job.stdout ? "\n" + job.stdout : "") + (job.stderr ? "\n" + job.stderr : "");
+    if (job.state !== "running") { setTimeout(loadNodes, 1000); return; }
+    await new Promise(r => setTimeout(r, 2000));
+  }
+}
+
+document.getElementById("scrim").addEventListener("click", closeDrawer);
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeDrawer(); });
+loadNodes();
+state.timer = setInterval(() => { loadNodes(); if (state.current) loadCharts(state.current); }, REFRESH_MS);
+</script>
