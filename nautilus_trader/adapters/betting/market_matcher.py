@@ -616,7 +616,9 @@ class MarketMatcher:
         start = instrument.parsed_start_time()
         if start is None:
             return aliases
-        suffix = start.strftime("%Y-%m-%dT%H")
+        bucket_minute = 0 if start.minute < 30 else 30
+        bucketed = start.replace(minute=bucket_minute, second=0, microsecond=0)
+        suffix = bucketed.strftime("%Y-%m-%dT%H:%M")
         return {f"{alias}:{suffix}" for alias in aliases}
 
     @staticmethod
