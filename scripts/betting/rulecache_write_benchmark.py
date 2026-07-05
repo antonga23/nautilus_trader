@@ -37,7 +37,7 @@ def _run(cache_dir: Path, count: int, payload: bytes, *, bulk: bool) -> float:
     return time.monotonic() - start
 
 
-def _content(cache_dir: Path, count: int) -> dict[str, bytes]:
+def _content(cache_dir: Path, count: int) -> dict[str, bytes | None]:
     cache = FileRuleCache(cache_dir)
     return {
         f"betting:semantic_rules:candidate:{i}": cache.get(
