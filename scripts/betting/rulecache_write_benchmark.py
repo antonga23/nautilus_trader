@@ -3,10 +3,11 @@
 FileRuleCache write-throughput benchmark.
 
 Continuous-experimentation harness for the semantic mine's storage hot path. The mine
-persists thousands of artifacts through FileRuleCache, which fsync'd every record; on EBS
-that dominates mine wall time. This times N record writes in the normal path vs inside
-`bulk_writes()` (per-record fsync deferred to one directory fsync) and verifies the two
-paths leave byte-identical cache content.
+persists thousands of artifacts through FileRuleCache, which fsync'd every record; on
+EBS that dominates mine wall time. This times N record writes in the normal path vs
+inside `bulk_writes()` (per-record fsync deferred to one directory fsync) and verifies
+the two paths leave byte-identical cache content.
+
 """
 
 from __future__ import annotations
