@@ -3,19 +3,18 @@
 """
 Miner CPU-stage benchmark over a deterministic synthetic selection corpus.
 
-Continuous-experimentation harness (mine-performance iteration 2). Iteration 1
-removed the storage fsync bottleneck on the write path (~84x); this measures the
-CPU side that remains. It synthesizes a structurally diverse corpus of
-NormalizedSelectionRecord (multiple sports, ~records/8 fixtures with per-venue
-cutoff skew, TOTALS/MATCH_ODDS/WINNER/POINT_SPREAD families with complementary
-selection pairs), then times each RuleMiner bootstrap stage separately: in-memory
-(pure mining CPU) and via the store-backed entrypoints that
-scripts/betting/semantic_rule_mining.py uses for the real bootstrap.
-RuleStore.bulk_writes() does not exist on this branch, so corpus population pays
-per-record fsync (reported separately as populateSecs) and the *_from_store
-stages include store reads. With --profile the largest stage is re-run under
-cProfile and the top functions by cumulative time are embedded in the JSON
-output. Exit code is always 0: this is a measurement tool.
+Continuous-experimentation harness (mine-performance iteration 2). Iteration 1 removed
+the storage fsync bottleneck on the write path (~84x); this measures the CPU side that
+remains. It synthesizes a structurally diverse corpus of NormalizedSelectionRecord
+(multiple sports, ~records/8 fixtures with per-venue cutoff skew,
+TOTALS/MATCH_ODDS/WINNER/POINT_SPREAD families with complementary selection pairs), then
+times each RuleMiner bootstrap stage separately: in-memory (pure mining CPU) and via the
+store-backed entrypoints that scripts/betting/semantic_rule_mining.py uses for the real
+bootstrap. RuleStore.bulk_writes() does not exist on this branch, so corpus population
+pays per-record fsync (reported separately as populateSecs) and the *_from_store stages
+include store reads. With --profile the largest stage is re-run under cProfile and the
+top functions by cumulative time are embedded in the JSON output. Exit code is always 0:
+this is a measurement tool.
 
 """
 
