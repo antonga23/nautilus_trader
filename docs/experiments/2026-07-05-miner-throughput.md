@@ -2,11 +2,11 @@
 experiment: miner-throughput
 date: 2026-07-05
 mode: checkpoint
-status: running
+status: complete
 branch: experiment/2026-07-05-miner-throughput
 baseline_commit: a4094843e0
 primary_metric: FileRuleCache write throughput (records/sec) during a bulk mine
-result: pending
+result: PASS (84.2x write throughput, content identical, tests green)
 ---
 
 ## Hypothesis
@@ -58,6 +58,17 @@ result: pending
 | speedup < 10× | abort/rethink | — |
 | content NOT identical | hard fail | — |
 
-## Result
+## Result — PASS
 
-_pending — FileRuleCache normal-vs-bulk measured next._
+`FileRuleCache` benchmark (real class, EC2 EBS, 5000 records):
+
+| path | time | throughput |
+| --- | --- | --- |
+| normal (fsync/record) | 20.83s | 240/s |
+| `bulk_writes()` | 0.247s | 20,224/s |
+
+**Speedup ~84.2×**, `contentIdentical: true`. Miner/store suite: 11 passed incl. the new fsync/content test.
+
+**Conclusion:** the mine's per-record fsync was the dominant storage cost; `bulk_writes()` removes it safely (atomic visibility preserved, one dir fsync at end, derived-cache semantics). Directly reduces the fresh-mine wall time behind PR #246's `fresh` default. KEPT.
+
+**Next directions (not run — checkpoint):** profile the mining CPU stages (`mine_store`/`mine_templates`/`mine_coverage`) and node warmup/instrument-fetch separately; these need a fixed captured corpus to be reproducible.
