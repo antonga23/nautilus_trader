@@ -10,9 +10,10 @@ remains. It synthesizes a structurally diverse corpus of NormalizedSelectionReco
 TOTALS/MATCH_ODDS/WINNER/POINT_SPREAD families with complementary selection pairs), then
 times each RuleMiner bootstrap stage separately: in-memory (pure mining CPU) and via the
 store-backed entrypoints that scripts/betting/semantic_rule_mining.py uses for the real
-bootstrap. RuleStore.bulk_writes() does not exist on this branch, so corpus population
-pays per-record fsync (reported separately as populateSecs) and the *_from_store stages
-include store reads. With --profile the largest stage is re-run under cProfile and the
+bootstrap. Corpus population mirrors the production path (defer_index_writes + bulk_writes
+when the store exposes it, post-#252) and is reported separately as populateSecs, outside
+the stage timings; the *_from_store stages include store reads. With --profile the largest
+stage is re-run under cProfile and the
 top functions by cumulative time are embedded in the JSON output. Exit code is always 0:
 this is a measurement tool.
 
@@ -66,9 +67,9 @@ STAGE_NAMES = (
     "mine_coverage_from_store",
 )
 STORAGE_NOTE = (
-    "RuleStore.bulk_writes() is absent on this branch: corpus population pays "
-    "per-record fsync (populateSecs, excluded from stages) and *_from_store stages "
-    "include store reads; persist=False keeps mining writes out of all stage timings."
+    "Corpus population uses defer_index_writes + bulk_writes when available (post-#252), "
+    "measured separately as populateSecs and excluded from stage timings; *_from_store "
+    "stages include store reads; persist=False keeps mining writes out of all stage timings."
 )
 
 _HEAD_MARKET_BY_SPORT = {
@@ -86,7 +87,7 @@ _RAW_MARKET = {
 
 def _fixture_menu(
     sport: str,
-    roles: tuple[str, str, str],
+    roles: tuple[str, ...],
     line: str,
     alt_line: str,
 ) -> tuple[tuple[str, str, str, str], ...]:
@@ -239,7 +240,10 @@ def _profile_stage(
     profiler = cProfile.Profile()
     profiler.runcall(runner)
     stats = pstats.Stats(profiler)
-    entries = sorted(stats.stats.items(), key=lambda item: item[1][3], reverse=True)[:top]
+    # pstats.Stats.stats (the raw {func: (cc, nc, tt, ct, callers)} map) is public at
+    # runtime but absent from the typeshed stub.
+    stat_map = stats.stats  # type: ignore[attr-defined]
+    entries = sorted(stat_map.items(), key=lambda item: item[1][3], reverse=True)[:top]
     rows: list[dict[str, object]] = []
     for (filename, lineno, funcname), (_primitive, ncalls, tottime, cumtime, _callers) in entries:
         module = Path(filename).stem if filename != "~" else "builtin"
