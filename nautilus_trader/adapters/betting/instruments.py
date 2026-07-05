@@ -17,6 +17,7 @@ CryptoBettingInstrument - Instrument type for crypto sports betting markets.
 """
 
 import hashlib
+import sys
 import time
 from datetime import UTC
 from datetime import datetime
@@ -213,15 +214,19 @@ class CryptoBettingInstrument(Instrument):
         PyCondition.positive(price, "price")
 
         # Store betting-specific attributes
-        self.event_id = event_id
-        self.event_name = event_name
+        # Intern low-cardinality strings so identical values are deduplicated across the
+        # thousands of instruments a graph build materializes. Interning does not change
+        # equality or identity semantics for str values. home_name/away_name are left
+        # un-interned because they are effectively unique per team.
+        self.event_id = sys.intern(event_id)
+        self.event_name = sys.intern(event_name)
         self.home_name = home_name
         self.away_name = away_name
-        self.sport_name = sport_name
-        self.competition_name = competition_name
-        self.market_name = market_name
-        self.market_type = market_type
-        self.outcome = outcome
+        self.sport_name = sys.intern(sport_name)
+        self.competition_name = sys.intern(competition_name)
+        self.market_name = sys.intern(market_name)
+        self.market_type = sys.intern(market_type)
+        self.outcome = sys.intern(outcome)
         self.side = side
         self.price = price
         self.params = params or ""
@@ -231,11 +236,11 @@ class CryptoBettingInstrument(Instrument):
         self.end_time = end_time
         self.handicap = handicap
         self.trading_status = trading_status
-        self.market_id = market_id
+        self.market_id = sys.intern(market_id) if market_id else market_id
         self.home_id = home_id
         self.away_id = away_id
-        self.sport_id = sport_id
-        self.competition_id = competition_id
+        self.sport_id = sys.intern(sport_id) if sport_id else sport_id
+        self.competition_id = sys.intern(competition_id) if competition_id else competition_id
         self.fees = fees
         self.venue_name = venue
         self.instrument_key = instrument_key
