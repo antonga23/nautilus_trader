@@ -38,7 +38,7 @@ from nautilus_trader.adapters.betting.semantics import SafetyTier
 from nautilus_trader.adapters.betting.semantics import SemanticRuleTemplate
 
 
-@dataclass
+@dataclass(slots=True)
 class ArbitrageOpportunity:
     """
     Represents a detected arbitrage opportunity between two selections.
@@ -88,7 +88,7 @@ class ArbitrageOpportunity:
         )
 
 
-@dataclass
+@dataclass(slots=True)
 class HedgeCandidate:
     """
     A candidate instrument for hedging.

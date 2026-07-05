@@ -17,6 +17,7 @@ Enums for betting adapters.
 """
 
 from enum import Enum
+from functools import lru_cache
 
 
 class SelectionSide(str, Enum):
@@ -105,30 +106,35 @@ class MarketType(str, Enum):
             The parsed market type, or OTHER if not recognized.
 
         """
-        value_lower = value.lower().replace(" ", "_").replace("-", "_")
+        return _market_type_from_string(value)
 
-        # Direct match
-        for market_type in cls:
-            if market_type.value == value_lower:
-                return market_type
 
-        # Fuzzy matching for common variations
-        if "1x2" in value_lower or "money_line" in value_lower:
-            return cls.MATCH_ODDS
-        if "handicap" in value_lower:
-            if "asian" in value_lower:
-                return cls.ASIAN_HANDICAP
-            if "european" in value_lower:
-                return cls.EUROPEAN_HANDICAP
-            return cls.ASIAN_HANDICAP  # Default to Asian
-        if "over" in value_lower or "under" in value_lower or "total" in value_lower:
-            return cls.TOTAL_GOALS
-        if "both_teams" in value_lower or "btts" in value_lower:
-            return cls.BOTH_TEAMS_TO_SCORE
-        if "double_chance" in value_lower:
-            return cls.DOUBLE_CHANCE
+@lru_cache(maxsize=256)
+def _market_type_from_string(value: str) -> "MarketType":
+    value_lower = value.lower().replace(" ", "_").replace("-", "_")
 
-        return cls.OTHER
+    # Direct match
+    for market_type in MarketType:
+        if market_type.value == value_lower:
+            return market_type
+
+    # Fuzzy matching for common variations
+    if "1x2" in value_lower or "money_line" in value_lower:
+        return MarketType.MATCH_ODDS
+    if "handicap" in value_lower:
+        if "asian" in value_lower:
+            return MarketType.ASIAN_HANDICAP
+        if "european" in value_lower:
+            return MarketType.EUROPEAN_HANDICAP
+        return MarketType.ASIAN_HANDICAP  # Default to Asian
+    if "over" in value_lower or "under" in value_lower or "total" in value_lower:
+        return MarketType.TOTAL_GOALS
+    if "both_teams" in value_lower or "btts" in value_lower:
+        return MarketType.BOTH_TEAMS_TO_SCORE
+    if "double_chance" in value_lower:
+        return MarketType.DOUBLE_CHANCE
+
+    return MarketType.OTHER
 
 
 class BetStatus(str, Enum):
