@@ -741,10 +741,11 @@ class TestMarketMatcher:
         """
         Test a same-day doubleheader does not match even when both legs have times.
 
-        Both source-venue games fall inside the cross-venue soft start-time tolerance
-        of the single opposing fixture, so the target cannot be uniquely attributed
+        Both source-venue games fall inside the cross-venue soft start-time tolerance of
+        the single opposing fixture, so the target cannot be uniquely attributed
         (#231/#237). Prior to the fix the both-start-times branch asserted a match
         against an arbitrary one of the two games.
+
         """
         game_1 = make_instrument(
             venue="CLOUDBET",

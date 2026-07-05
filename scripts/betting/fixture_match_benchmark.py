@@ -2,12 +2,13 @@
 """
 Labeled cross-venue fixture-match recall/precision benchmark.
 
-Continuous-experimentation harness for the cross-venue fixture-identity path.
-Scores MarketMatcher.explain_hedge_event_match against a hand-labeled corpus of
-CLOUDBET/POLYMARKET/SXBET scenarios and emits structured JSON metrics. The
-primary signal is precision on doubleheader-ambiguity scenarios (same teams,
-two fixtures the same day, both within the cross-venue soft start-time
-tolerance) alongside recall on genuine cross-venue matches.
+Continuous-experimentation harness for the cross-venue fixture-identity path. Scores
+MarketMatcher.explain_hedge_event_match against a hand-labeled corpus of
+CLOUDBET/POLYMARKET/SXBET scenarios and emits structured JSON metrics. The primary
+signal is precision on doubleheader-ambiguity scenarios (same teams, two fixtures the
+same day, both within the cross-venue soft start-time tolerance) alongside recall on
+genuine cross-venue matches.
+
 """
 
 from __future__ import annotations
@@ -114,7 +115,9 @@ def _scenarios() -> list[Scenario]:
         home_name="Los Angeles Lakers",
         away_name="Denver Nuggets",
     )
-    scenarios.append(Scenario("different_teams", "non_match", diff_a, diff_b, [diff_a, diff_b], False))
+    scenarios.append(
+        Scenario("different_teams", "non_match", diff_a, diff_b, [diff_a, diff_b], False)
+    )
 
     # city-prefix false-positive trap (#222): shared "new york" prefix, different teams
     ny_a = _inst(
@@ -162,7 +165,9 @@ def _scenarios() -> list[Scenario]:
     )
     dh_pool = [dh_early, dh_late, dh_target]
     scenarios.append(
-        Scenario("doubleheader_both_times", "doubleheader_ambiguous", dh_target, dh_early, dh_pool, False),
+        Scenario(
+            "doubleheader_both_times", "doubleheader_ambiguous", dh_target, dh_early, dh_pool, False
+        ),
     )
 
     # single (non-doubleheader) same fixture with start times => must still match (recall guard)
@@ -183,8 +188,14 @@ def _scenarios() -> list[Scenario]:
         start_time="2026-05-10T18:40:00Z",
     )
     scenarios.append(
-        Scenario("single_fixture_both_times", "clear_match", single_sx, single_cb,
-                 [single_cb, single_sx], True),
+        Scenario(
+            "single_fixture_both_times",
+            "clear_match",
+            single_sx,
+            single_cb,
+            [single_cb, single_sx],
+            True,
+        ),
     )
 
     return scenarios
