@@ -12,6 +12,7 @@ from datetime import datetime
 from datetime import timedelta
 from decimal import Decimal
 import json
+import logging
 import threading
 import time
 from pathlib import Path
@@ -36,6 +37,9 @@ from nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache import
 from nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache import (
     ensure_semantic_cache_ready,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 ZERO_PAIR_SAMPLE_NODE_LIMIT = 160
@@ -385,22 +389,30 @@ class RuntimeProbeStatusWriter(threading.Thread):
     def run(self) -> None:
         min_profit_margin = Decimal(str(self._manifest.strategy.min_profit_margin))
         while not self._stop_event.wait(self._interval_secs):
-            runtime_probe = _collect_runtime_probe_payload(
-                self._strategy,
-                min_profit_margin=min_profit_margin,
-                elapsed_seconds=time.monotonic() - self._started_at,
-            )
-            _write_status(
-                self._status_path,
-                manifest=self._manifest,
-                status="running",
-                semantic_cache=self._semantic_cache,
-                manifest_snapshot=self._manifest_snapshot,
-                rendered_config_path=self._rendered_config_path,
-                heartbeat_path=self._heartbeat_path,
-                runtime_probe=runtime_probe,
-                updatedAt=_utc_now(),
-            )
+            # A daemon thread dies silently on any unhandled exception, which would freeze
+            # status.json at its last snapshot while the node keeps running. Keep the writer
+            # alive across transient collection/write errors so the probe stays fresh.
+            try:
+                runtime_probe = _collect_runtime_probe_payload(
+                    self._strategy,
+                    min_profit_margin=min_profit_margin,
+                    elapsed_seconds=time.monotonic() - self._started_at,
+                )
+                _write_status(
+                    self._status_path,
+                    manifest=self._manifest,
+                    status="running",
+                    semantic_cache=self._semantic_cache,
+                    manifest_snapshot=self._manifest_snapshot,
+                    rendered_config_path=self._rendered_config_path,
+                    heartbeat_path=self._heartbeat_path,
+                    runtime_probe=runtime_probe,
+                    updatedAt=_utc_now(),
+                )
+            except Exception:
+                logger.exception(
+                    "Runtime probe status write failed; keeping writer alive for next cycle",
+                )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1815,18 +1827,32 @@ def _empty_candidate_quality_payload() -> dict[str, object]:
     }
 
 
-def _snapshot_probe_graph_state(graph) -> dict[str, object] | None:
-    try:
-        return {
-            "edges": list(graph.edges_by_id.values()),
-            "nodes": dict(graph.nodes_by_id),
-            "quotes": dict(graph.quotes_by_node_id),
-            "matched_node_ids": {
-                node_id for node_id, edge_ids in graph.edge_ids_by_node_id.items() if edge_ids
-            },
-        }
-    except RuntimeError:
-        return None
+def _snapshot_probe_graph_state(graph, *, attempts: int = 5) -> dict[str, object] | None:
+    # The probe thread copies the live graph dicts while the strategy thread mutates them
+    # during rebuilds. On a large, actively-refreshing graph that races into
+    # "RuntimeError: dictionary changed size during iteration", which previously collapsed
+    # to an empty snapshot (edges=0) and made a healthy node read as idle to the
+    # runtime-verify gate. The race is transient, so retry a few times before giving up.
+    for attempt in range(1, attempts + 1):
+        try:
+            return {
+                "edges": list(graph.edges_by_id.values()),
+                "nodes": dict(graph.nodes_by_id),
+                "quotes": dict(graph.quotes_by_node_id),
+                "matched_node_ids": {
+                    node_id for node_id, edge_ids in graph.edge_ids_by_node_id.items() if edge_ids
+                },
+            }
+        except RuntimeError:
+            if attempt >= attempts:
+                logger.warning(
+                    "Runtime probe graph snapshot failed after %d attempts "
+                    "(graph mutating concurrently); emitting empty snapshot",
+                    attempts,
+                )
+                return None
+            time.sleep(0.05)
+    return None
 
 
 def _venue_pair_coverage(
