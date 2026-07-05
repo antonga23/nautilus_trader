@@ -116,7 +116,7 @@ def _scenarios() -> list[Scenario]:
         away_name="Denver Nuggets",
     )
     scenarios.append(
-        Scenario("different_teams", "non_match", diff_a, diff_b, [diff_a, diff_b], False)
+        Scenario("different_teams", "non_match", diff_a, diff_b, [diff_a, diff_b], False),
     )
 
     # city-prefix false-positive trap (#222): shared "new york" prefix, different teams
@@ -166,7 +166,12 @@ def _scenarios() -> list[Scenario]:
     dh_pool = [dh_early, dh_late, dh_target]
     scenarios.append(
         Scenario(
-            "doubleheader_both_times", "doubleheader_ambiguous", dh_target, dh_early, dh_pool, False
+            "doubleheader_both_times",
+            "doubleheader_ambiguous",
+            dh_target,
+            dh_early,
+            dh_pool,
+            False,
         ),
     )
 
