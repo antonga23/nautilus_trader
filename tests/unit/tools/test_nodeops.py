@@ -15,8 +15,10 @@ manifest secret-stripping. Docker, subprocess, and the filesystem are mocked wit
 from __future__ import annotations
 
 import base64
+import http.client
 import io
 import json
+import threading
 from datetime import UTC
 from datetime import datetime
 from datetime import timedelta
@@ -571,3 +573,55 @@ def test_read_body_rejects_oversized(tmp_path: Path) -> None:
     handler.headers = {"Content-Length": str(oversized)}
     handler.rfile = io.BytesIO(b"{}")  # body never read because the cap trips first
     assert handler._read_body() == {}
+
+
+# -- real HTTP smoke (exercises the actual Handler, not the fake) ----------------
+
+
+def test_real_http_server_serves_nodes_and_index(tmp_path: Path) -> None:
+    """
+    Drive the real server over HTTP on an ephemeral port.
+
+    The fake-handler tests inject ``state`` directly, so they never exercise the
+    Handler.state resolution or the module import on the wire — this does both, and
+    fails if ``self.state`` is unresolved (500) or the module cannot import.
+
+    """
+    nodes = tmp_path / "nodes"
+    (nodes / "demo").mkdir(parents=True)
+    (nodes / "demo" / "status.json").write_text(
+        '{"runtimeProbe": {"graphEdges": 9, "quotedEdges": 2}}',
+        encoding="utf8",
+    )
+    config = _config(
+        tmp_path,
+        NODEOPS_HOST="127.0.0.1",
+        NODEOPS_PORT="0",
+        NODEOPS_READONLY="1",
+        NODEOPS_NODES_ROOT=str(nodes),
+    )
+    store = server.Store(config.db_path)
+    jobs = server.Jobs()
+    srv = server.build_server(config, store, jobs)
+    port = srv.server_address[1]
+    thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    thread.start()
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("GET", "/api/nodes")
+        resp = conn.getresponse()
+        body = resp.read().decode("utf8")
+        assert resp.status == 200, body
+        data = json.loads(body)
+        assert data["readonly"] is True
+        assert any(node["node"] == "demo" for node in data["nodes"])
+        conn.request("GET", "/")
+        index = conn.getresponse()
+        index_body = index.read()
+        assert index.status == 200
+        assert index_body
+        conn.close()
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        store.close()

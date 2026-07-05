@@ -33,7 +33,6 @@ import subprocess
 import threading
 import uuid
 from collections.abc import Mapping
-from datetime import UTC
 from datetime import datetime
 from datetime import timedelta
 from http import HTTPStatus
@@ -43,6 +42,17 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs
 from urllib.parse import urlsplit
+
+
+# datetime.UTC is a 3.11+ symbol, but the strategy-node deploy host runs Python 3.10;
+# fall back to the equivalent timezone.utc there. (ruff UP017 targets py3.12 and would
+# rewrite the fallback back to datetime.UTC, so it is silenced on that one line.)
+try:
+    from datetime import UTC
+except ImportError:  # pragma: no cover - Python 3.10 deploy host
+    from datetime import timezone
+
+    UTC = timezone.utc  # noqa: UP017
 
 
 logger = logging.getLogger("nodeops")
@@ -749,7 +759,13 @@ class Handler(BaseHTTPRequestHandler):
     """
 
     server_version = "nodeops/1.0"
-    state: NodeOpsState  # injected on the server instance
+
+    @property
+    def state(self) -> NodeOpsState:
+        # NodeOpsState is attached to the server in build_server; BaseHTTPRequestHandler
+        # exposes it via self.server, so resolve it there rather than expecting an
+        # instance attribute (there is none — every request would 500 otherwise).
+        return self.server.state  # type: ignore[attr-defined]
 
     def log_message(self, fmt: str, *args: Any) -> None:
         logger.info("%s - %s", self.address_string(), fmt % args)
