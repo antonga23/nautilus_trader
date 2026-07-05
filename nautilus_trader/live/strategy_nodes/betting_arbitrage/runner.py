@@ -13,6 +13,7 @@ from datetime import timedelta
 from decimal import Decimal
 import json
 import logging
+import math
 import threading
 import time
 from pathlib import Path
@@ -723,9 +724,20 @@ def _run_node(node, context: RunnerContext) -> int:
         node.dispose()
 
 
+def _sanitize_json_value(value: Any) -> Any:
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {key: _sanitize_json_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_json_value(item) for item in value]
+    return value
+
+
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf8")
+    sanitized = _sanitize_json_value(payload)
+    path.write_text(json.dumps(sanitized, indent=2) + "\n", encoding="utf8")
 
 
 def _write_status(
