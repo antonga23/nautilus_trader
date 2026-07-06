@@ -1,5 +1,14 @@
 # Global Agent Rules
 
+- GitHub identity for this repo is `antonga23` (personal, non-Pencil). Multiple agents
+  share the global gh/git state, so **do not** use `gh auth switch` (it races other
+  sessions). Select the account per command:
+  `GH_TOKEN="$(gh auth token --user antonga23)" gh …` — this also works for git over
+  HTTPS (origin uses the `gh auth git-credential` helper, which honours `GH_TOKEN`).
+  For pure git, the `github-personal` SSH alias (`~/.ssh/github_personal`) →
+  `git@github-personal:antonga23/…` is equivalent. AWS: always pass
+  `--profile betting-project`. All pushes/PRs target `antonga23/cloudbet-market-maker`;
+  never push to upstream Nautilus (`nautechsystems/nautilus_trader`) or any Pencil account.
 - For any monitoring or supervision task expected to run longer than 60 seconds,
   use the `background-monitor` skill instead of model-loop polling.
 - Do not use repeated `sleep`, `gh`, `tail`, or SSH polling commands from the
