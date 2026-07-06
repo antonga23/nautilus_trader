@@ -37,9 +37,60 @@ DEFAULT_START_TIME_TOLERANCE_SECS = 2 * 60 * 60
 DEFAULT_SOFT_CROSS_VENUE_START_TIME_TOLERANCE_SECS = 12 * 60 * 60
 
 
+def _fold_event_component(value: str) -> str:
+    folded = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
+    normalized = re.sub(r"[^a-z0-9]+", " ", folded.lower())
+    return " ".join(normalized.split())
+
+
+@lru_cache(maxsize=4096)
+def _normalize_event_component_cached(value: str) -> str:
+    return _fold_event_component(value)
+
+
+@lru_cache(maxsize=4096)
+def _normalize_sport_cached(sport: str) -> str:
+    normalized = _fold_event_component(sport).replace(" ", "_")
+    return FixtureIdentityResolver.SPORT_ALIASES.get(normalized.replace("_", " "), normalized)
+
+
+@lru_cache(maxsize=4096)
+def _parse_start_time_cached(start_text: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(start_text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+@lru_cache(maxsize=4096)
+def _team_key_cached(home_name: str, away_name: str, event_name: str) -> tuple[str, ...]:
+    participants = sorted(
+        {
+            _normalize_team_name_cached(home_name),
+            _normalize_team_name_cached(away_name),
+        }
+        - {""},
+    )
+    if participants:
+        return tuple(participants)
+    for title in FixtureIdentityResolver._fixture_title_candidates(event_name):
+        split_names = [
+            _normalize_team_name_cached(part)
+            for part in FixtureIdentityResolver.EVENT_SPLIT_PATTERN.split(title, maxsplit=1)
+        ]
+        split_participants = sorted(set(split_names) - {""})
+        if len(split_participants) >= 2:
+            return tuple(split_participants[:2])
+    normalized_event = _fold_event_component(event_name)
+    return (normalized_event,) if normalized_event else ()
+
+
 @lru_cache(maxsize=4096)
 def _normalize_team_name_cached(name: str | None) -> str:
-    normalized = FixtureIdentityResolver.normalize_event_component(name)
+    normalized = _fold_event_component(name) if name else ""
     if not normalized:
         return ""
     normalized = FixtureIdentityResolver._strip_market_group_suffix(normalized)
@@ -279,13 +330,10 @@ class FixtureIdentityResolver:
     def normalize_event_component(value: str | None) -> str:
         if not value:
             return ""
-        folded = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
-        normalized = re.sub(r"[^a-z0-9]+", " ", folded.lower())
-        return " ".join(normalized.split())
+        return _normalize_event_component_cached(value)
 
     def normalize_sport(self, sport: str | None) -> str:
-        normalized = self.normalize_event_component(sport).replace(" ", "_")
-        return self.SPORT_ALIASES.get(normalized.replace("_", " "), normalized)
+        return _normalize_sport_cached(sport or "")
 
     def normalize_team_name(self, name: str | None) -> str:
         return _normalize_team_name_cached(name)
@@ -331,28 +379,11 @@ class FixtureIdentityResolver:
         return cleaned
 
     def team_key(self, instrument: Any) -> tuple[str, ...]:
-        home_name = str(getattr(instrument, "home_name", "") or "")
-        away_name = str(getattr(instrument, "away_name", "") or "")
-        participants = sorted(
-            {
-                self.normalize_team_name(home_name),
-                self.normalize_team_name(away_name),
-            }
-            - {""},
+        return _team_key_cached(
+            str(getattr(instrument, "home_name", "") or ""),
+            str(getattr(instrument, "away_name", "") or ""),
+            str(getattr(instrument, "event_name", "") or ""),
         )
-        if participants:
-            return tuple(participants)
-        event_name = str(getattr(instrument, "event_name", "") or "")
-        for title in self._fixture_title_candidates(event_name):
-            split_names = [
-                self.normalize_team_name(part)
-                for part in self.EVENT_SPLIT_PATTERN.split(title, maxsplit=1)
-            ]
-            split_participants = sorted(set(split_names) - {""})
-            if len(split_participants) >= 2:
-                return tuple(split_participants[:2])
-        normalized_event = self.normalize_event_component(event_name)
-        return (normalized_event,) if normalized_event else ()
 
     def team_aliases(self, name: str | None) -> tuple[str, ...]:
         canonical = self.normalize_team_name(name)
@@ -389,7 +420,8 @@ class FixtureIdentityResolver:
                 return split_aliases[:2]
         return ()
 
-    def _fixture_title_candidates(self, event_name: str) -> tuple[str, ...]:
+    @staticmethod
+    def _fixture_title_candidates(event_name: str) -> tuple[str, ...]:
         """
         Prefer fixture-looking title segments over provider competition prefixes.
 
@@ -406,7 +438,7 @@ class FixtureIdentityResolver:
         candidates: list[str] = []
         if ":" in title:
             suffix = title.rsplit(":", maxsplit=1)[-1].strip()
-            if suffix and self.EVENT_SPLIT_PATTERN.search(suffix):
+            if suffix and FixtureIdentityResolver.EVENT_SPLIT_PATTERN.search(suffix):
                 candidates.append(suffix)
         candidates.append(title)
         return tuple(dict.fromkeys(candidates))
@@ -470,14 +502,7 @@ class FixtureIdentityResolver:
         start = getattr(instrument, "start_time", None)
         if not start:
             return None
-        start_text = str(start).replace("Z", "+00:00")
-        try:
-            parsed = datetime.fromisoformat(start_text)
-        except ValueError:
-            return None
-        if parsed.tzinfo is None:
-            return parsed.replace(tzinfo=UTC)
-        return parsed.astimezone(UTC)
+        return _parse_start_time_cached(str(start).replace("Z", "+00:00"))
 
     def resolve(self, instrument_a: Any, instrument_b: Any) -> FixtureIdentityProof:
         key_a = self.event_key(instrument_a, include_start_time=False)
