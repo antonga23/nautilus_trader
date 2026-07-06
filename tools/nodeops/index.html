@@ -16,15 +16,29 @@
     display:flex;align-items:baseline;gap:16px;flex-wrap:wrap}
   header h1{margin:0;font-size:18px;font-weight:600;letter-spacing:.02em}
   header .meta{color:var(--muted);font-size:12px;font-family:var(--mono)}
+  header .spacer{flex:1}
   .ro-badge{font-size:11px;padding:2px 8px;border-radius:4px;border:1px solid var(--line2);
     color:var(--warn);text-transform:uppercase;letter-spacing:.08em}
+  .link-btn{font:inherit;font-size:12px;padding:4px 10px;border-radius:5px;
+    border:1px solid var(--line2);background:var(--panel2);color:var(--ink);cursor:pointer}
+  .link-btn:hover{border-color:var(--gold);color:var(--gold)}
   main{padding:clamp(12px,3vw,28px)}
-  .wrap{max-width:1360px;margin:0 auto}
+  .wrap{max-width:1560px;margin:0 auto}
+  /* filter bar */
+  .filters{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:14px}
+  .filters .fgroup{display:flex;flex-direction:column;gap:3px}
+  .filters label{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+  .filters select,.filters input{font:inherit;font-size:12px;padding:5px 8px;border-radius:5px;
+    border:1px solid var(--line2);background:var(--ground);color:var(--ink);min-width:130px}
+  .filters .reset{align-self:flex-end}
   table{border-collapse:collapse;width:100%;font-size:13px}
   .table-scroll{overflow-x:auto;border:1px solid var(--line);border-radius:8px}
   th,td{padding:9px 12px;text-align:left;white-space:nowrap;border-bottom:1px solid var(--line)}
   th{color:var(--muted);font-weight:500;font-size:11px;text-transform:uppercase;
-    letter-spacing:.06em;background:var(--panel);position:sticky;top:0}
+    letter-spacing:.06em;background:var(--panel);position:sticky;top:0;z-index:1}
+  th.sortable{cursor:pointer;user-select:none}
+  th.sortable:hover{color:var(--ink)}
+  th .arrow{color:var(--gold);font-size:9px}
   tbody tr{cursor:pointer}
   tbody tr:hover{background:var(--panel)}
   td.num,th.num{text-align:right;font-family:var(--mono)}
@@ -34,24 +48,45 @@
   .chip.exited,.chip.dead{color:var(--neg);border-color:var(--neg)}
   .chip.restarting,.chip.paused,.chip.created{color:var(--warn);border-color:var(--warn)}
   .chip.unknown{color:var(--muted)}
+  .badge{display:inline-block;padding:1px 7px;border-radius:4px;font-size:10px;
+    font-family:var(--mono);border:1px solid var(--line2);letter-spacing:.02em}
+  .badge.pos{color:var(--pos);border-color:var(--pos)}
+  .badge.warn{color:var(--warn);border-color:var(--warn)}
+  .badge.neg{color:var(--neg);border-color:var(--neg)}
+  .badge.muted{color:var(--muted)}
   .rag{font-family:var(--mono);font-size:12px}
   .rag .g{color:var(--pos)} .rag .a{color:var(--warn)} .rag .r{color:var(--neg)}
+  .mini-bar{display:inline-block;vertical-align:middle}
   .stale{color:var(--neg)}
   .muted{color:var(--muted)}
+  .pos{color:var(--pos)} .neg{color:var(--neg)} .warn{color:var(--warn)}
   /* drawer */
-  #scrim{position:fixed;inset:0;background:#0007;display:none}
+  #scrim{position:fixed;inset:0;background:#0007;display:none;z-index:5}
   #scrim.open{display:block}
-  #drawer{position:fixed;top:0;right:0;height:100vh;width:min(720px,96vw);
+  #drawer{position:fixed;top:0;right:0;height:100vh;width:min(920px,97vw);z-index:6;
     background:var(--panel);border-left:1px solid var(--line);transform:translateX(100%);
     transition:transform .18s ease;overflow-y:auto;padding:22px clamp(16px,2.5vw,28px)}
   #drawer.open{transform:translateX(0)}
   #drawer h2{margin:0 0 4px;font-size:16px;font-weight:600}
-  #drawer .sub{color:var(--muted);font-family:var(--mono);font-size:12px;margin-bottom:16px}
+  #drawer .sub{color:var(--muted);font-family:var(--mono);font-size:12px;margin-bottom:14px}
   .close{position:absolute;top:16px;right:18px;background:none;border:none;color:var(--muted);
-    font-size:22px;cursor:pointer;line-height:1}
-  .section{margin:18px 0;border-top:1px solid var(--line);padding-top:14px}
+    font-size:22px;cursor:pointer;line-height:1;z-index:2}
+  /* tabs */
+  .tabstrip{display:flex;gap:2px;flex-wrap:wrap;border-bottom:1px solid var(--line);
+    margin-bottom:16px;position:sticky;top:-22px;background:var(--panel);padding-top:4px;z-index:2}
+  .tabstrip button{font:inherit;font-size:12px;padding:6px 11px;border:none;
+    border-bottom:2px solid transparent;background:none;color:var(--muted);cursor:pointer}
+  .tabstrip button:hover{color:var(--ink)}
+  .tabstrip button.active{color:var(--gold);border-bottom-color:var(--gold)}
+  .tabpane{display:none}
+  .tabpane.active{display:block}
+  .section{margin:0 0 18px}
   .section h3{margin:0 0 10px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;
     color:var(--muted);font-weight:500}
+  .kv{display:grid;grid-template-columns:max-content 1fr;gap:3px 16px;font-size:12.5px;
+    font-family:var(--mono)}
+  .kv .k{color:var(--muted)}
+  .kv .v{word-break:break-word}
   .charts{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px}
   .chart{border:1px solid var(--line);border-radius:6px;padding:8px 10px;background:var(--ground)}
   .chart .label{font-size:11px;color:var(--muted);display:flex;justify-content:space-between}
@@ -66,31 +101,126 @@
   .actions button.danger{color:var(--neg);border-color:var(--neg)}
   button:disabled{opacity:.4;cursor:not-allowed}
   pre.manifest{background:var(--ground);border:1px solid var(--line);border-radius:6px;
-    padding:12px;overflow:auto;max-height:320px;font-family:var(--mono);font-size:12px;color:var(--ink)}
-  .deploy-form{display:grid;gap:8px;max-width:520px}
-  .deploy-form input{font:inherit;font-family:var(--mono);font-size:12px;padding:6px 9px;
-    border-radius:5px;border:1px solid var(--line2);background:var(--ground);color:var(--ink)}
-  .deploy-form label{font-size:11px;color:var(--muted)}
-  #job{margin-top:10px;font-family:var(--mono);font-size:12px;white-space:pre-wrap}
+    padding:12px;overflow:auto;max-height:420px;font-family:var(--mono);font-size:12px;color:var(--ink)}
+  /* funnel */
+  .funnel{display:flex;flex-direction:column;gap:5px;font-family:var(--mono);font-size:12px}
+  .funnel .stage{display:flex;align-items:center;gap:8px}
+  .funnel .stage .fname{width:150px;color:var(--muted);text-align:right;flex-shrink:0}
+  .funnel .stage .fbar{height:16px;background:var(--info);border-radius:3px;min-width:2px}
+  .funnel .stage .fval{color:var(--ink)}
+  /* horizontal count-bar list */
+  .barlist{display:flex;flex-direction:column;gap:4px;font-family:var(--mono);font-size:12px}
+  .barlist .row{display:flex;align-items:center;gap:8px}
+  .barlist .blabel{width:150px;color:var(--muted);white-space:nowrap;overflow:hidden;
+    text-overflow:ellipsis;flex-shrink:0}
+  .barlist .bbar{height:14px;border-radius:3px;min-width:2px;background:var(--gold)}
+  .barlist .bval{color:var(--ink)}
+  /* matrices */
+  .mtx{border-collapse:collapse;font-family:var(--mono);font-size:11.5px;margin-bottom:6px}
+  .mtx th,.mtx td{border:1px solid var(--line);padding:4px 8px;text-align:right}
+  .mtx th{background:var(--panel2);color:var(--muted);text-align:center}
+  .mtx td.rowhdr{background:var(--panel2);color:var(--muted);text-align:left}
+  /* candidate/data tables inside drawer */
+  table.data{border:1px solid var(--line);border-radius:6px;font-size:12px}
+  table.data th{position:static;background:var(--panel2)}
+  table.data td,table.data th{border-bottom:1px solid var(--line);padding:6px 9px}
+  .subtle{color:var(--faint);font-size:11px;margin:2px 0 8px}
+  #job{margin-top:10px;font-family:var(--mono);font-size:12px;white-space:pre-wrap;
+    background:var(--ground);border:1px solid var(--line);border-radius:6px;padding:0}
+  #job:not(:empty){padding:10px}
+  /* market-window form (Overview) */
+  .mw-form{margin-top:10px}
+  .mw-form .mw-row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end}
+  .mw-form .fgroup{display:flex;flex-direction:column;gap:3px}
+  .mw-form label{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+  .mw-form input,.mw-form select{font:inherit;font-size:12px;padding:5px 8px;border-radius:5px;
+    border:1px solid var(--line2);background:var(--ground);color:var(--ink);min-width:110px}
+  .mw-form .windows{margin-left:0;align-self:flex-end;padding-bottom:1px}
+  .mw-form #mwApply{font:inherit;font-size:12px;padding:5px 12px;border-radius:5px;
+    border:1px solid var(--gold);background:var(--panel2);color:var(--gold);cursor:pointer}
+  .mw-form #mwApply:hover:not(:disabled){background:var(--panel)}
+  #mwResult{margin-top:10px;font-family:var(--mono);font-size:12px;white-space:pre-wrap;
+    background:var(--ground);border:1px solid var(--line);border-radius:6px;padding:0}
+  #mwResult:not(:empty){padding:10px}
+  .del-confirm{display:none;margin-top:12px;padding:12px;border:1px solid var(--neg);
+    border-radius:6px;background:var(--ground);max-width:420px}
+  .del-confirm.open{display:block}
+  .del-confirm label{font-size:11px;color:var(--muted);display:block;margin-bottom:6px}
+  .del-confirm input{font:inherit;font-family:var(--mono);font-size:12px;padding:6px 9px;width:100%;
+    border-radius:5px;border:1px solid var(--line2);background:var(--panel);color:var(--ink);margin-bottom:8px}
   .hidden{display:none}
   .empty{padding:40px;text-align:center;color:var(--muted)}
+  /* modal (change-password) */
+  #modalScrim{position:fixed;inset:0;background:#000a;display:none;z-index:20;
+    align-items:center;justify-content:center}
+  #modalScrim.open{display:flex}
+  .modal{background:var(--panel);border:1px solid var(--line2);border-radius:10px;
+    padding:24px;width:min(420px,94vw);box-shadow:0 20px 60px #000a}
+  .modal h2{margin:0 0 4px;font-size:16px}
+  .modal p.hint{color:var(--muted);font-size:12px;margin:0 0 16px}
+  .modal .field{display:flex;flex-direction:column;gap:3px;margin-bottom:12px}
+  .modal label{font-size:11px;color:var(--muted)}
+  .modal input{font:inherit;font-size:13px;padding:8px 10px;border-radius:6px;
+    border:1px solid var(--line2);background:var(--ground);color:var(--ink)}
+  .modal .msg{font-size:12px;min-height:16px;margin-bottom:10px}
+  .modal .msg.err{color:var(--neg)}
+  .modal .msg.ok{color:var(--pos)}
+  .modal .actions{justify-content:flex-end}
+  .modal button.primary{border-color:var(--gold);color:var(--gold)}
 </style>
 
 <header>
   <h1>Nodeops</h1>
   <span class="meta" id="summary">loading…</span>
   <span class="ro-badge hidden" id="roBadge">read-only</span>
+  <span class="spacer"></span>
+  <span class="meta" id="whoami"></span>
+  <button class="link-btn" id="changePwBtn" type="button">Change password</button>
 </header>
 <main><div class="wrap">
+  <div class="filters" id="filters">
+    <div class="fgroup">
+      <label for="fRag">RAG</label>
+      <select id="fRag">
+        <option value="all">all</option>
+        <option value="green">green &gt; 0</option>
+        <option value="amber">amber-dominant</option>
+        <option value="red">red-dominant</option>
+        <option value="none">none</option>
+      </select>
+    </div>
+    <div class="fgroup">
+      <label for="fQuote">Quote health</label>
+      <select id="fQuote">
+        <option value="all">all</option>
+        <option value="quoting">quoting</option>
+        <option value="no-quotes">no quotes</option>
+      </select>
+    </div>
+    <div class="fgroup">
+      <label for="fFamily">Node family</label>
+      <select id="fFamily"><option value="all">all</option></select>
+    </div>
+    <div class="fgroup">
+      <label for="fVenue">Venue / name contains</label>
+      <input id="fVenue" type="text" placeholder="e.g. sxbet" autocomplete="off">
+    </div>
+    <div class="fgroup reset">
+      <button class="link-btn" id="fReset" type="button">Reset filters</button>
+    </div>
+  </div>
   <div class="table-scroll">
     <table>
       <thead><tr>
-        <th>Node</th><th>State</th><th class="num">HB age</th><th>Image</th>
+        <th>Node</th><th>State</th><th class="num">HB age</th><th class="num">Uptime</th>
+        <th>Image</th>
+        <th>Quote health</th>
         <th class="num">Instr</th><th class="num">Edges</th><th class="num">Quoted</th>
-        <th class="num">xVenue</th><th>RAG</th>
-        <th class="num">Raw</th><th class="num">Valid</th><th class="num">Exec</th><th class="num">Done</th>
+        <th class="num">xVenue</th><th>RAG</th><th>Margin</th>
+        <th class="num">Raw</th><th class="num">Valid</th><th class="num">Exec</th>
+        <th class="num">Done</th><th class="num">Uniq/Dup</th>
       </tr></thead>
-      <tbody id="rows"><tr><td colspan="13" class="empty">loading…</td></tr></tbody>
+      <tbody id="rows"><tr><td colspan="17" class="empty">loading…</td></tr></tbody>
     </table>
   </div>
 </div></main>
@@ -98,21 +228,69 @@
 <div id="scrim"></div>
 <aside id="drawer" aria-hidden="true"></aside>
 
+<div id="modalScrim">
+  <div class="modal" role="dialog" aria-modal="true">
+    <h2 id="modalTitle">Change password</h2>
+    <p class="hint" id="modalHint"></p>
+    <form id="pwForm">
+      <div class="field">
+        <label for="pwCurrent">Current password</label>
+        <input id="pwCurrent" type="password" autocomplete="current-password" required>
+      </div>
+      <div class="field">
+        <label for="pwUser">New username (optional)</label>
+        <input id="pwUser" type="text" autocomplete="username" placeholder="unchanged if blank">
+      </div>
+      <div class="field">
+        <label for="pwNew">New password (min 8)</label>
+        <input id="pwNew" type="password" autocomplete="new-password" required minlength="8">
+      </div>
+      <div class="field">
+        <label for="pwConfirm">Confirm new password</label>
+        <input id="pwConfirm" type="password" autocomplete="new-password" required minlength="8">
+      </div>
+      <div class="msg" id="pwMsg"></div>
+      <div class="actions">
+        <button type="button" class="link-btn" id="pwCancel">Cancel</button>
+        <button type="submit" class="link-btn primary">Change password</button>
+      </div>
+    </form>
+  </div>
+</div>
+
 <script>
 "use strict";
 const REFRESH_MS = 15000;
-const state = { readonly: true, current: null, window: 6, timer: null };
+const state = {
+  readonly: true,
+  current: null,
+  window: 6,
+  timer: null,
+  nodes: [],
+  authIsDefault: false,
+  authUsername: null,
+  authDisabled: false,
+  filters: { rag: "all", quote: "all", venue: "", family: "all" },
+  tab: "overview",
+  edges: null,       // /odds response cache for the open node
+  detail: null,      // /api/nodes/<name> cache for the open node
+  sort: { positive: null, negative: null, value: null },
+};
 
+// ---- fetch wrapper ---------------------------------------------------------
 async function api(path, opts) {
   const res = await fetch(path, Object.assign({ credentials: "same-origin" }, opts || {}));
   if (!res.ok) {
     let detail = res.statusText;
     try { detail = (await res.json()).error || detail; } catch (e) { /* ignore */ }
-    throw new Error(detail + " (" + res.status + ")");
+    const err = new Error(detail + " (" + res.status + ")");
+    err.status = res.status;
+    throw err;
   }
   return res.json();
 }
 
+// ---- primitives ------------------------------------------------------------
 function esc(v) {
   return String(v == null ? "" : v).replace(/[&<>"']/g, c => (
     { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
@@ -132,38 +310,149 @@ function fmtAge(secs) {
   return { text, stale: s > 180 };
 }
 function num(v) { return v == null ? "—" : v; }
-
+// humanized container uptime: 32s / 45m / 18h 32m / 3d 4h
+function fmtUptime(secs) {
+  const n = toNum(secs);
+  if (Number.isNaN(n) || n < 0) return "—";
+  const s = Math.floor(n);
+  if (s < 60) return s + "s";
+  const m = Math.floor(s / 60), h = Math.floor(m / 60), d = Math.floor(h / 24);
+  if (h < 1) return m + "m";
+  if (d < 1) return h + "h " + (m % 60) + "m";
+  return d + "d " + (h % 24) + "h";
+}
+// tolerate string-or-number probe values (spec 0.4)
+function toNum(v) {
+  if (v == null || v === "") return NaN;
+  const n = typeof v === "number" ? v : parseFloat(v);
+  return Number.isNaN(n) ? NaN : n;
+}
+function fmtNum(v, dp) {
+  const n = toNum(v);
+  if (Number.isNaN(n)) return v == null || v === "" ? "—" : esc(String(v));
+  return dp == null ? String(n) : n.toFixed(dp);
+}
 function stateChip(st) {
   const key = (st || "unknown").toLowerCase();
   return '<span class="chip ' + esc(key) + '">' + esc(st || "unknown") + "</span>";
 }
+
+// ---- RAG cell + margin mini-bar (hand-rolled inline SVG, CSP-safe) ---------
 function ragCell(s) {
   if (!s) return '<span class="muted">—</span>';
   return '<span class="rag"><span class="g">' + num(s.rag_green) + '</span>/' +
     '<span class="a">' + num(s.rag_amber) + '</span>/' +
     '<span class="r">' + num(s.rag_red) + "</span></span>";
 }
+function marginMini(s, width) {
+  const W = width || 64, H = 12;
+  const g = Math.max(0, toNum(s && s.rag_green) || 0);
+  const a = Math.max(0, toNum(s && s.rag_amber) || 0);
+  const r = Math.max(0, toNum(s && s.rag_red) || 0);
+  const total = g + a + r;
+  if (!total) return '<svg class="mini-bar" width="' + W + '" height="' + H + '" ' +
+    'viewBox="0 0 ' + W + ' ' + H + '"><rect x="0" y="0" width="' + W + '" height="' + H +
+    '" rx="2" fill="var(--line)"/></svg>';
+  const gw = (g / total) * W, aw = (a / total) * W, rw = (r / total) * W;
+  const seg = (x, w, fill) =>
+    w <= 0 ? "" : '<rect x="' + x.toFixed(2) + '" y="0" width="' + w.toFixed(2) +
+      '" height="' + H + '" fill="' + fill + '"/>';
+  return '<svg class="mini-bar" width="' + W + '" height="' + H + '" viewBox="0 0 ' + W +
+    ' ' + H + '"><g>' + seg(0, gw, "var(--pos)") + seg(gw, aw, "var(--warn)") +
+    seg(gw + aw, rw, "var(--neg)") + '</g></svg>';
+}
 
+// ---- quote-health badge (client-side, spec D.2) ----------------------------
+function quoteBadge(s) {
+  const q = s ? s.quoted_edges : null;
+  if (q == null) {
+    return '<span class="badge muted" title="no sample">—</span>';
+  }
+  if (q > 0) {
+    return '<span class="badge pos" title="' + esc(q + " quoted edges") + '">quoting</span>';
+  }
+  if (s.graph_edges > 0) {
+    return '<span class="badge warn" title="edges exist but 0 quoted — check providerQuotePollStats">no quotes</span>';
+  }
+  return '<span class="badge neg" title="no graph edges built yet">no edges</span>';
+}
+// uniq/dup proxy (spec D.1 col 16): valid = unique, raw-valid = duplicate/suppressed
+function uniqDup(s) {
+  if (!s) return "—";
+  const valid = s.valid_opportunities;
+  const raw = s.raw_detections;
+  if (valid == null && raw == null) return "—";
+  const u = valid == null ? "—" : valid;
+  const d = (raw == null || valid == null) ? "—" : Math.max(0, raw - valid);
+  return u + "/" + d;
+}
+
+// ---- node family + filters -------------------------------------------------
+function familyOf(node) {
+  const m = String(node).split(/[-_]/)[0];
+  return m || node;
+}
+function nodeMatchesFilters(n) {
+  const s = n.latest || {};
+  const f = state.filters;
+  const g = s.rag_green || 0, a = s.rag_amber || 0, r = s.rag_red || 0;
+  if (f.rag === "green" && !(g > 0)) return false;
+  if (f.rag === "amber" && !(a >= g && a >= r && a > 0)) return false;
+  if (f.rag === "red" && !(r >= g && r >= a && r > 0)) return false;
+  if (f.rag === "none" && (g + a + r) !== 0) return false;
+  if (f.quote === "quoting" && !(s.quoted_edges > 0)) return false;
+  if (f.quote === "no-quotes" && !(s.quoted_edges === 0 || s.quoted_edges == null)) return false;
+  if (f.family !== "all" && familyOf(n.node) !== f.family) return false;
+  if (f.venue && !String(n.node).toLowerCase().includes(f.venue.toLowerCase())) return false;
+  return true;
+}
+
+// ---- node list -------------------------------------------------------------
 async function loadNodes() {
   try {
     const data = await api("/api/nodes");
     state.readonly = data.readonly;
+    state.nodes = data.nodes || [];
     document.getElementById("roBadge").classList.toggle("hidden", !data.readonly);
-    const rows = document.getElementById("rows");
-    if (!data.nodes.length) {
-      rows.innerHTML = '<tr><td colspan="13" class="empty">no nodes under nodes root</td></tr>';
-    } else {
-      rows.innerHTML = data.nodes.map(renderRow).join("");
-      for (const tr of rows.querySelectorAll("tr[data-node]")) {
-        tr.addEventListener("click", () => openDrawer(tr.dataset.node));
-      }
-    }
-    const running = data.nodes.filter(n => (n.latest || {}).container_state === "running").length;
+    populateFamilyFilter();
+    renderRows();
+    const running = state.nodes.filter(n => (n.latest || {}).container_state === "running").length;
     document.getElementById("summary").textContent =
-      data.nodes.length + " nodes · " + running + " running · updated " +
+      state.nodes.length + " nodes · " + running + " running · updated " +
       new Date().toLocaleTimeString();
   } catch (e) {
     document.getElementById("summary").textContent = "error: " + e.message;
+    if (e.status === 401) {
+      document.getElementById("summary").textContent =
+        "not authenticated — reload and provide credentials (401)";
+    }
+  }
+}
+
+function populateFamilyFilter() {
+  const sel = document.getElementById("fFamily");
+  const fams = Array.from(new Set(state.nodes.map(n => familyOf(n.node)))).sort();
+  const cur = state.filters.family;
+  sel.innerHTML = '<option value="all">all</option>' +
+    fams.map(f => '<option value="' + esc(f) + '">' + esc(f) + "</option>").join("");
+  sel.value = fams.includes(cur) || cur === "all" ? cur : "all";
+  state.filters.family = sel.value;
+}
+
+function renderRows() {
+  const rows = document.getElementById("rows");
+  if (!state.nodes.length) {
+    rows.innerHTML = '<tr><td colspan="17" class="empty">no nodes under nodes root</td></tr>';
+    return;
+  }
+  const shown = state.nodes.filter(nodeMatchesFilters);
+  if (!shown.length) {
+    rows.innerHTML = '<tr><td colspan="17" class="empty">no nodes match the current filters</td></tr>';
+    return;
+  }
+  rows.innerHTML = shown.map(renderRow).join("");
+  for (const tr of rows.querySelectorAll("tr[data-node]")) {
+    tr.addEventListener("click", () => openDrawer(tr.dataset.node));
   }
 }
 
@@ -174,20 +463,47 @@ function renderRow(n) {
     "<td>" + esc(n.node) + "</td>" +
     "<td>" + stateChip(s.container_state) + "</td>" +
     '<td class="num ' + (age.stale ? "stale" : "") + '">' + age.text + "</td>" +
+    '<td class="num" title="' + esc(s.started_at || "") + '">' + fmtUptime(s.uptime_secs) + "</td>" +
     '<td class="mono">' + esc(shortImage(s.image)) + "</td>" +
+    "<td>" + quoteBadge(n.latest ? s : null) + "</td>" +
     '<td class="num">' + num(s.subscribed_instruments) + "</td>" +
     '<td class="num">' + num(s.graph_edges) + "</td>" +
     '<td class="num">' + num(s.quoted_edges) + "</td>" +
     '<td class="num">' + num(s.cross_venue_candidate_count) + "</td>" +
-    "<td>" + ragCell(s) + "</td>" +
+    "<td>" + ragCell(n.latest ? s : null) + "</td>" +
+    "<td>" + marginMini(s) + "</td>" +
     '<td class="num">' + num(s.raw_detections) + "</td>" +
     '<td class="num">' + num(s.valid_opportunities) + "</td>" +
     '<td class="num">' + num(s.executable_candidates) + "</td>" +
     '<td class="num">' + num(s.executed) + "</td>" +
+    '<td class="num">' + uniqDup(n.latest ? s : null) + "</td>" +
     "</tr>";
 }
 
-// -- sparkline: tiny inline-SVG polyline chart --------------------------------
+// ---- filter wiring ---------------------------------------------------------
+function wireFilters() {
+  const bind = (id, key) => {
+    const el = document.getElementById(id);
+    el.addEventListener(el.tagName === "SELECT" ? "change" : "input", () => {
+      state.filters[key] = el.value;
+      renderRows();
+    });
+  };
+  bind("fRag", "rag");
+  bind("fQuote", "quote");
+  bind("fFamily", "family");
+  bind("fVenue", "venue");
+  document.getElementById("fReset").addEventListener("click", () => {
+    state.filters = { rag: "all", quote: "all", venue: "", family: "all" };
+    document.getElementById("fRag").value = "all";
+    document.getElementById("fQuote").value = "all";
+    document.getElementById("fFamily").value = "all";
+    document.getElementById("fVenue").value = "";
+    renderRows();
+  });
+}
+
+// ---- sparkline (existing, unchanged) ---------------------------------------
 function sparkline(points, key) {
   const W = 200, H = 46, pad = 3;
   const vals = points.map(p => p[key]).filter(v => v != null);
@@ -201,7 +517,6 @@ function sparkline(points, key) {
     const y = H - pad - ((v - min) / span) * (H - 2 * pad);
     return x.toFixed(1) + "," + y.toFixed(1);
   }).join(" ");
-  const last = vals[vals.length - 1];
   const lastPt = coords.split(" ").pop().split(",");
   return '<svg viewBox="0 0 ' + W + " " + H + '" preserveAspectRatio="none">' +
     '<polyline fill="none" stroke="var(--info)" stroke-width="1.5" points="' + coords + '"/>' +
@@ -213,12 +528,78 @@ const CHART_METRICS = [
   ["graph_edges", "graph edges"],
   ["quoted_edges", "quoted edges"],
   ["cross_venue_candidate_count", "cross-venue cand"],
-  ["valid_opportunities", "valid opps"],
+  ["valid_opportunities", "valid opportunities"],
+  ["raw_detections", "raw detections"],
+  ["executable_candidates", "executable cand"],
   ["mem_mb", "mem (MiB)"],
+];
+
+// ---- generic renderers -----------------------------------------------------
+// Recursive key/value block for arbitrary probe sub-objects (spec D.3 rule).
+function renderKV(obj) {
+  if (obj == null) return '<div class="muted">no data</div>';
+  if (typeof obj !== "object") return '<div class="kv"><span class="v">' + esc(String(obj)) + "</span></div>";
+  const entries = Array.isArray(obj)
+    ? obj.map((v, i) => [String(i), v])
+    : Object.entries(obj);
+  if (!entries.length) return '<div class="muted">no data</div>';
+  const rows = entries.map(([k, v]) => {
+    let vs;
+    if (v != null && typeof v === "object") {
+      vs = "<pre class=\"manifest\">" + esc(JSON.stringify(v, null, 2)) + "</pre>";
+    } else {
+      vs = esc(v == null ? "—" : String(v));
+    }
+    return '<span class="k">' + esc(k) + '</span><span class="v">' + vs + "</span>";
+  }).join("");
+  return '<div class="kv">' + rows + "</div>";
+}
+function renderJSON(obj, emptyMsg) {
+  if (obj == null || (typeof obj === "object" && !Object.keys(obj).length))
+    return '<div class="muted">' + esc(emptyMsg || "no data") + "</div>";
+  return '<pre class="manifest">' + esc(JSON.stringify(obj, null, 2)) + "</pre>";
+}
+// sorted {label:count} bar list
+function renderBarList(map, emptyMsg) {
+  if (!map || typeof map !== "object" || !Object.keys(map).length)
+    return '<div class="muted">' + esc(emptyMsg || "no data") + "</div>";
+  const entries = Object.entries(map)
+    .map(([k, v]) => [k, toNum(v)])
+    .filter(([, v]) => !Number.isNaN(v))
+    .sort((a, b) => b[1] - a[1]);
+  if (!entries.length) return '<div class="muted">' + esc(emptyMsg || "no data") + "</div>";
+  const max = Math.max(...entries.map(e => e[1]), 1);
+  const rows = entries.map(([k, v]) => {
+    const w = Math.max(2, (v / max) * 220);
+    return '<div class="row"><span class="blabel" title="' + esc(k) + '">' + esc(k) + "</span>" +
+      '<span class="bbar" style="width:' + w.toFixed(1) + 'px"></span>' +
+      '<span class="bval">' + esc(String(v)) + "</span></div>";
+  }).join("");
+  return '<div class="barlist">' + rows + "</div>";
+}
+
+// ---- drawer shell + tabs ---------------------------------------------------
+const TABS = [
+  ["overview", "Overview"],
+  ["history", "Metrics"],
+  ["edges", "Edges / Opportunities"],
+  ["coverage", "Venue coverage"],
+  ["xvenue", "Why no x-venue arbs"],
+  ["quote", "Quote health"],
+  ["bands", "Bands"],
+  ["latency", "Latency / SLO"],
+  ["diag", "Diagnostics"],
+  ["policy", "Policy"],
+  ["manifest", "Manifest"],
+  ["controls", "Controls"],
 ];
 
 async function openDrawer(node) {
   state.current = node;
+  state.tab = "overview";
+  state.edges = null;
+  state.detail = null;
+  state.sort = { positive: null, negative: null, value: null };
   const drawer = document.getElementById("drawer");
   document.getElementById("scrim").classList.add("open");
   drawer.classList.add("open");
@@ -245,50 +626,229 @@ async function renderDrawer(node) {
     drawer.querySelector(".sub").textContent = "error: " + e.message;
     return;
   }
+  state.detail = detail;
   const s = detail.latest || {};
-  const ro = detail.readonly;
-  const disabled = ro ? "disabled" : "";
+
   const html = [];
   html.push('<button class="close" id="closeBtn">&times;</button>');
   html.push("<h2>" + esc(node) + "</h2>");
   html.push('<div class="sub">' + stateChip(s.container_state) + " · " +
-    esc(shortImage(s.image)) + "</div>");
+    esc(shortImage(s.image || detail.image)) +
+    (detail.readonly ? ' · <span class="warn">read-only</span>' : "") + "</div>");
 
-  html.push('<div class="section"><h3>Metrics history' +
-    '<span class="windows" id="windows"></span></h3>');
-  html.push('<div class="charts" id="charts"><span class="muted">loading…</span></div></div>');
-
-  html.push('<div class="section"><h3>Manifest</h3>');
-  html.push('<pre class="manifest">' +
-    esc(detail.manifest ? JSON.stringify(detail.manifest, null, 2) : "no manifest.runtime.json") +
-    "</pre></div>");
-
-  html.push('<div class="section"><h3>Actions' +
-    (ro ? ' <span class="muted">(read-only)</span>' : "") + "</h3>");
-  html.push('<div class="actions">');
-  html.push('<button data-act="restart" ' + disabled + ">Restart</button>");
-  html.push('<button data-act="stop" ' + disabled + ">Stop</button>");
-  html.push('<button data-act="start" ' + disabled + ">Start</button>");
-  html.push('<button class="danger" data-act="delete" ' + disabled + ">Delete</button>");
-  html.push("</div>");
-  html.push('<div id="job"></div>');
-  html.push('<form class="deploy-form ' + (ro ? "hidden" : "") + '" id="deployForm">' +
-    '<label>Deploy / redeploy (runs deploy script)</label>' +
-    '<input name="container_name" placeholder="container_name" value="' + esc(node) + '" required>' +
-    '<input name="image" placeholder="image ref (registry/name:tag or @sha256:…)" required>' +
-    '<input name="manifest_path" placeholder="deploy/strategy_nodes/…/manifest.json" required>' +
-    "<button type=submit " + disabled + ">Deploy</button></form>");
-  html.push("</div>");
+  html.push('<div class="tabstrip" id="tabstrip">' +
+    TABS.map(([id, label]) =>
+      '<button data-tab="' + id + '" class="' + (state.tab === id ? "active" : "") + '">' +
+      esc(label) + "</button>").join("") + "</div>");
+  html.push('<div id="tabbody"></div>');
 
   drawer.innerHTML = html.join("");
   document.getElementById("closeBtn").addEventListener("click", closeDrawer);
-  renderWindows();
-  wireActions(node, ro);
-  loadCharts(node);
+  for (const b of document.querySelectorAll("#tabstrip button")) {
+    b.addEventListener("click", () => selectTab(b.dataset.tab));
+  }
+  renderTab(state.tab);
 }
 
+function selectTab(tab) {
+  state.tab = tab;
+  for (const b of document.querySelectorAll("#tabstrip button")) {
+    b.classList.toggle("active", b.dataset.tab === tab);
+  }
+  renderTab(tab);
+}
+
+function renderTab(tab) {
+  const body = document.getElementById("tabbody");
+  if (!body || !state.detail) return;
+  const d = state.detail;
+  const probe = d.runtimeProbe || {};
+  switch (tab) {
+    case "overview":
+      body.innerHTML = tabOverview(d, probe);
+      wireMarketWindow(state.current, d);
+      break;
+    case "history": body.innerHTML = tabHistory(); renderWindows(); loadCharts(state.current); break;
+    case "edges": body.innerHTML = tabEdgesShell(); loadEdges(state.current); break;
+    case "coverage": body.innerHTML = tabCoverage(probe); break;
+    case "xvenue": body.innerHTML = tabXVenue(probe); break;
+    case "quote": body.innerHTML = tabQuote(probe); break;
+    case "bands": body.innerHTML = tabBands(probe); break;
+    case "latency": body.innerHTML = tabLatency(probe); break;
+    case "diag": body.innerHTML = tabDiag(probe); break;
+    case "policy": body.innerHTML = tabPolicy(probe); break;
+    case "manifest": body.innerHTML = tabManifest(d); break;
+    case "controls": body.innerHTML = tabControls(d); wireControls(state.current, d.readonly); break;
+    default: body.innerHTML = "";
+  }
+}
+
+// ---- Tab 1: Overview -------------------------------------------------------
+function tabOverview(d, probe) {
+  const s = d.latest || {};
+  const age = fmtAge(s.heartbeat_age_secs);
+  const rel = d.release || {};
+  const man = d.manifest || {};
+  const deployedAt = rel.deployedAt || rel.deployed_at || man.deployedAt || man.deployed_at;
+  const kv = {
+    "container state": s.container_state,
+    "heartbeat age": age.text,
+    uptime: fmtUptime(s.uptime_secs),
+    "started at": s.started_at || "—",
+    "deployed at": deployedAt || "—",
+    image: shortImage(s.image || d.image),
+    "subscribed instruments": num(s.subscribed_instruments),
+    "graph nodes": num(s.graph_nodes),
+    "graph edges": num(s.graph_edges),
+    "quoted edges": num(s.quoted_edges),
+    "x-venue candidates": num(s.cross_venue_candidate_count),
+    "sample @": s.ts_utc || "—",
+  };
+  const out = [];
+  out.push('<div class="tabpane active">');
+  out.push('<div class="section"><h3>Node summary</h3>' + renderKV(kv) + "</div>");
+
+  out.push('<div class="section"><h3>RAG</h3>');
+  out.push('<div style="display:flex;align-items:center;gap:14px">');
+  out.push(ragCell(d.latest ? s : null) + marginMini(s, 160));
+  out.push('<span class="subtle" style="margin:0">green tradeable · amber blocked/near-miss · red losing</span>');
+  out.push("</div></div>");
+
+  out.push('<div class="section"><h3>Arbitrage funnel</h3>' + arbFunnel(probe) + "</div>");
+  out.push(marketWindowPanel(d, probe));
+  out.push("</div>");
+  return out.join("");
+}
+
+// ---- Market window panel (Overview) -----------------------------------------
+// Shows the manifest's rolling instrument-discovery window and, when not
+// readonly, an "Extend window" form that POSTs /api/nodes/<name>/config with
+// restart=true so the node re-reads the manifest and captures upcoming markets.
+const MW_PRESETS = [48, 96, 168];
+function marketWindowPanel(d, probe) {
+  const man = d.manifest || {};
+  const ro = d.readonly;
+  const disabled = ro ? "disabled" : "";
+  const horizon = man.max_resolution_horizon_hours;
+  const timing = man.market_timing_filter;
+  const out = [];
+  out.push('<div class="section"><h3>Market window</h3>');
+  out.push(renderKV({
+    "resolution horizon (h)": num(horizon),
+    "timing filter": timing == null ? "—" : timing,
+    "instrument refresh (s)": num(man.instrument_refresh_interval_secs),
+  }));
+  if (probe.resolutionHorizon != null) {
+    out.push('<div class="subtle">probe resolutionHorizon diagnostics</div>');
+    out.push(renderKV(probe.resolutionHorizon));
+  }
+  if (!d.manifest) {
+    out.push('<div class="muted">no manifest.runtime.json — window not editable</div></div>');
+    return out.join("");
+  }
+  out.push('<div class="subtle">The node discovers instruments in a rolling now+horizon window. ' +
+    "Extending it rewrites manifest.runtime.json (with a backup) and restarts the node.</div>");
+  out.push('<div class="mw-form">');
+  out.push('<div class="mw-row">');
+  out.push('<div class="fgroup"><label for="mwHours">Horizon hours (max 720)</label>' +
+    '<input id="mwHours" type="number" min="1" max="720" step="1" value="' +
+    esc(horizon != null ? horizon : 48) + '" ' + disabled + "></div>");
+  out.push('<span class="windows">' + MW_PRESETS.map(h =>
+    '<button type="button" data-mwh="' + h + '" ' + disabled + ">" + h + "h</button>").join("") +
+    "</span>");
+  out.push('<div class="fgroup"><label for="mwTiming">Timing filter</label>' +
+    '<select id="mwTiming" ' + disabled + ">" + ["all", "pre_market"].map(v =>
+      '<option value="' + v + '"' + (v === timing ? " selected" : "") + ">" + v + "</option>").join("") +
+    "</select></div>");
+  out.push('<button id="mwApply" type="button" ' + disabled + ">Extend window…</button>");
+  out.push("</div>");
+  if (ro) out.push('<div class="subtle">read-only mode — window controls disabled</div>');
+  out.push('<div id="mwResult"></div>');
+  out.push("</div></div>");
+  return out.join("");
+}
+
+function wireMarketWindow(node, d) {
+  const apply = document.getElementById("mwApply");
+  if (!apply) return;
+  const hours = document.getElementById("mwHours");
+  const timing = document.getElementById("mwTiming");
+  const result = document.getElementById("mwResult");
+  for (const b of document.querySelectorAll("button[data-mwh]")) {
+    b.addEventListener("click", () => { hours.value = b.dataset.mwh; });
+  }
+  apply.addEventListener("click", async () => {
+    if (d.readonly) return;
+    const h = parseFloat(hours.value);
+    if (!(h > 0) || h > 720) { result.textContent = "horizon hours must be in (0, 720]"; return; }
+    if (!confirm("Extend market window of " + node + " to " + h + "h (timing filter: " +
+        timing.value + ")?\n\nThis rewrites the node manifest and restarts the node.")) return;
+    result.textContent = "applying…";
+    try {
+      const r = await api("/api/nodes/" + encodeURIComponent(node) + "/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          max_resolution_horizon_hours: h,
+          market_timing_filter: timing.value,
+          restart: true,
+        }),
+      });
+      const parts = Object.entries(r.changed || {}).map(([k, v]) =>
+        k + ": " + (v.old == null ? "—" : v.old) + " → " + v.new);
+      result.textContent = "ok — " + parts.join("\n") +
+        "\nbackup: " + r.backup +
+        (r.restarted ? "\nnode restarted" : "\nnode NOT restarted");
+      setTimeout(loadNodes, 1500);
+      setTimeout(() => { if (state.current === node) renderDrawer(node); }, 4000);
+    } catch (e) {
+      result.textContent = "failed: " + e.message;
+    }
+  });
+}
+
+// arb funnel from strategyStats (spec D.3 Tab1)
+function arbFunnel(probe) {
+  const st = probe.strategyStats || {};
+  const stages = [
+    ["raw_arbitrage_detections", "raw detections"],
+    ["opportunities_found", "opportunities found"],
+    ["executable_candidates", "executable candidates"],
+    ["opportunities_executed", "opportunities executed"],
+  ];
+  const known = new Set(stages.map(x => x[0]));
+  const vals = stages.map(([k]) => toNum(st[k]) || 0);
+  const top = Math.max(...vals, 1);
+  const present = stages.some(([k]) => st[k] != null);
+  if (!present) return '<div class="muted">no strategyStats</div>';
+  const bars = stages.map(([k, label], i) => {
+    const v = st[k];
+    const w = Math.max(2, ((toNum(v) || 0) / top) * 320);
+    return '<div class="stage"><span class="fname">' + esc(label) + "</span>" +
+      '<span class="fbar" style="width:' + w.toFixed(1) + 'px"></span>' +
+      '<span class="fval">' + (v == null ? "—" : esc(String(v))) + "</span></div>";
+  }).join("");
+  // suppression / other counters below the funnel
+  const extras = Object.entries(st).filter(([k]) => !known.has(k));
+  let extraHtml = "";
+  if (extras.length) {
+    extraHtml = '<h3 style="margin-top:14px">Suppression / other counters</h3>' +
+      '<div class="kv">' + extras.map(([k, v]) =>
+        '<span class="k">' + esc(k) + '</span><span class="v">' + esc(String(v)) + "</span>").join("") +
+      "</div>";
+  }
+  return '<div class="funnel">' + bars + "</div>" + extraHtml;
+}
+
+// ---- Tab 2: Metrics history ------------------------------------------------
+function tabHistory() {
+  return '<div class="tabpane active"><div class="section"><h3>Metrics history' +
+    '<span class="windows" id="windows"></span></h3>' +
+    '<div class="charts" id="charts"><span class="muted">loading…</span></div></div></div>';
+}
 function renderWindows() {
   const el = document.getElementById("windows");
+  if (!el) return;
   const opts = [[1, "1h"], [6, "6h"], [24, "24h"]];
   el.innerHTML = opts.map(([h, label]) =>
     '<button data-h="' + h + '" class="' + (state.window === h ? "active" : "") + '">' +
@@ -301,7 +861,6 @@ function renderWindows() {
     });
   }
 }
-
 async function loadCharts(node) {
   const charts = document.getElementById("charts");
   if (!charts) return;
@@ -327,47 +886,382 @@ async function loadCharts(node) {
   }).join("");
 }
 
-function wireActions(node, ro) {
+// ---- Tab 3: Edges / Opportunities ------------------------------------------
+const CANDIDATE_COLS = [
+  ["instrumentPair", "Instrument", "t"],
+  ["venues", "Venues", "t"],
+  ["marketFamily", "Market", "t"],
+  ["profitMargin", "Profit", "n"],
+  ["rawProfitMargin", "Raw", "n"],
+  ["feeAdjustedProfitMargin", "Fee-adj", "n"],
+  ["oddsA", "Odds A", "n"],
+  ["oddsB", "Odds B", "n"],
+  ["marginBand", "Band", "t"],
+  ["candidateValueClassification", "Value", "t"],
+  ["rejectionBucket", "Reject/blocker", "t"],
+  ["safetyTier", "Safety", "t"],
+  ["templateId", "Template", "t"],
+];
+const EDGE_KINDS = [
+  ["topPositiveCandidates", "positive", "Positive candidates"],
+  ["topNegativeNearMisses", "negative", "Negative near-misses"],
+  ["topValueEdgeCandidates", "value", "Value edges"],
+];
+function tabEdgesShell() {
+  return '<div class="tabpane active"><div class="subtle">Live from the current probe, plus ' +
+    'the latest stored candidate rows. Click a column header to sort.</div>' +
+    '<div id="edgesBody"><span class="muted">loading…</span></div></div>';
+}
+async function loadEdges(node) {
+  const el = document.getElementById("edgesBody");
+  if (!el) return;
+  // stored companion (/odds) — tolerate absence
+  if (state.edges === null) {
+    try {
+      state.edges = await api("/api/nodes/" + encodeURIComponent(node) + "/odds");
+    } catch (e) {
+      state.edges = { _error: e.message, kinds: {} };
+    }
+  }
+  renderEdges();
+}
+function candidateCell(cand, key, kind) {
+  const v = cand[key];
+  if (key === "venues") return esc(Array.isArray(v) ? v.join(" · ") : (v == null ? "—" : v));
+  if (key === "rejectionBucket") {
+    const rb = cand.rejectionBucket, br = cand.blockerReason;
+    const both = [rb, br].filter(x => x != null && x !== "");
+    return both.length ? esc(both.join(" / ")) : "—";
+  }
+  if (v == null || v === "") return "—";
+  return esc(String(v));
+}
+function sortCandidates(list, kind) {
+  const sort = state.sort[kind];
+  if (!sort) return list.slice();
+  const [key, dir] = sort;
+  const col = CANDIDATE_COLS.find(c => c[0] === key);
+  const numeric = col && col[2] === "n";
+  const arr = list.slice();
+  arr.sort((a, b) => {
+    let av = a[key], bv = b[key];
+    if (numeric) {
+      const an = toNum(av), bn = toNum(bv);
+      const aa = Number.isNaN(an) ? Infinity : an; // NaN sorts last
+      const bb = Number.isNaN(bn) ? Infinity : bn;
+      return dir === "asc" ? aa - bb : bb - aa;
+    }
+    av = av == null ? "" : String(av);
+    bv = bv == null ? "" : String(bv);
+    return dir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
+  });
+  return arr;
+}
+function candidateTable(list, kind) {
+  if (!list || !list.length) return '<div class="muted">no candidates</div>';
+  const sort = state.sort[kind];
+  const head = CANDIDATE_COLS.map(([key, label, t]) => {
+    let arrow = "";
+    if (sort && sort[0] === key) arrow = ' <span class="arrow">' + (sort[1] === "asc" ? "▲" : "▼") + "</span>";
+    const cls = "sortable" + (t === "n" ? " num" : "");
+    return '<th class="' + cls + '" data-kind="' + kind + '" data-key="' + esc(key) + '">' +
+      esc(label) + arrow + "</th>";
+  }).join("");
+  const rows = sortCandidates(list, kind).map(c => {
+    return "<tr>" + CANDIDATE_COLS.map(([key, , t]) =>
+      '<td' + (t === "n" ? ' class="num"' : "") + ">" + candidateCell(c, key, kind) + "</td>").join("") + "</tr>";
+  }).join("");
+  return '<div class="table-scroll"><table class="data"><thead><tr>' + head +
+    "</tr></thead><tbody>" + rows + "</tbody></table></div>";
+}
+function renderEdges() {
+  const el = document.getElementById("edgesBody");
+  if (!el) return;
+  const probe = (state.detail && state.detail.runtimeProbe) || {};
+  const cq = probe.candidateQuality || {};
+  const stored = (state.edges && state.edges.kinds) || {};
+  const out = [];
+  for (const [key, kind, label] of EDGE_KINDS) {
+    const live = Array.isArray(cq[key]) ? cq[key] : null;
+    const storedEntry = stored[key];
+    const storedList = storedEntry && Array.isArray(storedEntry.candidates) ? storedEntry.candidates : null;
+    out.push('<div class="section"><h3>' + esc(label) + "</h3>");
+    // Prefer live; show stored beneath with its timestamp.
+    if (live && live.length) {
+      out.push('<div class="subtle">live · from current probe</div>');
+      out.push(candidateTable(live, kind));
+    } else if (storedList && storedList.length) {
+      out.push('<div class="subtle">stored · captured ' + esc(storedEntry.ts_utc || "?") + "</div>");
+      out.push(candidateTable(storedList, kind));
+    } else {
+      out.push('<div class="muted">no candidates</div>');
+    }
+    out.push("</div>");
+  }
+  if (state.edges && state.edges._error) {
+    out.push('<div class="subtle neg">stored odds unavailable: ' + esc(state.edges._error) + "</div>");
+  }
+  el.innerHTML = out.join("");
+  for (const th of el.querySelectorAll("th.sortable")) {
+    th.addEventListener("click", () => {
+      const kind = th.dataset.kind, key = th.dataset.key;
+      const cur = state.sort[kind];
+      let dir = "asc";
+      if (cur && cur[0] === key) dir = cur[1] === "asc" ? "desc" : "asc";
+      state.sort[kind] = [key, dir];
+      renderEdges();
+    });
+  }
+}
+
+// ---- Tab 4: Venue coverage -------------------------------------------------
+function matrixTable(m) {
+  if (!m || typeof m !== "object" || !Object.keys(m).length)
+    return '<div class="muted">no data</div>';
+  const rowKeys = Object.keys(m);
+  const colSet = new Set();
+  for (const rk of rowKeys) {
+    const row = m[rk];
+    if (row && typeof row === "object") for (const ck of Object.keys(row)) colSet.add(ck);
+  }
+  const cols = Array.from(colSet);
+  if (!cols.length) return renderKV(m); // flat {venue:count}
+  const head = "<tr><th></th>" + cols.map(c => "<th>" + esc(c) + "</th>").join("") + "</tr>";
+  const body = rowKeys.map(rk => {
+    const row = m[rk] || {};
+    return '<tr><td class="rowhdr">' + esc(rk) + "</td>" +
+      cols.map(c => "<td>" + (row[c] == null ? "—" : esc(String(row[c]))) + "</td>").join("") + "</tr>";
+  }).join("");
+  return '<table class="mtx"><thead>' + head + "</thead><tbody>" + body + "</tbody></table>";
+}
+function tabCoverage(probe) {
+  const vc = probe.venueCoverage || {};
+  const out = ['<div class="tabpane active">'];
+  out.push('<div class="section"><h3>Edge counts (venue × venue)</h3>' + matrixTable(vc.edgeCounts) + "</div>");
+  out.push('<div class="section"><h3>Quoted edge counts</h3>' + matrixTable(vc.quotedEdgeCounts) + "</div>");
+  out.push('<div class="section"><h3>Candidate counts</h3>' + matrixTable(vc.candidateCounts) + "</div>");
+  // per-venue table
+  const pv = vc.perVenue || {};
+  if (Object.keys(pv).length) {
+    const rows = Object.entries(pv).map(([venue, c]) =>
+      "<tr><td>" + esc(venue) + '</td><td class="num">' + num(c && c.nodeCount) +
+      '</td><td class="num">' + num(c && c.subscriptionCount) +
+      '</td><td class="num">' + num(c && c.gapCount) + "</td></tr>").join("");
+    out.push('<div class="section"><h3>Per-venue counts</h3>' +
+      '<div class="table-scroll"><table class="data"><thead><tr><th>Venue</th>' +
+      '<th class="num">Nodes</th><th class="num">Subscriptions</th><th class="num">Gaps</th></tr></thead>' +
+      "<tbody>" + rows + "</tbody></table></div></div>");
+  } else {
+    out.push('<div class="section"><h3>Per-venue counts</h3><div class="muted">no data</div></div>');
+  }
+  out.push('<div class="section"><h3>Cross-venue quote readiness</h3>' +
+    renderKV(vc.crossVenueQuoteReadiness) + "</div>");
+  out.push("</div>");
+  return out.join("");
+}
+
+// ---- Tab 5: Why no cross-venue arbs ----------------------------------------
+function tabXVenue(probe) {
+  const vc = probe.venueCoverage || {};
+  const out = ['<div class="tabpane active">'];
+  out.push('<div class="section"><h3>Cross-venue candidate count</h3>' +
+    '<div class="kv"><span class="v" style="font-size:20px">' +
+    num(vc.crossVenueCandidateCount) + "</span></div></div>");
+  out.push('<div class="section"><h3>Zero-candidate blocker counts</h3>' +
+    renderBarList(vc.zeroCandidateBlockerCounts, "no blockers recorded") + "</div>");
+  const pairs = Array.isArray(vc.zeroCandidateVenuePairs) ? vc.zeroCandidateVenuePairs : [];
+  if (pairs.length) {
+    const rows = pairs.map(p => {
+      const keys = Array.isArray(p.sampleEventKeys) ? p.sampleEventKeys : [];
+      const joined = keys.join(", ");
+      const shown = keys.length > 3 ? keys.slice(0, 3).join(", ") + " +" + (keys.length - 3) : joined;
+      return "<tr><td>" + esc(p.venueA) + "</td><td>" + esc(p.venueB) + "</td><td>" +
+        esc(p.blockerReason) + '</td><td title="' + esc(joined) + '">' + esc(shown || "—") + "</td></tr>";
+    }).join("");
+    out.push('<div class="section"><h3>Zero-candidate venue pairs</h3>' +
+      '<div class="table-scroll"><table class="data"><thead><tr><th>Venue A</th><th>Venue B</th>' +
+      "<th>Blocker reason</th><th>Sample event keys</th></tr></thead><tbody>" + rows +
+      "</tbody></table></div></div>");
+  } else {
+    out.push('<div class="section"><h3>Zero-candidate venue pairs</h3><div class="muted">no data</div></div>');
+  }
+  out.push("</div>");
+  return out.join("");
+}
+
+// ---- Tab 6: Quote health ---------------------------------------------------
+function tabQuote(probe) {
+  const qos = probe.quoteObservationState || {};
+  const poll = probe.providerQuotePollStats || {};
+  const out = ['<div class="tabpane active">'];
+  if (Object.keys(qos).length) {
+    const health = qos.health;
+    const rest = Object.assign({}, qos);
+    delete rest.health;
+    out.push('<div class="section"><h3>Quote observation state</h3>');
+    if (health != null) {
+      out.push('<div style="font-size:16px;margin-bottom:8px">health: <b>' + esc(String(health)) + "</b></div>");
+    }
+    out.push(Object.keys(rest).length ? renderKV(rest) : "");
+    out.push("</div>");
+  } else {
+    out.push('<div class="section"><h3>Quote observation state</h3><div class="muted">no data</div></div>');
+  }
+  if (Object.keys(poll).length) {
+    const rows = Object.entries(poll).map(([venue, st]) => {
+      st = st || {};
+      const lastErr = st.last_error;
+      const errCell = lastErr ? '<td class="neg">' + esc(String(lastErr)) + "</td>" : "<td>—</td>";
+      return "<tr><td>" + esc(venue) + '</td><td class="num">' + num(st.quote_count) +
+        '</td><td class="num">' + num(st.backlog) + '</td><td class="num">' + num(st.latency) +
+        "</td>" + errCell + "</tr>";
+    }).join("");
+    out.push('<div class="section"><h3>Provider quote poll stats</h3>' +
+      '<div class="table-scroll"><table class="data"><thead><tr><th>Venue</th>' +
+      '<th class="num">Quotes</th><th class="num">Backlog</th><th class="num">Latency</th>' +
+      "<th>Last error</th></tr></thead><tbody>" + rows + "</tbody></table></div></div>");
+  } else {
+    out.push('<div class="section"><h3>Provider quote poll stats</h3><div class="muted">no data</div></div>');
+  }
+  out.push("</div>");
+  return out.join("");
+}
+
+// ---- Tab 7: Bands ----------------------------------------------------------
+function tabBands(probe) {
+  const cq = probe.candidateQuality || {};
+  return '<div class="tabpane active">' +
+    '<div class="section"><h3>Margin bands</h3>' + renderBarList(cq.marginBands) + "</div>" +
+    '<div class="section"><h3>Rejection buckets</h3>' + renderBarList(cq.rejectionBuckets) + "</div>" +
+    '<div class="section"><h3>Timing flags</h3>' + renderBarList(cq.timingFlags) + "</div>" +
+    "</div>";
+}
+
+// ---- Tab 8: Latency / SLO --------------------------------------------------
+function looksBreached(k, v) {
+  const s = String(v).toLowerCase();
+  return s.includes("breach") || s.includes("violat") || s === "fail" || s === "false" ||
+    s.includes("exceeded");
+}
+function renderKVFlagged(obj) {
+  if (obj == null || typeof obj !== "object" || !Object.keys(obj).length)
+    return '<div class="muted">no data</div>';
+  const rows = Object.entries(obj).map(([k, v]) => {
+    if (v != null && typeof v === "object") {
+      return '<span class="k">' + esc(k) + '</span><span class="v"><pre class="manifest">' +
+        esc(JSON.stringify(v, null, 2)) + "</pre></span>";
+    }
+    const cls = looksBreached(k, v) ? ' class="v neg"' : ' class="v"';
+    return '<span class="k">' + esc(k) + "</span><span" + cls + ">" + esc(v == null ? "—" : String(v)) + "</span>";
+  }).join("");
+  return '<div class="kv">' + rows + "</div>";
+}
+function tabLatency(probe) {
+  return '<div class="tabpane active">' +
+    '<div class="section"><h3>Latency diagnostics</h3>' + renderKVFlagged(probe.latencyDiagnostics) + "</div>" +
+    '<div class="section"><h3>SLO status</h3>' + renderKVFlagged(probe.sloStatus) + "</div>" +
+    "</div>";
+}
+
+// ---- Tab 9: Diagnostics ----------------------------------------------------
+function tabDiag(probe) {
+  const cq = probe.candidateQuality || {};
+  return '<div class="tabpane active">' +
+    '<div class="section"><h3>Devig diagnostics</h3>' + renderJSON(cq.devigDiagnostics) + "</div>" +
+    '<div class="section"><h3>Coverage diagnostics</h3>' + renderJSON(probe.coverageDiagnostics) + "</div>" +
+    '<div class="section"><h3>Semantic diagnostics</h3>' + renderJSON(probe.semanticDiagnostics) + "</div>" +
+    "</div>";
+}
+
+// ---- Tab 10: Policy (read-only display, no controls) -----------------------
+function tabPolicy(probe) {
+  return '<div class="tabpane active">' +
+    '<div class="subtle">Read-only. Execution-arming is not exposed.</div>' +
+    '<div class="section"><h3>Fee policy</h3>' + renderKV(probe.feePolicy) + "</div>" +
+    '<div class="section"><h3>Execution readiness</h3>' + renderKV(probe.executionReadiness) + "</div>" +
+    "</div>";
+}
+
+// ---- Tab 11: Manifest ------------------------------------------------------
+function tabManifest(d) {
+  return '<div class="tabpane active"><div class="section"><h3>manifest.runtime.json</h3>' +
+    '<pre class="manifest">' +
+    esc(d.manifest ? JSON.stringify(d.manifest, null, 2) : "no manifest.runtime.json") +
+    "</pre></div></div>";
+}
+
+// ---- Tab 12: Controls (deploy REMOVED; lifecycle + typed-name delete) ------
+function tabControls(d) {
+  const ro = d.readonly;
+  const disabled = ro ? "disabled" : "";
+  const out = ['<div class="tabpane active">'];
+  out.push('<div class="section"><h3>Lifecycle' +
+    (ro ? ' <span class="muted">(read-only)</span>' : "") + "</h3>");
+  out.push('<div class="actions">');
+  out.push('<button data-act="restart" ' + disabled + ">Restart</button>");
+  out.push('<button data-act="stop" ' + disabled + ">Stop</button>");
+  out.push('<button data-act="start" ' + disabled + ">Start</button>");
+  out.push('<button class="danger" data-act="delete" ' + disabled + ">Delete…</button>");
+  out.push("</div>");
+  // typed-name delete confirmation (hidden until Delete… clicked)
+  out.push('<div class="del-confirm" id="delConfirm">' +
+    '<label>Type the node name to confirm deletion: <b>' + esc(state.current) + "</b></label>" +
+    '<input id="delInput" type="text" autocomplete="off" placeholder="' + esc(state.current) + '">' +
+    '<div class="actions">' +
+    '<button class="link-btn" id="delCancel" type="button">Cancel</button>' +
+    '<button class="danger" id="delGo" type="button" disabled>Delete node</button>' +
+    "</div></div>");
+  out.push('<div id="job"></div>');
+  out.push("</div></div>");
+  return out.join("");
+}
+
+function wireControls(node, ro) {
   const jobEl = document.getElementById("job");
-  for (const btn of document.querySelectorAll(".actions button")) {
+  const delConfirm = document.getElementById("delConfirm");
+  const delInput = document.getElementById("delInput");
+  const delGo = document.getElementById("delGo");
+  const delCancel = document.getElementById("delCancel");
+
+  for (const btn of document.querySelectorAll(".actions button[data-act]")) {
     btn.addEventListener("click", async () => {
       if (ro) return;
       const act = btn.dataset.act;
-      if (act === "delete" && !confirm("Archive and delete node " + node + "? This removes the container and node dir.")) return;
+      if (act === "delete") {
+        delConfirm.classList.add("open");
+        delInput.value = "";
+        delGo.disabled = true;
+        delInput.focus();
+        return;
+      }
+      if (!confirm(act.charAt(0).toUpperCase() + act.slice(1) + " node " + node + "?")) return;
       jobEl.textContent = act + "…";
       try {
-        if (act === "delete") {
-          const r = await api("/api/nodes/" + encodeURIComponent(node), { method: "DELETE" });
-          pollJob(r.job_id, jobEl);
-        } else {
-          const r = await api("/api/nodes/" + encodeURIComponent(node) + "/" + act, { method: "POST" });
-          jobEl.textContent = act + ": ok";
-          setTimeout(loadNodes, 1000);
-        }
+        await api("/api/nodes/" + encodeURIComponent(node) + "/" + act, { method: "POST" });
+        jobEl.textContent = act + ": ok";
+        setTimeout(loadNodes, 1000);
       } catch (e) {
         jobEl.textContent = act + " failed: " + e.message;
       }
     });
   }
-  const form = document.getElementById("deployForm");
-  if (form && !ro) {
-    form.addEventListener("submit", async ev => {
-      ev.preventDefault();
-      const fd = new FormData(form);
-      jobEl.textContent = "deploying…";
+
+  if (delInput) {
+    delInput.addEventListener("input", () => { delGo.disabled = delInput.value !== node; });
+  }
+  if (delCancel) {
+    delCancel.addEventListener("click", () => { delConfirm.classList.remove("open"); });
+  }
+  if (delGo) {
+    delGo.addEventListener("click", async () => {
+      if (ro || delInput.value !== node) return;
+      delConfirm.classList.remove("open");
+      jobEl.textContent = "delete…";
       try {
-        const r = await api("/api/nodes", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            container_name: fd.get("container_name"),
-            image: fd.get("image"),
-            manifest_path: fd.get("manifest_path"),
-          }),
-        });
+        const r = await api("/api/nodes/" + encodeURIComponent(node), { method: "DELETE" });
         pollJob(r.job_id, jobEl);
       } catch (e) {
-        jobEl.textContent = "deploy failed: " + e.message;
+        jobEl.textContent = "delete failed: " + e.message;
       }
     });
   }
@@ -385,8 +1279,106 @@ async function pollJob(jobId, el) {
   }
 }
 
+// ---- auth / change-password (spec D.6) -------------------------------------
+async function loadWhoami() {
+  let who;
+  try {
+    who = await api("/api/auth/whoami");
+  } catch (e) {
+    return; // if whoami fails (e.g. 401) the browser Basic prompt handles auth
+  }
+  state.authUsername = who.username;
+  state.authIsDefault = who.is_default === true;
+  state.authDisabled = who.username == null;
+  const wa = document.getElementById("whoami");
+  wa.textContent = who.username ? "signed in as " + who.username : "auth disabled";
+  // hide change-password affordance when auth is disabled (no store to change)
+  document.getElementById("changePwBtn").classList.toggle("hidden", state.authDisabled);
+  if (state.authIsDefault) openPwModal(true);
+}
+
+function openPwModal(mandatory) {
+  const scrim = document.getElementById("modalScrim");
+  const title = document.getElementById("modalTitle");
+  const hint = document.getElementById("modalHint");
+  const msg = document.getElementById("pwMsg");
+  const cancel = document.getElementById("pwCancel");
+  document.getElementById("pwForm").reset();
+  msg.textContent = "";
+  msg.className = "msg";
+  scrim.dataset.mandatory = mandatory ? "1" : "0";
+  title.textContent = mandatory ? "Change the default password" : "Change password";
+  hint.textContent = mandatory
+    ? "This node is still on the shipped default (admin/admin). Set a new password to continue."
+    : "Rotate the credential used for this dashboard.";
+  cancel.classList.toggle("hidden", !!mandatory);
+  scrim.classList.add("open");
+  document.getElementById("pwCurrent").focus();
+}
+function closePwModal() {
+  if (document.getElementById("modalScrim").dataset.mandatory === "1" && state.authIsDefault) return;
+  document.getElementById("modalScrim").classList.remove("open");
+}
+
+function wirePwModal() {
+  document.getElementById("changePwBtn").addEventListener("click", () => {
+    if (state.authDisabled) return;
+    openPwModal(false);
+  });
+  document.getElementById("pwCancel").addEventListener("click", closePwModal);
+  document.getElementById("pwForm").addEventListener("submit", async ev => {
+    ev.preventDefault();
+    const msg = document.getElementById("pwMsg");
+    const current = document.getElementById("pwCurrent").value;
+    const user = document.getElementById("pwUser").value.trim();
+    const np = document.getElementById("pwNew").value;
+    const confirmPw = document.getElementById("pwConfirm").value;
+    msg.className = "msg err";
+    if (np.length < 8) { msg.textContent = "new password too short (min 8)"; return; }
+    if (np !== confirmPw) { msg.textContent = "passwords do not match"; return; }
+    const body = { current_password: current, new_password: np };
+    if (user) body.new_username = user;
+    try {
+      const r = await api("/api/auth/change", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      state.authIsDefault = false;
+      msg.className = "msg ok";
+      msg.textContent = "Password changed" +
+        (user ? ". You may be prompted to re-authenticate on next reload." : ".");
+      // reflect new identity + re-load
+      await loadWhoami();
+      setTimeout(() => {
+        document.getElementById("modalScrim").classList.remove("open");
+        loadNodes();
+      }, user ? 1400 : 700);
+    } catch (e) {
+      msg.className = "msg err";
+      msg.textContent = e.message;
+    }
+  });
+}
+
+// ---- boot ------------------------------------------------------------------
 document.getElementById("scrim").addEventListener("click", closeDrawer);
-document.addEventListener("keydown", e => { if (e.key === "Escape") closeDrawer(); });
+document.addEventListener("keydown", e => {
+  if (e.key !== "Escape") return;
+  const modal = document.getElementById("modalScrim");
+  if (modal.classList.contains("open")) { closePwModal(); return; }
+  closeDrawer();
+});
+document.getElementById("modalScrim").addEventListener("click", e => {
+  if (e.target === document.getElementById("modalScrim")) closePwModal();
+});
+
+wireFilters();
+wirePwModal();
+loadWhoami();
 loadNodes();
-state.timer = setInterval(() => { loadNodes(); if (state.current) loadCharts(state.current); }, REFRESH_MS);
+state.timer = setInterval(() => {
+  loadNodes();
+  if (state.current && state.tab === "history") loadCharts(state.current);
+}, REFRESH_MS);
 </script>

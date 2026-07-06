@@ -22,14 +22,19 @@ JSON is returned.
 from __future__ import annotations
 
 import base64
+import contextlib
+import hashlib
 import hmac
 import json
 import logging
+import math
 import os
 import re
+import secrets
 import signal
 import sqlite3
 import subprocess
+import tempfile
 import threading
 import uuid
 from collections.abc import Mapping
@@ -72,6 +77,17 @@ MANIFEST_PREFIX = "deploy/strategy_nodes/"
 # larger rather than buffering an attacker-supplied Content-Length into memory.
 MAX_BODY_BYTES = 1 << 20
 
+# Persisted-credential store parameters. pbkdf2-hmac-sha256 with a per-record random
+# salt; the password is never written to disk in the clear. 200k iterations is the
+# spec floor — a stored record may carry a higher count and still verify.
+AUTH_ITERATIONS = 200000
+AUTH_ALGO = "pbkdf2_hmac_sha256"
+AUTH_VERSION = 1
+# New-password bounds enforced by POST /api/auth/change.
+AUTH_MIN_PASSWORD_LEN = 8
+AUTH_MAX_PASSWORD_LEN = 256
+AUTH_MAX_USERNAME_LEN = 64
+
 SAMPLE_COLUMNS = (
     "ts_utc",
     "node",
@@ -93,11 +109,14 @@ SAMPLE_COLUMNS = (
     "executed",
     "mem_mb",
     "cpu_pct",
+    "started_at",
+    "uptime_secs",
 )
 # Numeric metric columns the history endpoint may chart.
 HISTORY_METRICS = frozenset(
     {
         "heartbeat_age_secs",
+        "uptime_secs",
         "subscribed_instruments",
         "graph_nodes",
         "graph_edges",
@@ -116,6 +135,28 @@ HISTORY_METRICS = frozenset(
     },
 )
 
+# Columns added after the first deployed DB was created; Store adds them via
+# additive ALTER TABLE on startup so an existing samples table upgrades in place.
+SAMPLES_MIGRATED_COLUMNS = (
+    ("started_at", "TEXT"),
+    ("uptime_secs", "REAL"),
+)
+
+# POST /api/nodes/<name>/config may rewrite ONLY these manifest fields (plus the
+# ``restart`` action flag). They widen/narrow the node's instrument-discovery
+# window and can never arm execution; everything else is rejected outright.
+CONFIG_ALLOWED_KEYS = frozenset(
+    {
+        "max_resolution_horizon_hours",
+        "market_timing_filter",
+        "instrument_refresh_interval_secs",
+        "restart",
+    },
+)
+MARKET_TIMING_FILTERS = frozenset({"all", "pre_market"})
+MAX_HORIZON_HOURS = 720.0
+MIN_REFRESH_SECS = 30.0
+
 
 class Config:
     """
@@ -130,6 +171,10 @@ class Config:
         self.port = int(env.get("NODEOPS_PORT", "8090"))
         self.nodes_root = Path(env.get("NODEOPS_NODES_ROOT", "/opt/cloudbet/strategy-nodes"))
         self.db_path = Path(env.get("NODEOPS_DB", "/opt/cloudbet/nodeops/nodeops.db"))
+        # The credential store lives beside the DB (``.../nodeops/auth.json`` by
+        # default). NODEOPS_AUTH_FILE overrides the location verbatim for tests.
+        auth_file = env.get("NODEOPS_AUTH_FILE")
+        self.auth_path = Path(auth_file) if auth_file else self.db_path.parent / "auth.json"
         self.sample_secs = int(env.get("NODEOPS_SAMPLE_SECS", "60"))
         self.retention_days = int(env.get("NODEOPS_RETENTION_DAYS", "30"))
         user = env.get("NODEOPS_USER") or None
@@ -246,6 +291,64 @@ def manifest_is_validation_safe(manifest: Any) -> bool:
     return True
 
 
+def _positive_number(value: Any) -> float | None:
+    """
+    Return ``value`` as a finite positive float, or ``None`` when it is not one.
+
+    Booleans are rejected explicitly (they are ``int`` subclasses and would
+    otherwise coerce to 0.0/1.0).
+
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    if not math.isfinite(number) or number <= 0.0:
+        return None
+    return number
+
+
+def validate_config_body(body: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
+    """
+    Validate a ``POST /api/nodes/<name>/config`` request body.
+
+    Returns ``(updates, "")`` with the allow-listed manifest field updates on
+    success, or ``(None, message)`` for the first rejection. ``restart`` is
+    validated here but is an action flag, not a manifest field, so it is never
+    included in ``updates``.
+
+    """
+    unknown = sorted(set(body) - CONFIG_ALLOWED_KEYS)
+    if unknown:
+        return None, "unknown keys: " + ", ".join(unknown)
+    updates: dict[str, Any] = {}
+    if "max_resolution_horizon_hours" in body:
+        horizon = _positive_number(body["max_resolution_horizon_hours"])
+        if horizon is None or horizon > MAX_HORIZON_HOURS:
+            return (
+                None,
+                f"max_resolution_horizon_hours must be a number in (0, {MAX_HORIZON_HOURS:g}]",
+            )
+        updates["max_resolution_horizon_hours"] = horizon
+    if "market_timing_filter" in body:
+        timing = body["market_timing_filter"]
+        if timing not in MARKET_TIMING_FILTERS:
+            return None, "market_timing_filter must be one of: all, pre_market"
+        updates["market_timing_filter"] = timing
+    if "instrument_refresh_interval_secs" in body:
+        refresh = _positive_number(body["instrument_refresh_interval_secs"])
+        if refresh is None or refresh < MIN_REFRESH_SECS:
+            return (
+                None,
+                f"instrument_refresh_interval_secs must be a number >= {MIN_REFRESH_SECS:g}",
+            )
+        updates["instrument_refresh_interval_secs"] = refresh
+    if "restart" in body and not isinstance(body["restart"], bool):
+        return None, "restart must be a boolean"
+    if not updates:
+        return None, "no config fields provided"
+    return updates, ""
+
+
 def strip_secrets(value: Any) -> Any:
     """
     Recursively drop mapping keys that look like credentials.
@@ -279,6 +382,280 @@ def _as_float(value: Any) -> float | None:
         return None
 
 
+def _utc_now_str() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# -- RAG derivation -------------------------------------------------------------
+
+
+def _band_is_negative(label: str) -> bool:
+    """
+    Return whether a ``marginBands`` bucket label denotes a negative margin.
+
+    ``"positive"`` is the aggregate profitable bucket and is never negative. Any
+    other label containing a minus sign is a loss bucket — e.g. ``"< -5%"``,
+    ``"-5% to -1%"``, and the near-loss ``"0% to -1%"`` all count toward RED.
+
+    """
+    if label.strip().lower() == "positive":
+        return False
+    return "-" in label
+
+
+def _derive_rag(probe: dict[str, Any]) -> tuple[int, int, int]:
+    """
+    Derive ``(green, amber, red)`` counts from live runtime-probe fields.
+
+    The node never populates ``candidateQuality.ragBands`` (a dead field), so the
+    dashboard RAG is derived deterministically instead:
+
+    - GREEN = profitable *and* execution-eligible edges. The profitable count (the
+      ``"positive"`` aggregate bucket, or the sum of non-negative buckets when it is
+      absent) is capped by ``executionSafeEdges`` and by ``executable_candidates``
+      when those are present, and forced to 0 when nothing is quoted (an unquoted
+      node cannot hold a live tradeable edge).
+    - RED = the summed count of every negative-margin ``marginBands`` bucket.
+    - AMBER = the profitable-but-not-green remainder (blocked / near-miss / stale),
+      never negative.
+
+    """
+    candidate_quality = probe.get("candidateQuality") or {}
+    strategy_stats = probe.get("strategyStats") or {}
+    margin_bands = candidate_quality.get("marginBands") or {}
+    quoted = _as_int(probe.get("quotedEdges"))
+
+    if "positive" in margin_bands:
+        positive = _as_int(margin_bands.get("positive"))
+    else:
+        positive = sum(
+            _as_int(count) for label, count in margin_bands.items() if not _band_is_negative(label)
+        )
+
+    red = sum(_as_int(count) for label, count in margin_bands.items() if _band_is_negative(label))
+
+    caps = [positive]
+    safe = candidate_quality.get("executionSafeEdges")
+    if safe is not None:
+        caps.append(_as_int(safe))
+    exec_cand = _as_int(strategy_stats.get("executable_candidates"))
+    if exec_cand > 0:
+        caps.append(exec_cand)
+    green = 0 if quoted == 0 else max(0, min(caps))
+
+    amber = max(0, positive - green)
+    return green, amber, red
+
+
+# -- credential store -----------------------------------------------------------
+
+
+def _hash_password(password: str, salt: bytes, iterations: int) -> bytes:
+    return hashlib.pbkdf2_hmac("sha256", password.encode("utf8"), salt, iterations)
+
+
+def _make_credential(username: str, password: str, *, is_default: bool) -> dict[str, Any]:
+    salt = secrets.token_bytes(16)
+    derived = _hash_password(password, salt, AUTH_ITERATIONS)
+    return {
+        "version": AUTH_VERSION,
+        "username": username,
+        "algo": AUTH_ALGO,
+        "iterations": AUTH_ITERATIONS,
+        "salt": base64.b64encode(salt).decode("ascii"),
+        "hash": base64.b64encode(derived).decode("ascii"),
+        "is_default": is_default,
+        "updated_at": _utc_now_str(),
+    }
+
+
+def _verify_password(record: dict[str, Any], username: str, password: str) -> bool:
+    """
+    Constant-time verify ``username``/``password`` against a stored credential.
+
+    The pbkdf2 derivation always runs before returning even when the username
+    mismatches, so a wrong username costs the same as a wrong password and cannot be
+    used to enumerate valid accounts by timing.
+
+    """
+    if record.get("algo") != AUTH_ALGO:
+        return False
+    try:
+        salt = base64.b64decode(record["salt"])
+        expected = base64.b64decode(record["hash"])
+        iterations = int(record["iterations"])
+    except (KeyError, ValueError, TypeError):
+        return False
+    derived = _hash_password(password, salt, iterations)
+    user_ok = hmac.compare_digest(str(record.get("username", "")), username)
+    pass_ok = hmac.compare_digest(expected, derived)
+    return user_ok and pass_ok
+
+
+def _valid_username(username: str) -> bool:
+    """
+    Return whether a username is acceptable for the credential store.
+
+    Usernames are ``1..64`` printable characters with no ``:`` (the Basic-auth
+    field delimiter) and no control characters.
+
+    """
+    if not username or len(username) > AUTH_MAX_USERNAME_LEN:
+        return False
+    if ":" in username:
+        return False
+    return all(ord(ch) >= 0x20 and ord(ch) != 0x7F for ch in username)
+
+
+def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
+    """
+    Write ``data`` as JSON to ``path`` atomically with mode ``0600``.
+
+    The payload is written to a temp file in the same directory (so ``os.replace``
+    is an atomic same-filesystem rename), fsynced, then renamed over the target.
+
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".auth.", suffix=".tmp")
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf8") as handle:
+            json.dump(data, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+        os.chmod(path, 0o600)
+    except OSError:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
+def _atomic_write_manifest(path: Path, data: dict[str, Any]) -> None:
+    """
+    Atomically replace a node manifest with ``data`` as pretty-printed JSON.
+
+    Same tmp-file + fsync + rename pattern as ``_atomic_write_json``, but the
+    original file mode is preserved (the container must still be able to read
+    the manifest, so it must not be tightened to 0600).
+
+    """
+    try:
+        mode = path.stat().st_mode & 0o777
+    except OSError:
+        mode = 0o644
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".manifest.", suffix=".tmp")
+    try:
+        os.fchmod(fd, mode)
+        with os.fdopen(fd, "w", encoding="utf8") as handle:
+            json.dump(data, handle, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except OSError:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
+class AuthStore:
+    """
+    Persisted single-identity credential store backed by ``auth.json``.
+
+    Holds one salted-hash admin record. Seeds ``admin``/``admin`` (hashed,
+    ``is_default=true``) on first startup, verifies HTTP Basic against the stored
+    hash in constant time, and rotates credentials atomically via ``change``.
+
+    """
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        self._lock = threading.Lock()
+
+    def load(self) -> dict[str, Any] | None:
+        """
+        Read and parse ``auth.json``; return ``None`` on missing/corrupt/unusable.
+        """
+        try:
+            raw = self._path.read_text(encoding="utf8")
+        except (OSError, ValueError):
+            logger.debug("auth store %s absent or unreadable", self._path)
+            return None
+        try:
+            record = json.loads(raw)
+        except ValueError:
+            logger.warning("auth store %s is corrupt JSON; treating as absent", self._path)
+            return None
+        if not isinstance(record, dict):
+            logger.warning("auth store %s is not an object; treating as absent", self._path)
+            return None
+        if _as_int(record.get("version")) > AUTH_VERSION:
+            logger.warning("auth store %s has unknown version; treating as absent", self._path)
+            return None
+        if record.get("algo") != AUTH_ALGO:
+            logger.warning("auth store %s has unknown algo; treating as absent", self._path)
+            return None
+        return record
+
+    def seed_default_if_absent(self) -> None:
+        """
+        Write the hashed ``admin``/``admin`` default record when none exists.
+        """
+        with self._lock:
+            if self.load() is not None:
+                return
+            _atomic_write_json(
+                self._path,
+                _make_credential("admin", "admin", is_default=True),
+            )
+            logger.info(
+                "seeded default nodeops credential (admin/admin); change it on first login",
+            )
+
+    def verify(self, username: str, password: str) -> bool:
+        record = self.load()
+        return record is not None and _verify_password(record, username, password)
+
+    def whoami(self) -> dict[str, Any]:
+        record = self.load()
+        if record is None:
+            return {"username": None, "is_default": False}
+        return {
+            "username": record.get("username"),
+            "is_default": bool(record.get("is_default")),
+        }
+
+    def change(
+        self,
+        current_password: str,
+        new_username: str | None,
+        new_password: str,
+    ) -> tuple[bool, str]:
+        """
+        Rotate the stored credential after verifying ``current_password``.
+
+        The current username is taken from the stored record (the change form only
+        sends the current password). On success a new record is written with
+        ``is_default=false`` and the new password, keeping the existing username
+        when ``new_username`` is empty/absent.
+
+        """
+        with self._lock:
+            record = self.load()
+            if record is None:
+                return False, "auth is disabled"
+            existing_username = str(record.get("username", ""))
+            if not _verify_password(record, existing_username, current_password):
+                return False, "current password incorrect"
+            username = new_username or existing_username
+            _atomic_write_json(
+                self._path,
+                _make_credential(username, new_password, is_default=False),
+            )
+            return True, ""
+
+
 class Store:
     """
     SQLite-backed sample store (WAL mode, one connection per accessor).
@@ -290,6 +667,7 @@ class Store:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = self._connect()
         self._create_schema()
+        self._migrate_schema()
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(
@@ -327,7 +705,9 @@ class Store:
                     executable_candidates INTEGER,
                     executed INTEGER,
                     mem_mb REAL,
-                    cpu_pct REAL
+                    cpu_pct REAL,
+                    started_at TEXT,
+                    uptime_secs REAL
                 );
                 CREATE INDEX IF NOT EXISTS idx_samples_node_ts
                     ON samples (node, ts_utc);
@@ -342,6 +722,27 @@ class Store:
                     ON odds_samples (node, ts_utc);
                 """,
             )
+            self._conn.commit()
+
+    def _migrate_schema(self) -> None:
+        """
+        Add ``samples`` columns introduced after a deployed DB was created.
+
+        ``CREATE TABLE IF NOT EXISTS`` never alters an existing table, so a DB
+        created by an older build lacks the newer columns; add them additively
+        (``ALTER TABLE ... ADD COLUMN``) when missing.
+
+        """
+        with self._lock:
+            existing = {
+                record["name"]
+                for record in self._conn.execute("PRAGMA table_info(samples)").fetchall()
+            }
+            for column, ddl_type in SAMPLES_MIGRATED_COLUMNS:
+                if column not in existing:
+                    # column/type come from the fixed SAMPLES_MIGRATED_COLUMNS tuple.
+                    self._conn.execute(f"ALTER TABLE samples ADD COLUMN {column} {ddl_type}")
+                    logger.info("migrated samples table: added column %s %s", column, ddl_type)
             self._conn.commit()
 
     def insert_sample(self, row: dict[str, Any]) -> None:
@@ -397,6 +798,35 @@ class Store:
             )
             records = cursor.fetchall()
         return {record["node"]: dict(record) for record in records}
+
+    def latest_odds(self, node: str) -> dict[str, dict[str, Any]]:
+        """
+        Return the most recent odds row per ``kind`` for ``node``.
+
+        Keyed by kind (``topPositiveCandidates`` etc.); each value carries the row
+        ``ts_utc`` and the parsed ``payload_json``. Empty when the node has no odds.
+
+        """
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                SELECT o.kind, o.ts_utc, o.payload_json FROM odds_samples o
+                JOIN (
+                    SELECT kind, MAX(id) AS max_id FROM odds_samples
+                    WHERE node = ? GROUP BY kind
+                ) latest ON o.id = latest.max_id
+                """,
+                (node,),
+            )
+            records = cursor.fetchall()
+        result: dict[str, dict[str, Any]] = {}
+        for record in records:
+            try:
+                payload = json.loads(record["payload_json"])
+            except ValueError:
+                payload = []
+            result[record["kind"]] = {"ts_utc": record["ts_utc"], "payload": payload}
+        return result
 
     def history(self, node: str, hours: float, metrics: list[str]) -> dict[str, Any]:
         """
@@ -473,9 +903,41 @@ def heartbeat_age_secs(heartbeat: dict[str, Any] | None, now: datetime) -> float
     return max(0.0, (now - stamp).total_seconds())
 
 
+def parse_docker_timestamp(value: Any) -> datetime | None:
+    """
+    Parse docker's ``State.StartedAt`` timestamp into an aware UTC datetime.
+
+    Docker emits RFC 3339 with nanosecond fractions (e.g.
+    ``2026-07-04T17:46:05.123456789Z``), which Python 3.10's ``fromisoformat``
+    cannot read, so the fraction is trimmed to microseconds and the trailing
+    ``Z`` mapped to ``+00:00`` first. Docker's zero time (``0001-01-01...``,
+    a never-started container) and unparsable values return ``None``.
+
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text or text.startswith("0001-01-01"):
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    text = re.sub(r"\.(\d{6})\d+", r".\1", text)
+    try:
+        stamp = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=UTC)
+    return stamp.astimezone(UTC)
+
+
 def docker_inspect(container: str) -> dict[str, Any] | None:
     """
-    Return ``{state, image}`` for a container via ``docker inspect``.
+    Return ``{state, image, started_at}`` for a container via ``docker inspect``.
+
+    ``started_at`` is the ``State.StartedAt`` timestamp normalized to the
+    sampler's ``YYYY-MM-DDTHH:MM:SSZ`` format, or ``None`` when absent.
+
     """
     if not valid_name(container):
         return None
@@ -484,7 +946,7 @@ def docker_inspect(container: str) -> dict[str, Any] | None:
             "docker",
             "inspect",
             "--format",
-            "{{.State.Status}}\t{{.Config.Image}}",
+            "{{.State.Status}}\t{{.Config.Image}}\t{{.State.StartedAt}}",
             container,
         ],
     )
@@ -493,7 +955,9 @@ def docker_inspect(container: str) -> dict[str, Any] | None:
     parts = result.strip().split("\t")
     state = parts[0] if parts else None
     image = parts[1] if len(parts) > 1 else None
-    return {"state": state, "image": image}
+    started = parse_docker_timestamp(parts[2]) if len(parts) > 2 else None
+    started_at = started.strftime("%Y-%m-%dT%H:%M:%SZ") if started is not None else None
+    return {"state": state, "image": image, "started_at": started_at}
 
 
 def docker_stats(container: str) -> dict[str, Any]:
@@ -579,16 +1043,22 @@ def build_sample_row(
 
     Reads the runtime-probe JSON paths produced by the betting-arbitrage runner
     (``runtimeProbe.venueCoverage.crossVenueCandidateCount``,
-    ``runtimeProbe.candidateQuality.ragBands``, ``runtimeProbe.strategyStats``),
-    falling back to zero when a key is absent.
+    ``runtimeProbe.candidateQuality.marginBands``, ``runtimeProbe.strategyStats``),
+    falling back to zero when a key is absent. RAG is derived from live probe
+    fields (``ragBands`` is never populated by the node) via ``_derive_rag``.
 
     """
     probe = (status or {}).get("runtimeProbe") or {}
     venue_coverage = probe.get("venueCoverage") or {}
-    candidate_quality = probe.get("candidateQuality") or {}
-    rag_bands = candidate_quality.get("ragBands") or {}
     strategy_stats = probe.get("strategyStats") or {}
+    rag_green, rag_amber, rag_red = _derive_rag(probe)
     inspect = inspect or {}
+    started_at = inspect.get("started_at")
+    uptime_secs: float | None = None
+    if inspect.get("state") == "running":
+        started = parse_docker_timestamp(started_at)
+        if started is not None:
+            uptime_secs = max(0.0, (now - started).total_seconds())
     return {
         "ts_utc": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "node": node,
@@ -601,15 +1071,17 @@ def build_sample_row(
         "quoted_edges": _as_int(probe.get("quotedEdges")),
         "semantic_match_instruments": _as_int(probe.get("semanticMatchInstruments")),
         "cross_venue_candidate_count": _as_int(venue_coverage.get("crossVenueCandidateCount")),
-        "rag_green": _as_int(rag_bands.get("green")),
-        "rag_amber": _as_int(rag_bands.get("amber")),
-        "rag_red": _as_int(rag_bands.get("red")),
+        "rag_green": rag_green,
+        "rag_amber": rag_amber,
+        "rag_red": rag_red,
         "raw_detections": _as_int(strategy_stats.get("raw_arbitrage_detections")),
         "valid_opportunities": _as_int(strategy_stats.get("opportunities_found")),
         "executable_candidates": _as_int(strategy_stats.get("executable_candidates")),
         "executed": _as_int(strategy_stats.get("opportunities_executed")),
         "mem_mb": stats.get("mem_mb"),
         "cpu_pct": stats.get("cpu_pct"),
+        "started_at": started_at,
+        "uptime_secs": uptime_secs,
     }
 
 
@@ -672,11 +1144,12 @@ class Sampler(threading.Thread):
         ts_utc: str,
     ) -> None:
         candidate_quality = ((status or {}).get("runtimeProbe") or {}).get("candidateQuality") or {}
-        for kind, key in (
-            ("topPositiveCandidates", "topPositiveCandidates"),
-            ("topNegativeNearMisses", "topNegativeNearMisses"),
+        for kind in (
+            "topPositiveCandidates",
+            "topNegativeNearMisses",
+            "topValueEdgeCandidates",
         ):
-            payload = candidate_quality.get(key)
+            payload = candidate_quality.get(kind)
             if payload:
                 self._store.insert_odds_sample(ts_utc, node, kind, payload)
 
@@ -747,10 +1220,21 @@ class NodeOpsState:
     Bundle of long-lived collaborators shared by every request handler.
     """
 
-    def __init__(self, config: Config, store: Store, jobs: Jobs) -> None:
+    def __init__(
+        self,
+        config: Config,
+        store: Store,
+        jobs: Jobs,
+        auth: AuthStore | None = None,
+    ) -> None:
         self.config = config
         self.store = store
         self.jobs = jobs
+        # ``auth is None`` means the credential store is disabled: env-override mode
+        # (auth handled by config.user/password) or the deliberate test seam where
+        # _authorized's store branch returns True. main() always passes a real store
+        # in production (non-env mode), so production is never unauthenticated.
+        self.auth = auth
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -787,9 +1271,37 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
+    def _auth_mode(self) -> str:
+        """
+        Return the effective auth mode: ``"env"``, ``"store"``, or ``"disabled"``.
+        """
+        if self.state.config.auth_enabled:
+            return "env"
+        if self.state.auth is not None:
+            return "store"
+        return "disabled"
+
     def _authorized(self) -> bool:
         config = self.state.config
-        if not config.auth_enabled:
+        if config.auth_enabled:
+            # env-override path — plaintext compare_digest, unchanged from the
+            # pre-store implementation so every existing env-auth test still holds.
+            header = self.headers.get("Authorization", "")
+            if not header.startswith("Basic "):
+                return False
+            try:
+                decoded = base64.b64decode(header[len("Basic ") :]).decode("utf8")
+            except (ValueError, UnicodeDecodeError):
+                return False
+            user, _, password = decoded.partition(":")
+            user_ok = hmac.compare_digest(user, config.user or "")
+            password_ok = hmac.compare_digest(password, config.password or "")
+            return user_ok and password_ok
+        # store path
+        auth = self.state.auth
+        if auth is None:
+            # No env auth and no store ⇒ auth disabled (the test seam / loopback dev
+            # with the store unavailable). Production always attaches a real store.
             return True
         header = self.headers.get("Authorization", "")
         if not header.startswith("Basic "):
@@ -799,9 +1311,7 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, UnicodeDecodeError):
             return False
         user, _, password = decoded.partition(":")
-        user_ok = hmac.compare_digest(user, config.user or "")
-        password_ok = hmac.compare_digest(password, config.password or "")
-        return user_ok and password_ok
+        return auth.verify(user, password)
 
     def _read_body(self) -> dict[str, Any]:
         length = _as_int(self.headers.get("Content-Length"))
@@ -859,13 +1369,22 @@ class Handler(BaseHTTPRequestHandler):
         if method == "POST" and path == "/api/nodes":
             self._deploy_node()
             return
+        if method == "GET" and path == "/api/auth/whoami":
+            self._auth_whoami()
+            return
+        if method == "POST" and path == "/api/auth/change":
+            self._auth_change()
+            return
 
         job_match = re.fullmatch(r"/api/jobs/([0-9a-fA-F]+)", path)
         if method == "GET" and job_match:
             self._get_job(job_match.group(1))
             return
 
-        node_match = re.fullmatch(r"/api/nodes/([^/]+)(/history|/restart|/stop|/start)?", path)
+        node_match = re.fullmatch(
+            r"/api/nodes/([^/]+)(/history|/odds|/restart|/stop|/start|/config)?",
+            path,
+        )
         if node_match:
             name = node_match.group(1)
             action = node_match.group(2)
@@ -887,11 +1406,17 @@ class Handler(BaseHTTPRequestHandler):
         if method == "GET" and action == "/history":
             self._node_history(name, query)
             return
+        if method == "GET" and action == "/odds":
+            self._node_odds(name)
+            return
         if method == "GET" and action is None:
             self._node_detail(name)
             return
         if method == "POST" and action in {"/restart", "/stop", "/start"}:
             self._node_lifecycle(name, action.lstrip("/"))
+            return
+        if method == "POST" and action == "/config":
+            self._node_config(name)
             return
         if method == "DELETE" and action is None:
             self._delete_node(name)
@@ -942,16 +1467,20 @@ class Handler(BaseHTTPRequestHandler):
         node_dir = config.nodes_root / name
         status = read_json_file(node_dir / "status.json")
         manifest = read_json_file(node_dir / "manifest.runtime.json")
+        release = read_json_file(node_dir / "release.json")
         latest = self.state.store.latest_sample(name)
         payload = {
             "node": name,
             "readonly": config.readonly,
             "latest": latest,
             "manifest": strip_secrets(manifest) if manifest is not None else None,
+            "release": strip_secrets(release) if release is not None else None,
             "runtimeProbe": strip_secrets((status or {}).get("runtimeProbe")),
             "status": strip_secrets(_status_summary(status)),
             "containerState": (latest or {}).get("container_state"),
             "image": (latest or {}).get("image"),
+            "startedAt": (latest or {}).get("started_at"),
+            "uptimeSecs": (latest or {}).get("uptime_secs"),
         }
         self._send_json(HTTPStatus.OK, payload)
 
@@ -962,12 +1491,84 @@ class Handler(BaseHTTPRequestHandler):
         history = self.state.store.history(name, hours, metrics)
         self._send_json(HTTPStatus.OK, history)
 
+    def _node_odds(self, name: str) -> None:
+        latest = self.state.store.latest_odds(name)
+        kinds: dict[str, Any] = {}
+        for kind, row in latest.items():
+            payload = row.get("payload")
+            candidates = payload if isinstance(payload, list) else []
+            kinds[kind] = {
+                "ts_utc": row.get("ts_utc"),
+                "candidates": [strip_secrets(candidate) for candidate in candidates],
+            }
+        self._send_json(HTTPStatus.OK, {"node": name, "kinds": kinds})
+
     def _get_job(self, job_id: str) -> None:
         job = self.state.jobs.get(job_id)
         if job is None:
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "unknown job"})
             return
         self._send_json(HTTPStatus.OK, job)
+
+    # -- auth routes ------------------------------------------------------------
+
+    def _auth_whoami(self) -> None:
+        config = self.state.config
+        if config.auth_enabled:
+            self._send_json(
+                HTTPStatus.OK,
+                {"username": config.user, "is_default": False},
+            )
+            return
+        auth = self.state.auth
+        if auth is None:
+            self._send_json(HTTPStatus.OK, {"username": None, "is_default": False})
+            return
+        self._send_json(HTTPStatus.OK, auth.whoami())
+
+    def _auth_change(self) -> None:
+        config = self.state.config
+        if config.auth_enabled:
+            self._send_json(
+                HTTPStatus.CONFLICT,
+                {
+                    "error": "auth is configured via environment variables; "
+                    "change NODEOPS_USER/PASSWORD instead",
+                },
+            )
+            return
+        auth = self.state.auth
+        if auth is None:
+            self._send_json(HTTPStatus.CONFLICT, {"error": "auth is disabled"})
+            return
+        body = self._read_body()
+        current_password = str(body.get("current_password") or "")
+        new_password = str(body.get("new_password") or "")
+        new_username_raw = str(body.get("new_username") or "").strip()
+        if not current_password:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "current_password required"})
+            return
+        if not (AUTH_MIN_PASSWORD_LEN <= len(new_password) <= AUTH_MAX_PASSWORD_LEN):
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"error": f"new_password too short (min {AUTH_MIN_PASSWORD_LEN})"},
+            )
+            return
+        # Empty-after-strip means "keep the current username"; only a non-empty but
+        # malformed value is a validation error.
+        new_username = new_username_raw or None
+        if new_username is not None and not _valid_username(new_username):
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid new_username"})
+            return
+        ok, message = auth.change(current_password, new_username, new_password)
+        if not ok:
+            self._send_json(HTTPStatus.FORBIDDEN, {"error": message})
+            return
+        identity = auth.whoami()
+        self._send_json(
+            HTTPStatus.OK,
+            {"ok": True, "username": identity["username"], "is_default": identity["is_default"]},
+        )
 
     # -- mutating routes --------------------------------------------------------
 
@@ -1031,6 +1632,82 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._send_json(HTTPStatus.OK, {"node": name, "action": action, "ok": True})
 
+    def _node_config(self, name: str) -> None:
+        """
+        Rewrite allow-listed market-window fields in a node's runtime manifest.
+
+        Flow: validate the body against ``CONFIG_ALLOWED_KEYS``; apply the
+        updates to a copy of ``manifest.runtime.json``; refuse (403) unless the
+        result still passes ``manifest_is_validation_safe`` (defence in depth —
+        the allow-listed fields cannot arm execution, but re-check anyway); then
+        back up the old manifest, atomically write the new one, and optionally
+        restart the container so the node re-reads the manifest.
+
+        """
+        if self._readonly_blocked():
+            return
+        body = self._read_body()
+        updates, error = validate_config_body(body)
+        if updates is None:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": error})
+            return
+        manifest_path = self.state.config.nodes_root / name / "manifest.runtime.json"
+        manifest = read_json_file(manifest_path)
+        if manifest is None:
+            self._send_json(
+                HTTPStatus.NOT_FOUND,
+                {"error": "manifest.runtime.json not found or unreadable"},
+            )
+            return
+        changed = {
+            field: {"old": manifest.get(field), "new": value} for field, value in updates.items()
+        }
+        new_manifest = dict(manifest)
+        new_manifest.update(updates)
+        if not manifest_is_validation_safe(new_manifest):
+            self._send_json(
+                HTTPStatus.FORBIDDEN,
+                {
+                    "error": "resulting manifest is not validation-safe; nodeops only "
+                    "manages data-only nodes (validation_mode with no execution armed)",
+                },
+            )
+            return
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        backup_path = manifest_path.with_name(f"{manifest_path.name}.bak-{stamp}")
+        try:
+            backup_path.write_text(manifest_path.read_text(encoding="utf8"), encoding="utf8")
+            _atomic_write_manifest(manifest_path, new_manifest)
+        except OSError as exc:
+            self._send_json(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                {"error": f"manifest write failed: {exc}"},
+            )
+            return
+        restarted = False
+        if body.get("restart") is True:
+            if _run_docker(["docker", "restart", "--", name]) is None:
+                self._send_json(
+                    HTTPStatus.BAD_GATEWAY,
+                    {
+                        "error": "manifest updated but docker restart failed",
+                        "changed": changed,
+                        "backup": backup_path.name,
+                    },
+                )
+                return
+            restarted = True
+        self._send_json(
+            HTTPStatus.OK,
+            {
+                "ok": True,
+                "node": name,
+                "changed": changed,
+                "backup": backup_path.name,
+                "restarted": restarted,
+            },
+        )
+
     def _delete_node(self, name: str) -> None:
         if self._readonly_blocked():
             return
@@ -1074,12 +1751,17 @@ def _status_summary(status: dict[str, Any] | None) -> dict[str, Any] | None:
     return {key: value for key, value in status.items() if key != "runtimeProbe"}
 
 
-def build_server(config: Config, store: Store, jobs: Jobs) -> ThreadingHTTPServer:
+def build_server(
+    config: Config,
+    store: Store,
+    jobs: Jobs,
+    auth: AuthStore | None = None,
+) -> ThreadingHTTPServer:
     """
     Construct the threading HTTP server with shared state attached.
     """
     server = ThreadingHTTPServer((config.host, config.port), Handler)
-    server.state = NodeOpsState(config, store, jobs)  # type: ignore[attr-defined]
+    server.state = NodeOpsState(config, store, jobs, auth)  # type: ignore[attr-defined]
     return server
 
 
@@ -1090,14 +1772,29 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
     config = Config()
-    if _insecure_public_bind(config):
+    # In env-override mode auth comes from NODEOPS_USER/PASSWORD and we never touch
+    # the credential store. Otherwise seed the persisted store (admin/admin, hashed)
+    # so a fresh install always comes up authenticated — never plaintext, never
+    # CHANGE_ME. Store-backed auth also satisfies the public-bind requirement.
+    auth: AuthStore | None
+    if config.auth_enabled:
+        auth = None
+    else:
+        auth = AuthStore(config.auth_path)
+        try:
+            auth.seed_default_if_absent()
+        except OSError as exc:
+            logger.error("could not create credential store at %s: %s", config.auth_path, exc)
+            auth = None
+    store_authed = auth is not None and auth.load() is not None
+    if _insecure_public_bind(config) and not store_authed:
         logger.error(
             "refusing to start: NODEOPS_HOST=%s is not loopback but HTTP Basic auth is "
             "not configured. Set NODEOPS_USER/NODEOPS_PASSWORD, or bind 127.0.0.1.",
             config.host,
         )
         return 2
-    if not config.auth_enabled:
+    if not config.auth_enabled and not store_authed:
         logger.warning(
             "HTTP Basic auth is DISABLED (loopback bind only). Set NODEOPS_USER/"
             "NODEOPS_PASSWORD before exposing this service beyond localhost.",
@@ -1107,7 +1804,7 @@ def main() -> int:
     stop_event = threading.Event()
     sampler = Sampler(config, store, stop_event)
     sampler.start()
-    server = build_server(config, store, jobs)
+    server = build_server(config, store, jobs, auth)
 
     def _shutdown(signum: int, _frame: Any) -> None:
         logger.info("received signal %s; shutting down", signum)
