@@ -15,10 +15,12 @@ from datetime import datetime
 from datetime import timedelta
 import hashlib
 import json
+import logging
 from decimal import Decimal
 import os
 from pathlib import Path
 import subprocess
+import time
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -202,6 +204,9 @@ def _manifest(
     *,
     cache_dir: Path | None = None,
     seed_dir: Path | None = None,
+    cache_mode: str = "fresh",
+    cache_default_root: Path | None = None,
+    cache_max_age_hours: float | None = None,
 ) -> BettingArbitrageNodeManifest:
     return BettingArbitrageNodeManifest(
         node_id="sxbet-node",
@@ -210,6 +215,11 @@ def _manifest(
         allow_dummy_credentials=True,
         semantic_rule_cache_dir=str(cache_dir) if cache_dir is not None else None,
         semantic_rule_cache_seed_dir=str(seed_dir) if seed_dir is not None else None,
+        semantic_rule_cache_mode=cache_mode,
+        semantic_rule_cache_default_root=(
+            str(cache_default_root) if cache_default_root is not None else None
+        ),
+        semantic_rule_cache_max_age_hours=cache_max_age_hours,
         rendered_config_path=str(tmp_path / "trading-node-config.json"),
         status_path=str(tmp_path / "status.json"),
         heartbeat_path=str(tmp_path / "heartbeat.json"),
@@ -1564,7 +1574,7 @@ class TestSemanticCacheBootstrap:
 
     def test_reuses_existing_semantic_cache_without_bootstrap(self, tmp_path, monkeypatch):
         cache_dir = tmp_path / "semantic-cache"
-        manifest = _manifest(tmp_path, cache_dir=cache_dir)
+        manifest = _manifest(tmp_path, cache_dir=cache_dir, cache_mode="reuse")
         _seed_promoted_template(cache_dir, manifest=manifest)
 
         monkeypatch.setattr(
@@ -1589,6 +1599,7 @@ class TestSemanticCacheBootstrap:
             validation_mode=True,
             allow_dummy_credentials=True,
             semantic_rule_cache_dir=str(cache_dir),
+            semantic_rule_cache_mode="reuse",
             rendered_config_path=str(tmp_path / "trading-node-config.json"),
             status_path=str(tmp_path / "status.json"),
             heartbeat_path=str(tmp_path / "heartbeat.json"),
@@ -1623,7 +1634,7 @@ class TestSemanticCacheBootstrap:
 
     def test_rebuilds_ready_cache_when_compatibility_marker_is_stale(self, tmp_path, monkeypatch):
         cache_dir = tmp_path / "semantic-cache"
-        manifest = _manifest(tmp_path, cache_dir=cache_dir)
+        manifest = _manifest(tmp_path, cache_dir=cache_dir, cache_mode="reuse")
         _seed_promoted_template(cache_dir, manifest=manifest)
         (cache_dir / node_cache.SEMANTIC_CACHE_COMPATIBILITY_FILE).write_text("stale\n")
         stale_file = cache_dir / "stale.bin"
@@ -1646,7 +1657,7 @@ class TestSemanticCacheBootstrap:
 
     def test_bootstraps_missing_semantic_cache(self, tmp_path, monkeypatch):
         cache_dir = tmp_path / "semantic-cache"
-        manifest = _manifest(tmp_path, cache_dir=cache_dir)
+        manifest = _manifest(tmp_path, cache_dir=cache_dir, cache_mode="reuse")
 
         def fake_bootstrap(*, cache_dir, **_):
             _seed_promoted_template(cache_dir)
@@ -1666,7 +1677,7 @@ class TestSemanticCacheBootstrap:
     def test_seeds_missing_semantic_cache_before_bootstrap(self, tmp_path, monkeypatch):
         cache_dir = tmp_path / "semantic-cache"
         seed_dir = tmp_path / "seed-cache"
-        manifest = _manifest(tmp_path, cache_dir=cache_dir)
+        manifest = _manifest(tmp_path, cache_dir=cache_dir, cache_mode="reuse")
         seed_dir.mkdir()
         (seed_dir / "marker").write_text("seeded", encoding="utf-8")
         monkeypatch.setenv(node_cache.SEMANTIC_CACHE_SEED_DIR_ENV, str(seed_dir))
@@ -1719,7 +1730,12 @@ class TestSemanticCacheBootstrap:
         cache_dir = tmp_path / "semantic-cache"
         manifest_seed_dir = tmp_path / "manifest-seed-cache"
         env_seed_dir = tmp_path / "env-seed-cache"
-        manifest = _manifest(tmp_path, cache_dir=cache_dir, seed_dir=manifest_seed_dir)
+        manifest = _manifest(
+            tmp_path,
+            cache_dir=cache_dir,
+            seed_dir=manifest_seed_dir,
+            cache_mode="reuse",
+        )
         manifest_seed_dir.mkdir()
         env_seed_dir.mkdir()
         (manifest_seed_dir / "marker").write_text("manifest-seed", encoding="utf-8")
@@ -1780,6 +1796,190 @@ class TestSemanticCacheBootstrap:
 
         with pytest.raises(RuntimeError, match="usable cache"):
             ensure_semantic_cache_ready(manifest)
+
+    def test_fresh_mode_remines_even_when_compatible_cache_exists(self, tmp_path, monkeypatch):
+        cache_dir = tmp_path / "semantic-cache"
+        manifest = _manifest(tmp_path, cache_dir=cache_dir, cache_mode="fresh")
+        _seed_promoted_template(cache_dir, manifest=manifest)
+        assert node_cache.semantic_cache_status(cache_dir, manifest=manifest).ready is True
+
+        bootstrapped: list[Path] = []
+
+        def fake_bootstrap(*, cache_dir, **_):
+            bootstrapped.append(cache_dir)
+            _seed_promoted_template(cache_dir, manifest=manifest)
+
+        monkeypatch.setattr(
+            "nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache._run_bootstrap",
+            fake_bootstrap,
+        )
+
+        status = ensure_semantic_cache_ready(manifest)
+
+        assert bootstrapped == [cache_dir]
+        assert status.source == "bootstrapped"
+        assert status.ready is True
+        assert status.compatible is True
+
+    def test_reuse_mode_returns_existing_cache_without_bootstrap(self, tmp_path, monkeypatch):
+        cache_dir = tmp_path / "semantic-cache"
+        manifest = _manifest(tmp_path, cache_dir=cache_dir, cache_mode="reuse")
+        _seed_promoted_template(cache_dir, manifest=manifest)
+
+        monkeypatch.setattr(
+            "nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache._run_bootstrap",
+            lambda **_: (_ for _ in ()).throw(AssertionError("bootstrap should not run")),
+        )
+
+        status = ensure_semantic_cache_ready(manifest)
+
+        assert status.source == "existing"
+        assert status.ready is True
+        assert status.compatible is True
+
+    def test_fresh_mode_registers_default_mine(self, tmp_path, monkeypatch):
+        cache_dir = tmp_path / "semantic-cache"
+        default_root = tmp_path / "default-mines"
+        manifest = _manifest(
+            tmp_path,
+            cache_dir=cache_dir,
+            cache_mode="fresh",
+            cache_default_root=default_root,
+        )
+
+        def fake_bootstrap(*, cache_dir, **_):
+            _seed_promoted_template(cache_dir, manifest=manifest)
+
+        monkeypatch.setattr(
+            "nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache._run_bootstrap",
+            fake_bootstrap,
+        )
+
+        status = ensure_semantic_cache_ready(manifest)
+
+        assert status.source == "bootstrapped"
+        registry_dir = node_cache._default_mine_dir(str(default_root), manifest)
+        assert registry_dir.parent == default_root
+        assert node_cache.semantic_cache_status(registry_dir, manifest=manifest).ready is True
+
+    def test_default_mode_reuses_registered_mine_without_bootstrap(self, tmp_path, monkeypatch):
+        cache_dir = tmp_path / "semantic-cache"
+        default_root = tmp_path / "default-mines"
+        manifest = _manifest(
+            tmp_path,
+            cache_dir=cache_dir,
+            cache_mode="default",
+            cache_default_root=default_root,
+        )
+        registry_dir = node_cache._default_mine_dir(str(default_root), manifest)
+        _seed_promoted_template(registry_dir, manifest=manifest)
+
+        monkeypatch.setattr(
+            "nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache._run_bootstrap",
+            lambda **_: (_ for _ in ()).throw(AssertionError("bootstrap should not run")),
+        )
+
+        status = ensure_semantic_cache_ready(manifest)
+
+        assert status.source == "default-mine"
+        assert status.ready is True
+        assert status.compatible is True
+
+    def test_default_mode_mines_and_registers_when_registry_empty(self, tmp_path, monkeypatch):
+        cache_dir = tmp_path / "semantic-cache"
+        default_root = tmp_path / "default-mines"
+        manifest = _manifest(
+            tmp_path,
+            cache_dir=cache_dir,
+            cache_mode="default",
+            cache_default_root=default_root,
+        )
+        bootstrapped: list[Path] = []
+
+        def fake_bootstrap(*, cache_dir, **_):
+            bootstrapped.append(cache_dir)
+            _seed_promoted_template(cache_dir, manifest=manifest)
+
+        monkeypatch.setattr(
+            "nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache._run_bootstrap",
+            fake_bootstrap,
+        )
+
+        status = ensure_semantic_cache_ready(manifest)
+
+        assert bootstrapped == [cache_dir]
+        assert status.source == "bootstrapped"
+        registry_dir = node_cache._default_mine_dir(str(default_root), manifest)
+        assert node_cache.semantic_cache_status(registry_dir, manifest=manifest).ready is True
+
+    def test_default_mode_ignores_stale_registry_entry(self, tmp_path, monkeypatch):
+        cache_dir = tmp_path / "semantic-cache"
+        default_root = tmp_path / "default-mines"
+        manifest = _manifest(
+            tmp_path,
+            cache_dir=cache_dir,
+            cache_mode="default",
+            cache_default_root=default_root,
+            cache_max_age_hours=1.0,
+        )
+        registry_dir = node_cache._default_mine_dir(str(default_root), manifest)
+        _seed_promoted_template(registry_dir, manifest=manifest)
+        # Materialize the summary (carries generated_at_unix_secs) then backdate it.
+        assert node_cache.semantic_cache_status(registry_dir, manifest=manifest).ready is True
+        stale = time.time() - 7200.0
+        summary_path = registry_dir / node_cache.SEMANTIC_CACHE_SUMMARY_FILE
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        summary["generated_at_unix_secs"] = stale
+        summary_path.write_text(json.dumps(summary, sort_keys=True), encoding="utf-8")
+        os.utime(registry_dir / node_cache.SEMANTIC_CACHE_COMPATIBILITY_FILE, (stale, stale))
+
+        bootstrapped: list[Path] = []
+
+        def fake_bootstrap(*, cache_dir, **_):
+            bootstrapped.append(cache_dir)
+            _seed_promoted_template(cache_dir, manifest=manifest)
+
+        monkeypatch.setattr(
+            "nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache._run_bootstrap",
+            fake_bootstrap,
+        )
+
+        status = ensure_semantic_cache_ready(manifest)
+
+        assert bootstrapped == [cache_dir]
+        assert status.source == "bootstrapped"
+
+    def test_default_mode_without_default_root_mines_fresh(self, tmp_path, monkeypatch):
+        cache_dir = tmp_path / "semantic-cache"
+        manifest = _manifest(tmp_path, cache_dir=cache_dir, cache_mode="default")
+        bootstrapped: list[Path] = []
+
+        def fake_bootstrap(*, cache_dir, **_):
+            bootstrapped.append(cache_dir)
+            _seed_promoted_template(cache_dir, manifest=manifest)
+
+        monkeypatch.setattr(
+            "nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache._run_bootstrap",
+            fake_bootstrap,
+        )
+
+        status = ensure_semantic_cache_ready(manifest)
+
+        assert bootstrapped == [cache_dir]
+        assert status.source == "bootstrapped"
+
+    def test_invalid_semantic_cache_mode_rejected(self, tmp_path):
+        with pytest.raises(ValueError, match="Unsupported semantic_rule_cache_mode"):
+            _manifest(tmp_path, cache_dir=tmp_path / "semantic-cache", cache_mode="stale")
+
+    def test_non_positive_semantic_cache_max_age_hours_rejected(self, tmp_path):
+        with pytest.raises(ValueError, match="max_age_hours must be positive"):
+            _manifest(
+                tmp_path,
+                cache_dir=tmp_path / "semantic-cache",
+                cache_mode="default",
+                cache_max_age_hours=0.0,
+            )
 
     def test_semantic_cache_status_counts_missing_and_same_venue_templates(
         self,
@@ -3089,6 +3289,81 @@ class TestBettingArbitrageNodeRunner:
         assert diagnostics["unsupportedProviderPatternSamples"][0]["samples"][0][
             "instrumentId"
         ] == str(unsupported_instrument.id)
+
+    def test_probe_graph_snapshot_retries_transient_mutation_error(self, monkeypatch):  # skipcq
+        # A large graph being rebuilt races the probe into "dictionary changed size during
+        # iteration"; the snapshot must retry rather than collapse to an empty payload.
+        class _FlakyDict(dict):
+            def __init__(self, *args, fail_times=0, **kwargs):
+                super().__init__(*args, **kwargs)
+                self._fail_remaining = fail_times
+
+            def values(self):
+                if self._fail_remaining > 0:
+                    self._fail_remaining -= 1
+                    raise RuntimeError("dictionary changed size during iteration")
+                return super().values()
+
+        graph = SimpleNamespace(
+            edges_by_id=_FlakyDict({"e1": object()}, fail_times=2),
+            nodes_by_id={"n1": object()},
+            quotes_by_node_id={},
+            edge_ids_by_node_id={"n1": {"e1"}},
+        )
+        monkeypatch.setattr(node_runner.time, "sleep", lambda *_: None)
+
+        snapshot = node_runner._snapshot_probe_graph_state(graph, attempts=5)
+
+        assert snapshot is not None
+        assert len(list(snapshot["edges"])) == 1
+
+    def test_probe_graph_snapshot_gives_up_after_attempts(self, monkeypatch, caplog):  # skipcq
+        class _AlwaysFlakyDict(dict):
+            def values(self):
+                raise RuntimeError("dictionary changed size during iteration")
+
+        graph = SimpleNamespace(
+            edges_by_id=_AlwaysFlakyDict({"e1": object()}),
+            nodes_by_id={"n1": object()},
+            quotes_by_node_id={},
+            edge_ids_by_node_id={},
+        )
+        monkeypatch.setattr(node_runner.time, "sleep", lambda *_: None)
+
+        with caplog.at_level(logging.WARNING, logger=node_runner.__name__):
+            snapshot = node_runner._snapshot_probe_graph_state(graph, attempts=3)
+
+        assert snapshot is None
+        assert "failed after 3 attempts" in caplog.text
+
+    def test_runtime_probe_writer_survives_collection_error(self, tmp_path, monkeypatch):  # skipcq
+        # A daemon-thread exception would freeze status.json; the writer must swallow a
+        # collection error, log it, and stay alive for the next cycle.
+        class _WaitOnceEvent:
+            def __init__(self):
+                self._calls = 0
+
+            def wait(self, _timeout):
+                self._calls += 1
+                return self._calls > 1  # run the body once, then stop
+
+        def _raise_collect(*_args, **_kwargs):
+            raise RuntimeError("collection boom")
+
+        monkeypatch.setattr(node_runner, "_collect_runtime_probe_payload", _raise_collect)
+        writer = node_runner.RuntimeProbeStatusWriter(
+            status_path=tmp_path / "status.json",
+            manifest=SimpleNamespace(strategy=SimpleNamespace(min_profit_margin="0.02")),
+            strategy=SimpleNamespace(),
+            semantic_cache=None,
+            manifest_snapshot=tmp_path / "manifest.json",
+            rendered_config_path=tmp_path / "rendered.json",
+            heartbeat_path=tmp_path / "heartbeat.json",
+            interval_secs=0.0,
+            stop_event=_WaitOnceEvent(),
+        )
+
+        writer.run()  # must return without propagating the collection error
 
     def test_runtime_probe_venue_coverage_explains_zero_cross_venue_pairs(self):
         sxbet_instrument = _instrument(
@@ -5546,3 +5821,16 @@ class TestBettingArbitrageNodeRunner:
         )
 
         assert result.returncode == 0, result.stderr
+
+
+def test_probe_rag_band_classifies_green_amber_red() -> None:
+    # profitable -> green
+    assert node_runner._probe_rag_band(Decimal("0.05")) == "green"
+    assert node_runner._probe_rag_band(Decimal("0.0001")) == "green"
+    # slightly unprofitable (0% to -5%, inclusive) -> amber
+    assert node_runner._probe_rag_band(Decimal(0)) == "amber"
+    assert node_runner._probe_rag_band(Decimal("-0.03")) == "amber"
+    assert node_runner._probe_rag_band(Decimal("-0.05")) == "amber"
+    # unprofitable (worse than -5%) -> red
+    assert node_runner._probe_rag_band(Decimal("-0.0501")) == "red"
+    assert node_runner._probe_rag_band(Decimal("-0.20")) == "red"

@@ -38,7 +38,7 @@ from nautilus_trader.adapters.betting.semantics import SafetyTier
 from nautilus_trader.adapters.betting.semantics import SemanticRuleTemplate
 
 
-@dataclass
+@dataclass(slots=True)
 class ArbitrageOpportunity:
     """
     Represents a detected arbitrage opportunity between two selections.
@@ -88,7 +88,7 @@ class ArbitrageOpportunity:
         )
 
 
-@dataclass
+@dataclass(slots=True)
 class HedgeCandidate:
     """
     A candidate instrument for hedging.
@@ -476,6 +476,18 @@ class MarketMatcher:
                 same_venue=False,
             )
         if instrument.parsed_start_time() is not None and candidate.parsed_start_time() is not None:
+            # Both legs carry start times, but the target can still be ambiguous when the
+            # opposing venue lists the same teams more than once the same day (a
+            # doubleheader) and both games fall inside the cross-venue soft tolerance. The
+            # start-time-aware fixture cluster count catches that; without this guard the
+            # branch asserted a match against an arbitrary one of the games (#231/#237).
+            if self._has_ambiguous_missing_fixture_evidence(instrument, candidate, candidates):
+                return HedgeEventMatchDecision(
+                    matched=False,
+                    reason="ambiguous_fixture",
+                    proof=replace(proof, ambiguous=True),
+                    same_venue=False,
+                )
             return HedgeEventMatchDecision(
                 matched=True,
                 reason="cross_venue_fixture_proof",
@@ -604,7 +616,9 @@ class MarketMatcher:
         start = instrument.parsed_start_time()
         if start is None:
             return aliases
-        suffix = start.strftime("%Y-%m-%dT%H")
+        bucket_minute = 0 if start.minute < 30 else 30
+        bucketed = start.replace(minute=bucket_minute, second=0, microsecond=0)
+        suffix = bucketed.strftime("%Y-%m-%dT%H:%M")
         return {f"{alias}:{suffix}" for alias in aliases}
 
     @staticmethod

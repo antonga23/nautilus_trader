@@ -6,6 +6,7 @@
 
 from dataclasses import replace
 from decimal import Decimal
+import logging
 
 from nautilus_trader.adapters.betting.common.enums import SelectionSide
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
@@ -42,6 +43,7 @@ def betting_instrument(
     market_name: str,
     market_type: str,
     outcome: str,
+    sport: str = "soccer",
     params: str = "",
     venue: str = "SXBET",
     price: float = 2.1,
@@ -54,7 +56,7 @@ def betting_instrument(
         event_name="Team A vs Team B",
         home_name="Team A",
         away_name="Team B",
-        sport_name="soccer",
+        sport_name=sport,
         competition_name="Test League",
         market_name=market_name,
         market_type=market_type,
@@ -274,6 +276,136 @@ def test_european_handicap_and_asian_handicap_same_line_are_dangerous():
     assert rule.execution_safe is False
 
 
+def test_winner_and_half_point_spread_project_to_equivalent_in_no_draw_sport():
+    classifier = RuleClassifier()
+    moneyline_home = betting_instrument(
+        sport="basketball",
+        market_name="moneyline_2way",
+        market_type="moneyline_2way",
+        outcome="home",
+        venue="CLOUDBET",
+    )
+    spread_home_half = betting_instrument(
+        sport="basketball",
+        market_name="point_spread",
+        market_type="point_spread",
+        outcome="home",
+        params="line=-0.5",
+        handicap=-0.5,
+    )
+
+    rule = classifier.classify(moneyline_home, spread_home_half)
+
+    assert rule is not None
+    assert rule.relationship_type == RelationshipType.EQUIVALENT_SELECTION.value
+    assert rule.confidence == 1.0
+    assert rule.result_states == ("HOME_WIN", "AWAY_WIN")
+    assert rule.settlement_a == ("WIN", "LOSE")
+    assert rule.settlement_b == ("WIN", "LOSE")
+    assert "cross_family_partition_projection" in rule.caveats
+    assert rule.has_void is False
+    assert rule.has_partial is False
+    assert rule.execution_safe is False
+
+
+def test_winner_and_half_point_spread_opposite_sides_are_complementary():
+    classifier = RuleClassifier()
+    moneyline_home = betting_instrument(
+        sport="basketball",
+        market_name="moneyline_2way",
+        market_type="moneyline_2way",
+        outcome="home",
+        venue="CLOUDBET",
+    )
+    spread_away_half = betting_instrument(
+        sport="basketball",
+        market_name="point_spread",
+        market_type="point_spread",
+        outcome="away",
+        params="line=0.5",
+        handicap=0.5,
+    )
+
+    rule = classifier.classify(moneyline_home, spread_away_half)
+
+    assert rule is not None
+    assert rule.relationship_type == RelationshipType.COMPLEMENTARY_COVERAGE.value
+    assert rule.result_states == ("HOME_WIN", "AWAY_WIN")
+    assert rule.settlement_a == ("WIN", "LOSE")
+    assert rule.settlement_b == ("LOSE", "WIN")
+    assert "cross_family_partition_projection" in rule.caveats
+    assert rule.execution_safe is False
+
+
+def test_winner_and_half_point_spread_stay_rejected_in_draw_capable_sport():
+    classifier = RuleClassifier()
+    moneyline_home = betting_instrument(
+        market_name="moneyline_2way",
+        market_type="moneyline_2way",
+        outcome="home",
+        venue="CLOUDBET",
+    )
+    spread_home_half = betting_instrument(
+        market_name="point_spread",
+        market_type="point_spread",
+        outcome="home",
+        params="line=-0.5",
+        handicap=-0.5,
+    )
+
+    assert classifier.classify(moneyline_home, spread_home_half) is None
+
+
+def test_winner_and_spread_projection_requires_exact_half_point_line():
+    classifier = RuleClassifier()
+    moneyline_home = betting_instrument(
+        sport="basketball",
+        market_name="moneyline_2way",
+        market_type="moneyline_2way",
+        outcome="home",
+        venue="CLOUDBET",
+    )
+
+    for line in ("-1.5", "0", "-0.25"):
+        spread = betting_instrument(
+            sport="basketball",
+            market_name="point_spread",
+            market_type="point_spread",
+            outcome="home",
+            params=f"line={line}",
+            handicap=float(line),
+        )
+        assert classifier.classify(moneyline_home, spread) is None
+
+
+def test_binary_event_partitions_do_not_project_onto_winner_states():
+    classifier = RuleClassifier()
+    moneyline_home = betting_instrument(
+        sport="basketball",
+        market_name="moneyline_2way",
+        market_type="moneyline_2way",
+        outcome="home",
+        venue="CLOUDBET",
+    )
+    bare_binary_yes = betting_instrument(
+        sport="basketball",
+        market_name="binary_option",
+        market_type="binary_option",
+        outcome="yes",
+        venue="POLYMARKET",
+    )
+    team_winner_yes = betting_instrument(
+        sport="basketball",
+        market_name="moneyline_2way",
+        market_type="moneyline_2way",
+        outcome="yes",
+        params="team=home&period=ft",
+    )
+
+    assert classifier.classify(moneyline_home, bare_binary_yes) is None
+    assert classifier.classify(moneyline_home, team_winner_yes) is None
+
+
 def test_rule_store_persists_candidates_promotions_and_validation_stats():
     classifier = RuleClassifier()
     rule = classifier.classify(
@@ -367,6 +499,39 @@ def test_promotion_policy_marks_complementary_rule_as_execution_safe():
     )
 
     assert tier == SafetyTier.EXECUTION_SAFE
+    assert "execution_safe_complementary_coverage" in reasons
+
+
+def test_deterministic_complementary_partition_is_execution_safe_without_statistical_support():
+    rule = RuleClassifier().classify(
+        betting_instrument(market_name="match_odds", market_type="match_odds", outcome="home"),
+        betting_instrument(
+            market_name="double_chance",
+            market_type="double_chance",
+            outcome="away_draw",
+        ),
+    )
+    assert rule is not None
+    assert rule.relationship_type == RelationshipType.COMPLEMENTARY_COVERAGE.value
+
+    starved_support = TemplateSupportStats(
+        template_id="cross-venue-starved",
+        observed_count=1,
+        event_count=1,
+        provider_count=2,
+        providers=("CLOUDBET", "POLYMARKET"),
+        sports=("soccer",),
+        mismatch_count=0,
+        confidence=1.0,
+    )
+    template = SemanticRuleTemplate.from_rule(rule, support=starved_support)
+
+    assert template.support.catalog_promotable is False
+
+    tier, reasons = RulePromotionPolicy().classify_template_tier(template, venue_agnostic=True)
+
+    assert tier == SafetyTier.EXECUTION_SAFE
+    assert "deterministic_complementary_partition" in reasons
     assert "execution_safe_complementary_coverage" in reasons
 
 
@@ -872,3 +1037,61 @@ def test_template_promotion_policy_handles_audit_only_and_partial_templates():
     assert unknown_reasons == ("unknown_settlement_present",)
     assert partial_tier == SafetyTier.EXECUTION_SAFE_SAME_VENUE_ELIGIBLE
     assert "partial_settlement_present" in partial_reasons
+
+
+def test_semantic_node_payload_marks_unnormalized_and_warns(monkeypatch, caplog):
+    # Issues #230 / #219: a failed normalization must NOT masquerade as a full_time
+    # semantic identity, and the failure must be logged rather than silently swallowed.
+    instrument = betting_instrument(
+        market_name="match_odds",
+        market_type="match_odds",
+        outcome="home",
+    )
+
+    def _raise(_item):
+        raise ValueError("synthetic normalization failure")
+
+    monkeypatch.setattr(MarketNormalizer, "normalize", staticmethod(_raise))
+
+    with caplog.at_level(
+        logging.WARNING,
+        logger="nautilus_trader.examples.strategies.opportunity_graph",
+    ):
+        payload = OpportunityGraph._semantic_node_payload(instrument)
+
+    assert payload["semantic_scope"] == "unnormalized"
+    assert payload["semantic_scope"] != "full_time"
+    assert any(
+        record.levelno == logging.WARNING and "normalize failed" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_semantic_coverage_summary_logs_malformed_rust_json(caplog):
+    # Issue #241: a malformed Rust coverage payload must be logged (with a sample of the
+    # raw string) so it is distinguishable from genuinely-empty coverage during diagnostics.
+    graph = OpportunityGraph(MarketMatcher(), engine="python")
+
+    class _MalformedRustCore:
+        def semantic_coverage_summary_json(self):  # skipcq
+            return "{not valid json at all"
+
+    graph._rust_core = _MalformedRustCore()
+
+    with caplog.at_level(
+        logging.WARNING,
+        logger="nautilus_trader.examples.strategies.opportunity_graph",
+    ):
+        summary = graph.semantic_coverage_summary()
+
+    assert summary == graph._empty_coverage_summary()
+    warning = next(
+        (
+            r
+            for r in caplog.records
+            if r.levelno == logging.WARNING and "malformed payload" in r.getMessage()
+        ),
+        None,
+    )
+    assert warning is not None
+    assert "not valid json" in warning.getMessage()

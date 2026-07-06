@@ -12,6 +12,8 @@ from datetime import datetime
 from datetime import timedelta
 from decimal import Decimal
 import json
+import logging
+import math
 import threading
 import time
 from pathlib import Path
@@ -38,6 +40,9 @@ from nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache import
 )
 
 
+logger = logging.getLogger(__name__)
+
+
 ZERO_PAIR_SAMPLE_NODE_LIMIT = 160
 
 
@@ -59,6 +64,7 @@ class ProbeProfitabilityCounters:
     threshold_execution: int = 0
     threshold_same_venue: int = 0
     margin_bands: Counter[str] = field(default_factory=Counter)
+    rag_bands: Counter[str] = field(default_factory=Counter)
     rejection_buckets: Counter[str] = field(default_factory=Counter)
     timing_flags: Counter[str] = field(default_factory=Counter)
     freshness_profiles: Counter[str] = field(default_factory=Counter)
@@ -120,6 +126,7 @@ class ProbeProfitabilityCounters:
             "threshold_execution": self.threshold_execution,
             "threshold_same_venue": self.threshold_same_venue,
             "margin_bands": dict(self.margin_bands),
+            "rag_bands": dict(self.rag_bands),
             "rejection_buckets": dict(self.rejection_buckets),
             "timing_flags": dict(self.timing_flags),
             "freshness_profiles": dict(self.freshness_profiles),
@@ -383,22 +390,30 @@ class RuntimeProbeStatusWriter(threading.Thread):
     def run(self) -> None:
         min_profit_margin = Decimal(str(self._manifest.strategy.min_profit_margin))
         while not self._stop_event.wait(self._interval_secs):
-            runtime_probe = _collect_runtime_probe_payload(
-                self._strategy,
-                min_profit_margin=min_profit_margin,
-                elapsed_seconds=time.monotonic() - self._started_at,
-            )
-            _write_status(
-                self._status_path,
-                manifest=self._manifest,
-                status="running",
-                semantic_cache=self._semantic_cache,
-                manifest_snapshot=self._manifest_snapshot,
-                rendered_config_path=self._rendered_config_path,
-                heartbeat_path=self._heartbeat_path,
-                runtime_probe=runtime_probe,
-                updatedAt=_utc_now(),
-            )
+            # A daemon thread dies silently on any unhandled exception, which would freeze
+            # status.json at its last snapshot while the node keeps running. Keep the writer
+            # alive across transient collection/write errors so the probe stays fresh.
+            try:
+                runtime_probe = _collect_runtime_probe_payload(
+                    self._strategy,
+                    min_profit_margin=min_profit_margin,
+                    elapsed_seconds=time.monotonic() - self._started_at,
+                )
+                _write_status(
+                    self._status_path,
+                    manifest=self._manifest,
+                    status="running",
+                    semantic_cache=self._semantic_cache,
+                    manifest_snapshot=self._manifest_snapshot,
+                    rendered_config_path=self._rendered_config_path,
+                    heartbeat_path=self._heartbeat_path,
+                    runtime_probe=runtime_probe,
+                    updatedAt=_utc_now(),
+                )
+            except Exception:
+                logger.exception(
+                    "Runtime probe status write failed; keeping writer alive for next cycle",
+                )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -709,9 +724,20 @@ def _run_node(node, context: RunnerContext) -> int:
         node.dispose()
 
 
+def _sanitize_json_value(value: Any) -> Any:
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {key: _sanitize_json_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_json_value(item) for item in value]
+    return value
+
+
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf8")
+    sanitized = _sanitize_json_value(payload)
+    path.write_text(json.dumps(sanitized, indent=2) + "\n", encoding="utf8")
 
 
 def _write_status(
@@ -1161,6 +1187,7 @@ def _collect_runtime_probe_payload(
         "candidateQuality": {
             "quotedEdges": profitability["quoted_edges"],
             "marginBands": profitability["margin_bands"],
+            "ragBands": profitability["rag_bands"],
             "rejectionBuckets": profitability["rejection_buckets"],
             "timingFlags": profitability["timing_flags"],
             "freshnessProfiles": profitability["freshness_profiles"],
@@ -1725,6 +1752,7 @@ def _empty_candidate_quality_payload() -> dict[str, object]:
     return {
         "quotedEdges": 0,
         "marginBands": {},
+        "ragBands": {},
         "rejectionBuckets": {},
         "timingFlags": {},
         "freshnessProfiles": {},
@@ -1811,18 +1839,32 @@ def _empty_candidate_quality_payload() -> dict[str, object]:
     }
 
 
-def _snapshot_probe_graph_state(graph) -> dict[str, object] | None:
-    try:
-        return {
-            "edges": list(graph.edges_by_id.values()),
-            "nodes": dict(graph.nodes_by_id),
-            "quotes": dict(graph.quotes_by_node_id),
-            "matched_node_ids": {
-                node_id for node_id, edge_ids in graph.edge_ids_by_node_id.items() if edge_ids
-            },
-        }
-    except RuntimeError:
-        return None
+def _snapshot_probe_graph_state(graph, *, attempts: int = 5) -> dict[str, object] | None:
+    # The probe thread copies the live graph dicts while the strategy thread mutates them
+    # during rebuilds. On a large, actively-refreshing graph that races into
+    # "RuntimeError: dictionary changed size during iteration", which previously collapsed
+    # to an empty snapshot (edges=0) and made a healthy node read as idle to the
+    # runtime-verify gate. The race is transient, so retry a few times before giving up.
+    for attempt in range(1, attempts + 1):
+        try:
+            return {
+                "edges": list(graph.edges_by_id.values()),
+                "nodes": dict(graph.nodes_by_id),
+                "quotes": dict(graph.quotes_by_node_id),
+                "matched_node_ids": {
+                    node_id for node_id, edge_ids in graph.edge_ids_by_node_id.items() if edge_ids
+                },
+            }
+        except RuntimeError:
+            if attempt >= attempts:
+                logger.warning(
+                    "Runtime probe graph snapshot failed after %d attempts "
+                    "(graph mutating concurrently); emitting empty snapshot",
+                    attempts,
+                )
+                return None
+            time.sleep(0.05)
+    return None
 
 
 def _venue_pair_coverage(
@@ -2617,14 +2659,16 @@ def _zero_pair_blocker_hint(
     return ""
 
 
-_DIRECTIONAL_MARKET_FAMILIES = frozenset(
-    {
-        "WINNER",
-        "MATCH_ODDS",
-        "DRAW_NO_BET",
-        "ASIAN_HANDICAP",
-        "POINT_SPREAD",
-    },
+# Cross-family pairs the diagnostic treats as matchable. MATCH_ODDS/DRAW_NO_BET share
+# THREE_WAY_STATES and ASIAN_HANDICAP/POINT_SPREAD share handicap margin states
+# (classifier.py:136). WINNER belongs with the moneyline group: the normalizer emits
+# WINNER vs MATCH_ODDS for the same raw market based solely on the is_two_way_market
+# flag (normalization.py), so a WINNER cross-pair there is a semantic-edge gap, not an
+# unsupported family. Moneyline<->spread pairs stay unmatchable so the blocker hint
+# surfaces the real limitation (#235).
+_DIRECTIONAL_MARKET_FAMILY_GROUPS = (
+    frozenset({"WINNER", "MATCH_ODDS", "DRAW_NO_BET"}),
+    frozenset({"ASIAN_HANDICAP", "POINT_SPREAD"}),
 )
 _TOTAL_MARKET_FAMILIES = frozenset({"TOTALS", "TEAM_TOTALS"})
 
@@ -2639,7 +2683,7 @@ def _market_family_relation(
         return "unknown"
     if family_a == family_b:
         return "same_family"
-    if family_a in _DIRECTIONAL_MARKET_FAMILIES and family_b in _DIRECTIONAL_MARKET_FAMILIES:
+    if any(family_a in group and family_b in group for group in _DIRECTIONAL_MARKET_FAMILY_GROUPS):
         return "directional_family"
     if family_a in _TOTAL_MARKET_FAMILIES and family_b in _TOTAL_MARKET_FAMILIES:
         return "same_family"
@@ -4051,6 +4095,7 @@ def _record_probe_quality(
     venue_pair = str(quality["venuePair"])
     market_family = str(quality["marketFamily"])
     counters.margin_bands[margin_band] += 1
+    counters.rag_bands[_probe_rag_band(margin)] += 1
     counters.rejection_buckets[rejection_bucket] += 1
     counters.freshness_profiles[str(quality.get("freshnessProfile") or "unknown")] += 1
     if quality.get("feeAdjusted"):
@@ -4304,6 +4349,22 @@ def _probe_margin_band(profit_margin: Decimal) -> str:
     if profit_margin >= Decimal("-0.05"):
         return "-2% to -5%"
     return "< -5%"
+
+
+def _probe_rag_band(profit_margin: Decimal) -> str:
+    """
+    Coarse RAG rollup of a candidate's profit margin, for at-a-glance triage.
+
+    green = profitable (> 0); amber = slightly unprofitable (0% to -5%); red =
+    unprofitable (< -5%). Applies to same-venue and cross-venue candidates alike, so
+    unprofitable cross-venue candidates are surfaced (not just executable ones).
+
+    """
+    if profit_margin > 0:
+        return "green"
+    if profit_margin >= Decimal("-0.05"):
+        return "amber"
+    return "red"
 
 
 def _probe_market_family(source_node, target_node) -> str:

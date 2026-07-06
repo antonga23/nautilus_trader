@@ -65,6 +65,11 @@ class PolymarketDataClientConfig(LiveDataClientConfig, frozen=True):
     drop_quotes_missing_side : bool, default True
         If True, drops QuoteTick messages when bid or ask prices are missing (can occur near market resolution).
         If False, uses boundary prices (0.001/0.999) with zero volume for missing sides.
+    max_ws_clients : PositiveInt or None, default None
+        The maximum number of Polymarket websocket clients to open. Each client supports up to
+        500 asset subscriptions, so this bounds total subscriptions at ``max_ws_clients * 500``.
+        If ``None`` then no ceiling is enforced. When the ceiling is reached, further asset
+        subscriptions are skipped (with a WARN) rather than opening more clients unbounded.
 
     """
 
@@ -82,6 +87,7 @@ class PolymarketDataClientConfig(LiveDataClientConfig, frozen=True):
     update_instruments_interval_mins: PositiveInt | None = 60
     compute_effective_deltas: bool = False
     drop_quotes_missing_side: bool = True
+    max_ws_clients: PositiveInt | None = None
 
 
 class PolymarketExecClientConfig(LiveExecClientConfig, frozen=True):

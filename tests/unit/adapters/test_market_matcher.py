@@ -734,6 +734,57 @@ class TestMarketMatcher:
 
         assert matches == []
 
+    def test_match_events_cross_venue_skips_same_day_doubleheader_with_start_times(
+        self,
+        market_matcher,
+    ):
+        """
+        Test a same-day doubleheader does not match even when both legs have times.
+
+        Both source-venue games fall inside the cross-venue soft start-time tolerance of
+        the single opposing fixture, so the target cannot be uniquely attributed
+        (#231/#237). Prior to the fix the both-start-times branch asserted a match
+        against an arbitrary one of the two games.
+
+        """
+        game_1 = make_instrument(
+            venue="CLOUDBET",
+            event_id="cb-dh-1",
+            event_name="Team A vs Team B",
+            home_name="Team A",
+            away_name="Team B",
+            market_name="Match Odds",
+            market_type="match_odds",
+            outcome="home",
+            start_time="2026-03-13T18:00:00Z",
+        )
+        game_2 = make_instrument(
+            venue="CLOUDBET",
+            event_id="cb-dh-2",
+            event_name="Team A vs Team B",
+            home_name="Team A",
+            away_name="Team B",
+            market_name="Match Odds",
+            market_type="match_odds",
+            outcome="home",
+            start_time="2026-03-13T21:00:00Z",
+        )
+        target = make_instrument(
+            venue="SXBET",
+            event_id="sx-dh",
+            event_name="Team B at Team A",
+            home_name="Team B",
+            away_name="Team A",
+            market_name="Match Odds",
+            market_type="match_odds",
+            outcome="home",
+            start_time="2026-03-13T19:30:00Z",
+        )
+
+        matches = market_matcher.match_events_cross_venue([game_1, game_2], [target])
+
+        assert matches == []
+
     def test_match_events_cross_venue_allows_unique_missing_start_time_without_time_signal(
         self,
         market_matcher,

@@ -27,6 +27,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC
 from datetime import datetime
+from functools import lru_cache
 import re
 from typing import Any
 import unicodedata
@@ -36,7 +37,25 @@ DEFAULT_START_TIME_TOLERANCE_SECS = 2 * 60 * 60
 DEFAULT_SOFT_CROSS_VENUE_START_TIME_TOLERANCE_SECS = 12 * 60 * 60
 
 
-@dataclass(frozen=True)
+@lru_cache(maxsize=4096)
+def _normalize_team_name_cached(name: str | None) -> str:
+    normalized = FixtureIdentityResolver.normalize_event_component(name)
+    if not normalized:
+        return ""
+    normalized = FixtureIdentityResolver._strip_market_group_suffix(normalized)
+    normalized = FixtureIdentityResolver._compact_letter_spaced_aliases(normalized)
+    normalized = FixtureIdentityResolver.PHRASE_ALIASES.get(normalized, normalized)
+    tokens: list[str] = []
+    for token in normalized.split():
+        if token in FixtureIdentityResolver.IGNORED_TEAM_TOKENS:
+            continue
+        replacement = FixtureIdentityResolver.TOKEN_ALIASES.get(token, token)
+        tokens.extend(replacement.split())
+    canonical = " ".join(tokens)
+    return FixtureIdentityResolver.PHRASE_ALIASES.get(canonical, canonical)
+
+
+@dataclass(frozen=True, slots=True)
 class FixtureIdentityProof:
     """
     Auditable proof for deciding whether two instruments represent one fixture.
@@ -54,7 +73,7 @@ class FixtureIdentityProof:
     blocker_reason: str | None = None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ParticipantMatch:
     matched: bool
     confidence: float
@@ -172,6 +191,11 @@ class FixtureIdentityResolver:
             },
         )
     )
+    # Tokens that live in GENERIC_SINGLE_TOKEN_ALIASES yet are the distinctive short
+    # name a venue emits for a full club ("United" for "Manchester United"/"West Ham
+    # United"). Geographic descriptors such as "city"/"state" stay non-distinctive so
+    # "New York City"/"Kansas City" cannot collapse onto a bare "City".
+    DISTINCTIVE_SUBSET_TOKENS = frozenset({"united"})
     PHRASE_ALIASES = {
         "cle cavaliers": "cleveland cavaliers",
         "cle cavs": "cleveland cavaliers",
@@ -220,6 +244,10 @@ class FixtureIdentityResolver:
     SPORT_ALIASES = {
         "american football": "american_football",
         "football": "soccer",
+        "football soccer": "soccer",
+        "association football": "soccer",
+        "futbol": "soccer",
+        "soccer football": "soccer",
         "ice hockey": "ice_hockey",
         "hockey": "ice_hockey",
     }
@@ -260,25 +288,10 @@ class FixtureIdentityResolver:
         return self.SPORT_ALIASES.get(normalized.replace("_", " "), normalized)
 
     def normalize_team_name(self, name: str | None) -> str:
-        normalized = self.normalize_event_component(name)
-        if not normalized:
-            return ""
-        normalized = self._strip_market_group_suffix(normalized)
-        normalized = self._compact_letter_spaced_aliases(normalized)
-        normalized = self.PHRASE_ALIASES.get(normalized, normalized)
-        tokens: list[str] = []
-        alias_hits: list[str] = []
-        for token in normalized.split():
-            if token in self.IGNORED_TEAM_TOKENS:
-                continue
-            replacement = self.TOKEN_ALIASES.get(token, token)
-            if replacement != token:
-                alias_hits.append(f"{token}->{replacement}")
-            tokens.extend(replacement.split())
-        canonical = " ".join(tokens)
-        return self.PHRASE_ALIASES.get(canonical, canonical)
+        return _normalize_team_name_cached(name)
 
-    def _compact_letter_spaced_aliases(self, normalized: str) -> str:
+    @staticmethod
+    def _compact_letter_spaced_aliases(normalized: str) -> str:
         """
         Recover dotted or spaced city abbreviations before token alias expansion.
 
@@ -287,7 +300,7 @@ class FixtureIdentityResolver:
 
         """
         compacted = normalized
-        for alias, replacement in self.LETTER_SPACED_ALIASES.items():
+        for alias, replacement in FixtureIdentityResolver.LETTER_SPACED_ALIASES.items():
             compacted = re.sub(
                 rf"(?<!\w){re.escape(alias)}(?!\w)",
                 replacement,
@@ -295,7 +308,8 @@ class FixtureIdentityResolver:
             )
         return " ".join(compacted.split())
 
-    def _strip_market_group_suffix(self, normalized: str) -> str:
+    @staticmethod
+    def _strip_market_group_suffix(normalized: str) -> str:
         """
         Remove provider UI suffixes accidentally appended to fixture participants.
 
@@ -309,7 +323,7 @@ class FixtureIdentityResolver:
         changed = True
         while changed:
             changed = False
-            for suffix in self.MARKET_GROUP_SUFFIXES:
+            for suffix in FixtureIdentityResolver.MARKET_GROUP_SUFFIXES:
                 if cleaned.endswith(suffix):
                     cleaned = cleaned[: -len(suffix)].strip()
                     changed = True
@@ -770,6 +784,9 @@ class FixtureIdentityResolver:
             return 0.84, "token_subset"
         overlap = left_tokens & right_tokens
         if len(overlap) >= 2:
+            distinctive_overlap = overlap - FixtureIdentityResolver.GEOGRAPHIC_PREFIX_TOKENS
+            if len(distinctive_overlap) < 2:
+                return 0.0, ""
             denominator = max(len(left_tokens), len(right_tokens), 1)
             return max(0.74, len(overlap) / denominator), "token_overlap"
         return 0.0, ""
@@ -780,7 +797,9 @@ class FixtureIdentityResolver:
             return False
         if not subset < superset:
             return False
-        return not subset <= cls.GENERIC_SINGLE_TOKEN_ALIASES
+        if not subset <= cls.GENERIC_SINGLE_TOKEN_ALIASES:
+            return True
+        return bool(subset & cls.DISTINCTIVE_SUBSET_TOKENS)
 
     def _participant_prefix_alias(self, canonical: str) -> str:
         tokens = canonical.split()

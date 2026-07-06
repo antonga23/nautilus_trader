@@ -1,0 +1,36 @@
+[Unit]
+Description=Nodeops dashboard (strategy-node CRUD + monitoring)
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+# WorkingDirectory must be the repo checkout so the deploy/archive scripts resolve.
+WorkingDirectory=/opt/cloudbet/cloudbet-market-maker
+ExecStart=/usr/bin/python3 /opt/cloudbet/nodeops/server.py
+Restart=always
+RestartSec=3
+
+# --- nodeops configuration (override via `systemctl edit nodeops` drop-ins) ---
+# Binds loopback by default. To expose to the operator network, set NODEOPS_HOST=0.0.0.0
+# AND set NODEOPS_USER/NODEOPS_PASSWORD — the server refuses a public bind without auth.
+Environment=NODEOPS_HOST=127.0.0.1
+Environment=NODEOPS_PORT=8090
+Environment=NODEOPS_NODES_ROOT=/opt/cloudbet/strategy-nodes
+Environment=NODEOPS_DB=/opt/cloudbet/nodeops/nodeops.db
+Environment=NODEOPS_SAMPLE_SECS=60
+Environment=NODEOPS_RETENTION_DAYS=30
+Environment=NODEOPS_READONLY=1
+Environment=NODEOPS_REPO_DIR=/opt/cloudbet/cloudbet-market-maker
+Environment=NODEOPS_DEPLOY_SCRIPT=scripts/deploy/strategy_nodes/deploy_betting_strategy_node.sh
+Environment=NODEOPS_ARCHIVE_SCRIPT=scripts/deploy/strategy_nodes/archive_strategy_nodes.sh
+# Host strategy-node env file reused by deploys (never read/returned by the API):
+Environment=NODEOPS_ENV_FILE=/opt/cloudbet/strategy-node.env
+# Basic-auth credentials are intentionally NOT set here. Provide real values via a
+# drop-in (`systemctl edit nodeops`) before exposing beyond loopback:
+#   [Service]
+#   Environment=NODEOPS_USER=...
+#   Environment=NODEOPS_PASSWORD=...
+
+[Install]
+WantedBy=multi-user.target

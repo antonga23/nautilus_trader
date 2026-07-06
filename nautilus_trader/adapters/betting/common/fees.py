@@ -26,8 +26,19 @@ from nautilus_trader.adapters.betting.common.odds import devig_probabilities
 
 DEFAULT_TAKER_FEE_RATES: dict[str, Decimal] = {
     # Polymarket sports markets use a 3% category fee-rate parameter in the
-    # protocol formula: shares * feeRate * price * (1 - price).
+    # protocol formula: feeRate * shares * min(price, 1 - price).
     "POLYMARKET": Decimal("0.03"),
+    # Cloudbet is a bookmaker: its cost is the margin embedded in the quoted odds,
+    # which the arbitrage math already prices, so the explicit per-stake fee is zero.
+    "CLOUDBET": Decimal(0),
+    # SX.bet charges no per-stake taker fee; its commission applies to net winnings
+    # (see DEFAULT_WINNING_PROFIT_FEE_RATES).
+    "SXBET": Decimal(0),
+}
+
+DEFAULT_WINNING_PROFIT_FEE_RATES: dict[str, Decimal] = {
+    # SX.bet taker commission: 4% of net winnings on the winning leg.
+    "SXBET": Decimal("0.04"),
 }
 
 
@@ -117,11 +128,13 @@ def fee_adjusted_odds(
     """
     Convert raw decimal odds into fee-adjusted effective odds.
 
-    ``taker_fee_rate`` uses the prediction-market formula where fee per share is
-    ``rate * price * (1 - price)``. Expressed per unit stake this is
-    ``rate * (1 - price)``. ``maker_rebate_rate`` mirrors that fee curve as a
-    stake-cost reduction for passive fills. ``winning_profit_fee_rate`` models
-    sportsbook-style commissions charged only on winning profit.
+    ``taker_fee_rate`` uses the prediction-market (Polymarket) protocol formula
+    where the fee per share is ``rate * min(price, 1 - price)``. With
+    ``shares = stake / price`` this is ``rate * min(price, 1 - price) / price``
+    per unit stake (``price`` here is ``raw_probability``). ``maker_rebate_rate``
+    applies a ``rate * (1 - price)`` stake-cost reduction for passive fills.
+    ``winning_profit_fee_rate`` models sportsbook-style commissions charged only
+    on winning profit.
 
     """
     raw_odds = Decimal(str(odds))
@@ -133,7 +146,8 @@ def fee_adjusted_odds(
     maker_rebate_rate = _normalized_rate(maker_rebate_rate)
     winning_rate = _normalized_rate(winning_profit_fee_rate)
     raw_probability = Decimal(1) / raw_odds
-    taker_cost_fraction = taker_rate * (Decimal(1) - raw_probability)
+    taker_min_side = min(raw_probability, Decimal(1) - raw_probability)
+    taker_cost_fraction = taker_rate * taker_min_side / raw_probability
     maker_rebate_fraction = maker_rebate_rate * (Decimal(1) - raw_probability)
     stake_cost_multiplier = Decimal(1) + taker_cost_fraction - maker_rebate_fraction
     if stake_cost_multiplier <= 0:

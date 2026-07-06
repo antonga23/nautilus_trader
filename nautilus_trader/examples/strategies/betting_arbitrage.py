@@ -33,6 +33,7 @@ from typing import Any
 import msgspec
 
 from nautilus_trader.adapters.betting.common.fees import DEFAULT_TAKER_FEE_RATES
+from nautilus_trader.adapters.betting.common.fees import DEFAULT_WINNING_PROFIT_FEE_RATES
 from nautilus_trader.adapters.betting.common.fees import FeeAdjustedCoverageBasket
 from nautilus_trader.adapters.betting.common.fees import fee_adjusted_basket_margin
 from nautilus_trader.adapters.betting.common.fees import fee_adjusted_coverage_basket
@@ -63,6 +64,7 @@ from nautilus_trader.examples.strategies.opportunity_graph import OpportunityGra
 from nautilus_trader.model.data import QuoteTick
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.enums import TimeInForce
+from nautilus_trader.model.identifiers import ClientOrderId
 from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.instruments import BinaryOption
@@ -70,6 +72,7 @@ from nautilus_trader.model.instruments.base import Instrument
 from nautilus_trader.model.instruments.crypto_betting import (
     CryptoBettingInstrument as LegacyCryptoBettingInstrument,
 )
+from nautilus_trader.model.orders import Order
 from nautilus_trader.trading.strategy import Strategy
 
 
@@ -79,6 +82,10 @@ VALID_DEVIG_METHODS = frozenset({"auto", "proportional", "shin", "logarithmic"})
 VALID_EXECUTION_PRICE_CHANGE_POLICIES = frozenset({"none", "better", "all"})
 VALID_EXECUTION_VENUE_MODES = frozenset({"all", "cross_venue", "same_venue"})
 DEFAULT_ENABLED_VENUES = frozenset({"CLOUDBET", "SXBET", "10BET"})
+# Venues whose execution adapter provably honours OrderSide.SELL as a position-reducing
+# exit. SX.bet's adapter ignores order side (it always posts the instrument's outcome),
+# so a SELL there would ADD exposure instead of closing it — never auto-exit elsewhere.
+UNWIND_EXIT_SUPPORTED_VENUES = frozenset({"CLOUDBET", "POLYMARKET"})
 NANOSECONDS_PER_SECOND = 1_000_000_000
 INSTRUMENT_REFRESH_TIMER_NAME = "betting-arbitrage-instrument-refresh"
 INSTRUMENT_RECONCILE_TIMER_PREFIX = "betting-arbitrage-instrument-reconcile"
@@ -232,6 +239,10 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         subscriptions in semantic mode for audit/runtime diagnostics.
     semantic_unmatched_quote_probe_limit_per_venue : int, default 20
         Maximum unmatched quote probes per venue when semantic quote priority is active.
+    cross_venue_common_fixture_quote_reserve_limit_per_venue : int | None, default None
+        Maximum reserved cross-venue common-fixture quote subscriptions per venue.
+        ``None`` sizes the reserve to the common fixtures actually loaded (still bounded
+        by ``semantic_quote_subscription_limit_by_venue``); ``0`` disables the reserve.
     quote_freshness_profile : str, default "pre_match"
         Quote timing policy: "pre_match", "live", or "custom".
     quote_max_pair_skew_secs : float | None, default None
@@ -244,15 +255,18 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         Optional timer interval for requesting refreshed venue instrument catalogs.
     stale_quote_refresh_cooldown_secs : float | None, default 60.0
         Minimum interval between stale-quote-triggered catalog refresh requests per venue.
-    venue_taker_fee_rates : dict[str, Decimal], default {"POLYMARKET": Decimal("0.03")}
+    venue_taker_fee_rates : dict[str, Decimal], default DEFAULT_TAKER_FEE_RATES
         Venue-level taker fee-rate parameters. Prediction-market venues use the
-        protocol formula ``shares * rate * price * (1 - price)``.
+        protocol formula ``rate * shares * min(price, 1 - price)``. Defaults cover
+        POLYMARKET (3%) plus explicit zeros for CLOUDBET (margin embedded in odds)
+        and SXBET (commission charged on net winnings instead).
     venue_maker_rebate_rates : dict[str, Decimal], default {}
         Venue-level maker rebate-rate parameters. These use the same
         prediction-market curve as taker fees, but reduce effective stake cost
         for passive fills.
-    venue_winning_profit_fee_rates : dict[str, Decimal], default {}
-        Venue-level fee rates applied only to winning profit.
+    venue_winning_profit_fee_rates : dict[str, Decimal], default DEFAULT_WINNING_PROFIT_FEE_RATES
+        Venue-level fee rates applied only to winning profit. Defaults cover the
+        SX.bet 4% net-winnings taker commission.
     venue_basket_rebate_rates : dict[str, Decimal], default {}
         Venue-level basket reward/cashback rate applied to the covered set,
         useful for parlay-style or temporary promotion accounting.
@@ -290,12 +304,18 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         explicit FX/currency-risk policy.
     execution_price_change_policy : str, default "better"
         Venue price-change policy for live execution.
-    execution_max_retry_count : int, default 1
-        Maximum retry attempts for live execution recovery paths.
-    execution_retry_slippage_bps : int, default 25
-        Slippage tolerance for venue retry payloads.
     live_execution_kill_switch_path : str | None, default None
         Optional file path which halts live execution when present.
+    unwind_filled_leg_enabled : bool, default False
+        Submit a bounded exit order for a filled leg whose sibling leg terminally
+        failed (rejected/denied/canceled). Cancelling a resting sibling leg is always
+        attempted because it only removes risk; exiting a filled leg places a new
+        live order, so it must be explicitly enabled.
+    unwind_max_slippage_bps : int, default 50
+        Maximum adverse move versus the filled leg's average entry price tolerated
+        by the automated exit. When the exit-side quote is outside this bound, or
+        any input needed for a safe exit is missing, the strategy only alerts and
+        leaves the position to the operator.
 
     """
 
@@ -318,6 +338,7 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
     semantic_quote_subscription_limit_by_venue: dict[str, int] = {}
     semantic_unmatched_quote_probe_venues: frozenset[str] = frozenset({"POLYMARKET"})
     semantic_unmatched_quote_probe_limit_per_venue: int = 20
+    cross_venue_common_fixture_quote_reserve_limit_per_venue: int | None = None
     quote_freshness_profile: str = "pre_match"
     quote_max_pair_skew_secs: float | None = None
     quote_max_fetch_latency_secs: float | None = None
@@ -349,9 +370,9 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
     fx_quote_max_age_secs: float = 30.0
     configured_fx_rates: dict[str, Decimal] = {}
     execution_price_change_policy: str = "better"
-    execution_max_retry_count: int = 1
-    execution_retry_slippage_bps: int = 25
     live_execution_kill_switch_path: str | None = None
+    unwind_filled_leg_enabled: bool = False
+    unwind_max_slippage_bps: int = 50
 
     def __post_init__(self) -> None:
         """
@@ -387,6 +408,7 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         )
         venue_winning_profit_fee_rates = normalize_venue_fee_rates(
             self.venue_winning_profit_fee_rates,
+            defaults=DEFAULT_WINNING_PROFIT_FEE_RATES,
         )
         venue_basket_rebate_rates = normalize_venue_fee_rates(
             self.venue_basket_rebate_rates,
@@ -536,6 +558,15 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         if self.semantic_unmatched_quote_probe_limit_per_venue < 0:
             msg = "semantic_unmatched_quote_probe_limit_per_venue must be non-negative"
             raise ValueError(msg)
+        if (
+            self.cross_venue_common_fixture_quote_reserve_limit_per_venue is not None
+            and self.cross_venue_common_fixture_quote_reserve_limit_per_venue < 0
+        ):
+            msg = (
+                "cross_venue_common_fixture_quote_reserve_limit_per_venue "
+                "must be non-negative when set"
+            )
+            raise ValueError(msg)
 
     def _validate_live_execution_config(
         self,
@@ -565,11 +596,8 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         if self.max_daily_loss < 0:
             msg = "max_daily_loss must be non-negative"
             raise ValueError(msg)
-        if self.execution_max_retry_count < 0:
-            msg = "execution_max_retry_count must be non-negative"
-            raise ValueError(msg)
-        if self.execution_retry_slippage_bps < 0:
-            msg = "execution_retry_slippage_bps must be non-negative"
+        if self.unwind_max_slippage_bps < 0:
+            msg = "unwind_max_slippage_bps must be non-negative"
             raise ValueError(msg)
         self._validate_portfolio_currency_config(stablecoin_currencies)
 
@@ -696,6 +724,13 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._live_execution_blocks = 0
         self._live_execution_submissions = 0
         self._live_execution_unhedged_exposures = 0
+        self._live_execution_naked_exposures = 0
+        self._live_execution_unwind_cancels = 0
+        self._live_execution_unwind_exits = 0
+        self._arb_leg_siblings: dict[str, str] = {}
+        self._unwound_arb_pairs: set[str] = set()
+        self._unwind_cancels_requested: set[str] = set()
+        self._unwind_exits_requested: set[str] = set()
         self._live_execution_halt_reason: str | None = None
         self._live_execution_notional_used = Decimal(0)
         self._live_execution_realized_loss = Decimal(0)
@@ -802,6 +837,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             f"{sorted(self._config.semantic_unmatched_quote_probe_venues)} "
             "semantic_unmatched_quote_probe_limit_per_venue="
             f"{self._config.semantic_unmatched_quote_probe_limit_per_venue} "
+            "cross_venue_common_fixture_quote_reserve_limit_per_venue="
+            f"{self._config.cross_venue_common_fixture_quote_reserve_limit_per_venue} "
             f"instrument_refresh_interval_secs={self._config.instrument_refresh_interval_secs} "
             "stale_quote_refresh_cooldown_secs="
             f"{self._config.stale_quote_refresh_cooldown_secs} "
@@ -1028,6 +1065,11 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._instrument_refresh_reconciles += 1
         self._instrument_refresh_reconciles_by_venue[venue_value] += 1
         active_cached = self._active_cached_venue_instruments(venue_value)
+        if active_cached is None:
+            # Cache read failed: abort reconcile for this venue rather than treating the
+            # venue as having zero active instruments, which would mass-remove every
+            # subscribed instrument and collapse cross-venue topology.
+            return
         active_ids = {str(instrument.id) for instrument in active_cached}
         added_instruments = self._add_refreshed_active_instruments(active_cached)
         removed = self._remove_inactive_or_delisted_instruments(
@@ -1050,11 +1092,17 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             f"subscribed={len(self._subscribed_instruments)}",
         )
 
-    def _active_cached_venue_instruments(self, venue_value: str) -> list[BettingInstrument]:
+    def _active_cached_venue_instruments(
+        self,
+        venue_value: str,
+    ) -> list[BettingInstrument] | None:
         try:
             cached_instruments = list(self.cache.instruments())
-        except Exception:
-            return []
+        except Exception as exc:
+            # Return None (not []) so the caller distinguishes "read failed" from
+            # "genuinely no active instruments" and skips removal on failure.
+            self.log.warning(f"Instrument cache read failed for venue={venue_value}: {exc!r}")
+            return None
 
         current_active_ids = self._current_active_refresh_ids(venue_value)
         active_cached: list[BettingInstrument] = []
@@ -1289,12 +1337,27 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
 
     def _subscribe_semantic_connected_quote_ticks(self) -> int:
         subscribed_by_venue = self._quote_subscription_counts_by_venue()
+        # A cross-venue reserve only makes sense with 2+ enabled venues; a single-venue
+        # config has no cross-venue counterpart to protect (#215).
+        cross_venue_reserve = (
+            max(0, self._config.semantic_unmatched_quote_probe_limit_per_venue)
+            if len(self._config.enabled_venues) >= 2
+            else 0
+        )
         subscribed_count = 0
-        for node in self._semantic_connected_quote_nodes():
+        for is_cross_venue, node in self._semantic_connected_quote_nodes():
             venue = node.instrument.id.venue.value.upper()
             venue_limit = self._config.semantic_quote_subscription_limit_by_venue.get(venue)
-            if venue_limit is not None and subscribed_by_venue[venue] >= venue_limit:
-                continue
+            if venue_limit is not None:
+                # Cross-venue-connected nodes may use the full venue ceiling; same-venue-
+                # only nodes stop short of a reserved cross-venue sub-budget so they
+                # cannot permanently occupy the limit across refresh cycles and starve a
+                # later cross-venue counterpart. Cap the reserve at half the ceiling so a
+                # small limit is never fully starved; the ceiling itself is never exceeded.
+                reserve = min(cross_venue_reserve, venue_limit // 2)
+                effective_limit = venue_limit if is_cross_venue else max(0, venue_limit - reserve)
+                if subscribed_by_venue[venue] >= effective_limit:
+                    continue
             if self._subscribe_quote_ticks_for_instrument(node.instrument):
                 subscribed_by_venue[venue] += 1
                 subscribed_count += 1
@@ -1321,8 +1384,14 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         runtime can observe prices for already loaded shared fixtures.
 
         """
-        per_venue_limit = self._config.semantic_unmatched_quote_probe_limit_per_venue
-        if per_venue_limit <= 0 or len(self._config.enabled_venues) < 2:
+        # The reserve has its own limit: the unmatched-probe limit is sized for
+        # Polymarket audit probes (default 20) and is far too small for shared-fixture
+        # coverage (#227). None sizes the reserve to the common fixtures actually
+        # loaded; the per-venue quote ceiling still bounds every subscription.
+        per_venue_limit = self._config.cross_venue_common_fixture_quote_reserve_limit_per_venue
+        if per_venue_limit is not None and per_venue_limit <= 0:
+            return 0
+        if len(self._config.enabled_venues) < 2:
             return 0
 
         subscribed_snapshot = tuple(self._subscribed_instruments)
@@ -1366,7 +1435,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             venue_limit = self._config.semantic_quote_subscription_limit_by_venue.get(venue)
             if venue_limit is not None and subscribed_by_venue[venue] >= venue_limit:
                 continue
-            if reserved_by_venue[venue] >= per_venue_limit:
+            if per_venue_limit is not None and reserved_by_venue[venue] >= per_venue_limit:
                 continue
             if self._subscribe_quote_ticks_for_instrument(instrument):
                 subscribed_by_venue[venue] += 1
@@ -1449,9 +1518,9 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 return True
         return False
 
-    def _semantic_connected_quote_nodes(self) -> list[Any]:
+    def _semantic_connected_quote_nodes(self) -> list[tuple[bool, Any]]:
         """
-        Return semantically connected nodes in quote-subscription priority order.
+        Return (is_cross_venue, node) pairs in quote-subscription priority order.
 
         Multi-venue validation can have thousands of same-venue edges and only a handful
         of cross-venue edges. Venue quote limits should therefore spend their first
@@ -1468,9 +1537,13 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 continue
             if not self._resolution_horizon_quote_allowed(node):
                 continue
-            ranked.append((self._semantic_quote_subscription_priority(node_id, edge_ids), node))
+            priority = self._semantic_quote_subscription_priority(node_id, edge_ids)
+            ranked.append((priority, node))
         ranked.sort(key=lambda item: item[0])
-        return [node for _, node in ranked]
+        # priority[0] is -cross_venue_edges; < 0 means the node participates in at least
+        # one cross-venue edge. Surfaced so the subscription pass can protect a reserve
+        # for cross-venue nodes from same-venue-only saturation (issue #215).
+        return [(priority[0] < 0, node) for priority, node in ranked]
 
     def _semantic_quote_subscription_priority(
         self,
@@ -1841,13 +1914,16 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 return prediction_price
             return None
 
-        if venue == "SXBET" and bid_price > 0:
+        # Decimal odds must be > 1 (a "price" of 1.0 or a wrongly scaled sub-1 quote is
+        # degenerate); returning it would raise ValueError downstream in
+        # fee_adjusted_odds and abort the whole quote-handling callback for the tick.
+        if venue == "SXBET" and bid_price > 1:
             return bid_price
 
-        if ask_price > 0:
+        if ask_price > 1:
             return ask_price
 
-        if bid_price > 0:
+        if bid_price > 1:
             return bid_price
 
         return None
@@ -4182,9 +4258,13 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             time.perf_counter_ns() - construction_started_ns,
         )
 
-        # Submit both orders
-        # Note: In practice, you'd want to submit these with minimal delay
-        # and handle cases where one fills but the other doesn't
+        leg_a_id = str(order_a.client_order_id)
+        leg_b_id = str(order_b.client_order_id)
+        self._arb_leg_siblings[leg_a_id] = leg_b_id
+        self._arb_leg_siblings[leg_b_id] = leg_a_id
+
+        # Submit both orders; terminal non-fill events on either leg trigger the
+        # sibling unwind in on_order_rejected/on_order_denied/on_order_canceled.
         submit_started_ns = time.perf_counter_ns()
         self._live_execution_attempts += 1
         submitted_count = 0
@@ -4220,6 +4300,13 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         order_ids = f"{order_a.client_order_id}, {order_b.client_order_id}"
         msg = f"Arbitrage orders submitted: {order_ids}"
         self.log.info(msg)
+
+        # A leg denied/rejected synchronously inside submit_order fires its handler
+        # before the sibling is in the cache, so the unwind there cannot resolve the
+        # pair; re-run it now that both legs are cached.
+        for order in (order_a, order_b):
+            if order.is_closed:
+                self._unwind_sibling_leg_for(str(order.client_order_id))
 
     def _live_execution_block_reasons_for(
         self,
@@ -4294,6 +4381,14 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         )
 
         reasons: list[str] = []
+        # Fail closed on an undated quote: a missing/zero decision timestamp yields a
+        # deceptive 0.0 age/skew, so the stale/cross-cycle checks below would pass an
+        # arbitrarily stale quote straight to live submission. Block it explicitly.
+        if (
+            self._quote_decision_timestamp_ns(quote_a) <= 0
+            or self._quote_decision_timestamp_ns(quote_b) <= 0
+        ):
+            reasons.append("final_quote_missing_timestamp")
         if (
             quote_age_a_secs > freshness.max_quote_age_secs
             or quote_age_b_secs > freshness.max_quote_age_secs
@@ -4576,6 +4671,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._record_order_lifecycle_event(event, "filled")
         msg = f"Order filled: {event}"
         self.log.info(msg)
+        self._handle_unwind_cancel_fill_race(event)
 
     def on_order_accepted(self, event: Event) -> None:
         """
@@ -4604,6 +4700,188 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             self._live_execution_block_reasons["order_rejected"] += 1
         msg = f"Order rejected: {event}"
         self.log.warning(msg)
+        self._unwind_sibling_leg(event)
+
+    def on_order_denied(self, event: Event) -> None:
+        """
+        Handle order denied events (e.g. a local RiskEngine denial).
+
+        submit_order enqueues asynchronously and does not raise on a local denial, so a
+        denied leg is otherwise swallowed by the base no-op while its sibling may be
+        resting or filled — leaving naked directional exposure. Mirror the rejected path
+        so a denial halts live execution and is counted as unhedged exposure.
+
+        """
+        self._record_order_lifecycle_event(event, "denied")
+        if self._config.live_execution_armed:
+            self._live_execution_halt_reason = "order_denied"
+            self._live_execution_unhedged_exposures += 1
+            self._live_execution_block_reasons["order_denied"] += 1
+        msg = f"Order denied: {event}"
+        self.log.warning(msg)
+        self._unwind_sibling_leg(event)
+
+    def on_order_canceled(self, event: Event) -> None:
+        """
+        Handle order canceled events.
+
+        A canceled leg (venue-side or operator) after its sibling filled is the same
+        unhedged-exposure hazard as a rejection, so halt live execution and count it. A
+        cancel the strategy itself issued to unwind a pair is risk-reducing confirmation
+        instead, and must not halt, count, or recurse into the unwind.
+
+        """
+        self._record_order_lifecycle_event(event, "canceled")
+        if self._pop_unwind_cancel_confirmation(event):
+            msg = f"Arbitrage unwind cancel confirmed: {event}"
+            self.log.info(msg)
+            return
+        if self._config.live_execution_armed:
+            self._live_execution_halt_reason = "order_canceled"
+            self._live_execution_unhedged_exposures += 1
+            self._live_execution_block_reasons["order_canceled"] += 1
+        msg = f"Order canceled: {event}"
+        self.log.warning(msg)
+        self._unwind_sibling_leg(event)
+
+    def _pop_unwind_cancel_confirmation(self, event: Event) -> bool:
+        client_order_id = getattr(event, "client_order_id", None)
+        if client_order_id is None:
+            return False
+        key = str(client_order_id)
+        if key not in self._unwind_cancels_requested:
+            return False
+        self._unwind_cancels_requested.discard(key)
+        return True
+
+    def _handle_unwind_cancel_fill_race(self, event: Event) -> None:
+        client_order_id = getattr(event, "client_order_id", None)
+        if client_order_id is None:
+            return
+        key = str(client_order_id)
+        if key not in self._unwind_cancels_requested:
+            return
+        self._unwind_cancels_requested.discard(key)
+        order = self.cache.order(ClientOrderId(key))
+        if order is None:
+            self.log.error(
+                f"Arbitrage leg filled after unwind cancel but is not cached: {key}",
+            )
+            return
+        self._handle_naked_filled_leg(order, self._arb_leg_siblings.get(key, "unknown"))
+
+    def _unwind_sibling_leg(self, event: Event) -> None:
+        client_order_id = getattr(event, "client_order_id", None)
+        if client_order_id is None:
+            return
+        self._unwind_sibling_leg_for(str(client_order_id))
+
+    def _unwind_sibling_leg_for(self, failed_leg_id: str) -> None:
+        sibling_id = self._arb_leg_siblings.get(failed_leg_id)
+        if sibling_id is None:
+            return
+        pair_id = "|".join(sorted((failed_leg_id, sibling_id)))
+        if pair_id in self._unwound_arb_pairs:
+            return
+        sibling = self.cache.order(ClientOrderId(sibling_id))
+        if sibling is None:
+            self.log.error(
+                "Arbitrage unwind blocked, sibling leg not cached: "
+                f"failed_leg={failed_leg_id} sibling_leg={sibling_id}",
+            )
+            return
+        self._unwound_arb_pairs.add(pair_id)
+        if not sibling.is_closed:
+            self._unwind_cancels_requested.add(sibling_id)
+            self._live_execution_unwind_cancels += 1
+            self.log.warning(
+                f"Unwinding arbitrage pair: canceling sibling leg {sibling_id} "
+                f"after terminal failure of {failed_leg_id}",
+            )
+            self.cancel_order(sibling)
+        if sibling.filled_qty.as_decimal() > 0:
+            self._handle_naked_filled_leg(sibling, failed_leg_id)
+
+    def _handle_naked_filled_leg(self, order: Order, failed_leg_id: str) -> None:
+        leg_id = str(order.client_order_id)
+        if leg_id in self._unwind_exits_requested:
+            return
+        self._unwind_exits_requested.add(leg_id)
+        self._live_execution_naked_exposures += 1
+        self.log.error(
+            "NAKED EXPOSURE: arbitrage leg filled while sibling leg failed: "
+            f"instrument={order.instrument_id} filled_qty={order.filled_qty} "
+            f"avg_px={order.avg_px} failed_leg={failed_leg_id} "
+            f"exit_enabled={self._config.unwind_filled_leg_enabled}",
+        )
+        if not self._config.unwind_filled_leg_enabled:
+            return
+        if self._live_execution_kill_switch_active():
+            self.log.error(f"Naked-exposure exit skipped, kill switch active: {leg_id}")
+            return
+        self._attempt_bounded_exit(order)
+
+    def _attempt_bounded_exit(self, order: Order) -> None:
+        venue = str(order.instrument_id.venue).upper()
+        if venue not in UNWIND_EXIT_SUPPORTED_VENUES:
+            self.log.error(
+                f"Naked-exposure exit skipped, no proven sell-side exit path: venue={venue}",
+            )
+            return
+        instrument = self.cache.instrument(order.instrument_id)
+        quote = self._latest_quotes.get(str(order.instrument_id))
+        exit_price = self._unwind_exit_price(venue, quote)
+        entry_px = Decimal(str(order.avg_px)) if order.avg_px else None
+        if instrument is None or exit_price is None or entry_px is None or entry_px <= 0:
+            self.log.error(
+                "Naked-exposure exit skipped, missing exit inputs: "
+                f"instrument_cached={instrument is not None} exit_price={exit_price} "
+                f"entry_px={entry_px}",
+            )
+            return
+        if not self._exit_price_within_slippage(venue, entry_px, exit_price):
+            self.log.error(
+                "Naked-exposure exit skipped, exit price outside slippage bound: "
+                f"entry_px={entry_px} exit_price={exit_price} "
+                f"max_slippage_bps={self._config.unwind_max_slippage_bps}",
+            )
+            return
+        exit_order = self.order_factory.limit(
+            instrument_id=order.instrument_id,
+            order_side=OrderSide.SELL,
+            quantity=order.filled_qty,
+            price=instrument.make_price(float(exit_price)),
+            time_in_force=TimeInForce.GTC,
+        )
+        self._live_execution_unwind_exits += 1
+        self.log.warning(
+            f"Submitting bounded naked-exposure exit: {exit_order.client_order_id} "
+            f"instrument={order.instrument_id} qty={order.filled_qty} price={exit_price}",
+        )
+        self.submit_order(exit_order)
+
+    @staticmethod
+    def _unwind_exit_price(venue: str, quote: QuoteTick | None) -> Decimal | None:
+        if quote is None:
+            return None
+        bid_price = quote.bid_price.as_decimal()
+        if venue == "POLYMARKET":
+            return bid_price if Decimal(0) < bid_price < Decimal(1) else None
+        return bid_price if bid_price > 1 else None
+
+    def _exit_price_within_slippage(
+        self,
+        venue: str,
+        entry_px: Decimal,
+        exit_price: Decimal,
+    ) -> bool:
+        # Adverse direction flips with the price domain: on POLYMARKET (probability
+        # prices) selling BELOW entry is the loss; in decimal-odds domains laying
+        # ABOVE the backed odds is the loss.
+        tolerance = Decimal(self._config.unwind_max_slippage_bps) / Decimal(10_000)
+        if venue == "POLYMARKET":
+            return exit_price >= entry_px * (Decimal(1) - tolerance)
+        return exit_price <= entry_px * (Decimal(1) + tolerance)
 
     def _record_order_lifecycle_event(self, event: Event, lifecycle: str) -> None:
         instrument_id = getattr(event, "instrument_id", None)
@@ -4793,6 +5071,11 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                     sorted(self._live_execution_submissions_by_venue.items()),
                 ),
                 "unhedged_exposures": self._live_execution_unhedged_exposures,
+                "naked_exposures": self._live_execution_naked_exposures,
+                "unwind_cancels": self._live_execution_unwind_cancels,
+                "unwind_exits": self._live_execution_unwind_exits,
+                "unwind_filled_leg_enabled": self._config.unwind_filled_leg_enabled,
+                "unwind_max_slippage_bps": self._config.unwind_max_slippage_bps,
                 "order_lifecycle_counts_by_venue": {
                     venue: dict(sorted(counts.items()))
                     for venue, counts in sorted(self._order_lifecycle_counts_by_venue.items())
