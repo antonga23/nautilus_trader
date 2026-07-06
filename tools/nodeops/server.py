@@ -1637,7 +1637,10 @@ class Handler(BaseHTTPRequestHandler):
         Rewrite allow-listed market-window fields in a node's runtime manifest.
 
         Flow: validate the body against ``CONFIG_ALLOWED_KEYS``; apply the
-        updates to a copy of ``manifest.runtime.json``; refuse (403) unless the
+        updates to a copy of ``manifest.runtime.json`` under its ``strategy``
+        block — the location the strategy actually reads — mirroring each value
+        to the top level only when that key already exists there, so the two
+        copies never contradict; refuse (403) unless the
         result still passes ``manifest_is_validation_safe`` (defence in depth —
         the allow-listed fields cannot arm execution, but re-check anyway); then
         back up the old manifest, atomically write the new one, and optionally
@@ -1659,11 +1662,15 @@ class Handler(BaseHTTPRequestHandler):
                 {"error": "manifest.runtime.json not found or unreadable"},
             )
             return
+        strategy = manifest.get("strategy")
+        strategy = dict(strategy) if isinstance(strategy, dict) else {}
         changed = {
-            field: {"old": manifest.get(field), "new": value} for field, value in updates.items()
+            field: {"old": strategy.get(field), "new": value} for field, value in updates.items()
         }
+        strategy.update(updates)
         new_manifest = dict(manifest)
-        new_manifest.update(updates)
+        new_manifest["strategy"] = strategy
+        new_manifest.update({field: value for field, value in updates.items() if field in manifest})
         if not manifest_is_validation_safe(new_manifest):
             self._send_json(
                 HTTPStatus.FORBIDDEN,

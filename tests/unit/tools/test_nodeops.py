@@ -1358,9 +1358,15 @@ class _ConfigHandler:
 
 def _window_manifest(**overrides: Any) -> dict[str, Any]:
     manifest = _validation_manifest()
-    manifest["max_resolution_horizon_hours"] = 48.0
-    manifest["market_timing_filter"] = "all"
-    manifest["instrument_refresh_interval_secs"] = 300.0
+    # the rendered runtime manifest carries the discovery window in the
+    # strategy block — the location the strategy actually reads
+    manifest["strategy"].update(
+        {
+            "max_resolution_horizon_hours": 48.0,
+            "market_timing_filter": "all",
+            "instrument_refresh_interval_secs": 300.0,
+        },
+    )
     manifest.update(overrides)
     return manifest
 
@@ -1415,16 +1421,38 @@ def test_config_happy_path_rewrites_manifest_and_restarts(
     assert docker_calls == [["docker", "restart", "--", "node-a"]]
 
     rewritten = json.loads(manifest_path.read_text(encoding="utf8"))
-    assert rewritten["max_resolution_horizon_hours"] == 168.0
-    assert rewritten["market_timing_filter"] == "pre_market"
-    assert rewritten["instrument_refresh_interval_secs"] == 300.0  # untouched
+    assert rewritten["strategy"]["max_resolution_horizon_hours"] == 168.0
+    assert rewritten["strategy"]["market_timing_filter"] == "pre_market"
+    assert rewritten["strategy"]["instrument_refresh_interval_secs"] == 300.0  # untouched
+    assert "max_resolution_horizon_hours" not in rewritten  # no top-level copy invented
     assert server.manifest_is_validation_safe(rewritten) is True
 
     backup_path = manifest_path.parent / payload["backup"]
     assert backup_path.exists()
     assert payload["backup"].startswith("manifest.runtime.json.bak-")
     backup = json.loads(backup_path.read_text(encoding="utf8"))
-    assert backup["max_resolution_horizon_hours"] == 48.0
+    assert backup["strategy"]["max_resolution_horizon_hours"] == 48.0
+
+
+def test_config_writes_strategy_block_and_mirrors_top_level(tmp_path: Path) -> None:
+    """
+    Regression: the strategy reads the discovery window from ``strategy.*``, so a
+    top-level-only write is silently ignored by the node. Updates must land in the
+    strategy block, and a pre-existing top-level copy must be kept in sync rather
+    than left stale and contradicting.
+    """
+    manifest = _window_manifest(max_resolution_horizon_hours=48.0)  # stale top-level copy
+    state, manifest_path = _config_node(tmp_path, manifest)
+    handler = _ConfigHandler(state, _config_body(max_resolution_horizon_hours=168))
+    handler._node_config("node-a")
+    assert handler.sent["status"] == server.HTTPStatus.OK
+    assert handler.sent["payload"]["changed"]["max_resolution_horizon_hours"] == {
+        "old": 48.0,
+        "new": 168.0,
+    }
+    rewritten = json.loads(manifest_path.read_text(encoding="utf8"))
+    assert rewritten["strategy"]["max_resolution_horizon_hours"] == 168.0
+    assert rewritten["max_resolution_horizon_hours"] == 168.0  # mirrored, not stale
 
 
 def test_config_no_restart_leaves_docker_alone(tmp_path: Path, monkeypatch: Any) -> None:
@@ -1438,9 +1466,8 @@ def test_config_no_restart_leaves_docker_alone(tmp_path: Path, monkeypatch: Any)
     handler._node_config("node-a")
     assert handler.sent["status"] == server.HTTPStatus.OK
     assert handler.sent["payload"]["restarted"] is False
-    assert (
-        json.loads(manifest_path.read_text(encoding="utf8"))["max_resolution_horizon_hours"] == 96.0
-    )
+    rewritten = json.loads(manifest_path.read_text(encoding="utf8"))
+    assert rewritten["strategy"]["max_resolution_horizon_hours"] == 96.0
 
 
 def test_config_rejects_unknown_keys_400(tmp_path: Path) -> None:
@@ -1516,9 +1543,8 @@ def test_config_restart_failure_502_after_write(tmp_path: Path, monkeypatch: Any
     assert "restart failed" in payload["error"]
     # the manifest write already happened; the response still reports it
     assert payload["changed"]["max_resolution_horizon_hours"]["new"] == 96.0
-    assert (
-        json.loads(manifest_path.read_text(encoding="utf8"))["max_resolution_horizon_hours"] == 96.0
-    )
+    rewritten = json.loads(manifest_path.read_text(encoding="utf8"))
+    assert rewritten["strategy"]["max_resolution_horizon_hours"] == 96.0
 
 
 # -- real HTTP smoke for /config --------------------------------------------------
@@ -1569,14 +1595,12 @@ def test_real_http_config_endpoint(tmp_path: Path) -> None:
         assert ok["changed"]["max_resolution_horizon_hours"] == {"old": 48.0, "new": 96.0}
 
         rewritten = json.loads(manifest_path.read_text(encoding="utf8"))
-        assert rewritten["max_resolution_horizon_hours"] == 96.0
-        assert rewritten["market_timing_filter"] == "pre_market"
+        assert rewritten["strategy"]["max_resolution_horizon_hours"] == 96.0
+        assert rewritten["strategy"]["market_timing_filter"] == "pre_market"
         backup_path = manifest_path.parent / ok["backup"]
         assert backup_path.exists()
-        assert (
-            json.loads(backup_path.read_text(encoding="utf8"))["max_resolution_horizon_hours"]
-            == 48.0
-        )
+        backup = json.loads(backup_path.read_text(encoding="utf8"))
+        assert backup["strategy"]["max_resolution_horizon_hours"] == 48.0
 
         bad = json.dumps({"max_resolution_horizon_hours": 96, "auto_execute": True}).encode("utf8")
         conn.request(
