@@ -92,6 +92,7 @@
   .chart .label{font-size:11px;color:var(--muted);display:flex;justify-content:space-between}
   .chart .val{font-family:var(--mono);color:var(--ink)}
   .chart svg{display:block;width:100%;height:46px;margin-top:4px}
+  .chart.rag svg{height:96px}
   .windows{display:inline-flex;gap:6px;margin-left:8px}
   .windows button,.actions button{font:inherit;font-size:12px;padding:3px 10px;border-radius:5px;
     border:1px solid var(--line2);background:var(--panel2);color:var(--ink);cursor:pointer}
@@ -533,6 +534,35 @@ const CHART_METRICS = [
   ["executable_candidates", "executable cand"],
   ["mem_mb", "mem (MiB)"],
 ];
+const RAG_METRICS = ["rag_green", "rag_amber", "rag_red"];
+
+// stacked-area RAG history (hand-rolled inline SVG, CSP-safe; colors match ragCell)
+function ragStackChart(points) {
+  const W = 640, H = 96, pad = 3;
+  const series = points.map(p => {
+    const g = Math.max(0, toNum(p.rag_green) || 0);
+    const a = Math.max(0, toNum(p.rag_amber) || 0);
+    const r = Math.max(0, toNum(p.rag_red) || 0);
+    return { g, a, r, total: g + a + r };
+  });
+  const max = Math.max(...series.map(s => s.total));
+  if (!max) return '<div class="muted">no candidate bands in window</div>';
+  const pts = series.length < 2 ? [series[0], series[0]] : series;
+  const n = pts.length;
+  const x = i => pad + (i / (n - 1)) * (W - 2 * pad);
+  const y = v => H - pad - (v / max) * (H - 2 * pad);
+  const band = (lower, upper, fill) => {
+    const top = pts.map((s, i) => x(i).toFixed(1) + "," + y(upper(s)).toFixed(1));
+    const bottom = pts.map((s, i) => x(i).toFixed(1) + "," + y(lower(s)).toFixed(1)).reverse();
+    return '<polygon fill="' + fill + '" fill-opacity="0.75" points="' +
+      top.concat(bottom).join(" ") + '"/>';
+  };
+  return '<svg viewBox="0 0 ' + W + " " + H + '" preserveAspectRatio="none">' +
+    band(() => 0, s => s.g, "var(--pos)") +
+    band(s => s.g, s => s.g + s.a, "var(--warn)") +
+    band(s => s.g + s.a, s => s.g + s.a + s.r, "var(--neg)") +
+    "</svg>";
+}
 
 // ---- generic renderers -----------------------------------------------------
 // Recursive key/value block for arbitrary probe sub-objects (spec D.3 rule).
@@ -727,16 +757,19 @@ function tabOverview(d, probe) {
 const MW_PRESETS = [48, 96, 168];
 function marketWindowPanel(d, probe) {
   const man = d.manifest || {};
+  // strategy block is what the node reads; older manifests carry these top-level
+  const strat = (man.strategy && typeof man.strategy === "object") ? man.strategy : {};
+  const mwField = k => strat[k] != null ? strat[k] : man[k];
   const ro = d.readonly;
   const disabled = ro ? "disabled" : "";
-  const horizon = man.max_resolution_horizon_hours;
-  const timing = man.market_timing_filter;
+  const horizon = mwField("max_resolution_horizon_hours");
+  const timing = mwField("market_timing_filter");
   const out = [];
   out.push('<div class="section"><h3>Market window</h3>');
   out.push(renderKV({
     "resolution horizon (h)": num(horizon),
     "timing filter": timing == null ? "—" : timing,
-    "instrument refresh (s)": num(man.instrument_refresh_interval_secs),
+    "instrument refresh (s)": num(mwField("instrument_refresh_interval_secs")),
   }));
   if (probe.resolutionHorizon != null) {
     out.push('<div class="subtle">probe resolutionHorizon diagnostics</div>');
@@ -842,8 +875,10 @@ function arbFunnel(probe) {
 
 // ---- Tab 2: Metrics history ------------------------------------------------
 function tabHistory() {
-  return '<div class="tabpane active"><div class="section"><h3>Metrics history' +
+  return '<div class="tabpane active"><div class="section"><h3>RAG / margin bands' +
     '<span class="windows" id="windows"></span></h3>' +
+    '<div class="chart rag" id="ragChart"><span class="muted">loading…</span></div></div>' +
+    '<div class="section"><h3>Metrics history</h3>' +
     '<div class="charts" id="charts"><span class="muted">loading…</span></div></div></div>';
 }
 function renderWindows() {
@@ -863,20 +898,28 @@ function renderWindows() {
 }
 async function loadCharts(node) {
   const charts = document.getElementById("charts");
+  const rag = document.getElementById("ragChart");
   if (!charts) return;
-  const metrics = CHART_METRICS.map(m => m[0]).join(",");
+  const metrics = CHART_METRICS.map(m => m[0]).concat(RAG_METRICS).join(",");
   let data;
   try {
     data = await api("/api/nodes/" + encodeURIComponent(node) +
       "/history?hours=" + state.window + "&metrics=" + metrics);
   } catch (e) {
     charts.innerHTML = '<span class="muted">history error: ' + esc(e.message) + "</span>";
+    if (rag) rag.innerHTML = '<span class="muted">history error: ' + esc(e.message) + "</span>";
     return;
   }
   const pts = data.points || [];
   if (!pts.length) {
     charts.innerHTML = '<span class="muted">no samples in window yet</span>';
+    if (rag) rag.innerHTML = '<span class="muted">no samples in window yet</span>';
     return;
+  }
+  if (rag) {
+    rag.innerHTML = '<div class="label"><span>stacked candidate counts per sample</span>' +
+      '<span class="val">' + ragCell(pts[pts.length - 1]) + "</span></div>" +
+      ragStackChart(pts);
   }
   charts.innerHTML = CHART_METRICS.map(([key, label]) => {
     const last = pts[pts.length - 1][key];
