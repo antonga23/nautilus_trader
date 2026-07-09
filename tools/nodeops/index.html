@@ -67,6 +67,25 @@
     background:var(--panel);border-left:1px solid var(--line);transform:translateX(100%);
     transition:transform .18s ease;overflow-y:auto;padding:22px clamp(16px,2.5vw,28px)}
   #drawer.open{transform:translateX(0)}
+  /* ops panel (alerts / audit) — same slide-in shell as the drawer */
+  #opsScrim{position:fixed;inset:0;background:#0007;display:none;z-index:7}
+  #opsScrim.open{display:block}
+  #opsPanel{position:fixed;top:0;right:0;height:100vh;width:min(760px,97vw);z-index:8;
+    background:var(--panel);border-left:1px solid var(--line);transform:translateX(100%);
+    transition:transform .18s ease;overflow-y:auto;padding:22px clamp(16px,2.5vw,28px)}
+  #opsPanel.open{transform:translateX(0)}
+  #opsPanel h2{margin:0 0 4px;font-size:16px;font-weight:600}
+  .alert-row{display:flex;gap:10px;align-items:baseline;padding:7px 0;border-bottom:1px solid var(--line);
+    font-family:var(--mono);font-size:12px}
+  .alert-row .sev{flex-shrink:0;text-transform:uppercase;letter-spacing:.04em;width:64px}
+  .alert-row .sev.high{color:var(--neg)} .alert-row .sev.warning{color:var(--warn)}
+  .alert-row .sev.info{color:var(--info)}
+  .alert-row .ats{color:var(--faint);flex-shrink:0}
+  .alert-row .anode{color:var(--gold);flex-shrink:0}
+  .alert-row .adet{color:var(--ink)}
+  .hookbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px;
+    font-family:var(--mono);font-size:12px;color:var(--muted)}
+  .hookbar code{color:var(--ink)}
   #drawer h2{margin:0 0 4px;font-size:16px;font-weight:600}
   #drawer .sub{color:var(--muted);font-family:var(--mono);font-size:12px;margin-bottom:14px}
   .close{position:absolute;top:16px;right:18px;background:none;border:none;color:var(--muted);
@@ -175,6 +194,8 @@
   <span class="meta" id="summary">loading…</span>
   <span class="ro-badge hidden" id="roBadge">read-only</span>
   <span class="spacer"></span>
+  <button class="link-btn" id="alertsBtn" type="button">Alerts</button>
+  <button class="link-btn" id="auditBtn" type="button">Audit</button>
   <span class="meta" id="whoami"></span>
   <button class="link-btn" id="changePwBtn" type="button">Change password</button>
 </header>
@@ -229,6 +250,9 @@
 <div id="scrim"></div>
 <aside id="drawer" aria-hidden="true"></aside>
 
+<div id="opsScrim"></div>
+<aside id="opsPanel" aria-hidden="true"></aside>
+
 <div id="modalScrim">
   <div class="modal" role="dialog" aria-modal="true">
     <h2 id="modalTitle">Change password</h2>
@@ -276,6 +300,7 @@ const state = {
   edges: null,       // /odds response cache for the open node
   detail: null,      // /api/nodes/<name> cache for the open node
   sort: { positive: null, negative: null, value: null },
+  ops: null,         // "alerts" | "audit" — open ops panel, or null
 };
 
 // ---- fetch wrapper ---------------------------------------------------------
@@ -705,7 +730,7 @@ function renderTab(tab) {
     case "quote": body.innerHTML = tabQuote(probe); break;
     case "bands": body.innerHTML = tabBands(probe); break;
     case "latency": body.innerHTML = tabLatency(probe); break;
-    case "diag": body.innerHTML = tabDiag(probe); break;
+    case "diag": body.innerHTML = tabDiag(probe, d); break;
     case "policy": body.innerHTML = tabPolicy(probe); break;
     case "manifest": body.innerHTML = tabManifest(d); break;
     case "controls": body.innerHTML = tabControls(d); wireControls(state.current, d.readonly); break;
@@ -1207,10 +1232,30 @@ function tabLatency(probe) {
 }
 
 // ---- Tab 9: Diagnostics ----------------------------------------------------
-function tabDiag(probe) {
+// Devig panel surfaces existing probe data (candidateQuality.devigDiagnostics —
+// overround / vig / value-edge percentiles / method counts) plus the count and
+// recency of stored odds_samples. Read-only visibility into devig behaviour; this
+// is NOT the odds→settlement money-path validation (data-gated, separate work).
+function devigPanel(d, probe) {
   const cq = probe.candidateQuality || {};
+  const devig = (d && d.devigDiagnostics != null) ? d.devigDiagnostics : cq.devigDiagnostics;
+  const odds = (d && d.oddsSamples) || {};
+  const out = [];
+  const count = odds.count == null ? 0 : odds.count;
+  out.push('<div class="subtle">stored odds samples: <b>' + esc(String(count)) + "</b>" +
+    (odds.latestTs ? " · latest " + esc(odds.latestTs) : " · none captured yet") + "</div>");
+  if (devig == null || (typeof devig === "object" && !Object.keys(devig).length)) {
+    out.push('<div class="muted">no devigDiagnostics in the current probe</div>');
+  } else if (typeof devig === "object" && !Array.isArray(devig)) {
+    out.push(renderKV(devig));
+  } else {
+    out.push(renderJSON(devig));
+  }
+  return out.join("");
+}
+function tabDiag(probe, d) {
   return '<div class="tabpane active">' +
-    '<div class="section"><h3>Devig diagnostics</h3>' + renderJSON(cq.devigDiagnostics) + "</div>" +
+    '<div class="section"><h3>Devig diagnostics</h3>' + devigPanel(d, probe) + "</div>" +
     '<div class="section"><h3>Coverage diagnostics</h3>' + renderJSON(probe.coverageDiagnostics) + "</div>" +
     '<div class="section"><h3>Semantic diagnostics</h3>' + renderJSON(probe.semanticDiagnostics) + "</div>" +
     "</div>";
@@ -1404,12 +1449,116 @@ function wirePwModal() {
   });
 }
 
+// ---- ops panel: Alerts + Audit ---------------------------------------------
+function openOps(which) {
+  state.ops = which;
+  const scrim = document.getElementById("opsScrim");
+  const panel = document.getElementById("opsPanel");
+  scrim.classList.add("open");
+  panel.classList.add("open");
+  panel.setAttribute("aria-hidden", "false");
+  panel.innerHTML = '<button class="close" id="opsClose">&times;</button>' +
+    "<h2>" + (which === "alerts" ? "Alerts" : "Audit log") + '</h2>' +
+    '<div class="sub" id="opsSub">loading…</div><div id="opsBody"></div>';
+  document.getElementById("opsClose").addEventListener("click", closeOps);
+  if (which === "alerts") loadAlerts();
+  else loadAudit();
+}
+function closeOps() {
+  state.ops = null;
+  document.getElementById("opsScrim").classList.remove("open");
+  const panel = document.getElementById("opsPanel");
+  panel.classList.remove("open");
+  panel.setAttribute("aria-hidden", "true");
+}
+
+async function loadAlerts() {
+  const body = document.getElementById("opsBody");
+  const sub = document.getElementById("opsSub");
+  let data;
+  try {
+    data = await api("/api/alerts");
+  } catch (e) {
+    sub.textContent = "error: " + e.message;
+    return;
+  }
+  const hook = data.webhook_configured
+    ? '<code>' + esc(data.webhook || "configured") + "</code>"
+    : '<span class="warn">no webhook configured (set NODEOPS_ALERT_WEBHOOK)</span>';
+  const testBtn = state.readonly
+    ? '<span class="muted">(read-only — test disabled)</span>'
+    : '<button class="link-btn" id="alertTest" type="button">Test webhook</button>';
+  sub.innerHTML = "";
+  const out = ['<div class="hookbar">webhook: ' + hook + " " + testBtn + "</div>"];
+  out.push('<div id="alertTestResult" class="subtle"></div>');
+  const alerts = Array.isArray(data.alerts) ? data.alerts : [];
+  if (!alerts.length) {
+    out.push('<div class="muted">no alerts recorded yet</div>');
+  } else {
+    out.push(alerts.map(a =>
+      '<div class="alert-row">' +
+      '<span class="sev ' + esc(a.severity || "info") + '">' + esc(a.severity || "info") + "</span>" +
+      '<span class="ats">' + esc(a.ts_utc || "") + "</span>" +
+      '<span class="anode">' + esc(a.node || "") + "</span>" +
+      '<span class="adet">' + esc(a.condition || "") +
+      (a.detail ? " — " + esc(a.detail) : "") + "</span></div>").join(""));
+  }
+  body.innerHTML = out.join("");
+  const tb = document.getElementById("alertTest");
+  if (tb) {
+    tb.addEventListener("click", async () => {
+      const r = document.getElementById("alertTestResult");
+      r.textContent = "firing test alert…";
+      try {
+        const res = await api("/api/alerts/test", { method: "POST" });
+        r.textContent = res.webhook_configured
+          ? "test alert POSTed to " + (res.webhook || "webhook")
+          : "test alert recorded (no webhook configured to POST)";
+        loadAlerts();
+      } catch (e) {
+        r.textContent = "test failed: " + e.message;
+      }
+    });
+  }
+}
+
+async function loadAudit() {
+  const body = document.getElementById("opsBody");
+  const sub = document.getElementById("opsSub");
+  let data;
+  try {
+    data = await api("/api/audit?limit=200");
+  } catch (e) {
+    sub.textContent = "error: " + e.message;
+    return;
+  }
+  const rows = Array.isArray(data.rows) ? data.rows : [];
+  sub.textContent = rows.length + " recent entries";
+  if (!rows.length) {
+    body.innerHTML = '<div class="muted">no mutating actions recorded yet</div>';
+    return;
+  }
+  const head = "<tr><th>When</th><th>Who</th><th>Action</th><th>Node</th>" +
+    "<th>Params</th><th>Outcome</th></tr>";
+  const trs = rows.map(r =>
+    "<tr><td>" + esc(r.ts_utc || "—") + "</td><td>" + esc(r.username || "—") + "</td>" +
+    "<td>" + esc(r.action || "—") + "</td><td>" + esc(r.node || "—") + "</td>" +
+    '<td title="' + esc(r.params_summary || "") + '">' + esc(r.params_summary || "—") + "</td>" +
+    "<td>" + esc(r.status || "—") + "</td></tr>").join("");
+  body.innerHTML = '<div class="table-scroll"><table class="data"><thead>' + head +
+    "</thead><tbody>" + trs + "</tbody></table></div>";
+}
+
 // ---- boot ------------------------------------------------------------------
 document.getElementById("scrim").addEventListener("click", closeDrawer);
+document.getElementById("opsScrim").addEventListener("click", closeOps);
+document.getElementById("alertsBtn").addEventListener("click", () => openOps("alerts"));
+document.getElementById("auditBtn").addEventListener("click", () => openOps("audit"));
 document.addEventListener("keydown", e => {
   if (e.key !== "Escape") return;
   const modal = document.getElementById("modalScrim");
   if (modal.classList.contains("open")) { closePwModal(); return; }
+  if (state.ops) { closeOps(); return; }
   closeDrawer();
 });
 document.getElementById("modalScrim").addEventListener("click", e => {

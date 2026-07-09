@@ -36,6 +36,8 @@ import sqlite3
 import subprocess
 import tempfile
 import threading
+import urllib.error
+import urllib.request
 import uuid
 from collections.abc import Mapping
 from datetime import datetime
@@ -73,6 +75,14 @@ SECRET_KEY_PATTERN = re.compile(
 )
 MANIFEST_SUFFIX = ".json"
 MANIFEST_PREFIX = "deploy/strategy_nodes/"
+
+# Bounded in-memory alert ring returned by GET /api/alerts, and the POST timeout for
+# the outbound webhook (short — a slow/unreachable webhook must never stall a sample).
+ALERT_RING_SIZE = 200
+ALERT_WEBHOOK_TIMEOUT = 5.0
+# The most recent N audit rows GET /api/audit returns when no limit is supplied.
+AUDIT_DEFAULT_LIMIT = 100
+AUDIT_MAX_LIMIT = 1000
 # Cap request bodies: deploy/lifecycle payloads are tiny JSON, so refuse anything
 # larger rather than buffering an attacker-supplied Content-Length into memory.
 MAX_BODY_BYTES = 1 << 20
@@ -195,6 +205,11 @@ class Config:
         self.env_file = env.get("NODEOPS_ENV_FILE") or None
         self.repo_dir = Path(env.get("NODEOPS_REPO_DIR", os.getcwd()))
         self.static_dir = Path(__file__).resolve().parent
+        # Optional push-alerting webhook. When set, the sampler POSTs a JSON alert on
+        # each detected per-node state transition (quoting on/off, heartbeat stale,
+        # container left running, cross-venue arb found). Unset ⇒ alerting is inert.
+        self.alert_webhook = env.get("NODEOPS_ALERT_WEBHOOK") or None
+        self.heartbeat_stale_secs = float(env.get("NODEOPS_HEARTBEAT_STALE_SECS", "180"))
 
     @property
     def auth_enabled(self) -> bool:
@@ -720,6 +735,17 @@ class Store:
                 );
                 CREATE INDEX IF NOT EXISTS idx_odds_node_ts
                     ON odds_samples (node, ts_utc);
+                CREATE TABLE IF NOT EXISTS audit_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts_utc TEXT NOT NULL,
+                    username TEXT,
+                    action TEXT NOT NULL,
+                    node TEXT,
+                    params_summary TEXT,
+                    status TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_audit_ts
+                    ON audit_log (ts_utc);
                 """,
             )
             self._conn.commit()
@@ -827,6 +853,60 @@ class Store:
                 payload = []
             result[record["kind"]] = {"ts_utc": record["ts_utc"], "payload": payload}
         return result
+
+    def odds_stats(self, node: str) -> dict[str, Any]:
+        """
+        Return stored-odds count and most-recent timestamp for ``node``.
+
+        Surfaces devig-panel context: how many ``odds_samples`` rows the sampler
+        has persisted for the node and when the newest one landed. ``count`` is 0
+        and ``latest_ts`` is ``None`` when the node has no stored odds.
+
+        """
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT COUNT(*) AS count, MAX(ts_utc) AS latest_ts "
+                "FROM odds_samples WHERE node = ?",
+                (node,),
+            )
+            record = cursor.fetchone()
+        return {
+            "count": _as_int(record["count"]) if record is not None else 0,
+            "latest_ts": record["latest_ts"] if record is not None else None,
+        }
+
+    def insert_audit(
+        self,
+        ts_utc: str,
+        username: str | None,
+        action: str,
+        node: str | None,
+        params_summary: str,
+        status: str,
+    ) -> None:
+        """
+        Append one row to the ``audit_log`` for a mutating control action.
+        """
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO audit_log "
+                "(ts_utc, username, action, node, params_summary, status) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (ts_utc, username, action, node, params_summary, status),
+            )
+            self._conn.commit()
+
+    def recent_audit(self, limit: int) -> list[dict[str, Any]]:
+        """
+        Return the most recent ``limit`` audit rows, newest first.
+        """
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT ts_utc, username, action, node, params_summary, status "
+                "FROM audit_log ORDER BY id DESC LIMIT ?",
+                (limit,),
+            )
+            return [dict(record) for record in cursor.fetchall()]
 
     def history(self, node: str, hours: float, metrics: list[str]) -> dict[str, Any]:
         """
@@ -1085,16 +1165,200 @@ def build_sample_row(
     }
 
 
+# -- alerting -------------------------------------------------------------------
+
+
+def _alert_node_state(row: dict[str, Any], stale_secs: float) -> dict[str, Any]:
+    """
+    Reduce a sample row to the coarse state the alert engine tracks per node.
+
+    The tracked axes are the ones alert conditions transition on: whether the node
+    is quoting, whether its heartbeat is stale, its container state, and whether it
+    currently holds a cross-venue arb candidate. Kept deliberately small so a
+    transition compare is a plain dict-field comparison.
+
+    """
+    hb_age = _as_float(row.get("heartbeat_age_secs"))
+    return {
+        "quoting": _as_int(row.get("quoted_edges")) > 0,
+        "heartbeat_stale": hb_age is not None and hb_age > stale_secs,
+        "container_state": row.get("container_state"),
+        "cross_venue": _as_int(row.get("cross_venue_candidate_count")) > 0,
+    }
+
+
+def detect_transitions(
+    prev: dict[str, Any] | None,
+    curr: dict[str, Any],
+) -> list[dict[str, str]]:
+    """
+    Return the alert events fired by the move from ``prev`` to ``curr`` state.
+
+    ``prev is None`` is a node's first observed sample: there is no prior state to
+    transition from, so nothing fires (the baseline is recorded, not alerted). Each
+    event is ``{"condition", "severity", "detail"}``; the cross-venue-arb-found
+    transition is flagged high severity.
+
+    """
+    if prev is None:
+        return []
+    events: list[dict[str, str]] = []
+    if prev.get("quoting") and not curr.get("quoting"):
+        events.append(
+            {"condition": "quoting_stopped", "severity": "warning", "detail": "quoted edges → 0"},
+        )
+    elif not prev.get("quoting") and curr.get("quoting"):
+        events.append(
+            {"condition": "quoting_started", "severity": "info", "detail": "0 → quoted edges"},
+        )
+    if not prev.get("heartbeat_stale") and curr.get("heartbeat_stale"):
+        events.append(
+            {
+                "condition": "heartbeat_stale",
+                "severity": "warning",
+                "detail": "heartbeat went stale",
+            },
+        )
+    prev_state = prev.get("container_state")
+    curr_state = curr.get("container_state")
+    if prev_state == "running" and curr_state != "running":
+        events.append(
+            {
+                "condition": "container_left_running",
+                "severity": "warning",
+                "detail": f"{prev_state} → {curr_state}",
+            },
+        )
+    if not prev.get("cross_venue") and curr.get("cross_venue"):
+        events.append(
+            {
+                "condition": "cross_venue_candidate",
+                "severity": "high",
+                "detail": "ARB FOUND — cross-venue candidate count → >0",
+            },
+        )
+    return events
+
+
+def post_webhook(url: str, payload: dict[str, Any]) -> bool:
+    """
+    POST ``payload`` as JSON to ``url``; swallow and log any failure.
+
+    Uses a short timeout so a slow or unreachable webhook can never stall the sampler
+    loop. Returns whether the POST was accepted (2xx), for the test endpoint to report
+    wiring status.
+
+    """
+    body = json.dumps(payload, default=str).encode("utf8")
+    request = urllib.request.Request(  # noqa: S310 - operator-configured webhook URL
+        url,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(  # noqa: S310 - operator-configured webhook URL
+            request,
+            timeout=ALERT_WEBHOOK_TIMEOUT,
+        ) as response:
+            return 200 <= response.status < 300
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        logger.warning("alert webhook POST to %s failed: %s", url, exc)
+        return False
+
+
+class AlertState:
+    """
+    In-memory alert engine: per-node last state plus a bounded event ring.
+
+    The sampler is a single process, so keeping last-alerted state in memory (rather
+    than a table) is sufficient for de-dupe: an alert fires only on a state
+    *transition*, never while a condition merely persists across samples.
+
+    """
+
+    def __init__(self, config: Config) -> None:
+        self._config = config
+        self._lock = threading.Lock()
+        self._last_state: dict[str, dict[str, Any]] = {}
+        self._events: list[dict[str, Any]] = []
+
+    def _record(self, event: dict[str, Any]) -> None:
+        self._events.append(event)
+        if len(self._events) > ALERT_RING_SIZE:
+            del self._events[: len(self._events) - ALERT_RING_SIZE]
+
+    def observe(self, node: str, row: dict[str, Any]) -> list[dict[str, Any]]:
+        """
+        Fold one sample row into the engine, firing alerts on any transition.
+
+        Records the new per-node baseline, appends each fired event to the ring, and
+        POSTs it to the configured webhook (if any). Returns the events fired so the
+        caller can log them; de-dupe is inherent — unchanged state fires nothing.
+
+        """
+        curr = _alert_node_state(row, self._config.heartbeat_stale_secs)
+        with self._lock:
+            prev = self._last_state.get(node)
+            self._last_state[node] = curr
+            transitions = detect_transitions(prev, curr)
+            fired: list[dict[str, Any]] = []
+            for transition in transitions:
+                event = {
+                    "ts_utc": _utc_now_str(),
+                    "node": node,
+                    **transition,
+                }
+                self._record(event)
+                fired.append(event)
+        for event in fired:
+            self._maybe_post(event)
+        return fired
+
+    def _maybe_post(self, event: dict[str, Any]) -> None:
+        if self._config.alert_webhook:
+            post_webhook(self._config.alert_webhook, event)
+
+    def fire_synthetic(self) -> dict[str, Any]:
+        """
+        Emit a synthetic test alert (records it and POSTs it) to verify wiring.
+        """
+        event = {
+            "ts_utc": _utc_now_str(),
+            "node": "__test__",
+            "condition": "test",
+            "severity": "info",
+            "detail": "synthetic test alert from POST /api/alerts/test",
+        }
+        with self._lock:
+            self._record(event)
+        posted = self._config.alert_webhook is not None
+        if posted:
+            post_webhook(self._config.alert_webhook or "", event)
+        return {"event": event, "webhook_configured": posted}
+
+    def recent(self, limit: int) -> list[dict[str, Any]]:
+        with self._lock:
+            return list(self._events[-limit:][::-1])
+
+
 class Sampler(threading.Thread):
     """
     Background thread that samples every node into the store on an interval.
     """
 
-    def __init__(self, config: Config, store: Store, stop_event: threading.Event) -> None:
+    def __init__(
+        self,
+        config: Config,
+        store: Store,
+        stop_event: threading.Event,
+        alerts: AlertState | None = None,
+    ) -> None:
         super().__init__(name="nodeops-sampler", daemon=True)
         self._config = config
         self._store = store
         self._stop_event = stop_event
+        self._alerts = alerts
 
     def run(self) -> None:
         # First sample immediately so the dashboard is populated on start-up.
@@ -1136,6 +1400,16 @@ class Sampler(threading.Thread):
         row = build_sample_row(node, status, heartbeat, inspect, stats, now)
         self._store.insert_sample(row)
         self._record_odds_samples(node, status, row["ts_utc"])
+        if self._alerts is not None:
+            fired = self._alerts.observe(node, row)
+            for event in fired:
+                logger.info(
+                    "alert [%s/%s] node=%s: %s",
+                    event["severity"],
+                    event["condition"],
+                    node,
+                    event["detail"],
+                )
 
     def _record_odds_samples(
         self,
@@ -1226,6 +1500,7 @@ class NodeOpsState:
         store: Store,
         jobs: Jobs,
         auth: AuthStore | None = None,
+        alerts: AlertState | None = None,
     ) -> None:
         self.config = config
         self.store = store
@@ -1235,6 +1510,10 @@ class NodeOpsState:
         # _authorized's store branch returns True. main() always passes a real store
         # in production (non-env mode), so production is never unauthenticated.
         self.auth = auth
+        # Shared alert engine; the sampler and the /api/alerts* routes both use it.
+        # main() always passes one; fake-handler tests that omit it get None and the
+        # alert routes degrade to an empty ring (never crash).
+        self.alerts = alerts if alerts is not None else AlertState(config)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1330,6 +1609,59 @@ class Handler(BaseHTTPRequestHandler):
             return True
         return False
 
+    def _current_username(self) -> str | None:
+        """
+        Return the authenticated identity for audit rows.
+
+        In env-override mode the identity is ``config.user``; otherwise it is the
+        username carried in the Basic header (already verified by ``_authorized``
+        before dispatch). Auth-disabled requests have no identity.
+
+        """
+        config = self.state.config
+        if config.auth_enabled:
+            return config.user
+        header = self.headers.get("Authorization", "")
+        if not header.startswith("Basic "):
+            return None
+        try:
+            decoded = base64.b64decode(header[len("Basic ") :]).decode("utf8")
+        except (ValueError, UnicodeDecodeError):
+            return None
+        user, _, _ = decoded.partition(":")
+        return user or None
+
+    def _audit(
+        self,
+        action: str,
+        node: str | None,
+        params: dict[str, Any] | None,
+        status: str,
+    ) -> None:
+        """
+        Record one audit row for a mutating control.
+
+        ``params`` is run through ``strip_secrets`` and compact-JSON-encoded so no
+        credential value can ever land in the log. Auditing must never break the
+        request path, so any store error is swallowed and logged.
+
+        """
+        store = self.state.store
+        if not hasattr(store, "insert_audit"):
+            return
+        summary = json.dumps(strip_secrets(params or {}), default=str, sort_keys=True)
+        try:
+            store.insert_audit(
+                _utc_now_str(),
+                self._current_username(),
+                action,
+                node,
+                summary,
+                status,
+            )
+        except Exception:
+            logger.exception("writing audit row for %s failed", action)
+
     # -- dispatch ---------------------------------------------------------------
 
     def do_GET(self) -> None:
@@ -1363,17 +1695,20 @@ class Handler(BaseHTTPRequestHandler):
         if method == "GET" and path in {"/", "/index.html"}:
             self._serve_index()
             return
-        if method == "GET" and path == "/api/nodes":
-            self._list_nodes()
-            return
-        if method == "POST" and path == "/api/nodes":
-            self._deploy_node()
-            return
-        if method == "GET" and path == "/api/auth/whoami":
-            self._auth_whoami()
-            return
-        if method == "POST" and path == "/api/auth/change":
-            self._auth_change()
+        # Fixed (method, path) routes dispatched by table so this stays flat as the
+        # endpoint list grows. Query-taking handlers are wrapped to a nullary shape.
+        fixed: dict[tuple[str, str], Any] = {
+            ("GET", "/api/nodes"): self._list_nodes,
+            ("POST", "/api/nodes"): self._deploy_node,
+            ("GET", "/api/auth/whoami"): self._auth_whoami,
+            ("POST", "/api/auth/change"): self._auth_change,
+            ("GET", "/api/alerts"): self._list_alerts,
+            ("POST", "/api/alerts/test"): self._alerts_test,
+            ("GET", "/api/audit"): lambda: self._list_audit(query),
+        }
+        handler = fixed.get((method, path))
+        if handler is not None:
+            handler()
             return
 
         job_match = re.fullmatch(r"/api/jobs/([0-9a-fA-F]+)", path)
@@ -1469,18 +1804,35 @@ class Handler(BaseHTTPRequestHandler):
         manifest = read_json_file(node_dir / "manifest.runtime.json")
         release = read_json_file(node_dir / "release.json")
         latest = self.state.store.latest_sample(name)
+        probe = strip_secrets((status or {}).get("runtimeProbe"))
+        # Devig-diagnostics panel: surface the probe's candidateQuality.devigDiagnostics
+        # (overround / vig / value-edge percentiles / method counts) alongside how many
+        # odds_samples rows the sampler has stored for this node and when. Read-only
+        # visibility into devig behaviour — NOT the money-path odds→settlement check.
+        devig = None
+        if isinstance(probe, dict):
+            candidate_quality = probe.get("candidateQuality")
+            if isinstance(candidate_quality, dict):
+                devig = candidate_quality.get("devigDiagnostics")
+        store = self.state.store
+        odds_stats = store.odds_stats(name) if hasattr(store, "odds_stats") else {}
         payload = {
             "node": name,
             "readonly": config.readonly,
             "latest": latest,
             "manifest": strip_secrets(manifest) if manifest is not None else None,
             "release": strip_secrets(release) if release is not None else None,
-            "runtimeProbe": strip_secrets((status or {}).get("runtimeProbe")),
+            "runtimeProbe": probe,
             "status": strip_secrets(_status_summary(status)),
             "containerState": (latest or {}).get("container_state"),
             "image": (latest or {}).get("image"),
             "startedAt": (latest or {}).get("started_at"),
             "uptimeSecs": (latest or {}).get("uptime_secs"),
+            "devigDiagnostics": devig,
+            "oddsSamples": {
+                "count": odds_stats.get("count", 0),
+                "latestTs": odds_stats.get("latest_ts"),
+            },
         }
         self._send_json(HTTPStatus.OK, payload)
 
@@ -1565,15 +1917,77 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.FORBIDDEN, {"error": message})
             return
         identity = auth.whoami()
+        # Audit the account change WITHOUT any password material — only the new
+        # username (if changed). strip_secrets would already drop *_password keys.
+        self._audit(
+            "auth.change",
+            None,
+            {"new_username": new_username} if new_username else {},
+            "ok",
+        )
         self._send_json(
             HTTPStatus.OK,
             {"ok": True, "username": identity["username"], "is_default": identity["is_default"]},
         )
 
+    # -- alerts / audit routes --------------------------------------------------
+
+    def _mask_webhook(self) -> str | None:
+        """
+        Return the configured webhook URL with everything after the host masked.
+
+        Operators need to confirm *which* endpoint is wired without the full path /
+        token leaking into the browser. ``None`` when no webhook is configured.
+
+        """
+        url = self.state.config.alert_webhook
+        if not url:
+            return None
+        split = urlsplit(url)
+        if split.scheme and split.netloc:
+            return f"{split.scheme}://{split.netloc}/…"
+        return "…"
+
+    def _list_alerts(self) -> None:
+        limit = ALERT_RING_SIZE
+        events = self.state.alerts.recent(limit)
+        self._send_json(
+            HTTPStatus.OK,
+            {
+                "webhook": self._mask_webhook(),
+                "webhook_configured": self.state.config.alert_webhook is not None,
+                "alerts": events,
+            },
+        )
+
+    def _alerts_test(self) -> None:
+        if self._readonly_blocked():
+            self._audit("alerts.test", None, None, "blocked")
+            return
+        result = self.state.alerts.fire_synthetic()
+        self._audit("alerts.test", None, None, "ok")
+        self._send_json(
+            HTTPStatus.OK,
+            {
+                "ok": True,
+                "webhook": self._mask_webhook(),
+                "webhook_configured": result["webhook_configured"],
+                "event": result["event"],
+            },
+        )
+
+    def _list_audit(self, query: dict[str, list[str]]) -> None:
+        limit_raw = _as_int(query.get("limit", [str(AUDIT_DEFAULT_LIMIT)])[0])
+        limit = AUDIT_DEFAULT_LIMIT if limit_raw <= 0 else min(limit_raw, AUDIT_MAX_LIMIT)
+        store = self.state.store
+        rows = store.recent_audit(limit) if hasattr(store, "recent_audit") else []
+        self._send_json(HTTPStatus.OK, {"limit": limit, "rows": rows})
+
     # -- mutating routes --------------------------------------------------------
 
     def _deploy_node(self) -> None:
         if self._readonly_blocked():
+            self._audit("deploy", None, None, "blocked")
             return
         config = self.state.config
         body = self._read_body()
@@ -1620,16 +2034,25 @@ class Handler(BaseHTTPRequestHandler):
         ]
         if config.env_file:
             args += ["--env-file", config.env_file]
+        self._audit(
+            "deploy",
+            container,
+            {"image": image, "manifest_path": safe_manifest},
+            "accepted",
+        )
         self._start_job("deploy", container, args)
 
     def _node_lifecycle(self, name: str, action: str) -> None:
         if self._readonly_blocked():
+            self._audit(action, name, None, "blocked")
             return
         # ``--`` terminates flag parsing so the name can never be read as an option.
         result = _run_docker(["docker", action, "--", name])
         if result is None:
+            self._audit(action, name, None, "failed")
             self._send_json(HTTPStatus.BAD_GATEWAY, {"error": f"docker {action} failed"})
             return
+        self._audit(action, name, None, "ok")
         self._send_json(HTTPStatus.OK, {"node": name, "action": action, "ok": True})
 
     def _node_config(self, name: str) -> None:
@@ -1648,6 +2071,7 @@ class Handler(BaseHTTPRequestHandler):
 
         """
         if self._readonly_blocked():
+            self._audit("config", name, None, "blocked")
             return
         body = self._read_body()
         updates, error = validate_config_body(body)
@@ -1691,9 +2115,11 @@ class Handler(BaseHTTPRequestHandler):
                 {"error": f"manifest write failed: {exc}"},
             )
             return
+        audit_params = {field: change["new"] for field, change in changed.items()}
         restarted = False
         if body.get("restart") is True:
             if _run_docker(["docker", "restart", "--", name]) is None:
+                self._audit("config", name, audit_params, "written; restart failed")
                 self._send_json(
                     HTTPStatus.BAD_GATEWAY,
                     {
@@ -1704,6 +2130,12 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return
             restarted = True
+        self._audit(
+            "config",
+            name,
+            {**audit_params, "restarted": restarted},
+            "ok",
+        )
         self._send_json(
             HTTPStatus.OK,
             {
@@ -1717,6 +2149,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _delete_node(self, name: str) -> None:
         if self._readonly_blocked():
+            self._audit("delete", name, None, "blocked")
             return
         config = self.state.config
         args = [
@@ -1728,6 +2161,7 @@ class Handler(BaseHTTPRequestHandler):
             str(config.nodes_root),
             "--remove",
         ]
+        self._audit("delete", name, None, "accepted")
         self._start_job("archive", name, args)
 
     def _start_job(self, kind: str, target: str, args: list[str]) -> None:
@@ -1763,12 +2197,13 @@ def build_server(
     store: Store,
     jobs: Jobs,
     auth: AuthStore | None = None,
+    alerts: AlertState | None = None,
 ) -> ThreadingHTTPServer:
     """
     Construct the threading HTTP server with shared state attached.
     """
     server = ThreadingHTTPServer((config.host, config.port), Handler)
-    server.state = NodeOpsState(config, store, jobs, auth)  # type: ignore[attr-defined]
+    server.state = NodeOpsState(config, store, jobs, auth, alerts)  # type: ignore[attr-defined]
     return server
 
 
@@ -1808,10 +2243,11 @@ def main() -> int:
         )
     store = Store(config.db_path)
     jobs = Jobs()
+    alerts = AlertState(config)
     stop_event = threading.Event()
-    sampler = Sampler(config, store, stop_event)
+    sampler = Sampler(config, store, stop_event, alerts)
     sampler.start()
-    server = build_server(config, store, jobs, auth)
+    server = build_server(config, store, jobs, auth, alerts)
 
     def _shutdown(signum: int, _frame: Any) -> None:
         logger.info("received signal %s; shutting down", signum)

@@ -582,6 +582,8 @@ class _DeployHandler:
     _deploy_node = server.Handler._deploy_node
     _read_body = server.Handler._read_body
     _readonly_blocked = server.Handler._readonly_blocked
+    _audit = server.Handler._audit
+    _current_username = server.Handler._current_username
 
     def _send_json(self, status: int, payload: Any) -> None:
         self.sent = {"status": status, "payload": payload}
@@ -905,6 +907,8 @@ class _AuthHandler:
     _auth_change = server.Handler._auth_change
     _authorized = server.Handler._authorized
     _read_body = server.Handler._read_body
+    _audit = server.Handler._audit
+    _current_username = server.Handler._current_username
 
     def _send_json(self, status: int, payload: Any) -> None:
         self.sent = {"status": status, "payload": payload}
@@ -1107,12 +1111,15 @@ class _LifecycleHandler:
     def __init__(self, state: Any) -> None:
         self.state = state
         self.command = "POST"
+        self.headers: dict[str, str] = {}
         self.sent: dict[str, Any] = {}
         self.started: dict[str, Any] | None = None
 
     _node_lifecycle = server.Handler._node_lifecycle
     _delete_node = server.Handler._delete_node
     _readonly_blocked = server.Handler._readonly_blocked
+    _audit = server.Handler._audit
+    _current_username = server.Handler._current_username
 
     def _send_json(self, status: int, payload: Any) -> None:
         self.sent = {"status": status, "payload": payload}
@@ -1351,6 +1358,8 @@ class _ConfigHandler:
     _node_config = server.Handler._node_config
     _read_body = server.Handler._read_body
     _readonly_blocked = server.Handler._readonly_blocked
+    _audit = server.Handler._audit
+    _current_username = server.Handler._current_username
 
     def _send_json(self, status: int, payload: Any) -> None:
         self.sent = {"status": status, "payload": payload}
@@ -1613,6 +1622,512 @@ def test_real_http_config_endpoint(tmp_path: Path) -> None:
         rejected = json.loads(bad_resp.read().decode("utf8"))
         assert bad_resp.status == 400, rejected
         assert "unknown keys" in rejected["error"]
+        conn.close()
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        store.close()
+
+
+# -- FEATURE 1: alerting --------------------------------------------------------
+
+
+def _alert_row(**overrides: Any) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "quoted_edges": 0,
+        "heartbeat_age_secs": 0.0,
+        "container_state": "running",
+        "cross_venue_candidate_count": 0,
+    }
+    row.update(overrides)
+    return row
+
+
+def _capture_webhook(sink: list[Any], *, key: str = "both") -> Any:
+    """
+    Return a ``post_webhook`` stub that records calls into ``sink`` and returns True.
+    """
+
+    def _stub(url: str, payload: dict[str, Any]) -> bool:
+        if key == "url":
+            sink.append(url)
+        elif key == "payload":
+            sink.append(payload)
+        else:
+            sink.append((url, payload))
+        return True
+
+    return _stub
+
+
+def test_detect_transitions_first_sample_is_silent(tmp_path: Path) -> None:
+    curr = server._alert_node_state(_alert_row(quoted_edges=5), 180.0)
+    # No prior state ⇒ baseline only, nothing fires.
+    assert server.detect_transitions(None, curr) == []
+
+
+def test_detect_transitions_quoting_stopped_and_started(tmp_path: Path) -> None:
+    quoting = server._alert_node_state(_alert_row(quoted_edges=5), 180.0)
+    idle = server._alert_node_state(_alert_row(quoted_edges=0), 180.0)
+    stopped = {e["condition"] for e in server.detect_transitions(quoting, idle)}
+    assert "quoting_stopped" in stopped
+    started = {e["condition"] for e in server.detect_transitions(idle, quoting)}
+    assert "quoting_started" in started
+
+
+def test_detect_transitions_heartbeat_stale(tmp_path: Path) -> None:
+    fresh = server._alert_node_state(_alert_row(heartbeat_age_secs=10.0), 180.0)
+    stale = server._alert_node_state(_alert_row(heartbeat_age_secs=999.0), 180.0)
+    conds = {e["condition"] for e in server.detect_transitions(fresh, stale)}
+    assert "heartbeat_stale" in conds
+    # once stale, staying stale must not re-fire
+    assert server.detect_transitions(stale, stale) == []
+
+
+def test_detect_transitions_container_left_running(tmp_path: Path) -> None:
+    up = server._alert_node_state(_alert_row(container_state="running"), 180.0)
+    down = server._alert_node_state(_alert_row(container_state="exited"), 180.0)
+    conds = {e["condition"] for e in server.detect_transitions(up, down)}
+    assert "container_left_running" in conds
+
+
+def test_detect_transitions_cross_venue_is_high_severity(tmp_path: Path) -> None:
+    none = server._alert_node_state(_alert_row(cross_venue_candidate_count=0), 180.0)
+    found = server._alert_node_state(_alert_row(cross_venue_candidate_count=2), 180.0)
+    events = server.detect_transitions(none, found)
+    match = [e for e in events if e["condition"] == "cross_venue_candidate"]
+    assert len(match) == 1
+    assert match[0]["severity"] == "high"
+
+
+def test_alertstate_dedupes_on_unchanged_state(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    alerts = server.AlertState(config)
+    row = _alert_row(quoted_edges=5)
+    assert alerts.observe("node-a", row) == []  # first sample: baseline, silent
+    assert alerts.observe("node-a", row) == []  # unchanged: no re-fire
+    idle = _alert_row(quoted_edges=0)
+    fired = alerts.observe("node-a", idle)
+    assert {e["condition"] for e in fired} == {"quoting_stopped"}
+    # staying idle does not re-fire
+    assert alerts.observe("node-a", idle) == []
+
+
+def test_alertstate_posts_to_webhook(tmp_path: Path, monkeypatch: Any) -> None:
+    posted: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(server, "post_webhook", _capture_webhook(posted))
+    config = _config(tmp_path, NODEOPS_ALERT_WEBHOOK="https://hook.example/notify")
+    alerts = server.AlertState(config)
+    alerts.observe("node-a", _alert_row(quoted_edges=5))  # baseline
+    alerts.observe("node-a", _alert_row(quoted_edges=0))  # quoting_stopped
+    assert len(posted) == 1
+    url, payload = posted[0]
+    assert url == "https://hook.example/notify"
+    assert payload["condition"] == "quoting_stopped"
+    assert payload["node"] == "node-a"
+
+
+def test_alertstate_no_webhook_no_post(tmp_path: Path, monkeypatch: Any) -> None:
+    called: list[Any] = []
+    monkeypatch.setattr(server, "post_webhook", lambda url, payload: called.append(url))
+    config = _config(tmp_path)  # NODEOPS_ALERT_WEBHOOK unset
+    alerts = server.AlertState(config)
+    alerts.observe("node-a", _alert_row(quoted_edges=5))
+    alerts.observe("node-a", _alert_row(quoted_edges=0))
+    assert called == []  # nothing posted when no webhook configured
+
+
+def test_alertstate_ring_is_bounded(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    alerts = server.AlertState(config)
+    alerts.observe("n", _alert_row(quoted_edges=0))  # baseline
+    for i in range(server.ALERT_RING_SIZE + 50):
+        # flip quoting each iteration to force one transition per observe
+        q = 5 if i % 2 == 0 else 0
+        alerts.observe("n", _alert_row(quoted_edges=q))
+    recent = alerts.recent(server.ALERT_RING_SIZE + 100)
+    assert len(recent) == server.ALERT_RING_SIZE
+    # newest-first ordering
+    assert recent[0]["ts_utc"] >= recent[-1]["ts_utc"]
+
+
+def test_post_webhook_swallows_errors(tmp_path: Path, monkeypatch: Any) -> None:
+    def _boom(*a: Any, **k: Any) -> Any:
+        raise server.urllib.error.URLError("down")
+
+    monkeypatch.setattr(server.urllib.request, "urlopen", _boom)
+    # must return False, not raise
+    assert server.post_webhook("https://hook.example/x", {"a": 1}) is False
+
+
+def test_sampler_fires_alert_on_quoting_stop(tmp_path: Path, monkeypatch: Any) -> None:
+    nodes_root = tmp_path / "nodes"
+    (nodes_root / "n").mkdir(parents=True)
+    status_path = nodes_root / "n" / "status.json"
+    status_path.write_text('{"runtimeProbe": {"quotedEdges": 5}}', encoding="utf8")
+    config = _config(tmp_path, NODEOPS_NODES_ROOT=str(nodes_root))
+    store = server.Store(config.db_path)
+    monkeypatch.setattr(server, "docker_inspect", lambda name: {"state": "running", "image": "i"})
+    monkeypatch.setattr(server, "docker_stats", lambda name: {"mem_mb": 1.0, "cpu_pct": 1.0})
+    alerts = server.AlertState(config)
+    sampler = server.Sampler(config, store, threading.Event(), alerts)
+    sampler.sample_once()  # baseline (quoting)
+    status_path.write_text('{"runtimeProbe": {"quotedEdges": 0}}', encoding="utf8")
+    sampler.sample_once()  # quoting stops → alert
+    conds = {e["condition"] for e in alerts.recent(50)}
+    assert "quoting_stopped" in conds
+    store.close()
+
+
+class _AlertHandler:
+    """
+    Fake handler exercising the alert routes against a real AlertState.
+    """
+
+    def __init__(self, state: Any) -> None:
+        self.state = state
+        self.command = "POST"
+        self.headers: dict[str, str] = {}
+        self.sent: dict[str, Any] = {}
+
+    _list_alerts = server.Handler._list_alerts
+    _alerts_test = server.Handler._alerts_test
+    _mask_webhook = server.Handler._mask_webhook
+    _readonly_blocked = server.Handler._readonly_blocked
+    _audit = server.Handler._audit
+    _current_username = server.Handler._current_username
+
+    def _send_json(self, status: int, payload: Any) -> None:
+        self.sent = {"status": status, "payload": payload}
+
+
+def test_alerts_test_endpoint_fires_and_masks_webhook(tmp_path: Path, monkeypatch: Any) -> None:
+    posted: list[Any] = []
+    monkeypatch.setattr(server, "post_webhook", _capture_webhook(posted, key="url"))
+    config = _config(
+        tmp_path,
+        NODEOPS_READONLY="0",
+        NODEOPS_ALERT_WEBHOOK="https://hook.example/secret/path?token=abc",
+    )
+    store = server.Store(config.db_path)
+    state = server.NodeOpsState(config, store, object())
+    handler = _AlertHandler(state)
+    handler._alerts_test()
+    assert handler.sent["status"] == server.HTTPStatus.OK
+    payload = handler.sent["payload"]
+    assert payload["ok"] is True
+    assert payload["webhook_configured"] is True
+    assert payload["webhook"] == "https://hook.example/…"  # host only, path/token masked
+    assert posted == ["https://hook.example/secret/path?token=abc"]
+    store.close()
+
+
+def test_alerts_test_blocked_in_readonly(tmp_path: Path) -> None:
+    config = _config(tmp_path, NODEOPS_READONLY="1")
+    store = server.Store(config.db_path)
+    state = server.NodeOpsState(config, store, object())
+    handler = _AlertHandler(state)
+    handler._alerts_test()
+    assert handler.sent["status"] == server.HTTPStatus.FORBIDDEN
+    store.close()
+
+
+def test_list_alerts_returns_ring(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    alerts = server.AlertState(config)
+    alerts.observe("n", _alert_row(quoted_edges=5))
+    alerts.observe("n", _alert_row(quoted_edges=0))
+    store = server.Store(config.db_path)
+    state = server.NodeOpsState(config, store, object(), alerts=alerts)
+    handler = _AlertHandler(state)
+    handler.command = "GET"
+    handler._list_alerts()
+    assert handler.sent["status"] == server.HTTPStatus.OK
+    payload = handler.sent["payload"]
+    assert payload["webhook_configured"] is False
+    assert payload["webhook"] is None
+    assert any(a["condition"] == "quoting_stopped" for a in payload["alerts"])
+    store.close()
+
+
+# -- FEATURE 2: audit log -------------------------------------------------------
+
+
+class _AuditListHandler:
+    """
+    Fake handler exercising ``_list_audit`` against a real store.
+    """
+
+    def __init__(self, state: Any) -> None:
+        self.state = state
+        self.command = "GET"
+        self.sent: dict[str, Any] = {}
+
+    _list_audit = server.Handler._list_audit
+
+    def _send_json(self, status: int, payload: Any) -> None:
+        self.sent = {"status": status, "payload": payload}
+
+
+def test_audit_table_created_and_roundtrip(tmp_path: Path) -> None:
+    store = server.Store(tmp_path / "nodeops.db")
+    tables = {
+        row["name"]
+        for row in store._conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }
+    assert "audit_log" in tables
+    store.insert_audit("2026-07-01T00:00:00Z", "admin", "restart", "node-a", "{}", "ok")
+    rows = store.recent_audit(10)
+    assert len(rows) == 1
+    assert rows[0]["username"] == "admin"
+    assert rows[0]["action"] == "restart"
+    assert rows[0]["node"] == "node-a"
+    assert rows[0]["status"] == "ok"
+    store.close()
+
+
+def test_audit_created_on_existing_db_without_table(tmp_path: Path) -> None:
+    """
+    A DB created before audit_log existed gains it via CREATE TABLE IF NOT EXISTS.
+    """
+    db_path = tmp_path / "nodeops.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE samples (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        + ", ".join(f"{column} TEXT" for column in server.SAMPLE_COLUMNS)
+        + ")",
+    )
+    conn.commit()
+    conn.close()
+    store = server.Store(db_path)
+    tables = {
+        row["name"]
+        for row in store._conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }
+    assert "audit_log" in tables
+    store.close()
+
+
+def test_lifecycle_writes_audit_row(tmp_path: Path, monkeypatch: Any) -> None:
+    config = _config(tmp_path, NODEOPS_READONLY="0")
+    store = server.Store(config.db_path)
+    state = server.NodeOpsState(config, store, object())
+    monkeypatch.setattr(server, "_run_docker", lambda *a, **k: "restarted")
+    handler = _LifecycleHandler(state)
+    handler.headers = {"Authorization": _basic_header("opsuser", "pw")}
+    handler._node_lifecycle("node-a", "restart")
+    rows = store.recent_audit(10)
+    assert len(rows) == 1
+    assert rows[0]["action"] == "restart"
+    assert rows[0]["node"] == "node-a"
+    assert rows[0]["username"] == "opsuser"
+    assert rows[0]["status"] == "ok"
+    store.close()
+
+
+def test_config_writes_audit_row_with_params(tmp_path: Path) -> None:
+    manifest = _window_manifest()
+    nodes_root = tmp_path / "nodes"
+    node_dir = nodes_root / "node-a"
+    node_dir.mkdir(parents=True)
+    (node_dir / "manifest.runtime.json").write_text(json.dumps(manifest), encoding="utf8")
+    config = _config(tmp_path, NODEOPS_NODES_ROOT=str(nodes_root), NODEOPS_READONLY="0")
+    store = server.Store(config.db_path)
+    state = server.NodeOpsState(config, store, object())
+    handler = _ConfigHandler(state, _config_body(max_resolution_horizon_hours=96))
+    handler._node_config("node-a")
+    rows = store.recent_audit(10)
+    assert len(rows) == 1
+    assert rows[0]["action"] == "config"
+    assert "96" in rows[0]["params_summary"]
+    store.close()
+
+
+def test_delete_writes_audit_row(tmp_path: Path) -> None:
+    config = _config(tmp_path, NODEOPS_READONLY="0")
+    store = server.Store(config.db_path)
+    state = server.NodeOpsState(config, store, object())
+    handler = _LifecycleHandler(state)
+    handler.headers = {}
+    handler._delete_node("node-a")
+    rows = store.recent_audit(10)
+    assert len(rows) == 1
+    assert rows[0]["action"] == "delete"
+    assert rows[0]["status"] == "accepted"
+    store.close()
+
+
+def test_readonly_action_audited_as_blocked_not_executed(tmp_path: Path, monkeypatch: Any) -> None:
+    config = _config(tmp_path, NODEOPS_READONLY="1")
+    store = server.Store(config.db_path)
+    state = server.NodeOpsState(config, store, object())
+    calls: list[Any] = []
+    monkeypatch.setattr(server, "_run_docker", lambda *a, **k: calls.append(a))
+    handler = _LifecycleHandler(state)
+    handler.headers = {}
+    handler._node_lifecycle("node-a", "stop")
+    assert calls == []  # docker never invoked
+    rows = store.recent_audit(10)
+    assert len(rows) == 1
+    assert rows[0]["action"] == "stop"
+    assert rows[0]["status"] == "blocked"  # audited as blocked, not as executed
+    store.close()
+
+
+def test_audit_strips_secrets_from_params(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    store = server.Store(config.db_path)
+    state = server.NodeOpsState(config, store, object())
+    handler = _AlertHandler(state)  # any handler with _audit bound
+    handler.headers = {}
+    handler._audit("test", "node-a", {"image": "ghcr/x", "CLOUDBET_API_KEY": "leak"}, "ok")
+    rows = store.recent_audit(10)
+    assert "leak" not in rows[0]["params_summary"]
+    assert "image" in rows[0]["params_summary"]
+    store.close()
+
+
+def test_list_audit_endpoint_returns_rows_and_limit(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    store = server.Store(config.db_path)
+    for i in range(5):
+        store.insert_audit(f"2026-07-01T00:00:0{i}Z", "admin", "restart", f"n{i}", "{}", "ok")
+    state = server.NodeOpsState(config, store, object())
+    handler = _AuditListHandler(state)
+    handler._list_audit({"limit": ["2"]})
+    assert handler.sent["status"] == server.HTTPStatus.OK
+    payload = handler.sent["payload"]
+    assert payload["limit"] == 2
+    assert len(payload["rows"]) == 2
+    assert payload["rows"][0]["node"] == "n4"  # newest first
+    store.close()
+
+
+# -- FEATURE 3: devig diagnostics panel -----------------------------------------
+
+
+def test_node_detail_surfaces_devig_and_odds_stats(tmp_path: Path) -> None:
+    nodes_root = tmp_path / "nodes"
+    node_dir = nodes_root / "node-a"
+    node_dir.mkdir(parents=True)
+    (node_dir / "status.json").write_text(
+        json.dumps(
+            {
+                "runtimeProbe": {
+                    "candidateQuality": {
+                        "devigDiagnostics": {
+                            "overround": "1.05",
+                            "vig": "0.048",
+                            "methodCounts": {"multiplicative": 12},
+                        },
+                    },
+                },
+            },
+        ),
+        encoding="utf8",
+    )
+    config = _config(tmp_path, NODEOPS_NODES_ROOT=str(nodes_root))
+    store = server.Store(config.db_path)
+    store.insert_odds_sample("2026-07-01T00:00:00Z", "node-a", "topPositiveCandidates", [{"x": 1}])
+    store.insert_odds_sample("2026-07-01T00:05:00Z", "node-a", "topPositiveCandidates", [{"x": 2}])
+    handler = _DetailHandler(server.NodeOpsState(config, store, object()))
+    handler._node_detail("node-a")
+    payload = handler.sent["payload"]
+    assert handler.sent["status"] == server.HTTPStatus.OK
+    assert payload["devigDiagnostics"]["overround"] == "1.05"
+    assert payload["oddsSamples"]["count"] == 2
+    assert payload["oddsSamples"]["latestTs"] == "2026-07-01T00:05:00Z"
+    store.close()
+
+
+def test_node_detail_devig_graceful_empty(tmp_path: Path) -> None:
+    nodes_root = tmp_path / "nodes"
+    node_dir = nodes_root / "node-a"
+    node_dir.mkdir(parents=True)
+    (node_dir / "status.json").write_text('{"runtimeProbe": {"graphEdges": 3}}', encoding="utf8")
+    config = _config(tmp_path, NODEOPS_NODES_ROOT=str(nodes_root))
+    store = server.Store(config.db_path)
+    handler = _DetailHandler(server.NodeOpsState(config, store, object()))
+    handler._node_detail("node-a")
+    payload = handler.sent["payload"]
+    assert payload["devigDiagnostics"] is None
+    assert payload["oddsSamples"] == {"count": 0, "latestTs": None}
+    store.close()
+
+
+# -- real HTTP smoke for alerts / audit -----------------------------------------
+
+
+def test_real_http_alerts_audit_smoke(tmp_path: Path, monkeypatch: Any) -> None:
+    """
+    Wire-level smoke: a synthetic quoting-stopped alert POSTs the webhook, a
+    (mocked-docker) restart writes an audit row, and /api/alerts/test fires.
+    """
+    posted: list[dict[str, Any]] = []
+    monkeypatch.setattr(server, "post_webhook", _capture_webhook(posted, key="payload"))
+    monkeypatch.setattr(server, "_run_docker", lambda *a, **k: "restarted")
+
+    nodes = tmp_path / "nodes"
+    (nodes / "demo").mkdir(parents=True)
+    status_path = nodes / "demo" / "status.json"
+    status_path.write_text('{"runtimeProbe": {"quotedEdges": 5}}', encoding="utf8")
+    config = _config(
+        tmp_path,
+        NODEOPS_HOST="127.0.0.1",
+        NODEOPS_PORT="0",
+        NODEOPS_READONLY="0",
+        NODEOPS_NODES_ROOT=str(nodes),
+        NODEOPS_ALERT_WEBHOOK="https://hook.example/notify",
+    )
+    store = server.Store(config.db_path)
+    jobs = server.Jobs()
+    alerts = server.AlertState(config)
+    monkeypatch.setattr(server, "docker_inspect", lambda name: {"state": "running", "image": "i"})
+    monkeypatch.setattr(server, "docker_stats", lambda name: {"mem_mb": 1.0, "cpu_pct": 1.0})
+    # drive two samples to force a quoting-stopped transition (webhook attempted)
+    sampler = server.Sampler(config, store, threading.Event(), alerts)
+    sampler.sample_once()
+    status_path.write_text('{"runtimeProbe": {"quotedEdges": 0}}', encoding="utf8")
+    sampler.sample_once()
+    assert any(p["condition"] == "quoting_stopped" for p in posted)
+
+    srv = server.build_server(config, store, jobs, None, alerts)
+    port = srv.server_address[1]
+    thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    thread.start()
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+
+        # a mocked-docker restart writes an audit row
+        conn.request("POST", "/api/nodes/demo/restart")
+        restart_resp = conn.getresponse()
+        assert restart_resp.status == 200, restart_resp.read()
+        restart_resp.read()
+
+        conn.request("GET", "/api/audit")
+        audit_resp = conn.getresponse()
+        audit = json.loads(audit_resp.read().decode("utf8"))
+        assert audit_resp.status == 200
+        assert any(r["action"] == "restart" and r["node"] == "demo" for r in audit["rows"])
+
+        # /api/alerts/test fires a synthetic alert to the webhook
+        before = len(posted)
+        conn.request("POST", "/api/alerts/test")
+        test_resp = conn.getresponse()
+        test = json.loads(test_resp.read().decode("utf8"))
+        assert test_resp.status == 200
+        assert test["ok"] is True
+        assert test["webhook"] == "https://hook.example/…"
+        assert len(posted) == before + 1
+
+        # /api/alerts lists the ring, webhook masked
+        conn.request("GET", "/api/alerts")
+        alerts_resp = conn.getresponse()
+        listing = json.loads(alerts_resp.read().decode("utf8"))
+        assert alerts_resp.status == 200
+        assert listing["webhook_configured"] is True
+        assert listing["webhook"] == "https://hook.example/…"
+        assert any(a["condition"] == "quoting_stopped" for a in listing["alerts"])
         conn.close()
     finally:
         srv.shutdown()
