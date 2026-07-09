@@ -56,6 +56,10 @@ permissions:
   contents: read
 
 env:
+  # uv's cache dir and the job .venv live on different filesystems on the self-hosted
+  # runner, so the default hardlink install fails with EPERM ("Operation not permitted").
+  # Copy mode is filesystem-agnostic.
+  UV_LINK_MODE: copy
   USE_GITHUB_ACTIONS_CACHE: "false"
   CI_TRANSIENT_ARTIFACTS_ENABLED: "true"
   CI_TRANSIENT_R2_BUCKET: ${{ secrets.CI_TRANSIENT_R2_BUCKET_NAME }}
