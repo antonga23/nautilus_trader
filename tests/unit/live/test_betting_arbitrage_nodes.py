@@ -3536,6 +3536,10 @@ class TestBettingArbitrageNodeRunner:
             },
             "opportunity_graph_quote_states": 0,
             "subscribed_instruments": 292,
+            "instrument_cache_miss": 7,
+            "quote_odds_rejected": 3,
+            "instrument_cache_miss_by_venue": {"CLOUDBET": 7},
+            "quote_odds_rejected_by_venue": {"SXBET": 3},
         }
 
         state = node_runner._probe_quote_observation_state(stats, venue_coverage)
@@ -3550,6 +3554,10 @@ class TestBettingArbitrageNodeRunner:
         assert state["unquotedSemanticMatchedNodeSamples"]["POLYMARKET"][0]["instrumentId"] == (
             "poly-1"
         )
+        assert state["instrumentCacheMiss"] == 7
+        assert state["quoteOddsRejected"] == 3
+        assert state["instrumentCacheMissCounts"] == {"CLOUDBET": 7}
+        assert state["quoteOddsRejectedCounts"] == {"SXBET": 3}
 
     def test_venue_pair_coverage_reports_no_common_fixture_without_false_pair_samples(self):
         sxbet_instrument = _instrument(

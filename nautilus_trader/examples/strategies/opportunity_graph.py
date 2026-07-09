@@ -291,7 +291,7 @@ class OpportunityGraph:
         if node.node_id in self.nodes_by_id:
             return False
 
-        existing = [existing_node.instrument for existing_node in self.nodes_by_id.values()]
+        existing = [existing_node.instrument for existing_node in list(self.nodes_by_id.values())]
         self.nodes_by_id[node.node_id] = node
         self.edge_ids_by_node_id.setdefault(node.node_id, set())
 
@@ -310,11 +310,11 @@ class OpportunityGraph:
             else:
                 added = self._rust_core.add_instrument(payload)
                 self._topology_source = "rust_legacy"
-            if added:
-                self._sync_edges_from_rust()
-            else:
-                self.nodes_by_id.pop(node.node_id, None)
-                self.edge_ids_by_node_id.pop(node.node_id, None)
+            # Rust returns False only when the node already exists (idempotent),
+            # never on genuine failure. Keep the freshly mirrored node so the
+            # Python mirror stays consistent with Rust; popping it here would
+            # strand a node Rust is quoting, making quotes for it drop forever.
+            self._sync_edges_from_rust()
             return added
 
         candidates = [*existing, instrument]
