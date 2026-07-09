@@ -317,6 +317,38 @@ def test_update_quote_and_scan_fast_returns_false_for_unknown_rust_node() -> Non
     ensure(result == (False, []))
 
 
+def test_add_instrument_keeps_mirror_when_rust_already_has_node() -> None:  # skipcq
+    instruments = [_instrument(outcome="over"), _instrument(outcome="under")]
+    graph = _graph("rust", instruments)
+    target = instruments[1]
+    node_id = str(target.id)
+
+    # Simulate a mirror/Rust desync: Rust still holds the node but the python
+    # mirror lost it. Re-adding must keep the mirror entry (Rust returns False
+    # because the node already exists), not pop it back out.
+    graph.nodes_by_id.pop(node_id, None)
+    graph.edge_ids_by_node_id.pop(node_id, None)
+    ensure(node_id not in graph.nodes_by_id)
+
+    added = graph.add_instrument(target)
+    ensure(added is False)
+    ensure(node_id in graph.nodes_by_id)
+
+    result = graph.update_quote_and_scan_fast(
+        _quote(target, Decimal("2.55"), ts_event=10_001),
+        odds=Decimal("2.55"),
+        received_ns=20_001,
+        min_profit_margin=Decimal("0.01"),
+        now_ns=30_000,
+    )
+    if result is None:
+        raise AssertionError("Rust fast scan should return snapshots")
+    quote_updated, _snapshots = result
+    ensure(quote_updated is True)
+    ensure(node_id in graph.quotes_by_node_id)
+    ensure(graph.quote_state_count > 0)
+
+
 def test_update_quote_and_scan_fast_is_rust_only() -> None:  # skipcq
     instrument = _instrument()
     graph = _graph("python", [instrument])

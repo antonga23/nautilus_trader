@@ -38,6 +38,7 @@ from nautilus_trader.adapters.cloudbet.client.schema import (
 )
 from nautilus_trader.examples.strategies.betting_arbitrage import BettingArbitrageConfig
 from nautilus_trader.examples.strategies.betting_arbitrage import BettingArbitrageStrategy
+from nautilus_trader.examples.strategies.betting_arbitrage import OpportunityPairState
 from nautilus_trader.examples.strategies.opportunity_graph import OpportunityGraph
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.identifiers import InstrumentId
@@ -728,6 +729,10 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure("instrument_refresh_graph_rebuilds" in stats)
         ensure("instrument_refresh_stale_triggers" in stats)
         ensure("quote_unsubscribe_requests" in stats)
+        ensure("instrument_cache_miss" in stats)
+        ensure("quote_odds_rejected" in stats)
+        ensure("instrument_cache_miss_by_venue" in stats)
+        ensure("quote_odds_rejected_by_venue" in stats)
         ensure("quote_subscription_counts_by_venue" in stats)
         ensure("semantic_quote_subscription_limit_by_venue" in stats)
         ensure("semantic_quote_subscription_limit_exceeded_by_venue" in stats)
@@ -756,6 +761,10 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(stats["instrument_refresh_graph_rebuilds"] == 0)
         ensure(stats["instrument_refresh_stale_triggers"] == 0)
         ensure(stats["quote_unsubscribe_requests"] == 0)
+        ensure(stats["instrument_cache_miss"] == 0)
+        ensure(stats["quote_odds_rejected"] == 0)
+        ensure(stats["instrument_cache_miss_by_venue"] == {})
+        ensure(stats["quote_odds_rejected_by_venue"] == {})
         ensure(stats["quote_subscription_counts_by_venue"] == {})
         ensure(stats["semantic_quote_subscription_limit_by_venue"] == {})
         ensure(stats["semantic_quote_subscription_limit_exceeded_by_venue"] == {})
@@ -3400,6 +3409,46 @@ class TestBettingArbitrageStrategy:  # skipcq
         )
         ensure("pair-a" in strategy._seen_opportunity_pairs)
         ensure("pair-a" not in strategy._active_opportunity_pairs)
+
+    def test_prune_inactive_pairs_survives_concurrent_mutation(self):  # skipcq
+        """
+        Prune must iterate a snapshot so a concurrent add during iteration cannot
+        raise RuntimeError: dictionary changed size during iteration.
+        """
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["SXBET"]),
+                duplicate_suppression_cooldown_secs=1.0,
+            ),
+        )
+
+        pairs: dict[str, object] = {}
+
+        class _MutatingState:
+            last_opportunity_id = "pair-old"
+            last_accepted_ns = 0
+
+            @property
+            def last_seen_ns(self) -> int:  # skipcq
+                # Reading a field mid-iteration emulates the quote path inserting a
+                # new pair while prune walks the mapping. Over a live dict view this
+                # raises RuntimeError; over a list() snapshot it is safe.
+                pairs.setdefault(
+                    f"pair-injected-{len(pairs)}",
+                    OpportunityPairState(
+                        last_opportunity_id="pair-injected",
+                        last_accepted_ns=0,
+                        last_seen_ns=0,
+                    ),
+                )
+                return 0
+
+        pairs["pair-old"] = _MutatingState()
+        strategy._active_opportunity_pairs = pairs
+
+        strategy._prune_inactive_opportunity_pairs(5_000_000_000)
+
+        ensure("pair-old" not in strategy._active_opportunity_pairs)
 
     def test_changed_price_pair_can_reenter_after_cooldown_while_active(self):  # skipcq
         strategy = BettingArbitrageStrategy(

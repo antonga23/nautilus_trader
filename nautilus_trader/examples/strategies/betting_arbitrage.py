@@ -755,6 +755,10 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._instrument_refresh_graph_rebuilds_by_venue: Counter[str] = Counter()
         self._instrument_refresh_stale_triggers_by_venue: Counter[str] = Counter()
         self._quote_unsubscribe_requests_by_venue: Counter[str] = Counter()
+        self._instrument_cache_miss = 0
+        self._quote_odds_rejected = 0
+        self._instrument_cache_miss_by_venue: Counter[str] = Counter()
+        self._quote_odds_rejected_by_venue: Counter[str] = Counter()
         self._pending_refresh_reconcile_venues: set[str] = set()
         self._last_refresh_request_at_ns: dict[str, int] = {}
         self._last_stale_refresh_trigger_at_ns: dict[str, int] = {}
@@ -1137,7 +1141,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self,
         instruments: list[BettingInstrument],
     ) -> list[BettingInstrument]:
-        existing_ids = {str(instrument.id) for instrument in self._subscribed_instruments}
+        existing_ids = {str(instrument.id) for instrument in set(self._subscribed_instruments)}
         added: list[BettingInstrument] = []
         for instrument in instruments:
             if str(instrument.id) in existing_ids:
@@ -1256,7 +1260,9 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         if not self._should_process_instrument(betting_instrument):
             return False
 
-        if any(existing.id == betting_instrument.id for existing in self._subscribed_instruments):
+        if any(
+            existing.id == betting_instrument.id for existing in set(self._subscribed_instruments)
+        ):
             return False
 
         self._subscribed_instruments.add(betting_instrument)
@@ -1302,7 +1308,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         instruments: list[Instrument],
     ) -> None:
         subscribed_before = len(self._subscribed_instruments)
-        existing_ids = {str(instrument.id) for instrument in self._subscribed_instruments}
+        existing_ids = {str(instrument.id) for instrument in set(self._subscribed_instruments)}
         for instrument in instruments:
             betting_instrument = self._coerce_betting_instrument(instrument)
             if betting_instrument is None:
@@ -1793,7 +1799,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
 
     def _quote_subscription_counts_by_venue(self) -> Counter[str]:
         counts: Counter[str] = Counter()
-        for instrument_id in self._quote_subscribed_instrument_ids:
+        for instrument_id in set(self._quote_subscribed_instrument_ids):
             venue = self._venue_from_instrument_id_text(str(instrument_id))
             if venue:
                 counts[venue] += 1
@@ -1980,6 +1986,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
 
         instrument = self._coerce_betting_instrument(self.cache.instrument(tick.instrument_id))
         if instrument is None:
+            self._instrument_cache_miss += 1
+            self._instrument_cache_miss_by_venue[str(tick.instrument_id.venue).upper()] += 1
             return
         tick = self._quote_tick_for_betting_instrument(tick, instrument)
 
@@ -2049,6 +2057,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
     ) -> None:
         current_odds = self._quote_odds(tick)
         if current_odds is None:
+            self._quote_odds_rejected += 1
+            self._quote_odds_rejected_by_venue[str(tick.instrument_id.venue).upper()] += 1
             return
 
         now_ns = self.clock.timestamp_ns()
@@ -2333,7 +2343,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         cooldown_ns = self._duplicate_suppression_cooldown_ns()
         expired = [
             pair_id
-            for pair_id, state in self._active_opportunity_pairs.items()
+            for pair_id, state in list(self._active_opportunity_pairs.items())
             if now_ns - state.last_seen_ns > cooldown_ns
         ]
         for pair_id in expired:
@@ -5090,6 +5100,14 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             "instrument_refresh_graph_rebuilds": self._instrument_refresh_graph_rebuilds,
             "instrument_refresh_stale_triggers": self._instrument_refresh_stale_triggers,
             "quote_unsubscribe_requests": self._quote_unsubscribe_requests,
+            "instrument_cache_miss": self._instrument_cache_miss,
+            "quote_odds_rejected": self._quote_odds_rejected,
+            "instrument_cache_miss_by_venue": dict(
+                sorted(self._instrument_cache_miss_by_venue.items()),
+            ),
+            "quote_odds_rejected_by_venue": dict(
+                sorted(self._quote_odds_rejected_by_venue.items()),
+            ),
             "instrument_refresh_by_venue": self._instrument_refresh_by_venue_payload(),
             "provider_quote_poll_stats": self._provider_quote_poll_stats(),
             "latency_diagnostics": {

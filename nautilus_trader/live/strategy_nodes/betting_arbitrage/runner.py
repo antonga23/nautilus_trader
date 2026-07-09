@@ -2097,6 +2097,10 @@ def _probe_quote_observation_state(
         "providerQuotePollStats": stats.get("provider_quote_poll_stats", {}),
         "graphQuoteStates": stats.get("opportunity_graph_quote_states", {}),
         "subscribedInstruments": int(stats.get("subscribed_instruments") or 0),
+        "instrumentCacheMiss": int(stats.get("instrument_cache_miss") or 0),
+        "quoteOddsRejected": int(stats.get("quote_odds_rejected") or 0),
+        "instrumentCacheMissCounts": _int_mapping(stats.get("instrument_cache_miss_by_venue")),
+        "quoteOddsRejectedCounts": _int_mapping(stats.get("quote_odds_rejected_by_venue")),
     }
 
 
