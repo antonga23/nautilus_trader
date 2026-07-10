@@ -121,6 +121,12 @@ class SXBetDataClientConfig(LiveDataClientConfig, frozen=True):
         Target poll-cycle duration for live latency diagnostics and adaptive fanout.
     order_book_adaptive_concurrency : bool, default False
         If true, adjust polling concurrency toward the target cycle duration.
+    fetch_timeout_secs : PositiveFloat, optional
+        Independent timeout for each poll-cycle fetch; a fetch exceeding it is
+        recorded as a failure. Defaults to ``order_book_poll_interval_secs``.
+    cycle_deadline_secs : PositiveFloat, optional
+        Hard deadline for a full poll cycle; still-pending fetches are cancelled
+        and recorded as failures. Defaults to ``2 * order_book_poll_interval_secs``.
     api_key_pool : tuple[str, ...], optional
         SX.bet API keys for realtime/WebSocket-capable surfaces.
 
@@ -144,6 +150,8 @@ class SXBetDataClientConfig(LiveDataClientConfig, frozen=True):
     order_book_max_concurrency: PositiveInt | None = None
     order_book_target_cycle_secs: PositiveFloat | None = None
     order_book_adaptive_concurrency: bool = False
+    fetch_timeout_secs: PositiveFloat | None = None
+    cycle_deadline_secs: PositiveFloat | None = None
     api_key_pool: tuple[str, ...] | None = None
 
 

@@ -109,6 +109,10 @@ class SXBetDataClient(LiveMarketDataClient):
             float(config.order_book_target_cycle_secs or 0.0),
         )
         self._order_book_adaptive_concurrency = bool(config.order_book_adaptive_concurrency)
+        self._fetch_timeout_secs = float(config.fetch_timeout_secs or self._polling_interval)
+        self._cycle_deadline_secs = float(
+            config.cycle_deadline_secs or 2 * self._polling_interval,
+        )
         self._next_poll_sleep_secs = self._polling_interval
         self._order_book_poll_mode = (
             str(
@@ -408,12 +412,40 @@ class SXBetDataClient(LiveMarketDataClient):
             market_hash: str,
         ) -> tuple[int, int, bool, bool, float, bool, bool, str | None]:
             async with semaphore:
-                return await self._fetch_and_publish_quote_stats(
-                    market_hash,
-                    quote_event_ns=cycle_started_ns,
-                )
+                try:
+                    return await asyncio.wait_for(
+                        self._fetch_and_publish_quote_stats(
+                            market_hash,
+                            quote_event_ns=cycle_started_ns,
+                        ),
+                        timeout=self._fetch_timeout_secs,
+                    )
+                except TimeoutError:
+                    return (
+                        0,
+                        0,
+                        False,
+                        False,
+                        self._fetch_timeout_secs,
+                        True,
+                        False,
+                        f"request_timeout>{self._fetch_timeout_secs}s",
+                    )
 
-        return await asyncio.gather(*[_fetch(market_hash) for market_hash in sorted(market_hashes)])
+        tasks = [
+            asyncio.ensure_future(_fetch(market_hash)) for market_hash in sorted(market_hashes)
+        ]
+        deadline_result = (
+            0,
+            0,
+            False,
+            False,
+            self._cycle_deadline_secs,
+            True,
+            False,
+            "cycle_deadline_exceeded",
+        )
+        return await self._collect_with_cycle_deadline(tasks, [deadline_result] * len(tasks))
 
     async def _fetch_best_odds_batch_results(
         self,
@@ -427,12 +459,56 @@ class SXBetDataClient(LiveMarketDataClient):
             market_hash_batch: list[str],
         ) -> tuple[int, int, int, int, int, float, bool, bool, str | None]:
             async with semaphore:
-                return await self._fetch_and_publish_best_odds_batch_stats(
-                    market_hash_batch,
-                    quote_event_ns=cycle_started_ns,
-                )
+                try:
+                    return await asyncio.wait_for(
+                        self._fetch_and_publish_best_odds_batch_stats(
+                            market_hash_batch,
+                            quote_event_ns=cycle_started_ns,
+                        ),
+                        timeout=self._fetch_timeout_secs,
+                    )
+                except TimeoutError:
+                    return (
+                        0,
+                        0,
+                        len(market_hash_batch),
+                        0,
+                        0,
+                        self._fetch_timeout_secs,
+                        True,
+                        False,
+                        f"request_timeout>{self._fetch_timeout_secs}s",
+                    )
 
-        return await asyncio.gather(*[_fetch(batch) for batch in market_hash_batches])
+        tasks = [asyncio.ensure_future(_fetch(batch)) for batch in market_hash_batches]
+        deadline_results = [
+            (
+                0,
+                0,
+                len(batch),
+                0,
+                0,
+                self._cycle_deadline_secs,
+                True,
+                False,
+                "cycle_deadline_exceeded",
+            )
+            for batch in market_hash_batches
+        ]
+        return await self._collect_with_cycle_deadline(tasks, deadline_results)
+
+    async def _collect_with_cycle_deadline(self, tasks: list, deadline_results: list) -> list:
+        if not tasks:
+            return []
+        done, pending = await asyncio.wait(tasks, timeout=self._cycle_deadline_secs)
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        return [
+            task.result() if task in done else deadline_result
+            for task, deadline_result in zip(tasks, deadline_results, strict=True)
+        ]
 
     def _send_all_instruments_to_data_engine(self) -> None:
         for instrument in self._instrument_provider.get_all().values():
