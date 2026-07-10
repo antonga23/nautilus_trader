@@ -731,3 +731,121 @@ class TestLiveDataEngine:
 
             engine.stop()
             await eventually(lambda: engine.data_qsize() == 0)
+
+    @pytest.mark.asyncio
+    async def test_process_quote_ticks_coalesces_backlog_to_newest_per_instrument(self):
+        # Arrange
+        handler: list[QuoteTick] = []
+        self.msgbus.subscribe(topic="data.quotes.*", handler=handler.append)
+
+        ticks = [
+            TestDataStubs.quote_tick(instrument=BTCUSDT_BINANCE, ts_event=i, ts_init=i)
+            for i in range(1, 6)
+        ]
+
+        # Act - enqueue a backlog before the consumer starts
+        for tick in ticks:
+            self.engine.process(tick)
+
+        # Assert - superseded ticks refreshed the queued slot in place
+        await eventually(lambda: self.engine.data_qsize() == 1)
+
+        self.engine.start()
+        await eventually(lambda: self.engine.data_count == 1)
+        assert handler == [ticks[-1]]
+
+        # Tear Down
+        self.engine.stop()
+
+    @pytest.mark.asyncio
+    async def test_process_quote_ticks_delivered_ts_event_monotonic_per_instrument(self):
+        # Arrange
+        handler: list[QuoteTick] = []
+        self.msgbus.subscribe(topic="data.quotes.*", handler=handler.append)
+
+        # Act - interleaved backlog across two instruments, then live streaming
+        for i in range(1, 11):
+            instrument = BTCUSDT_BINANCE if i % 2 else ETHUSDT_BINANCE
+            self.engine.process(
+                TestDataStubs.quote_tick(instrument=instrument, ts_event=i, ts_init=i),
+            )
+
+        self.engine.start()
+        await eventually(lambda: self.engine.data_count == 2)
+
+        delivered = self.engine.data_count
+        for i in range(11, 15):
+            instrument = BTCUSDT_BINANCE if i % 2 else ETHUSDT_BINANCE
+            self.engine.process(
+                TestDataStubs.quote_tick(instrument=instrument, ts_event=i, ts_init=i),
+            )
+            delivered += 1
+            await eventually(lambda n=delivered: self.engine.data_count == n)
+
+        # Assert
+        last_ts: dict[InstrumentId, int] = {}
+        for tick in handler:
+            assert tick.ts_event > last_ts.get(tick.instrument_id, 0)
+            last_ts[tick.instrument_id] = tick.ts_event
+        assert last_ts == {BTCUSDT_BINANCE.id: 13, ETHUSDT_BINANCE.id: 14}
+
+        # Tear Down
+        self.engine.stop()
+
+    @pytest.mark.asyncio
+    async def test_process_quote_ticks_final_state_identical_to_fifo(self):
+        # Arrange
+        handler: list[QuoteTick] = []
+        self.msgbus.subscribe(topic="data.quotes.*", handler=handler.append)
+
+        instruments = [XBTUSD_BITMEX, BTCUSDT_BINANCE, ETHUSDT_BINANCE]
+        ticks = [
+            TestDataStubs.quote_tick(instrument=instruments[i % 3], ts_event=i, ts_init=i)
+            for i in range(1, 31)
+        ]
+
+        # FIFO delivers every tick, so its final state is the last tick per instrument
+        fifo_final = {tick.instrument_id: tick for tick in ticks}
+
+        # Act
+        for tick in ticks:
+            self.engine.process(tick)
+
+        self.engine.start()
+        await eventually(lambda: self.engine.data_count == 3)
+
+        # Assert
+        coalesced_final = {tick.instrument_id: tick for tick in handler}
+        assert coalesced_final == fifo_final
+
+        # Tear Down
+        self.engine.stop()
+
+    @pytest.mark.asyncio
+    async def test_process_non_quote_data_count_and_order_unaffected(self):
+        # Arrange
+        handler = []
+        self.msgbus.subscribe(topic="data.trades.*", handler=handler.append)
+
+        trades = [
+            TestDataStubs.trade_tick(instrument=ETHUSDT_BINANCE, trade_id=str(i), ts_event=i)
+            for i in range(1, 6)
+        ]
+        quotes = [
+            TestDataStubs.quote_tick(instrument=BTCUSDT_BINANCE, ts_event=i, ts_init=i)
+            for i in range(1, 6)
+        ]
+
+        # Act - interleave trades with quotes that will coalesce
+        for trade, quote in zip(trades, quotes, strict=True):
+            self.engine.process(trade)
+            self.engine.process(quote)
+
+        self.engine.start()
+
+        # Assert - all five trades delivered in order, quotes coalesced to one
+        await eventually(lambda: self.engine.data_count == 6)
+        assert handler == trades
+
+        # Tear Down
+        self.engine.stop()
