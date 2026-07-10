@@ -1556,6 +1556,70 @@ def test_config_restart_failure_502_after_write(tmp_path: Path, monkeypatch: Any
     assert rewritten["strategy"]["max_resolution_horizon_hours"] == 96.0
 
 
+def test_config_preserves_manifest_owner_and_mode(tmp_path: Path, monkeypatch: Any) -> None:
+    """
+    The rewrite must keep the manifest (and its backup) owned by whoever owned the
+    manifest and with the same mode. nodeops runs as root but the deploy pipeline runs
+    as ``ubuntu`` and must still be able to overwrite the file, so the root-created
+    replacement is chowned/chmodded back to the original owner.
+
+    Cross-uid restore needs root, so this exercises the same-user path: the mode
+    is set to a value that differs from both ``mkstemp``'s 0o600 default and the
+    umask default, proving the captured mode is genuinely restored and never
+    corrupted.
+
+    """
+    state, manifest_path = _config_node(tmp_path, _window_manifest())
+    manifest_path.chmod(0o640)
+    monkeypatch.setattr(server, "_run_docker", lambda *a, **k: "node-a\n")
+    before = manifest_path.stat()
+
+    handler = _ConfigHandler(state, _config_body(max_resolution_horizon_hours=96))
+    handler._node_config("node-a")
+    assert handler.sent["status"] == server.HTTPStatus.OK
+
+    after = manifest_path.stat()
+    assert after.st_uid == before.st_uid
+    assert after.st_gid == before.st_gid
+    assert (after.st_mode & 0o777) == (before.st_mode & 0o777) == 0o640
+
+    backup_path = manifest_path.parent / handler.sent["payload"]["backup"]
+    backup = backup_path.stat()
+    assert backup.st_uid == before.st_uid
+    assert backup.st_gid == before.st_gid
+    assert (backup.st_mode & 0o777) == (before.st_mode & 0o777)
+
+
+def test_config_chowns_manifest_and_backup_to_original_owner(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    """
+    Even where the test process cannot actually chown (non-root CI), assert the
+    intent: ``os.chown`` is invoked for both the rewritten manifest and its
+    backup with the *original* owner's uid/gid captured before the write.
+    """
+    state, manifest_path = _config_node(tmp_path, _window_manifest())
+    manifest_path.chmod(0o644)
+    before = manifest_path.stat()
+
+    chown_calls: list[tuple[str, int, int]] = []
+
+    def _record_chown(path: Any, uid: int, gid: int) -> None:
+        chown_calls.append((str(path), uid, gid))
+
+    monkeypatch.setattr(server.os, "chown", _record_chown)
+    monkeypatch.setattr(server, "_run_docker", lambda *a, **k: "node-a\n")
+
+    handler = _ConfigHandler(state, _config_body(max_resolution_horizon_hours=96))
+    handler._node_config("node-a")
+    assert handler.sent["status"] == server.HTTPStatus.OK
+
+    backup_path = manifest_path.parent / handler.sent["payload"]["backup"]
+    assert (str(manifest_path), before.st_uid, before.st_gid) in chown_calls
+    assert (str(backup_path), before.st_uid, before.st_gid) in chown_calls
+
+
 # -- real HTTP smoke for /config --------------------------------------------------
 
 

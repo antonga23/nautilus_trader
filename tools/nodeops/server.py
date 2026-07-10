@@ -546,19 +546,52 @@ def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
         raise
 
 
+def _restore_owner_mode(path: Path, uid: int, gid: int, mode: int) -> None:
+    """
+    Best-effort restore of ``path``'s ownership and permission bits.
+
+    nodeops runs as root so it can read root-owned status files and reach docker,
+    but the strategy-node deploy pipeline runs as ``ubuntu`` and must be able to
+    overwrite the manifest it owns. A tmp+rename rewrite creates a root-owned
+    file, so ownership is restored to the pre-write owner; otherwise the next
+    deploy fails with ``PermissionError`` on ``manifest.runtime.json``. ``chown``
+    needs privilege and is a logged no-op when the service is not root (e.g. in
+    tests) — never fatal, so a rewrite that already succeeded is not undone.
+
+    """
+    try:
+        os.chown(path, uid, gid)
+    except PermissionError:
+        logger.debug(
+            "cannot chown %s to %s:%s without privilege; owner left unchanged",
+            path,
+            uid,
+            gid,
+        )
+    except OSError as exc:
+        logger.debug("chown %s failed: %s", path, exc)
+    with contextlib.suppress(OSError):
+        os.chmod(path, mode)
+
+
 def _atomic_write_manifest(path: Path, data: dict[str, Any]) -> None:
     """
     Atomically replace a node manifest with ``data`` as pretty-printed JSON.
 
     Same tmp-file + fsync + rename pattern as ``_atomic_write_json``, but the
-    original file mode is preserved (the container must still be able to read
-    the manifest, so it must not be tightened to 0600).
+    original file's owner and mode are preserved (the container must still be
+    able to read the manifest, so it must not be tightened to 0600, and the
+    deploy pipeline running as ``ubuntu`` must still be able to overwrite it, so
+    the root-created replacement is chowned back to the pre-write owner).
 
     """
     try:
-        mode = path.stat().st_mode & 0o777
+        st = path.stat()
+        mode = st.st_mode & 0o777
+        uid, gid = st.st_uid, st.st_gid
     except OSError:
         mode = 0o644
+        uid = gid = -1
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".manifest.", suffix=".tmp")
     try:
         os.fchmod(fd, mode)
@@ -572,6 +605,7 @@ def _atomic_write_manifest(path: Path, data: dict[str, Any]) -> None:
         with contextlib.suppress(OSError):
             os.unlink(tmp)
         raise
+    _restore_owner_mode(path, uid, gid, mode)
 
 
 class AuthStore:
@@ -2104,10 +2138,21 @@ class Handler(BaseHTTPRequestHandler):
                 },
             )
             return
+        try:
+            orig_stat = manifest_path.stat()
+        except OSError:
+            orig_stat = None
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         backup_path = manifest_path.with_name(f"{manifest_path.name}.bak-{stamp}")
         try:
             backup_path.write_text(manifest_path.read_text(encoding="utf8"), encoding="utf8")
+            if orig_stat is not None:
+                _restore_owner_mode(
+                    backup_path,
+                    orig_stat.st_uid,
+                    orig_stat.st_gid,
+                    orig_stat.st_mode & 0o777,
+                )
             _atomic_write_manifest(manifest_path, new_manifest)
         except OSError as exc:
             self._send_json(
