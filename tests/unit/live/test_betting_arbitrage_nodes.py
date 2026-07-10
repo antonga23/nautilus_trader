@@ -3172,6 +3172,131 @@ class TestBettingArbitrageNodeRunner:
         assert payload["runtimeProbe"]["quotedSemanticMatchInstruments"] == 2
         assert payload["runtimeProbe"]["positiveMarginCandidates"]["total"] == 1
 
+    def test_probe_runtime_stops_before_dispose_on_coverage_error(
+        self,
+        tmp_path,
+        monkeypatch,
+        caplog,
+    ):
+        manifest = _manifest(tmp_path, cache_dir=tmp_path / "semantic-cache")
+        manifest_path = tmp_path / "manifest.json"
+        manifest_path.write_bytes(manifest.json())
+
+        monkeypatch.setattr(
+            node_runner,
+            "ensure_semantic_cache_ready",
+            lambda _: SemanticCacheStatus(
+                path=str(tmp_path / "semantic-cache"),
+                source="existing",
+                manifest_count=1,
+                promoted_template_count=1,
+                execution_safe_template_count=1,
+                same_venue_execution_eligible_template_count=0,
+            ),
+        )
+
+        def _raise_coverage(**_kwargs):
+            raise node_runner.RuntimeProbeCoverageError("no coverage", {"connectedNodes": 0})
+
+        monkeypatch.setattr(node_runner, "_probe_runtime", _raise_coverage)
+
+        events: list[str] = []
+
+        class RunningTradingNode:
+            instances: list["RunningTradingNode"] = []
+
+            def __init__(self, config):
+                self.config = config
+                self._running = True
+                type(self).instances.append(self)
+
+            def build(self):
+                return None
+
+            def is_running(self):
+                return self._running
+
+            def stop(self):
+                events.append("stop")
+                self._running = False
+
+            def dispose(self):
+                events.append("dispose")
+                if self._running:
+                    raise RuntimeError("Cannot dispose a connected data client")
+
+        monkeypatch.setattr("nautilus_trader.live.node.TradingNode", RunningTradingNode)
+
+        with (
+            caplog.at_level(logging.ERROR, logger=node_runner.__name__),
+            pytest.raises(node_runner.RuntimeProbeCoverageError),
+        ):
+            runner_main(["probe-runtime", "--manifest", str(manifest_path)])
+
+        # stop() must be called once (RUNNING -> STOPPED) before the first dispose().
+        # dispose() may be called more than once (main() also disposes on the re-raise
+        # after _handle_probe_runtime_command's own finally has cleaned up), but the
+        # node is no longer RUNNING so the pyo3 abort is impossible.
+        assert events[:2] == ["stop", "dispose"], events
+        assert events.count("stop") == 1
+        assert not any(
+            "Cannot dispose a connected data client" in rec.getMessage() for rec in caplog.records
+        )
+        assert not any("node.dispose() failed" in rec.getMessage() for rec in caplog.records)
+        payload = json.loads((tmp_path / "status.json").read_text())
+        assert payload["status"] == "failed"
+
+    def test_probe_runtime_skips_stop_when_node_already_stopped(self, tmp_path, monkeypatch):
+        manifest = _manifest(tmp_path, cache_dir=tmp_path / "semantic-cache")
+        manifest_path = tmp_path / "manifest.json"
+        manifest_path.write_bytes(manifest.json())
+
+        monkeypatch.setattr(
+            node_runner,
+            "ensure_semantic_cache_ready",
+            lambda _: SemanticCacheStatus(
+                path=str(tmp_path / "semantic-cache"),
+                source="existing",
+                manifest_count=1,
+                promoted_template_count=1,
+                execution_safe_template_count=1,
+                same_venue_execution_eligible_template_count=0,
+            ),
+        )
+
+        def _raise_coverage(**_kwargs):
+            raise node_runner.RuntimeProbeCoverageError("no coverage", {"connectedNodes": 0})
+
+        monkeypatch.setattr(node_runner, "_probe_runtime", _raise_coverage)
+
+        events: list[str] = []
+
+        class StoppedTradingNode:
+            def __init__(self, config):
+                self.config = config
+
+            def build(self):
+                return None
+
+            def is_running(self):
+                return False
+
+            def stop(self):
+                events.append("stop")
+
+            def dispose(self):
+                events.append("dispose")
+
+        monkeypatch.setattr("nautilus_trader.live.node.TradingNode", StoppedTradingNode)
+
+        with pytest.raises(node_runner.RuntimeProbeCoverageError):
+            runner_main(["probe-runtime", "--manifest", str(manifest_path)])
+
+        # No stop() call — the node was never RUNNING from is_running()'s perspective.
+        assert "stop" not in events
+        assert events
+        assert all(e == "dispose" for e in events)
+
     def test_semantic_probe_diagnostics_report_live_pattern_template_overlap(self):
         instrument = _instrument(
             venue="SXBET",

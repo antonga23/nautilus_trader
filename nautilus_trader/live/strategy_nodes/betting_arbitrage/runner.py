@@ -416,6 +416,29 @@ class RuntimeProbeStatusWriter(threading.Thread):
                 )
 
 
+def _safe_shutdown_node(node) -> None:
+    # Nautilus's TradingNode / DataClient refuse ``dispose`` while state==RUNNING
+    # ("InvalidStateTrigger('RUNNING -> DISPOSE')"), which surfaces as a pyo3
+    # abort during interpreter shutdown. Stop first when the node is still
+    # running, then dispose; log-and-continue on either failure so we always
+    # reach the dispose step.
+    is_running_method = getattr(node, "is_running", None)
+    try:
+        still_running = bool(is_running_method()) if callable(is_running_method) else False
+    except Exception:
+        logger.exception("probe cleanup: node.is_running() failed; assuming running")
+        still_running = True
+    if still_running:
+        try:
+            node.stop()
+        except Exception:
+            logger.exception("probe cleanup: node.stop() failed")
+    try:
+        node.dispose()
+    except Exception:
+        logger.exception("probe cleanup: node.dispose() failed")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_arg_parser()
     args = parser.parse_args(argv)
@@ -438,11 +461,11 @@ def main(argv: list[str] | None = None) -> int:
         _build_node(node, context)
         return _handle_built_node_command(args, node, context)
     except Exception:
-        node.dispose()
+        _safe_shutdown_node(node)
         raise
     finally:
         if args.command == "run" and args.no_start:
-            node.dispose()
+            _safe_shutdown_node(node)
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
@@ -650,7 +673,7 @@ def _handle_probe_runtime_command(args, node, context: RunnerContext) -> int:
         )
         raise
     finally:
-        node.dispose()
+        _safe_shutdown_node(node)
 
 
 def _run_node(node, context: RunnerContext) -> int:
@@ -721,7 +744,7 @@ def _run_node(node, context: RunnerContext) -> int:
         heartbeat_stop.set()
         if runtime_probe_stop is not None:
             runtime_probe_stop.set()
-        node.dispose()
+        _safe_shutdown_node(node)
 
 
 def _sanitize_json_value(value: Any) -> Any:
