@@ -25,6 +25,7 @@ import pytest
 
 from nautilus_trader.adapters.betting.common.enums import SelectionSide
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
+from nautilus_trader.adapters.betting.instruments import make_crypto_betting_instrument_id
 from nautilus_trader.adapters.betting.market_matcher import ArbitrageOpportunity
 from nautilus_trader.adapters.betting.market_matcher import MarketMatcher
 from nautilus_trader.adapters.betting.runtime_cache import active_venue_instrument_index_key
@@ -4698,6 +4699,60 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(quote_updated is True)
         ensure(len(snapshots) == 1)
         return instrument_a, instrument_b, snapshots[0]
+
+    def test_instrument_id_canonicalizes_numeric_params(self):  # skipcq
+        canonical = make_crypto_betting_instrument_id(
+            venue=Venue("CLOUDBET"),
+            event_id="event-1",
+            market_name="total_goals",
+            outcome="over",
+            params="line=2.5",
+        )
+        ensure(str(canonical.symbol) == "event-1:total_goals:over:line_2_5")
+        for raw in ("line=2.50", "line=2.500"):
+            jittered = make_crypto_betting_instrument_id(
+                venue=Venue("CLOUDBET"),
+                event_id="event-1",
+                market_name="total_goals",
+                outcome="over",
+                params=raw,
+            )
+            ensure(jittered == canonical)
+
+        negative = make_crypto_betting_instrument_id(
+            venue=Venue("CLOUDBET"),
+            event_id="event-1",
+            market_name="handicap",
+            outcome="home",
+            params="line=-1.5",
+        )
+        ensure(str(negative.symbol) == "event-1:handicap:home:line_-1_5")
+        ensure(
+            make_crypto_betting_instrument_id(
+                venue=Venue("CLOUDBET"),
+                event_id="event-1",
+                market_name="handicap",
+                outcome="home",
+                params="line=-1.50",
+            )
+            == negative,
+        )
+
+        non_numeric = make_crypto_betting_instrument_id(
+            venue=Venue("CLOUDBET"),
+            event_id="event-1",
+            market_name="totals",
+            outcome="over",
+            params="period=full_time",
+        )
+        ensure(str(non_numeric.symbol) == "event-1:totals:over:period_full_time")
+
+    def test_instruments_with_jittered_numeric_params_share_one_id(self):  # skipcq
+        ids = {
+            str(self._sxbet_instrument(event_id="market-1", outcome="over", params=params).id)
+            for params in ("line=2.5", "line=2.50", "line=2.500")
+        }
+        ensure(len(ids) == 1)
 
     @staticmethod
     def _sxbet_instrument(
