@@ -34,6 +34,7 @@ from nautilus_trader.adapters.betting.common.odds import devig_probabilities
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.betting.semantics import FileRuleCache
 from nautilus_trader.adapters.betting.semantics import CorpusSnapshot
+from nautilus_trader.adapters.betting.semantics import MarketNormalizer
 from nautilus_trader.adapters.betting.semantics import RuleClassifier
 from nautilus_trader.adapters.betting.semantics import RuleCorpusManifest
 from nautilus_trader.adapters.betting.semantics import RulePromotionPolicy
@@ -5967,3 +5968,71 @@ def test_probe_rag_band_classifies_green_amber_red() -> None:
     # unprofitable (worse than -5%) -> red
     assert node_runner._probe_rag_band(Decimal("-0.0501")) == "red"
     assert node_runner._probe_rag_band(Decimal("-0.20")) == "red"
+
+
+def _provider_pattern_key(instrument: CryptoBettingInstrument) -> tuple[str, ...]:
+    normalized = MarketNormalizer.normalize(instrument)
+    return (
+        normalized.venue,
+        normalized.sport,
+        normalized.scope,
+        normalized.market_type,
+        normalized.market_family,
+        normalized.selection,
+        node_runner._semantic_params_key(normalized.params),
+    )
+
+
+def test_synthetic_line_node_pattern_matches_line_keyed_template() -> None:
+    node_key = _provider_pattern_key(
+        _instrument(
+            venue="CLOUDBET",
+            market_type="total_sets",
+            outcome="over",
+            sport_name="tennis",
+            params="total=2.5",
+        ),
+    )
+    template_key = _provider_pattern_key(
+        _instrument(
+            venue="CLOUDBET",
+            market_type="total_sets",
+            outcome="over",
+            sport_name="tennis",
+            params="line=2.5",
+        ),
+    )
+
+    assert node_key[-1] == '[["line","2.5"]]'
+    assert node_key == template_key
+
+    node_counts = Counter({node_key: 5})
+    template_counts = Counter({template_key: 1})
+    assert node_runner._supported_provider_node_count(node_counts, template_counts) == 5
+
+
+def test_distinct_line_node_pattern_stays_unsupported() -> None:
+    node_key = _provider_pattern_key(
+        _instrument(
+            venue="CLOUDBET",
+            market_type="total_sets",
+            outcome="over",
+            sport_name="tennis",
+            params="total=3.5",
+        ),
+    )
+    template_key = _provider_pattern_key(
+        _instrument(
+            venue="CLOUDBET",
+            market_type="total_sets",
+            outcome="over",
+            sport_name="tennis",
+            params="line=2.5",
+        ),
+    )
+
+    assert node_key != template_key
+
+    node_counts = Counter({node_key: 5})
+    template_counts = Counter({template_key: 1})
+    assert node_runner._supported_provider_node_count(node_counts, template_counts) == 0

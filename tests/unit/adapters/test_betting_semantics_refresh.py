@@ -152,7 +152,8 @@ def test_cloudbet_basketball_spread_normalizes_from_fixture():
     assert normalized.market_type == CanonicalMarketType.POINT_SPREAD.value
     assert normalized.selection == "HOME"
     assert normalized.scope == "full_time_including_overtime"
-    assert normalized.param("handicap") == "3.5"
+    assert normalized.param("line") == "3.5"
+    assert normalized.param("handicap") is None
 
 
 def test_cloudbet_away_spread_normalizes_home_relative_line_to_selection_line():
@@ -162,8 +163,8 @@ def test_cloudbet_away_spread_normalizes_home_relative_line_to_selection_line():
 
     assert away.market_type == CanonicalMarketType.POINT_SPREAD.value
     assert away.selection == "AWAY"
-    assert away.param("handicap") == "-3.5"
     assert away.param("line") == "-3.5"
+    assert away.param("handicap") is None
     rule = RuleClassifier().classify(home, away)
     assert rule is not None
     assert rule.relationship_type == RelationshipType.COMPLEMENTARY_COVERAGE.value
@@ -479,7 +480,8 @@ def test_cloudbet_soccer_quarter_handicap_preserves_arbitrary_line():
     )
 
     assert normalized.market_type == CanonicalMarketType.ASIAN_HANDICAP.value
-    assert normalized.param("handicap") == "-0.25"
+    assert normalized.param("line") == "-0.25"
+    assert normalized.param("handicap") is None
     assert rule is not None
     assert rule.relationship_type == RelationshipType.PARTIAL_SETTLEMENT_HEDGE.value
 

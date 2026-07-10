@@ -122,6 +122,7 @@ class MarketNormalizer:
             market_type=market_type,
             selection=selection,
         )
+        params = cls._drop_redundant_line_sources(params)
 
         event_key = cls._event_key_from_fields(
             event_id=str(getattr(instrument, "event_id", instrument.id)),
@@ -235,6 +236,7 @@ class MarketNormalizer:
             market_type=market_type,
             selection=selection,
         )
+        params = cls._drop_redundant_line_sources(params)
 
         event_id = (
             cls._value(item, "event_id") or cls._value(item, "eventId") or cls._value(item, "id")
@@ -497,6 +499,17 @@ class MarketNormalizer:
             if parsed is not None:
                 return parsed
         return None
+
+    @staticmethod
+    def _drop_redundant_line_sources(params: dict[str, str]) -> dict[str, str]:
+        line_value = params.get("line")
+        if line_value is None:
+            return params
+        return {
+            key: value
+            for key, value in params.items()
+            if key not in ("total", "handicap") or value != line_value
+        }
 
     @classmethod
     def _venue_selection_relative_params(
