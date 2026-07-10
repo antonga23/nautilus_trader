@@ -18,12 +18,14 @@ Provider-backed corpus ingestion for semantic rule mining.
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import suppress
 from datetime import UTC
 from datetime import datetime
 from enum import Enum
 import hashlib
 import json
+import logging
 from typing import Any
 
 from nautilus_trader.adapters.betting.semantics.normalization import MarketNormalizer
@@ -36,6 +38,9 @@ from nautilus_trader.adapters.sxbet.config import SXBetInstrumentProviderConfig
 from nautilus_trader.adapters.sxbet.constants import SXBET_SPORT_IDS
 from nautilus_trader.adapters.sxbet.http_client import SXBetHttpClient
 from nautilus_trader.adapters.sxbet.providers import SXBetInstrumentProvider
+
+
+logger = logging.getLogger(__name__)
 
 
 def _utc_now() -> str:
@@ -62,7 +67,7 @@ class SnapshotIngestor:
         self._store = store
         self._normalizer = normalizer or MarketNormalizer()
 
-    async def refresh_cloudbet(  # noqa: C901
+    async def refresh_cloudbet(
         self,
         client: CloudbetClient,
         *,
@@ -81,6 +86,7 @@ class SnapshotIngestor:
         bet_from_date: str | None = None,
         bet_to_date: str | None = None,
         settled_bets_only: bool = False,
+        fetch_concurrency: int = 8,
     ) -> RuleCorpusManifest:
         fetched_at = _utc_now()
         sports_response = await client.get_sports()
@@ -111,290 +117,47 @@ class SnapshotIngestor:
             "sports": {},
         }
 
-        for sport_key in selected_sports:
-            with suppress(Exception):
-                source_refs.append(
-                    self._save_snapshot(
-                        provider="CLOUDBET",
-                        endpoint=f"/pub/v2/odds/sports/{sport_key}",
-                        fetched_at=fetched_at,
-                        payload=await client.get_sport(sport_key),
-                    ),
-                )
+        semaphore = asyncio.Semaphore(max(1, fetch_concurrency))
 
-            events_response = None
-            selections: list[Any] = []
-            attempt_reports: list[dict[str, Any]] = []
-            base_window_seconds = max(to_timestamp - from_timestamp, 24 * 60 * 60)
-            window_seconds = min(base_window_seconds, max_window_seconds)
-            while True:
-                attempt_from = from_timestamp
-                attempt_to = from_timestamp + window_seconds
-                try:
-                    events_response = await client.get_events_for_sport(
-                        sport_key=sport_key,
-                        from_timestamp=attempt_from,
-                        to_timestamp=attempt_to,
-                        limit=limit,
-                    )
-                except Exception as exc:
-                    attempt_reports.append(
-                        {
-                            "from": attempt_from,
-                            "to": attempt_to,
-                            "error": type(exc).__name__,
-                        },
-                    )
-                    events_response = None
-                    break
-                snapshot_id = self._save_snapshot(
-                    provider="CLOUDBET",
-                    endpoint=(
-                        f"/pub/v2/odds/events?sport={sport_key}&from={attempt_from}&to={attempt_to}"
-                    ),
+        async def _bounded_refresh(sport_key: str) -> dict[str, Any]:
+            async with semaphore:
+                return await self._refresh_cloudbet_sport(
+                    client,
+                    sport_key,
                     fetched_at=fetched_at,
-                    payload=events_response,
+                    from_timestamp=from_timestamp,
+                    to_timestamp=to_timestamp,
+                    limit=limit,
+                    adaptive_window=adaptive_window,
+                    max_window_seconds=max_window_seconds,
+                    sparse_history_window_seconds=sparse_history_window_seconds,
+                    min_events_per_sport=min_events_per_sport,
+                    include_recent_past_on_sparse=include_recent_past_on_sparse,
                 )
-                source_refs.append(snapshot_id)
-                selections = client.event_to_selection(events_response)
-                seen_attempt_events = {selection.event_id for selection in selections}
-                attempt_reports.append(
-                    {
-                        "from": attempt_from,
-                        "to": attempt_to,
-                        "event_count": len(seen_attempt_events),
-                        "selection_count": len(selections),
-                    },
+
+        sport_results = await asyncio.gather(
+            *(_bounded_refresh(sport_key) for sport_key in selected_sports),
+            return_exceptions=True,
+        )
+        for sport_key, sport_result in zip(selected_sports, sport_results, strict=True):
+            if isinstance(sport_result, BaseException):
+                logger.warning(
+                    "Cloudbet corpus refresh failed for sport %s: %r",
+                    sport_key,
+                    sport_result,
                 )
-                if (
-                    not adaptive_window
-                    or len(seen_attempt_events) >= min_events_per_sport
-                    or window_seconds >= max_window_seconds
-                ):
-                    break
-                window_seconds = min(max_window_seconds, window_seconds * 2)
-
-            sparse_event_threshold = max(min_events_per_sport, 4)
-            if (
-                include_recent_past_on_sparse
-                and adaptive_window
-                and len({selection.event_id for selection in selections}) < sparse_event_threshold
-            ):
-                attempt_from = from_timestamp - max_window_seconds
-                attempt_to = from_timestamp
-                try:
-                    past_response = await client.get_events_for_sport(
-                        sport_key=sport_key,
-                        from_timestamp=attempt_from,
-                        to_timestamp=attempt_to,
-                        limit=limit,
-                    )
-                    past_snapshot_id = self._save_snapshot(
-                        provider="CLOUDBET",
-                        endpoint=(
-                            f"/pub/v2/odds/events?sport={sport_key}"
-                            f"&from={attempt_from}&to={attempt_to}&direction=past"
-                        ),
-                        fetched_at=fetched_at,
-                        payload=past_response,
-                    )
-                    source_refs.append(past_snapshot_id)
-                    past_selections = client.event_to_selection(past_response)
-                    current_event_count = len({selection.event_id for selection in selections})
-                    past_event_count = len({selection.event_id for selection in past_selections})
-                    if past_event_count > current_event_count or (
-                        past_event_count == current_event_count
-                        and len(past_selections) > len(selections)
-                    ):
-                        events_response = past_response
-                        selections = past_selections
-                    attempt_reports.append(
-                        {
-                            "from": attempt_from,
-                            "to": attempt_to,
-                            "direction": "past",
-                            "event_count": len(
-                                {selection.event_id for selection in past_selections},
-                            ),
-                            "selection_count": len(past_selections),
-                        },
-                    )
-                except Exception as exc:
-                    attempt_reports.append(
-                        {
-                            "from": attempt_from,
-                            "to": attempt_to,
-                            "direction": "past",
-                            "error": type(exc).__name__,
-                        },
-                    )
-
-            if (
-                include_recent_past_on_sparse
-                and adaptive_window
-                and sparse_history_window_seconds > max_window_seconds
-                and len({selection.event_id for selection in selections}) < sparse_event_threshold
-            ):
-                attempt_from = from_timestamp - sparse_history_window_seconds
-                attempt_to = from_timestamp
-                historical_limit = max(limit, 200)
-                try:
-                    historical_response = await client.get_events_for_sport(
-                        sport_key=sport_key,
-                        from_timestamp=attempt_from,
-                        to_timestamp=attempt_to,
-                        limit=historical_limit,
-                    )
-                    historical_snapshot_id = self._save_snapshot(
-                        provider="CLOUDBET",
-                        endpoint=(
-                            f"/pub/v2/odds/events?sport={sport_key}"
-                            f"&from={attempt_from}&to={attempt_to}&direction=historical"
-                        ),
-                        fetched_at=fetched_at,
-                        payload=historical_response,
-                    )
-                    source_refs.append(historical_snapshot_id)
-                    historical_selections = client.event_to_selection(historical_response)
-                    current_event_count = len({selection.event_id for selection in selections})
-                    historical_event_count = len(
-                        {selection.event_id for selection in historical_selections},
-                    )
-                    if historical_event_count > current_event_count or (
-                        historical_event_count == current_event_count
-                        and len(historical_selections) > len(selections)
-                    ):
-                        events_response = historical_response
-                        selections = historical_selections
-                    attempt_reports.append(
-                        {
-                            "from": attempt_from,
-                            "to": attempt_to,
-                            "direction": "historical",
-                            "event_count": historical_event_count,
-                            "selection_count": len(historical_selections),
-                            "limit": historical_limit,
-                        },
-                    )
-                except Exception as exc:
-                    attempt_reports.append(
-                        {
-                            "from": attempt_from,
-                            "to": attempt_to,
-                            "direction": "historical",
-                            "error": type(exc).__name__,
-                            "limit": historical_limit,
-                        },
-                    )
-
-            if events_response is None:
                 coverage_report["sports"][sport_key] = {
                     "event_count": 0,
                     "selection_count": 0,
-                    "attempts": attempt_reports,
+                    "error": type(sport_result).__name__,
                 }
                 continue
-
-            first_competition = next(iter(events_response.competitions), None)
-            competition_payload = None
-            if first_competition is not None:
-                with suppress(Exception):
-                    competition_payload = await client.get_competition(first_competition.key)
-                    source_refs.append(
-                        self._save_snapshot(
-                            provider="CLOUDBET",
-                            endpoint=f"/pub/v2/odds/competitions/{first_competition.key}",
-                            fetched_at=fetched_at,
-                            payload=competition_payload,
-                        ),
-                    )
-            if not selections and competition_payload:
-                selections = self._cloudbet_competition_to_selections(competition_payload)
-                attempt_reports.append(
-                    {
-                        "source": "competition",
-                        "event_count": len(
-                            {
-                                self._cloudbet_selection_field(selection, "event_id")
-                                for selection in selections
-                            },
-                        ),
-                        "selection_count": len(selections),
-                    },
-                )
-
-            selection_count += len(selections)
-
-            seen_event_ids = {
-                event_id
-                for selection in selections
-                if (event_id := self._cloudbet_selection_field(selection, "event_id")) is not None
-            }
-            event_count += len(seen_event_ids)
-            market_names.update(
-                market_name
-                for selection in selections
-                if (market_name := self._cloudbet_selection_field(selection, "market_name"))
-            )
-            coverage_report["sports"][sport_key] = {
-                "event_count": len(seen_event_ids),
-                "selection_count": len(selections),
-                "attempts": attempt_reports,
-                "sparse": len(seen_event_ids) < sparse_event_threshold,
-                "sparse_event_threshold": sparse_event_threshold,
-            }
-
-            for selection in selections:
-                normalized = self._normalizer.normalize(selection)
-                normalized_records.append(
-                    NormalizedSelectionRecord(
-                        record_id=self._normalized_record_id("CLOUDBET", normalized),
-                        provider="CLOUDBET",
-                        selection=normalized,
-                        manifest_id=None,
-                    ),
-                )
-
-            first_event_id = next(iter(seen_event_ids), None)
-            if first_event_id is not None:
-                try:
-                    event_response = await client.get_event(first_event_id)
-                except Exception:
-                    event_response = None
-                if event_response is not None:
-                    event_snapshot_id = self._save_snapshot(
-                        provider="CLOUDBET",
-                        endpoint=f"/pub/v2/odds/events/{first_event_id}",
-                        fetched_at=fetched_at,
-                        payload=event_response,
-                    )
-                    source_refs.append(event_snapshot_id)
-                first_line_selection = next(
-                    (
-                        selection
-                        for selection in selections
-                        if self._cloudbet_selection_field(selection, "event_id") == first_event_id
-                    ),
-                    None,
-                )
-                market_url = (
-                    self._cloudbet_selection_field(first_line_selection, "market_url")
-                    if first_line_selection is not None
-                    else None
-                )
-                if market_url:
-                    with suppress(Exception):
-                        source_refs.append(
-                            self._save_snapshot(
-                                provider="CLOUDBET",
-                                endpoint="/pub/v2/odds/lines",
-                                fetched_at=fetched_at,
-                                payload=await client.get_line(
-                                    first_event_id,
-                                    market_url,
-                                ),
-                            ),
-                        )
+            source_refs.extend(sport_result["source_refs"])
+            market_names.update(sport_result["market_names"])
+            selection_count += sport_result["selection_count"]
+            event_count += sport_result["event_count"]
+            normalized_records.extend(sport_result["normalized_records"])
+            coverage_report["sports"][sport_key] = sport_result["coverage"]
 
         source_refs.append(
             self._save_snapshot(
@@ -457,6 +220,321 @@ class SnapshotIngestor:
         self._persist_normalized_records(normalized_records, manifest.manifest_id)
         self._store.save_manifest(manifest)
         return manifest
+
+    async def _refresh_cloudbet_sport(  # noqa: C901
+        self,
+        client: CloudbetClient,
+        sport_key: str,
+        *,
+        fetched_at: str,
+        from_timestamp: int,
+        to_timestamp: int,
+        limit: int,
+        adaptive_window: bool,
+        max_window_seconds: int,
+        sparse_history_window_seconds: int,
+        min_events_per_sport: int,
+        include_recent_past_on_sparse: bool,
+    ) -> dict[str, Any]:
+        source_refs: list[str] = []
+        market_names: set[str] = set()
+        normalized_records: list[NormalizedSelectionRecord] = []
+
+        with suppress(Exception):
+            source_refs.append(
+                self._save_snapshot(
+                    provider="CLOUDBET",
+                    endpoint=f"/pub/v2/odds/sports/{sport_key}",
+                    fetched_at=fetched_at,
+                    payload=await client.get_sport(sport_key),
+                ),
+            )
+
+        events_response = None
+        selections: list[Any] = []
+        attempt_reports: list[dict[str, Any]] = []
+        base_window_seconds = max(to_timestamp - from_timestamp, 24 * 60 * 60)
+        window_seconds = min(base_window_seconds, max_window_seconds)
+        while True:
+            attempt_from = from_timestamp
+            attempt_to = from_timestamp + window_seconds
+            try:
+                events_response = await client.get_events_for_sport(
+                    sport_key=sport_key,
+                    from_timestamp=attempt_from,
+                    to_timestamp=attempt_to,
+                    limit=limit,
+                )
+            except Exception as exc:
+                attempt_reports.append(
+                    {
+                        "from": attempt_from,
+                        "to": attempt_to,
+                        "error": type(exc).__name__,
+                    },
+                )
+                events_response = None
+                break
+            snapshot_id = self._save_snapshot(
+                provider="CLOUDBET",
+                endpoint=(
+                    f"/pub/v2/odds/events?sport={sport_key}&from={attempt_from}&to={attempt_to}"
+                ),
+                fetched_at=fetched_at,
+                payload=events_response,
+            )
+            source_refs.append(snapshot_id)
+            selections = client.event_to_selection(events_response)
+            seen_attempt_events = {selection.event_id for selection in selections}
+            attempt_reports.append(
+                {
+                    "from": attempt_from,
+                    "to": attempt_to,
+                    "event_count": len(seen_attempt_events),
+                    "selection_count": len(selections),
+                },
+            )
+            if (
+                not adaptive_window
+                or len(seen_attempt_events) >= min_events_per_sport
+                or window_seconds >= max_window_seconds
+            ):
+                break
+            window_seconds = min(max_window_seconds, window_seconds * 2)
+
+        sparse_event_threshold = max(min_events_per_sport, 4)
+        if (
+            include_recent_past_on_sparse
+            and adaptive_window
+            and len({selection.event_id for selection in selections}) < sparse_event_threshold
+        ):
+            attempt_from = from_timestamp - max_window_seconds
+            attempt_to = from_timestamp
+            try:
+                past_response = await client.get_events_for_sport(
+                    sport_key=sport_key,
+                    from_timestamp=attempt_from,
+                    to_timestamp=attempt_to,
+                    limit=limit,
+                )
+                past_snapshot_id = self._save_snapshot(
+                    provider="CLOUDBET",
+                    endpoint=(
+                        f"/pub/v2/odds/events?sport={sport_key}"
+                        f"&from={attempt_from}&to={attempt_to}&direction=past"
+                    ),
+                    fetched_at=fetched_at,
+                    payload=past_response,
+                )
+                source_refs.append(past_snapshot_id)
+                past_selections = client.event_to_selection(past_response)
+                current_event_count = len({selection.event_id for selection in selections})
+                past_event_count = len({selection.event_id for selection in past_selections})
+                if past_event_count > current_event_count or (
+                    past_event_count == current_event_count
+                    and len(past_selections) > len(selections)
+                ):
+                    events_response = past_response
+                    selections = past_selections
+                attempt_reports.append(
+                    {
+                        "from": attempt_from,
+                        "to": attempt_to,
+                        "direction": "past",
+                        "event_count": len(
+                            {selection.event_id for selection in past_selections},
+                        ),
+                        "selection_count": len(past_selections),
+                    },
+                )
+            except Exception as exc:
+                attempt_reports.append(
+                    {
+                        "from": attempt_from,
+                        "to": attempt_to,
+                        "direction": "past",
+                        "error": type(exc).__name__,
+                    },
+                )
+
+        if (
+            include_recent_past_on_sparse
+            and adaptive_window
+            and sparse_history_window_seconds > max_window_seconds
+            and len({selection.event_id for selection in selections}) < sparse_event_threshold
+        ):
+            attempt_from = from_timestamp - sparse_history_window_seconds
+            attempt_to = from_timestamp
+            historical_limit = max(limit, 200)
+            try:
+                historical_response = await client.get_events_for_sport(
+                    sport_key=sport_key,
+                    from_timestamp=attempt_from,
+                    to_timestamp=attempt_to,
+                    limit=historical_limit,
+                )
+                historical_snapshot_id = self._save_snapshot(
+                    provider="CLOUDBET",
+                    endpoint=(
+                        f"/pub/v2/odds/events?sport={sport_key}"
+                        f"&from={attempt_from}&to={attempt_to}&direction=historical"
+                    ),
+                    fetched_at=fetched_at,
+                    payload=historical_response,
+                )
+                source_refs.append(historical_snapshot_id)
+                historical_selections = client.event_to_selection(historical_response)
+                current_event_count = len({selection.event_id for selection in selections})
+                historical_event_count = len(
+                    {selection.event_id for selection in historical_selections},
+                )
+                if historical_event_count > current_event_count or (
+                    historical_event_count == current_event_count
+                    and len(historical_selections) > len(selections)
+                ):
+                    events_response = historical_response
+                    selections = historical_selections
+                attempt_reports.append(
+                    {
+                        "from": attempt_from,
+                        "to": attempt_to,
+                        "direction": "historical",
+                        "event_count": historical_event_count,
+                        "selection_count": len(historical_selections),
+                        "limit": historical_limit,
+                    },
+                )
+            except Exception as exc:
+                attempt_reports.append(
+                    {
+                        "from": attempt_from,
+                        "to": attempt_to,
+                        "direction": "historical",
+                        "error": type(exc).__name__,
+                        "limit": historical_limit,
+                    },
+                )
+
+        if events_response is None:
+            return {
+                "source_refs": source_refs,
+                "market_names": market_names,
+                "selection_count": 0,
+                "event_count": 0,
+                "normalized_records": normalized_records,
+                "coverage": {
+                    "event_count": 0,
+                    "selection_count": 0,
+                    "attempts": attempt_reports,
+                },
+            }
+
+        first_competition = next(iter(events_response.competitions), None)
+        competition_payload = None
+        if first_competition is not None:
+            with suppress(Exception):
+                competition_payload = await client.get_competition(first_competition.key)
+                source_refs.append(
+                    self._save_snapshot(
+                        provider="CLOUDBET",
+                        endpoint=f"/pub/v2/odds/competitions/{first_competition.key}",
+                        fetched_at=fetched_at,
+                        payload=competition_payload,
+                    ),
+                )
+        if not selections and competition_payload:
+            selections = self._cloudbet_competition_to_selections(competition_payload)
+            attempt_reports.append(
+                {
+                    "source": "competition",
+                    "event_count": len(
+                        {
+                            self._cloudbet_selection_field(selection, "event_id")
+                            for selection in selections
+                        },
+                    ),
+                    "selection_count": len(selections),
+                },
+            )
+
+        seen_event_ids = {
+            event_id
+            for selection in selections
+            if (event_id := self._cloudbet_selection_field(selection, "event_id")) is not None
+        }
+        market_names.update(
+            market_name
+            for selection in selections
+            if (market_name := self._cloudbet_selection_field(selection, "market_name"))
+        )
+        coverage = {
+            "event_count": len(seen_event_ids),
+            "selection_count": len(selections),
+            "attempts": attempt_reports,
+            "sparse": len(seen_event_ids) < sparse_event_threshold,
+            "sparse_event_threshold": sparse_event_threshold,
+        }
+
+        for selection in selections:
+            normalized = self._normalizer.normalize(selection)
+            normalized_records.append(
+                NormalizedSelectionRecord(
+                    record_id=self._normalized_record_id("CLOUDBET", normalized),
+                    provider="CLOUDBET",
+                    selection=normalized,
+                    manifest_id=None,
+                ),
+            )
+
+        first_event_id = next(iter(seen_event_ids), None)
+        if first_event_id is not None:
+            try:
+                event_response = await client.get_event(first_event_id)
+            except Exception:
+                event_response = None
+            if event_response is not None:
+                event_snapshot_id = self._save_snapshot(
+                    provider="CLOUDBET",
+                    endpoint=f"/pub/v2/odds/events/{first_event_id}",
+                    fetched_at=fetched_at,
+                    payload=event_response,
+                )
+                source_refs.append(event_snapshot_id)
+            first_line_selection = next(
+                (
+                    selection
+                    for selection in selections
+                    if self._cloudbet_selection_field(selection, "event_id") == first_event_id
+                ),
+                None,
+            )
+            market_url = (
+                self._cloudbet_selection_field(first_line_selection, "market_url")
+                if first_line_selection is not None
+                else None
+            )
+            if market_url:
+                with suppress(Exception):
+                    source_refs.append(
+                        self._save_snapshot(
+                            provider="CLOUDBET",
+                            endpoint="/pub/v2/odds/lines",
+                            fetched_at=fetched_at,
+                            payload=await client.get_line(
+                                first_event_id,
+                                market_url,
+                            ),
+                        ),
+                    )
+
+        return {
+            "source_refs": source_refs,
+            "market_names": market_names,
+            "selection_count": len(selections),
+            "event_count": len(seen_event_ids),
+            "normalized_records": normalized_records,
+            "coverage": coverage,
+        }
 
     async def refresh_sxbet(
         self,

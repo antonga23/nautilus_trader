@@ -3179,6 +3179,165 @@ def test_refresh_cloudbet_uses_historical_backfill_when_recent_past_stays_sparse
     assert coverage["sparse"] is False
 
 
+class _ConcurrencyFakeSport(msgspec.Struct):
+    name: str
+    key: str
+
+
+class _ConcurrencyFakeSportsResponse(msgspec.Struct):
+    sports: list[_ConcurrencyFakeSport]
+
+
+class _ConcurrencyFakeCompetition(msgspec.Struct):
+    key: str
+
+
+class _ConcurrencyFakeEventsResponse(msgspec.Struct):
+    competitions: list[_ConcurrencyFakeCompetition]
+
+
+class _ConcurrencyFakeClient:
+    def __init__(
+        self,
+        sport_keys: list[str],
+        latencies: dict[str, float],
+        failing_sports: set[str] | None = None,
+    ) -> None:
+        self.sport_keys = sport_keys
+        self.completion_order: list[str] = []
+        self.in_flight = 0
+        self.peak_in_flight = 0
+        self._latencies = latencies
+        self._failing_sports = failing_sports or set()
+
+    async def _pause(self, sport_key: str) -> None:
+        self.in_flight += 1
+        self.peak_in_flight = max(self.peak_in_flight, self.in_flight)
+        try:
+            await asyncio.sleep(self._latencies.get(sport_key, 0.0))
+        finally:
+            self.in_flight -= 1
+
+    async def get_sports(self) -> _ConcurrencyFakeSportsResponse:
+        return _ConcurrencyFakeSportsResponse(
+            sports=[_ConcurrencyFakeSport(name=key, key=key) for key in self.sport_keys],
+        )
+
+    async def get_sport(self, sport_key: str) -> dict[str, str]:
+        await self._pause(sport_key)
+        return {"sport": sport_key}
+
+    async def get_events_for_sport(
+        self,
+        *,
+        sport_key: str,
+        from_timestamp: int,
+        to_timestamp: int,
+        limit: int,
+    ) -> _ConcurrencyFakeEventsResponse:
+        await self._pause(sport_key)
+        self.completion_order.append(sport_key)
+        return _ConcurrencyFakeEventsResponse(
+            competitions=[_ConcurrencyFakeCompetition(key=sport_key)],
+        )
+
+    def event_to_selection(
+        self,
+        response: _ConcurrencyFakeEventsResponse,
+    ) -> list[SimpleNamespace]:
+        sport_key = response.competitions[0].key
+        if sport_key in self._failing_sports:
+            raise RuntimeError(f"boom: {sport_key}")
+        return [
+            SimpleNamespace(
+                provider="CLOUDBET",
+                sport_name=sport_key,
+                sport_key=sport_key,
+                event_id=f"{sport_key}-event",
+                event_name=f"{sport_key} home vs away",
+                home_name=f"{sport_key} home",
+                away_name=f"{sport_key} away",
+                market_name=f"{sport_key}.winner",
+                market_type=f"{sport_key}.winner",
+                outcome="home",
+            ),
+        ]
+
+    async def get_event(self, event_id: str) -> None:
+        return None
+
+
+def _run_concurrency_refresh(client, *, fetch_concurrency):
+    store = RuleStore(DictCache())
+    ingestor = SnapshotIngestor(store)
+    manifest = asyncio.run(
+        ingestor.refresh_cloudbet(
+            client,
+            sports=list(client.sport_keys),
+            from_timestamp=1_000,
+            to_timestamp=1_000 + 86_400,
+            limit=10,
+            adaptive_window=False,
+            include_bets=False,
+            fetch_concurrency=fetch_concurrency,
+        ),
+    )
+    return manifest, store
+
+
+def _coverage_payload(store: RuleStore) -> dict:
+    for snapshot_id in store.list_snapshot_ids():
+        snapshot = store.load_snapshot(snapshot_id)
+        if snapshot is not None and snapshot.endpoint == "/semantic/coverage/cloudbet":
+            return json.loads(snapshot.payload.decode("utf-8"))
+    raise AssertionError("coverage snapshot not found")
+
+
+def test_refresh_cloudbet_concurrent_fetch_preserves_input_sport_order(monkeypatch):
+    monkeypatch.setattr(corpus_module, "_utc_now", lambda: "2026-01-01T00:00:00Z")
+    sport_keys = [f"sport-{index}" for index in range(6)]
+    latencies = {key: (len(sport_keys) - 1 - index) * 0.01 for index, key in enumerate(sport_keys)}
+
+    concurrent_client = _ConcurrencyFakeClient(sport_keys, latencies)
+    concurrent_manifest, concurrent_store = _run_concurrency_refresh(
+        concurrent_client,
+        fetch_concurrency=len(sport_keys),
+    )
+
+    assert concurrent_client.peak_in_flight > 1
+    assert concurrent_client.completion_order != sport_keys
+    assert list(_coverage_payload(concurrent_store)["sports"]) == sport_keys
+
+    sequential_client = _ConcurrencyFakeClient(sport_keys, latencies)
+    sequential_manifest, sequential_store = _run_concurrency_refresh(
+        sequential_client,
+        fetch_concurrency=1,
+    )
+
+    assert sequential_client.peak_in_flight == 1
+    assert sequential_client.completion_order == sport_keys
+    assert concurrent_manifest.source_refs == sequential_manifest.source_refs
+    assert concurrent_manifest == sequential_manifest
+
+
+def test_refresh_cloudbet_concurrent_fetch_isolates_per_sport_failures(monkeypatch):
+    monkeypatch.setattr(corpus_module, "_utc_now", lambda: "2026-01-01T00:00:00Z")
+    sport_keys = ["sport-0", "sport-1", "sport-2"]
+
+    client = _ConcurrencyFakeClient(sport_keys, {}, failing_sports={"sport-1"})
+    manifest, store = _run_concurrency_refresh(client, fetch_concurrency=len(sport_keys))
+
+    coverage = _coverage_payload(store)["sports"]
+    assert list(coverage) == sport_keys
+    assert coverage["sport-1"] == {
+        "event_count": 0,
+        "selection_count": 0,
+        "error": "RuntimeError",
+    }
+    assert manifest.selection_count == 2
+    assert manifest.event_count == 2
+
+
 def test_sxbet_six_sport_alias_resolution_includes_hockey_and_baseball():
     resolved = SnapshotIngestor._resolve_sxbet_sport_ids(
         requested_sports=[
