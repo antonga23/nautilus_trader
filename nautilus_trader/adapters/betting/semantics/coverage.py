@@ -33,6 +33,7 @@ from decimal import InvalidOperation
 import hashlib
 from itertools import product
 import json
+import re
 
 from nautilus_trader.adapters.betting.semantics.payoffs import PayoffVectorBuilder
 from nautilus_trader.adapters.betting.semantics.types import CanonicalMarketType
@@ -62,6 +63,17 @@ PARTIAL_LOSE = SettlementState.PARTIAL_LOSE.value
 UNKNOWN = SettlementState.UNKNOWN.value
 
 _PARTIAL_STATES = frozenset({HALF_WIN, HALF_LOSE, PARTIAL_WIN, PARTIAL_LOSE})
+_BARE_SCORE_PATTERN = re.compile(r"^\d+_\d+$")
+_RAW_BUCKET_MARKET_TOKENS = (
+    "exact_goals",
+    "halftime_fulltime",
+    "highest_scoring_quarter",
+    "highest_scoring_inning",
+    "margin",
+    "set_score",
+    "map_score",
+    "exact_sets",
+)
 _BINARY_SELECTION_GROUPS = (
     frozenset({"OVER", "UNDER"}),
     frozenset({"YES", "NO"}),
@@ -219,17 +231,9 @@ class SelectionPredicateBuilder:
                 )
             if selection.selection.startswith("ANY_OTHER_"):
                 return selection.selection, "bucket", selection.selection
-        if "exact_goals" in raw_market:
-            return selection.selection, "bucket", selection.selection
-        if "halftime_fulltime_result" in raw_market or "halftime_fulltime" in raw_market:
-            return selection.selection, "bucket", selection.selection
-        if "highest_scoring_quarter" in raw_market:
-            return selection.selection, "bucket", selection.selection
-        if "highest_scoring_inning" in raw_market:
-            return selection.selection, "bucket", selection.selection
-        if "winning_margin" in raw_market or "margin" in raw_market:
-            return selection.selection, "bucket", selection.selection
-        if "set_score" in raw_market or "map_score" in raw_market or "exact_sets" in raw_market:
+            if _BARE_SCORE_PATTERN.match(selection.selection):
+                return selection.selection, "score", selection.selection.replace("_", "-")
+        if any(token in raw_market for token in _RAW_BUCKET_MARKET_TOKENS):
             return selection.selection, "bucket", selection.selection
         return None, "", ""
 

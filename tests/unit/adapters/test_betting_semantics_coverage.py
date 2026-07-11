@@ -308,6 +308,66 @@ def test_correct_score_records_mine_bucket_coverage_from_realized_selection_labe
     assert len(hyperedges) == 1
 
 
+def test_correct_score_bare_numeric_selection_buckets_as_score_state():
+    predicate = SelectionPredicateBuilder.from_selection(
+        _selection(
+            instrument_id="score-2-1",
+            market_type=CanonicalMarketType.CORRECT_SCORE.value,
+            selection="2_1",
+        ),
+    )
+
+    assert predicate.win_states == ("2_1",)
+    assert predicate.result_states == ("2_1",)
+    assert predicate.unknown_states == ()
+    assert ("score", "2-1") in predicate.params
+
+
+def test_correct_score_bare_numeric_records_mine_bucket_coverage(tmp_path):
+    records = [
+        NormalizedSelectionRecord(
+            record_id=f"record-{selection.lower()}",
+            provider="CLOUDBET",
+            selection=_selection(
+                instrument_id=f"score-{selection.lower()}",
+                market_type=CanonicalMarketType.CORRECT_SCORE.value,
+                selection=selection,
+            ),
+        )
+        for selection in ("1_0", "0_2", "ANY_OTHER_HOME_WIN")
+    ]
+
+    proofs, hyperedges = RuleMiner(RuleStore(FileRuleCache(tmp_path))).mine_coverage(
+        records,
+        persist=False,
+    )
+
+    assert any(proof.complete for proof in proofs)
+    assert len(hyperedges) == 1
+
+
+def test_correct_score_ambiguous_selections_stay_unknown():
+    for selection in (
+        "ABANDONED",
+        "CANCELLED",
+        "VOID",
+        "3_PLUS",
+        "1_0_OR_2_0",
+        "POSTPONED",
+    ):
+        predicate = SelectionPredicateBuilder.from_selection(
+            _selection(
+                instrument_id=f"score-{selection.lower()}",
+                market_type=CanonicalMarketType.CORRECT_SCORE.value,
+                selection=selection,
+            ),
+        )
+
+        assert predicate.win_states == ()
+        assert predicate.unknown_states == ("UNKNOWN",)
+        assert CoverageBlockerReason.UNKNOWN_SETTLEMENT.value in predicate.caveats
+
+
 def test_other_bucket_market_records_mine_full_book_coverage(tmp_path):
     records = [
         NormalizedSelectionRecord(
