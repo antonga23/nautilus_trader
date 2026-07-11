@@ -371,7 +371,7 @@ class CryptoBettingInstrument(Instrument):
         """
         return {
             "type": "CryptoBettingInstrument",
-            "id": obj.id.to_str(),
+            "id": obj.id.value,
             "venue": obj.venue_name.value
             if hasattr(obj.venue_name, "value")
             else str(obj.venue_name),
@@ -405,6 +405,13 @@ class CryptoBettingInstrument(Instrument):
             "ts_event": obj.ts_event,
             "ts_init": obj.ts_init,
             "instrument_key": obj.instrument_key,
+            # Venue-specific fields (e.g. the SX.bet ``outcome_one`` assignment
+            # that drives which order-book side prices each leg) must survive the
+            # cache/msgbus round-trip. Without this, ``from_dict`` reconstructs an
+            # instrument with empty ``info`` and downstream code silently falls
+            # back to a HOME/AWAY name heuristic, mispricing handicap/totals legs
+            # whose outcomeOne is not the HOME/OVER selection.
+            "info": obj.info,
         }
 
     @staticmethod

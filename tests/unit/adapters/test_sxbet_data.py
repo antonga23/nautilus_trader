@@ -43,6 +43,10 @@ def _make_instrument(
     market_hash: str = "market-1",
     outcome: str = "home",
     outcome_one: bool = True,
+    market_name: str = "Match Odds",
+    market_type: str = "match_odds",
+    handicap: float | None = None,
+    params: str = "",
 ) -> CryptoBettingInstrument:
     return CryptoBettingInstrument(
         venue=Venue("SXBET"),
@@ -52,13 +56,16 @@ def _make_instrument(
         away_name="Team B",
         sport_name="soccer",
         competition_name="Test League",
-        market_name="Match Odds",
-        market_type="match_odds",
+        market_name=market_name,
+        market_type=market_type,
         outcome=outcome,
         side=SelectionSide.BACK,
         price=2.0,
         currency=Currency.from_str("USDT"),
+        params=params,
         market_id=market_hash,
+        instrument_key=market_hash,
+        handicap=handicap,
         info={"outcome_one": outcome_one},
     )
 
@@ -147,6 +154,90 @@ def test_two_sided_book_prices_to_overround_not_phantom_arbitrage():
     assert bid_one == pytest.approx(1 / 0.52, rel=1e-9)
     assert bid_two == pytest.approx(1 / 0.52, rel=1e-9)
     assert (1 / bid_one + 1 / bid_two) > 1.0
+
+
+def test_handicap_outcome_one_flag_survives_cache_round_trip_and_prices_correct_side():
+    # Money-path regression for handicap (and totals) markets.
+    #
+    # SX.bet assigns each market an explicit outcomeOne/outcomeTwo. That mapping
+    # need not line up with the HOME/OVER/YES side: here outcomeOne is the AWAY
+    # favourite (giving -3.5) and outcomeTwo is the HOME underdog (getting +3.5).
+    # ``_instrument_is_outcome_one`` must therefore read the explicit ``info``
+    # flag, not the HOME/AWAY name heuristic, to pick which order-book side prices
+    # each leg. That flag only stays authoritative if it survives the cache /
+    # msgbus serialization round-trip -- previously ``to_dict`` dropped ``info``,
+    # so a reconstructed instrument fell back to the name heuristic and priced the
+    # favourite leg from the wrong side (a fresh, deep phantom arbitrage).
+    favourite = _make_instrument(
+        outcome="away",  # outcomeOne is the away/favourite selection here
+        outcome_one=True,
+        market_name="asian_handicap",
+        market_type="asian_handicap",
+        handicap=-3.5,
+        params="line=-3.5",
+    )
+    underdog = _make_instrument(
+        outcome="home",  # outcomeTwo is the home/underdog selection
+        outcome_one=False,
+        market_name="asian_handicap",
+        market_type="asian_handicap",
+        handicap=-3.5,
+        params="line=-3.5",
+    )
+
+    # Reconstruct both instruments the way the cache does. Under the pre-fix
+    # ``to_dict`` these come back with empty ``info`` and the flag is lost.
+    favourite = CryptoBettingInstrument.from_dict(CryptoBettingInstrument.to_dict(favourite))
+    underdog = CryptoBettingInstrument.from_dict(CryptoBettingInstrument.to_dict(underdog))
+
+    assert favourite.info.get("outcome_one") is True
+    assert underdog.info.get("outcome_one") is False
+    assert SXBetDataClient._instrument_is_outcome_one(favourite) is True
+    assert SXBetDataClient._instrument_is_outcome_one(underdog) is False
+
+    # Two-sided handicap book: makers on outcomeOne imply 0.80, makers on
+    # outcomeTwo imply 0.13. A taker takes the complement of the opposite side.
+    orders = [
+        {
+            "isMakerBettingOutcomeOne": True,
+            "percentageOdds": _maker_pct(0.80),
+            "totalBetSize": 100_000000,
+        },
+        {
+            "isMakerBettingOutcomeOne": False,
+            "percentageOdds": _maker_pct(0.13),
+            "totalBetSize": 100_000000,
+        },
+    ]
+
+    fav_flag = SXBetDataClient._instrument_is_outcome_one(favourite)
+    dog_flag = SXBetDataClient._instrument_is_outcome_one(underdog)
+    fav_odds, _, _ = SXBetDataClient._best_bid_ask(orders, is_outcome_one=fav_flag)
+    dog_odds, _, _ = SXBetDataClient._best_bid_ask(orders, is_outcome_one=dog_flag)
+
+    # Favourite (outcomeOne) prices short from the complement of the 0.13 makers;
+    # underdog (outcomeTwo) prices long from the complement of the 0.80 makers.
+    assert fav_odds == pytest.approx(1 / (1 - 0.13), rel=1e-9)  # ~1.149
+    assert dog_odds == pytest.approx(1 / (1 - 0.80), rel=1e-9)  # 5.0
+    assert fav_odds < dog_odds  # favourite short, underdog long
+    fav_implied = 1 / fav_odds
+    dog_implied = 1 / dog_odds
+    assert fav_implied > dog_implied
+    assert (fav_implied + dog_implied) > 1.0  # healthy overround, not a phantom arb
+
+    # Guard the pre-fix failure mode directly: if ``info`` is dropped on
+    # serialization the favourite leg falls back to the name heuristic ("away" ->
+    # not outcome one) and is priced from the wrong side as a longshot.
+    stripped = CryptoBettingInstrument.to_dict(favourite)
+    stripped.pop("info", None)
+    heuristic_leg = CryptoBettingInstrument.from_dict(stripped)
+    assert SXBetDataClient._instrument_is_outcome_one(heuristic_leg) is False
+    wrong_side_odds, _, _ = SXBetDataClient._best_bid_ask(
+        orders,
+        is_outcome_one=SXBetDataClient._instrument_is_outcome_one(heuristic_leg),
+    )
+    assert wrong_side_odds == pytest.approx(1 / (1 - 0.80), rel=1e-9)  # favourite mispriced as 5.0
+    assert wrong_side_odds > fav_odds
 
 
 def test_market_order_sides_requires_positive_orders_on_both_outcomes():
