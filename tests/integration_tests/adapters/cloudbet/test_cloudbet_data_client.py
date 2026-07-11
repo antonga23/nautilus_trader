@@ -8,6 +8,7 @@ from nautilus_trader.data.messages import RequestInstrument
 from nautilus_trader.data.messages import SubscribeInstruments
 
 from nautilus_trader.adapters.cloudbet.client.core import CloudbetClient
+from nautilus_trader.adapters.cloudbet.client.exceptions import CloudbetAPIError
 from nautilus_trader.adapters.cloudbet.client.schema import (
     CompetitionWithCategory,
     EventStatus,
@@ -22,8 +23,67 @@ from nautilus_trader.adapters.cloudbet.client.schema import (
     TeamIdentifier,
 )
 from nautilus_trader.adapters.cloudbet.common import CLOUDBET_VENUE
+from nautilus_trader.adapters.cloudbet.data_client import REVALIDATE_EVERY_N_CYCLES
 from nautilus_trader.adapters.cloudbet.providers import CloudbetInstrumentProvider
 from nautilus_trader.model.identifiers import ClientId
+
+
+def build_event_response(instrument, markets) -> GetEventResponse:
+    return GetEventResponse(
+        sequence="1",
+        id=int(instrument.event_id),
+        sport=Identifier(name=instrument.sport_name, key="sport"),
+        competition=CompetitionWithCategory(
+            category=Identifier(name="category", key="category"),
+            key="competition",
+            name=instrument.competition_name,
+        ),
+        home=TeamIdentifier(
+            abbreviation="H",
+            key="home",
+            name=instrument.home_name,
+            nationality="",
+        ),
+        away=TeamIdentifier(
+            abbreviation="A",
+            key="away",
+            name=instrument.away_name,
+            nationality="",
+        ),
+        status=EventStatus.TRADING,
+        markets=markets,
+        name=instrument.event_name,
+        key="event",
+        cutoff_time="2026-05-07T12:00:00Z",
+        type="EVENT",
+        end_time="2026-05-07T14:00:00Z",
+        grading_duration=None,
+    )
+
+
+def build_markets_with_selection(data_client, instrument, price=2.72) -> dict:
+    submarket_key = data_client._preferred_submarket_key(instrument) or "period=ft"
+    return {
+        instrument.market_name: MarketModel(
+            submarkets={
+                submarket_key: SubmarketModel(
+                    sequence="1",
+                    selections=[
+                        SelectionModel(
+                            outcome=instrument.outcome,
+                            params=instrument.params,
+                            price=price,
+                            minStake=1,
+                            maxStake=321,
+                            probability=0.36,
+                            status=SelectionStatus.ENABLED.value,
+                            side=SelectionSide.BACK.value,
+                        ),
+                    ],
+                ),
+            },
+        ),
+    }
 
 
 async def wait_for_data_client_state(
@@ -523,3 +583,154 @@ class TestCloudbetDataClient:
         assert updated_response_count - current_response_count == 1, (
             f"Expected {updated_response_count} responses, got {current_response_count}"
         )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 1)], indirect=["instruments"])
+    @patch.object(CloudbetClient, "get_latest_odds", new_callable=AsyncMock)
+    @patch.object(CloudbetClient, "get_event", new_callable=AsyncMock)
+    async def test_poll_quote_ticks_skips_line_fallback_for_confirmed_absent_market(
+        self,
+        mock_get_event,
+        mock_get_latest_odds,
+        data_client,
+        instruments,
+    ):
+        instrument = instruments[0]
+        data_client.instrument_provider.add(instrument)
+        data_client._subscribed_quote_instruments.add(instrument.id)
+        data_client._requested_quote_instruments.add(instrument.id)
+        mock_get_event.return_value = build_event_response(instrument, markets={})
+        mock_get_latest_odds.side_effect = CloudbetAPIError("market not found", code="404")
+
+        await data_client._poll_quote_ticks_once()
+
+        assert mock_get_latest_odds.call_count == 1
+        assert instrument.id in data_client._quote_poll_absent_market_cycles
+
+        await data_client._poll_quote_ticks_once()
+
+        assert mock_get_latest_odds.call_count == 1
+        assert mock_get_event.call_count == 2
+        stats = data_client._cache.get("betting:venue_quote_poll_stats:CLOUDBET")
+        assert b'"event_request_count":1' in stats
+        assert b'"line_request_count":0' in stats
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 1)], indirect=["instruments"])
+    @patch.object(CloudbetClient, "get_latest_odds", new_callable=AsyncMock)
+    @patch.object(CloudbetClient, "get_event", new_callable=AsyncMock)
+    async def test_poll_quote_ticks_revalidates_absent_market_on_schedule(
+        self,
+        mock_get_event,
+        mock_get_latest_odds,
+        data_client,
+        instruments,
+    ):
+        instrument = instruments[0]
+        data_client.instrument_provider.add(instrument)
+        data_client._subscribed_quote_instruments.add(instrument.id)
+        data_client._requested_quote_instruments.add(instrument.id)
+        mock_get_event.return_value = build_event_response(instrument, markets={})
+        mock_get_latest_odds.side_effect = CloudbetAPIError("market not found", code="404")
+
+        for _ in range(REVALIDATE_EVERY_N_CYCLES):
+            await data_client._poll_quote_ticks_once()
+
+        assert mock_get_latest_odds.call_count == 1
+
+        await data_client._poll_quote_ticks_once()
+
+        assert mock_get_latest_odds.call_count == 2
+        assert instrument.id in data_client._quote_poll_absent_market_cycles
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 1)], indirect=["instruments"])
+    @patch.object(CloudbetClient, "get_latest_odds", new_callable=AsyncMock)
+    @patch.object(CloudbetClient, "get_event", new_callable=AsyncMock)
+    async def test_poll_quote_ticks_evicts_absent_market_when_it_appears(
+        self,
+        mock_get_event,
+        mock_get_latest_odds,
+        data_client,
+        instruments,
+        monkeypatch,
+    ):
+        instrument = instruments[0]
+        data_client.instrument_provider.add(instrument)
+        data_client._subscribed_quote_instruments.add(instrument.id)
+        data_client._requested_quote_instruments.add(instrument.id)
+        handled = []
+        monkeypatch.setattr(data_client, "_handle_data", handled.append)
+        mock_get_event.return_value = build_event_response(instrument, markets={})
+        mock_get_latest_odds.side_effect = CloudbetAPIError("market not found", code="404")
+
+        await data_client._poll_quote_ticks_once()
+
+        assert instrument.id in data_client._quote_poll_absent_market_cycles
+
+        mock_get_event.return_value = build_event_response(
+            instrument,
+            markets=build_markets_with_selection(data_client, instrument),
+        )
+
+        published, _ = await data_client._poll_quote_ticks_once()
+
+        assert published == 1
+        assert handled[0].instrument_id == instrument.id
+        assert instrument.id not in data_client._quote_poll_absent_market_cycles
+
+        mock_get_event.return_value = build_event_response(instrument, markets={})
+
+        await data_client._poll_quote_ticks_once()
+
+        assert mock_get_latest_odds.call_count == 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 2)], indirect=["instruments"])
+    @patch.object(CloudbetClient, "get_latest_odds", new_callable=AsyncMock)
+    @patch.object(CloudbetClient, "get_event", new_callable=AsyncMock)
+    async def test_poll_quote_ticks_absent_cache_publishes_identical_ticks(
+        self,
+        mock_get_event,
+        mock_get_latest_odds,
+        data_client,
+        instruments,
+        monkeypatch,
+    ):
+        present, absent = instruments
+        for instrument in instruments:
+            data_client.instrument_provider.add(instrument)
+            data_client._subscribed_quote_instruments.add(instrument.id)
+            data_client._requested_quote_instruments.add(instrument.id)
+        handled = []
+        monkeypatch.setattr(data_client, "_handle_data", handled.append)
+        events = {
+            int(present.event_id): build_event_response(
+                present,
+                markets=build_markets_with_selection(data_client, present),
+            ),
+        }
+        events.setdefault(int(absent.event_id), build_event_response(absent, markets={}))
+        mock_get_event.side_effect = lambda event_id: events[int(event_id)]
+        mock_get_latest_odds.side_effect = CloudbetAPIError("market not found", code="404")
+
+        cached_published = []
+        for _ in range(3):
+            handled.clear()
+            await data_client._poll_quote_ticks_once()
+            cached_published.append(
+                sorted((str(q.instrument_id), str(q.ask_price)) for q in handled),
+            )
+
+        no_cache_published = []
+        for _ in range(3):
+            data_client._quote_poll_absent_market_cycles.clear()
+            handled.clear()
+            await data_client._poll_quote_ticks_once()
+            no_cache_published.append(
+                sorted((str(q.instrument_id), str(q.ask_price)) for q in handled),
+            )
+
+        assert cached_published == no_cache_published
+        assert all(published == cached_published[0] for published in cached_published)
+        assert [instrument_id for instrument_id, _ in cached_published[0]] == [str(present.id)]
