@@ -382,6 +382,7 @@ jobs:
             --min-quoted-node-count POLYMARKET:2 \
             --require-cross-venue-candidates-or-blockers \
             --min-positive-margin-candidates 1 \
+            --allow-subscription-fallback \
             --require-rust-semantic-topology
 
       - name: Upload rendered strategy-node artifacts to transient CI storage
