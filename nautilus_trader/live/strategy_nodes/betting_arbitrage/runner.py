@@ -3112,6 +3112,14 @@ def _semantic_node_diagnostics(nodes: dict[str, object]) -> dict[str, object]:
     }
 
 
+# Same sample-capping convention as the sibling diagnostics fields in this
+# module (`_coverage_sample_hyperedges`, `proof_payloads[:10]`,
+# `_unsupported_provider_patterns(..., limit=10)`): these two template lists
+# are diagnostic samples, not data required by any consumer, and were the
+# single largest contributor to status.json size when left uncapped.
+_TEMPLATE_SAMPLE_LIMIT = 10
+
+
 def _semantic_template_diagnostics(graph) -> dict[str, object]:
     pattern_counts: Counter[tuple[str, ...]] = Counter()
     provider_pattern_counts: Counter[tuple[str, ...]] = Counter()
@@ -3163,11 +3171,11 @@ def _semantic_template_diagnostics(graph) -> dict[str, object]:
         "execution_safe_templates": sorted(
             execution_safe_templates,
             key=lambda item: str(item["templateId"]),
-        ),
+        )[:_TEMPLATE_SAMPLE_LIMIT],
         "same_venue_eligible_templates": sorted(
             same_venue_eligible_templates,
             key=lambda item: str(item["templateId"]),
-        ),
+        )[:_TEMPLATE_SAMPLE_LIMIT],
     }
 
 
