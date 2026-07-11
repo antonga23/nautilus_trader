@@ -58,6 +58,7 @@ from nautilus_trader.adapters.betting.semantics import RuleStore
 from nautilus_trader.config import StrategyConfig
 from nautilus_trader.core.message import Event
 from nautilus_trader.common.events import TimeEvent
+from nautilus_trader.examples.strategies.arb_position_tracker import ArbPositionTracker
 from nautilus_trader.examples.strategies.opportunity_graph import FastCandidateSnapshot
 from nautilus_trader.examples.strategies.opportunity_graph import OpportunityCandidate
 from nautilus_trader.examples.strategies.opportunity_graph import OpportunityGraph
@@ -728,6 +729,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._live_execution_unwind_cancels = 0
         self._live_execution_unwind_exits = 0
         self._arb_leg_siblings: dict[str, str] = {}
+        self._arb_position_tracker = ArbPositionTracker()
         self._unwound_arb_pairs: set[str] = set()
         self._unwind_cancels_requested: set[str] = set()
         self._unwind_exits_requested: set[str] = set()
@@ -4681,7 +4683,38 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._record_order_lifecycle_event(event, "filled")
         msg = f"Order filled: {event}"
         self.log.info(msg)
+        self._record_arb_position_fill(event)
         self._handle_unwind_cancel_fill_race(event)
+
+    def _record_arb_position_fill(self, event: Event) -> None:
+        """
+        Feed a fill into the arbitrage P&L tracker.
+
+        Deliberately side-effect-light and swallows every error: bad accounting must never
+        break order-event handling, and the tracker is an observability layer, not a
+        control path.
+
+        """
+        try:
+            client_order_id = getattr(event, "client_order_id", None)
+            instrument_id = getattr(event, "instrument_id", None)
+            if client_order_id is None or instrument_id is None:
+                return
+            instrument = self.cache.instrument(instrument_id)
+            outcome = getattr(instrument, "outcome", None)
+            if outcome is None:
+                return
+            key = str(client_order_id)
+            self._arb_position_tracker.record_fill(
+                client_order_id=key,
+                outcome=outcome,
+                order_side=event.order_side,
+                last_px=event.last_px,
+                last_qty=event.last_qty,
+                sibling_id=self._arb_leg_siblings.get(key),
+            )
+        except Exception as e:  # pragma: no cover - defensive; never raise into the handler
+            self.log.warning(f"Arb position tracker skipped fill: {e}")
 
     def on_order_accepted(self, event: Event) -> None:
         """
