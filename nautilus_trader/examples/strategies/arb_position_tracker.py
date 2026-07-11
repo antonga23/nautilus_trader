@@ -12,8 +12,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 # -------------------------------------------------------------------------------------------------
-"""
-Real-money two-leg arbitrage position tracking, built directly on the native Rust
+"""Real-money two-leg arbitrage position tracking, built directly on the native Rust
 betting P&L primitives exposed through PyO3.
 
 Why this exists at strategy level rather than in ``Portfolio``: Nautilus ships a tested
@@ -33,7 +32,6 @@ using the leg's own ``Bet``: a leg whose outcome wins contributes ``outcome_win_
 a leg whose outcome loses contributes ``outcome_lose_payoff``. Those two methods are
 framed relative to the selection the bet is on and already encode BACK vs LAY, so the
 joint computation is side-agnostic and never hand-rolls odds math.
-
 """
 
 from __future__ import annotations
@@ -52,12 +50,10 @@ _COMPLEMENT_OUTCOME = "__other__"
 
 
 def bet_side_for_order_side(order_side: object) -> BetSide:
-    """
-    Map a Nautilus order side onto a betting side.
+    """Map a Nautilus order side onto a betting side.
 
     A BUY posts (backs) the selection; a SELL lays it. Compared by name so a Cython
     ``OrderSide`` and a PyO3 ``OrderSide`` are both accepted without an enum-type clash.
-
     """
     name = getattr(order_side, "name", str(order_side)).upper()
     if "BUY" in name:
@@ -105,24 +101,18 @@ class LegState:
 
     @property
     def win_payoff(self) -> Decimal:
-        """
-        Net payoff of this leg in the outcome where its selection wins.
-        """
+        """Net payoff of this leg in the outcome where its selection wins."""
         return sum((bet.outcome_win_payoff() for bet in self.fills), Decimal(0))
 
     @property
     def lose_payoff(self) -> Decimal:
-        """
-        Net payoff of this leg in an outcome where its selection loses.
-        """
+        """Net payoff of this leg in an outcome where its selection loses."""
         return sum((bet.outcome_lose_payoff() for bet in self.fills), Decimal(0))
 
 
 @dataclass
 class ArbPairState:
-    """
-    Both legs of one arbitrage pair, keyed internally by leg client order id.
-    """
+    """Both legs of one arbitrage pair, keyed internally by leg client order id."""
 
     pair_id: str
     legs: dict[str, LegState] = field(default_factory=dict)
@@ -144,13 +134,11 @@ class ArbPairState:
         return sum((leg.exposure for leg in self.filled_legs), Decimal(0))
 
     def outcome_pnls(self) -> dict[str, Decimal]:
-        """
-        P&L in each candidate winning outcome while the pair is open.
+        """P&L in each candidate winning outcome while the pair is open.
 
         Each covered outcome maps to the joint payoff if that outcome wins. When fewer
         than two outcomes are covered (a naked single leg), a synthetic complement
         scenario is added so the unhedged downside is visible rather than hidden.
-
         """
         legs = self.filled_legs
         outcomes = {leg.outcome for leg in legs}
@@ -171,11 +159,9 @@ class ArbPairState:
         return total
 
     def guaranteed_pnl(self) -> Decimal | None:
-        """
-        Worst-case P&L across outcomes while open (the arb floor).
+        """Worst-case P&L across outcomes while open (the arb floor).
 
         None if settled/empty.
-
         """
         if self.settled:
             return None
@@ -193,13 +179,11 @@ class ArbPairState:
         return max(pnls.values())
 
     def settle(self, winning_outcome: str | None = None, *, void: bool = False) -> Decimal:
-        """
-        Realize P&L on settlement.
+        """Realize P&L on settlement.
 
         ``void`` refunds both stakes, so realized P&L is exactly zero. Otherwise realized
         P&L is the joint payoff for ``winning_outcome`` (an outcome not backed by any leg
         settles every leg at its lose payoff).
-
         """
         self.settled = True
         if void:
@@ -241,11 +225,9 @@ class ArbPairState:
 
 
 class ArbPositionTracker:
-    """
-    Tracks two-leg arbitrage pairs and their real-money P&L using the native ``Bet``
+    """Tracks two-leg arbitrage pairs and their real-money P&L using the native ``Bet``
     engine directly, keyed by the sorted pair of sibling client order ids (the same
-    canonical key the strategy uses for unwind bookkeeping).
-    """
+    canonical key the strategy uses for unwind bookkeeping)."""
 
     def __init__(self) -> None:
         self._pairs: dict[str, ArbPairState] = {}
@@ -269,9 +251,8 @@ class ArbPositionTracker:
         last_qty: object,
         sibling_id: object = None,
     ) -> ArbPairState:
-        """
-        Record a single fill (or partial fill) for a leg, accumulating it as a ``Bet``.
-        """
+        """Record a single fill (or partial fill) for a leg, accumulating it as a
+        ``Bet``."""
         coid = str(client_order_id)
         pair_id = self._resolve_pair_id(coid, sibling_id)
         pair = self._pairs.get(pair_id)
@@ -291,14 +272,12 @@ class ArbPositionTracker:
         return pair
 
     def link_leg_to_pair(self, leg_id: object, existing_leg_id: object) -> str | None:
-        """
-        Attach a not-yet-filled hedging leg to the pair of an already-tracked leg.
+        """Attach a not-yet-filled hedging leg to the pair of an already-tracked leg.
 
         Used when a naked leg is flattened by backing the complementary outcome: the new
         back forms the pair's second outcome, so its incoming fills must accumulate into
         the existing pair rather than open a standalone one. Returns the pair id, or None
         when the existing leg is not tracked.
-
         """
         pair_id = self._leg_to_pair.get(str(existing_leg_id))
         if pair_id is None:
@@ -334,9 +313,7 @@ class ArbPositionTracker:
         return self._pairs.get(pair_id) if pair_id is not None else None
 
     def summary(self) -> dict:
-        """
-        Compact snapshot for the runtime probe / nodeops dashboard.
-        """
+        """Compact snapshot for the runtime probe / nodeops dashboard."""
         pairs = [pair.summary() for pair in self._pairs.values()]
         open_pairs = [p for p in self._pairs.values() if not p.settled]
         realized_total = sum(

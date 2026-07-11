@@ -14,9 +14,7 @@
 # -------------------------------------------------------------------------------------------------
 # skipcq: PYL-C0302, PYL-E0611, PYL-R0902, PYL-R0911, PYL-R0913, PYL-R0914, PYL-R0917
 # pylint: disable=no-name-in-module,too-many-arguments,too-many-instance-attributes,too-many-lines,too-many-locals,too-many-positional-arguments,too-many-return-statements
-"""
-Cross-venue arbitrage strategy for sports betting.
-"""
+"""Cross-venue arbitrage strategy for sports betting."""
 
 from collections import Counter
 from collections.abc import Sequence
@@ -109,9 +107,7 @@ class QuoteFreshnessThresholds:
 @dataclass(frozen=True)
 # skipcq: PYL-R0902
 class ArbitrageDiagnostics:  # skipcq
-    """
-    Structured diagnostics captured for one arbitrage evaluation.
-    """
+    """Structured diagnostics captured for one arbitrage evaluation."""
 
     opportunity_id: str
     canonical_pair_id: str
@@ -182,9 +178,7 @@ class ArbitrageDiagnostics:  # skipcq
 
 @dataclass(frozen=True)
 class OpportunityPairState:
-    """
-    Active duplicate-suppression state for a continuously visible pair.
-    """
+    """Active duplicate-suppression state for a continuously visible pair."""
 
     last_opportunity_id: str
     last_accepted_ns: int
@@ -192,8 +186,7 @@ class OpportunityPairState:
 
 
 class BettingArbitrageConfig(StrategyConfig, frozen=True):
-    """
-    Configuration for betting arbitrage strategy.
+    """Configuration for betting arbitrage strategy.
 
     Parameters
     ----------
@@ -318,7 +311,6 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         by the automated exit. When the exit-side quote is outside this bound, or
         any input needed for a safe exit is missing, the strategy only alerts and
         leaves the position to the operator.
-
     """
 
     min_profit_margin: Decimal = Decimal("0.01")
@@ -377,9 +369,7 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
     unwind_max_slippage_bps: int = 50
 
     def __post_init__(self) -> None:
-        """
-        Normalize configured venues and market-timing filters.
-        """
+        """Normalize configured venues and market-timing filters."""
         enabled_venues = frozenset(self.enabled_venues or DEFAULT_ENABLED_VENUES)
         normalized_sport_filter = self.sport_filter.strip().lower() if self.sport_filter else None
         market_timing_filter = self.market_timing_filter if not self.exclude_live else "pre_market"
@@ -673,8 +663,7 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
 
 # skipcq: PYL-R0902
 class BettingArbitrageStrategy(Strategy):  # skipcq
-    """
-    Cross-venue sports betting arbitrage strategy.
+    """Cross-venue sports betting arbitrage strategy.
 
     Finds and executes arbitrage opportunities across multiple betting venues:
     1. Monitors quote ticks from all subscribed instruments
@@ -687,16 +676,13 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
     ----------
     config : BettingArbitrageConfig
         Strategy configuration.
-
     """
 
     def __init__(
         self,
         config: BettingArbitrageConfig,
     ):
-        """
-        Initialize the strategy state, matcher, and opportunity graph.
-        """
+        """Initialize the strategy state, matcher, and opportunity graph."""
         super().__init__(config)
         self._config = config
 
@@ -783,22 +769,16 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
 
     @property
     def market_matcher(self) -> MarketMatcher:
-        """
-        Matcher used by runtime diagnostics and node probes.
-        """
+        """Matcher used by runtime diagnostics and node probes."""
         return self._matcher
 
     @property
     def opportunity_graph(self) -> OpportunityGraph:
-        """
-        Opportunity graph used by runtime diagnostics and node probes.
-        """
+        """Opportunity graph used by runtime diagnostics and node probes."""
         return self._opportunity_graph
 
     def on_start(self) -> None:
-        """
-        Run strategy startup subscriptions and diagnostics logging.
-        """
+        """Run strategy startup subscriptions and diagnostics logging."""
         self.log.info("BettingArbitrageStrategy starting...")
         rule_store = self._semantic_rule_store()
         if rule_store is not None:
@@ -870,9 +850,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         return bool(rule_store.list_manifest_ids() or rule_store.list_promoted_template_ids())
 
     def on_stop(self) -> None:
-        """
-        Run strategy shutdown logging and final summary emission.
-        """
+        """Run strategy shutdown logging and final summary emission."""
         self.log.info("BettingArbitrageStrategy stopping...")
         self._stop_instrument_refresh_timer()
         self._cancel_instrument_reconcile_timers()
@@ -883,9 +861,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._log_arbitrage_summary(force=True)
 
     def on_time_event(self, event: TimeEvent) -> None:
-        """
-        Refresh venue instrument catalogs on the configured runtime timer.
-        """
+        """Refresh venue instrument catalogs on the configured runtime timer."""
         if event.name == INSTRUMENT_REFRESH_TIMER_NAME:
             self._refresh_enabled_venue_instruments()
             return
@@ -895,8 +871,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             self._reconcile_cached_venue_instruments(venue_value)
 
     def subscribe_instruments(self, instruments: list[Instrument]) -> None:
-        """
-        Subscribe to instruments for arbitrage monitoring.
+        """Subscribe to instruments for arbitrage monitoring.
 
         Applies filtering by:
         - Enabled venues
@@ -906,7 +881,6 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         ----------
         instruments : list[Instrument]
             Instruments to monitor.
-
         """
         subscribed_before = len(self._subscribed_instruments)
         if self._semantic_batch_subscription_enabled():
@@ -920,9 +894,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             self._log_graph_topology_summary()
 
     def on_instrument(self, instrument: Instrument) -> None:
-        """
-        Subscribe a newly seen betting instrument when it passes strategy filters.
-        """
+        """Subscribe a newly seen betting instrument when it passes strategy filters."""
         self._maybe_subscribe_instrument(instrument)
 
     def _subscribe_cached_instruments(self) -> None:
@@ -1382,8 +1354,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         return subscribed_count
 
     def _subscribe_cross_venue_common_fixture_quote_ticks(self) -> int:
-        """
-        Reserve quote slots for loaded fixtures shared across enabled venues.
+        """Reserve quote slots for loaded fixtures shared across enabled venues.
 
         Semantic topology can contain many same-venue edges. If those edges consume
         venue quote limits first, runtime can correctly discover a common
@@ -1392,7 +1363,6 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         on instruments whose fixture aliases are present on another venue. It does
         not create semantic edges or execution authority; it only ensures the
         runtime can observe prices for already loaded shared fixtures.
-
         """
         # The reserve has its own limit: the unmatched-probe limit is sized for
         # Polymarket audit probes (default 20) and is far too small for shared-fixture
@@ -1529,14 +1499,12 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         return False
 
     def _semantic_connected_quote_nodes(self) -> list[tuple[bool, Any]]:
-        """
-        Return (is_cross_venue, node) pairs in quote-subscription priority order.
+        """Return (is_cross_venue, node) pairs in quote-subscription priority order.
 
         Multi-venue validation can have thousands of same-venue edges and only a handful
         of cross-venue edges. Venue quote limits should therefore spend their first
         slots on instruments needed to quote cross-venue topology, then strict
         execution-safe edges, then the broader topology set.
-
         """
         ranked: list[tuple[tuple[int, int, int, int, int, str], Any]] = []
         for node_id, edge_ids in self._opportunity_graph.edge_ids_by_node_id.items():
@@ -1664,15 +1632,13 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         return str(getattr(venue, "value", venue)).upper()
 
     def _subscribe_semantic_unmatched_quote_probe_ticks(self) -> int:
-        """
-        Subscribe bounded unmatched quote streams for semantic audit venues.
+        """Subscribe bounded unmatched quote streams for semantic audit venues.
 
         Semantic mode deliberately prioritizes graph-connected instruments so execution
         diagnostics only reflect promoted-rule topology. Polymarket sports markets can
         be discovered before they have promoted semantic edges, so this probe keeps
         their quote health visible without granting execution authority or creating
         graph edges.
-
         """
         probe_venues = self._config.semantic_unmatched_quote_probe_venues
         per_venue_limit = self._config.semantic_unmatched_quote_probe_limit_per_venue
@@ -1741,13 +1707,11 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         alias_keys_by_instrument_id: dict[str, set[str]] | None = None,
         alias_venues_by_key: dict[str, set[str]] | None = None,
     ) -> tuple[int, int, int, str]:
-        """
-        Rank unmatched audit probes toward near-term cross-venue fixture evidence.
+        """Rank unmatched audit probes toward near-term cross-venue fixture evidence.
 
         These subscriptions do not create graph edges or execution authority. They only
         keep venues like Polymarket observable when promoted topology is missing, so the
         first slots should prove whether common near-term fixtures are quoted.
-
         """
         venue = instrument.id.venue.value.upper()
         aliases = (
@@ -1833,8 +1797,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         )
 
     def _should_process_instrument(self, instrument: BettingInstrument) -> bool:
-        """
-        Check if instrument should be processed based on filters.
+        """Check if instrument should be processed based on filters.
 
         Parameters
         ----------
@@ -1845,7 +1808,6 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         -------
         bool
             True if instrument passes all filters.
-
         """
         # Sport filter
         if self._config.sport_filter:
@@ -1879,8 +1841,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
 
     @staticmethod
     def _is_live_market(instrument: BettingInstrument) -> bool:
-        """
-        Determine if instrument represents a live/in-play market.
+        """Determine if instrument represents a live/in-play market.
 
         Parameters
         ----------
@@ -1891,7 +1852,6 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         -------
         bool
             True if live market.
-
         """
         raw_live = getattr(instrument, "live", None)
         if isinstance(raw_live, bool):
@@ -1969,8 +1929,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         return Decimal(0)
 
     def on_quote_tick(self, tick: QuoteTick) -> None:
-        """
-        Handle quote tick updates.
+        """Handle quote tick updates.
 
         When a new quote arrives:
         1. Update latest quote state
@@ -1981,7 +1940,6 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         ----------
         tick : QuoteTick
             Latest quote tick.
-
         """
         # Store latest quote
         strategy_received_ns = self.clock.timestamp_ns()
@@ -3627,15 +3585,11 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
 
     @property
     def live_quote_age_slo_secs(self) -> float:
-        """
-        Maximum live quote age at decision time for runtime diagnostics.
-        """
+        """Maximum live quote age at decision time for runtime diagnostics."""
         return float(self._config.live_quote_age_slo_secs)
 
     def fee_adjusted_opportunity(self, opportunity: ArbitrageOpportunity) -> ArbitrageOpportunity:
-        """
-        Apply configured venue fees to an opportunity before strategy decisions.
-        """
+        """Apply configured venue fees to an opportunity before strategy decisions."""
         if opportunity.fee_adjusted:
             return opportunity
 
@@ -3700,9 +3654,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         )
 
     def venue_taker_fee_rate(self, instrument: Instrument) -> Decimal:
-        """
-        Return the taker fee-rate parameter for an instrument venue or market.
-        """
+        """Return the taker fee-rate parameter for an instrument venue or market."""
         return self._instrument_fee_rate(
             instrument,
             keys=("taker_fee_rate", "fee_rate", "polymarket_fee_rate", "market_fee_rate"),
@@ -3711,9 +3663,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         )
 
     def venue_maker_rebate_rate(self, instrument: Instrument) -> Decimal:
-        """
-        Return the maker rebate-rate parameter for an instrument venue or market.
-        """
+        """Return the maker rebate-rate parameter for an instrument venue or market."""
         return self._instrument_fee_rate(
             instrument,
             keys=("maker_rebate_rate", "rebate_rate", "polymarket_maker_rebate_rate"),
@@ -3722,9 +3672,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         )
 
     def venue_winning_profit_fee_rate(self, instrument: Instrument) -> Decimal:
-        """
-        Return the winning-profit commission for an instrument venue or market.
-        """
+        """Return the winning-profit commission for an instrument venue or market."""
         return self._instrument_fee_rate(
             instrument,
             keys=("winning_profit_fee_rate", "commission_rate", "profit_fee_rate"),
@@ -3741,9 +3689,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         instrument_a: Instrument,
         instrument_b: Instrument,
     ) -> Decimal:
-        """
-        Return the basket-level cashback/reward rate for a covered candidate.
-        """
+        """Return the basket-level cashback/reward rate for a covered candidate."""
         return self._pair_basket_rate(
             instrument_a,
             instrument_b,
@@ -3757,9 +3703,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         instrument_a: Instrument,
         instrument_b: Instrument,
     ) -> Decimal:
-        """
-        Return the basket-level return boost rate for a covered candidate.
-        """
+        """Return the basket-level return boost rate for a covered candidate."""
         return self._pair_basket_rate(
             instrument_a,
             instrument_b,
@@ -3773,14 +3717,12 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         instruments: Sequence[Instrument],
         odds: Sequence[Decimal | float | str],
     ) -> FeeAdjustedCoverageBasket:
-        """
-        Apply fee and promotion policy to an N-leg semantic coverage set.
+        """Apply fee and promotion policy to an N-leg semantic coverage set.
 
         Pairwise arbitrage still uses ``fee_adjusted_opportunity``. This helper
         gives coverage proofs and future hyperedge execution diagnostics the
         same fee/VIG treatment, including maker rebates and temporary basket
         rewards, without changing any execution-safety tier.
-
         """
         if len(instruments) != len(odds):
             msg = f"instruments and odds lengths must match: {len(instruments)} != {len(odds)}"
@@ -3810,12 +3752,10 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         *,
         method: str | None = None,
     ) -> DeviggedBook | None:
-        """
-        Return a no-vig probability view for diagnostics when enabled.
+        """Return a no-vig probability view for diagnostics when enabled.
 
         This helper deliberately does not affect executable arbitrage decisions. It is a
         fair-value/reference layer used by runtime reports.
-
         """
         if not self._config.devig_enabled:
             return None
@@ -3838,9 +3778,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         return self._config.min_value_edge
 
     def coverage_basket_rebate_rate(self, instruments: Sequence[Instrument]) -> Decimal:
-        """
-        Return the strongest configured cashback/reward rate across a coverage set.
-        """
+        """Return the strongest configured cashback/reward rate across a coverage
+        set."""
         return self._coverage_basket_rate(
             instruments,
             keys=("basket_rebate_rate", "promo_rebate_rate", "reward_rebate_rate"),
@@ -3849,9 +3788,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         )
 
     def coverage_basket_boost_rate(self, instruments: Sequence[Instrument]) -> Decimal:
-        """
-        Return the strongest configured return boost rate across a coverage set.
-        """
+        """Return the strongest configured return boost rate across a coverage set."""
         return self._coverage_basket_rate(
             instruments,
             keys=("basket_boost_rate", "odds_boost_rate", "reward_boost_rate"),
@@ -3914,9 +3851,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         bps_keys: tuple[str, ...] = (),
         venue_rates: dict[str, Decimal],
     ) -> Decimal:
-        """
-        Return instrument-specific fee metadata before falling back to venue defaults.
-        """
+        """Return instrument-specific fee metadata before falling back to venue
+        defaults."""
         info = getattr(instrument, "info", None) or {}
         if isinstance(info, dict):
             rate = BettingArbitrageStrategy._rate_from_mapping(info, keys=keys, bps_keys=bps_keys)
@@ -3971,9 +3907,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
 
     @staticmethod
     def _stake_pricing_odds(opportunity: ArbitrageOpportunity) -> tuple[Decimal, Decimal]:
-        """
-        Return fee-adjusted odds for sizing when available, otherwise raw odds.
-        """
+        """Return fee-adjusted odds for sizing when available, otherwise raw odds."""
         return (
             opportunity.fee_adjusted_odds_a or opportunity.odds_a,
             opportunity.fee_adjusted_odds_b or opportunity.odds_b,
@@ -3981,9 +3915,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
 
     @staticmethod
     def _order_price_for_instrument(instrument: Instrument, odds: Decimal) -> Decimal:
-        """
-        Convert strategy decimal odds back to the venue's executable price domain.
-        """
+        """Convert strategy decimal odds back to the venue's executable price domain."""
         if str(instrument.id.venue).upper() == "POLYMARKET" and odds > 1:
             return Decimal(1) / odds
         return odds
@@ -4124,8 +4056,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         opportunity: ArbitrageOpportunity,
         diagnostics: ArbitrageDiagnostics | None = None,
     ) -> None:
-        """
-        Handle an arbitrage opportunity.
+        """Handle an arbitrage opportunity.
 
         Parameters
         ----------
@@ -4133,7 +4064,6 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             The arbitrage opportunity.
         diagnostics : ArbitrageDiagnostics, optional
             Runtime classification details for the opportunity.
-
         """
         diagnostic_suffix = ""
         if diagnostics is not None:
@@ -4187,8 +4117,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         opportunity: ArbitrageOpportunity,
         diagnostics: ArbitrageDiagnostics | None = None,
     ) -> None:
-        """
-        Execute an arbitrage opportunity.
+        """Execute an arbitrage opportunity.
 
         Steps:
         1. Calculate optimal stakes
@@ -4201,7 +4130,6 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             The arbitrage opportunity to execute.
         diagnostics : ArbitrageDiagnostics, optional
             Final runtime quality diagnostics used by live risk gates.
-
         """
         if self._config.live_execution_armed:
             opportunity, refresh_reasons = self._live_execution_refresh_opportunity(opportunity)
@@ -4679,9 +4607,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         return bool(path and os.path.exists(path))
 
     def on_order_filled(self, event: Event) -> None:
-        """
-        Handle order filled events.
-        """
+        """Handle order filled events."""
         self._record_order_lifecycle_event(event, "filled")
         msg = f"Order filled: {event}"
         self.log.info(msg)
@@ -4689,13 +4615,11 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._handle_unwind_cancel_fill_race(event)
 
     def _record_arb_position_fill(self, event: Event) -> None:
-        """
-        Feed a fill into the arbitrage P&L tracker.
+        """Feed a fill into the arbitrage P&L tracker.
 
         Deliberately side-effect-light and swallows every error: bad accounting must never
         break order-event handling, and the tracker is an observability layer, not a
         control path.
-
         """
         try:
             client_order_id = getattr(event, "client_order_id", None)
@@ -4719,25 +4643,19 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             self.log.warning(f"Arb position tracker skipped fill: {e}")
 
     def on_order_accepted(self, event: Event) -> None:
-        """
-        Handle order accepted events.
-        """
+        """Handle order accepted events."""
         self._record_order_lifecycle_event(event, "accepted")
         msg = f"Order accepted: {event}"
         self.log.info(msg)
 
     def on_order_submitted(self, event: Event) -> None:
-        """
-        Handle order submitted events.
-        """
+        """Handle order submitted events."""
         self._record_order_lifecycle_event(event, "submitted")
         msg = f"Order submitted: {event}"
         self.log.info(msg)
 
     def on_order_rejected(self, event: Event) -> None:
-        """
-        Handle order rejected events.
-        """
+        """Handle order rejected events."""
         self._record_order_lifecycle_event(event, "rejected")
         if self._config.live_execution_armed:
             self._live_execution_halt_reason = "order_rejected"
@@ -4748,14 +4666,12 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._unwind_sibling_leg(event)
 
     def on_order_denied(self, event: Event) -> None:
-        """
-        Handle order denied events (e.g. a local RiskEngine denial).
+        """Handle order denied events (e.g. a local RiskEngine denial).
 
         submit_order enqueues asynchronously and does not raise on a local denial, so a
         denied leg is otherwise swallowed by the base no-op while its sibling may be
         resting or filled — leaving naked directional exposure. Mirror the rejected path
         so a denial halts live execution and is counted as unhedged exposure.
-
         """
         self._record_order_lifecycle_event(event, "denied")
         if self._config.live_execution_armed:
@@ -4767,14 +4683,12 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._unwind_sibling_leg(event)
 
     def on_order_canceled(self, event: Event) -> None:
-        """
-        Handle order canceled events.
+        """Handle order canceled events.
 
         A canceled leg (venue-side or operator) after its sibling filled is the same
         unhedged-exposure hazard as a rejection, so halt live execution and count it. A
         cancel the strategy itself issued to unwind a pair is risk-reducing confirmation
         instead, and must not halt, count, or recurse into the unwind.
-
         """
         self._record_order_lifecycle_event(event, "canceled")
         if self._pop_unwind_cancel_confirmation(event):
@@ -4874,16 +4788,15 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._attempt_bounded_exit(order)
 
     def _attempt_opposing_back_flatten(self, order: Order, failed_leg_id: str) -> None:
-        """
-        Flatten a naked SX.bet back by backing the complementary outcome.
+        """Flatten a naked SX.bet back by backing the complementary outcome.
 
-        On a betting exchange a SELL cannot reduce exposure, so the naked directional back
-        on selection X is neutralised by placing a marketable back on the mutually
-        exclusive outcome Y (the sibling leg's selection). The opposing stake is sized off
-        the shared arb-sizing split so the two backs return equally, and is placed only
-        when it stays within the slippage bound and the real opposing depth. Otherwise the
-        leg is left for manual handling rather than force-hedged into a larger loss.
-
+        On a betting exchange a SELL cannot reduce exposure, so the naked directional
+        back on selection X is neutralised by placing a marketable back on the mutually
+        exclusive outcome Y (the sibling leg's selection). The opposing stake is sized
+        off the shared arb-sizing split so the two backs return equally, and is placed
+        only when it stays within the slippage bound and the real opposing depth.
+        Otherwise the leg is left for manual handling rather than force-hedged into a
+        larger loss.
         """
         naked_leg_id = str(order.client_order_id)
         opposing = self._resolve_opposing_selection(failed_leg_id)
@@ -5121,9 +5034,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         return ordered_samples[index] / 1_000_000
 
     def get_stats(self) -> dict:
-        """
-        Get strategy statistics.
-        """
+        """Get strategy statistics."""
         quote_subscription_counts = dict(sorted(self._quote_subscription_counts_by_venue().items()))
         semantic_quote_limits = dict(
             sorted(self._config.semantic_quote_subscription_limit_by_venue.items()),

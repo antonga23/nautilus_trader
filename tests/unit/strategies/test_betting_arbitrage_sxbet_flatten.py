@@ -7,14 +7,13 @@
 # bandit:skip=B101
 # skipcq: PYL-C0114, PYL-C0115, PYL-C0116, PYL-W0212
 # pylint: disable=missing-function-docstring,no-name-in-module,protected-access,too-many-arguments
-"""
-Adversarial proofs for the SX.bet naked-leg flatten.
+"""Adversarial proofs for the SX.bet naked-leg flatten.
 
-A SELL on SX.bet cannot reduce exposure: the taker-fill adapter posts the instrument's own
-outcome regardless of order side, so a SELL only ADDS a second back. The strategy therefore
-flattens a naked back on selection X by placing a marketable back on the mutually exclusive
-outcome Y, sized so the two backs hedge, and only within the slippage bound and real opposing
-depth. Otherwise it halts and alerts for manual handling.
+A SELL on SX.bet cannot reduce exposure: the taker-fill adapter posts the instrument's
+own outcome regardless of order side, so a SELL only ADDS a second back. The strategy
+therefore flattens a naked back on selection X by placing a marketable back on the
+mutually exclusive outcome Y, sized so the two backs hedge, and only within the slippage
+bound and real opposing depth. Otherwise it halts and alerts for manual handling.
 """
 
 from decimal import Decimal
@@ -59,9 +58,8 @@ def _betting_instrument(*, venue: str, outcome: str) -> CryptoBettingInstrument:
 
 
 class _Harness:
-    """
-    A registered strategy plus the naked leg, its failed sibling, and the opposing quote.
-    """
+    """A registered strategy plus the naked leg, its failed sibling, and the opposing
+    quote."""
 
     def __init__(
         self,
