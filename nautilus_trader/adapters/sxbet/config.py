@@ -187,6 +187,12 @@ class SXBetExecClientConfig(LiveExecClientConfig, frozen=True):
         while ``"maker_post"`` posts a maker order to the SX.bet order book.
     odds_slippage : int, default 5
         Slippage tolerance sent to the SX.bet taker fill endpoint.
+    fill_poll_interval_secs : PositiveFloat, default 3.0
+        Interval for polling SX.bet order status to detect newly matched size and
+        emit fills. SX.bet has no authenticated user fill push feed, so fills are
+        reconciled by polling the order-status ``fillAmount`` field.
+    account_state_interval_secs : PositiveFloat, default 30.0
+        Interval for refreshing and re-publishing the SX.bet account state.
 
     """
 
@@ -202,3 +208,5 @@ class SXBetExecClientConfig(LiveExecClientConfig, frozen=True):
     dry_run: bool = False
     execution_mode: str = "taker_fill"
     odds_slippage: int = 5
+    fill_poll_interval_secs: PositiveFloat = 3.0
+    account_state_interval_secs: PositiveFloat = 30.0
