@@ -41,6 +41,7 @@ from nautilus_trader.adapters.betting.common.fees import fee_adjusted_odds
 from nautilus_trader.adapters.betting.common.fees import normalize_venue_fee_rates
 from nautilus_trader.adapters.betting.common.odds import DeviggedBook
 from nautilus_trader.adapters.betting.common.odds import calculate_arbitrage_stakes
+from nautilus_trader.adapters.betting.common.odds import decimal_to_probability
 from nautilus_trader.adapters.betting.common.odds import devig_probabilities
 from nautilus_trader.adapters.betting.fixture_identity import DEFAULT_FIXTURE_IDENTITY_RESOLVER
 from nautilus_trader.adapters.betting.fx import FxConversion
@@ -726,6 +727,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._live_execution_submissions = 0
         self._live_execution_unhedged_exposures = 0
         self._live_execution_naked_exposures = 0
+        self._live_execution_naked_flatten_halts = 0
         self._live_execution_unwind_cancels = 0
         self._live_execution_unwind_exits = 0
         self._arb_leg_siblings: dict[str, str] = {}
@@ -4862,7 +4864,140 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         if self._live_execution_kill_switch_active():
             self.log.error(f"Naked-exposure exit skipped, kill switch active: {leg_id}")
             return
+        # SX.bet cannot be exited with a SELL: its taker-fill adapter posts the
+        # instrument's own outcome regardless of order side, so a SELL only ADDS a second
+        # back. Flatten instead by backing the complementary selection (below); every
+        # other venue keeps the proven sell-side bounded exit.
+        if str(order.instrument_id.venue).upper() == "SXBET":
+            self._attempt_opposing_back_flatten(order, failed_leg_id)
+            return
         self._attempt_bounded_exit(order)
+
+    def _attempt_opposing_back_flatten(self, order: Order, failed_leg_id: str) -> None:
+        """
+        Flatten a naked SX.bet back by backing the complementary outcome.
+
+        On a betting exchange a SELL cannot reduce exposure, so the naked directional
+        back on selection X is neutralised by placing a marketable back on the mutually
+        exclusive outcome Y (the sibling leg's selection). The opposing stake is sized
+        off the shared arb-sizing split so the two backs return equally, and is placed
+        only when it stays within the slippage bound and the real opposing depth.
+        Otherwise the leg is left for manual handling rather than force-hedged into a
+        larger loss.
+
+        """
+        naked_leg_id = str(order.client_order_id)
+        opposing = self._resolve_opposing_selection(failed_leg_id)
+        if opposing is None:
+            self._halt_naked_flatten(naked_leg_id, "complementary selection unavailable")
+            return
+        opposing_instrument, opposing_id = opposing
+        quote = self._latest_quotes.get(str(opposing_id))
+        opposing_odds = self._quote_odds(quote)
+        entry_odds = Decimal(str(order.avg_px)) if order.avg_px else None
+        naked_stake = order.filled_qty.as_decimal()
+        if (
+            opposing_odds is None
+            or opposing_odds <= Decimal(1)
+            or entry_odds is None
+            or entry_odds <= 0
+            or naked_stake <= 0
+        ):
+            self._halt_naked_flatten(
+                naked_leg_id,
+                "missing flatten inputs: "
+                f"opposing_odds={opposing_odds} entry_odds={entry_odds} "
+                f"naked_stake={naked_stake}",
+            )
+            return
+        # Backing the complement at `opposing_odds` is economically a LAY of the naked
+        # selection at effective odds opposing_odds / (opposing_odds - 1); hold that
+        # synthetic lay to the same adverse-move bound as a native sell-side exit.
+        effective_lay = opposing_odds / (opposing_odds - Decimal(1))
+        if not self._exit_price_within_slippage("SXBET", entry_odds, effective_lay):
+            self._halt_naked_flatten(
+                naked_leg_id,
+                "opposing odds outside slippage bound: "
+                f"entry_odds={entry_odds} opposing_odds={opposing_odds} "
+                f"effective_lay={effective_lay} "
+                f"max_slippage_bps={self._config.unwind_max_slippage_bps}",
+            )
+            return
+        hedge_stake = self._opposing_hedge_stake(naked_stake, entry_odds, opposing_odds)
+        available_depth = self.quote_available_size(quote)
+        if hedge_stake <= 0 or hedge_stake > available_depth:
+            self._halt_naked_flatten(
+                naked_leg_id,
+                "insufficient opposing depth: "
+                f"hedge_stake={hedge_stake} available_depth={available_depth}",
+            )
+            return
+        flatten_order = self.order_factory.limit(
+            instrument_id=opposing_id,
+            order_side=OrderSide.BUY,  # SX.bet flatten is a BACK on the complement; never SELL
+            quantity=opposing_instrument.make_qty(float(hedge_stake)),
+            price=opposing_instrument.make_price(
+                float(self._order_price_for_instrument(opposing_instrument, opposing_odds)),
+            ),
+            time_in_force=TimeInForce.GTC,
+        )
+        # Fold the hedging back into the naked leg's tracked pair so its incoming fill
+        # completes the pair rather than opening a standalone one.
+        self._arb_position_tracker.link_leg_to_pair(
+            str(flatten_order.client_order_id),
+            naked_leg_id,
+        )
+        self._live_execution_unwind_exits += 1
+        self.log.warning(
+            f"Submitting SX.bet opposing-back flatten: {flatten_order.client_order_id} "
+            f"naked_leg={naked_leg_id} opposing={opposing_id} qty={hedge_stake} "
+            f"opposing_odds={opposing_odds}",
+        )
+        self.submit_order(flatten_order)
+
+    def _resolve_opposing_selection(
+        self,
+        failed_leg_id: str,
+    ) -> tuple[Instrument, InstrumentId] | None:
+        # The failed sibling leg was the same-venue arb's other outcome, so its
+        # instrument is exactly the complementary selection to back.
+        if not failed_leg_id or failed_leg_id == "unknown":
+            return None
+        failed_order = self.cache.order(ClientOrderId(failed_leg_id))
+        if failed_order is None:
+            return None
+        opposing_id = failed_order.instrument_id
+        opposing_instrument = self.cache.instrument(opposing_id)
+        if opposing_instrument is None:
+            return None
+        return opposing_instrument, opposing_id
+
+    @staticmethod
+    def _opposing_hedge_stake(
+        naked_stake: Decimal,
+        entry_odds: Decimal,
+        opposing_odds: Decimal,
+    ) -> Decimal:
+        # Recover the two-leg total that would have sized the already-filled naked stake,
+        # then take the matching opposing stake from the shared arb split so returns
+        # balance (naked_stake * entry_odds == hedge_stake * opposing_odds).
+        prob_entry = decimal_to_probability(entry_odds)
+        prob_opposing = decimal_to_probability(opposing_odds)
+        implied_total = naked_stake * (prob_entry + prob_opposing) / prob_entry
+        _entry_stake, hedge_stake, _profit = calculate_arbitrage_stakes(
+            entry_odds,
+            opposing_odds,
+            implied_total,
+        )
+        return hedge_stake
+
+    def _halt_naked_flatten(self, naked_leg_id: str, reason: str) -> None:
+        self._live_execution_halt_reason = "naked_leg_flatten_halted"
+        self._live_execution_naked_flatten_halts += 1
+        self.log.error(
+            f"NAKED EXPOSURE: manual intervention required: naked_leg={naked_leg_id} "
+            f"reason={reason}",
+        )
 
     def _attempt_bounded_exit(self, order: Order) -> None:
         venue = str(order.instrument_id.venue).upper()
@@ -5115,6 +5250,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 ),
                 "unhedged_exposures": self._live_execution_unhedged_exposures,
                 "naked_exposures": self._live_execution_naked_exposures,
+                "naked_flatten_halts": self._live_execution_naked_flatten_halts,
                 "unwind_cancels": self._live_execution_unwind_cancels,
                 "unwind_exits": self._live_execution_unwind_exits,
                 "unwind_filled_leg_enabled": self._config.unwind_filled_leg_enabled,

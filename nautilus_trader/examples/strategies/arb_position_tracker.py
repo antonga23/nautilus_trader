@@ -290,6 +290,22 @@ class ArbPositionTracker:
         leg.add_fill(last_px, last_qty)
         return pair
 
+    def link_leg_to_pair(self, leg_id: object, existing_leg_id: object) -> str | None:
+        """
+        Attach a not-yet-filled hedging leg to the pair of an already-tracked leg.
+
+        Used when a naked leg is flattened by backing the complementary outcome: the new
+        back forms the pair's second outcome, so its incoming fills must accumulate into
+        the existing pair rather than open a standalone one. Returns the pair id, or None
+        when the existing leg is not tracked.
+
+        """
+        pair_id = self._leg_to_pair.get(str(existing_leg_id))
+        if pair_id is None:
+            return None
+        self._leg_to_pair[str(leg_id)] = pair_id
+        return pair_id
+
     def settle(
         self,
         pair_id: str,
