@@ -17,6 +17,7 @@ CryptoBettingInstrument - Instrument type for crypto sports betting markets.
 """
 
 import hashlib
+import re
 import sys
 import time
 from datetime import UTC
@@ -82,6 +83,10 @@ def make_crypto_betting_instrument_id(
     outcome = outcome.replace(".", "_").replace(" ", "_")
 
     if params:
+        # Canonicalize numeric tokens ("2.50" / "2.500" -> "2.5") so the same betting
+        # line always yields the same instrument ID regardless of how the venue
+        # payload serialized the float.
+        params = re.sub(r"-?\d+\.\d+", lambda m: f"{float(m.group(0)):g}", params)
         params = params.replace(".", "_").replace(" ", "_").replace("=", "_")
         symbol_str = f"{event_id}:{market_name}:{outcome}:{params}"
     else:
