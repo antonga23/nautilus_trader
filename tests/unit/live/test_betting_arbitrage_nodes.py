@@ -1411,7 +1411,7 @@ class TestBettingArbitrageNodeBuilder:
             "SXBET",
         ]
         assert config.strategies[0].config["quote_freshness_profile"] == "pre_match"
-        assert config.strategies[0].config["max_resolution_horizon_hours"] == 48.0
+        assert config.strategies[0].config["max_resolution_horizon_hours"] == 168.0
         assert config.strategies[0].config["semantic_unmatched_quote_probe_venues"] == [
             "POLYMARKET",
         ]
@@ -1426,7 +1426,7 @@ class TestBettingArbitrageNodeBuilder:
             == "artifacts/semantic-rule-cache/multi-venue-validation"
         )
         cloudbet_config = config.data_clients["CLOUDBET_PRIMARY"].config
-        assert cloudbet_config["instrument_provider"]["filters"]["limit"] == 80
+        assert cloudbet_config["instrument_provider"]["filters"]["limit"] == 240
         assert "market_name" not in cloudbet_config["instrument_provider"]["filters"]
         assert cloudbet_config["quote_poll_interval_secs"] == 1.0
         assert cloudbet_config["quote_poll_concurrency"] == 24
@@ -1452,7 +1452,7 @@ class TestBettingArbitrageNodeBuilder:
             "is_active": True,
             "limit": 240,
             "max_results": 240,
-            "max_resolution_horizon_hours": 48.0,
+            "max_resolution_horizon_hours": 168.0,
             "sports": [
                 "american_football",
                 "baseball",
