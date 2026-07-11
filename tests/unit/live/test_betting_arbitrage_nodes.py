@@ -3152,6 +3152,7 @@ class TestBettingArbitrageNodeRunner:
                 "CLOUDBET:2",
                 "--min-quoted-node-count",
                 "SXBET:2",
+                "--allow-subscription-fallback",
             ],
         )
 
@@ -3163,6 +3164,7 @@ class TestBettingArbitrageNodeRunner:
             "CLOUDBET": 2,
             "SXBET": 2,
         }
+        assert observed_probe_kwargs["allow_subscription_fallback"] is True
         payload = json.loads((tmp_path / "status.json").read_text())
         assert payload["status"] == "probed"
         assert payload["runtimeProbe"]["graphEngine"] == "rust"
@@ -5833,6 +5835,7 @@ class TestBettingArbitrageNodeRunner:
         assert "--min-quoted-node-count CLOUDBET:2" in workflow
         assert "--min-quoted-node-count POLYMARKET:2" in workflow
         assert "--min-quoted-node-count SXBET:2" in workflow
+        assert "--allow-subscription-fallback" in workflow
         assert "min_positive_margin_candidates=0" in workflow
         assert (
             '[ "$manifest_path" = "deploy/strategy_nodes/betting_arbitrage/multi-venue-validation.json" ]'
@@ -6099,6 +6102,159 @@ class TestBettingArbitrageNodeRunner:
         )
 
         assert result.returncode == 0, result.stderr
+
+
+def _cold_start_probe_payload(**overrides) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "graphEngine": "rust",
+        "topologySource": "rust_semantic",
+        "semanticTemplateCount": 2,
+        "connectedNodes": 2,
+        "semanticMatchInstruments": 2,
+        "quotedSemanticMatchInstruments": 0,
+        "quotedEdges": 0,
+        "positiveMarginCandidates": {"total": 0},
+        "venueCoverage": {
+            "crossVenueCandidateCount": 0,
+            "quotedNodeCounts": {"POLYMARKET": 0, "SXBET": 0},
+            "quoteSubscriptionCounts": {"POLYMARKET": 3, "SXBET": 2},
+        },
+        "quoteObservationState": {"status": "subscribed_but_no_quotes"},
+    }
+    payload.update(overrides)
+    return payload
+
+
+_MULTI_VENUE_GATE_KWARGS = {
+    "min_connected_nodes": 2,
+    "min_match_instruments": 2,
+    "min_quoted_match_instruments": 2,
+    "min_positive_margin_candidates": 1,
+    "require_cross_venue_candidates_or_blockers": True,
+    "min_quoted_node_counts": {"POLYMARKET": 2, "SXBET": 2},
+    "require_rust_semantic_topology": True,
+}
+
+
+def test_runtime_probe_subscription_fallback_engages_when_subscribed_but_unquoted() -> None:
+    payload = _cold_start_probe_payload()
+
+    assert node_runner._runtime_probe_satisfied(
+        payload,
+        **_MULTI_VENUE_GATE_KWARGS,
+        allow_subscription_fallback=True,
+    )
+    assert payload["subscriptionFallback"] == {
+        "engaged": True,
+        "venues": ["POLYMARKET", "SXBET"],
+        "quoteObservationStatus": "subscribed_but_no_quotes",
+    }
+
+
+def test_runtime_probe_subscription_fallback_accepts_partial_quote_gap() -> None:
+    payload = _cold_start_probe_payload(
+        venueCoverage={
+            "crossVenueCandidateCount": 0,
+            "quotedNodeCounts": {"POLYMARKET": 2, "SXBET": 1},
+            "quoteSubscriptionCounts": {"POLYMARKET": 3, "SXBET": 2},
+        },
+        quoteObservationState={"status": "partial_subscription_quote_gap"},
+    )
+
+    assert node_runner._runtime_probe_satisfied(
+        payload,
+        **_MULTI_VENUE_GATE_KWARGS,
+        allow_subscription_fallback=True,
+    )
+    assert payload["subscriptionFallback"]["venues"] == ["SXBET"]
+
+
+def test_runtime_probe_default_stays_strict_without_fallback_flag() -> None:
+    payload = _cold_start_probe_payload()
+
+    assert not node_runner._runtime_probe_satisfied(
+        payload,
+        **_MULTI_VENUE_GATE_KWARGS,
+    )
+    assert "subscriptionFallback" not in payload
+
+
+def test_runtime_probe_subscription_fallback_requires_subscription_minimums() -> None:
+    payload = _cold_start_probe_payload(
+        venueCoverage={
+            "crossVenueCandidateCount": 0,
+            "quotedNodeCounts": {"POLYMARKET": 0, "SXBET": 0},
+            "quoteSubscriptionCounts": {"POLYMARKET": 3, "SXBET": 1},
+        },
+    )
+
+    assert not node_runner._runtime_probe_satisfied(
+        payload,
+        **_MULTI_VENUE_GATE_KWARGS,
+        allow_subscription_fallback=True,
+    )
+    assert "subscriptionFallback" not in payload
+
+
+def test_runtime_probe_subscription_fallback_rejects_no_quote_subscriptions_state() -> None:
+    payload = _cold_start_probe_payload(
+        venueCoverage={
+            "crossVenueCandidateCount": 0,
+            "quotedNodeCounts": {"POLYMARKET": 0, "SXBET": 0},
+            "quoteSubscriptionCounts": {"POLYMARKET": 0, "SXBET": 0},
+        },
+        quoteObservationState={"status": "no_quote_subscriptions"},
+    )
+
+    assert not node_runner._runtime_probe_satisfied(
+        payload,
+        **_MULTI_VENUE_GATE_KWARGS,
+        allow_subscription_fallback=True,
+    )
+
+
+def test_runtime_probe_subscription_fallback_keeps_wiring_checks_strict() -> None:
+    below_min_connections = _cold_start_probe_payload(connectedNodes=1)
+    assert not node_runner._runtime_probe_satisfied(
+        below_min_connections,
+        **_MULTI_VENUE_GATE_KWARGS,
+        allow_subscription_fallback=True,
+    )
+
+    no_instruments = _cold_start_probe_payload(semanticMatchInstruments=0)
+    assert not node_runner._runtime_probe_satisfied(
+        no_instruments,
+        **_MULTI_VENUE_GATE_KWARGS,
+        allow_subscription_fallback=True,
+    )
+
+    missing_topology = _cold_start_probe_payload(topologySource="python")
+    assert not node_runner._runtime_probe_satisfied(
+        missing_topology,
+        **_MULTI_VENUE_GATE_KWARGS,
+        allow_subscription_fallback=True,
+    )
+
+
+def test_runtime_probe_strict_pass_does_not_flag_fallback() -> None:
+    payload = _cold_start_probe_payload(
+        quotedSemanticMatchInstruments=2,
+        quotedEdges=1,
+        positiveMarginCandidates={"total": 1},
+        venueCoverage={
+            "crossVenueCandidateCount": 1,
+            "quotedNodeCounts": {"POLYMARKET": 2, "SXBET": 2},
+            "quoteSubscriptionCounts": {"POLYMARKET": 3, "SXBET": 2},
+        },
+        quoteObservationState={"status": "quotes_observed"},
+    )
+
+    assert node_runner._runtime_probe_satisfied(
+        payload,
+        **_MULTI_VENUE_GATE_KWARGS,
+        allow_subscription_fallback=True,
+    )
+    assert "subscriptionFallback" not in payload
 
 
 def test_probe_rag_band_classifies_green_amber_red() -> None:

@@ -514,6 +514,17 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         metavar="VENUE:COUNT",
         help="Require at least COUNT quoted nodes for VENUE. May be repeated.",
     )
+    probe_parser.add_argument(
+        "--allow-subscription-fallback",
+        action="store_true",
+        help=(
+            "Accept an unmet per-venue quoted-node minimum when that venue has at "
+            "least as many quote subscriptions and the quote observation state "
+            "attributes the gap to markets not quoting yet; quoted-book coverage "
+            "checks are waived while connection, instrument, and topology checks "
+            "stay strict."
+        ),
+    )
     probe_parser.add_argument("--require-rust-semantic-topology", action="store_true")
 
     return parser
@@ -645,6 +656,7 @@ def _handle_probe_runtime_command(args, node, context: RunnerContext) -> int:
                 args.min_quoted_node_count,
             ),
             require_rust_semantic_topology=bool(args.require_rust_semantic_topology),
+            allow_subscription_fallback=bool(args.allow_subscription_fallback),
         )
         _write_status(
             context.status_path,
@@ -859,6 +871,7 @@ def _probe_runtime(
     require_cross_venue_candidates_or_blockers: bool,
     min_quoted_node_counts: dict[str, int],
     require_rust_semantic_topology: bool,
+    allow_subscription_fallback: bool = False,
 ) -> dict[str, object]:
     if not manifest.validation_mode:
         raise RuntimeError("probe-runtime requires validation_mode=true")
@@ -933,6 +946,7 @@ def _probe_runtime(
                 ),
                 min_quoted_node_counts=min_quoted_node_counts,
                 require_rust_semantic_topology=require_rust_semantic_topology,
+                allow_subscription_fallback=allow_subscription_fallback,
             ):
                 return latest_payload
             if run_error:
@@ -1684,6 +1698,7 @@ def _runtime_probe_satisfied(
     require_cross_venue_candidates_or_blockers: bool = False,
     min_quoted_node_counts: dict[str, int] | None = None,
     require_rust_semantic_topology: bool = False,
+    allow_subscription_fallback: bool = False,
 ) -> bool:
     positive_candidates = payload["positiveMarginCandidates"]["total"]
     venue_coverage = payload.get("venueCoverage") or {}
@@ -1711,16 +1726,75 @@ def _runtime_probe_satisfied(
         and payload.get("topologySource") == "rust_semantic"
         and int(payload.get("semanticTemplateCount") or 0) > 0
     )
-    return (
+    wiring_ok = (
         payload["connectedNodes"] >= min_connected_nodes
         and payload["semanticMatchInstruments"] >= min_match_instruments
-        and payload["quotedSemanticMatchInstruments"] >= min_quoted_match_instruments
+        and (rust_semantic_topology_ok or not require_rust_semantic_topology)
+    )
+    quoted_flow_ok = (
+        payload["quotedSemanticMatchInstruments"] >= min_quoted_match_instruments
         and payload["quotedEdges"] >= min_quoted_edges
         and positive_candidates >= min_positive_margin_candidates
         and cross_venue_ok
         and venue_quoted_ok
-        and (rust_semantic_topology_ok or not require_rust_semantic_topology)
     )
+    if wiring_ok and quoted_flow_ok:
+        return True
+    if not (allow_subscription_fallback and wiring_ok):
+        return False
+    fallback_venues = _subscription_fallback_venues(
+        payload,
+        min_quoted_node_counts=min_quoted_node_counts or {},
+    )
+    if not fallback_venues:
+        return False
+    quote_observation = payload.get("quoteObservationState")
+    quote_observation_status = (
+        str(quote_observation.get("status") or "") if isinstance(quote_observation, dict) else ""
+    )
+    payload["subscriptionFallback"] = {
+        "engaged": True,
+        "venues": fallback_venues,
+        "quoteObservationStatus": quote_observation_status,
+    }
+    logger.warning(
+        "Runtime probe passed via subscription fallback: quoted-node minimums unmet "
+        "for %s but quote subscriptions cover the minimums "
+        "(quote_observation_status=%s); quoted-book coverage checks were waived",
+        ",".join(fallback_venues),
+        quote_observation_status,
+    )
+    return True
+
+
+_SUBSCRIPTION_FALLBACK_QUOTE_STATUSES = frozenset(
+    {"subscribed_but_no_quotes", "partial_subscription_quote_gap"},
+)
+
+
+def _subscription_fallback_venues(
+    payload: dict[str, object],
+    *,
+    min_quoted_node_counts: dict[str, int],
+) -> list[str]:
+    venue_coverage = payload.get("venueCoverage") or {}
+    if not isinstance(venue_coverage, dict):
+        return []
+    quote_observation = payload.get("quoteObservationState") or {}
+    if not isinstance(quote_observation, dict):
+        return []
+    if str(quote_observation.get("status") or "") not in _SUBSCRIPTION_FALLBACK_QUOTE_STATUSES:
+        return []
+    quoted_node_counts = _int_mapping(venue_coverage.get("quotedNodeCounts"))
+    subscription_counts = _int_mapping(venue_coverage.get("quoteSubscriptionCounts"))
+    fallback_venues: list[str] = []
+    for venue, minimum in sorted(min_quoted_node_counts.items()):
+        if quoted_node_counts.get(venue, 0) >= minimum:
+            continue
+        if subscription_counts.get(venue, 0) < minimum:
+            return []
+        fallback_venues.append(venue)
+    return fallback_venues
 
 
 def _has_cross_venue_blocker(
