@@ -1,0 +1,199 @@
+# -------------------------------------------------------------------------------------------------
+#  Copyright (C) 2015-2026 Nautech Systems Pty Ltd. All rights reserved.
+#
+#  Unit tests for the arbitrage position tracker (real-money two-leg betting P&L).
+# -------------------------------------------------------------------------------------------------
+# skipcq: BAN-B101
+# bandit:skip=B101
+# skipcq: PYL-C0114, PYL-C0115, PYL-C0116, PYL-W0212
+# pylint: disable=missing-function-docstring,no-name-in-module
+"""
+Adversarial, hand-computed proofs for ArbPositionTracker.
+
+Every expected number below is derived by hand from the back-bet payoff identities for a
+binary market with mutually exclusive outcomes A and B:
+
+  BACK at odds ``p`` for stake ``s``:
+    outcome_win_payoff  = s * (p - 1)   (selection wins)
+    outcome_lose_payoff = -s            (selection loses)
+
+  joint payoff if A wins  = legA.win  + legB.lose
+  joint payoff if B wins  = legB.win  + legA.lose
+
+"""
+
+from decimal import Decimal
+
+from nautilus_trader.core.nautilus_pyo3 import BetSide
+from nautilus_trader.examples.strategies.arb_position_tracker import ArbPositionTracker
+from nautilus_trader.examples.strategies.arb_position_tracker import bet_side_for_order_side
+
+
+LEG_A = "O-A"
+LEG_B = "O-B"
+OUTCOME_A = "HOME-1.5"
+OUTCOME_B = "AWAY+1.5"
+
+
+def _tracker_with_pair(odds_a, stake_a, odds_b, stake_b):
+    tracker = ArbPositionTracker()
+    tracker.record_fill(LEG_A, OUTCOME_A, "BUY", odds_a, stake_a, sibling_id=LEG_B)
+    tracker.record_fill(LEG_B, OUTCOME_B, "BUY", odds_b, stake_b, sibling_id=LEG_A)
+    return tracker, tracker.pair_key(LEG_A, LEG_B)
+
+
+def test_bet_side_mapping():
+    assert bet_side_for_order_side("BUY") == BetSide.BACK
+    assert bet_side_for_order_side("SELL") == BetSide.LAY
+
+
+def test_a_genuine_arb_guaranteed_plus_one_in_both_outcomes():
+    # 2.1/2.1, stake 10 each. A wins: 10*1.1 - 10 = +1 ; B wins: 10*1.1 - 10 = +1.
+    tracker, pair_id = _tracker_with_pair("2.1", "10", "2.1", "10")
+    pair = tracker.pair(pair_id)
+
+    pnls = pair.outcome_pnls()
+    assert pnls[OUTCOME_A] == Decimal("1.0")
+    assert pnls[OUTCOME_B] == Decimal("1.0")
+    assert pair.guaranteed_pnl() == Decimal("1.0")
+    assert pair.best_case_pnl() == Decimal("1.0")
+    assert pair.is_fully_hedged is True
+    # exposure = price*stake per BACK leg = 21 + 21
+    assert pair.exposure == Decimal("42.0")
+
+
+def test_b_negative_margin_minus_one_in_both_outcomes():
+    # 1.9/1.9, stake 10 each. A wins: 10*0.9 - 10 = -1 ; B wins: -1.
+    tracker, pair_id = _tracker_with_pair("1.9", "10", "1.9", "10")
+    pair = tracker.pair(pair_id)
+
+    pnls = pair.outcome_pnls()
+    assert pnls[OUTCOME_A] == Decimal("-1.0")
+    assert pnls[OUTCOME_B] == Decimal("-1.0")
+    assert pair.guaranteed_pnl() == Decimal("-1.0")
+    assert pair.best_case_pnl() == Decimal("-1.0")
+
+
+def test_c_void_refunds_both_stakes_pnl_zero():
+    tracker, pair_id = _tracker_with_pair("2.1", "10", "2.1", "10")
+    realized = tracker.settle(pair_id, void=True)
+
+    assert realized == Decimal(0)
+    pair = tracker.pair(pair_id)
+    assert pair.settled is True
+    assert pair.void is True
+    assert pair.realized_pnl == Decimal(0)
+    # settled pairs surface realized P&L, not open outcome scenarios
+    assert pair.guaranteed_pnl() is None
+    assert pair.summary()["outcome_pnls"] == {}
+
+
+def test_d_one_leg_only_fill_outcome_dependent_no_guarantee():
+    # Only leg A fills: BACK 2.1 stake 10. Selection wins => +11 ; loses => -10.
+    tracker = ArbPositionTracker()
+    tracker.record_fill(LEG_A, OUTCOME_A, "BUY", "2.1", "10", sibling_id=LEG_B)
+    pair = tracker.pair_for_leg(LEG_A)
+
+    pnls = pair.outcome_pnls()
+    assert pnls[OUTCOME_A] == Decimal("11.0")
+    # synthetic complement scenario = the selection loses
+    assert pnls["__other__"] == Decimal(-10)
+    assert pair.guaranteed_pnl() == Decimal(-10)  # no guarantee: worst case is a loss
+    assert pair.best_case_pnl() == Decimal("11.0")
+    assert pair.is_fully_hedged is False
+
+
+def test_e_asymmetric_stakes_per_outcome_payoffs():
+    # legA BACK 2.1 stake 10 ; legB BACK 2.1 stake 8.
+    # A wins: legA.win 10*1.1=11 + legB.lose -8  = +3.0
+    # B wins: legB.win 8*1.1=8.8 + legA.lose -10 = -1.2
+    tracker, pair_id = _tracker_with_pair("2.1", "10", "2.1", "8")
+    pair = tracker.pair(pair_id)
+
+    pnls = pair.outcome_pnls()
+    assert pnls[OUTCOME_A] == Decimal("3.0")
+    assert pnls[OUTCOME_B] == Decimal("-1.2")
+    assert pair.guaranteed_pnl() == Decimal("-1.2")
+    assert pair.best_case_pnl() == Decimal("3.0")
+
+
+def test_e_asymmetric_settlement_matches_worst_and_best():
+    tracker, pair_id = _tracker_with_pair("2.1", "10", "2.1", "8")
+    assert tracker.settle(pair_id, OUTCOME_B) == Decimal("-1.2")
+
+    tracker2, pair_id2 = _tracker_with_pair("2.1", "10", "2.1", "8")
+    assert tracker2.settle(pair_id2, OUTCOME_A) == Decimal("3.0")
+
+
+def test_f_partial_fills_accumulate_per_leg():
+    # legA fills 6 then 4 (both 2.1) => stake 10. legB fills 10 at 2.1.
+    # Must reproduce the genuine-arb +1/+1 once fully accumulated.
+    tracker = ArbPositionTracker()
+    tracker.record_fill(LEG_A, OUTCOME_A, "BUY", "2.1", "6", sibling_id=LEG_B)
+    tracker.record_fill(LEG_A, OUTCOME_A, "BUY", "2.1", "4", sibling_id=LEG_B)
+    tracker.record_fill(LEG_B, OUTCOME_B, "BUY", "2.1", "10", sibling_id=LEG_A)
+    pair = tracker.pair(tracker.pair_key(LEG_A, LEG_B))
+
+    leg_a = pair.legs[LEG_A]
+    assert len(leg_a.fills) == 2
+    assert leg_a.stake == Decimal(10)
+
+    pnls = pair.outcome_pnls()
+    assert pnls[OUTCOME_A] == Decimal("1.0")
+    assert pnls[OUTCOME_B] == Decimal("1.0")
+    assert pair.guaranteed_pnl() == Decimal("1.0")
+
+
+def test_partial_fills_at_different_prices_accumulate_exactly():
+    # legA: 5 @ 2.0 then 5 @ 2.2 ; legB: 10 @ 2.1.
+    # A wins: legA.win = 5*1.0 + 5*1.2 = 11 ; legB.lose = -10  => +1.0
+    # B wins: legB.win = 10*1.1 = 11 ; legA.lose = -(5+5) = -10 => +1.0
+    tracker = ArbPositionTracker()
+    tracker.record_fill(LEG_A, OUTCOME_A, "BUY", "2.0", "5", sibling_id=LEG_B)
+    tracker.record_fill(LEG_A, OUTCOME_A, "BUY", "2.2", "5", sibling_id=LEG_B)
+    tracker.record_fill(LEG_B, OUTCOME_B, "BUY", "2.1", "10", sibling_id=LEG_A)
+    pair = tracker.pair(tracker.pair_key(LEG_A, LEG_B))
+
+    pnls = pair.outcome_pnls()
+    assert pnls[OUTCOME_A] == Decimal("1.0")
+    assert pnls[OUTCOME_B] == Decimal("1.0")
+
+
+def test_settlement_on_untraded_outcome_settles_every_leg_at_loss():
+    # Neither leg backed outcome C: both legs lose their stakes => -(10) - (8) = -18.
+    tracker, pair_id = _tracker_with_pair("2.1", "10", "2.1", "8")
+    assert tracker.settle(pair_id, "SOME-VOIDED-THIRD-OUTCOME") == Decimal(-18)
+
+
+def test_pair_key_is_order_independent():
+    assert ArbPositionTracker.pair_key("z", "a") == ArbPositionTracker.pair_key("a", "z")
+
+
+def test_summary_aggregates_open_and_realized():
+    tracker = ArbPositionTracker()
+    # open genuine arb: guaranteed +1
+    tracker.record_fill("A1", OUTCOME_A, "BUY", "2.1", "10", sibling_id="B1")
+    tracker.record_fill("B1", OUTCOME_B, "BUY", "2.1", "10", sibling_id="A1")
+    # settled negative-margin pair: realized -1
+    tracker.record_fill("A2", OUTCOME_A, "BUY", "1.9", "10", sibling_id="B2")
+    tracker.record_fill("B2", OUTCOME_B, "BUY", "1.9", "10", sibling_id="A2")
+    tracker.settle(tracker.pair_key("A2", "B2"), OUTCOME_A)
+
+    summary = tracker.summary()
+    assert summary["pairs_tracked"] == 2
+    assert summary["pairs_open"] == 1
+    assert summary["open_guaranteed_pnl"] == Decimal("1.0")
+    assert summary["realized_pnl"] == Decimal("-1.0")
+    assert summary["open_exposure"] == Decimal("42.0")
+
+
+def test_sell_side_leg_maps_to_lay_payoffs():
+    # A LAY leg on outcome A: outcome_win_payoff = -liability, outcome_lose_payoff = profit.
+    # LAY 2.0 stake 10 -> liability 10*(2-1)=10 ; A wins => -10 ; A loses => +10.
+    tracker = ArbPositionTracker()
+    tracker.record_fill(LEG_A, OUTCOME_A, "SELL", "2.0", "10")
+    pair = tracker.pair_for_leg(LEG_A)
+
+    pnls = pair.outcome_pnls()
+    assert pnls[OUTCOME_A] == Decimal(-10)
+    assert pnls["__other__"] == Decimal(10)
