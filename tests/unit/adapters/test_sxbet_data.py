@@ -4,6 +4,8 @@
 #  Unit tests for SX.bet market data quoting.
 # -------------------------------------------------------------------------------------------------
 
+import asyncio
+import time
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 
@@ -470,6 +472,107 @@ async def test_poll_order_books_once_records_rate_limit_failures():
     assert stats.rate_limit_count == 1
     assert stats.backoff_secs == 1.0
     assert stats.last_error == "rate limited"
+
+
+def _make_hung_market_client(
+    *,
+    config: SXBetDataClientConfig,
+) -> tuple[SXBetDataClient, CryptoBettingInstrument]:
+    hung_instrument = _make_instrument(event_id="fixture-hung", market_hash="market-hung")
+    healthy_instrument = _make_instrument(event_id="fixture-healthy", market_hash="market-healthy")
+    hang_forever = asyncio.Event()
+
+    async def fake_get_order_book(market_hash: str) -> dict:
+        if market_hash == "market-hung":
+            await hang_forever.wait()
+        return {
+            "data": {
+                "orders": [
+                    {
+                        "isMakerBettingOutcomeOne": True,
+                        "percentageOdds": decimal_odds_to_percentage(2.0),
+                    },
+                ],
+            },
+        }
+
+    instrument_provider = _make_provider()
+    instruments_by_id = {
+        hung_instrument.id: hung_instrument,
+        healthy_instrument.id: healthy_instrument,
+    }
+    instruments_by_hash = {
+        "market-hung": [hung_instrument],
+        "market-healthy": [healthy_instrument],
+    }
+    instrument_provider.find = Mock(side_effect=instruments_by_id.get)  # type: ignore[method-assign]
+    instrument_provider.find_by_market_hash = Mock(  # type: ignore[method-assign]
+        side_effect=lambda market_hash: instruments_by_hash.get(market_hash, []),
+    )
+    client = _make_client(instrument_provider=instrument_provider, config=config)
+    client._http_client.get_order_book = AsyncMock(side_effect=fake_get_order_book)  # type: ignore[method-assign]
+    client._subscribed_instruments = {hung_instrument.id, healthy_instrument.id}
+    client._handle_data = Mock()
+    return client, healthy_instrument
+
+
+@pytest.mark.asyncio
+async def test_poll_order_books_once_times_out_hung_fetch_and_publishes_healthy_markets():
+    client, healthy_instrument = _make_hung_market_client(
+        config=SXBetDataClientConfig(
+            order_book_poll_interval_secs=0.2,
+            fetch_timeout_secs=0.1,
+            cycle_deadline_secs=0.4,
+        ),
+    )
+
+    started_at = time.perf_counter()
+    await client._poll_order_books_once()
+    elapsed = time.perf_counter() - started_at
+
+    assert elapsed < 0.4
+    client._handle_data.assert_called_once()
+    assert client._handle_data.call_args.args[0].instrument_id == healthy_instrument.id
+    stats = decode_venue_quote_poll_stats(
+        client._cache.get(venue_quote_poll_stats_key("SXBET")),
+    )
+    assert stats is not None
+    assert stats.failure_count >= 1
+    assert stats.quote_count == 1
+    assert stats.last_error == "request_timeout>0.1s"
+
+
+@pytest.mark.asyncio
+async def test_poll_order_books_once_enforces_cycle_deadline_on_hung_fetch():
+    client, healthy_instrument = _make_hung_market_client(
+        config=SXBetDataClientConfig(
+            order_book_poll_interval_secs=0.1,
+            fetch_timeout_secs=60.0,
+            cycle_deadline_secs=0.2,
+        ),
+    )
+
+    started_at = time.perf_counter()
+    await client._poll_order_books_once()
+    elapsed = time.perf_counter() - started_at
+
+    assert elapsed < 1.0
+    client._handle_data.assert_called_once()
+    assert client._handle_data.call_args.args[0].instrument_id == healthy_instrument.id
+    stats = decode_venue_quote_poll_stats(
+        client._cache.get(venue_quote_poll_stats_key("SXBET")),
+    )
+    assert stats is not None
+    assert stats.failure_count >= 1
+    assert stats.quote_count == 1
+    assert stats.last_error == "cycle_deadline_exceeded"
+
+
+def test_fetch_timeout_and_cycle_deadline_default_from_poll_interval():
+    client = _make_client(config=SXBetDataClientConfig(order_book_poll_interval_secs=3.0))
+
+    assert client._fetch_timeout_secs == 3.0
+    assert client._cycle_deadline_secs == 6.0
 
 
 @pytest.mark.asyncio
