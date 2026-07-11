@@ -1095,3 +1095,60 @@ def test_semantic_coverage_summary_logs_malformed_rust_json(caplog):
     )
     assert warning is not None
     assert "not valid json" in warning.getMessage()
+
+
+def test_synthetic_line_drops_source_param():
+    node = MarketNormalizer.normalize(
+        betting_instrument(
+            market_name="total_sets",
+            market_type="total_sets",
+            outcome="over",
+            sport="tennis",
+            params="total=2.5",
+            venue="CLOUDBET",
+        ),
+    )
+    template = MarketNormalizer.normalize(
+        betting_instrument(
+            market_name="total_sets",
+            market_type="total_sets",
+            outcome="over",
+            sport="tennis",
+            params="line=2.5",
+            venue="CLOUDBET",
+        ),
+    )
+
+    assert node.params == (("line", "2.5"),)
+    assert node.params == template.params
+
+
+def test_handicap_source_param_dropped_after_selection_relative_adjustment():
+    normalized = MarketNormalizer.normalize(
+        betting_instrument(
+            market_name="run_line",
+            market_type="run_line",
+            outcome="away",
+            sport="baseball",
+            params="handicap=-1",
+            handicap=-1.0,
+            venue="CLOUDBET",
+        ),
+    )
+
+    assert normalized.params == (("line", "1"),)
+
+
+def test_conflicting_total_and_line_params_are_not_collapsed():
+    normalized = MarketNormalizer.normalize(
+        betting_instrument(
+            market_name="total_sets",
+            market_type="total_sets",
+            outcome="over",
+            sport="tennis",
+            params="line=2.5&total=3",
+            venue="CLOUDBET",
+        ),
+    )
+
+    assert normalized.params == (("line", "2.5"), ("total", "3"))
