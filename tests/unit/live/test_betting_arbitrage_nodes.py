@@ -1429,9 +1429,9 @@ class TestBettingArbitrageNodeBuilder:
         assert cloudbet_config["instrument_provider"]["filters"]["limit"] == 80
         assert "market_name" not in cloudbet_config["instrument_provider"]["filters"]
         assert cloudbet_config["quote_poll_interval_secs"] == 1.0
-        assert cloudbet_config["quote_poll_concurrency"] == 16
+        assert cloudbet_config["quote_poll_concurrency"] == 24
         assert cloudbet_config["quote_poll_min_concurrency"] == 4
-        assert cloudbet_config["quote_poll_max_concurrency"] == 16
+        assert cloudbet_config["quote_poll_max_concurrency"] == 48
         assert cloudbet_config["quote_poll_target_cycle_secs"] == 4.0
         assert cloudbet_config["quote_poll_adaptive_concurrency"] is True
         assert cloudbet_config["quote_poll_event_batching"] is True
