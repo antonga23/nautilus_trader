@@ -3112,6 +3112,14 @@ def _semantic_node_diagnostics(nodes: dict[str, object]) -> dict[str, object]:
     }
 
 
+# Same sample-capping convention as the sibling diagnostics fields in this
+# module (`_coverage_sample_hyperedges`, `proof_payloads[:10]`,
+# `_unsupported_provider_patterns(..., limit=10)`): these two template lists
+# are diagnostic samples, not data required by any consumer, and were the
+# single largest contributor to status.json size when left uncapped.
+_TEMPLATE_SAMPLE_LIMIT = 10
+
+
 def _semantic_template_diagnostics(graph) -> dict[str, object]:
     pattern_counts: Counter[tuple[str, ...]] = Counter()
     provider_pattern_counts: Counter[tuple[str, ...]] = Counter()
@@ -3163,11 +3171,11 @@ def _semantic_template_diagnostics(graph) -> dict[str, object]:
         "execution_safe_templates": sorted(
             execution_safe_templates,
             key=lambda item: str(item["templateId"]),
-        ),
+        )[:_TEMPLATE_SAMPLE_LIMIT],
         "same_venue_eligible_templates": sorted(
             same_venue_eligible_templates,
             key=lambda item: str(item["templateId"]),
-        ),
+        )[:_TEMPLATE_SAMPLE_LIMIT],
     }
 
 
@@ -3315,6 +3323,8 @@ def _probe_coverage_book_devig_diagnostics(  # noqa: C901
     quoted_hyperedges = 0
     incomplete_hyperedges = 0
     adjuster = getattr(strategy, "fee_adjusted_coverage_basket", None)
+    quoted_ids = {str(node_id) for node_id in quotes}
+    node_index = _coverage_runtime_node_index(nodes, quoted_ids)
 
     for hyperedge in sample_hyperedges:
         if not isinstance(hyperedge, dict):
@@ -3324,6 +3334,7 @@ def _probe_coverage_book_devig_diagnostics(  # noqa: C901
             hyperedge,
             nodes=nodes,
             quotes=quotes,
+            node_index=node_index,
         )
         if len(instrument_ids) < 2 or not callable(adjuster):
             incomplete_hyperedges += 1
@@ -3420,6 +3431,7 @@ def _resolve_coverage_hyperedge_node_ids(
     *,
     nodes: dict[Any, object],
     quotes: dict[Any, object],
+    node_index: dict[tuple[str, str, str, str, str, str, str], list[str]] | None = None,
 ) -> tuple[tuple[str, ...], list[str]]:
     node_by_id = {str(node_id): node for node_id, node in nodes.items()}
     quoted_ids = {str(node_id) for node_id in quotes}
@@ -3432,7 +3444,9 @@ def _resolve_coverage_hyperedge_node_ids(
     ):
         return direct_ids, []
 
-    index = _coverage_runtime_node_index(nodes, quoted_ids)
+    index = (
+        node_index if node_index is not None else _coverage_runtime_node_index(nodes, quoted_ids)
+    )
     resolved: list[str] = []
     missing: list[str] = []
     predicates = hyperedge.get("predicates")

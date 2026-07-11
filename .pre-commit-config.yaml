@@ -390,6 +390,7 @@ repos:
             |nautilus_trader/adapters/tenbet/
             |nautilus_trader/adapters/cloudbet/
             |nautilus_trader/live/strategy_nodes/betting_arbitrage/
+            |scripts/betting/exp4_probe-assembly-cost\.py$
             |scripts/betting/exp4_semantic-pattern-coverage\.py$
             |tests/.*cloudbet.*
             |tests/unit/adapters/test_tenbet_adapter\.py$

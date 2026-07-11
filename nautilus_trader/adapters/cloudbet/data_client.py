@@ -58,6 +58,8 @@ from nautilus_trader.model.instruments import Instrument
 from nautilus_trader.model.instruments.crypto_betting import CryptoBettingInstrument
 from nautilus_trader.model.orderbook import OrderBook
 
+REVALIDATE_EVERY_N_CYCLES = 20
+
 
 class CloudbetDataClient(LiveMarketDataClient):
     """
@@ -161,6 +163,7 @@ class CloudbetDataClient(LiveMarketDataClient):
             int(getattr(self._config, "quote_poll_missing_prune_threshold", 3)),
         )
         self._quote_poll_missing_counts: dict[InstrumentId, int] = defaultdict(int)
+        self._quote_poll_absent_market_cycles: dict[InstrumentId, int] = {}
         self._quote_poll_concurrency = min(
             max(self._quote_poll_min_concurrency, self._quote_poll_concurrency),
             self._quote_poll_max_concurrency,
@@ -740,10 +743,22 @@ class CloudbetDataClient(LiveMarketDataClient):
                 request_started_ns=request_started_ns,
                 response_received_ns=response_received_ns,
             )
-            if quote is None:
-                unresolved_ids.append(instrument_id)
-            else:
+            if quote is not None:
+                self._quote_poll_absent_market_cycles.pop(instrument_id, None)
                 group_results.append((instrument_id, quote, None))
+                continue
+            if event.markets.get(str(instrument.market_name)) is not None:
+                self._quote_poll_absent_market_cycles.pop(instrument_id, None)
+                unresolved_ids.append(instrument_id)
+                continue
+            confirmed_at = self._quote_poll_absent_market_cycles.get(instrument_id)
+            if (
+                confirmed_at is not None
+                and self._quote_poll_cycle_id - confirmed_at < REVALIDATE_EVERY_N_CYCLES
+            ):
+                group_results.append((instrument_id, None, None))
+                continue
+            unresolved_ids.append(instrument_id)
 
         fallback_count = 0
         if unresolved_ids:
@@ -751,6 +766,21 @@ class CloudbetDataClient(LiveMarketDataClient):
                 unresolved_ids,
             )
             group_results.extend(fallback_results)
+            for instrument_id, quote, _ in fallback_results:
+                if quote is not None:
+                    self._quote_poll_absent_market_cycles.pop(instrument_id, None)
+                    continue
+                instrument = self._instrument_provider.find(instrument_id)
+                if (
+                    isinstance(instrument, CryptoBettingInstrument)
+                    and event.markets.get(str(instrument.market_name)) is None
+                ):
+                    # The market key is structurally absent from the event payload
+                    # AND the per-line endpoint (same market path) found nothing:
+                    # skip the redundant per-line request on subsequent cycles.
+                    self._quote_poll_absent_market_cycles[instrument_id] = (
+                        self._quote_poll_cycle_id
+                    )
         return group_results, fallback_count
 
     def _record_missing_quote_subscription(self, instrument_id: InstrumentId) -> bool:

@@ -30,6 +30,15 @@ from nautilus_trader.data.messages import DataCommand
 from nautilus_trader.data.messages import DataResponse
 from nautilus_trader.data.messages import RequestData
 from nautilus_trader.live.enqueue import ThrottledEnqueuer
+from nautilus_trader.model.data import QuoteTick
+from nautilus_trader.model.identifiers import InstrumentId
+
+
+class _QuoteTickSlot:
+    __slots__ = ("tick",)
+
+    def __init__(self, tick: QuoteTick) -> None:
+        self.tick = tick
 
 
 class LiveDataEngine(DataEngine):
@@ -103,6 +112,7 @@ class LiveDataEngine(DataEngine):
             clock=self._clock,
             logger=self._log,
         )
+        self._quote_slots: dict[InstrumentId, _QuoteTickSlot] = {}
         self._data_enqueuer: ThrottledEnqueuer[Data] = ThrottledEnqueuer(
             qname="data_queue",
             queue=self._data_queue,
@@ -340,6 +350,21 @@ class LiveDataEngine(DataEngine):
         loop is running on. Calling it from a different thread may lead to unexpected behavior.
 
         """
+        if isinstance(data, QuoteTick):
+            # Latest-wins coalescing: under backpressure only the newest quote per
+            # instrument is actionable, so a re-arrival refreshes the queued slot's
+            # value in place (keeping its original queue position) instead of
+            # appending another stale-on-arrival tick behind the backlog.
+            slot = self._quote_slots.get(data.instrument_id)
+            if slot is not None:
+                slot.tick = data
+                return
+
+            slot = _QuoteTickSlot(data)
+            self._quote_slots[data.instrument_id] = slot
+            self._data_enqueuer.enqueue(slot)
+            return
+
         self._data_enqueuer.enqueue(data)
 
     # -- INTERNAL -------------------------------------------------------------------------------------
@@ -479,7 +504,12 @@ class LiveDataEngine(DataEngine):
                     if data is self._sentinel:
                         break
 
-                    self._handle_data(data)
+                    if type(data) is _QuoteTickSlot:
+                        tick = data.tick
+                        self._quote_slots.pop(tick.instrument_id, None)
+                        self._handle_data(tick)
+                    else:
+                        self._handle_data(data)
                 except asyncio.CancelledError:
                     self._log.warning("Data message queue canceled")
                     break

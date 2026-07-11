@@ -3368,6 +3368,59 @@ class TestBettingArbitrageNodeRunner:
         assert diagnostics["sameVenueEligibleTemplates"][0]["templateId"] == "template-total-25"
         assert diagnostics["sameVenueEligibleTemplates"][0]["patternA"]["selection"] == "OVER"
 
+    def test_semantic_probe_diagnostics_caps_template_sample_lists(self):
+        instrument = _instrument(
+            venue="SXBET",
+            market_type="total_goals",
+            market_name="Total Goals",
+            outcome="over",
+            params="line=2.5",
+            handicap=2.5,
+        )
+        params_key = json.dumps([["line", "2.5"]], separators=(",", ":"))
+        pattern = {
+            "sport": "soccer",
+            "scope": "full_time",
+            "market_type": "TOTALS",
+            "market_family": "TOTALS",
+            "selection": "OVER",
+            "params_key": params_key,
+        }
+        templates = [
+            {
+                "template_id": f"template-total-{index:02d}",
+                "relationship_type": "COMPLEMENTARY_COVERAGE",
+                "provider_scope": ["SXBET"],
+                "venue_agnostic": False,
+                "confidence": 0.99,
+                "caveats": [],
+                "safety_tier": "EXECUTION_SAFE",
+                "execution_safe": True,
+                "same_venue_execution_eligible": True,
+                "pattern_a": pattern,
+                "pattern_b": {**pattern, "selection": "UNDER"},
+            }
+            for index in reversed(range(node_runner._TEMPLATE_SAMPLE_LIMIT + 5))
+        ]
+
+        class FakeGraph:
+            nodes_by_id = {"node-1": SimpleNamespace(instrument=instrument)}
+
+            @staticmethod
+            def _semantic_template_payloads():
+                return templates
+
+        diagnostics = node_runner._semantic_probe_diagnostics(FakeGraph())
+
+        assert diagnostics["templateCount"] == len(templates)
+        for key in ("executionSafeTemplates", "sameVenueEligibleTemplates"):
+            sampled = diagnostics[key]
+            assert len(sampled) == node_runner._TEMPLATE_SAMPLE_LIMIT
+            assert sampled[0]["templateId"] == "template-total-00"
+            assert [item["templateId"] for item in sampled] == sorted(
+                item["templateId"] for item in sampled
+            )
+
     def test_semantic_probe_diagnostics_reports_unsupported_provider_patterns(self):
         unsupported_instrument = _instrument(
             venue="POLYMARKET",
@@ -5574,6 +5627,98 @@ class TestBettingArbitrageNodeRunner:
             "semantic-home",
             "semantic-away",
         ]
+
+    def test_runtime_probe_coverage_book_devig_builds_node_index_once(self, monkeypatch):
+        instrument_a = _instrument(
+            venue="CLOUDBET",
+            market_type="match_odds",
+            outcome="home",
+            event_name="CLE Cavaliers vs MIN Timberwolves",
+            home_name="CLE Cavaliers",
+            away_name="MIN Timberwolves",
+            sport_name="basketball",
+        )
+        instrument_b = _instrument(
+            venue="CLOUDBET",
+            market_type="match_odds",
+            outcome="away",
+            event_name="Cleveland Cavaliers vs Minnesota Timberwolves",
+            home_name="Cleveland Cavaliers",
+            away_name="Minnesota Timberwolves",
+            sport_name="basketball",
+        )
+        nodes = {
+            str(instrument_a.id): SimpleNamespace(instrument=instrument_a),
+            str(instrument_b.id): SimpleNamespace(instrument=instrument_b),
+        }
+        quotes = {
+            str(instrument_a.id): SimpleNamespace(odds=Decimal("2.20")),
+            str(instrument_b.id): SimpleNamespace(odds=Decimal("2.20")),
+        }
+        strategy = SimpleNamespace(
+            fee_adjusted_coverage_basket=lambda instruments, odds: fee_adjusted_coverage_basket(
+                odds,
+                devig_method="proportional",
+            ),
+        )
+        predicates = [
+            {
+                "instrument_id": "semantic-home",
+                "provider": "CLOUDBET",
+                "event_key": "basketball|cle_cavaliers|min_timberwolves",
+                "sport": "basketball",
+                "scope": "full_time",
+                "market_family": "MATCH_ODDS",
+                "selection": "HOME",
+                "params_key": "[]",
+            },
+            {
+                "instrument_id": "semantic-away",
+                "provider": "CLOUDBET",
+                "event_key": "basketball|cle_cavaliers|min_timberwolves",
+                "sport": "basketball",
+                "scope": "full_time",
+                "market_family": "MATCH_ODDS",
+                "selection": "AWAY",
+                "params_key": "[]",
+            },
+        ]
+        coverage_diagnostics = {
+            "sampleHyperedges": [
+                {
+                    "hyperedge_id": f"hyperedge-{i}",
+                    "coverage_proof_id": f"proof-{i}",
+                    "instrument_ids": ["semantic-home", "semantic-away"],
+                    "provider_scope": ["CLOUDBET"],
+                    "safety_tier": "EXECUTION_SAFE",
+                    "execution_safe": True,
+                    "predicates": predicates,
+                }
+                for i in range(3)
+            ],
+        }
+
+        real_index = node_runner._coverage_runtime_node_index
+        index_builds = []
+
+        def counting_index(nodes_arg, quoted_ids):
+            index_builds.append(1)
+            return real_index(nodes_arg, quoted_ids)
+
+        monkeypatch.setattr(node_runner, "_coverage_runtime_node_index", counting_index)
+
+        payload = node_runner._probe_coverage_book_devig_diagnostics(
+            strategy,
+            coverage_diagnostics=coverage_diagnostics,
+            nodes=nodes,
+            quotes=quotes,
+            min_profit_margin=Decimal("0.02"),
+        )
+
+        assert len(index_builds) == 1
+        assert payload["sampledHyperedges"] == 3
+        assert payload["quotedHyperedges"] == 3
+        assert payload["incompleteHyperedges"] == 0
 
     def test_runtime_probe_coverage_book_devig_reports_missing_semantic_legs(self):
         instrument_a = _instrument(
