@@ -19,20 +19,27 @@ from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.sxbet.config import SXBetInstrumentProviderConfig
 from nautilus_trader.adapters.sxbet.constants import SXBET_TOKENS
 from nautilus_trader.adapters.sxbet.constants import SXBET_VENUE
+from nautilus_trader.adapters.sxbet.execution import SXBET_USDC
 from nautilus_trader.adapters.sxbet.execution import SXBetExecutionClient
 from nautilus_trader.adapters.sxbet.providers import SXBetInstrumentProvider
 from nautilus_trader.common.component import Logger
 from nautilus_trader.common.functions import get_event_loop
 from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.execution.messages import GenerateFillReports
+from nautilus_trader.execution.messages import GenerateOrderStatusReport
 from nautilus_trader.execution.messages import GenerateOrderStatusReports
 from nautilus_trader.execution.messages import GeneratePositionStatusReports
+from nautilus_trader.model.enums import AccountType
+from nautilus_trader.model.enums import LiquiditySide
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.enums import OrderType
+from nautilus_trader.model.events import AccountState
+from nautilus_trader.model.events import OrderFilled
 from nautilus_trader.model.identifiers import ClientOrderId
 from nautilus_trader.model.identifiers import VenueOrderId
 from nautilus_trader.model.objects import Currency
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
+from nautilus_trader.test_kit.stubs.execution import TestExecStubs
 
 
 def _fixed_expiry(hours: int = 24) -> int:
@@ -701,6 +708,7 @@ async def test_connect_uses_usdc_token_address():
     )
     http_client = Mock()
     http_client.connect = AsyncMock()
+    http_client.disconnect = AsyncMock()
     http_client.get_balance = AsyncMock(return_value={"balance": "1"})
     client = SXBetExecutionClient(
         loop=get_event_loop(),
@@ -720,6 +728,262 @@ async def test_connect_uses_usdc_token_address():
         config.wallet_address,
         SXBET_TOKENS["USDC"],
     )
+
+    await client._disconnect()
+
+
+def _fill_instrument() -> CryptoBettingInstrument:
+    return CryptoBettingInstrument(
+        venue=SXBET_VENUE,
+        event_id="0x" + "ab" * 32,
+        event_name="Team A vs Team B",
+        home_name="Team A",
+        away_name="Team B",
+        sport_name="Soccer",
+        competition_name="League",
+        market_name="Match Odds",
+        market_type="match_odds",
+        outcome="home",
+        side=SelectionSide.BACK,
+        price=2.0,
+        currency=Currency.from_str("USDC"),
+        params="",
+        market_id="0x" + "ab" * 32,
+        info={"outcome_one": True},
+    )
+
+
+def _make_fill_client(http_client, instrument, msgbus, cache, *, execution_mode="maker_post"):
+    config = SimpleNamespace(
+        api_key="api-key",
+        wallet_address="0x" + "12" * 20,
+        private_key="0x" + "34" * 32,
+        base_currency="USDC",
+        execution_mode=execution_mode,
+    )
+    instrument_provider = SXBetInstrumentProvider(
+        http_client=Mock(),
+        config=SXBetInstrumentProviderConfig(),
+        logger=Mock(),
+    )
+    instrument_provider.find = Mock(return_value=instrument)
+    client = SXBetExecutionClient(
+        loop=get_event_loop(),
+        http_client=http_client,
+        instrument_provider=instrument_provider,
+        msgbus=msgbus,
+        cache=cache,
+        clock=TestComponentStubs.clock(),
+        logger=Logger(name="test-sxbet-execution"),
+        config=config,
+    )
+    return client
+
+
+# Odds 2.0 as SX.bet percentage odds (implied probability * 10^20).
+_ODDS_2X = "50000000000000000000"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_emits_fill_and_status_report_reports_filled_qty():
+    instrument = _fill_instrument()
+    order = TestExecStubs.limit_order(
+        instrument=instrument,
+        price=instrument.make_price(2.0),
+        quantity=instrument.make_qty(10),
+    )
+    cache = TestComponentStubs.cache()
+    cache.add_instrument(instrument)
+    cache.add_order(order)
+    msgbus = TestComponentStubs.msgbus()
+    events: list[object] = []
+    msgbus.register("ExecEngine.process", events.append)
+
+    http_client = Mock()
+    http_client.get_user_orders = AsyncMock(
+        return_value={
+            "data": {
+                "orders": [
+                    {
+                        "orderHash": "0xorderhash",
+                        "orderStatus": "ACTIVE",
+                        "totalBetSize": "10000000",  # 10 USDC (6 decimals)
+                        "fillAmount": "4000000",  # 4 USDC matched
+                        "percentageOdds": _ODDS_2X,
+                    },
+                ],
+            },
+        },
+    )
+    client = _make_fill_client(http_client, instrument, msgbus, cache)
+    client._venue_order_ids[order.client_order_id] = VenueOrderId("0xorderhash")
+
+    await client._reconcile_order_fills()
+
+    fills = [e for e in events if isinstance(e, OrderFilled)]
+    assert len(fills) == 1
+    assert fills[0].last_qty == instrument.make_qty(4)
+    assert fills[0].last_px == instrument.make_price(2.0)
+    assert fills[0].liquidity_side == LiquiditySide.MAKER
+    assert fills[0].currency == SXBET_USDC
+
+    report = await client.generate_order_status_report(
+        GenerateOrderStatusReport(
+            instrument_id=instrument.id,
+            client_order_id=order.client_order_id,
+            venue_order_id=VenueOrderId("0xorderhash"),
+            command_id=UUID4(),
+            ts_init=client._clock.timestamp_ns(),
+        ),
+    )
+    assert report is not None
+    assert report.filled_qty == instrument.make_qty(4)
+    assert report.quantity == instrument.make_qty(10)
+
+
+@pytest.mark.asyncio
+async def test_reconcile_order_fills_is_idempotent_and_emits_deltas():
+    instrument = _fill_instrument()
+    order = TestExecStubs.limit_order(
+        instrument=instrument,
+        price=instrument.make_price(2.0),
+        quantity=instrument.make_qty(10),
+    )
+    cache = TestComponentStubs.cache()
+    cache.add_instrument(instrument)
+    cache.add_order(order)
+    msgbus = TestComponentStubs.msgbus()
+    events: list[object] = []
+    msgbus.register("ExecEngine.process", events.append)
+
+    def order_payload(fill_amount: str) -> dict:
+        return {
+            "data": {
+                "orders": [
+                    {
+                        "orderHash": "0xorderhash",
+                        "orderStatus": "ACTIVE",
+                        "totalBetSize": "10000000",
+                        "fillAmount": fill_amount,
+                        "percentageOdds": _ODDS_2X,
+                    },
+                ],
+            },
+        }
+
+    http_client = Mock()
+    http_client.get_user_orders = AsyncMock(return_value=order_payload("4000000"))
+    client = _make_fill_client(http_client, instrument, msgbus, cache)
+    client._venue_order_ids[order.client_order_id] = VenueOrderId("0xorderhash")
+
+    # Same matched size polled twice -> exactly one fill.
+    await client._reconcile_order_fills()
+    await client._reconcile_order_fills()
+    fills = [e for e in events if isinstance(e, OrderFilled)]
+    assert len(fills) == 1
+    assert fills[0].last_qty == instrument.make_qty(4)
+
+    # A larger cumulative matched size -> one further fill for the delta only.
+    http_client.get_user_orders.return_value = order_payload("7000000")
+    await client._reconcile_order_fills()
+    fills = [e for e in events if isinstance(e, OrderFilled)]
+    assert len(fills) == 2
+    assert fills[1].last_qty == instrument.make_qty(3)
+    assert client._last_matched_wei[order.client_order_id] == 7_000_000
+
+
+@pytest.mark.asyncio
+async def test_connect_emits_single_account_state_with_wallet_balance():
+    config = SimpleNamespace(
+        api_key="api-key",
+        wallet_address="0x" + "12" * 20,
+        private_key="0x" + "34" * 32,
+        base_currency="USDC",
+    )
+    instrument_provider = SXBetInstrumentProvider(
+        http_client=Mock(),
+        config=SXBetInstrumentProviderConfig(),
+        logger=Mock(),
+    )
+    http_client = Mock()
+    http_client.connect = AsyncMock()
+    http_client.disconnect = AsyncMock()
+    http_client.get_balance = AsyncMock(return_value={"balance": "1234560"})  # 1.23456 USDC
+    http_client.get_user_orders = AsyncMock(return_value={"data": {"orders": []}})
+    msgbus = TestComponentStubs.msgbus()
+    account_states: list[object] = []
+    msgbus.register("Portfolio.update_account", account_states.append)
+    client = SXBetExecutionClient(
+        loop=get_event_loop(),
+        http_client=http_client,
+        instrument_provider=instrument_provider,
+        msgbus=msgbus,
+        cache=TestComponentStubs.cache(),
+        clock=TestComponentStubs.clock(),
+        logger=Logger(name="test-sxbet-execution"),
+        config=config,
+    )
+
+    await client._connect()
+
+    states = [e for e in account_states if isinstance(e, AccountState)]
+    assert len(states) == 1
+    assert states[0].account_type == AccountType.BETTING
+    balance = states[0].balances[0]
+    assert balance.total.as_double() == pytest.approx(1.23456)
+    assert balance.currency == SXBET_USDC
+    assert balance.locked.as_double() == 0.0
+
+    await client._disconnect()
+
+
+@pytest.mark.asyncio
+async def test_generate_fill_reports_builds_from_user_trades():
+    instrument = _fill_instrument()
+    order = TestExecStubs.limit_order(
+        instrument=instrument,
+        price=instrument.make_price(2.0),
+        quantity=instrument.make_qty(10),
+    )
+    cache = TestComponentStubs.cache()
+    cache.add_instrument(instrument)
+    cache.add_order(order)
+    http_client = Mock()
+    http_client.get_user_trades = AsyncMock(
+        return_value={
+            "data": {
+                "trades": [
+                    {
+                        "orderHash": "0xorderhash",
+                        "stake": "5000000",  # 5 USDC
+                        "odds": _ODDS_2X,
+                        "fillHash": "0xfillhash",
+                        "maker": True,
+                    },
+                ],
+            },
+        },
+    )
+    client = _make_fill_client(http_client, instrument, TestComponentStubs.msgbus(), cache)
+    client._venue_order_ids[order.client_order_id] = VenueOrderId("0xorderhash")
+
+    reports = await client.generate_fill_reports(
+        GenerateFillReports(
+            instrument_id=None,
+            venue_order_id=None,
+            start=None,
+            end=None,
+            command_id=UUID4(),
+            ts_init=client._clock.timestamp_ns(),
+        ),
+    )
+
+    assert len(reports) == 1
+    assert reports[0].venue_order_id == VenueOrderId("0xorderhash")
+    assert str(reports[0].trade_id) == "0xfillhash"
+    assert reports[0].last_qty == instrument.make_qty(5)
+    assert reports[0].last_px == instrument.make_price(2.0)
+    assert reports[0].liquidity_side == LiquiditySide.MAKER
 
 
 def test_init_rejects_non_usdc_base_currency():

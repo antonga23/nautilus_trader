@@ -29,8 +29,10 @@ from nautilus_trader.adapters.sxbet.http_client import SXBetHttpClient
 from nautilus_trader.adapters.sxbet.http_client import SXBetHttpClientError
 from nautilus_trader.adapters.sxbet.providers import SXBetInstrumentProvider
 from nautilus_trader.adapters.sxbet.signing import decimal_odds_to_percentage
+from nautilus_trader.adapters.sxbet.signing import from_wei
 from nautilus_trader.adapters.sxbet.signing import generate_salt
 from nautilus_trader.adapters.sxbet.signing import get_expiry
+from nautilus_trader.adapters.sxbet.signing import percentage_to_decimal_odds
 from nautilus_trader.adapters.sxbet.signing import sign_eip712_fill_order
 from nautilus_trader.adapters.sxbet.signing import sign_eip712_order
 from nautilus_trader.adapters.sxbet.signing import to_wei
@@ -52,6 +54,8 @@ from nautilus_trader.execution.reports import OrderStatusReport
 from nautilus_trader.execution.reports import PositionStatusReport
 from nautilus_trader.live.execution_client import LiveExecutionClient
 from nautilus_trader.model.enums import AccountType
+from nautilus_trader.model.enums import CurrencyType
+from nautilus_trader.model.enums import LiquiditySide
 from nautilus_trader.model.enums import OmsType
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.enums import OrderStatus
@@ -66,9 +70,27 @@ from nautilus_trader.model.identifiers import AccountId
 from nautilus_trader.model.identifiers import ClientId
 from nautilus_trader.model.identifiers import ClientOrderId
 from nautilus_trader.model.identifiers import InstrumentId
+from nautilus_trader.model.identifiers import TradeId
 from nautilus_trader.model.identifiers import VenueOrderId
+from nautilus_trader.model.objects import AccountBalance
+from nautilus_trader.model.objects import Currency
+from nautilus_trader.model.objects import Money
+from nautilus_trader.model.objects import Price
 from nautilus_trader.model.objects import Quantity
 from nautilus_trader.model.orders import Order
+
+
+# SX.bet settles USDC bets with 6-decimal wallet precision (see signing.to_wei).
+SXBET_USDC = Currency(
+    code="USDC",
+    precision=6,
+    iso4217=0,
+    name="USD Coin",
+    currency_type=CurrencyType.CRYPTO,
+)
+
+# CryptoBettingInstrument size/price precision used when no instrument is resolvable.
+_SXBET_BETTING_PRECISION = 2
 
 
 class SXBetExecutionError(ValueError):
@@ -162,6 +184,10 @@ class SXBetExecutionClient(LiveExecutionClient):
         # Order tracking
         self._orders: dict[ClientOrderId, dict] = {}
         self._venue_order_ids: dict[ClientOrderId, VenueOrderId] = {}
+        # Cumulative matched size (wei) last emitted per order, for idempotent fills
+        self._last_matched_wei: dict[ClientOrderId, int] = {}
+        self._fill_poll_task: asyncio.Task | None = None
+        self._account_state_task: asyncio.Task | None = None
 
     async def _connect(self) -> None:
         """
@@ -170,17 +196,19 @@ class SXBetExecutionClient(LiveExecutionClient):
         self._log.info("Connecting SXBetExecutionClient...")
         await self._http_client.connect()
 
-        # Get balance
-        try:
-            balance = await self._http_client.get_balance(
-                self._wallet_address,
-                self._base_token,
-            )
-            if balance:
-                self._log.info("Retrieved SX.bet wallet balance")
-        except SXBetHttpClientError as e:
-            msg = f"Could not get balance: {e}"
-            self._log.warning(msg)
+        # Publish the initial account state so the portfolio sees SX.bet funds
+        await self._update_account_state()
+
+        # SX.bet exposes no authenticated user fill push feed, so fills and the
+        # account balance are reconciled by polling.
+        self._fill_poll_task = self.create_task(
+            self._fill_poll_loop(),
+            log_msg="sxbet_fill_poll",
+        )
+        self._account_state_task = self.create_task(
+            self._account_state_loop(),
+            log_msg="sxbet_account_state_poll",
+        )
 
         self._log.info("SXBetExecutionClient connected")
 
@@ -189,8 +217,225 @@ class SXBetExecutionClient(LiveExecutionClient):
         Disconnect from the execution venue.
         """
         self._log.info("Disconnecting SXBetExecutionClient...")
+        for task in (self._fill_poll_task, self._account_state_task):
+            if task is not None and not task.done():
+                task.cancel()
+        self._fill_poll_task = None
+        self._account_state_task = None
         await self._http_client.disconnect()
         self._log.info("SXBetExecutionClient disconnected")
+
+    async def _fill_poll_loop(self) -> None:
+        interval = float(getattr(self._config, "fill_poll_interval_secs", 3.0))
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await self._reconcile_order_fills()
+            except asyncio.CancelledError:
+                raise
+            except (ValueError, TypeError, KeyError, SXBetHttpClientError) as e:
+                self._log.error(f"SX.bet fill reconciliation failed: {e}")
+
+    async def _account_state_loop(self) -> None:
+        interval = float(getattr(self._config, "account_state_interval_secs", 30.0))
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await self._update_account_state()
+            except asyncio.CancelledError:
+                raise
+            except (ValueError, TypeError, KeyError, SXBetHttpClientError) as e:
+                self._log.error(f"SX.bet account state refresh failed: {e}")
+
+    async def _update_account_state(self) -> None:
+        """
+        Fetch the SX.bet wallet balance and publish an account state.
+
+        SX.bet does not currently expose wallet balance through the public REST API
+        (``get_balance`` raises), so an account state is only published when the HTTP
+        client yields a usable balance result. ``locked`` is reported as zero; modelling
+        open-order stake as locked funds is left to a follow-up.
+
+        """
+        try:
+            balance = await self._http_client.get_balance(
+                self._wallet_address,
+                self._base_token,
+            )
+        except SXBetHttpClientError as e:
+            self._log.warning(f"Could not get balance: {e}")
+            return
+
+        balance_wei = self._parse_balance_wei(balance)
+        if balance_wei is None:
+            return
+
+        total = Money(from_wei(balance_wei, decimals=SXBET_USDC.precision), SXBET_USDC)
+        account_balance = AccountBalance(
+            total=total,
+            locked=Money(0, SXBET_USDC),
+            free=total,
+        )
+        self.generate_account_state(
+            balances=[account_balance],
+            margins=[],
+            reported=True,
+            ts_event=self._clock.timestamp_ns(),
+        )
+
+    @staticmethod
+    def _parse_balance_wei(balance: object) -> int | None:
+        """
+        Extract the raw wallet balance (6-decimal USDC subunits) from a balance result.
+        """
+        value: object = balance
+        if isinstance(balance, dict):
+            for key in ("balance", "available", "total"):
+                if key in balance:
+                    value = balance[key]
+                    break
+            else:
+                return None
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return value
+        if isinstance(value, (str, float)):
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    async def _reconcile_order_fills(self) -> None:
+        """
+        Poll SX.bet order status and emit fills for newly matched size.
+
+        Idempotent: the cumulative matched size (``fillAmount``) last seen per order is
+        tracked, so repeated polls of the same matched size never re-emit, and a larger
+        matched size emits only the incremental delta.
+
+        """
+        if not self._venue_order_ids:
+            return
+
+        orders = await self._http_client.get_user_orders(self._wallet_address)
+        by_hash = {
+            str(venue_order_id): client_order_id
+            for client_order_id, venue_order_id in self._venue_order_ids.items()
+        }
+        for order_data in orders.get("data", {}).get("orders", []):
+            order_hash = order_data.get("orderHash")
+            client_order_id = by_hash.get(str(order_hash))
+            if client_order_id is None:
+                continue
+
+            matched_wei = self._matched_wei(order_data)
+            last_wei = self._last_matched_wei.get(client_order_id, 0)
+            if matched_wei <= last_wei:
+                continue
+
+            self._emit_order_filled(
+                client_order_id=client_order_id,
+                order_data=order_data,
+                delta_wei=matched_wei - last_wei,
+                cumulative_wei=matched_wei,
+            )
+            self._last_matched_wei[client_order_id] = matched_wei
+
+    @staticmethod
+    def _matched_wei(order_data: dict) -> int:
+        try:
+            return int(order_data.get("fillAmount", 0) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def _emit_order_filled(
+        self,
+        client_order_id: ClientOrderId,
+        order_data: dict,
+        delta_wei: int,
+        cumulative_wei: int,
+    ) -> None:
+        order = self._cache.order(client_order_id)
+        if order is None:
+            self._log.warning(
+                f"Cannot emit SX.bet fill; order not in cache ({client_order_id})",
+            )
+            return
+
+        venue_order_id = self._venue_order_ids.get(client_order_id)
+        if venue_order_id is None:
+            return
+
+        instrument = self._instrument_provider.find(order.instrument_id)
+        last_qty = self._make_qty(instrument, from_wei(delta_wei, decimals=SXBET_USDC.precision))
+        last_px = self._fill_price(instrument, order, order_data)
+        # Deterministic per cumulative matched level keeps repeated polls idempotent.
+        trade_id = TradeId(f"{venue_order_id.value}-{cumulative_wei}")
+
+        self.generate_order_filled(
+            strategy_id=order.strategy_id,
+            instrument_id=order.instrument_id,
+            client_order_id=client_order_id,
+            venue_order_id=venue_order_id,
+            venue_position_id=None,
+            trade_id=trade_id,
+            order_side=order.side,
+            order_type=order.order_type,
+            last_qty=last_qty,
+            last_px=last_px,
+            quote_currency=SXBET_USDC,
+            commission=Money(0, SXBET_USDC),
+            liquidity_side=self._liquidity_side(),
+            ts_event=self._clock.timestamp_ns(),
+            info=order_data,
+        )
+
+    def _liquidity_side(self) -> LiquiditySide:
+        execution_mode = getattr(self._config, "execution_mode", "maker_post")
+        return LiquiditySide.TAKER if execution_mode == "taker_fill" else LiquiditySide.MAKER
+
+    @staticmethod
+    def _make_qty(instrument: object, value: float) -> Quantity:
+        if isinstance(instrument, CryptoBettingInstrument):
+            return instrument.make_qty(value)
+        return Quantity(value, precision=_SXBET_BETTING_PRECISION)
+
+    def _status_quantity(
+        self,
+        instrument: object,
+        order_data: dict,
+        cached_order: Order | None,
+    ) -> Quantity:
+        try:
+            total_wei = int(order_data.get("totalBetSize", 0) or 0)
+        except (TypeError, ValueError):
+            total_wei = 0
+        if total_wei:
+            return self._make_qty(
+                instrument,
+                from_wei(total_wei, decimals=SXBET_USDC.precision),
+            )
+        if cached_order is not None:
+            return cached_order.quantity
+        return Quantity.from_int(1)
+
+    @staticmethod
+    def _fill_price(instrument: object, order: Order, order_data: dict) -> Price:
+        percentage_odds = order_data.get("percentageOdds")
+        decimal_odds: float | None = None
+        if percentage_odds is not None:
+            try:
+                decimal_odds = percentage_to_decimal_odds(int(percentage_odds))
+            except (TypeError, ValueError):
+                decimal_odds = None
+        if decimal_odds is None:
+            order_price = getattr(order, "price", None)
+            decimal_odds = float(order_price) if order_price is not None else 0.0
+        if isinstance(instrument, CryptoBettingInstrument):
+            return instrument.make_price(decimal_odds)
+        return Price(decimal_odds, precision=_SXBET_BETTING_PRECISION)
 
     async def _submit_order(self, command: SubmitOrder) -> None:
         """
@@ -648,7 +893,9 @@ class SXBetExecutionClient(LiveExecutionClient):
             return OrderStatus.ACCEPTED
         if status == "FILLED":
             return OrderStatus.FILLED
-        if status == "CANCELLED":
+        if status == "PARTIALLY_FILLED":
+            return OrderStatus.PARTIALLY_FILLED
+        if status in {"CANCELLED", "EXPIRED"}:
             return OrderStatus.CANCELED
         return OrderStatus.SUBMITTED
 
@@ -679,9 +926,20 @@ class SXBetExecutionClient(LiveExecutionClient):
                 self._wallet_address,
             )
 
+            instrument = self._instrument_provider.find(instrument_id)
             for order_data in orders.get("data", {}).get("orders", []):
                 if order_data.get("orderHash") != str(venue_order_id):
                     continue
+
+                filled_qty = self._make_qty(
+                    instrument,
+                    from_wei(self._matched_wei(order_data), decimals=SXBET_USDC.precision),
+                )
+                quantity = self._status_quantity(instrument, order_data, cached_order)
+                if filled_qty > quantity:
+                    quantity = filled_qty
+                # SX.bet returns "orderStatus"; older code read "status".
+                raw_status = order_data.get("orderStatus") or order_data.get("status", "")
 
                 return OrderStatusReport(
                     account_id=self._resolved_account_id(),
@@ -691,9 +949,9 @@ class SXBetExecutionClient(LiveExecutionClient):
                     order_side=cached_order.side if cached_order else OrderSide.BUY,
                     order_type=OrderType.LIMIT,
                     time_in_force=TimeInForce.GTC,
-                    order_status=self._map_order_status(order_data.get("status", "")),
-                    quantity=Quantity.from_int(1),
-                    filled_qty=Quantity.zero(),
+                    order_status=self._map_order_status(raw_status),
+                    quantity=quantity,
+                    filled_qty=filled_qty,
                     report_id=UUID4(),
                     ts_accepted=self._clock.timestamp_ns(),
                     ts_last=self._clock.timestamp_ns(),
@@ -779,18 +1037,98 @@ class SXBetExecutionClient(LiveExecutionClient):
         command: GenerateFillReports,
     ) -> list[FillReport]:
         """
-        Generate SX.bet fill reports for locally tracked fills.
+        Generate SX.bet fill reports from the authenticated user trades feed.
 
-        Startup reconciliation may request a partial lookback range before this process
-        has submitted any orders. SX.bet fill history is not available through the
-        public REST path used here, so the safe startup result is an empty report list.
+        Reports are bounded to locally tracked orders (matched by ``orderHash``). During
+        startup reconciliation, before this process has submitted any orders and without
+        a ``venue_order_id`` filter, there is nothing to reconcile, so an empty list is
+        returned without querying the venue.
 
         """
-        self._log.debug(
-            "SX.bet fill report reconciliation is local-only; returning no reports "
-            f"(instrument_id={command.instrument_id}, venue_order_id={command.venue_order_id})",
+        venue_filter = command.venue_order_id
+        if not self._venue_order_ids and venue_filter is None:
+            self._log.debug(
+                "No locally tracked SX.bet orders for fill reconciliation; returning none",
+            )
+            return []
+
+        by_hash = {
+            str(venue_order_id): client_order_id
+            for client_order_id, venue_order_id in self._venue_order_ids.items()
+        }
+        trades = await self._http_client.get_user_trades(self._wallet_address)
+        reports: list[FillReport] = []
+        for trade in trades.get("data", {}).get("trades", []):
+            order_hash = trade.get("orderHash")
+            if order_hash is None:
+                continue
+            venue_order_id = VenueOrderId(str(order_hash))
+            if venue_filter is not None and venue_order_id != venue_filter:
+                continue
+            client_order_id = by_hash.get(str(order_hash))
+            if client_order_id is None and venue_filter is None:
+                continue
+
+            report = self._build_fill_report(command, trade, venue_order_id, client_order_id)
+            if report is not None:
+                reports.append(report)
+
+        return reports
+
+    def _build_fill_report(
+        self,
+        command: GenerateFillReports,
+        trade: dict,
+        venue_order_id: VenueOrderId,
+        client_order_id: ClientOrderId | None,
+    ) -> FillReport | None:
+        cached_order = self._cache.order(client_order_id) if client_order_id is not None else None
+        instrument_id = command.instrument_id
+        if instrument_id is None and cached_order is not None:
+            instrument_id = cached_order.instrument_id
+        if instrument_id is None:
+            return None
+
+        instrument = self._instrument_provider.find(instrument_id)
+        try:
+            stake_wei = int(trade.get("stake", 0) or 0)
+        except (TypeError, ValueError):
+            stake_wei = 0
+        if stake_wei <= 0:
+            return None
+
+        last_qty = self._make_qty(instrument, from_wei(stake_wei, decimals=SXBET_USDC.precision))
+        odds = trade.get("odds")
+        try:
+            decimal_odds = percentage_to_decimal_odds(int(odds)) if odds is not None else 0.0
+        except (TypeError, ValueError):
+            decimal_odds = 0.0
+        last_px = (
+            instrument.make_price(decimal_odds)
+            if isinstance(instrument, CryptoBettingInstrument)
+            else Price(decimal_odds, precision=_SXBET_BETTING_PRECISION)
         )
-        return []
+        order_side = cached_order.side if cached_order is not None else OrderSide.BUY
+        fill_hash = trade.get("fillHash") or f"{venue_order_id.value}-{stake_wei}"
+        liquidity_side = (
+            LiquiditySide.MAKER if trade.get("maker") is True else self._liquidity_side()
+        )
+
+        return FillReport(
+            account_id=self._resolved_account_id(),
+            instrument_id=instrument_id,
+            venue_order_id=venue_order_id,
+            client_order_id=client_order_id,
+            trade_id=TradeId(str(fill_hash)),
+            order_side=order_side,
+            last_qty=last_qty,
+            last_px=last_px,
+            commission=Money(0, SXBET_USDC),
+            liquidity_side=liquidity_side,
+            report_id=UUID4(),
+            ts_event=self._clock.timestamp_ns(),
+            ts_init=self._clock.timestamp_ns(),
+        )
 
     async def generate_position_status_reports(
         self,
