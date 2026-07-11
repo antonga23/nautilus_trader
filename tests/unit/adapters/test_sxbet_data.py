@@ -34,7 +34,6 @@ from nautilus_trader.model.objects import Currency
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
 
 
-EXPECTED_EXECUTABLE_ODDS = 2.5
 EXPECTED_ONE_SIDED_ODDS = 2.0
 
 
@@ -89,30 +88,65 @@ def _make_client(
     )
 
 
-def test_best_bid_ask_uses_highest_executable_decimal_odds():
+def _maker_pct(implied_prob: float) -> int:
+    return round(implied_prob * 10**20)
+
+
+def test_best_bid_ask_prices_taker_complement_and_sums_opposite_depth():
+    # A taker backing outcome one matches makers resting on outcome two and
+    # receives the complement of the maker's implied probability; the fillable
+    # depth is the summed size of those opposite-side makers.
     orders = [
         {
-            "isMakerBettingOutcomeOne": True,
-            "percentageOdds": decimal_odds_to_percentage(2.0),
-        },
-        {
-            "isMakerBettingOutcomeOne": True,
-            "percentageOdds": decimal_odds_to_percentage(2.5),
+            "isMakerBettingOutcomeOne": False,
+            "percentageOdds": _maker_pct(0.40),
+            "totalBetSize": 100_000000,
         },
         {
             "isMakerBettingOutcomeOne": False,
-            "percentageOdds": decimal_odds_to_percentage(2.0),
+            "percentageOdds": _maker_pct(0.45),
+            "totalBetSize": 50_000000,
         },
+        # Same-side makers are ignored when pricing the outcome-one taker.
         {
-            "isMakerBettingOutcomeOne": False,
-            "percentageOdds": decimal_odds_to_percentage(2.5),
+            "isMakerBettingOutcomeOne": True,
+            "percentageOdds": _maker_pct(0.50),
+            "totalBetSize": 999_000000,
         },
     ]
 
-    best_bid, best_ask = SXBetDataClient._best_bid_ask(orders, is_outcome_one=True)
+    best_bid, best_ask, bid_size = SXBetDataClient._best_bid_ask(orders, is_outcome_one=True)
 
-    assert best_bid == EXPECTED_EXECUTABLE_ODDS
+    # Best taker odds come from the highest-implied opposite maker: 1 / (1 - 0.45).
+    assert best_bid == pytest.approx(1 / 0.55, rel=1e-9)
     assert best_ask == 0
+    assert bid_size == pytest.approx(150.0, rel=1e-9)
+
+
+def test_two_sided_book_prices_to_overround_not_phantom_arbitrage():
+    # Regression: applying a maker's percentage odds directly (without the taker
+    # complement) manufactures a phantom overlay on every two-sided book. Correct
+    # taker pricing must produce an overround (implied-prob sum > 1), never a
+    # standing arbitrage (< 1).
+    orders = [
+        {
+            "isMakerBettingOutcomeOne": True,
+            "percentageOdds": _maker_pct(0.48),
+            "totalBetSize": 100_000000,
+        },
+        {
+            "isMakerBettingOutcomeOne": False,
+            "percentageOdds": _maker_pct(0.48),
+            "totalBetSize": 100_000000,
+        },
+    ]
+
+    bid_one, _, _ = SXBetDataClient._best_bid_ask(orders, is_outcome_one=True)
+    bid_two, _, _ = SXBetDataClient._best_bid_ask(orders, is_outcome_one=False)
+
+    assert bid_one == pytest.approx(1 / 0.52, rel=1e-9)
+    assert bid_two == pytest.approx(1 / 0.52, rel=1e-9)
+    assert (1 / bid_one + 1 / bid_two) > 1.0
 
 
 def test_market_order_sides_requires_positive_orders_on_both_outcomes():
@@ -144,7 +178,8 @@ def test_has_valid_spread_rejects_locked_or_crossed_quotes():
 
 @pytest.mark.asyncio
 async def test_fetch_and_publish_quotes_emits_one_sided_quote():
-    instrument = _make_instrument()
+    # A single outcome-one maker provides taker liquidity for the outcome-two side.
+    instrument = _make_instrument(outcome="away", outcome_one=False)
 
     http_client = Mock()
     http_client.get_order_book = AsyncMock(
@@ -153,7 +188,8 @@ async def test_fetch_and_publish_quotes_emits_one_sided_quote():
                 "orders": [
                     {
                         "isMakerBettingOutcomeOne": True,
-                        "percentageOdds": decimal_odds_to_percentage(2.0),
+                        "percentageOdds": _maker_pct(0.50),
+                        "totalBetSize": 120_000000,
                     },
                 ],
             },
@@ -180,9 +216,10 @@ async def test_fetch_and_publish_quotes_emits_one_sided_quote():
     assert orders == 1
     client._handle_data.assert_called_once()
     quote = client._handle_data.call_args.args[0]
+    # Taker complement of a 0.50 maker is 1 / (1 - 0.50) = 2.0.
     assert quote.bid_price.as_decimal() == EXPECTED_ONE_SIDED_ODDS
     assert quote.ask_price.as_decimal() == 0
-    assert quote.bid_size.as_decimal() == 100
+    assert quote.bid_size.as_decimal() == 120
     assert quote.ask_size.as_decimal() == 0
 
 
@@ -485,11 +522,13 @@ def _make_hung_market_client(
     async def fake_get_order_book(market_hash: str) -> dict:
         if market_hash == "market-hung":
             await hang_forever.wait()
+        # The healthy instruments are outcome-one, so their taker liquidity is an
+        # opposite-side (outcome-two) maker: implied 0.5 -> taker complement 2.0.
         return {
             "data": {
                 "orders": [
                     {
-                        "isMakerBettingOutcomeOne": True,
+                        "isMakerBettingOutcomeOne": False,
                         "percentageOdds": decimal_odds_to_percentage(2.0),
                     },
                 ],
@@ -576,18 +615,22 @@ def test_fetch_timeout_and_cycle_deadline_default_from_poll_interval():
 
 
 @pytest.mark.asyncio
-async def test_fetch_and_publish_quotes_ignores_opposite_outcome_orders():
-    instrument = _make_instrument()
+async def test_fetch_and_publish_quotes_ignores_same_outcome_orders():
+    # An outcome-one taker prices off opposite-outcome (isMakerBettingOutcomeOne=False)
+    # makers and ignores same-outcome makers entirely.
+    instrument = _make_instrument()  # outcome_one=True
 
     http_client = Mock()
     http_client.get_order_book = AsyncMock(
         return_value={
             "data": {
                 "orders": [
+                    # Same-side maker: ignored when pricing the outcome-one taker.
                     {
                         "isMakerBettingOutcomeOne": True,
                         "percentageOdds": decimal_odds_to_percentage(2.5),
                     },
+                    # Opposite-side maker at implied 1/4.0 = 0.25.
                     {
                         "isMakerBettingOutcomeOne": False,
                         "percentageOdds": decimal_odds_to_percentage(4.0),
@@ -617,7 +660,8 @@ async def test_fetch_and_publish_quotes_ignores_opposite_outcome_orders():
     assert orders == 2
     client._handle_data.assert_called_once()
     quote = client._handle_data.call_args.args[0]
-    assert quote.bid_price.as_decimal() == EXPECTED_EXECUTABLE_ODDS
+    # Taker complement of the 0.25 opposite maker: 1 / (1 - 0.25) = 1.333..., at precision 2.
+    assert float(quote.bid_price) == round(1 / (1 - 1 / 4.0), 2)
     assert quote.ask_price.as_decimal() == 0
 
 

@@ -102,6 +102,39 @@ def percentage_to_decimal_odds(percentage_odds: int) -> float:
     return float(Decimal(1) / implied_probability)
 
 
+def taker_decimal_odds_from_maker_percentage(percentage_odds: int) -> float:
+    """
+    Convert a resting maker order's percentage odds to the decimal odds a taker
+    receives.
+
+    On SX.bet a taker matches a maker by backing the *opposite* outcome, so the
+    taker's implied probability is the complement of the maker's:
+    ``taker_implied = 1 - maker_percentage / 1e20`` and ``decimal = 1 / taker_implied``.
+    Applying ``percentage_to_decimal_odds`` directly to a maker order (as if the
+    maker's probability were the taker's) overstates the odds and manufactures a
+    phantom overlay on every two-sided book.
+
+    Returns ``0.0`` when the maker odds fall outside the open interval that yields
+    valid taker odds (``> 1``), so callers can skip unusable orders.
+
+    Parameters
+    ----------
+    percentage_odds : int
+        Resting maker order percentage odds (implied probability scaled by ``10^20``).
+
+    Returns
+    -------
+    float
+        Decimal odds available to the taker, or ``0.0`` if out of range.
+
+    """
+    maker_implied = Decimal(str(percentage_odds)) / SXBET_PERCENTAGE_ODDS_SCALE
+    taker_implied = Decimal(1) - maker_implied
+    if taker_implied <= 0 or taker_implied >= 1:
+        return 0.0
+    return float(Decimal(1) / taker_implied)
+
+
 def to_wei(amount: Decimal | str | int, decimals: int = 6) -> int:
     """
     Convert token amount to wei (smallest unit).

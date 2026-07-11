@@ -33,7 +33,9 @@ from nautilus_trader.adapters.sxbet.constants import SXBET_VENUE
 from nautilus_trader.adapters.sxbet.http_client import SXBetHttpClient
 from nautilus_trader.adapters.sxbet.http_client import SXBetHttpClientError
 from nautilus_trader.adapters.sxbet.providers import SXBetInstrumentProvider
+from nautilus_trader.adapters.sxbet.signing import from_wei
 from nautilus_trader.adapters.sxbet.signing import percentage_to_decimal_odds
+from nautilus_trader.adapters.sxbet.signing import taker_decimal_odds_from_maker_percentage
 from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.component import LiveClock
 from nautilus_trader.common.component import Logger
@@ -812,6 +814,12 @@ class SXBetDataClient(LiveMarketDataClient):
         if percentage_odds in (None, ""):
             return None
 
+        # NOTE: the ``best_odds_batch`` poll mode reads the API's aggregated
+        # ``bestOdds`` field rather than raw maker orders. Whether that field is
+        # already taker-executable or is raw maker odds (requiring the same
+        # complement as ``_best_bid_ask``) is not yet confirmed against the SX.bet
+        # API, so this opt-in mode is NOT execution-verified. Live execution nodes
+        # must use the default ``order_book`` poll mode, whose pricing is verified.
         best_bid = percentage_to_decimal_odds(int(str(percentage_odds)))
         if best_bid <= 1:
             return None
@@ -868,7 +876,7 @@ class SXBetDataClient(LiveMarketDataClient):
                     continue
 
                 is_outcome_one = self._instrument_is_outcome_one(instrument)
-                best_bid, best_ask = self._best_bid_ask(orders, is_outcome_one)
+                best_bid, best_ask, bid_size = self._best_bid_ask(orders, is_outcome_one)
 
                 if best_bid <= 0 and best_ask <= 0:
                     continue
@@ -880,12 +888,17 @@ class SXBetDataClient(LiveMarketDataClient):
                     )
                     continue
 
+                zero_size = Quantity.zero(precision=instrument.size_precision)
                 quote = QuoteTick(
                     instrument_id=instrument.id,
                     bid_price=Price(best_bid, precision=2),
                     ask_price=Price(best_ask, precision=2),
-                    bid_size=Quantity.from_int(100) if best_bid > 0 else Quantity.zero(),
-                    ask_size=Quantity.from_int(100) if best_ask > 0 else Quantity.zero(),
+                    bid_size=(
+                        instrument.make_qty(bid_size)
+                        if best_bid > 0 and bid_size > 0
+                        else zero_size
+                    ),
+                    ask_size=zero_size,
                     ts_event=quote_event_ns or request_started_ns,
                     ts_init=response_received_ns,
                 )
@@ -941,18 +954,26 @@ class SXBetDataClient(LiveMarketDataClient):
         return "outcome_one=True" in params
 
     @staticmethod
-    def _best_bid_ask(orders: list[dict], is_outcome_one: bool) -> tuple[float, float]:
+    def _best_bid_ask(orders: list[dict], is_outcome_one: bool) -> tuple[float, float, float]:
+        # A taker backing this instrument's outcome matches makers resting on the
+        # opposite outcome, receiving the complement of the maker's odds. Both the
+        # best price and the fillable depth come from those opposite-side orders.
         best_bid = 0.0
+        available_size = 0.0
 
         for order in orders:
-            percentage = int(order.get("percentageOdds", 0))
+            if order.get("isMakerBettingOutcomeOne") == is_outcome_one:
+                continue
+            percentage = int(order.get("percentageOdds", 0) or 0)
             if percentage <= 0:
                 continue
-            odds = percentage_to_decimal_odds(percentage)
-            if order.get("isMakerBettingOutcomeOne") == is_outcome_one:
-                best_bid = max(best_bid, odds)
+            odds = taker_decimal_odds_from_maker_percentage(percentage)
+            if odds <= 1:
+                continue
+            best_bid = max(best_bid, odds)
+            available_size += from_wei(int(order.get("totalBetSize", 0) or 0))
 
-        return best_bid, 0.0
+        return best_bid, 0.0, available_size
 
     @staticmethod
     def _market_order_sides(orders: list[dict]) -> tuple[bool, bool]:

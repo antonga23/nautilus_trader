@@ -35,6 +35,7 @@ from nautilus_trader.adapters.sxbet.constants import SXBET_VENUE
 from nautilus_trader.adapters.sxbet.http_client import SXBetHttpClient
 from nautilus_trader.adapters.sxbet.http_client import SXBetHttpClientError
 from nautilus_trader.adapters.sxbet.signing import percentage_to_decimal_odds
+from nautilus_trader.adapters.sxbet.signing import taker_decimal_odds_from_maker_percentage
 from nautilus_trader.common.component import Logger
 from nautilus_trader.common.providers import InstrumentProvider
 from nautilus_trader.model.identifiers import InstrumentId
@@ -587,12 +588,14 @@ class SXBetInstrumentProvider(InstrumentProvider):
         best_odds = 0.0
         for order in orders:
             if order.get("isMakerBettingOutcomeOne") != outcome_one:
-                # This order is betting against our desired outcome
-                # So we can take the opposite side
-                odds = SXBetInstrumentProvider._executable_decimal_odds_from_percentage(
-                    order.get("percentageOdds", 0),
+                # This maker is betting the opposite outcome, so a taker backing
+                # our outcome matches it and receives the complement of the maker's
+                # odds (not the maker's odds directly).
+                odds = taker_decimal_odds_from_maker_percentage(
+                    int(order.get("percentageOdds", 0) or 0),
                 )
-                best_odds = max(best_odds, odds)
+                if odds > 1:
+                    best_odds = max(best_odds, odds)
 
         # If no orders, use implied odds from market
         if best_odds <= 0:
