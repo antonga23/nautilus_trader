@@ -1,0 +1,45 @@
+# Trading-host registry (EXAMPLE — copy to deploy/hosts.yaml and edit).
+#
+# Provider-agnostic source of truth for which SSH-reachable hosts run trading nodes
+# and the nodeops dashboard. Aligned with the `kind: ssh` host-record shape proposed
+# in docs/ops/betting-arbitrage-nodes.md ("Node Registry And Discovery"), which places
+# the runtime copy at /srv/symphony/worker-state/trading-hosts/hosts.json.
+#
+# This registry is DESIRED STATE only (host assignment + connection hints). Runtime
+# truth (container state, heartbeats, status files) is discovered per host from
+# Docker + the node status/heartbeat files, then merged against this registry.
+#
+# Real hosts, IPs, and key paths are operator-supplied and gitignored: only this
+# example is committed. Never put secrets here — `identity_file_hint` is a path/label
+# the operator resolves locally, not a key. Phase 2 (multi-host deploy targeting) and
+# Phase 3 (nodeops multi-host roll-up) consume this same file.
+
+version: 1
+hosts:
+  - name: betting-dev-ec2
+    kind: ssh
+    ssh:
+      host: 203.0.113.10           # hostname or IP the operator reaches over SSH
+      user: ubuntu
+      identity_file_hint: ~/.ssh/betting-dev-ec2.pem   # local key hint, not a secret
+    provider: aws                  # informational: aws | gcp | other
+    region: eu-west-1
+    nodes_root: /opt/cloudbet/strategy-nodes
+    nodeops_url: http://127.0.0.1:8090   # loopback unless the operator exposed it
+    labels:
+      - dev
+      - primary
+
+  - name: betting-dev-gcp
+    kind: ssh
+    ssh:
+      host: 198.51.100.20
+      user: cloudbet
+      identity_file_hint: gcp:betting-dev-gcp   # e.g. a gcloud-managed key label
+    provider: gcp                  # same SSH path; GCP needs an active billing account
+    region: europe-west1
+    nodes_root: /opt/cloudbet/strategy-nodes
+    nodeops_url: http://127.0.0.1:8090
+    labels:
+      - dev
+      - spare

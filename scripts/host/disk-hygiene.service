@@ -1,0 +1,11 @@
+[Unit]
+Description=Trading-node host disk hygiene (journald/docker/session-log/archive cleanup)
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+User=root
+EnvironmentFile=-/etc/cloudbet/node-host-disk-hygiene.conf
+WorkingDirectory=/opt/cloudbet/host-tools
+ExecStart=/opt/cloudbet/host-tools/disk-hygiene.sh

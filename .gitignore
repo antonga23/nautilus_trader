@@ -131,3 +131,7 @@ tests/test_data/**/backtest/**
 
 # ignore all env files
 nautilus_trader/adapters/cloudbet/.cloudbet_env
+
+# operator-supplied trading-host registry (real hosts/IPs); commit only the example
+/deploy/hosts.yaml
+/deploy/hosts.local.yaml
