@@ -925,11 +925,14 @@ async def test_fetch_and_publish_best_odds_uses_market_hash_batch():
                 "bestOdds": [
                     {
                         "marketHash": "market-1",
+                        # Same-side maker (ignored when pricing the outcomeOne taker).
                         "outcomeOne": {
-                            "percentageOdds": str(decimal_odds_to_percentage(2.0)),
-                        },
-                        "outcomeTwo": {
                             "percentageOdds": str(decimal_odds_to_percentage(3.0)),
+                        },
+                        # Opposite-side maker at implied 0.5; the outcomeOne taker
+                        # receives the complement 1 / (1 - 0.5) = 2.0.
+                        "outcomeTwo": {
+                            "percentageOdds": str(decimal_odds_to_percentage(2.0)),
                         },
                     },
                 ],
@@ -973,7 +976,10 @@ async def test_fetch_and_publish_best_odds_skips_non_executable_decimal_odds():
                 "bestOdds": [
                     {
                         "marketHash": "market-1",
-                        "outcomeOne": {
+                        # Opposite-side maker at implied 1.0 yields no taker
+                        # complement (1 / (1 - 1.0)), so the outcomeOne taker leg is
+                        # skipped as non-executable.
+                        "outcomeTwo": {
                             "percentageOdds": str(decimal_odds_to_percentage(1.0)),
                         },
                     },
@@ -1002,7 +1008,7 @@ async def test_fetch_and_publish_best_odds_skips_non_executable_decimal_odds():
 
 
 @pytest.mark.asyncio
-async def test_fetch_and_publish_best_odds_uses_outcome_two_and_skips_unsubscribed():
+async def test_fetch_and_publish_best_odds_uses_opposite_side_and_skips_unsubscribed():
     subscribed = CryptoBettingInstrument(
         venue=Venue("SXBET"),
         event_id="fixture-1",
@@ -1045,9 +1051,12 @@ async def test_fetch_and_publish_best_odds_uses_outcome_two_and_skips_unsubscrib
                 "bestOdds": [
                     {
                         "marketHash": "market-1",
+                        # Opposite-side maker (read for the outcomeTwo taker) at
+                        # implied 0.5; the taker receives 1 / (1 - 0.5) = 2.0.
                         "outcomeOne": {
                             "percentageOdds": str(decimal_odds_to_percentage(2.0)),
                         },
+                        # Same-side maker, ignored when pricing the outcomeTwo taker.
                         "outcomeTwo": {
                             "percentageOdds": str(decimal_odds_to_percentage(3.0)),
                         },
@@ -1081,4 +1090,4 @@ async def test_fetch_and_publish_best_odds_uses_outcome_two_and_skips_unsubscrib
     client._handle_data.assert_called_once()
     quote = client._handle_data.call_args.args[0]
     assert quote.instrument_id == subscribed.id
-    assert quote.bid_price.as_decimal() == 3
+    assert quote.bid_price.as_decimal() == EXPECTED_ONE_SIDED_ODDS
