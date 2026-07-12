@@ -261,6 +261,10 @@ def test_build_sample_row_reads_probe_paths() -> None:
                 "executable_candidates": 6,
                 "opportunities_executed": 2,
             },
+            "executionApprovals": {
+                "mode": "manual",
+                "pending": [{"approval_id": "a" * 12}, {"approval_id": "b" * 12}],
+            },
         },
     }
     heartbeat = {"at": "2026-07-01T00:04:00Z"}
@@ -277,6 +281,7 @@ def test_build_sample_row_reads_probe_paths() -> None:
     assert row["valid_opportunities"] == 12
     assert row["executable_candidates"] == 6
     assert row["executed"] == 2
+    assert row["pending_approvals"] == 2
     assert row["heartbeat_age_secs"] == 60.0
     assert row["container_state"] == "running"
 
@@ -286,6 +291,7 @@ def test_build_sample_row_defaults_missing_probe_to_zero() -> None:
     row = server.build_sample_row("node-a", None, None, None, {}, now)
     assert row["graph_edges"] == 0
     assert row["cross_venue_candidate_count"] == 0
+    assert row["pending_approvals"] == 0
     assert row["heartbeat_age_secs"] is None
     assert row["mem_mb"] is None
 
@@ -378,7 +384,9 @@ def test_store_migrates_old_schema_in_place(tmp_path: Path) -> None:
     """
     db_path = tmp_path / "nodeops.db"
     old_columns = [
-        column for column in server.SAMPLE_COLUMNS if column not in {"started_at", "uptime_secs"}
+        column
+        for column in server.SAMPLE_COLUMNS
+        if column not in {"started_at", "uptime_secs", "pending_approvals"}
     ]
     conn = sqlite3.connect(db_path)
     conn.execute(
@@ -391,7 +399,7 @@ def test_store_migrates_old_schema_in_place(tmp_path: Path) -> None:
 
     store = server.Store(db_path)
     columns = {row["name"] for row in store._conn.execute("PRAGMA table_info(samples)")}
-    assert {"started_at", "uptime_secs"}.issubset(columns)
+    assert {"started_at", "uptime_secs", "pending_approvals"}.issubset(columns)
     store.insert_sample(
         _sample_row(
             "node-a",
@@ -2192,6 +2200,234 @@ def test_real_http_alerts_audit_smoke(tmp_path: Path, monkeypatch: Any) -> None:
         assert listing["webhook_configured"] is True
         assert listing["webhook"] == "https://hook.example/…"
         assert any(a["condition"] == "quoting_stopped" for a in listing["alerts"])
+        conn.close()
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        store.close()
+
+
+# -- manual execution-approval queue ----------------------------------------------
+
+
+def _approvals_status(approval_id: str = "abc123def456") -> dict[str, Any]:
+    return {
+        "runtimeProbe": {
+            "executionApprovals": {
+                "mode": "manual",
+                "max_pending": 10,
+                "ttl_secs": 300.0,
+                "staged": 1,
+                "pending": [
+                    {
+                        "approval_id": approval_id,
+                        "venue_a": "CLOUDBET",
+                        "venue_b": "SXBET",
+                        "odds_a": "2.20",
+                        "odds_b": "2.20",
+                        "stake_a": "12.5",
+                        "stake_b": "12.5",
+                        "expected_profit": "2.5",
+                        "expires_at": "2026-07-12T00:05:00Z",
+                    },
+                ],
+                "recent_decisions": [],
+            },
+        },
+    }
+
+
+def test_execution_approvals_probe_extraction() -> None:
+    probe = _approvals_status()["runtimeProbe"]
+    assert server.execution_approvals_from_probe(probe)["mode"] == "manual"
+    legacy = {"strategyStats": {"execution_approvals": {"mode": "manual", "pending": []}}}
+    assert server.execution_approvals_from_probe(legacy)["pending"] == []
+    assert server.execution_approvals_from_probe(None) is None
+    assert server.execution_approvals_from_probe({}) is None
+
+
+def test_node_detail_includes_execution_approvals(tmp_path: Path) -> None:
+    nodes_root = tmp_path / "nodes"
+    node_dir = nodes_root / "node-a"
+    node_dir.mkdir(parents=True)
+    (node_dir / "status.json").write_text(json.dumps(_approvals_status()), encoding="utf8")
+    config = _config(tmp_path, NODEOPS_NODES_ROOT=str(nodes_root))
+    store = server.Store(config.db_path)
+    handler = _DetailHandler(server.NodeOpsState(config, store, object()))
+    handler._node_detail("node-a")
+    payload = handler.sent["payload"]
+    assert handler.sent["status"] == server.HTTPStatus.OK
+    assert payload["executionApprovals"]["mode"] == "manual"
+    assert payload["executionApprovals"]["pending"][0]["approval_id"] == "abc123def456"
+    store.close()
+
+
+class _ApprovalHandler:
+    """
+    Fake handler exercising the approvals routes with readonly + audit bound.
+    """
+
+    def __init__(self, state: Any) -> None:
+        self.state = state
+        self.command = "POST"
+        self.headers: dict[str, str] = {}
+        self.sent: dict[str, Any] = {}
+
+    _route_approvals = server.Handler._route_approvals
+    _node_approvals = server.Handler._node_approvals
+    _approval_action = server.Handler._approval_action
+    _readonly_blocked = server.Handler._readonly_blocked
+    _audit = server.Handler._audit
+    _current_username = server.Handler._current_username
+
+    def _send_json(self, status: int, payload: Any) -> None:
+        self.sent = {"status": status, "payload": payload}
+
+
+def test_approval_action_blocked_in_readonly(tmp_path: Path) -> None:
+    config = _config(tmp_path, NODEOPS_READONLY="1")
+    store = server.Store(config.db_path)
+    state = server.NodeOpsState(config, store, object())
+    handler = _ApprovalHandler(state)
+
+    handler._approval_action("node-a", "abc123def456", "approve")
+
+    assert handler.sent["status"] == server.HTTPStatus.FORBIDDEN
+    assert not (config.nodes_root / "node-a" / server.COMMANDS_DIRNAME).exists()
+    rows = store.recent_audit(5)
+    assert rows[0]["action"] == "approve_arb"
+    assert rows[0]["status"] == "blocked"
+    store.close()
+
+
+def test_approval_action_rejects_invalid_id(tmp_path: Path) -> None:
+    config = _config(tmp_path, NODEOPS_READONLY="0")
+    store = server.Store(config.db_path)
+    handler = _ApprovalHandler(server.NodeOpsState(config, store, object()))
+
+    handler._approval_action("node-a", "NOT-HEX", "approve")
+
+    assert handler.sent["status"] == server.HTTPStatus.BAD_REQUEST
+    assert not (config.nodes_root / "node-a" / server.COMMANDS_DIRNAME).exists()
+    store.close()
+
+
+def test_real_http_approvals_get_and_actions(tmp_path: Path) -> None:
+    """
+    Drive GET/POST approvals over real HTTP: command files land in the node dir,
+    unknown/expired ids 404 without writing, and every decision is audited.
+    """
+    nodes = tmp_path / "nodes"
+    node_dir = nodes / "demo"
+    node_dir.mkdir(parents=True)
+    (node_dir / "status.json").write_text(json.dumps(_approvals_status()), encoding="utf8")
+    config = _config(
+        tmp_path,
+        NODEOPS_HOST="127.0.0.1",
+        NODEOPS_PORT="0",
+        NODEOPS_READONLY="0",
+        NODEOPS_NODES_ROOT=str(nodes),
+    )
+    store = server.Store(config.db_path)
+    jobs = server.Jobs()
+    srv = server.build_server(config, store, jobs)
+    port = srv.server_address[1]
+    thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    thread.start()
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+
+        conn.request("GET", "/api/nodes/demo/approvals")
+        listing_resp = conn.getresponse()
+        listing = json.loads(listing_resp.read().decode("utf8"))
+        assert listing_resp.status == 200, listing
+        assert listing["readonly"] is False
+        assert listing["approvals"]["pending"][0]["approval_id"] == "abc123def456"
+
+        conn.request("POST", "/api/nodes/demo/approvals/abc123def456/approve")
+        approve_resp = conn.getresponse()
+        approve = json.loads(approve_resp.read().decode("utf8"))
+        assert approve_resp.status == 202, approve
+        assert approve["ok"] is True
+        command_files = sorted((node_dir / server.COMMANDS_DIRNAME).glob("*.json"))
+        assert len(command_files) == 1
+        command = json.loads(command_files[0].read_text(encoding="utf8"))
+        assert command["command"] == "approve_arb"
+        assert command["approval_id"] == "abc123def456"
+        assert command["id"] == approve["command_id"]
+
+        conn.request("POST", "/api/nodes/demo/approvals/abc123def456/reject")
+        reject_resp = conn.getresponse()
+        reject = json.loads(reject_resp.read().decode("utf8"))
+        assert reject_resp.status == 202, reject
+        command_files = sorted((node_dir / server.COMMANDS_DIRNAME).glob("*.json"))
+        assert len(command_files) == 2
+        reject_command = json.loads(command_files[-1].read_text(encoding="utf8"))
+        assert reject_command["command"] == "reject_arb"
+
+        conn.request("POST", "/api/nodes/demo/approvals/eeeeeeeeeeee/approve")
+        unknown_resp = conn.getresponse()
+        unknown_resp.read()
+        assert unknown_resp.status == 404
+        assert len(sorted((node_dir / server.COMMANDS_DIRNAME).glob("*.json"))) == 2
+
+        rows = store.recent_audit(10)
+        assert [(row["action"], row["status"]) for row in rows[:3]] == [
+            ("approve_arb", "unknown_approval"),
+            ("reject_arb", "accepted"),
+            ("approve_arb", "accepted"),
+        ]
+        assert "abc123def456" in rows[1]["params_summary"]
+        conn.close()
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        store.close()
+
+
+def test_real_http_approval_action_requires_auth(tmp_path: Path) -> None:
+    nodes = tmp_path / "nodes"
+    node_dir = nodes / "demo"
+    node_dir.mkdir(parents=True)
+    (node_dir / "status.json").write_text(json.dumps(_approvals_status()), encoding="utf8")
+    config = _config(
+        tmp_path,
+        NODEOPS_HOST="127.0.0.1",
+        NODEOPS_PORT="0",
+        NODEOPS_READONLY="0",
+        NODEOPS_USER="",
+        NODEOPS_NODES_ROOT=str(nodes),
+    )
+    authstore = server.AuthStore(config.auth_path)
+    authstore.seed_default_if_absent()
+    store = server.Store(config.db_path)
+    jobs = server.Jobs()
+    srv = server.build_server(config, store, jobs, authstore)
+    port = srv.server_address[1]
+    thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    thread.start()
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+
+        conn.request("POST", "/api/nodes/demo/approvals/abc123def456/approve")
+        unauth_resp = conn.getresponse()
+        unauth_resp.read()
+        assert unauth_resp.status == 401
+        assert not (node_dir / server.COMMANDS_DIRNAME).exists()
+
+        auth_header = {"Authorization": _basic_header("admin", "admin")}
+        conn.request(
+            "POST",
+            "/api/nodes/demo/approvals/abc123def456/approve",
+            headers=auth_header,
+        )
+        approve_resp = conn.getresponse()
+        approve = json.loads(approve_resp.read().decode("utf8"))
+        assert approve_resp.status == 202, approve
+        command_files = sorted((node_dir / server.COMMANDS_DIRNAME).glob("*.json"))
+        assert len(command_files) == 1
+        command = json.loads(command_files[0].read_text(encoding="utf8"))
+        assert command["requested_by"] == "admin"
         conn.close()
     finally:
         srv.shutdown()

@@ -76,6 +76,12 @@ SECRET_KEY_PATTERN = re.compile(
 MANIFEST_SUFFIX = ".json"
 MANIFEST_PREFIX = "deploy/strategy_nodes/"
 
+# Approval ids are short hex tokens minted by the strategy; anything else is
+# rejected before it can reach a filename or a command payload.
+APPROVAL_ID_PATTERN = re.compile(r"^[0-9a-f]{8,64}$")
+APPROVAL_ACTIONS = {"approve": "approve_arb", "reject": "reject_arb"}
+COMMANDS_DIRNAME = "commands"
+
 # Bounded in-memory alert ring returned by GET /api/alerts, and the POST timeout for
 # the outbound webhook (short — a slow/unreachable webhook must never stall a sample).
 ALERT_RING_SIZE = 200
@@ -117,6 +123,7 @@ SAMPLE_COLUMNS = (
     "valid_opportunities",
     "executable_candidates",
     "executed",
+    "pending_approvals",
     "mem_mb",
     "cpu_pct",
     "started_at",
@@ -140,6 +147,7 @@ HISTORY_METRICS = frozenset(
         "valid_opportunities",
         "executable_candidates",
         "executed",
+        "pending_approvals",
         "mem_mb",
         "cpu_pct",
     },
@@ -150,6 +158,7 @@ HISTORY_METRICS = frozenset(
 SAMPLES_MIGRATED_COLUMNS = (
     ("started_at", "TEXT"),
     ("uptime_secs", "REAL"),
+    ("pending_approvals", "INTEGER"),
 )
 
 # POST /api/nodes/<name>/config may rewrite ONLY these manifest fields (plus the
@@ -753,6 +762,7 @@ class Store:
                     valid_opportunities INTEGER,
                     executable_candidates INTEGER,
                     executed INTEGER,
+                    pending_approvals INTEGER,
                     mem_mb REAL,
                     cpu_pct REAL,
                     started_at TEXT,
@@ -1144,6 +1154,28 @@ def _run_docker(args: list[str], timeout: float = 15.0) -> str | None:
     return completed.stdout
 
 
+def execution_approvals_from_probe(probe: dict[str, Any] | None) -> dict[str, Any] | None:
+    """
+    Extract the strategy's execution-approvals block from a runtime probe.
+
+    Newer runners expose it as ``runtimeProbe.executionApprovals``; fall back to
+    the raw ``strategyStats.execution_approvals`` for probes written before the
+    dedicated key existed.
+
+    """
+    if not isinstance(probe, dict):
+        return None
+    approvals = probe.get("executionApprovals")
+    if isinstance(approvals, dict) and approvals:
+        return approvals
+    strategy_stats = probe.get("strategyStats")
+    if isinstance(strategy_stats, dict):
+        fallback = strategy_stats.get("execution_approvals")
+        if isinstance(fallback, dict):
+            return fallback
+    return None
+
+
 def build_sample_row(
     node: str,
     status: dict[str, Any] | None,
@@ -1165,6 +1197,8 @@ def build_sample_row(
     probe = (status or {}).get("runtimeProbe") or {}
     venue_coverage = probe.get("venueCoverage") or {}
     strategy_stats = probe.get("strategyStats") or {}
+    approvals = execution_approvals_from_probe(probe) or {}
+    pending = approvals.get("pending")
     rag_green, rag_amber, rag_red = _derive_rag(probe)
     inspect = inspect or {}
     started_at = inspect.get("started_at")
@@ -1192,6 +1226,7 @@ def build_sample_row(
         "valid_opportunities": _as_int(strategy_stats.get("opportunities_found")),
         "executable_candidates": _as_int(strategy_stats.get("executable_candidates")),
         "executed": _as_int(strategy_stats.get("opportunities_executed")),
+        "pending_approvals": len(pending) if isinstance(pending, list) else 0,
         "mem_mb": stats.get("mem_mb"),
         "cpu_pct": stats.get("cpu_pct"),
         "started_at": started_at,
@@ -1750,6 +1785,14 @@ class Handler(BaseHTTPRequestHandler):
             self._get_job(job_match.group(1))
             return
 
+        approvals_match = re.fullmatch(
+            r"/api/nodes/([^/]+)/approvals(?:/([^/]+)/(approve|reject))?",
+            path,
+        )
+        if approvals_match:
+            self._route_approvals(method, *approvals_match.groups())
+            return
+
         node_match = re.fullmatch(
             r"/api/nodes/([^/]+)(/history|/odds|/restart|/stop|/start|/config)?",
             path,
@@ -1853,6 +1896,9 @@ class Handler(BaseHTTPRequestHandler):
         payload = {
             "node": name,
             "readonly": config.readonly,
+            "executionApprovals": execution_approvals_from_probe(
+                probe if isinstance(probe, dict) else None,
+            ),
             "latest": latest,
             "manifest": strip_secrets(manifest) if manifest is not None else None,
             "release": strip_secrets(release) if release is not None else None,
@@ -1888,6 +1934,36 @@ class Handler(BaseHTTPRequestHandler):
                 "candidates": [strip_secrets(candidate) for candidate in candidates],
             }
         self._send_json(HTTPStatus.OK, {"node": name, "kinds": kinds})
+
+    def _route_approvals(
+        self,
+        method: str,
+        name: str,
+        approval_id: str | None,
+        action: str | None,
+    ) -> None:
+        if not valid_name(name):
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid node name"})
+            return
+        if method == "GET" and approval_id is None:
+            self._node_approvals(name)
+            return
+        if method == "POST" and approval_id is not None and action in APPROVAL_ACTIONS:
+            self._approval_action(name, approval_id, action)
+            return
+        self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+
+    def _node_approvals(self, name: str) -> None:
+        status = read_json_file(self.state.config.nodes_root / name / "status.json")
+        approvals = execution_approvals_from_probe((status or {}).get("runtimeProbe"))
+        self._send_json(
+            HTTPStatus.OK,
+            {
+                "node": name,
+                "readonly": self.state.config.readonly,
+                "approvals": strip_secrets(approvals) if approvals is not None else None,
+            },
+        )
 
     def _get_job(self, job_id: str) -> None:
         job = self.state.jobs.get(job_id)
@@ -2088,6 +2164,76 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._audit(action, name, None, "ok")
         self._send_json(HTTPStatus.OK, {"node": name, "action": action, "ok": True})
+
+    def _approval_action(self, name: str, approval_id: str, action: str) -> None:
+        """
+        Queue one operator approve/reject command for a staged arbitrage.
+
+        The dashboard never talks to the node process directly: it drops a command
+        file into ``<node dir>/commands/``, which the strategy polls, applies after
+        re-running its full live gate stack, and acks through the next status.json
+        probe (``executionApprovals.recent_decisions``). Approval is therefore
+        necessary but never sufficient — a lifted quote, cap breach, or kill switch
+        still blocks the trade node-side.
+
+        """
+        command = APPROVAL_ACTIONS[action]
+        if self._readonly_blocked():
+            self._audit(command, name, {"approval_id": approval_id}, "blocked")
+            return
+        if not APPROVAL_ID_PATTERN.fullmatch(approval_id):
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid approval id"})
+            return
+        node_dir = self.state.config.nodes_root / name
+        status = read_json_file(node_dir / "status.json")
+        approvals = execution_approvals_from_probe((status or {}).get("runtimeProbe")) or {}
+        pending = approvals.get("pending")
+        pending = pending if isinstance(pending, list) else []
+        if not any(
+            isinstance(record, dict) and record.get("approval_id") == approval_id
+            for record in pending
+        ):
+            self._audit(command, name, {"approval_id": approval_id}, "unknown_approval")
+            self._send_json(
+                HTTPStatus.NOT_FOUND,
+                {"error": "approval not pending (expired, decided, or unknown)"},
+            )
+            return
+        command_id = uuid.uuid4().hex[:12]
+        payload = {
+            "id": command_id,
+            "command": command,
+            "approval_id": approval_id,
+            "requested_by": self._current_username(),
+            "requested_at": _utc_now_str(),
+        }
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+        command_path = node_dir / COMMANDS_DIRNAME / f"{stamp}-{command}-{approval_id}.json"
+        try:
+            _atomic_write_json(command_path, payload)
+        except OSError as exc:
+            self._audit(command, name, {"approval_id": approval_id}, "failed")
+            self._send_json(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                {"error": f"command write failed: {exc}"},
+            )
+            return
+        self._audit(
+            command,
+            name,
+            {"approval_id": approval_id, "command_id": command_id},
+            "accepted",
+        )
+        self._send_json(
+            HTTPStatus.ACCEPTED,
+            {
+                "ok": True,
+                "node": name,
+                "action": action,
+                "approval_id": approval_id,
+                "command_id": command_id,
+            },
+        )
 
     def _node_config(self, name: str) -> None:
         """

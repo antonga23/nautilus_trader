@@ -260,6 +260,12 @@ def _build_strategy_importable_config(
         strategy_config["semantic_quote_subscription_limit_by_venue"] = semantic_quote_limits
     if manifest.semantic_rule_cache_dir:
         strategy_config["semantic_rule_cache_dir"] = manifest.semantic_rule_cache_dir
+    if manifest.status_path and not strategy_config.get("execution_approval_command_dir"):
+        # Colocate the operator approve/reject command drop-box with the status file
+        # so both ride the same node-dir bind mount that nodeops already reads.
+        strategy_config["execution_approval_command_dir"] = str(
+            Path(manifest.status_path).parent / "commands",
+        )
     if manifest.validation_mode:
         strategy_config["auto_execute"] = False
         strategy_config["value_execution_enabled"] = False

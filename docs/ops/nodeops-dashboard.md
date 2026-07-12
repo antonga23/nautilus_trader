@@ -61,11 +61,25 @@ tools/nodeops/
     `POST /api/nodes/{name}/start` — docker lifecycle.
   - `DELETE /api/nodes/{name}` — stop + `archive_strategy_nodes.sh` the node dir + remove
     container. Two-step confirm in the UI.
+  - `GET  /api/nodes/{name}/approvals` — the strategy's `executionApprovals` probe block:
+    staged arbs awaiting operator approval (manual execution approval mode), counters,
+    and recent decisions.
+  - `POST /api/nodes/{name}/approvals/{approval_id}/approve` ·
+    `.../reject` — queue an operator decision for a staged arb. The server drops a
+    command file into `<node dir>/commands/`; the strategy polls the directory, re-runs
+    its **full live gate stack on fresh quotes** (arming, kill switch, caps, staleness)
+    before approving anything into `_execute_arbitrage`, and acks through
+    `executionApprovals.recent_decisions` on a later probe. Approval is necessary,
+    never sufficient. 404 when the id is not currently pending; audited like every
+    other mutating control. Pending records are strategy-memory only — a node restart
+    clears the queue (the deploy script also clears stale command files).
   - Mutating endpoints are also gated by `NODEOPS_READONLY=1` (deploy the service
     read-only first; flip when comfortable).
 - **Frontend**: table view (state chips, heartbeat age, xvCand, RAG chips, arb counters)
   → node drawer with sparkline charts (edges, quotedEdges, xvCand, arbs, mem) over a
-  selectable window, manifest viewer, and the action buttons.
+  selectable window, manifest viewer, a Pending trades tab (per-arb venue pair, odds,
+  stakes, fee-adjusted margin, expected profit, expiry countdown, Approve/Reject with
+  confirm), and the action buttons.
 
 ### Security
 

@@ -11,6 +11,8 @@
 Strategy regression tests for the betting arbitrage fast-path integration.
 """
 
+import json
+from dataclasses import replace
 from decimal import Decimal
 from datetime import UTC
 from datetime import datetime
@@ -3529,6 +3531,7 @@ class TestBettingArbitrageStrategy:  # skipcq
                 min_profit_margin=Decimal("0.02"),
                 enabled_venues=frozenset(["SXBET"]),
                 auto_execute=True,
+                execution_approval_mode="auto",
             ),
         )
         strategy._execute_arbitrage = Mock()
@@ -3547,6 +3550,7 @@ class TestBettingArbitrageStrategy:  # skipcq
                 min_profit_margin=Decimal("0.02"),
                 enabled_venues=frozenset(["SXBET"]),
                 auto_execute=True,
+                execution_approval_mode="auto",
             ),
         )
         strategy.register(
@@ -4322,6 +4326,7 @@ class TestBettingArbitrageStrategy:  # skipcq
                 min_profit_margin=Decimal("0.02"),
                 enabled_venues=frozenset(["SXBET"]),
                 auto_execute=True,
+                execution_approval_mode="auto",
                 opportunity_log_manual_instructions=False,
             ),
         )
@@ -4334,6 +4339,228 @@ class TestBettingArbitrageStrategy:  # skipcq
         opportunity = strategy._execute_arbitrage.call_args.args[0]
         ensure(opportunity.odds_a == Decimal("2.45"))
         ensure(opportunity.odds_b == Decimal("2.30"))
+
+    def _manual_approval_strategy(self, **config_overrides):
+        config_kwargs: dict[str, Any] = {
+            "enabled_venues": frozenset(["CLOUDBET", "SXBET"]),
+            "auto_execute": True,
+            "max_total_stake": Decimal(25),
+        }
+        config_kwargs.update(config_overrides)
+        strategy = BettingArbitrageStrategy(config=BettingArbitrageConfig(**config_kwargs))
+        strategy.register(
+            trader_id=TraderId("TESTER-000"),
+            portfolio=TestComponentStubs.portfolio(),
+            msgbus=TestComponentStubs.msgbus(),
+            cache=TestComponentStubs.cache(),
+            clock=TestComponentStubs.clock(),
+        )
+        strategy.submit_order = Mock()
+        strategy._live_execution_block_reasons_for = Mock(return_value=[])
+        return strategy
+
+    def _cross_venue_opportunity(self, event_id: str = "event-1") -> ArbitrageOpportunity:
+        cloudbet = self._sxbet_instrument(event_id=event_id, venue="CLOUDBET", outcome="over")
+        sxbet = self._sxbet_instrument(event_id=event_id, venue="SXBET", outcome="under")
+        return ArbitrageOpportunity(
+            instrument_a=cloudbet,
+            instrument_b=sxbet,
+            probability_a=Decimal("0.45"),
+            probability_b=Decimal("0.45"),
+            total_probability=Decimal("0.90"),
+            profit_margin=Decimal("0.11"),
+            odds_a=Decimal("2.20"),
+            odds_b=Decimal("2.20"),
+            is_same_venue=False,
+            match_type="cross_venue",
+        )
+
+    def test_manual_mode_stages_instead_of_submitting(self):  # skipcq
+        strategy = self._manual_approval_strategy()
+
+        strategy._handle_arbitrage_opportunity(self._cross_venue_opportunity())
+
+        strategy.submit_order.assert_not_called()
+        ensure(strategy._opportunities_executed == 0)
+        ensure(len(strategy._pending_approvals) == 1)
+        approvals = strategy.get_stats()["execution_approvals"]
+        ensure(approvals["mode"] == "manual")
+        ensure(approvals["staged"] == 1)
+        record = approvals["pending"][0]
+        ensure(record["venue_a"] == "CLOUDBET")
+        ensure(record["venue_b"] == "SXBET")
+        ensure(record["odds_a"] == "2.20")
+        ensure(Decimal(record["stake_a"]) + Decimal(record["stake_b"]) <= Decimal(25))
+        ensure(Decimal(record["expected_profit"]) > 0)
+        ensure(record["expires_at"] > record["created_at"])
+
+    def test_manual_stage_blocked_when_gates_fail(self):  # skipcq
+        strategy = self._manual_approval_strategy()
+        strategy._live_execution_block_reasons_for = Mock(return_value=["kill_switch_active"])
+
+        strategy._handle_arbitrage_opportunity(self._cross_venue_opportunity())
+
+        ensure(len(strategy._pending_approvals) == 0)
+        ensure(strategy.get_stats()["execution_approvals"]["staged"] == 0)
+
+    def test_manual_approve_reruns_gates_and_executes(self):  # skipcq
+        strategy = self._manual_approval_strategy()
+        strategy._handle_arbitrage_opportunity(self._cross_venue_opportunity())
+        approval_id = next(iter(strategy._pending_approvals))
+        gate_calls_after_stage = strategy._live_execution_block_reasons_for.call_count
+
+        decision = strategy.handle_execution_approval_command(
+            {"id": "cmd-1", "command": "approve_arb", "approval_id": approval_id},
+        )
+
+        ensure(decision["result"] == "executed")
+        ensure(strategy.submit_order.call_count == 2)
+        ensure(strategy._live_execution_block_reasons_for.call_count > gate_calls_after_stage)
+        ensure(len(strategy._pending_approvals) == 0)
+        approvals = strategy.get_stats()["execution_approvals"]
+        ensure(approvals["approved_executed"] == 1)
+        ensure(approvals["commands_processed"] == 1)
+        ensure(approvals["recent_decisions"][-1]["command_id"] == "cmd-1")
+
+    def test_manual_approve_blocked_when_gates_now_fail(self):  # skipcq
+        strategy = self._manual_approval_strategy()
+        strategy._handle_arbitrage_opportunity(self._cross_venue_opportunity())
+        approval_id = next(iter(strategy._pending_approvals))
+        strategy._live_execution_block_reasons_for = Mock(return_value=["kill_switch_active"])
+
+        decision = strategy.handle_execution_approval_command(
+            {"command": "approve_arb", "approval_id": approval_id},
+        )
+
+        ensure(decision["result"] == "blocked")
+        ensure("kill_switch_active" in decision["reasons"])
+        strategy.submit_order.assert_not_called()
+        ensure(len(strategy._pending_approvals) == 0)
+        ensure(strategy.get_stats()["execution_approvals"]["approved_blocked"] == 1)
+
+    def test_manual_approve_expired_approval_blocked(self):  # skipcq
+        strategy = self._manual_approval_strategy()
+        strategy._handle_arbitrage_opportunity(self._cross_venue_opportunity())
+        approval_id = next(iter(strategy._pending_approvals))
+        record = strategy._pending_approvals[approval_id]
+        record.expires_ts_ns = strategy.clock.timestamp_ns() - 1
+
+        decision = strategy.handle_execution_approval_command(
+            {"command": "approve_arb", "approval_id": approval_id},
+        )
+
+        ensure(decision["result"] == "unknown_approval_id")
+        strategy.submit_order.assert_not_called()
+        approvals = strategy.get_stats()["execution_approvals"]
+        ensure(approvals["expired"] == 1)
+        expiries = [entry for entry in approvals["recent_decisions"] if entry["action"] == "expire"]
+        ensure(expiries[-1]["reasons"] == ["approval_ttl_elapsed"])
+
+    def test_manual_reject_discards_without_submitting(self):  # skipcq
+        strategy = self._manual_approval_strategy()
+        strategy._handle_arbitrage_opportunity(self._cross_venue_opportunity())
+        approval_id = next(iter(strategy._pending_approvals))
+
+        decision = strategy.handle_execution_approval_command(
+            {"command": "reject_arb", "approval_id": approval_id},
+        )
+
+        ensure(decision["result"] == "discarded")
+        strategy.submit_order.assert_not_called()
+        ensure(len(strategy._pending_approvals) == 0)
+        ensure(strategy.get_stats()["execution_approvals"]["rejected"] == 1)
+
+    def test_manual_restage_refreshes_existing_pair_record(self):  # skipcq
+        strategy = self._manual_approval_strategy()
+        opportunity = self._cross_venue_opportunity()
+
+        strategy._handle_arbitrage_opportunity(opportunity)
+        strategy._handle_arbitrage_opportunity(replace(opportunity, odds_a=Decimal("2.40")))
+
+        ensure(len(strategy._pending_approvals) == 1)
+        approvals = strategy.get_stats()["execution_approvals"]
+        ensure(approvals["staged"] == 1)
+        ensure(approvals["pending"][0]["odds_a"] == "2.40")
+
+    def test_manual_pending_capacity_evicts_oldest(self):  # skipcq
+        strategy = self._manual_approval_strategy(execution_approval_max_pending=2)
+
+        for index in range(3):
+            strategy._handle_arbitrage_opportunity(
+                self._cross_venue_opportunity(event_id=f"event-{index}"),
+            )
+
+        ensure(len(strategy._pending_approvals) == 2)
+        approvals = strategy.get_stats()["execution_approvals"]
+        ensure(approvals["staged"] == 3)
+        ensure(approvals["evicted"] == 1)
+        evictions = [entry for entry in approvals["recent_decisions"] if entry["action"] == "evict"]
+        ensure(evictions[-1]["reasons"] == ["pending_capacity_exceeded"])
+
+    def test_invalid_approval_command_counted(self):  # skipcq
+        strategy = self._manual_approval_strategy()
+
+        decision = strategy.handle_execution_approval_command({"command": "detonate"})
+
+        ensure(decision["result"] == "invalid_command")
+        unknown = strategy.handle_execution_approval_command(
+            {"command": "approve_arb", "approval_id": "does-not-exist"},
+        )
+        ensure(unknown["result"] == "unknown_approval_id")
+        approvals = strategy.get_stats()["execution_approvals"]
+        ensure(approvals["commands_invalid"] == 1)
+        ensure(approvals["commands_processed"] == 1)
+
+    def test_approval_command_files_processed_and_removed(self, tmp_path):  # skipcq
+        command_dir = tmp_path / "commands"
+        command_dir.mkdir()
+        strategy = self._manual_approval_strategy(
+            execution_approval_command_dir=str(command_dir),
+        )
+        strategy._handle_arbitrage_opportunity(self._cross_venue_opportunity())
+        approval_id = next(iter(strategy._pending_approvals))
+        (command_dir / "001-reject.json").write_text(
+            json.dumps({"id": "cmd-9", "command": "reject_arb", "approval_id": approval_id}),
+            encoding="utf8",
+        )
+        (command_dir / "002-junk.json").write_text("{not json", encoding="utf8")
+        (command_dir / "ignored.tmp").write_text("{}", encoding="utf8")
+
+        strategy._process_approval_command_files()
+
+        ensure(len(strategy._pending_approvals) == 0)
+        ensure(not (command_dir / "001-reject.json").exists())
+        ensure(not (command_dir / "002-junk.json").exists())
+        ensure((command_dir / "ignored.tmp").exists())
+        approvals = strategy.get_stats()["execution_approvals"]
+        ensure(approvals["rejected"] == 1)
+        ensure(approvals["commands_processed"] == 1)
+        ensure(approvals["commands_invalid"] == 1)
+
+    def test_approval_command_timer_only_in_manual_mode_with_dir(self, tmp_path):  # skipcq
+        manual = self._manual_approval_strategy(
+            execution_approval_command_dir=str(tmp_path),
+        )
+        ensure(manual._approval_command_polling_enabled() is True)
+
+        no_dir = self._manual_approval_strategy()
+        ensure(no_dir._approval_command_polling_enabled() is False)
+
+        auto = self._manual_approval_strategy(
+            execution_approval_mode="auto",
+            execution_approval_command_dir=str(tmp_path),
+        )
+        ensure(auto._approval_command_polling_enabled() is False)
+
+    def test_execution_approval_config_validation(self):  # skipcq
+        with pytest.raises(ValueError, match="Invalid execution_approval_mode"):
+            BettingArbitrageConfig(execution_approval_mode="ask-nicely")
+        with pytest.raises(ValueError, match="execution_approval_ttl_secs"):
+            BettingArbitrageConfig(execution_approval_ttl_secs=0)
+        with pytest.raises(ValueError, match="execution_approval_max_pending"):
+            BettingArbitrageConfig(execution_approval_max_pending=0)
+        normalized = BettingArbitrageConfig(execution_approval_mode=" AUTO ")
+        ensure(normalized.execution_approval_mode == "auto")
 
     def test_arbitrage_diagnostics_flags_same_venue_event_mismatch(self):  # skipcq
         strategy = BettingArbitrageStrategy(

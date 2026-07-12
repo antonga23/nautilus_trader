@@ -296,6 +296,45 @@ class TestBettingArbitrageNodeBuilder:
             == "artifacts/semantic-rule-cache/sxbet-validation"
         )
 
+    def test_builder_defaults_approval_command_dir_beside_status_file(self, tmp_path):
+        manifest = _manifest(tmp_path)
+
+        config = build_trading_node_config(manifest)
+
+        strategy_config = config.strategies[0].config
+        assert strategy_config["execution_approval_command_dir"] == str(tmp_path / "commands")
+        assert strategy_config["execution_approval_mode"] == "manual"
+
+    def test_builder_keeps_explicit_approval_command_dir(self, tmp_path):
+        manifest = BettingArbitrageNodeManifest(
+            node_id="sxbet-validation",
+            trader_id="BETARB-TEST-001",
+            validation_mode=True,
+            allow_dummy_credentials=True,
+            status_path=str(tmp_path / "status.json"),
+            strategy=BettingArbitrageConfig(
+                execution_approval_command_dir="/custom/commands",
+            ),
+            venues=[BettingVenueManifest(venue="SXBET")],
+        )
+
+        config = build_trading_node_config(manifest)
+
+        assert config.strategies[0].config["execution_approval_command_dir"] == "/custom/commands"
+
+    def test_builder_leaves_approval_command_dir_unset_without_status_path(self):
+        manifest = BettingArbitrageNodeManifest(
+            node_id="sxbet-validation",
+            trader_id="BETARB-TEST-001",
+            validation_mode=True,
+            allow_dummy_credentials=True,
+            venues=[BettingVenueManifest(venue="SXBET")],
+        )
+
+        config = build_trading_node_config(manifest)
+
+        assert config.strategies[0].config["execution_approval_command_dir"] is None
+
     def test_semantic_cache_manifest_rejects_python_opportunity_graph(self):
         manifest = BettingArbitrageNodeManifest(
             node_id="sxbet-validation",
@@ -2910,6 +2949,23 @@ class TestSemanticCacheBootstrap:
 
 
 class TestBettingArbitrageNodeRunner:
+    def test_runtime_probe_payload_exposes_execution_approvals(self):
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(enabled_venues=frozenset(["SXBET"])),
+        )
+
+        payload = node_runner._collect_runtime_probe_payload(
+            strategy,
+            min_profit_margin=Decimal("0.02"),
+            elapsed_seconds=1.0,
+        )
+
+        approvals = payload["executionApprovals"]
+        assert approvals["mode"] == "manual"
+        assert approvals["pending"] == []
+        assert approvals["staged"] == 0
+        assert payload["strategyStats"]["execution_approvals"] == approvals
+
     def test_heartbeat_writer_emits_alive_payload(self, tmp_path, monkeypatch):
         heartbeat_path = tmp_path / "heartbeat.json"
 
