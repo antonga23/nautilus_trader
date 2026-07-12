@@ -68,6 +68,75 @@ async def test_sxbet_provider_normalizes_outcomes_and_market_params():
 
 
 @pytest.mark.asyncio
+async def test_sxbet_provider_handicap_favourite_prices_short_from_best_odds_complement():
+    # Money-path regression for the SX.bet handicap-favourite mispricing.
+    #
+    # ``bestOdds.outcomeX.percentageOdds`` is the best *maker* implied probability
+    # resting on outcome X, so a taker backing an outcome matches the makers on the
+    # *opposite* outcome and takes the complement of their odds. The provider used
+    # to read the same-side field and apply ``1 / maker_implied`` with no
+    # complement, which inflated both legs of every hydrated two-sided market into
+    # longshot prices. On a real baseball -3.5 run line that priced the away
+    # favourite (outcomeOne, +3.5) at 5.0896 and the home underdog (outcomeTwo,
+    # -3.5) at 5.9920 -- a raw probability sum of ~0.36 (a ~175% "arbitrage" that
+    # passed the same-venue dry-run gate) instead of a healthy overround.
+    live_favourite_phantom_odds = 5.0896  # AWAY +3.5 leg, pre-fix
+    live_underdog_phantom_odds = 5.9920  # HOME -3.5 leg, pre-fix
+
+    provider = SXBetInstrumentProvider(
+        http_client=object(),
+        config=SXBetInstrumentProviderConfig(),
+    )
+    await provider._process_market(
+        {
+            "marketHash": "0x3565fb2a6e64c8",
+            "teamOneName": "Athletics",  # away favourite
+            "teamTwoName": "Dodgers",  # home underdog
+            "sportId": 3,
+            "leagueName": "MLB",
+            "type": 3,
+            "line": 3.5,
+            "outcomeOneName": "Athletics +3.5",
+            "outcomeTwoName": "Dodgers -3.5",
+            # decimal_odds_to_percentage(d) == round((1 / d) * 1e20), i.e. the maker
+            # implied probability. These are the live maker implieds whose reciprocal
+            # produced the pre-fix phantom odds above.
+            "bestOdds": {
+                "outcomeOne": {
+                    "percentageOdds": str(decimal_odds_to_percentage(live_favourite_phantom_odds)),
+                },
+                "outcomeTwo": {
+                    "percentageOdds": str(decimal_odds_to_percentage(live_underdog_phantom_odds)),
+                },
+            },
+        },
+    )
+
+    instruments = list(provider.get_all().values())
+    favourite = next(i for i in instruments if i.info["outcome_one"] is True)
+    underdog = next(i for i in instruments if i.info["outcome_one"] is False)
+
+    # The favourite (outcomeOne) now prices from the complement of the opposite
+    # (outcomeTwo) maker implied: 1 / (1 - 1 / 5.9920) ~= 1.20.
+    assert float(favourite.price) == pytest.approx(
+        1 / (1 - 1 / live_underdog_phantom_odds),
+        rel=1e-4,
+    )
+    assert float(underdog.price) == pytest.approx(
+        1 / (1 - 1 / live_favourite_phantom_odds),
+        rel=1e-4,
+    )
+
+    # Favourite prices short (pre-fix it was the 5.0896 phantom longshot).
+    assert float(favourite.price) < 1.5
+    assert float(favourite.price) != pytest.approx(live_favourite_phantom_odds, rel=1e-3)
+
+    # The complementary pair is a healthy overround, not a standing phantom arb.
+    implied_sum = 1 / float(favourite.price) + 1 / float(underdog.price)
+    assert implied_sum > 1.0
+
+
+@pytest.mark.asyncio
 async def test_sxbet_provider_sets_start_time_from_game_time():
     provider = SXBetInstrumentProvider(
         http_client=object(),
@@ -1095,10 +1164,14 @@ async def test_sxbet_provider_uses_placeholder_prices_when_best_odds_not_executa
 
     instruments = list(provider.get_all().values())
     home, away = instruments
-    assert home.price == 2.0
-    assert home.info["has_best_odds"] is False
-    assert away.price == 2.1
-    assert away.info["has_best_odds"] is True
+    # The outcomeOne (home) taker prices off the executable opposite (outcomeTwo)
+    # maker at implied 1 / 2.1: complement 1 / (1 - 1 / 2.1) ~= 1.909.
+    assert home.price == pytest.approx(1 / (1 - 1 / 2.1))
+    assert home.info["has_best_odds"] is True
+    # The outcomeTwo (away) taker would price off the non-executable outcomeOne
+    # maker (implied 1.0), so it falls back to the placeholder price.
+    assert away.price == 2.0
+    assert away.info["has_best_odds"] is False
 
 
 @pytest.mark.asyncio

@@ -34,7 +34,6 @@ from nautilus_trader.adapters.sxbet.constants import SXBET_TOKENS
 from nautilus_trader.adapters.sxbet.constants import SXBET_VENUE
 from nautilus_trader.adapters.sxbet.http_client import SXBetHttpClient
 from nautilus_trader.adapters.sxbet.http_client import SXBetHttpClientError
-from nautilus_trader.adapters.sxbet.signing import percentage_to_decimal_odds
 from nautilus_trader.adapters.sxbet.signing import taker_decimal_odds_from_maker_percentage
 from nautilus_trader.common.component import Logger
 from nautilus_trader.common.providers import InstrumentProvider
@@ -562,27 +561,37 @@ class SXBetInstrumentProvider(InstrumentProvider):
                 self.add(instrument)
 
     @staticmethod
-    def _executable_decimal_odds_from_percentage(percentage_odds: object) -> float:
-        if percentage_odds in (None, ""):
+    def _best_odds_taker_price(best_odds_entry: dict, outcome_one: bool) -> float:
+        # ``bestOdds.outcomeX.percentageOdds`` is the best *maker* implied
+        # probability resting on outcome X, so the two sides sum to < 1 by the maker
+        # spread (e.g. the API's own 0.5775 / 0.34 example). A taker backing this
+        # outcome matches the makers on the *opposite* outcome and receives the
+        # complement of their implied odds -- exactly as the raw order path. Reading
+        # the same-side field without the complement (``1 / maker_implied``) inflated
+        # every hydrated two-sided market into a deep phantom overlay, pricing both
+        # legs as longshots.
+        opposite_key = "outcomeTwo" if outcome_one else "outcomeOne"
+        payload = best_odds_entry.get(opposite_key)
+        if not isinstance(payload, dict):
             return 0.0
-        best_odds = percentage_to_decimal_odds(int(str(percentage_odds)))
-        return best_odds if best_odds > 1 else 0.0
+        percentage = payload.get("percentageOdds")
+        if percentage in (None, ""):
+            return 0.0
+        odds = taker_decimal_odds_from_maker_percentage(int(str(percentage)))
+        return odds if odds > 1 else 0.0
 
     @staticmethod
     def _extract_best_odds(market: dict, outcome_one: bool) -> float:
         """
-        Extract best available odds from market.
+        Extract the best available taker odds for one outcome of a market.
         """
         best_odds_entry = market.get("bestOdds")
         if isinstance(best_odds_entry, dict):
-            key = "outcomeOne" if outcome_one else "outcomeTwo"
-            payload = best_odds_entry.get(key, {})
-            if isinstance(payload, dict):
-                return SXBetInstrumentProvider._executable_decimal_odds_from_percentage(
-                    payload.get("percentageOdds"),
-                )
+            odds = SXBetInstrumentProvider._best_odds_taker_price(best_odds_entry, outcome_one)
+            if odds > 1:
+                return odds
 
-        # Check if there are orders in the market
+        # Fall back to raw resting orders when no executable best-odds side exists.
         orders = market.get("orders", [])
 
         best_odds = 0.0

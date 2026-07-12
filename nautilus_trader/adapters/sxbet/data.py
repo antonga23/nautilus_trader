@@ -805,8 +805,14 @@ class SXBetDataClient(LiveMarketDataClient):
         request_started_ns: int | None = None,
         response_received_ns: int | None = None,
     ) -> QuoteTick | None:
-        key = "outcomeOne" if self._instrument_is_outcome_one(instrument) else "outcomeTwo"
-        outcome_payload = best_odds_entry.get(key)
+        # ``bestOdds.outcomeX.percentageOdds`` is the best *maker* implied
+        # probability resting on outcome X (the two sides sum to < 1 by the maker
+        # spread). A taker backing this instrument's outcome matches the makers on
+        # the *opposite* outcome and receives the complement of their implied odds,
+        # mirroring ``_best_bid_ask``. Reading the same-side field without the
+        # complement manufactured a phantom overlay identical to the raw-order case.
+        opposite_key = "outcomeTwo" if self._instrument_is_outcome_one(instrument) else "outcomeOne"
+        outcome_payload = best_odds_entry.get(opposite_key)
         if not isinstance(outcome_payload, dict):
             return None
 
@@ -814,13 +820,7 @@ class SXBetDataClient(LiveMarketDataClient):
         if percentage_odds in (None, ""):
             return None
 
-        # NOTE: the ``best_odds_batch`` poll mode reads the API's aggregated
-        # ``bestOdds`` field rather than raw maker orders. Whether that field is
-        # already taker-executable or is raw maker odds (requiring the same
-        # complement as ``_best_bid_ask``) is not yet confirmed against the SX.bet
-        # API, so this opt-in mode is NOT execution-verified. Live execution nodes
-        # must use the default ``order_book`` poll mode, whose pricing is verified.
-        best_bid = percentage_to_decimal_odds(int(str(percentage_odds)))
+        best_bid = taker_decimal_odds_from_maker_percentage(int(str(percentage_odds)))
         if best_bid <= 1:
             return None
 
