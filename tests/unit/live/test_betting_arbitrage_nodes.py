@@ -3602,6 +3602,160 @@ class TestBettingArbitrageNodeRunner:
 
         writer.run()  # must return without propagating the collection error
 
+    def test_runtime_probe_throttles_expensive_diagnostics_within_interval(self, monkeypatch):
+        # The status writer runs every heartbeat, but the semantic/coverage diagnostics do
+        # O(graph) work. They must recompute at most once per interval and be reused between
+        # so the writer releases the GIL instead of starving the venue quote-poll loops.
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(enabled_venues=frozenset(["SXBET"])),
+        )
+
+        semantic_calls = {"count": 0}
+        coverage_calls = {"count": 0}
+
+        def _spy_semantic(_graph):
+            semantic_calls["count"] += 1
+            return {"available": True, "call": semantic_calls["count"]}
+
+        def _spy_coverage(*_args, **_kwargs):
+            coverage_calls["count"] += 1
+            return {"call": coverage_calls["count"]}
+
+        monkeypatch.setattr(node_runner, "_semantic_probe_diagnostics", _spy_semantic)
+        monkeypatch.setattr(
+            node_runner,
+            "_probe_coverage_book_devig_diagnostics",
+            _spy_coverage,
+        )
+
+        now = [1_000.0]
+        throttle = node_runner._RuntimeProbeDiagnosticsThrottle(90.0, clock=lambda: now[0])
+
+        def _collect():
+            return node_runner._collect_runtime_probe_payload(
+                strategy,
+                min_profit_margin=Decimal("0.02"),
+                elapsed_seconds=now[0] - 1_000.0,
+                diagnostics=throttle,
+            )
+
+        first = _collect()
+        assert semantic_calls["count"] == 1
+        assert coverage_calls["count"] == 1
+
+        now[0] += 30.0  # within the 90s interval
+        second = _collect()
+        assert semantic_calls["count"] == 1  # reused, not recomputed
+        assert coverage_calls["count"] == 1
+        assert second["semanticDiagnostics"] == first["semanticDiagnostics"]
+
+        now[0] += 65.0  # 95s since the last recompute -> interval elapsed
+        third = _collect()
+        assert semantic_calls["count"] == 2
+        assert coverage_calls["count"] == 2
+        assert third["semanticDiagnostics"]["call"] == 2
+
+    def test_runtime_probe_refreshes_trading_fields_every_cycle(self, monkeypatch):
+        # Trading-relevant fields stay fresh every heartbeat even while the expensive
+        # semantic section is throttled and reused.
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(enabled_venues=frozenset(["SXBET"])),
+        )
+
+        base_stats = strategy.get_stats()
+        cycle = {"n": 0}
+
+        def _fake_get_stats():
+            stats = dict(base_stats)
+            stats["provider_quote_poll_stats"] = {"SXBET": {"cycles": cycle["n"]}}
+            return stats
+
+        monkeypatch.setattr(strategy, "get_stats", _fake_get_stats)
+
+        semantic_calls = {"count": 0}
+
+        def _spy_semantic(_graph):
+            semantic_calls["count"] += 1
+            return {"available": True, "call": semantic_calls["count"]}
+
+        monkeypatch.setattr(node_runner, "_semantic_probe_diagnostics", _spy_semantic)
+
+        now = [0.0]
+        throttle = node_runner._RuntimeProbeDiagnosticsThrottle(3_600.0, clock=lambda: now[0])
+
+        poll_stats_seen = []
+        semantic_seen = []
+        for _ in range(3):
+            cycle["n"] += 1
+            now[0] += 5.0  # a heartbeat apart, well inside the interval
+            payload = node_runner._collect_runtime_probe_payload(
+                strategy,
+                min_profit_margin=Decimal("0.02"),
+                elapsed_seconds=now[0],
+                diagnostics=throttle,
+            )
+            poll_stats_seen.append(payload["providerQuotePollStats"])
+            semantic_seen.append(payload["semanticDiagnostics"])
+
+        assert poll_stats_seen == [
+            {"SXBET": {"cycles": 1}},
+            {"SXBET": {"cycles": 2}},
+            {"SXBET": {"cycles": 3}},
+        ]
+        # Expensive section computed once and reused across the three heartbeats.
+        assert semantic_calls["count"] == 1
+        assert all(seen == semantic_seen[0] for seen in semantic_seen)
+
+    def test_runtime_probe_large_graph_skips_heavy_sections_per_heartbeat(self, monkeypatch):
+        # Perf sanity: on a large graph the O(graph) semantic/coverage functions must not run
+        # on every heartbeat. Over 20 heartbeats (100s) with a 90s interval they run twice,
+        # not twenty times -- so the quote path cost is independent of graph size.
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(enabled_venues=frozenset(["SXBET"])),
+        )
+        base_stats = strategy.get_stats()
+
+        def _fake_get_stats():
+            stats = dict(base_stats)
+            stats["opportunity_graph_nodes"] = 39_010
+            return stats
+
+        monkeypatch.setattr(strategy, "get_stats", _fake_get_stats)
+
+        heavy_calls = {"semantic": 0, "coverage": 0}
+
+        def _spy_semantic(_graph):
+            heavy_calls["semantic"] += 1
+            return {"available": True}
+
+        def _spy_coverage(*_args, **_kwargs):
+            heavy_calls["coverage"] += 1
+            return {}
+
+        monkeypatch.setattr(node_runner, "_semantic_probe_diagnostics", _spy_semantic)
+        monkeypatch.setattr(
+            node_runner,
+            "_probe_coverage_book_devig_diagnostics",
+            _spy_coverage,
+        )
+
+        now = [0.0]
+        throttle = node_runner._RuntimeProbeDiagnosticsThrottle(90.0, clock=lambda: now[0])
+        heartbeats = 20
+        last_payload = None
+        for _ in range(heartbeats):
+            now[0] += 5.0
+            last_payload = node_runner._collect_runtime_probe_payload(
+                strategy,
+                min_profit_margin=Decimal("0.02"),
+                elapsed_seconds=now[0],
+                diagnostics=throttle,
+            )
+
+        assert last_payload["graphNodes"] == 39_010
+        assert heavy_calls["semantic"] == 2
+        assert heavy_calls["coverage"] == 2
+
     def test_runtime_probe_venue_coverage_explains_zero_cross_venue_pairs(self):
         sxbet_instrument = _instrument(
             venue="SXBET",
