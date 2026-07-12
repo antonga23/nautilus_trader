@@ -193,6 +193,11 @@ class SXBetExecClientConfig(LiveExecClientConfig, frozen=True):
         reconciled by polling the order-status ``fillAmount`` field.
     account_state_interval_secs : PositiveFloat, default 30.0
         Interval for refreshing and re-publishing the SX.bet account state.
+    settlement_poll_interval_secs : PositiveFloat, default 30.0
+        Interval for polling graded (settled) SX.bet trades for tracked orders. Each
+        graded order is published once as a ``BetSettlement`` so the strategy can
+        realize arbitrage P&L. Polling is skipped while no unsettled tracked orders
+        exist.
 
     """
 
@@ -210,3 +215,4 @@ class SXBetExecClientConfig(LiveExecClientConfig, frozen=True):
     odds_slippage: int = 5
     fill_poll_interval_secs: PositiveFloat = 3.0
     account_state_interval_secs: PositiveFloat = 30.0
+    settlement_poll_interval_secs: PositiveFloat = 30.0

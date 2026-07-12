@@ -15,6 +15,9 @@ from unittest.mock import Mock
 import pytest
 
 from nautilus_trader.adapters.betting.common.enums import SelectionSide
+from nautilus_trader.adapters.betting.common.settlement import BET_SETTLEMENTS_TOPIC
+from nautilus_trader.adapters.betting.common.settlement import BetSettlement
+from nautilus_trader.adapters.betting.common.settlement import SettlementResult
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.sxbet.config import SXBetInstrumentProviderConfig
 from nautilus_trader.adapters.sxbet.constants import SXBET_TOKENS
@@ -1086,3 +1089,261 @@ def test_init_rejects_missing_or_malformed_required_credentials(
             logger=Logger(name="test-sxbet-execution"),
             config=config,
         )
+
+
+# Field names mirror the SX.bet GET /trades schema (settled, outcome, bettingOutcomeOne).
+def _settled_trade(
+    *,
+    order_hash="0xorderhash",
+    fill_hash="0xfillhash",
+    outcome=1,
+    betting_outcome_one=True,
+    settled=True,
+    trade_status="SUCCESS",
+    settle_value=1,
+) -> dict:
+    return {
+        "orderHash": order_hash,
+        "fillHash": fill_hash,
+        "marketHash": "0xmarkethash",
+        "stake": "5000000",
+        "odds": _ODDS_2X,
+        "maker": True,
+        "bettingOutcomeOne": betting_outcome_one,
+        "settled": settled,
+        "outcome": outcome,
+        "settleValue": settle_value,
+        "tradeStatus": trade_status,
+    }
+
+
+def _trades_payload(*trades: dict) -> dict:
+    return {"data": {"trades": list(trades)}}
+
+
+def _make_settlement_client(http_client, instrument, msgbus, cache):
+    client = _make_fill_client(http_client, instrument, msgbus, cache)
+    settlements: list[BetSettlement] = []
+    msgbus.subscribe(topic=BET_SETTLEMENTS_TOPIC, handler=settlements.append)
+    return client, settlements
+
+
+@pytest.mark.asyncio
+async def test_settlement_poll_emits_won_once_and_refreshes_account():
+    instrument = _fill_instrument()
+    order = TestExecStubs.limit_order(
+        instrument=instrument,
+        price=instrument.make_price(2.0),
+        quantity=instrument.make_qty(10),
+    )
+    cache = TestComponentStubs.cache()
+    cache.add_instrument(instrument)
+    cache.add_order(order)
+    http_client = Mock()
+    http_client.get_user_trades = AsyncMock(
+        return_value=_trades_payload(_settled_trade(outcome=1, betting_outcome_one=True)),
+    )
+    http_client.get_balance = AsyncMock(return_value={"balance": "1000000"})
+    client, settlements = _make_settlement_client(
+        http_client,
+        instrument,
+        TestComponentStubs.msgbus(),
+        cache,
+    )
+    client._venue_order_ids[order.client_order_id] = VenueOrderId("0xorderhash")
+
+    await client._reconcile_settlements()
+    await client._reconcile_settlements()
+
+    assert len(settlements) == 1
+    settlement = settlements[0]
+    assert settlement.result == SettlementResult.WON
+    assert settlement.client_order_id == order.client_order_id.value
+    assert settlement.instrument_id == str(instrument.id)
+    assert settlement.settle_value == 1.0
+    assert settlement.venue == SXBET_VENUE.value
+    http_client.get_user_trades.assert_awaited_once_with(
+        client._wallet_address,
+        settled=True,
+    )
+    # Grading changes the wallet balance, so the account state refreshes immediately.
+    assert http_client.get_balance.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_settlement_poll_maps_lost_and_matches_taker_fill_hash():
+    instrument = _fill_instrument()
+    order = TestExecStubs.limit_order(
+        instrument=instrument,
+        price=instrument.make_price(2.0),
+        quantity=instrument.make_qty(10),
+    )
+    cache = TestComponentStubs.cache()
+    cache.add_instrument(instrument)
+    cache.add_order(order)
+    http_client = Mock()
+    # Taker fills track the fillHash as the venue order id; the maker's orderHash in the
+    # trade row is not ours.
+    http_client.get_user_trades = AsyncMock(
+        return_value=_trades_payload(
+            _settled_trade(
+                order_hash="0xmakerorder",
+                fill_hash="0xtakerfill",
+                outcome=2,
+                betting_outcome_one=True,
+            ),
+        ),
+    )
+    http_client.get_balance = AsyncMock(return_value={"balance": "1000000"})
+    client, settlements = _make_settlement_client(
+        http_client,
+        instrument,
+        TestComponentStubs.msgbus(),
+        cache,
+    )
+    client._venue_order_ids[order.client_order_id] = VenueOrderId("0xtakerfill")
+
+    await client._reconcile_settlements()
+
+    assert len(settlements) == 1
+    assert settlements[0].result == SettlementResult.LOST
+
+
+@pytest.mark.asyncio
+async def test_settlement_poll_maps_void_outcome_zero():
+    instrument = _fill_instrument()
+    order = TestExecStubs.limit_order(
+        instrument=instrument,
+        price=instrument.make_price(2.0),
+        quantity=instrument.make_qty(10),
+    )
+    cache = TestComponentStubs.cache()
+    cache.add_instrument(instrument)
+    cache.add_order(order)
+    http_client = Mock()
+    http_client.get_user_trades = AsyncMock(
+        return_value=_trades_payload(_settled_trade(outcome=0, settle_value=None)),
+    )
+    http_client.get_balance = AsyncMock(return_value={"balance": "1000000"})
+    client, settlements = _make_settlement_client(
+        http_client,
+        instrument,
+        TestComponentStubs.msgbus(),
+        cache,
+    )
+    client._venue_order_ids[order.client_order_id] = VenueOrderId("0xorderhash")
+
+    await client._reconcile_settlements()
+
+    assert len(settlements) == 1
+    assert settlements[0].result == SettlementResult.VOID
+    assert settlements[0].settle_value is None
+
+
+@pytest.mark.asyncio
+async def test_settlement_poll_handles_legs_grading_across_polls():
+    instrument = _fill_instrument()
+    order_a = TestExecStubs.limit_order(
+        instrument=instrument,
+        price=instrument.make_price(2.0),
+        quantity=instrument.make_qty(10),
+        client_order_id=ClientOrderId("O-LEG-A"),
+    )
+    order_b = TestExecStubs.limit_order(
+        instrument=instrument,
+        price=instrument.make_price(2.0),
+        quantity=instrument.make_qty(10),
+        client_order_id=ClientOrderId("O-LEG-B"),
+    )
+    cache = TestComponentStubs.cache()
+    cache.add_instrument(instrument)
+    cache.add_order(order_a)
+    cache.add_order(order_b)
+    http_client = Mock()
+    trade_a = _settled_trade(order_hash="0xlega", fill_hash="0xfilla", outcome=1)
+    trade_b = _settled_trade(
+        order_hash="0xlegb",
+        fill_hash="0xfillb",
+        outcome=1,
+        betting_outcome_one=False,
+    )
+    http_client.get_user_trades = AsyncMock(return_value=_trades_payload(trade_a))
+    http_client.get_balance = AsyncMock(return_value={"balance": "1000000"})
+    client, settlements = _make_settlement_client(
+        http_client,
+        instrument,
+        TestComponentStubs.msgbus(),
+        cache,
+    )
+    client._venue_order_ids[order_a.client_order_id] = VenueOrderId("0xlega")
+    client._venue_order_ids[order_b.client_order_id] = VenueOrderId("0xlegb")
+
+    await client._reconcile_settlements()
+    # The second leg grades on a later poll; the first row is re-served by the venue.
+    http_client.get_user_trades.return_value = _trades_payload(trade_a, trade_b)
+    await client._reconcile_settlements()
+
+    assert [s.client_order_id for s in settlements] == [
+        order_a.client_order_id.value,
+        order_b.client_order_id.value,
+    ]
+    assert [s.result for s in settlements] == [SettlementResult.WON, SettlementResult.LOST]
+    # Both legs settled -> nothing left to poll.
+    await client._reconcile_settlements()
+    assert http_client.get_user_trades.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_settlement_poll_without_tracked_orders_skips_api():
+    instrument = _fill_instrument()
+    http_client = Mock()
+    http_client.get_user_trades = AsyncMock()
+    client, settlements = _make_settlement_client(
+        http_client,
+        instrument,
+        TestComponentStubs.msgbus(),
+        TestComponentStubs.cache(),
+    )
+
+    await client._reconcile_settlements()
+
+    http_client.get_user_trades.assert_not_awaited()
+    assert settlements == []
+
+
+@pytest.mark.asyncio
+async def test_settlement_poll_ignores_ungraded_failed_and_unknown_rows():
+    instrument = _fill_instrument()
+    order = TestExecStubs.limit_order(
+        instrument=instrument,
+        price=instrument.make_price(2.0),
+        quantity=instrument.make_qty(10),
+    )
+    cache = TestComponentStubs.cache()
+    cache.add_instrument(instrument)
+    cache.add_order(order)
+    http_client = Mock()
+    http_client.get_user_trades = AsyncMock(
+        return_value=_trades_payload(
+            _settled_trade(settled=False, outcome=None),
+            _settled_trade(trade_status="FAILED"),
+            _settled_trade(outcome=None),
+            _settled_trade(order_hash="0xother", fill_hash="0xotherfill"),
+        ),
+    )
+    http_client.get_balance = AsyncMock(return_value={"balance": "1000000"})
+    client, settlements = _make_settlement_client(
+        http_client,
+        instrument,
+        TestComponentStubs.msgbus(),
+        cache,
+    )
+    client._venue_order_ids[order.client_order_id] = VenueOrderId("0xorderhash")
+
+    await client._reconcile_settlements()
+
+    assert settlements == []
+    assert http_client.get_balance.await_count == 0
+    # The order is still pending, so the next poll queries the venue again.
+    await client._reconcile_settlements()
+    assert http_client.get_user_trades.await_count == 2

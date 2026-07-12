@@ -43,6 +43,9 @@ from nautilus_trader.adapters.betting.common.odds import DeviggedBook
 from nautilus_trader.adapters.betting.common.odds import calculate_arbitrage_stakes
 from nautilus_trader.adapters.betting.common.odds import decimal_to_probability
 from nautilus_trader.adapters.betting.common.odds import devig_probabilities
+from nautilus_trader.adapters.betting.common.settlement import BET_SETTLEMENTS_TOPIC
+from nautilus_trader.adapters.betting.common.settlement import BetSettlement
+from nautilus_trader.adapters.betting.common.settlement import SettlementResult
 from nautilus_trader.adapters.betting.fixture_identity import DEFAULT_FIXTURE_IDENTITY_RESOLVER
 from nautilus_trader.adapters.betting.fx import FxConversion
 from nautilus_trader.adapters.betting.fx import PortfolioCurrencyPolicy
@@ -59,6 +62,8 @@ from nautilus_trader.adapters.betting.semantics import RuleStore
 from nautilus_trader.config import StrategyConfig
 from nautilus_trader.core.message import Event
 from nautilus_trader.common.events import TimeEvent
+from nautilus_trader.examples.strategies.arb_position_tracker import _COMPLEMENT_OUTCOME
+from nautilus_trader.examples.strategies.arb_position_tracker import ArbPairState
 from nautilus_trader.examples.strategies.arb_position_tracker import ArbPositionTracker
 from nautilus_trader.examples.strategies.opportunity_graph import FastCandidateSnapshot
 from nautilus_trader.examples.strategies.opportunity_graph import OpportunityCandidate
@@ -732,6 +737,10 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._live_execution_unwind_exits = 0
         self._arb_leg_siblings: dict[str, str] = {}
         self._arb_position_tracker = ArbPositionTracker()
+        self._arb_leg_settlements: dict[str, SettlementResult] = {}
+        self._bet_settlements_received = 0
+        self._bet_settlements_unmatched = 0
+        self._arb_pairs_settled = 0
         self._unwound_arb_pairs: set[str] = set()
         self._unwind_cancels_requested: set[str] = set()
         self._unwind_exits_requested: set[str] = set()
@@ -853,6 +862,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             f"manual_instructions={self._config.opportunity_log_manual_instructions}"
         )
         self.log.info(msg)
+        self.msgbus.subscribe(topic=BET_SETTLEMENTS_TOPIC, handler=self._on_bet_settlement)
         self._subscribe_enabled_venue_instrument_updates()
         self._subscribe_cached_instruments()
         self._start_instrument_refresh_timer()
@@ -874,6 +884,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         Run strategy shutdown logging and final summary emission.
         """
         self.log.info("BettingArbitrageStrategy stopping...")
+        if self.msgbus is not None:  # None when stopped before registration
+            self.msgbus.unsubscribe(topic=BET_SETTLEMENTS_TOPIC, handler=self._on_bet_settlement)
         self._stop_instrument_refresh_timer()
         self._cancel_instrument_reconcile_timers()
         msg = f"Opportunities found: {self._opportunities_found}"
@@ -4718,6 +4730,102 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         except Exception as e:  # pragma: no cover - defensive; never raise into the handler
             self.log.warning(f"Arb position tracker skipped fill: {e}")
 
+    def _on_bet_settlement(self, settlement: BetSettlement) -> None:
+        """
+        Realize arbitrage P&L when an execution client reports a graded bet.
+
+        Pair-settlement rule (legs back mutually exclusive outcomes of a binary market,
+        so at most one leg can win): a leg grading WON fixes the pair's winning outcome
+        immediately, even while the sibling's grading lags; otherwise the pair waits
+        until every tracked leg has graded — all VOID realizes zero (stakes returned),
+        no WON realizes every leg at its lose payoff. Each pair settles exactly once;
+        gradings for an already-settled pair are ignored.
+
+        """
+        try:
+            self._bet_settlements_received += 1
+            leg_id = str(settlement.client_order_id)
+            pair = self._arb_position_tracker.pair_for_leg(leg_id)
+            if pair is None or not pair.legs:
+                self._bet_settlements_unmatched += 1
+                self.log.warning(
+                    f"Bet settlement for untracked leg: {leg_id} ({settlement.result})",
+                )
+                return
+            if pair.settled:
+                self.log.debug(
+                    f"Bet settlement for already-settled pair ignored: {leg_id}",
+                )
+                return
+            self._arb_leg_settlements[leg_id] = settlement.result
+            self._maybe_settle_arb_pair(pair, leg_id, settlement.result)
+        except Exception as e:  # pragma: no cover - defensive; never raise into the handler
+            self.log.warning(f"Bet settlement skipped: {e}")
+
+    def _maybe_settle_arb_pair(
+        self,
+        pair: ArbPairState,
+        leg_id: str,
+        result: SettlementResult,
+    ) -> None:
+        if result == SettlementResult.WON:
+            self._realize_arb_pair(pair, winning_outcome=self._arb_leg_outcome(pair, leg_id))
+            return
+
+        graded = {lid: self._arb_leg_settlements.get(lid) for lid in pair.legs}
+        if any(res is None for res in graded.values()):
+            return  # A sibling leg has not graded yet; settle when it does
+
+        won_leg = next(
+            (lid for lid, res in graded.items() if res == SettlementResult.WON),
+            None,
+        )
+        if won_leg is not None:
+            self._realize_arb_pair(pair, winning_outcome=self._arb_leg_outcome(pair, won_leg))
+        elif all(res == SettlementResult.VOID for res in graded.values()):
+            self._realize_arb_pair(pair, void=True)
+        elif all(res == SettlementResult.LOST for res in graded.values()):
+            # No tracked outcome won; the complement scenario settles every leg at its
+            # lose payoff.
+            self._realize_arb_pair(pair, winning_outcome=_COMPLEMENT_OUTCOME)
+        else:
+            # LOST/VOID mixes cannot occur when legs share one market (grading is
+            # market-level); leave the pair open and visible rather than mis-realize.
+            self.log.error(
+                f"Arbitrage pair has mixed LOST/VOID gradings; not settling: "
+                f"pair_id={pair.pair_id} gradings={graded}",
+            )
+
+    def _arb_leg_outcome(self, pair: ArbPairState, leg_id: str) -> str | None:
+        leg = pair.legs.get(leg_id)
+        if leg is not None:
+            return leg.outcome
+        order = self.cache.order(ClientOrderId(leg_id))
+        if order is None:
+            return None
+        outcome = getattr(self.cache.instrument(order.instrument_id), "outcome", None)
+        return None if outcome is None else str(outcome)
+
+    def _realize_arb_pair(
+        self,
+        pair: ArbPairState,
+        winning_outcome: str | None = None,
+        *,
+        void: bool = False,
+    ) -> None:
+        if not void and winning_outcome is None:
+            self.log.error(
+                f"Cannot settle arbitrage pair without a winning outcome: {pair.pair_id}",
+            )
+            return
+        realized = pair.settle(winning_outcome, void=void)
+        self._arb_pairs_settled += 1
+        self.log.info(
+            f"Arbitrage pair settled: pair_id={pair.pair_id} "
+            f"winning_outcome={pair.winning_outcome} void={pair.void} "
+            f"realized_pnl={realized}",
+        )
+
     def on_order_accepted(self, event: Event) -> None:
         """
         Handle order accepted events.
@@ -5121,6 +5229,22 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         index = max(0, min(len(ordered_samples) - 1, int((len(ordered_samples) - 1) * percentile)))
         return ordered_samples[index] / 1_000_000
 
+    def _arb_position_tracker_stats(self) -> dict:
+        """
+        JSON-safe rollup of the arbitrage P&L tracker for stats and the runtime probe.
+        """
+        summary = self._arb_position_tracker.summary()
+        return {
+            "pairs_tracked": summary["pairs_tracked"],
+            "pairs_open": summary["pairs_open"],
+            "pairs_settled": self._arb_pairs_settled,
+            "open_exposure": str(summary["open_exposure"]),
+            "open_guaranteed_pnl": str(summary["open_guaranteed_pnl"]),
+            "realized_pnl": str(summary["realized_pnl"]),
+            "settlements_received": self._bet_settlements_received,
+            "settlements_unmatched": self._bet_settlements_unmatched,
+        }
+
     def get_stats(self) -> dict:
         """
         Get strategy statistics.
@@ -5260,6 +5384,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                     for venue, counts in sorted(self._order_lifecycle_counts_by_venue.items())
                 },
             },
+            "arb_position_tracker": self._arb_position_tracker_stats(),
             "instrument_refresh_requests": self._instrument_refresh_requests,
             "instrument_refresh_failures": self._instrument_refresh_failures,
             "instrument_refresh_added": self._instrument_refresh_added,
