@@ -714,13 +714,20 @@ class SXBetHttpClient:
         )
         return self._wrap_list_response(payload, "orders")
 
-    async def get_user_trades(self, wallet_address: str) -> dict[str, Any]:
+    async def get_user_trades(
+        self,
+        wallet_address: str,
+        settled: bool | None = None,
+    ) -> dict[str, Any]:
         """
-        Get trades for a specific wallet.
+        Get trades for a specific wallet, optionally filtered by settlement status.
         """
         self._require_api_key("user trades")
 
         params = {"bettor": wallet_address}
+        if settled is not None:
+            # aiohttp rejects bool query params; SX.bet expects "true"/"false".
+            params["settled"] = "true" if settled else "false"
         return await self._request("GET", SXBET_ENDPOINTS["user_trades"], params=params)
 
     async def get_balance(self, wallet_address: str, token: str) -> dict[str, Any]:

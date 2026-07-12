@@ -21,6 +21,9 @@ import re
 from decimal import Decimal
 
 from nautilus_trader.adapters.betting.common.enums import Outcome
+from nautilus_trader.adapters.betting.common.settlement import BET_SETTLEMENTS_TOPIC
+from nautilus_trader.adapters.betting.common.settlement import BetSettlement
+from nautilus_trader.adapters.betting.common.settlement import SettlementResult
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.sxbet.config import SXBetExecClientConfig
 from nautilus_trader.adapters.sxbet.constants import SXBET_TOKENS
@@ -186,8 +189,11 @@ class SXBetExecutionClient(LiveExecutionClient):
         self._venue_order_ids: dict[ClientOrderId, VenueOrderId] = {}
         # Cumulative matched size (wei) last emitted per order, for idempotent fills
         self._last_matched_wei: dict[ClientOrderId, int] = {}
+        # Orders whose settlement was already published, so grading never re-emits
+        self._settled_order_ids: set[ClientOrderId] = set()
         self._fill_poll_task: asyncio.Task | None = None
         self._account_state_task: asyncio.Task | None = None
+        self._settlement_poll_task: asyncio.Task | None = None
 
     async def _connect(self) -> None:
         """
@@ -209,6 +215,10 @@ class SXBetExecutionClient(LiveExecutionClient):
             self._account_state_loop(),
             log_msg="sxbet_account_state_poll",
         )
+        self._settlement_poll_task = self.create_task(
+            self._settlement_poll_loop(),
+            log_msg="sxbet_settlement_poll",
+        )
 
         self._log.info("SXBetExecutionClient connected")
 
@@ -217,11 +227,12 @@ class SXBetExecutionClient(LiveExecutionClient):
         Disconnect from the execution venue.
         """
         self._log.info("Disconnecting SXBetExecutionClient...")
-        for task in (self._fill_poll_task, self._account_state_task):
+        for task in (self._fill_poll_task, self._account_state_task, self._settlement_poll_task):
             if task is not None and not task.done():
                 task.cancel()
         self._fill_poll_task = None
         self._account_state_task = None
+        self._settlement_poll_task = None
         await self._http_client.disconnect()
         self._log.info("SXBetExecutionClient disconnected")
 
@@ -246,6 +257,109 @@ class SXBetExecutionClient(LiveExecutionClient):
                 raise
             except (ValueError, TypeError, KeyError, SXBetHttpClientError) as e:
                 self._log.error(f"SX.bet account state refresh failed: {e}")
+
+    async def _settlement_poll_loop(self) -> None:
+        interval = float(getattr(self._config, "settlement_poll_interval_secs", 30.0))
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await self._reconcile_settlements()
+            except asyncio.CancelledError:
+                raise
+            except (ValueError, TypeError, KeyError, SXBetHttpClientError) as e:
+                self._log.error(f"SX.bet settlement reconciliation failed: {e}")
+
+    async def _reconcile_settlements(self) -> None:
+        """
+        Poll graded SX.bet trades and publish one ``BetSettlement`` per graded order.
+
+        Only runs while tracked orders remain unsettled; queries the ``/trades`` feed
+        with ``settled=true`` and matches rows to tracked orders by ``orderHash`` (maker
+        posts) or ``fillHash`` (taker fills). Idempotent: each order settles the bus
+        exactly once, across polls and across multiple graded trade rows (partial
+        matches all grade with the market, so the first graded row decides).
+
+        A grading pays out or releases the wallet balance, so the account state is
+        refreshed immediately after publishing settlements rather than waiting for the
+        slower account-state poll.
+
+        """
+        pending = {
+            str(venue_order_id): client_order_id
+            for client_order_id, venue_order_id in self._venue_order_ids.items()
+            if client_order_id not in self._settled_order_ids
+        }
+        if not pending:
+            return
+
+        trades = await self._http_client.get_user_trades(self._wallet_address, settled=True)
+        emitted = 0
+        for trade in trades.get("data", {}).get("trades", []):
+            client_order_id = pending.get(str(trade.get("orderHash"))) or pending.get(
+                str(trade.get("fillHash")),
+            )
+            if client_order_id is None or client_order_id in self._settled_order_ids:
+                continue
+
+            result = self._settlement_result(trade)
+            if result is None:
+                continue
+
+            self._settled_order_ids.add(client_order_id)
+            self._publish_settlement(client_order_id, result, trade)
+            emitted += 1
+
+        if emitted:
+            await self._update_account_state()
+
+    @staticmethod
+    def _settlement_result(trade: dict) -> SettlementResult | None:
+        """
+        Derive WON / LOST / VOID from a graded ``/trades`` row.
+
+        Grounded in the SX.bet API schema: ``settled`` flags grading, ``outcome`` is the
+        market's final outcome (``1`` outcome one, ``2`` outcome two, ``0`` void — a
+        voided market returns all stakes), and ``bettingOutcomeOne`` is the side this
+        bet backed. ``settleValue`` is not used because it does not encode the bettor's
+        result.
+
+        """
+        if trade.get("settled") is not True:
+            return None
+        if trade.get("tradeStatus") == "FAILED":
+            return None
+        outcome = trade.get("outcome")
+        if outcome == 0:
+            return SettlementResult.VOID
+        if outcome not in (1, 2):
+            return None
+        betting_outcome_one = trade.get("bettingOutcomeOne")
+        if not isinstance(betting_outcome_one, bool):
+            return None
+        won = (outcome == 1) == betting_outcome_one
+        return SettlementResult.WON if won else SettlementResult.LOST
+
+    def _publish_settlement(
+        self,
+        client_order_id: ClientOrderId,
+        result: SettlementResult,
+        trade: dict,
+    ) -> None:
+        order = self._cache.order(client_order_id)
+        settle_value = trade.get("settleValue")
+        settlement = BetSettlement(
+            venue=SXBET_VENUE.value,
+            client_order_id=client_order_id.value,
+            instrument_id=str(order.instrument_id) if order is not None else None,
+            result=result,
+            settle_value=float(settle_value) if isinstance(settle_value, (int, float)) else None,
+            ts_event=self._clock.timestamp_ns(),
+        )
+        self._log.info(
+            f"SX.bet bet settled: {client_order_id} {result} "
+            f"(marketHash={trade.get('marketHash')}, settleValue={settle_value})",
+        )
+        self._msgbus.publish(topic=BET_SETTLEMENTS_TOPIC, msg=settlement)
 
     async def _update_account_state(self) -> None:
         """
