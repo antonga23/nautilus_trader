@@ -59,7 +59,7 @@ rotate_sessions() {
   for node_dir in "$NODES_ROOT"/*/; do
     [[ -d "$node_dir" ]] || continue
     name="$(basename "$node_dir")"
-    [[ "$name" == "archives" ]] && continue
+    if [[ "$name" == "archives" ]]; then continue; fi
     sessions_dir="$node_dir/sessions"
     [[ -d "$sessions_dir" ]] || continue
     while IFS= read -r stale; do
@@ -71,7 +71,7 @@ rotate_sessions() {
         continue
       fi
       for target in "$sdir/node.log" "$sdir/events.jsonl"; do
-        [[ -f "$target" ]] && gzip -f "$target" 2> /dev/null || true
+        if [[ -f "$target" ]]; then gzip -f "$target" 2> /dev/null || true; fi
       done
     done < <(hc_list_subdir_names "$sessions_dir" | hc_sessions_to_rotate "$SESSION_KEEP")
   done
