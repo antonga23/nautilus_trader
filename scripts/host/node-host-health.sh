@@ -64,7 +64,7 @@ resolve_webhook_from_nodeops() {
   [[ "$env_line" == *NODEOPS_ALERT_WEBHOOK=* ]] || return 0
   local extracted
   extracted="$(printf '%s\n' "$env_line" | tr ' ' '\n' | sed -n 's/^NODEOPS_ALERT_WEBHOOK=//p' | head -n 1)"
-  [[ -n "$extracted" ]] && WEBHOOK="$extracted"
+  if [[ -n "$extracted" ]]; then WEBHOOK="$extracted"; fi
 }
 
 alert() {
@@ -81,7 +81,7 @@ rotate_sessions_all_nodes() {
   for node_dir in "$NODES_ROOT"/*/; do
     [[ -d "$node_dir" ]] || continue
     name="$(basename "$node_dir")"
-    [[ "$name" == "archives" ]] && continue
+    if [[ "$name" == "archives" ]]; then continue; fi
     sessions_dir="$node_dir/sessions"
     [[ -d "$sessions_dir" ]] || continue
     while IFS= read -r stale; do
@@ -174,7 +174,7 @@ restart_count_last_hour() {
   }
   while IFS= read -r ts; do
     hc_is_uint "$ts" || continue
-    [[ "$ts" -ge "$cutoff" ]] && count=$((count + 1))
+    if [[ "$ts" -ge "$cutoff" ]]; then count=$((count + 1)); fi
   done < "$logfile"
   printf '%s\n' "$count"
 }
@@ -222,7 +222,7 @@ check_containers() {
   for node_dir in "$NODES_ROOT"/*/; do
     [[ -d "$node_dir" ]] || continue
     node="$(basename "$node_dir")"
-    [[ "$node" == "archives" ]] && continue
+    if [[ "$node" == "archives" ]]; then continue; fi
     [[ "$node" == "$NODE_PREFIX"* ]] || continue
 
     wedged=""
@@ -241,17 +241,17 @@ check_containers() {
     if [[ -n "$hb_age" ]] && [[ "$hb_age" -gt "$HEARTBEAT_STALE_SECS" ]]; then
       alert "$node" "heartbeat_stale" "warning" \
         "heartbeat ${hb_age}s old (> ${HEARTBEAT_STALE_SECS}s)"
-      [[ "$state" == "running" ]] && wedged="heartbeat_stale=${hb_age}s"
+      if [[ "$state" == "running" ]]; then wedged="heartbeat_stale=${hb_age}s"; fi
     fi
 
     st_age="$(json_field_age_secs "$node_dir/status.json" updatedAt)"
     if [[ -n "$st_age" ]] && [[ "$st_age" -gt "$STATUS_STALE_SECS" ]]; then
       alert "$node" "status_stale" "warning" \
         "status.json updatedAt ${st_age}s old (> ${STATUS_STALE_SECS}s)"
-      [[ "$state" == "running" ]] && wedged="status_stale=${st_age}s"
+      if [[ "$state" == "running" ]]; then wedged="status_stale=${st_age}s"; fi
     fi
 
-    [[ -n "$wedged" ]] && maybe_restart "$node" "$wedged"
+    if [[ -n "$wedged" ]]; then maybe_restart "$node" "$wedged"; fi
   done
 }
 
