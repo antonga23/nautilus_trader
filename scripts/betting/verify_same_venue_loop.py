@@ -17,6 +17,7 @@ note, not a failure.
 
 Reuses the normalization in ``runtime_probe_report`` so the same coverage and
 candidate fields feed both the release report and this loop check.
+
 """
 
 from __future__ import annotations
@@ -48,6 +49,7 @@ def execution_approvals(payload: dict[str, Any]) -> dict[str, Any] | None:
     Mirrors ``tools.nodeops.server.execution_approvals_from_probe`` without
     importing the HTTP server: prefer ``runtimeProbe.executionApprovals`` and
     fall back to the legacy ``strategyStats.execution_approvals`` location.
+
     """
     for container_key, approvals_key in (
         ("runtimeProbe", "executionApprovals"),
