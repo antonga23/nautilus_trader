@@ -4790,7 +4790,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             self._realize_arb_pair(pair, winning_outcome=_COMPLEMENT_OUTCOME)
         else:
             # LOST/VOID mixes cannot occur when legs share one market (grading is
-            # market-level); leave the pair open and visible rather than mis-realize.
+            # market-level); leave the pair open and visible rather than realize it wrongly.
             self.log.error(
                 f"Arbitrage pair has mixed LOST/VOID gradings; not settling: "
                 f"pair_id={pair.pair_id} gradings={graded}",
