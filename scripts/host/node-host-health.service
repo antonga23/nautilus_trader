@@ -1,0 +1,11 @@
+[Unit]
+Description=Trading-node host health monitor (disk/OOM/container auto-remediation)
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+User=root
+EnvironmentFile=-/etc/cloudbet/node-host-health.conf
+WorkingDirectory=/opt/cloudbet/host-tools
+ExecStart=/opt/cloudbet/host-tools/node-host-health.sh check

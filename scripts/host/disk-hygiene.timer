@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the trading-node host disk-hygiene routine daily
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=30min
+Persistent=true
+Unit=disk-hygiene.service
+
+[Install]
+WantedBy=timers.target
