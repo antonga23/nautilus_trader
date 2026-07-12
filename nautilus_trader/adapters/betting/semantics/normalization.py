@@ -237,6 +237,7 @@ class MarketNormalizer:
             selection=selection,
         )
         params = cls._drop_redundant_line_sources(params)
+        params = cls._strip_whole_game_period(params)
 
         event_id = (
             cls._value(item, "event_id") or cls._value(item, "eventId") or cls._value(item, "id")
@@ -510,6 +511,19 @@ class MarketNormalizer:
             for key, value in params.items()
             if key not in ("total", "handicap") or value != line_value
         }
+
+    @staticmethod
+    def _strip_whole_game_period(params: dict[str, str]) -> dict[str, str]:
+        # CloudBet whole-game submarket keys carry period=ft (or period=ot&period=ft);
+        # the live instrument carries none. Drop the redundant whole-game period so the
+        # corpus params_key matches the live node's (genuine sub-game tokens are kept).
+        period = params.get("period")
+        if period is None:
+            return params
+        tokens = {token.strip().lower() for token in period.split("|") if token.strip()}
+        if tokens in ({"ft"}, {"ft", "ot"}):
+            return {key: value for key, value in params.items() if key != "period"}
+        return params
 
     @classmethod
     def _venue_selection_relative_params(
@@ -878,7 +892,11 @@ class MarketNormalizer:
         if "second_half" in text or "2h" in normalized_periods:
             return "second_half"
         if normalized_periods in ({"ft", "ot"}, {"ot", "ft"}):
-            return "full_time_including_overtime"
+            # Regulation+overtime spanning the whole game IS the full-time market. The
+            # live feed carries no period token, so folding overtime into the scope
+            # here would orphan every corpus record against its live node; the overtime
+            # nuance rides the includes_overtime rules_flag instead (see _rules_flags).
+            return "full_time"
         if "ft" in normalized_periods or "period_ft" in text:
             return "full_time"
         return None
@@ -900,17 +918,21 @@ class MarketNormalizer:
         inning_value = params.get("inning", "").strip().lower()
         if inning_value.isdigit():
             return f"inning_{inning_value}"
-        inning_period = next(
-            (
-                item
-                for item in normalized_periods
-                if item.startswith("inning") and item[6:].isdigit()
-            ),
-            None,
+        inning_numbers = sorted(
+            int(item[6:])
+            for item in normalized_periods
+            if item.startswith("inning") and item[6:].isdigit()
         )
-        if inning_period:
-            return f"inning_{inning_period[6:]}"
-        return None
+        if not inning_numbers:
+            return None
+        if len(inning_numbers) == 1:
+            return f"inning_{inning_numbers[0]}"
+        # A multi-inning submarket (e.g. innings 1-5) must map to one stable scope
+        # regardless of set iteration order, otherwise the same market drifts between
+        # inning_2/inning_4 run-to-run. Contiguous spans read as innings_{lo}_to_{hi}.
+        if inning_numbers == list(range(inning_numbers[0], inning_numbers[-1] + 1)):
+            return f"innings_{inning_numbers[0]}_to_{inning_numbers[-1]}"
+        return "innings_" + "_".join(str(number) for number in inning_numbers)
 
     @staticmethod
     def _rules_flags(scope: str, raw_text: str) -> tuple[str, ...]:

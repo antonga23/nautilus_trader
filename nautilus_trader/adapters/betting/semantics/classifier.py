@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from decimal import Decimal
 from decimal import InvalidOperation
 
@@ -37,6 +38,8 @@ from nautilus_trader.adapters.betting.semantics.types import PayoffVector
 from nautilus_trader.adapters.betting.semantics.types import RelationshipType
 from nautilus_trader.adapters.betting.semantics.types import SettlementState
 
+
+logger = logging.getLogger(__name__)
 
 TWO_WAY_RESULT_STATES = ("HOME_WIN", "AWAY_WIN")
 CROSS_FAMILY_PROJECTION_CAVEAT = "cross_family_partition_projection"
@@ -63,6 +66,11 @@ class RuleClassifier:
     ) -> None:
         self._normalizer = normalizer or MarketNormalizer()
         self._vector_builder = vector_builder or PayoffVectorBuilder()
+        self._scope_mismatch_skips = 0
+
+    @property
+    def scope_mismatch_skips(self) -> int:
+        return self._scope_mismatch_skips
 
     def classify(
         self,
@@ -89,6 +97,18 @@ class RuleClassifier:
         vector_a: PayoffVector,
         vector_b: PayoffVector,
     ) -> MinedRule | None:
+        if selection_a.scope != selection_b.scope:
+            # The miner buckets evidence by scope, so equal-scope pairs are the norm.
+            # A residual scope mismatch could only yield a scope="mixed" template whose
+            # patterns no live node (each at one concrete scope) can ever match. Skip it
+            # rather than emit a silently-dead rule; this makes "mixed" unreachable.
+            self._scope_mismatch_skips += 1
+            logger.debug(
+                "skipped classification for scope mismatch: %s != %s",
+                selection_a.scope,
+                selection_b.scope,
+            )
+            return None
         alternate_totals = self._alternate_totals_coverage_vectors(
             selection_a,
             selection_b,

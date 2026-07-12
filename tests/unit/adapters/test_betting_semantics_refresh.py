@@ -151,9 +151,231 @@ def test_cloudbet_basketball_spread_normalizes_from_fixture():
 
     assert normalized.market_type == CanonicalMarketType.POINT_SPREAD.value
     assert normalized.selection == "HOME"
-    assert normalized.scope == "full_time_including_overtime"
+    # Whole-game period=ot&period=ft is the full-time market; the overtime nuance is
+    # carried by the includes_overtime rules_flag, not the scope, so the corpus record
+    # keeps the same identity as the live instrument (which has no period token).
+    assert normalized.scope == "full_time"
+    assert normalized.param("period") is None
+    assert "includes_overtime" in normalized.rules_flags
     assert normalized.param("line") == "3.5"
     assert normalized.param("handicap") is None
+
+
+def _semantic_identity(selection: NormalizedSelection) -> tuple[str, ...]:
+    # Mirror the runtime node/template match key (runner._template_pattern_key and the
+    # semantic node identity dict): rules_flags are metadata, not part of the identity.
+    return (
+        selection.sport,
+        selection.scope,
+        selection.market_type,
+        selection.market_family,
+        selection.selection,
+        json.dumps(list(selection.params), sort_keys=True, separators=(",", ":")),
+    )
+
+
+def test_cloudbet_whole_game_corpus_identity_matches_live_and_sxbet():
+    normalizer = MarketNormalizer()
+    cb_corpus = normalizer.normalize(
+        {
+            "provider": "CLOUDBET",
+            "sport_name": "baseball",
+            "event_id": "evt-1",
+            "event_name": "Team A vs Team B",
+            "home_name": "Team A",
+            "away_name": "Team B",
+            "market_name": "baseball.moneyline",
+            "market_type": "baseball.moneyline",
+            "submarket_period": "period=ot&period=ft",
+            "outcome": "home",
+        },
+    )
+    cb_live = normalizer.normalize(
+        betting_instrument(
+            sport="baseball",
+            market_name="baseball.moneyline",
+            market_type="baseball.moneyline",
+            outcome="home",
+            venue="CLOUDBET",
+        ),
+    )
+    sxbet_match_odds = normalizer.normalize(
+        {
+            "provider": "SXBET",
+            "sport_name": "baseball",
+            "event_id": "evt-1",
+            "event_name": "Team A vs Team B",
+            "home_name": "Team A",
+            "away_name": "Team B",
+            "market_name": "match_odds",
+            "market_type": "match_odds",
+            "outcome": "home",
+            "raw_market_type": 52,
+            "info": {
+                "raw_market_type": 52,
+                "is_two_way_market": True,
+                "sxbet_market_hash": "h-home",
+            },
+        },
+    )
+
+    assert cb_corpus.scope == "full_time"
+    assert cb_corpus.param("period") is None
+    # (a) The corpus record's matching identity is byte-identical to the live instrument
+    # it must hedge against, and to the equivalent SXBET two-way market.
+    assert _semantic_identity(cb_corpus) == _semantic_identity(cb_live)
+    assert _semantic_identity(cb_corpus) == _semantic_identity(sxbet_match_odds)
+    # (b) The overtime nuance survives as a rules_flag, not in the identity, so it does
+    # not re-introduce the divergence it used to encode in the scope.
+    assert "includes_overtime" in cb_corpus.rules_flags
+    assert "includes_overtime" not in cb_live.rules_flags
+
+
+def test_cloudbet_multi_inning_submarket_uses_stable_deterministic_scope():
+    normalizer = MarketNormalizer()
+
+    def scope_for(order: str) -> str:
+        return normalizer.normalize(
+            {
+                "provider": "CLOUDBET",
+                "sport_name": "baseball",
+                "event_id": "evt-1",
+                "event_name": "Team A vs Team B",
+                "home_name": "Team A",
+                "away_name": "Team B",
+                "market_name": "baseball.moneyline_innings_1_to_5",
+                "market_type": "baseball.moneyline_innings_1_to_5",
+                "submarket_period": order,
+                "outcome": "home",
+            },
+        ).scope
+
+    orderings = {
+        scope_for("period=inning1&period=inning2&period=inning3&period=inning4&period=inning5"),
+        scope_for("period=inning5&period=inning3&period=inning1&period=inning4&period=inning2"),
+    }
+    # (c) A genuine sub-game market keeps a distinct scope, and the multi-inning span
+    # resolves to one stable value regardless of set iteration order (was arbitrary).
+    assert orderings == {"innings_1_to_5"}
+
+    single_inning = normalizer.normalize(
+        {
+            "provider": "CLOUDBET",
+            "sport_name": "baseball",
+            "event_id": "evt-1",
+            "event_name": "Team A vs Team B",
+            "home_name": "Team A",
+            "away_name": "Team B",
+            "market_name": "baseball.inning_winner",
+            "market_type": "baseball.inning_winner",
+            "submarket_period": "period=inning3",
+            "outcome": "home",
+        },
+    )
+    assert single_inning.scope == "inning_3"
+
+
+def test_classifier_skips_mixed_scope_pairs_and_counts_them():
+    classifier = RuleClassifier()
+    normalizer = MarketNormalizer()
+    full_time = normalizer.normalize(
+        betting_instrument(
+            sport="baseball",
+            market_name="baseball.moneyline",
+            market_type="baseball.moneyline",
+            outcome="home",
+            venue="CLOUDBET",
+        ),
+    )
+    first_half = replace(full_time, scope="first_half", period="first_half")
+
+    assert classifier.scope_mismatch_skips == 0
+    # (d) A scope-mismatched pair is skipped (never becomes a scope="mixed" template)
+    # and the skip is counted.
+    assert classifier.classify(full_time, first_half) is None
+    assert classifier.scope_mismatch_skips == 1
+    # Equal-scope pairs still classify, and do not increment the counter.
+    assert classifier.classify(full_time, full_time) is not None
+    assert classifier.scope_mismatch_skips == 1
+
+
+def test_mini_mine_yields_cross_venue_template_for_co_quoted_fixture(tmp_path):
+    normalizer = MarketNormalizer()
+    home = "Arizona Diamondbacks"
+    away = "Los Angeles Dodgers"
+    start = "2026-07-12T02:40:00Z"
+
+    def cb_record(outcome: str, index: int) -> NormalizedSelectionRecord:
+        selection = normalizer.normalize(
+            {
+                "provider": "CLOUDBET",
+                "sport_name": "baseball",
+                "event_id": "cb-1",
+                "event_name": f"{home} vs {away}",
+                "home_name": home,
+                "away_name": away,
+                "cutoff_time": start,
+                "market_name": "baseball.moneyline",
+                "market_type": "baseball.moneyline",
+                "submarket_period": "period=ot&period=ft",
+                "outcome": outcome,
+            },
+        )
+        return NormalizedSelectionRecord(
+            record_id=f"cb-{index}",
+            provider="CLOUDBET",
+            selection=selection,
+        )
+
+    def sxbet_record(outcome: str, index: int) -> NormalizedSelectionRecord:
+        selection = normalizer.normalize(
+            {
+                "provider": "SXBET",
+                "sport_name": "baseball",
+                "event_id": "sx-1",
+                "event_name": f"{home} vs {away}",
+                "home_name": home,
+                "away_name": away,
+                "cutoff_time": start,
+                "market_name": "match_odds",
+                "market_type": "match_odds",
+                "outcome": outcome,
+                "raw_market_type": 52,
+                "info": {
+                    "raw_market_type": 52,
+                    "is_two_way_market": True,
+                    "sxbet_market_hash": f"h-{outcome}",
+                },
+            },
+        )
+        return NormalizedSelectionRecord(
+            record_id=f"sx-{index}",
+            provider="SXBET",
+            selection=selection,
+        )
+
+    records = [
+        cb_record("home", 0),
+        cb_record("away", 1),
+        sxbet_record("home", 0),
+        sxbet_record("away", 1),
+    ]
+    miner = RuleMiner(RuleStore(FileRuleCache(tmp_path)))
+    templates = miner.mine_templates(
+        records,
+        persist=False,
+        persist_event_candidates=False,
+    )
+
+    # (e) Before the corpus/live scope reconciliation, CloudBet records bucketed at
+    # full_time_including_overtime and never co-bucketed with SXBET's full_time, so no
+    # venue-spanning template could exist. Now the same fixture mines one.
+    cross_venue = [
+        template for template in templates if set(template.provider_scope) == {"CLOUDBET", "SXBET"}
+    ]
+    assert cross_venue
+    assert all(template.scope == "full_time" for template in cross_venue)
+    assert any(template.safety_tier == SafetyTier.EXECUTION_SAFE.value for template in cross_venue)
 
 
 def test_cloudbet_away_spread_normalizes_home_relative_line_to_selection_line():
