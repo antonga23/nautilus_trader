@@ -123,6 +123,7 @@ ensure_dir "$sessions_dir"
 ensure_dir "$session_dir"
 ensure_dir "$node_dir/semantic-rule-cache"
 ensure_dir "$node_dir/semantic-rule-cache-seed"
+ensure_dir "$node_dir/commands"
 
 write_event() {
   local event_type="$1"
@@ -274,6 +275,9 @@ fi
 
 printf '%s\n' "$image_ref" > "$current_image_file"
 rm -f "$node_dir/status.json" "$node_dir/heartbeat.json"
+# Pending approvals are in-memory only, so approval ids from the previous session
+# can never exist in the new one; drop any queued command files with them.
+rm -f "$node_dir"/commands/*.json
 
 run_args=(
   run -d

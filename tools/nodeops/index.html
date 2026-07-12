@@ -162,6 +162,14 @@
   #mwResult{margin-top:10px;font-family:var(--mono);font-size:12px;white-space:pre-wrap;
     background:var(--ground);border:1px solid var(--line);border-radius:6px;padding:0}
   #mwResult:not(:empty){padding:10px}
+  /* pending-trade approval cards */
+  .approval{margin-top:10px;padding:10px 12px;border:1px solid var(--line2);
+    border-radius:6px;background:var(--ground)}
+  .approval-head{margin-bottom:6px}
+  .approval .leg{font-size:12px;margin:3px 0;font-family:var(--mono)}
+  #apResult{margin-top:10px;font-family:var(--mono);font-size:12px;white-space:pre-wrap;
+    background:var(--ground);border:1px solid var(--line);border-radius:6px;padding:0}
+  #apResult:not(:empty){padding:10px}
   .del-confirm{display:none;margin-top:12px;padding:12px;border:1px solid var(--neg);
     border-radius:6px;background:var(--ground);max-width:420px}
   .del-confirm.open{display:block}
@@ -636,6 +644,7 @@ function renderBarList(map, emptyMsg) {
 // ---- drawer shell + tabs ---------------------------------------------------
 const TABS = [
   ["overview", "Overview"],
+  ["approvals", "Pending trades"],
   ["history", "Metrics"],
   ["edges", "Edges / Opportunities"],
   ["coverage", "Venue coverage"],
@@ -722,6 +731,10 @@ function renderTab(tab) {
     case "overview":
       body.innerHTML = tabOverview(d, probe);
       wireMarketWindow(state.current, d);
+      break;
+    case "approvals":
+      body.innerHTML = tabApprovals(d);
+      wireApprovals(state.current, d.readonly);
       break;
     case "history": body.innerHTML = tabHistory(); renderWindows(); loadCharts(state.current); break;
     case "edges": body.innerHTML = tabEdgesShell(); loadEdges(state.current); break;
@@ -896,6 +909,156 @@ function arbFunnel(probe) {
       "</div>";
   }
   return '<div class="funnel">' + bars + "</div>" + extraHtml;
+}
+
+// ---- Tab: Pending trades (manual execution approvals) -----------------------
+// Renders executionApprovals from the node's runtime probe. Approve/Reject POST
+// /api/nodes/<name>/approvals/<id>/(approve|reject); the server drops a command
+// file into the node dir, the strategy applies it on its next poll after
+// re-running every live execution gate, and the ack lands in recent decisions on
+// a later probe. Pending records live in strategy memory only, so a node restart
+// clears the queue.
+function fmtCountdown(iso) {
+  if (!iso) return "—";
+  const t = Date.parse(iso);
+  if (!isFinite(t)) return "—";
+  const secs = Math.round((t - Date.now()) / 1000);
+  if (secs <= 0) return "expired";
+  return secs < 90 ? secs + "s" : Math.round(secs / 60) + "m";
+}
+
+function fmtSince(iso) {
+  if (!iso) return "—";
+  const t = Date.parse(iso);
+  if (!isFinite(t)) return "—";
+  return fmtAge(Math.max(0, (Date.now() - t) / 1000)).text;
+}
+
+function pctOf(v) {
+  const n = toNum(v);
+  return n == null ? "—" : (n * 100).toFixed(2) + "%";
+}
+
+function approvalLeg(venue, event, market, outcome, params, odds, stake) {
+  return '<div class="leg"><b>' + esc(venue || "?") + "</b> " + esc(event || "") +
+    ' <span class="subtle" style="display:inline;margin:0">' + esc(market || "") +
+    (outcome ? " · " + esc(outcome) : "") + (params ? " · " + esc(params) : "") +
+    "</span><br>odds " + esc(String(odds != null ? odds : "—")) +
+    " · stake " + esc(String(stake != null ? stake : "—")) + "</div>";
+}
+
+function tabApprovals(d) {
+  const ap = d.executionApprovals;
+  const ro = d.readonly;
+  const out = ['<div class="tabpane active">'];
+  out.push('<div class="section"><h3>Pending trades' +
+    (ro ? ' <span class="muted">(read-only)</span>' : "") + "</h3>");
+  if (!ap) {
+    out.push('<div class="muted">no executionApprovals in runtime probe — node not ' +
+      "probing yet, or its build predates the approval queue</div></div></div>");
+    return out.join("");
+  }
+  out.push(renderKV({
+    mode: ap.mode,
+    "pending / cap": (ap.pending || []).length + " / " + num(ap.max_pending),
+    "ttl (s)": num(ap.ttl_secs),
+    staged: num(ap.staged),
+    "approved → executed": num(ap.approved_executed),
+    "approved → blocked": num(ap.approved_blocked),
+    rejected: num(ap.rejected),
+    expired: num(ap.expired),
+    evicted: num(ap.evicted),
+  }));
+  if (ap.mode !== "manual") {
+    out.push('<div class="subtle">execution approval mode is "' + esc(ap.mode) +
+      '" — arbs execute without operator approval; nothing stages here</div>');
+  }
+  out.push('<div class="subtle">Approving re-runs every live gate (fresh quotes, staleness, ' +
+    "caps, kill switch) on the node before any order is placed; a blocked approval is " +
+    "discarded, not retried. Restarting the node clears the queue.</div>");
+
+  const pending = Array.isArray(ap.pending) ? ap.pending : [];
+  if (!pending.length) {
+    out.push('<div class="muted">no trades awaiting approval</div>');
+  }
+  for (const p of pending) {
+    out.push('<div class="approval" data-approval-row="' + esc(p.approval_id) + '">');
+    out.push('<div class="approval-head"><b>' + esc(p.venue_a || "?") + " ↔ " +
+      esc(p.venue_b || "?") + "</b>" +
+      ' <span class="subtle" style="display:inline;margin:0">' + esc(p.match_type || "") +
+      " · id " + esc(p.approval_id) + "</span></div>");
+    out.push(approvalLeg(p.venue_a, p.event_a, p.market_a, p.outcome_a, p.params_a,
+      p.odds_a, p.stake_a));
+    out.push(approvalLeg(p.venue_b, p.event_b, p.market_b, p.outcome_b, p.params_b,
+      p.odds_b, p.stake_b));
+    out.push('<div class="kv" style="margin:6px 0">' +
+      '<span class="k">fee-adj margin</span><span class="v">' + pctOf(p.fee_adjusted_profit_margin) + "</span>" +
+      '<span class="k">expected profit</span><span class="v">' + esc(String(p.expected_profit != null ? p.expected_profit : "—")) + "</span>" +
+      '<span class="k">staged</span><span class="v">' + fmtSince(p.created_at) + " ago</span>" +
+      '<span class="k">expires in</span><span class="v">' + fmtCountdown(p.expires_at) + "</span>" +
+      "</div>");
+    out.push('<div class="actions">' +
+      '<button data-approve="' + esc(p.approval_id) + '" ' + (ro ? "disabled" : "") + ">Approve…</button>" +
+      '<button class="danger" data-reject="' + esc(p.approval_id) + '" ' + (ro ? "disabled" : "") + ">Reject…</button>" +
+      "</div></div>");
+  }
+  out.push('<div class="actions" style="margin-top:8px">' +
+    '<button class="link-btn" id="apRefresh" type="button">Refresh</button></div>');
+  out.push('<div id="apResult"></div>');
+  out.push("</div>");
+
+  const decisions = Array.isArray(ap.recent_decisions) ? ap.recent_decisions.slice().reverse() : [];
+  out.push('<div class="section"><h3>Recent decisions</h3>');
+  if (!decisions.length) {
+    out.push('<div class="muted">none yet</div>');
+  } else {
+    out.push('<table class="data"><thead><tr><th>at</th><th>action</th><th>approval</th>' +
+      "<th>result</th><th>reasons</th></tr></thead><tbody>" +
+      decisions.map(dec => "<tr><td>" + esc(dec.at || "—") + "</td><td>" + esc(dec.action || "") +
+        "</td><td>" + esc(dec.approval_id || "—") + "</td><td>" + esc(dec.result || "") +
+        "</td><td>" + esc((dec.reasons || []).join(", ")) + "</td></tr>").join("") +
+      "</tbody></table>");
+  }
+  out.push("</div></div>");
+  return out.join("");
+}
+
+function wireApprovals(node, ro) {
+  const result = document.getElementById("apResult");
+  const refresh = document.getElementById("apRefresh");
+  if (refresh) refresh.addEventListener("click", () => renderDrawer(node));
+  const act = async (id, action, message) => {
+    if (ro) return;
+    if (!confirm(message)) return;
+    if (result) result.textContent = action + " " + id + "…";
+    try {
+      const r = await api("/api/nodes/" + encodeURIComponent(node) + "/approvals/" +
+        encodeURIComponent(id) + "/" + action, { method: "POST" });
+      if (result) {
+        result.textContent = action + " queued (command " + r.command_id +
+          ") — node applies on next poll; decision lands under Recent decisions";
+      }
+      setTimeout(() => { if (state.current === node && state.tab === "approvals") renderDrawer(node); }, 4000);
+    } catch (e) {
+      if (result) result.textContent = action + " failed: " + e.message;
+    }
+  };
+  const rowSummary = id => {
+    const ap = (state.detail || {}).executionApprovals || {};
+    const p = (ap.pending || []).find(x => x.approval_id === id) || {};
+    return (p.venue_a || "?") + " " + (p.odds_a || "?") + " / " + (p.venue_b || "?") + " " +
+      (p.odds_b || "?") + ", stakes " + (p.stake_a || "?") + " + " + (p.stake_b || "?") +
+      ", expected profit " + (p.expected_profit || "?");
+  };
+  for (const btn of document.querySelectorAll("button[data-approve]")) {
+    btn.addEventListener("click", () => act(btn.dataset.approve, "approve",
+      "Approve trade " + btn.dataset.approve + " on " + node + "?\n\n" + rowSummary(btn.dataset.approve) +
+      "\n\nThe node re-runs every live gate on fresh quotes before placing orders."));
+  }
+  for (const btn of document.querySelectorAll("button[data-reject]")) {
+    btn.addEventListener("click", () => act(btn.dataset.reject, "reject",
+      "Reject trade " + btn.dataset.reject + " on " + node + "? The staged arb is discarded."));
+  }
 }
 
 // ---- Tab 2: Metrics history ------------------------------------------------

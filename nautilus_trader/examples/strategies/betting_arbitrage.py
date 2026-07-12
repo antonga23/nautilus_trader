@@ -26,9 +26,12 @@ from datetime import UTC
 from datetime import datetime
 from datetime import timedelta
 from decimal import Decimal
+import json
 import os
+from pathlib import Path
 import time
 from typing import Any
+from uuid import uuid4
 
 import msgspec
 
@@ -83,6 +86,7 @@ VALID_QUOTE_FRESHNESS_PROFILES = frozenset({"pre_match", "live", "custom"})
 VALID_DEVIG_METHODS = frozenset({"auto", "proportional", "shin", "logarithmic"})
 VALID_EXECUTION_PRICE_CHANGE_POLICIES = frozenset({"none", "better", "all"})
 VALID_EXECUTION_VENUE_MODES = frozenset({"all", "cross_venue", "same_venue"})
+VALID_EXECUTION_APPROVAL_MODES = frozenset({"manual", "auto"})
 DEFAULT_ENABLED_VENUES = frozenset({"CLOUDBET", "SXBET", "10BET"})
 # Venues whose execution adapter provably honours OrderSide.SELL as a position-reducing
 # exit. SX.bet's adapter ignores order side (it always posts the instrument's outcome),
@@ -92,6 +96,9 @@ NANOSECONDS_PER_SECOND = 1_000_000_000
 INSTRUMENT_REFRESH_TIMER_NAME = "betting-arbitrage-instrument-refresh"
 INSTRUMENT_RECONCILE_TIMER_PREFIX = "betting-arbitrage-instrument-reconcile"
 INSTRUMENT_RECONCILE_DELAY_SECS = 5.0
+APPROVAL_COMMAND_TIMER_NAME = "betting-arbitrage-approval-commands"
+APPROVAL_COMMAND_POLL_INTERVAL_SECS = 2.0
+APPROVAL_DECISION_HISTORY_LIMIT = 20
 RESOLUTION_HORIZON_STALE_GRACE_HOURS = 6.0
 LATENCY_SAMPLE_LIMIT = 2_000
 BettingInstrument = CryptoBettingInstrument | LegacyCryptoBettingInstrument
@@ -191,6 +198,77 @@ class OpportunityPairState:
     last_seen_ns: int
 
 
+def _utc_iso_from_ns(ts_ns: int) -> str:
+    return datetime.fromtimestamp(
+        ts_ns / NANOSECONDS_PER_SECOND,
+        tz=UTC,
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+@dataclass(slots=True)
+class PendingArbitrageApproval:
+    """
+    A fully gated, sized, fee-adjusted arbitrage staged for operator approval.
+
+    The staged opportunity is a decision-time snapshot only: an approve command never
+    executes it as-is, the full live gate stack re-runs on fresh quotes first. Records
+    live in strategy memory, so a node restart clears every pending approval.
+
+    """
+
+    approval_id: str
+    canonical_pair_id: str
+    opportunity: ArbitrageOpportunity
+    diagnostics: ArbitrageDiagnostics | None
+    created_ts_ns: int
+    expires_ts_ns: int
+    stake_a: Decimal
+    stake_b: Decimal
+    expected_profit: Decimal
+
+    def to_payload(self) -> dict[str, object]:
+        """
+        Render the JSON-safe record exposed through strategy stats and the runtime
+        probe.
+        """
+        opportunity = self.opportunity
+        instrument_a = opportunity.instrument_a
+        instrument_b = opportunity.instrument_b
+        return {
+            "approval_id": self.approval_id,
+            "canonical_pair_id": self.canonical_pair_id,
+            "created_at": _utc_iso_from_ns(self.created_ts_ns),
+            "expires_at": _utc_iso_from_ns(self.expires_ts_ns),
+            "created_ts_ns": self.created_ts_ns,
+            "expires_ts_ns": self.expires_ts_ns,
+            "match_type": opportunity.match_type,
+            "venue_a": str(instrument_a.id.venue),
+            "venue_b": str(instrument_b.id.venue),
+            "instrument_id_a": str(instrument_a.id),
+            "instrument_id_b": str(instrument_b.id),
+            "event_a": str(getattr(instrument_a, "event_name", "") or ""),
+            "event_b": str(getattr(instrument_b, "event_name", "") or ""),
+            "market_a": str(getattr(instrument_a, "market_name", "") or ""),
+            "market_b": str(getattr(instrument_b, "market_name", "") or ""),
+            "outcome_a": str(getattr(instrument_a, "outcome", "") or ""),
+            "outcome_b": str(getattr(instrument_b, "outcome", "") or ""),
+            "params_a": str(getattr(instrument_a, "params", "") or ""),
+            "params_b": str(getattr(instrument_b, "params", "") or ""),
+            "odds_a": str(opportunity.odds_a),
+            "odds_b": str(opportunity.odds_b),
+            "stake_a": str(self.stake_a),
+            "stake_b": str(self.stake_b),
+            "fee_adjusted_profit_margin": str(opportunity.profit_margin),
+            "raw_profit_margin": (
+                str(opportunity.raw_profit_margin)
+                if opportunity.raw_profit_margin is not None
+                else None
+            ),
+            "fee_drag": str(opportunity.fee_drag),
+            "expected_profit": str(self.expected_profit),
+        }
+
+
 class BettingArbitrageConfig(StrategyConfig, frozen=True):
     """
     Configuration for betting arbitrage strategy.
@@ -216,6 +294,22 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         Consider rollover requirements in stake sizing.
     auto_execute : bool, default False
         Automatically execute arbitrage when found.
+    execution_approval_mode : str, default "manual"
+        Execution approval mode: "manual" or "auto". In manual mode an arbitrage that
+        passes every live execution gate is staged as a pending-approval record instead
+        of being submitted; an operator approve command re-runs the full gate stack on
+        fresh quotes before any order is placed, and a reject command discards the
+        record. "auto" submits immediately once ``auto_execute`` fires (the previous
+        behavior). Pending records are held in memory only, so a node restart clears
+        them.
+    execution_approval_ttl_secs : float, default 300.0
+        Seconds a staged arbitrage stays approvable before it is auto-discarded.
+    execution_approval_max_pending : int, default 10
+        Maximum simultaneous pending approvals. Staging beyond the cap evicts the
+        oldest record; evictions are counted in strategy stats.
+    execution_approval_command_dir : str | None, default None
+        Directory polled for operator approve/reject command files. The trading-node
+        builder points this at ``<node dir>/commands``; ``None`` disables polling.
     arbitrage_quote_stale_threshold_secs : float, default 30.0
         Maximum quote age before an arbitrage candidate is treated as stale.
     duplicate_suppression_cooldown_secs : float, default 60.0
@@ -329,6 +423,10 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
     exclude_live: bool = False
     rollover_aware: bool = True
     auto_execute: bool = False
+    execution_approval_mode: str = "manual"
+    execution_approval_ttl_secs: float = 300.0
+    execution_approval_max_pending: int = 10
+    execution_approval_command_dir: str | None = None
     arbitrage_quote_stale_threshold_secs: float = 30.0
     duplicate_suppression_cooldown_secs: float = 60.0
     arbitrage_summary_interval_secs: float = 60.0
@@ -391,6 +489,12 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
             if self.live_execution_kill_switch_path
             else None
         )
+        execution_approval_mode = self.execution_approval_mode.strip().lower()
+        execution_approval_command_dir = (
+            self.execution_approval_command_dir.strip()
+            if self.execution_approval_command_dir
+            else None
+        )
         semantic_unmatched_quote_probe_venues = frozenset(
             str(venue).strip().upper()
             for venue in self.semantic_unmatched_quote_probe_venues
@@ -445,6 +549,7 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
             execution_price_change_policy=execution_price_change_policy,
             stablecoin_currencies=stablecoin_currencies,
         )
+        self._validate_execution_approval_config(execution_approval_mode)
         self._validate_refresh_config()
 
         msgspec.structs.force_setattr(self, "enabled_venues", enabled_venues)
@@ -456,6 +561,12 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
             self,
             "live_execution_kill_switch_path",
             live_execution_kill_switch_path,
+        )
+        msgspec.structs.force_setattr(self, "execution_approval_mode", execution_approval_mode)
+        msgspec.structs.force_setattr(
+            self,
+            "execution_approval_command_dir",
+            execution_approval_command_dir,
         )
         msgspec.structs.force_setattr(
             self,
@@ -603,6 +714,20 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
             raise ValueError(msg)
         self._validate_portfolio_currency_config(stablecoin_currencies)
 
+    def _validate_execution_approval_config(self, execution_approval_mode: str) -> None:
+        if execution_approval_mode not in VALID_EXECUTION_APPROVAL_MODES:
+            msg = (
+                f"Invalid execution_approval_mode: {execution_approval_mode}. "
+                f"Must be one of {sorted(VALID_EXECUTION_APPROVAL_MODES)}"
+            )
+            raise ValueError(msg)
+        if self.execution_approval_ttl_secs <= 0:
+            msg = "execution_approval_ttl_secs must be positive"
+            raise ValueError(msg)
+        if self.execution_approval_max_pending <= 0:
+            msg = "execution_approval_max_pending must be positive"
+            raise ValueError(msg)
+
     def _validate_portfolio_currency_config(
         self,
         stablecoin_currencies: frozenset[str],
@@ -740,6 +865,16 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._live_execution_realized_loss = Decimal(0)
         self._live_execution_block_reasons: Counter[str] = Counter()
         self._live_execution_submissions_by_venue: Counter[str] = Counter()
+        self._pending_approvals: dict[str, PendingArbitrageApproval] = {}
+        self._approval_decisions: list[dict[str, object]] = []
+        self._approvals_staged = 0
+        self._approvals_approved_executed = 0
+        self._approvals_approved_blocked = 0
+        self._approvals_rejected = 0
+        self._approvals_expired = 0
+        self._approvals_evicted = 0
+        self._approval_commands_processed = 0
+        self._approval_commands_invalid = 0
         self._order_lifecycle_counts_by_venue: dict[str, Counter[str]] = {}
         self._instrument_refresh_requests = 0
         self._instrument_refresh_failures = 0
@@ -815,6 +950,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self.log.info(msg)
         msg = f"Auto execute: {self._config.auto_execute}"
         self.log.info(msg)
+        msg = f"Execution approval mode: {self._config.execution_approval_mode}"
+        self.log.info(msg)
         msg = (
             "Arbitrage diagnostics: "
             f"quote_stale_threshold_secs={self._config.arbitrage_quote_stale_threshold_secs} "
@@ -856,6 +993,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._subscribe_enabled_venue_instrument_updates()
         self._subscribe_cached_instruments()
         self._start_instrument_refresh_timer()
+        self._start_approval_command_timer()
 
     def _semantic_rule_store(self) -> RuleStore | None:
         if self._config.semantic_rule_cache_dir:
@@ -875,6 +1013,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         """
         self.log.info("BettingArbitrageStrategy stopping...")
         self._stop_instrument_refresh_timer()
+        self._stop_approval_command_timer()
         self._cancel_instrument_reconcile_timers()
         msg = f"Opportunities found: {self._opportunities_found}"
         self.log.info(msg)
@@ -888,6 +1027,9 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         """
         if event.name == INSTRUMENT_REFRESH_TIMER_NAME:
             self._refresh_enabled_venue_instruments()
+            return
+        if event.name == APPROVAL_COMMAND_TIMER_NAME:
+            self._process_approval_command_files()
             return
         if event.name.startswith(f"{INSTRUMENT_RECONCILE_TIMER_PREFIX}:"):
             venue_value = event.name.split(":", maxsplit=1)[-1].upper()
@@ -966,6 +1108,34 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             self.clock.cancel_timer(INSTRUMENT_REFRESH_TIMER_NAME)
         except Exception as exc:
             self.log.warning(f"Unable to cancel instrument refresh timer: error={exc}")
+
+    def _approval_command_polling_enabled(self) -> bool:
+        return bool(
+            self._config.execution_approval_command_dir
+            and self._config.execution_approval_mode == "manual",
+        )
+
+    def _start_approval_command_timer(self) -> None:
+        if not self._approval_command_polling_enabled():
+            return
+        self.clock.set_timer(
+            name=APPROVAL_COMMAND_TIMER_NAME,
+            interval=timedelta(seconds=APPROVAL_COMMAND_POLL_INTERVAL_SECS),
+            callback=self.on_time_event,
+        )
+        self.log.info(
+            "Started execution approval command polling: "
+            f"dir={self._config.execution_approval_command_dir} "
+            f"interval_secs={APPROVAL_COMMAND_POLL_INTERVAL_SECS}",
+        )
+
+    def _stop_approval_command_timer(self) -> None:
+        if not self._approval_command_polling_enabled():
+            return
+        try:
+            self.clock.cancel_timer(APPROVAL_COMMAND_TIMER_NAME)
+        except Exception as exc:
+            self.log.warning(f"Unable to cancel approval command timer: error={exc}")
 
     def _cancel_instrument_reconcile_timers(self) -> None:
         for venue_value in list(self._pending_refresh_reconcile_venues):
@@ -4180,13 +4350,16 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self.log.info(msg)
 
         if self._config.auto_execute:
-            self._execute_arbitrage(opportunity, diagnostics=diagnostics)
+            if self._config.execution_approval_mode == "manual":
+                self._stage_arbitrage_approval(opportunity, diagnostics=diagnostics)
+            else:
+                self._execute_arbitrage(opportunity, diagnostics=diagnostics)
 
     def _execute_arbitrage(
         self,
         opportunity: ArbitrageOpportunity,
         diagnostics: ArbitrageDiagnostics | None = None,
-    ) -> None:
+    ) -> list[str]:
         """
         Execute an arbitrage opportunity.
 
@@ -4202,6 +4375,12 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         diagnostics : ArbitrageDiagnostics, optional
             Final runtime quality diagnostics used by live risk gates.
 
+        Returns
+        -------
+        list[str]
+            The block reasons preventing full submission, empty when both legs were
+            submitted.
+
         """
         if self._config.live_execution_armed:
             opportunity, refresh_reasons = self._live_execution_refresh_opportunity(opportunity)
@@ -4213,7 +4392,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                     f"instrument_a={opportunity.instrument_a.id} "
                     f"instrument_b={opportunity.instrument_b.id}",
                 )
-                return
+                return refresh_reasons
         opportunity = self.fee_adjusted_opportunity(opportunity)
         # Calculate optimal stakes
         stake_odds_a, stake_odds_b = self._stake_pricing_odds(opportunity)
@@ -4237,7 +4416,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 f"instrument_b={opportunity.instrument_b.id} "
                 f"stake_a={stake_a} stake_b={stake_b}",
             )
-            return
+            return risk_reasons
 
         msg = f"Executing arbitrage: stake_a={stake_a}, stake_b={stake_b}, profit={profit}"
         self.log.info(msg)
@@ -4282,6 +4461,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         submit_started_ns = time.perf_counter_ns()
         self._live_execution_attempts += 1
         submitted_count = 0
+        submit_failure_reasons: list[str] = []
         for order in (order_a, order_b):
             venue = str(order.instrument_id.venue).upper()
             try:
@@ -4291,6 +4471,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             except Exception as e:  # pragma: no cover - submit_order is normally non-throwing
                 self._live_execution_halt_reason = "submit_order_exception"
                 self._live_execution_block_reasons["submit_order_exception"] += 1
+                submit_failure_reasons.append("submit_order_exception")
                 self.log.error(f"Live order submission raised for {order.instrument_id}: {e}")
         self._record_latency_sample(
             self._order_submit_latency_ns,
@@ -4300,8 +4481,9 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         if submitted_count == 1:
             self._live_execution_unhedged_exposures += 1
             self._live_execution_halt_reason = "partial_submit_unhedged_exposure"
+            submit_failure_reasons.append("partial_submit_unhedged_exposure")
         if submitted_count != 2:
-            return
+            return sorted(set(submit_failure_reasons)) or ["submit_order_incomplete"]
 
         self._opportunities_executed += 1
         self._live_execution_submissions += 1
@@ -4321,6 +4503,314 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         for order in (order_a, order_b):
             if order.is_closed:
                 self._unwind_sibling_leg_for(str(order.client_order_id))
+        return []
+
+    def _stage_arbitrage_approval(
+        self,
+        opportunity: ArbitrageOpportunity,
+        diagnostics: ArbitrageDiagnostics | None = None,
+    ) -> PendingArbitrageApproval | None:
+        """
+        Stage a fully gated, sized, fee-adjusted arbitrage for operator approval.
+
+        Runs the same refresh, fee-adjustment, sizing, and risk-gate pipeline as
+        ``_execute_arbitrage`` up to (but excluding) order submission, so only an
+        arbitrage that would have been submitted right now is staged.
+
+        """
+        now_ns = self.clock.timestamp_ns()
+        self._purge_expired_approvals(now_ns)
+        if self._config.live_execution_armed:
+            opportunity, refresh_reasons = self._live_execution_refresh_opportunity(opportunity)
+            if refresh_reasons:
+                self._record_live_execution_block(refresh_reasons)
+                self.log.warning(
+                    "Arbitrage approval staging blocked before final quote check: "
+                    f"reasons={','.join(refresh_reasons)} "
+                    f"instrument_a={opportunity.instrument_a.id} "
+                    f"instrument_b={opportunity.instrument_b.id}",
+                )
+                return None
+        opportunity = self.fee_adjusted_opportunity(opportunity)
+        stake_odds_a, stake_odds_b = self._stake_pricing_odds(opportunity)
+        stake_a, stake_b, expected_profit = calculate_arbitrage_stakes(
+            odds_a=stake_odds_a,
+            odds_b=stake_odds_b,
+            total_stake=self._config.max_total_stake,
+        )
+        risk_reasons = self._live_execution_block_reasons_for(
+            opportunity=opportunity,
+            stake_a=stake_a,
+            stake_b=stake_b,
+            diagnostics=diagnostics,
+        )
+        if risk_reasons:
+            self._record_live_execution_block(risk_reasons)
+            self.log.warning(
+                "Arbitrage approval staging blocked: "
+                f"reasons={','.join(risk_reasons)} "
+                f"instrument_a={opportunity.instrument_a.id} "
+                f"instrument_b={opportunity.instrument_b.id} "
+                f"stake_a={stake_a} stake_b={stake_b}",
+            )
+            return None
+        return self._store_pending_approval(
+            opportunity=opportunity,
+            diagnostics=diagnostics,
+            stake_a=stake_a,
+            stake_b=stake_b,
+            expected_profit=expected_profit,
+            now_ns=now_ns,
+        )
+
+    def _store_pending_approval(
+        self,
+        *,
+        opportunity: ArbitrageOpportunity,
+        diagnostics: ArbitrageDiagnostics | None,
+        stake_a: Decimal,
+        stake_b: Decimal,
+        expected_profit: Decimal,
+        now_ns: int,
+    ) -> PendingArbitrageApproval:
+        canonical_pair_id = self._canonical_pair_id(
+            opportunity.instrument_a,
+            opportunity.instrument_b,
+        )
+        expires_ts_ns = now_ns + int(
+            self._config.execution_approval_ttl_secs * NANOSECONDS_PER_SECOND,
+        )
+        existing = next(
+            (
+                record
+                for record in self._pending_approvals.values()
+                if record.canonical_pair_id == canonical_pair_id
+            ),
+            None,
+        )
+        if existing is not None:
+            # Keep at most one record per pair: refresh the staged snapshot so the
+            # operator always reviews current odds/stakes under the same approval id.
+            existing.opportunity = opportunity
+            existing.diagnostics = diagnostics
+            existing.stake_a = stake_a
+            existing.stake_b = stake_b
+            existing.expected_profit = expected_profit
+            existing.expires_ts_ns = expires_ts_ns
+            return existing
+        while len(self._pending_approvals) >= self._config.execution_approval_max_pending:
+            oldest = min(
+                self._pending_approvals.values(),
+                key=lambda record: record.created_ts_ns,
+            )
+            del self._pending_approvals[oldest.approval_id]
+            self._approvals_evicted += 1
+            self._record_approval_decision(
+                command_id=None,
+                approval_id=oldest.approval_id,
+                action="evict",
+                result="discarded",
+                reasons=["pending_capacity_exceeded"],
+            )
+        record = PendingArbitrageApproval(
+            approval_id=uuid4().hex[:12],
+            canonical_pair_id=canonical_pair_id,
+            opportunity=opportunity,
+            diagnostics=diagnostics,
+            created_ts_ns=now_ns,
+            expires_ts_ns=expires_ts_ns,
+            stake_a=stake_a,
+            stake_b=stake_b,
+            expected_profit=expected_profit,
+        )
+        self._pending_approvals[record.approval_id] = record
+        self._approvals_staged += 1
+        self.log.info(
+            "Arbitrage staged for manual approval: "
+            f"approval_id={record.approval_id} "
+            f"instrument_a={opportunity.instrument_a.id} "
+            f"instrument_b={opportunity.instrument_b.id} "
+            f"odds_a={opportunity.odds_a} odds_b={opportunity.odds_b} "
+            f"stake_a={stake_a} stake_b={stake_b} "
+            f"fee_adjusted_profit_margin={opportunity.profit_margin} "
+            f"expected_profit={expected_profit} "
+            f"expires_at={_utc_iso_from_ns(expires_ts_ns)}",
+        )
+        return record
+
+    def handle_execution_approval_command(self, command: dict[str, Any]) -> dict[str, object]:
+        """
+        Apply one operator approve/reject command and return the recorded decision.
+        """
+        command_id = str(command.get("id") or "").strip() or None
+        action = str(command.get("command") or "").strip().lower()
+        approval_id = str(command.get("approval_id") or "").strip()
+        if action not in {"approve_arb", "reject_arb"} or not approval_id:
+            self._approval_commands_invalid += 1
+            return self._record_approval_decision(
+                command_id=command_id,
+                approval_id=approval_id or None,
+                action=action or "unknown",
+                result="invalid_command",
+                reasons=[],
+            )
+        self._approval_commands_processed += 1
+        if action == "approve_arb":
+            return self._approve_pending_arbitrage(approval_id, command_id=command_id)
+        return self._reject_pending_arbitrage(approval_id, command_id=command_id)
+
+    def _approve_pending_arbitrage(
+        self,
+        approval_id: str,
+        *,
+        command_id: str | None = None,
+    ) -> dict[str, object]:
+        self._purge_expired_approvals(self.clock.timestamp_ns())
+        record = self._pending_approvals.pop(approval_id, None)
+        if record is None:
+            return self._record_approval_decision(
+                command_id=command_id,
+                approval_id=approval_id,
+                action="approve",
+                result="unknown_approval_id",
+                reasons=[],
+            )
+        # Approval is necessary but never sufficient: the full live gate stack
+        # (arming, kill switch, caps, fresh final quotes) re-runs inside
+        # _execute_arbitrage before any order is submitted.
+        block_reasons = self._execute_arbitrage(record.opportunity, diagnostics=record.diagnostics)
+        if block_reasons:
+            self._approvals_approved_blocked += 1
+            return self._record_approval_decision(
+                command_id=command_id,
+                approval_id=approval_id,
+                action="approve",
+                result="blocked",
+                reasons=block_reasons,
+            )
+        self._approvals_approved_executed += 1
+        return self._record_approval_decision(
+            command_id=command_id,
+            approval_id=approval_id,
+            action="approve",
+            result="executed",
+            reasons=[],
+        )
+
+    def _reject_pending_arbitrage(
+        self,
+        approval_id: str,
+        *,
+        command_id: str | None = None,
+    ) -> dict[str, object]:
+        self._purge_expired_approvals(self.clock.timestamp_ns())
+        record = self._pending_approvals.pop(approval_id, None)
+        if record is None:
+            return self._record_approval_decision(
+                command_id=command_id,
+                approval_id=approval_id,
+                action="reject",
+                result="unknown_approval_id",
+                reasons=[],
+            )
+        self._approvals_rejected += 1
+        return self._record_approval_decision(
+            command_id=command_id,
+            approval_id=approval_id,
+            action="reject",
+            result="discarded",
+            reasons=[],
+        )
+
+    def _purge_expired_approvals(self, now_ns: int) -> None:
+        expired = [
+            record for record in self._pending_approvals.values() if record.expires_ts_ns <= now_ns
+        ]
+        for record in expired:
+            del self._pending_approvals[record.approval_id]
+            self._approvals_expired += 1
+            self._record_approval_decision(
+                command_id=None,
+                approval_id=record.approval_id,
+                action="expire",
+                result="discarded",
+                reasons=["approval_ttl_elapsed"],
+            )
+
+    def _record_approval_decision(
+        self,
+        *,
+        command_id: str | None,
+        approval_id: str | None,
+        action: str,
+        result: str,
+        reasons: Sequence[str],
+    ) -> dict[str, object]:
+        now_ns = self._safe_clock_timestamp_ns()
+        decision: dict[str, object] = {
+            "command_id": command_id,
+            "approval_id": approval_id,
+            "action": action,
+            "result": result,
+            "reasons": [str(reason) for reason in reasons],
+            "at": _utc_iso_from_ns(now_ns) if now_ns is not None else None,
+        }
+        self._approval_decisions.append(decision)
+        overflow = len(self._approval_decisions) - APPROVAL_DECISION_HISTORY_LIMIT
+        if overflow > 0:
+            del self._approval_decisions[:overflow]
+        self.log.info(
+            "Execution approval decision: "
+            f"action={action} approval_id={approval_id} result={result} "
+            f"reasons={','.join(str(reason) for reason in reasons)} "
+            f"command_id={command_id}",
+        )
+        return decision
+
+    def _process_approval_command_files(self) -> None:
+        command_dir = self._config.execution_approval_command_dir
+        if not command_dir:
+            return
+        try:
+            paths = sorted(
+                path
+                for path in Path(command_dir).iterdir()
+                if path.is_file() and path.suffix == ".json"
+            )
+        except OSError:
+            return
+        for path in paths:
+            command = self._consume_approval_command_file(path)
+            if command is None:
+                self._approval_commands_invalid += 1
+                continue
+            self.handle_execution_approval_command(command)
+
+    def _consume_approval_command_file(self, path: Path) -> dict[str, Any] | None:
+        try:
+            raw = path.read_text(encoding="utf8")
+        except OSError as exc:
+            self.log.warning(f"Unable to read approval command file: path={path} error={exc}")
+            self._unlink_approval_command_file(path)
+            return None
+        # Remove before applying so a failing command can never replay every poll;
+        # a rare duplicate apply is safe because the record is popped on first use.
+        self._unlink_approval_command_file(path)
+        try:
+            command = json.loads(raw)
+        except ValueError as exc:
+            self.log.warning(f"Invalid approval command JSON: path={path.name} error={exc}")
+            return None
+        if not isinstance(command, dict):
+            self.log.warning(f"Approval command payload must be an object: path={path.name}")
+            return None
+        return command
+
+    def _unlink_approval_command_file(self, path: Path) -> None:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            self.log.warning(f"Unable to remove approval command file: path={path} error={exc}")
 
     def _live_execution_block_reasons_for(
         self,
@@ -5260,6 +5750,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                     for venue, counts in sorted(self._order_lifecycle_counts_by_venue.items())
                 },
             },
+            "execution_approvals": self._execution_approvals_payload(),
             "instrument_refresh_requests": self._instrument_refresh_requests,
             "instrument_refresh_failures": self._instrument_refresh_failures,
             "instrument_refresh_added": self._instrument_refresh_added,
@@ -5318,6 +5809,42 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 if self._opportunities_found > 0
                 else 0
             ),
+        }
+
+    def _safe_clock_timestamp_ns(self) -> int | None:
+        # get_stats runs on the runtime probe thread and in tests on unregistered
+        # strategies whose base clock raises; approval payload rendering must never
+        # require a live clock.
+        try:
+            return self.clock.timestamp_ns()
+        except Exception:
+            return None
+
+    def _execution_approvals_payload(self) -> dict[str, object]:
+        now_ns = self._safe_clock_timestamp_ns()
+        pending = sorted(
+            self._pending_approvals.values(),
+            key=lambda record: record.created_ts_ns,
+        )
+        if now_ns is not None:
+            # Read-only expiry filter: physical discards happen on the strategy
+            # thread in _purge_expired_approvals.
+            pending = [record for record in pending if record.expires_ts_ns > now_ns]
+        return {
+            "mode": self._config.execution_approval_mode,
+            "command_dir": self._config.execution_approval_command_dir,
+            "ttl_secs": float(self._config.execution_approval_ttl_secs),
+            "max_pending": int(self._config.execution_approval_max_pending),
+            "staged": self._approvals_staged,
+            "approved_executed": self._approvals_approved_executed,
+            "approved_blocked": self._approvals_approved_blocked,
+            "rejected": self._approvals_rejected,
+            "expired": self._approvals_expired,
+            "evicted": self._approvals_evicted,
+            "commands_processed": self._approval_commands_processed,
+            "commands_invalid": self._approval_commands_invalid,
+            "pending": [record.to_payload() for record in pending],
+            "recent_decisions": list(self._approval_decisions),
         }
 
     def _provider_quote_poll_stats(self) -> dict[str, dict[str, object]]:

@@ -1128,6 +1128,7 @@ def _collect_runtime_probe_payload(
                 "total": 0,
             },
             "candidateQuality": _empty_candidate_quality_payload(),
+            "executionApprovals": stats.get("execution_approvals", {}),
             "instrumentRefresh": _instrument_refresh_payload(stats),
             "strategyStats": stats,
             "latencyDiagnostics": latency_diagnostics,
@@ -1204,6 +1205,7 @@ def _collect_runtime_probe_payload(
             "minValueEdge": stats.get("min_value_edge", "0"),
         },
         "liveExecution": stats.get("live_execution", {}),
+        "executionApprovals": stats.get("execution_approvals", {}),
         "semanticMatchInstruments": len(snapshot["matched_node_ids"]),
         "quotedSemanticMatchInstruments": sum(
             1 for node_id in snapshot["matched_node_ids"] if node_id in snapshot["quotes"]
