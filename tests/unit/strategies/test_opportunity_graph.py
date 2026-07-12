@@ -1003,3 +1003,35 @@ def test_python_evaluation_skips_missing_unprofitable_and_push_edges() -> None: 
             now_ns=4,
         ),
     )
+
+
+def test_semantic_template_payloads_cache_avoids_disk_reread(tmp_path: Path) -> None:  # skipcq
+    instruments = [_instrument(outcome="over"), _instrument(outcome="under")]
+    store = _semantic_rule_store(tmp_path / "rules", instruments[0], instruments[1])
+    matcher = MarketMatcher(rule_store=store, allow_unpromoted_topology=False)
+    graph = OpportunityGraph(matcher, engine="python")
+
+    real_load = store.load_promoted_template
+    load_calls = {"count": 0}
+
+    def _counting_load(template_id: str) -> Any:
+        load_calls["count"] += 1
+        return real_load(template_id)
+
+    store.load_promoted_template = _counting_load  # type: ignore[method-assign]
+
+    first = graph._semantic_template_payloads()
+    reads_after_first = load_calls["count"]
+    ensure(reads_after_first >= 1)
+
+    second = graph._semantic_template_payloads()
+    # No promoted template re-read from disk while the store generation is unchanged.
+    ensure(load_calls["count"] == reads_after_first)
+    ensure(second is first)
+
+    # A store write bumps the generation and invalidates the cache, forcing a reload.
+    template_id = store.list_promoted_template_ids()[0]
+    store.save_promoted_template(real_load(template_id))
+    third = graph._semantic_template_payloads()
+    ensure(load_calls["count"] > reads_after_first)
+    ensure(third is not first)

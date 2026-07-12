@@ -187,6 +187,19 @@ class RuleStore:
         self._dirty_index_keys: set[str] = set()
         self._dirty_index_entries = 0
         self._deferred_index_write_depth = 0
+        self._generation = 0
+
+    @property
+    def generation(self) -> int:
+        """
+        Monotonic counter bumped on every write to the store.
+
+        Consumers that cache derived views of the store (e.g. the semantic template
+        payloads) key on this so the cache invalidates exactly when the store changes —
+        a fresh mine or the periodic refresh — and stays warm in between.
+
+        """
+        return self._generation
 
     @contextmanager
     def defer_index_writes(self) -> Iterator[RuleStore]:
@@ -496,6 +509,7 @@ class RuleStore:
 
     def _write_bytes(self, key: str, raw: bytes) -> None:
         self._cache.add(key, gzip.compress(raw, compresslevel=1))
+        self._generation += 1
 
     def _read_bytes(self, key: str) -> bytes | None:
         raw = self._cache.get(key)

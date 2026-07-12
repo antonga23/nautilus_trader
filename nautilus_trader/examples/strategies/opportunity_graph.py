@@ -205,6 +205,10 @@ class OpportunityGraph:
         self._coverage_proof_count = 0
         self._coverage_hyperedge_count = 0
         self._coverage_summary_payload: dict[str, object] = self._empty_coverage_summary()
+        self._semantic_template_payloads_cache: list[dict[str, object]] | None = None
+        self._semantic_template_payloads_cache_store: RuleStore | None = None
+        self._semantic_template_payloads_cache_generation: int | None = None
+        self._semantic_template_payloads_cache_counts: tuple[int, int] = (0, 0)
         self._rust_semantic_templates_loaded = False
         self.nodes_by_id: dict[str, OpportunityNode] = {}
         self.edges_by_id: dict[str, OpportunityEdge] = {}
@@ -1100,7 +1104,29 @@ class OpportunityGraph:
         if rule_store is None or not hasattr(rule_store, "list_promoted_template_ids"):
             self._coverage_proof_count = 0
             self._coverage_hyperedge_count = 0
+            self._semantic_template_payloads_cache = None
+            self._semantic_template_payloads_cache_store = None
+            self._semantic_template_payloads_cache_generation = None
             return []
+
+        # This loads and gunzips every promoted template from disk. On a large
+        # multivenue store that is thousands of files, and the probe status
+        # writer calls it every heartbeat, so re-reading it each time starves the
+        # quote-poll loops. Templates only change when the store does, so serve a
+        # cached view keyed on the store's monotonic generation and rebuild only
+        # after a fresh mine / refresh bumps it.
+        generation = getattr(rule_store, "generation", None)
+        if (
+            generation is not None
+            and self._semantic_template_payloads_cache is not None
+            and self._semantic_template_payloads_cache_store is rule_store
+            and self._semantic_template_payloads_cache_generation == generation
+        ):
+            self._coverage_proof_count, self._coverage_hyperedge_count = (
+                self._semantic_template_payloads_cache_counts
+            )
+            return self._semantic_template_payloads_cache
+
         self._coverage_proof_count = (
             len(rule_store.list_coverage_proof_ids())
             if hasattr(rule_store, "list_coverage_proof_ids")
@@ -1135,6 +1161,14 @@ class OpportunityGraph:
                     "same_venue_execution_eligible": template.same_venue_execution_eligible,
                 },
             )
+
+        self._semantic_template_payloads_cache = payloads
+        self._semantic_template_payloads_cache_store = rule_store
+        self._semantic_template_payloads_cache_generation = generation
+        self._semantic_template_payloads_cache_counts = (
+            self._coverage_proof_count,
+            self._coverage_hyperedge_count,
+        )
         return payloads
 
     def _semantic_coverage_payloads(

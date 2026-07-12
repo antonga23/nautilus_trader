@@ -137,6 +137,12 @@ class BettingArbitrageNodeManifest(NautilusConfig, frozen=True):
     semantic_rule_cache_max_age_hours : float, optional
         Maximum age of a registered default mine that ``'default'`` mode will
         reuse. ``None`` disables the age check.
+    semantic_diagnostics_interval_secs : PositiveFloat, default 90.0
+        Minimum seconds between recomputes of the expensive semantic/coverage
+        probe diagnostics. Trading-relevant probe fields still refresh every
+        ``heartbeat_interval_secs``; the O(graph) diagnostic sections refresh at
+        most this often so the status writer releases the GIL between passes
+        instead of starving the venue quote-poll loops on a large graph.
 
     """
 
@@ -158,6 +164,7 @@ class BettingArbitrageNodeManifest(NautilusConfig, frozen=True):
     status_path: str | None = None
     heartbeat_path: str | None = None
     heartbeat_interval_secs: PositiveFloat = 5.0
+    semantic_diagnostics_interval_secs: PositiveFloat = 90.0
     timeout_connection: PositiveFloat = 30.0
     timeout_reconciliation: PositiveFloat = 10.0
     timeout_portfolio: PositiveFloat = 10.0

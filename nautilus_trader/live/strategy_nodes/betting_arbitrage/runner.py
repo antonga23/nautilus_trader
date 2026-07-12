@@ -386,6 +386,9 @@ class RuntimeProbeStatusWriter(threading.Thread):
         self._interval_secs = interval_secs
         self._stop_event = stop_event
         self._started_at = time.monotonic()
+        self._diagnostics_throttle = _RuntimeProbeDiagnosticsThrottle(
+            getattr(manifest, "semantic_diagnostics_interval_secs", 90.0),
+        )
 
     def run(self) -> None:
         min_profit_margin = Decimal(str(self._manifest.strategy.min_profit_margin))
@@ -398,6 +401,7 @@ class RuntimeProbeStatusWriter(threading.Thread):
                     self._strategy,
                     min_profit_margin=min_profit_margin,
                     elapsed_seconds=time.monotonic() - self._started_at,
+                    diagnostics=self._diagnostics_throttle,
                 )
                 _write_status(
                     self._status_path,
@@ -1074,16 +1078,73 @@ def _safe_call(target: object | None, method_name: str) -> object:
         return None
 
 
+class _RuntimeProbeDiagnosticsThrottle:
+    """
+    Rate-limit the O(graph) semantic and coverage probe sections.
+
+    The status writer runs every ``heartbeat_interval_secs`` (default 5s), but
+    ``_semantic_probe_diagnostics`` and ``_probe_coverage_book_devig_diagnostics``
+    do work proportional to the whole graph. On a large multivenue graph a single
+    pass runs for far longer than a heartbeat, so recomputing them every cycle
+    holds the GIL back-to-back and starves the asyncio venue quote-poll loops.
+    The trading-relevant probe fields keep refreshing every heartbeat; these two
+    sections refresh at most once per ``interval_secs`` and are reused in between,
+    which releases the GIL so the quote path keeps running regardless of graph
+    size.
+
+    """
+
+    def __init__(self, interval_secs: float, *, clock=time.monotonic) -> None:
+        self._interval_secs = max(0.0, float(interval_secs))
+        self._clock = clock
+        self._last_computed_at: float | None = None
+        self._semantic_diagnostics: dict[str, object] = {}
+        self._coverage_book_devig: dict[str, object] = _empty_coverage_book_devig_payload()
+
+    @property
+    def semantic_diagnostics(self) -> dict[str, object]:
+        return self._semantic_diagnostics
+
+    @property
+    def coverage_book_devig(self) -> dict[str, object]:
+        return self._coverage_book_devig
+
+    def should_recompute(self) -> bool:
+        # Always compute on the first cycle so the section is never empty.
+        if self._last_computed_at is None:
+            return True
+        return (self._clock() - self._last_computed_at) >= self._interval_secs
+
+    def store(
+        self,
+        *,
+        semantic_diagnostics: dict[str, object],
+        coverage_book_devig: dict[str, object] | None = None,
+    ) -> None:
+        self._semantic_diagnostics = semantic_diagnostics
+        if coverage_book_devig is not None:
+            self._coverage_book_devig = coverage_book_devig
+        self._last_computed_at = self._clock()
+
+
 def _collect_runtime_probe_payload(
     strategy,
     *,
     min_profit_margin: Decimal,
     elapsed_seconds: float,
+    diagnostics: _RuntimeProbeDiagnosticsThrottle | None = None,
 ) -> dict[str, object]:
     graph = strategy.opportunity_graph
     stats = strategy.get_stats()
     snapshot = _snapshot_probe_graph_state(graph)
-    semantic_diagnostics = _semantic_probe_diagnostics(graph)
+    # The semantic/coverage sections are the O(graph) hotspots; throttle them via
+    # ``diagnostics`` when supplied (the live status writer), otherwise compute
+    # them fresh every call (validation probe and direct callers).
+    recompute_diagnostics = diagnostics is None or diagnostics.should_recompute()
+    if recompute_diagnostics:
+        semantic_diagnostics = _semantic_probe_diagnostics(graph)
+    else:
+        semantic_diagnostics = diagnostics.semantic_diagnostics
     if snapshot is None:
         venue_coverage = _venue_pair_coverage(
             strategy,
@@ -1095,6 +1156,8 @@ def _collect_runtime_probe_payload(
         )
         empty_profitability = _empty_candidate_quality_payload()
         latency_diagnostics = _runtime_latency_diagnostics(stats, empty_profitability)
+        if recompute_diagnostics and diagnostics is not None:
+            diagnostics.store(semantic_diagnostics=semantic_diagnostics)
         return {
             "elapsedSeconds": round(elapsed_seconds, 2),
             "minProfitMargin": str(min_profit_margin),
@@ -1161,13 +1224,21 @@ def _collect_runtime_probe_payload(
         quotes=snapshot["quotes"],
         min_profit_margin=min_profit_margin,
     )
-    coverage_book_devig = _probe_coverage_book_devig_diagnostics(
-        strategy,
-        coverage_diagnostics=stats.get("opportunity_graph_coverage_summary", {}),
-        nodes=snapshot["nodes"],
-        quotes=snapshot["quotes"],
-        min_profit_margin=min_profit_margin,
-    )
+    if recompute_diagnostics:
+        coverage_book_devig = _probe_coverage_book_devig_diagnostics(
+            strategy,
+            coverage_diagnostics=stats.get("opportunity_graph_coverage_summary", {}),
+            nodes=snapshot["nodes"],
+            quotes=snapshot["quotes"],
+            min_profit_margin=min_profit_margin,
+        )
+    else:
+        coverage_book_devig = diagnostics.coverage_book_devig
+    if recompute_diagnostics and diagnostics is not None:
+        diagnostics.store(
+            semantic_diagnostics=semantic_diagnostics,
+            coverage_book_devig=coverage_book_devig,
+        )
     latency_diagnostics = _runtime_latency_diagnostics(stats, profitability)
     venue_coverage = _venue_pair_coverage(
         strategy,
