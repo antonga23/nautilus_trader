@@ -1031,7 +1031,9 @@ def test_semantic_template_payloads_cache_avoids_disk_reread(tmp_path: Path) -> 
 
     # A store write bumps the generation and invalidates the cache, forcing a reload.
     template_id = store.list_promoted_template_ids()[0]
-    store.save_promoted_template(real_load(template_id))
+    reloaded_template = real_load(template_id)
+    assert reloaded_template is not None
+    store.save_promoted_template(reloaded_template)
     third = graph._semantic_template_payloads()
     ensure(load_calls["count"] > reads_after_first)
     ensure(third is not first)
