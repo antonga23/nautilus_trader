@@ -64,6 +64,21 @@ class RelationshipType(str, Enum):
     DANGEROUS_NON_EQUIVALENT = "DANGEROUS_NON_EQUIVALENT"
 
 
+# Relationships whose two legs form a complementary partition of the outcome
+# space (no state where both legs lose), so the complementary-partition
+# arb-margin formula ``1 / (1/odds_a + 1/odds_b) - 1`` is meaningful. Backing
+# the same outcome on two books (EQUIVALENT_SELECTION) is a value / line-shopping
+# signal, not a hedge, so it is deliberately excluded here; DANGEROUS_NON_EQUIVALENT
+# is likewise not a guaranteed-coverage pair.
+ARB_MARGIN_RELATIONSHIP_TYPES: frozenset[str] = frozenset(
+    {
+        RelationshipType.COMPLEMENTARY_COVERAGE.value,
+        RelationshipType.VOID_COMPATIBLE_HEDGE.value,
+        RelationshipType.PARTIAL_SETTLEMENT_HEDGE.value,
+    },
+)
+
+
 class PromotionStatus(str, Enum):
     CANDIDATE = "CANDIDATE"
     PROMOTED = "PROMOTED"
