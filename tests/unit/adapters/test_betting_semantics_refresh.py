@@ -779,12 +779,15 @@ def test_sxbet_negative_three_quarter_handicap_is_supported():
         params="line=-3.25",
         handicap=-3.25,
     )
+    # SX.bet stamps one team-one (home) relative line on both legs, so the raw away
+    # leg carries the same -3.25 as the home leg; normalization negates it back to the
+    # selection-relative +3.25 that completes the partial-settlement hedge.
     away_plus_three_quarter = betting_instrument(
         market_name="asian_handicap",
         market_type="asian_handicap",
         outcome="away",
-        params="line=3.25",
-        handicap=3.25,
+        params="line=-3.25",
+        handicap=-3.25,
     )
 
     rule = classifier.classify(home_minus_three_quarter, away_plus_three_quarter)
@@ -1300,14 +1303,16 @@ def test_polymarket_spread_binary_maps_yes_no_to_team_line_semantics():
     assert normalized.selection == "AWAY"
     assert normalized.param("line") == "4.5"
 
+    # The SX.bet away leg is quoted with the home-relative line (-4.5); normalization
+    # negates it to the selection-relative +4.5 that matches the Polymarket away leg.
     sxbet_away_plus = betting_instrument(
         venue="SXBET",
         sport="basketball",
         market_name="spread",
         market_type="spread",
         outcome="away",
-        params="line=4.5",
-        handicap=4.5,
+        params="line=-4.5",
+        handicap=-4.5,
     )
     rule = RuleClassifier().classify(transformed, sxbet_away_plus)
     assert rule is not None

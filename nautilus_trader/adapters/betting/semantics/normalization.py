@@ -59,6 +59,18 @@ TEXT_MARKET_TYPE_RULES: tuple[tuple[CanonicalMarketType, tuple[str, ...]], ...] 
 )
 WINNER_TEXT_TOKENS = ("moneyline", "winner")
 SPREAD_TEXT_TOKENS = ("handicap", "spread", "run_line")
+# Venues whose away-side handicap/spread ``line`` is quoted relative to the home
+# (team-one) side rather than the away selection, so the away leg must be negated
+# to become selection-relative. CloudBet only needs this for POINT_SPREAD (its
+# Asian handicaps are already per-side); SX.bet quotes a single team-one-relative
+# ``line`` on both outcomes of every handicap market (numeric type 3/342 ->
+# ASIAN_HANDICAP), so both handicap families need negating on the away leg.
+AWAY_SELECTION_RELATIVE_MARKET_TYPES: dict[str, frozenset[CanonicalMarketType]] = {
+    "CLOUDBET": frozenset({CanonicalMarketType.POINT_SPREAD}),
+    "SXBET": frozenset(
+        {CanonicalMarketType.ASIAN_HANDICAP, CanonicalMarketType.POINT_SPREAD},
+    ),
+}
 
 
 class MarketNormalizer:
@@ -534,11 +546,10 @@ class MarketNormalizer:
         market_type: CanonicalMarketType,
         selection: str,
     ) -> dict[str, str]:
-        if (
-            venue.upper() != "CLOUDBET"
-            or market_type != CanonicalMarketType.POINT_SPREAD
-            or selection != "AWAY"
-        ):
+        if selection != "AWAY":
+            return params
+        relative_market_types = AWAY_SELECTION_RELATIVE_MARKET_TYPES.get(venue.upper())
+        if relative_market_types is None or market_type not in relative_market_types:
             return params
 
         adjusted = dict(params)
