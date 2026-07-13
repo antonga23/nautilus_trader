@@ -58,6 +58,19 @@ SXBET_MARKET_TYPE_MAP = {
     342: MarketType.ASIAN_HANDICAP.value,
     835: MarketType.TOTAL_GOALS.value,
 }
+# Sports whose full-time result market is genuinely three-way (a draw can win).
+# Their `match_odds` is 1X2, not a two-way money line: SX.bet lists it as a set of
+# binary "Team / Not Team" and "Tie / Not tie" markets, so flagging it two-way would
+# drop the draw and let the home and away legs be mistaken for a complementary pair.
+SXBET_DRAW_CAPABLE_SPORTS = frozenset(
+    {
+        "soccer",
+        "cricket",
+        "rugby",
+        "rugby_league",
+        "australian_rules",
+    },
+)
 
 
 class SXBetInstrumentProvider(InstrumentProvider):
@@ -1015,7 +1028,10 @@ class SXBetInstrumentProvider(InstrumentProvider):
                 info={
                     "outcome_one": is_outcome_one,
                     "raw_market_type": raw_market_type,
-                    "is_two_way_market": market_type == MarketType.MATCH_ODDS.value,
+                    "is_two_way_market": (
+                        market_type == MarketType.MATCH_ODDS.value
+                        and self._canonical_sport_label(sport_name) not in SXBET_DRAW_CAPABLE_SPORTS
+                    ),
                     "has_best_odds": has_best_odds,
                     "outcome_label": outcome_label,
                     "sxbet_market_hash": market_hash,

@@ -172,6 +172,47 @@ async def test_sxbet_provider_sets_start_time_from_game_time():
 
 
 @pytest.mark.asyncio
+async def test_sxbet_provider_flags_draw_capable_match_odds_as_three_way():
+    # SX.bet lists a soccer 1X2 as binary "Team / Not Team" decomposition markets that
+    # all map to match_odds. Flagging them two-way drops the draw and lets the home and
+    # away legs be mistaken for a complementary pair, so a draw-capable sport must stay
+    # three-way while a genuine two-way sport (basketball) is unchanged.
+    provider = SXBetInstrumentProvider(
+        http_client=object(),
+        config=SXBetInstrumentProviderConfig(),
+    )
+
+    async def process(sport_id: int) -> list:
+        provider._instruments.clear()
+        await provider._process_market(
+            {
+                "marketHash": f"market-{sport_id}",
+                "teamOneName": "Levski Sofia",
+                "teamTwoName": "Borac Banja Luka",
+                "sportId": sport_id,
+                "leagueName": "Test League",
+                "type": 1,
+                "gameTime": 1_784_050_200,
+                "outcomeOneName": "Levski Sofia",
+                "outcomeTwoName": "Not Levski Sofia",
+                "bestOdds": {
+                    "outcomeOne": {"percentageOdds": str(decimal_odds_to_percentage(1.72))},
+                    "outcomeTwo": {"percentageOdds": str(decimal_odds_to_percentage(2.2))},
+                },
+            },
+        )
+        return list(provider.get_all().values())
+
+    soccer = await process(5)
+    basketball = await process(1)
+
+    assert soccer
+    assert all(i.market_name == "match_odds" for i in soccer)
+    assert all(i.info["is_two_way_market"] is False for i in soccer)
+    assert all(i.info["is_two_way_market"] is True for i in basketball)
+
+
+@pytest.mark.asyncio
 async def test_sxbet_provider_sets_live_flag_and_honors_live_only():
     provider = SXBetInstrumentProvider(
         http_client=object(),
