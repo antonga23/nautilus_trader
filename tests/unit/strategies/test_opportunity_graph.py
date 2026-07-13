@@ -771,6 +771,88 @@ def test_sync_keeps_rust_semantic_edges_without_python_rediscovery() -> None:  #
     ensure(edge.execution_safe is True)
 
 
+def _cross_venue_fake_rust_core(source_id: str, target_id: str, edge_id: str) -> Any:
+    metadata = json.dumps(
+        {
+            "template_id": "template:rust-semantic",
+            "relationship_type": "COMPLEMENTARY_COVERAGE",
+            "promotion_status": "PROMOTED",
+            "safety_tier": "TOPOLOGY_SAFE",
+            "market_relationship_type": "same_market",
+            "same_venue_execution_eligible": False,
+            "partial_settlement": False,
+            "caveats": ["cross_venue_topology_only"],
+        },
+    )
+
+    class FakeRustCore:
+        def edge_snapshots(self):
+            return [
+                (
+                    edge_id,
+                    source_id,
+                    target_id,
+                    "same_market",
+                    1.0,
+                    False,
+                    metadata,
+                    False,
+                    False,
+                    None,
+                    None,
+                    None,
+                ),
+            ]
+
+    return FakeRustCore()
+
+
+def test_sync_rematerializes_missing_endpoint_from_mirror_registry() -> None:  # skipcq
+    instruments = [
+        _instrument(venue="CLOUDBET", event_id="cb-1", outcome="over"),
+        _instrument(venue="SXBET", event_id="sx-1", outcome="under"),
+    ]
+    graph = OpportunityGraph(MarketMatcher(allow_unpromoted_topology=False), engine="python")
+    graph.build(instruments)
+    source_id = str(instruments[0].id)
+    target_id = str(instruments[1].id)
+    edge_id = graph._edge_id(source_id, target_id)
+    graph._rust_core = cast(Any, _cross_venue_fake_rust_core(source_id, target_id, edge_id))
+    graph.nodes_by_id.pop(source_id)
+
+    graph._sync_edges_from_rust()
+
+    ensure(source_id in graph.nodes_by_id)
+    ensure(target_id in graph.nodes_by_id)
+    ensure(graph.edge_count == 1)
+    edge = graph.edges_by_id[edge_id]
+    ensure(edge.same_venue is False)
+    ensure(edge_id in graph.edge_ids_by_node_id[source_id])
+    ensure(edge_id in graph.edge_ids_by_node_id[target_id])
+    ensure(graph.stats()["cross_venue_edges_dropped_missing_endpoint"] == 0)
+
+
+def test_sync_counts_dropped_cross_venue_edge_when_endpoint_unrecoverable() -> None:  # skipcq
+    instruments = [
+        _instrument(venue="CLOUDBET", event_id="cb-1", outcome="over"),
+        _instrument(venue="SXBET", event_id="sx-1", outcome="under"),
+    ]
+    graph = OpportunityGraph(MarketMatcher(allow_unpromoted_topology=False), engine="python")
+    graph.build(instruments)
+    source_id = str(instruments[0].id)
+    target_id = str(instruments[1].id)
+    edge_id = graph._edge_id(source_id, target_id)
+    graph._rust_core = cast(Any, _cross_venue_fake_rust_core(source_id, target_id, edge_id))
+    graph.nodes_by_id.pop(source_id)
+    graph._mirrored_nodes_by_id.pop(source_id)
+
+    graph._sync_edges_from_rust()
+
+    ensure(graph.edge_count == 0)
+    ensure(graph.stats()["cross_venue_edges_dropped_missing_endpoint"] == 1)
+    ensure(graph.cross_venue_edges_dropped_missing_endpoint == 1)
+
+
 def test_node_payload_fallbacks_cover_missing_helper_methods() -> None:  # skipcq
     template = _instrument()
 

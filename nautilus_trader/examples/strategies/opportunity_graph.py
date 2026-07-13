@@ -214,6 +214,8 @@ class OpportunityGraph:
         self.edges_by_id: dict[str, OpportunityEdge] = {}
         self.edge_ids_by_node_id: dict[str, set[str]] = {}
         self.quotes_by_node_id: dict[str, QuoteState] = {}
+        self._mirrored_nodes_by_id: dict[str, OpportunityNode] = {}
+        self._cross_venue_edges_dropped_missing_endpoint = 0
 
     @property
     def node_count(self) -> int:
@@ -261,6 +263,7 @@ class OpportunityGraph:
             self.nodes_by_id[node.node_id] = node
             self.edge_ids_by_node_id.setdefault(node.node_id, set())
             rust_nodes.append(self._node_payload_from_node(node, instrument))
+        self._mirrored_nodes_by_id = dict(self.nodes_by_id)
 
         semantic_templates = self._semantic_template_payloads()
         coverage_proofs, coverage_hyperedges = self._semantic_coverage_payloads()
@@ -298,6 +301,7 @@ class OpportunityGraph:
         existing = [existing_node.instrument for existing_node in list(self.nodes_by_id.values())]
         self.nodes_by_id[node.node_id] = node
         self.edge_ids_by_node_id.setdefault(node.node_id, set())
+        self._mirrored_nodes_by_id[node.node_id] = node
 
         if self._rust_core is not None and (
             self._should_use_semantic_rust(self._semantic_template_payloads())
@@ -550,6 +554,9 @@ class OpportunityGraph:
             "semantic_template_count": self._semantic_template_count,
             "coverage_proof_count": self._coverage_proof_count,
             "coverage_hyperedge_count": self._coverage_hyperedge_count,
+            "cross_venue_edges_dropped_missing_endpoint": (
+                self._cross_venue_edges_dropped_missing_endpoint
+            ),
         }
 
     @property
@@ -571,6 +578,10 @@ class OpportunityGraph:
     @property
     def coverage_hyperedge_count(self) -> int:
         return self._coverage_hyperedge_count
+
+    @property
+    def cross_venue_edges_dropped_missing_endpoint(self) -> int:
+        return self._cross_venue_edges_dropped_missing_endpoint
 
     def semantic_coverage_summary(self) -> dict[str, object]:
         """
@@ -607,6 +618,7 @@ class OpportunityGraph:
             return
         self.edges_by_id.clear()
         self.edge_ids_by_node_id = {node_id: set() for node_id in self.nodes_by_id}
+        dropped_cross_venue = 0
         for snapshot in self._rust_core.edge_snapshots():
             (
                 edge_id,
@@ -644,9 +656,12 @@ class OpportunityGraph:
             rust_topology_only = not rust_execution_safe and (
                 safety_tier == "TOPOLOGY_SAFE" or "cross_venue_topology_only" in caveats
             )
-            source_node = self.nodes_by_id.get(source_node_id)
-            target_node = self.nodes_by_id.get(target_node_id)
+            source_node, target_node = self._resolve_edge_endpoint_nodes(
+                source_node_id,
+                target_node_id,
+            )
             if source_node is None or target_node is None:
+                dropped_cross_venue += not same_venue
                 continue
 
             hedge = self._best_public_hedge_candidate(
@@ -717,6 +732,41 @@ class OpportunityGraph:
             self.edges_by_id[edge_id] = edge
             self.edge_ids_by_node_id.setdefault(source_node_id, set()).add(edge_id)
             self.edge_ids_by_node_id.setdefault(target_node_id, set()).add(edge_id)
+        self._record_dropped_cross_venue_edges(dropped_cross_venue)
+
+    def _record_dropped_cross_venue_edges(self, dropped: int) -> None:
+        self._cross_venue_edges_dropped_missing_endpoint = dropped
+        if dropped:
+            logger.warning(
+                "Dropped %d cross-venue Rust edges whose endpoint nodes are missing "
+                "from the Python mirror; their legs cannot be classified cross-venue "
+                "at quote-subscription time",
+                dropped,
+            )
+
+    def _resolve_edge_endpoint_nodes(
+        self,
+        source_node_id: str,
+        target_node_id: str,
+    ) -> tuple[OpportunityNode | None, OpportunityNode | None]:
+        source_node = self.nodes_by_id.get(source_node_id) or self._restore_mirrored_node(
+            source_node_id,
+        )
+        target_node = self.nodes_by_id.get(target_node_id) or self._restore_mirrored_node(
+            target_node_id,
+        )
+        return source_node, target_node
+
+    def _restore_mirrored_node(self, node_id: str) -> OpportunityNode | None:
+        # Rust can keep a node the Python mirror lost across concurrent rebuilds.
+        # Dropping its edges here would silently unflag the legs as cross-venue at
+        # quote-subscription time, so restore the node from the last mirrored snapshot.
+        node = self._mirrored_nodes_by_id.get(node_id)
+        if node is None:
+            return None
+        self.nodes_by_id[node_id] = node
+        self.edge_ids_by_node_id.setdefault(node_id, set())
+        return node
 
     def _candidates_from_rust_snapshots(
         self,

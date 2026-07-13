@@ -42,6 +42,7 @@ from nautilus_trader.adapters.cloudbet.client.schema import (
 from nautilus_trader.examples.strategies.betting_arbitrage import BettingArbitrageConfig
 from nautilus_trader.examples.strategies.betting_arbitrage import BettingArbitrageStrategy
 from nautilus_trader.examples.strategies.betting_arbitrage import OpportunityPairState
+from nautilus_trader.examples.strategies.opportunity_graph import OpportunityEdge
 from nautilus_trader.examples.strategies.opportunity_graph import OpportunityGraph
 from nautilus_trader.model.identifiers import TraderId
 from nautilus_trader.model.identifiers import InstrumentId
@@ -2443,6 +2444,74 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(cloudbet_match_odds.id in quoted_ids)
         ensure(sxbet_match_odds.id in quoted_ids)
         ensure(cloudbet_scope_mismatch.id not in quoted_ids)
+
+    def test_cross_venue_edge_legs_subscribed_without_fixture_alias_match(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:  # skipcq
+        # The graph's rule-matcher formed a cross-venue edge, but the alias index sees
+        # no cross-venue fixture overlap (different alias normalization). Both edge
+        # legs must still be reserved ahead of the same-venue bucket.
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["CLOUDBET", "SXBET"]),
+                semantic_quote_subscription_limit_by_venue={"CLOUDBET": 2, "SXBET": 2},
+            ),
+        )
+        strategy.subscribe_quote_ticks = Mock()
+        cloudbet_leg = self._sxbet_instrument(
+            event_id="cb-edge",
+            venue="CLOUDBET",
+            outcome="home",
+            event_name="CLE Cavaliers v DET Pistons",
+            home_name="CLE Cavaliers",
+            away_name="DET Pistons",
+            market_name="match_odds",
+            sport_name="Basketball",
+        )
+        sxbet_leg = self._sxbet_instrument(
+            event_id="sx-edge",
+            venue="SXBET",
+            outcome="away",
+            event_name="Cleveland Cavaliers vs Detroit Pistons",
+            home_name="Cleveland Cavaliers",
+            away_name="Detroit Pistons",
+            market_name="match_odds",
+            sport_name="Basketball",
+        )
+        strategy._subscribed_instruments.update({cloudbet_leg, sxbet_leg})
+        graph = strategy._opportunity_graph
+        for instrument in (cloudbet_leg, sxbet_leg):
+            node = graph._node_from_instrument(instrument)
+            graph.nodes_by_id[node.node_id] = node
+            graph.edge_ids_by_node_id[node.node_id] = set()
+        edge_id = graph._edge_id(str(cloudbet_leg.id), str(sxbet_leg.id))
+        graph.edges_by_id[edge_id] = OpportunityEdge(
+            edge_id=edge_id,
+            source_node_id=str(cloudbet_leg.id),
+            target_node_id=str(sxbet_leg.id),
+            hedge_type="same_market",
+            confidence=1.0,
+            same_venue=False,
+            market_relationship_type="same_market",
+            push_capable=False,
+            execution_safe=False,
+            safety_tier="TOPOLOGY_SAFE",
+            caveats=("cross_venue_topology_only",),
+        )
+        graph.edge_ids_by_node_id[str(cloudbet_leg.id)].add(edge_id)
+        graph.edge_ids_by_node_id[str(sxbet_leg.id)].add(edge_id)
+        monkeypatch.setattr(
+            strategy,
+            "_instrument_event_alias_keys",
+            lambda instrument: {str(instrument.id)},
+        )
+
+        subscribed = strategy._subscribe_cross_venue_common_fixture_quote_ticks()
+        quoted_ids = {call.args[0] for call in strategy.subscribe_quote_ticks.call_args_list}
+
+        ensure(subscribed == 2)
+        ensure(quoted_ids == {cloudbet_leg.id, sxbet_leg.id})
 
     def _common_fixture_reserve_strategy(
         self,
