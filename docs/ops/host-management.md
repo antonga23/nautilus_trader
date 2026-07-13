@@ -28,6 +28,8 @@ and shellcheck-clean.
 - `scripts/host/host_common.sh` — shared, unit-tested helper library.
 - `scripts/host/install-node-host-health.sh` / `install-disk-hygiene.sh` — idempotent
   systemd installers (same pattern as `scripts/ci/install_runner_hygiene.sh`).
+- `scripts/host/hostctl.sh` (+ `registry.py`) — the operator CLI for registry-driven
+  multi-host bootstrap, deploy, and status (see "Multi-host operations" below).
 - `deploy/hosts.example.yaml` — the host registry schema.
 
 The monitor and hygiene units install into `/opt/cloudbet/host-tools/`; their config
@@ -37,9 +39,11 @@ preserved on re-run).
 
 ## Provision a new host
 
-The host must have a checkout of this repo (the bootstrap reuses
-`tools/nodeops/install.sh` and the deploy scripts from it). Secrets are never
-committed — you supply the venue env file.
+`hostctl bootstrap <host>` (below) automates this whole section for a registered
+host. The manual flow is documented here because `bootstrap.sh` also works standalone
+from any checkout on the host. The host must have a checkout of this repo (the
+bootstrap reuses `tools/nodeops/install.sh` and the deploy scripts from it). Secrets
+are never committed — you supply the venue env file.
 
 ```bash
 # 1. Put the repo on the host (scp a checkout, or git clone on the host).
@@ -130,35 +134,105 @@ steady routine (the monitor handles urgent pressure between runs):
 
 `deploy/hosts.example.yaml` is the provider-agnostic, SSH-only registry schema (see
 `deploy/README.md` for the field table). Copy it to the gitignored `deploy/hosts.yaml`
-for real hosts. It is the seam Phase 2 (multi-host deploy targeting) and Phase 3
-(nodeops multi-host roll-up) build on. Its `kind: ssh` record shape matches the
-proposal in `betting-arbitrage-nodes.md`, whose runtime copy lives at
+for real hosts. `hostctl` (below) consumes it for multi-host deploy targeting; Phase 3
+(nodeops multi-host roll-up) builds on the same file. Its `kind: ssh` record shape
+matches the proposal in `betting-arbitrage-nodes.md`, whose runtime copy lives at
 `/srv/symphony/worker-state/trading-hosts/hosts.json`.
 
-## Add a new VM in 3 steps
+The registry is parsed by `scripts/host/registry.py` without PyYAML, so
+`hosts.yaml` must keep the exact list-of-maps shape of the example (2-space
+indents, one nested `ssh` map, one `labels` list, `#` comments). If you want richer
+YAML, commit the registry as `deploy/hosts.json` instead — JSON is parsed with the
+stdlib and preferred when both files exist.
+
+## Multi-host operations (hostctl)
+
+`scripts/host/hostctl.sh` runs on the operator's machine and drives any registered
+host over plain SSH — the target needs no GitHub runner, no repo checkout, and no
+GHCR credentials. (The release workflow's deploy job still targets only the single
+self-hosted runner labeled `ec2, deploy, trading`; `hostctl` is how a node reaches
+every other host.) Each invocation ships what it needs from the local checkout into
+a throwaway remote stage directory and removes it afterwards.
+
+```bash
+scripts/host/hostctl.sh list                      # print the registry
+scripts/host/hostctl.sh bootstrap <host> ...      # provision a fresh Ubuntu VM
+scripts/host/hostctl.sh deploy-node <host> ...    # deploy a trading node (preflighted)
+scripts/host/hostctl.sh deploy-nodeops <host>     # install/update the dashboard
+scripts/host/hostctl.sh status <host>             # read-only health snapshot
+scripts/host/hostctl.sh self-test                 # no-SSH parser + gate assertions
+```
+
+Common flags: `--registry <file>` (default `deploy/hosts.json`, then
+`deploy/hosts.yaml`, then the committed example with a warning), `--identity`/`-i`
+(default: the record's `identity_file_hint` when it resolves to a local file, else
+your ssh config/agent), and `--dry-run`, which prints every ssh/tar/docker command
+verbatim without running anything — use it to review a deploy plan first.
+
+### Bootstrap a new VM in 3 commands
 
 Works identically for EC2, GCP, or any other Ubuntu VM — the only contract is SSH.
+(GCP note: no cloud-specific code; the GCP account/billing must be active and the VM
+must allow inbound SSH.)
 
-1. Add a record to `deploy/hosts.yaml` (copy a block from `hosts.example.yaml`, set
-   `provider` to `aws` / `gcp` / `other`).
-2. `scp` a repo checkout to the host and run `scripts/host/bootstrap.sh` over SSH with
-   the venue env file (see above).
-3. Deploy a node and confirm health:
+```bash
+# 1. Register the host (copy a block from hosts.example.yaml; set provider/region).
+$EDITOR deploy/hosts.yaml
 
-   ```bash
-   ssh <host> 'sudo /opt/cloudbet/cloudbet-market-maker/scripts/host/node-host-health.sh recommend'
-   ```
+# 2. Ship the toolkit and provision (docker, nodeops, health monitor, disk hygiene).
+#    The venue env file is streamed over stdin — it never lands in the stage dir.
+scripts/host/hostctl.sh bootstrap my-new-host \
+  --env-file ./venue.env --webhook https://hooks.example.com/xyz
 
-GCP note: there is no cloud-specific code — a GCP VM is just another SSH target. The
-GCP account/billing must be active (it was disabled earlier in this project), and the
-VM must allow inbound SSH.
+# 3. Deploy a node to it by name.
+scripts/host/hostctl.sh deploy-node my-new-host \
+  --manifest deploy/strategy_nodes/betting_arbitrage/sxbet-single-venue.json \
+  --image ghcr.io/<owner>/cloudbet-market-maker/betting-arbitrage-node:<tag> \
+  --name betting-arbitrage-node-sxbet \
+  --host-env-file /opt/cloudbet/strategy-node.env
+```
+
+### Deploy preflight — refusal is the point
+
+Every `deploy-node` first runs the Phase-1 memory preflight on the target
+(`node-host-health.sh preflight --need-mb <N>`, default 3072, override with
+`--need-mb`) using the copy it just staged, so it works even on hosts that never
+installed the health monitor. If starting a node needing N MB would push
+`MemAvailable` below the host floor, hostctl logs `REFUSING deploy` and exits
+non-zero **before any image bytes move or containers change** — the anti-OOM guard
+from the original incident, wired into the deploy path.
+
+### Image transport
+
+`--transport` controls how the image reaches the host (default `auto`):
+
+- `pull` — the host pulls the ref itself; pass `--registry-user` +
+  `--registry-token-file` to `docker login ghcr.io` first (token shipped `0600`,
+  removed with the stage).
+- `save` — `docker save <ref> | gzip | ssh ... docker load` from your local daemon;
+  no registry credentials on the host at all.
+- `archive` — ship a pre-saved `--image-archive <tar/tar.gz>` (e.g. the release
+  workflow's `betting-arbitrage-node.tar.gz` R2 artifact) and `docker load` it.
+- `auto` — archive when `--image-archive` is given, else pull when a token file is
+  given, else save when the ref exists locally, else pull.
+
+### Secrets stay operator-side
+
+The registry never holds secrets — `identity_file_hint` is a local path/label, not a
+key. Venue env files and registry tokens are supplied per invocation via explicit
+flags, shipped `0600` (bootstrap streams the env file over stdin), and deleted with
+the remote stage. `deploy-node --host-env-file` reuses the env file `bootstrap`
+already installed on the host (default `/opt/cloudbet/strategy-node.env`) so
+redeploys need no secret transfer at all.
 
 ## Self-test
 
 The pure-logic helpers (disk-pct parse, memory preflight, capacity heuristic,
 restart-storm guard, session-rotation selection) are unit-tested without touching the
-host:
+host, as are the hostctl registry parser, the preflight refusal gate, and the
+per-subcommand dry-run command plans:
 
 ```bash
 scripts/host/node-host-health.sh self-test
+scripts/host/hostctl.sh self-test
 ```
