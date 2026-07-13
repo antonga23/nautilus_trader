@@ -23,10 +23,17 @@ Provides conversions between different odds formats:
 
 """
 
+from __future__ import annotations
+
 from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from math import gcd
+from typing import TYPE_CHECKING
+
+
+if TYPE_CHECKING:
+    from nautilus_trader.adapters.betting.fx import PortfolioCurrencyPolicy
 
 
 DECIMAL_ODDS_EVEN_THRESHOLD = Decimal(2)
@@ -602,6 +609,112 @@ def calculate_arbitrage_stakes(
         stake_a,
         stake_b,
         guaranteed_profit.quantize(stake_quantum),
+    )
+
+
+@dataclass(frozen=True)
+class CrossCurrencyArbitrageStakes:
+    """
+    Stake split for a two-leg arbitrage whose legs settle in different currencies.
+
+    ``stake_a`` / ``stake_b`` are denominated in each leg's own settlement currency
+    (the executable order sizes). All profit and exposure figures are expressed in the
+    portfolio base currency after FX conversion, so a genuine cross-currency edge and a
+    phantom one (positive single-currency margin that FX erases) are distinguishable.
+
+    """
+
+    stake_a: Decimal
+    stake_b: Decimal
+    guaranteed_profit: Decimal
+    base_payoff: Decimal
+    base_notional: Decimal
+    base_currency: str
+    is_available: bool
+    blocker_reason: str | None = None
+
+
+def calculate_cross_currency_arbitrage_stakes(
+    odds_a: float | Decimal,
+    odds_b: float | Decimal,
+    total_stake: float | Decimal,
+    *,
+    policy: PortfolioCurrencyPolicy,
+    currency_a: str,
+    currency_b: str,
+) -> CrossCurrencyArbitrageStakes:
+    """
+    Size a two-leg arbitrage so the post-FX payoffs are equalized in base currency.
+
+    Unlike :func:`calculate_arbitrage_stakes`, which balances returns within a single
+    currency, this solver converts each leg's payoff into the portfolio base currency
+    before balancing. Leg notionals use the haircut-inflated conversion (conservative
+    against risk caps); leg payoffs use the haircut-reduced conversion (conservative
+    against the edge). ``total_stake`` is the base-currency notional budget.
+
+    If any required conversion is unavailable (missing or stale FX rate, sandbox or
+    unknown currency), the pair is reported as unavailable and MUST NOT be executed;
+    the caller never falls back to a raw same-currency or 1:1 split.
+
+    """
+    odds_a = Decimal(str(odds_a))
+    odds_b = Decimal(str(odds_b))
+    total = Decimal(str(total_stake))
+    stake_quantum = Decimal("0.01")
+
+    notional_a = policy.convert(Decimal(1), currency_a)
+    notional_b = policy.convert(Decimal(1), currency_b)
+    payoff_a = policy.convert_payoff(Decimal(1), currency_a)
+    payoff_b = policy.convert_payoff(Decimal(1), currency_b)
+    conversions = (notional_a, notional_b, payoff_a, payoff_b)
+    base_currency = notional_a.target_currency
+    blocker = next((c.blocker_reason for c in conversions if c.blocker_reason), None)
+    if blocker is not None or any(c.converted_amount is None for c in conversions):
+        return CrossCurrencyArbitrageStakes(
+            stake_a=Decimal(0),
+            stake_b=Decimal(0),
+            guaranteed_profit=Decimal(0),
+            base_payoff=Decimal(0),
+            base_notional=Decimal(0),
+            base_currency=base_currency,
+            is_available=False,
+            blocker_reason=blocker or "missing_fx_rate",
+        )
+
+    n_a = notional_a.converted_amount
+    n_b = notional_b.converted_amount
+    p_a = payoff_a.converted_amount
+    p_b = payoff_b.converted_amount
+    if n_a is None or n_b is None or p_a is None or p_b is None:  # pragma: no cover
+        return CrossCurrencyArbitrageStakes(
+            stake_a=Decimal(0),
+            stake_b=Decimal(0),
+            guaranteed_profit=Decimal(0),
+            base_payoff=Decimal(0),
+            base_notional=Decimal(0),
+            base_currency=base_currency,
+            is_available=False,
+            blocker_reason="missing_fx_rate",
+        )
+
+    # Equalize base payoffs:   stake_a * odds_a * p_a == stake_b * odds_b * p_b
+    # Spend the base budget:   stake_a * n_a + stake_b * n_b == total
+    payoff_ratio = (odds_a * p_a) / (odds_b * p_b)
+    stake_a = (total / (n_a + payoff_ratio * n_b)).quantize(stake_quantum)
+    stake_b = (stake_a * payoff_ratio).quantize(stake_quantum)
+
+    base_payoff = min(stake_a * odds_a * p_a, stake_b * odds_b * p_b).quantize(stake_quantum)
+    base_notional = (stake_a * n_a + stake_b * n_b).quantize(stake_quantum)
+    guaranteed_profit = (base_payoff - base_notional).quantize(stake_quantum)
+
+    return CrossCurrencyArbitrageStakes(
+        stake_a=stake_a,
+        stake_b=stake_b,
+        guaranteed_profit=guaranteed_profit,
+        base_payoff=base_payoff,
+        base_notional=base_notional,
+        base_currency=base_currency,
+        is_available=True,
     )
 
 

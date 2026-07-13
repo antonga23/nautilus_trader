@@ -26,6 +26,7 @@ from unittest.mock import Mock
 import pytest
 
 from nautilus_trader.adapters.betting.common.enums import SelectionSide
+from nautilus_trader.adapters.betting.common.odds import calculate_arbitrage_stakes
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.betting.instruments import make_crypto_betting_instrument_id
 from nautilus_trader.adapters.betting.market_matcher import ArbitrageOpportunity
@@ -4204,6 +4205,145 @@ class TestBettingArbitrageStrategy:  # skipcq
 
         ensure("cross_currency_live_execution_blocked" not in reasons)
         ensure("missing_fx_rate" not in reasons)
+
+    def test_phantom_cross_currency_edge_reported_non_positive_after_fx(self):  # skipcq
+        # Single-currency arb math shows +0.8% on 2.016/2.016, but the legs settle in EUR and
+        # USDC. Net of a realistic FX round-trip (50 bps effective spread) the edge inverts to
+        # negative, so the fee-adjusted opportunity must report a non-positive post-FX margin.
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["CLOUDBET", "SXBET"]),
+                execution_venue_mode="cross_venue",
+                configured_fx_rates={"EUR/USD": Decimal("1.10")},
+                stablecoin_haircut_bps=50,
+                # Zero the SXBET winning-profit fee so this asserts the FX effect in isolation.
+                venue_winning_profit_fee_rates={"SXBET": Decimal(0)},
+                min_profit_margin=Decimal("0.001"),
+            ),
+        )
+        cloudbet = self._sxbet_instrument(
+            event_id="event-1",
+            venue="CLOUDBET",
+            outcome="over",
+            currency="EUR",
+        )
+        sxbet = self._sxbet_instrument(
+            event_id="event-1",
+            venue="SXBET",
+            outcome="under",
+            currency="USDC",
+        )
+        opportunity = ArbitrageOpportunity(
+            instrument_a=cloudbet,
+            instrument_b=sxbet,
+            probability_a=Decimal(1) / Decimal("2.016"),
+            probability_b=Decimal(1) / Decimal("2.016"),
+            total_probability=Decimal(2) / Decimal("2.016"),
+            profit_margin=Decimal("0.008"),
+            odds_a=Decimal("2.016"),
+            odds_b=Decimal("2.016"),
+            is_same_venue=False,
+            match_type="cross_venue",
+        )
+
+        adjusted = strategy.fee_adjusted_opportunity(opportunity)
+
+        # Single-currency margin clears the +0.1% floor, so the naive gate would accept it.
+        ensure(adjusted.raw_profit_margin == Decimal("0.008"))
+        ensure(adjusted.raw_profit_margin > strategy._config.min_profit_margin)
+        # Post-FX the edge is inverted and the pair is rejected.
+        ensure(adjusted.profit_margin < 0)
+        ensure(adjusted.profit_margin.quantize(Decimal("0.000001")) == Decimal("-0.002030"))
+        ensure(adjusted.profit_margin < strategy._config.min_profit_margin)
+
+    def test_cross_currency_missing_rate_blocks_even_with_flag(self):  # skipcq
+        # allow_cross_currency_live_execution must NOT bypass the convertibility gate: a
+        # missing EUR/USD rate blocks the pair rather than falling back to a raw 1:1 split.
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["CLOUDBET", "SXBET"]),
+                auto_execute=True,
+                live_execution_armed=True,
+                execution_venue_mode="cross_venue",
+                allow_cross_currency_live_execution=True,
+            ),
+        )
+        cloudbet = self._sxbet_instrument(
+            event_id="event-1",
+            venue="CLOUDBET",
+            outcome="over",
+            currency="EUR",
+        )
+        sxbet = self._sxbet_instrument(
+            event_id="event-1",
+            venue="SXBET",
+            outcome="under",
+            currency="USDC",
+        )
+        opportunity = ArbitrageOpportunity(
+            instrument_a=cloudbet,
+            instrument_b=sxbet,
+            probability_a=Decimal("0.45"),
+            probability_b=Decimal("0.45"),
+            total_probability=Decimal("0.90"),
+            profit_margin=Decimal("0.11"),
+            odds_a=Decimal("2.20"),
+            odds_b=Decimal("2.20"),
+            is_same_venue=False,
+            match_type="cross_venue",
+        )
+
+        reasons = strategy._live_execution_currency_block_reasons(opportunity)
+
+        ensure(reasons == ["cross_currency_live_execution_blocked"])
+
+    def test_same_currency_pair_unchanged_by_fx_adjustment(self):  # skipcq
+        # USDC/USDC cross-venue is the stablecoin-first path: no FX exposure between the legs,
+        # so the FX-net recomputation is skipped and sizing matches the single-currency solver.
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["CLOUDBET", "SXBET"]),
+                execution_venue_mode="cross_venue",
+            ),
+        )
+        cloudbet = self._sxbet_instrument(
+            event_id="event-1",
+            venue="CLOUDBET",
+            outcome="over",
+            currency="USDC",
+        )
+        sxbet = self._sxbet_instrument(
+            event_id="event-1",
+            venue="SXBET",
+            outcome="under",
+            currency="USDC",
+        )
+        opportunity = ArbitrageOpportunity(
+            instrument_a=cloudbet,
+            instrument_b=sxbet,
+            probability_a=Decimal(1) / Decimal("2.10"),
+            probability_b=Decimal(1) / Decimal("2.10"),
+            total_probability=Decimal(2) / Decimal("2.10"),
+            profit_margin=Decimal("0.05"),
+            odds_a=Decimal("2.10"),
+            odds_b=Decimal("2.10"),
+            is_same_venue=False,
+            match_type="cross_venue",
+        )
+
+        # No FX exposure -> FX-net recomputation is a no-op.
+        ensure(
+            strategy._fx_net_profit_margin(opportunity, Decimal("2.10"), Decimal("2.10")) is None,
+        )
+        # Sizing matches the single-currency solver exactly (no cross-currency skew).
+        sized = strategy._sized_arbitrage_stakes(opportunity, total_stake=Decimal(1000))
+        baseline = calculate_arbitrage_stakes(
+            odds_a=Decimal("2.10"),
+            odds_b=Decimal("2.10"),
+            total_stake=Decimal(1000),
+        )
+        ensure(sized == baseline)
+        ensure(sized == (Decimal("500.00"), Decimal("500.00"), Decimal("50.00")))
 
     def test_cross_venue_execution_mode_blocks_same_venue_candidates(self, monkeypatch):  # skipcq
         monkeypatch.setenv("BETTING_LIVE_EXECUTION_ARMED", "1")

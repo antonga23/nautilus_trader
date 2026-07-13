@@ -79,6 +79,29 @@ class PortfolioCurrencyPolicy:
     sandbox_currencies: frozenset[str] = SANDBOX_CURRENCIES
 
     def convert(self, amount: Decimal, currency: str) -> FxConversion:
+        """
+        Convert a NOTIONAL stake into the portfolio base currency.
+
+        The haircut inflates the converted amount, which over-states committed risk
+        against caps. This is the conservative direction for notional, but the wrong
+        direction for a payoff/profit (see ``convert_payoff``).
+
+        """
+        return self._convert(amount, currency, haircut_sign=1)
+
+    def convert_payoff(self, amount: Decimal, currency: str) -> FxConversion:
+        """
+        Convert a PAYOFF or profit into the portfolio base currency.
+
+        The haircut reduces the converted amount so the edge is never over-stated.
+        Reusing the notional-calibrated ``convert`` for a payoff would inflate the
+        realised return by the haircut and manufacture a phantom cross-currency edge,
+        so payoff conversion carries the opposite haircut sign.
+
+        """
+        return self._convert(amount, currency, haircut_sign=-1)
+
+    def _convert(self, amount: Decimal, currency: str, *, haircut_sign: int) -> FxConversion:
         source_currency = _currency_code(currency)
         target_currency = _currency_code(self.base_currency) or "USD"
         if not source_currency:
@@ -120,7 +143,7 @@ class PortfolioCurrencyPolicy:
             source_currency in self.stablecoin_currencies
             and target_currency in self.stablecoin_currencies
         ):
-            haircut = Decimal(self.stablecoin_haircut_bps) / Decimal(10_000)
+            haircut = Decimal(haircut_sign) * Decimal(self.stablecoin_haircut_bps) / Decimal(10_000)
             return FxConversion(
                 source_currency=source_currency,
                 target_currency=target_currency,
@@ -163,7 +186,7 @@ class PortfolioCurrencyPolicy:
                 haircut_bps=0,
                 blocker_reason="missing_fx_rate",
             )
-        haircut = Decimal(self.stablecoin_haircut_bps) / Decimal(10_000)
+        haircut = Decimal(haircut_sign) * Decimal(self.stablecoin_haircut_bps) / Decimal(10_000)
         return FxConversion(
             source_currency=source_currency,
             target_currency=target_currency,
@@ -202,7 +225,9 @@ class PortfolioCurrencyPolicy:
         direct_key = f"{source_currency}/{target_currency}"
         inverse_key = f"{target_currency}/{source_currency}"
         if direct_key in rates:
-            return Decimal(str(rates[direct_key]))
+            direct = Decimal(str(rates[direct_key]))
+            if direct > 0:
+                return direct
         if inverse_key in rates:
             inverse = Decimal(str(rates[inverse_key]))
             if inverse > 0:
