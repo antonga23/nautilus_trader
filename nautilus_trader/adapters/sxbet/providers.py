@@ -34,6 +34,7 @@ from nautilus_trader.adapters.sxbet.constants import SXBET_TOKENS
 from nautilus_trader.adapters.sxbet.constants import SXBET_VENUE
 from nautilus_trader.adapters.sxbet.http_client import SXBetHttpClient
 from nautilus_trader.adapters.sxbet.http_client import SXBetHttpClientError
+from nautilus_trader.adapters.sxbet.signing import from_wei
 from nautilus_trader.adapters.sxbet.signing import taker_decimal_odds_from_maker_percentage
 from nautilus_trader.common.component import Logger
 from nautilus_trader.common.providers import InstrumentProvider
@@ -397,6 +398,7 @@ class SXBetInstrumentProvider(InstrumentProvider):
             has_outcome_one, has_outcome_two = self._market_order_sides(orders)
             if has_outcome_one and has_outcome_two:
                 market["orders"] = orders
+                market["_liquidity_depth"] = self._market_two_sided_depth(orders)
                 two_sided.append(market)
             elif has_outcome_one or has_outcome_two:
                 market["orders"] = orders
@@ -405,12 +407,17 @@ class SXBetInstrumentProvider(InstrumentProvider):
                 empty += 1
                 fallback.append(market)
 
+        depth_ranked = len(two_sided)
+        two_sided = self._rank_two_sided_by_depth(two_sided)
+        depth_ranked -= len(two_sided)
+
         unprobed = markets[probe_limit:]
         selected = (two_sided + one_sided + fallback + unprobed)[:target_market_count]
         self._log.info(
             "SX.bet liquidity probe completed: "
             f"probed={probed} two_sided_markets={len(two_sided)} "
             f"one_sided_markets={len(one_sided)} empty_markets={empty} "
+            f"depth_filtered={depth_ranked} "
             f"selected_markets={len(selected)} target_markets={target_market_count}",
         )
         if len(two_sided) < self._sxbet_config.min_two_sided_markets:
@@ -437,6 +444,58 @@ class SXBetInstrumentProvider(InstrumentProvider):
             elif order.get("isMakerBettingOutcomeOne") is False:
                 has_outcome_two = True
         return has_outcome_one, has_outcome_two
+
+    @staticmethod
+    def _market_two_sided_depth(orders: list[dict]) -> float:
+        # Real fillable depth, mirroring the quote path (data.py ``_best_bid_ask``): a
+        # taker backing an outcome matches makers resting on the *opposite* outcome, so
+        # the depth backing each outcome is the summed ``totalBetSize`` of the opposite
+        # side. A market is only as deep as its thinner side, so the two-sided depth is
+        # the smaller of the two outcome depths -- the size an arb can actually lock on
+        # both legs.
+        depth_backing_outcome_one = 0.0
+        depth_backing_outcome_two = 0.0
+        for order in orders:
+            try:
+                percentage = int(order.get("percentageOdds", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if percentage <= 0:
+                continue
+            size = from_wei(int(order.get("totalBetSize", 0) or 0))
+            if order.get("isMakerBettingOutcomeOne") is False:
+                depth_backing_outcome_one += size
+            elif order.get("isMakerBettingOutcomeOne") is True:
+                depth_backing_outcome_two += size
+        return min(depth_backing_outcome_one, depth_backing_outcome_two)
+
+    def _rank_two_sided_by_depth(
+        self,
+        two_sided: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        min_depth = self._sxbet_config.min_market_depth
+        top_n = self._sxbet_config.top_markets_by_depth
+        if min_depth is None and top_n is None:
+            # No depth thresholds configured: leave the probe ordering untouched so
+            # existing deployments select exactly the markets they did before.
+            return two_sided
+
+        if min_depth is not None:
+            two_sided = [
+                market
+                for market in two_sided
+                if float(market.get("_liquidity_depth", 0.0) or 0.0) >= float(min_depth)
+            ]
+        # Stable sort by descending depth: equal-depth markets keep their probe order,
+        # so the near-horizon ordering upstream is preserved within a depth tier.
+        two_sided = sorted(
+            two_sided,
+            key=lambda market: float(market.get("_liquidity_depth", 0.0) or 0.0),
+            reverse=True,
+        )
+        if top_n is not None:
+            two_sided = two_sided[: int(top_n)]
+        return two_sided
 
     async def _hydrate_best_odds(self, markets: list[dict[str, Any]]) -> None:
         market_hashes = [
@@ -533,6 +592,12 @@ class SXBetInstrumentProvider(InstrumentProvider):
 
         outcome_one_odds = self._extract_best_odds(market, True)
         outcome_two_odds = self._extract_best_odds(market, False)
+        liquidity_depth = market.get("_liquidity_depth")
+        if liquidity_depth is None:
+            orders = market.get("orders")
+            liquidity_depth = (
+                self._market_two_sided_depth(orders) if isinstance(orders, list) else 0.0
+            )
         price_by_outcome = {
             True: outcome_one_odds if outcome_one_odds > 0 else SXBET_PLACEHOLDER_PRICE,
             False: outcome_two_odds if outcome_two_odds > 0 else SXBET_PLACEHOLDER_PRICE,
@@ -567,6 +632,7 @@ class SXBetInstrumentProvider(InstrumentProvider):
                 outcome_label=(
                     market.get("outcomeOneName") if outcome_one else market.get("outcomeTwoName")
                 ),
+                liquidity_depth=float(liquidity_depth or 0.0),
             )
 
             if instrument:
@@ -998,6 +1064,7 @@ class SXBetInstrumentProvider(InstrumentProvider):
         params: str = "",
         has_best_odds: bool = False,
         outcome_label: str | None = None,
+        liquidity_depth: float = 0.0,
     ) -> CryptoBettingInstrument | None:
         """
         Create a CryptoBettingInstrument from market data.
@@ -1034,6 +1101,7 @@ class SXBetInstrumentProvider(InstrumentProvider):
                     ),
                     "has_best_odds": has_best_odds,
                     "outcome_label": outcome_label,
+                    "liquidity_depth": liquidity_depth,
                     "sxbet_market_hash": market_hash,
                     "sxbet_event_id_source": event_id_source,
                 },

@@ -130,7 +130,8 @@ class CloudbetInstrumentProvider(InstrumentProvider):
                 )
                 assert self._client.connected is True, "Client is not connected"
                 updated_selection: GetLatestOddsResponse = await self._client.get_latest_odds(
-                    event_id, market_url
+                    event_id,
+                    market_url,
                 )
                 selection = Selection(
                     event_id=event_id,
@@ -196,7 +197,7 @@ class CloudbetInstrumentProvider(InstrumentProvider):
                 selection_ids: List[SelectionId] = filters.get("selection_id")
                 event_ids = list(set([selection_id.event_id for selection_id in selection_ids]))
                 market_names = list(
-                    set([selection_id.market_name for selection_id in selection_ids])
+                    set([selection_id.market_name for selection_id in selection_ids]),
                 )
                 for event_id in event_ids:
                     event: GetEventResponse = await self._client.get_event(event_id)
@@ -270,7 +271,8 @@ class CloudbetInstrumentProvider(InstrumentProvider):
             else market_name + "/" + outcome
         )
         updated_selection: GetLatestOddsResponse = await self._client.get_latest_odds(
-            event_id, market_url
+            event_id,
+            market_url,
         )
         selection = Selection(
             event_id=event_id,
@@ -372,6 +374,9 @@ class CloudbetInstrumentProvider(InstrumentProvider):
             trading_status=selection.status,
             event_id=selection.event_id,
             params=selection.params,
+            # Cloudbet exposes a real per-selection max stake, so it is the venue's
+            # native depth signal for liquidity-aware cross-venue selection (read via
+            # the max_size fallback in the strategy's _instrument_liquidity_depth).
             max_size=int(selection.max_stake),
             min_size=selection.min_stake,
             end_time=selection.cutoff_time,
@@ -380,7 +385,8 @@ class CloudbetInstrumentProvider(InstrumentProvider):
         return instrument
 
     async def get_instruments_update_async(
-        self, instrument_ids: List[InstrumentId]
+        self,
+        instrument_ids: List[InstrumentId],
     ) -> CryptoBettingInstrument:
         """
         Get the latest instruments update for the given instrument IDs.
@@ -399,7 +405,8 @@ class CloudbetInstrumentProvider(InstrumentProvider):
         raise NotImplementedError("get_instruments_update_async is not supported for Cloudbet")
 
     def search_instruments(
-        self, instrument_filter: Optional[dict] = None
+        self,
+        instrument_filter: Optional[dict] = None,
     ) -> Optional[List[CryptoBettingInstrument]]:
         """Search for instruments within the cache. Useful for debugging / interactive use"""
         instruments = self.list_all()

@@ -2395,6 +2395,286 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(subscribed == 2)
         ensure(quoted_ids == {cloudbet_common.id, sxbet_common.id})
 
+    def _liquidity_alias_setup(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        strategy: BettingArbitrageStrategy,
+        alias_by_event_id: dict[str, str],
+    ) -> None:
+        monkeypatch.setattr(
+            strategy,
+            "_instrument_event_alias_keys",
+            lambda instrument: {alias_by_event_id.get(instrument.event_id, str(instrument.id))},
+        )
+
+    def test_cross_venue_common_fixture_quote_prefers_both_deep_fixture(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:  # skipcq
+        # One SX.bet quote slot, two co-listed fixtures competing for it. The deep-on-
+        # both fixture must win it over the fixture that is deep on SX.bet but shallow
+        # on the co-listed Cloudbet leg -- only the former can actually be arbed.
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["CLOUDBET", "SXBET"]),
+                semantic_quote_subscription_limit_by_venue={"CLOUDBET": 2, "SXBET": 1},
+                cross_venue_liquidity_priority_enabled=True,
+            ),
+        )
+        strategy.subscribe_quote_ticks = Mock()
+        sxbet_deep = self._sxbet_instrument(
+            event_id="sx-deep",
+            venue="SXBET",
+            outcome="home",
+            market_name="match_odds",
+            info={"liquidity_depth": 100.0},
+        )
+        sxbet_shallow = self._sxbet_instrument(
+            event_id="sx-shallow",
+            venue="SXBET",
+            outcome="home",
+            market_name="match_odds",
+            info={"liquidity_depth": 100.0},
+        )
+        cloudbet_deep = self._sxbet_instrument(
+            event_id="cb-deep",
+            venue="CLOUDBET",
+            outcome="away",
+            market_name="match_odds",
+            info={"liquidity_depth": 100.0},
+        )
+        cloudbet_shallow = self._sxbet_instrument(
+            event_id="cb-shallow",
+            venue="CLOUDBET",
+            outcome="away",
+            market_name="match_odds",
+            info={"liquidity_depth": 1.0},
+        )
+        strategy._subscribed_instruments.update(
+            {sxbet_deep, sxbet_shallow, cloudbet_deep, cloudbet_shallow},
+        )
+        self._liquidity_alias_setup(
+            monkeypatch,
+            strategy,
+            {
+                "sx-deep": "fx-deep",
+                "cb-deep": "fx-deep",
+                "sx-shallow": "fx-shallow",
+                "cb-shallow": "fx-shallow",
+            },
+        )
+
+        strategy._subscribe_cross_venue_common_fixture_quote_ticks()
+        quoted_ids = {call.args[0] for call in strategy.subscribe_quote_ticks.call_args_list}
+
+        ensure(sxbet_deep.id in quoted_ids)
+        ensure(sxbet_shallow.id not in quoted_ids)
+
+    def test_cross_venue_common_fixture_quote_rotates_with_depth_shift(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:  # skipcq
+        # Same topology, but the co-listed depth has rotated onto the other fixture
+        # (e.g. a new match-day slate). The single SX.bet slot must follow it.
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["CLOUDBET", "SXBET"]),
+                semantic_quote_subscription_limit_by_venue={"CLOUDBET": 2, "SXBET": 1},
+                cross_venue_liquidity_priority_enabled=True,
+            ),
+        )
+        strategy.subscribe_quote_ticks = Mock()
+        sxbet_a = self._sxbet_instrument(
+            event_id="sx-a",
+            venue="SXBET",
+            outcome="home",
+            market_name="match_odds",
+            info={"liquidity_depth": 100.0},
+        )
+        sxbet_b = self._sxbet_instrument(
+            event_id="sx-b",
+            venue="SXBET",
+            outcome="home",
+            market_name="match_odds",
+            info={"liquidity_depth": 100.0},
+        )
+        cloudbet_a = self._sxbet_instrument(
+            event_id="cb-a",
+            venue="CLOUDBET",
+            outcome="away",
+            market_name="match_odds",
+            info={"liquidity_depth": 2.0},
+        )
+        cloudbet_b = self._sxbet_instrument(
+            event_id="cb-b",
+            venue="CLOUDBET",
+            outcome="away",
+            market_name="match_odds",
+            info={"liquidity_depth": 100.0},
+        )
+        strategy._subscribed_instruments.update({sxbet_a, sxbet_b, cloudbet_a, cloudbet_b})
+        self._liquidity_alias_setup(
+            monkeypatch,
+            strategy,
+            {"sx-a": "fx-a", "cb-a": "fx-a", "sx-b": "fx-b", "cb-b": "fx-b"},
+        )
+
+        strategy._subscribe_cross_venue_common_fixture_quote_ticks()
+        quoted_ids = {call.args[0] for call in strategy.subscribe_quote_ticks.call_args_list}
+
+        # fx-b is the deep-on-both fixture now, so its SX.bet leg takes the slot.
+        ensure(sxbet_b.id in quoted_ids)
+        ensure(sxbet_a.id not in quoted_ids)
+
+    def test_cross_venue_liquidity_priority_disabled_is_depth_neutral(self) -> None:  # skipcq
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["CLOUDBET", "SXBET"]),
+            ),
+        )
+        instrument = self._sxbet_instrument(
+            event_id="sx-1",
+            venue="SXBET",
+            outcome="home",
+            info={"liquidity_depth": 500.0},
+        )
+        alias_keys = {str(instrument.id): {"fx"}}
+        alias_venues = {"fx": {"SXBET", "CLOUDBET"}}
+        alias_depth = strategy._cross_venue_alias_venue_depth(
+            [instrument],
+            alias_keys_by_instrument_id=alias_keys,
+        )
+
+        priority = strategy._cross_venue_common_fixture_quote_priority(
+            instrument,
+            alias_keys_by_instrument_id=alias_keys,
+            alias_venues_by_key=alias_venues,
+            alias_venue_depth=alias_depth,
+        )
+
+        # Depth feature off: the alias->venue depth index is empty and the depth term
+        # in the priority tuple is a constant, so ordering is unchanged from before.
+        ensure(alias_depth == {})
+        ensure(priority[1] == 0.0)
+
+    def test_cross_venue_common_fixture_quote_gates_shallow_venue_leg(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:  # skipcq
+        # Per-venue min-depth floor drops a co-listed but shallow SX.bet leg, and an
+        # instrument with no depth metadata at all is treated as zero depth (no crash).
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["CLOUDBET", "SXBET"]),
+                semantic_quote_subscription_limit_by_venue={"CLOUDBET": 3, "SXBET": 3},
+                min_quote_depth_by_venue={"SXBET": 50.0},
+            ),
+        )
+        strategy.subscribe_quote_ticks = Mock()
+        sxbet_deep = self._sxbet_instrument(
+            event_id="sx-deep",
+            venue="SXBET",
+            outcome="home",
+            market_name="match_odds",
+            info={"liquidity_depth": 100.0},
+        )
+        sxbet_shallow = self._sxbet_instrument(
+            event_id="sx-shallow",
+            venue="SXBET",
+            outcome="home",
+            market_name="match_odds",
+            info={"liquidity_depth": 10.0},
+        )
+        sxbet_unknown = self._sxbet_instrument(
+            event_id="sx-unknown",
+            venue="SXBET",
+            outcome="home",
+            market_name="match_odds",
+        )
+        cloudbet_common = self._sxbet_instrument(
+            event_id="cb-common",
+            venue="CLOUDBET",
+            outcome="away",
+            market_name="match_odds",
+            info={"liquidity_depth": 100.0},
+        )
+        strategy._subscribed_instruments.update(
+            {sxbet_deep, sxbet_shallow, sxbet_unknown, cloudbet_common},
+        )
+        self._liquidity_alias_setup(
+            monkeypatch,
+            strategy,
+            {
+                "sx-deep": "fx",
+                "sx-shallow": "fx",
+                "sx-unknown": "fx",
+                "cb-common": "fx",
+            },
+        )
+
+        strategy._subscribe_cross_venue_common_fixture_quote_ticks()
+        quoted_ids = {call.args[0] for call in strategy.subscribe_quote_ticks.call_args_list}
+
+        ensure(sxbet_deep.id in quoted_ids)
+        ensure(sxbet_shallow.id not in quoted_ids)
+        ensure(sxbet_unknown.id not in quoted_ids)
+
+    def test_refreshed_active_instruments_ordered_by_depth_when_enabled(self) -> None:  # skipcq
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["SXBET"]),
+                cross_venue_liquidity_priority_enabled=True,
+            ),
+        )
+        shallow = self._sxbet_instrument(
+            event_id="sx-shallow",
+            venue="SXBET",
+            outcome="home",
+            info={"liquidity_depth": 5.0},
+        )
+        deep = self._sxbet_instrument(
+            event_id="sx-deep",
+            venue="SXBET",
+            outcome="home",
+            info={"liquidity_depth": 500.0},
+        )
+        unknown = self._sxbet_instrument(
+            event_id="sx-unknown",
+            venue="SXBET",
+            outcome="home",
+        )
+
+        added = strategy._add_refreshed_active_instruments([shallow, deep, unknown])
+
+        # Rotation feeds the deepest instruments into the subscription passes first;
+        # the depth-less instrument reads as zero depth and sorts last, no crash.
+        ensure(
+            [instrument.event_id for instrument in added]
+            == ["sx-deep", "sx-shallow", "sx-unknown"],
+        )
+
+    def test_refreshed_active_instruments_preserve_order_when_disabled(self) -> None:  # skipcq
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(enabled_venues=frozenset(["SXBET"])),
+        )
+        shallow = self._sxbet_instrument(
+            event_id="sx-shallow",
+            venue="SXBET",
+            outcome="home",
+            info={"liquidity_depth": 5.0},
+        )
+        deep = self._sxbet_instrument(
+            event_id="sx-deep",
+            venue="SXBET",
+            outcome="home",
+            info={"liquidity_depth": 500.0},
+        )
+
+        added = strategy._add_refreshed_active_instruments([shallow, deep])
+
+        # Feature off: arrival order preserved (no depth reordering).
+        ensure([instrument.event_id for instrument in added] == ["sx-shallow", "sx-deep"])
+
     def test_cross_venue_common_fixture_quote_slots_prefer_compatible_families(
         self,
         monkeypatch: pytest.MonkeyPatch,
