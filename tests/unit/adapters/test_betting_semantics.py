@@ -1152,3 +1152,60 @@ def test_conflicting_total_and_line_params_are_not_collapsed():
     )
 
     assert normalized.params == (("line", "2.5"), ("total", "3"))
+
+
+def _sxbet_handicap(outcome: str, line: str, *, market_hash: str) -> CryptoBettingInstrument:
+    # SX.bet quotes a single team-one (home) relative ``line`` on both outcomes of a
+    # handicap market (numeric type 3 -> ASIAN_HANDICAP); the provider stamps it
+    # verbatim on both legs, so the raw away leg carries the same sign as the home leg.
+    return betting_instrument(
+        sport="baseball",
+        market_name="asian_handicap",
+        market_type="asian_handicap",
+        outcome=outcome,
+        params=f"line={line}",
+        handicap=float(line),
+        info={"raw_market_type": 3, "sxbet_market_hash": market_hash},
+    )
+
+
+def test_sxbet_away_handicap_line_is_negated_to_selection_relative():
+    # A line=+2.5 SX market: teamOne (home) is +2.5, teamTwo (away) is really -2.5.
+    # Both legs arrive with the home-relative "line=2.5"; only the away leg must flip.
+    home = MarketNormalizer.normalize(_sxbet_handicap("home", "2.5", market_hash="m1"))
+    away = MarketNormalizer.normalize(_sxbet_handicap("away", "2.5", market_hash="m1"))
+
+    assert home.market_type == CanonicalMarketType.ASIAN_HANDICAP.value
+    assert home.selection == "HOME"
+    assert home.param("line") == "2.5"
+    assert away.selection == "AWAY"
+    # Pre-fix this stayed "2.5" (home-relative), which wrongly proved the away leg as the
+    # complement of a sibling market's "HOME -2.5" and minted a phantom hyperedge.
+    assert away.param("line") == "-2.5"
+
+
+def test_sxbet_away_handicap_phantom_cross_market_edge_does_not_form():
+    classifier = RuleClassifier()
+    # Observed on the baseball node: an SX "away line=+2.5" leg (really away -2.5) was
+    # proven the perfect complement of a sibling market's "home line=-2.5" leg, forming
+    # a cross-market edge whose two legs both lose.
+    away_plus = _sxbet_handicap("away", "2.5", market_hash="market-a")
+    sibling_home_minus = _sxbet_handicap("home", "-2.5", market_hash="market-b")
+
+    # Once the away leg is selection-relative (-2.5) it matches the sibling home leg's
+    # side rather than complementing it, so no hedge relationship is proven.
+    assert classifier.classify(away_plus, sibling_home_minus) is None
+
+
+def test_sxbet_same_market_handicap_complement_still_classifies():
+    classifier = RuleClassifier()
+    # The true two-outcome hedge inside ONE SX market (line=-1.5): home -1.5 vs away
+    # +1.5. Both legs arrive raw as "line=-1.5"; negating only the away leg restores
+    # the genuine complementary pair (guards against over-negating real hedges).
+    home_minus = _sxbet_handicap("home", "-1.5", market_hash="same-market")
+    away_plus = _sxbet_handicap("away", "-1.5", market_hash="same-market")
+
+    rule = classifier.classify(home_minus, away_plus)
+
+    assert rule is not None
+    assert rule.relationship_type == RelationshipType.COMPLEMENTARY_COVERAGE.value
