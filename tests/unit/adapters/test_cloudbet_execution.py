@@ -15,7 +15,11 @@ from unittest.mock import Mock
 import pytest
 
 from nautilus_trader.adapters.betting.common.enums import SelectionSide
+from nautilus_trader.adapters.betting.common.settlement import BET_SETTLEMENTS_TOPIC
+from nautilus_trader.adapters.betting.common.settlement import BetSettlement
+from nautilus_trader.adapters.betting.common.settlement import SettlementResult
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
+from nautilus_trader.adapters.cloudbet.common import CLOUDBET_VENUE
 from nautilus_trader.adapters.cloudbet.client.schema import AcceptPriceChange
 from nautilus_trader.adapters.cloudbet.client.schema import BetStatus
 from nautilus_trader.adapters.cloudbet.client.schema import GetBetResponse
@@ -78,7 +82,13 @@ def _make_exec_client(venue_client, cache, msgbus, config):
 
 
 def _bet_response(
-    status: BetStatus, *, stake: str, price: float = 2.1, reference_id: str = "venue-ref"
+    status: BetStatus,
+    *,
+    stake: str,
+    price: float = 2.1,
+    reference_id: str = "venue-ref",
+    win_loss: str | None = None,
+    return_amount: str | None = None,
 ):
     return GetBetResponse(
         legacy_status=status,
@@ -88,6 +98,8 @@ def _bet_response(
         currency="PLAY_EUR",
         reference_id=reference_id,
         create_time="2024-01-01T00:00:00Z",
+        win_loss=win_loss,
+        legacy_return_amount=return_amount,
     )
 
 
@@ -889,3 +901,165 @@ async def test_matched_submit_then_cancel_requery_does_not_double_fill():
     canceled = [e for e in events if isinstance(e, OrderCanceled)]
     assert len(fills) == 1
     assert canceled == []
+
+
+# -- Settlement publisher: graded Cloudbet bets -> BetSettlement on BET_SETTLEMENTS_TOPIC ----------
+# Mirrors the SXBET settlement poll (#289): a graded-bet poll maps Cloudbet's terminal status
+# vocabulary (WIN / LOSS / PUSH / HALF_WIN / HALF_LOSS) to the venue-neutral WON / LOST / VOID and
+# publishes one BetSettlement per graded leg so the venue-agnostic strategy consumer books
+# cross-venue arb P&L instead of leaving CB legs OPEN.
+
+
+def _settlement_client(venue_client, cache, msgbus):
+    client = _make_exec_client(
+        venue_client,
+        cache,
+        msgbus,
+        CloudbetExecClientConfig(dry_run=False, accept_price_change="BETTER"),
+    )
+    settlements: list[BetSettlement] = []
+    msgbus.subscribe(topic=BET_SETTLEMENTS_TOPIC, handler=settlements.append)
+    return client, settlements
+
+
+def _tracked_order(cache):
+    instrument = _betting_instrument()
+    order = TestExecStubs.limit_order(
+        instrument=instrument,
+        price=instrument.make_price(2.1),
+        quantity=instrument.make_qty(1.25),
+    )
+    cache.add_instrument(instrument)
+    cache.add_order(order)
+    return instrument, order
+
+
+@pytest.mark.asyncio
+async def test_settlement_poll_emits_won_once_and_refreshes_account():
+    cache = TestComponentStubs.cache()
+    instrument, order = _tracked_order(cache)
+    venue_client = Mock()
+    venue_client.connected = False
+    # WIN: stake 1.25 at 2.1 -> net win of +1.375 (Cloudbet's signed winLoss).
+    venue_client.get_bet_status = AsyncMock(
+        return_value=_bet_response(BetStatus.WIN, stake="1.25", win_loss="1.375"),
+    )
+    client, settlements = _settlement_client(venue_client, cache, TestComponentStubs.msgbus())
+    client.connection_account_state = AsyncMock()
+    client.venue_order_id_to_client_order_id[VenueOrderId("venue-ref")] = order.client_order_id
+
+    await client._reconcile_settlements()
+    await client._reconcile_settlements()
+
+    assert len(settlements) == 1
+    settlement = settlements[0]
+    assert settlement.result == SettlementResult.WON
+    assert settlement.client_order_id == order.client_order_id.value
+    assert settlement.instrument_id == str(instrument.id)
+    assert settlement.settle_value == 1.375
+    assert settlement.venue == CLOUDBET_VENUE.value
+    # Grading pays out the wallet, so the account state refreshes once after emitting.
+    assert client.connection_account_state.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_settlement_poll_maps_loss_to_negative_pnl():
+    cache = TestComponentStubs.cache()
+    _instrument, order = _tracked_order(cache)
+    venue_client = Mock()
+    venue_client.connected = False
+    # LOSS: the full stake is forfeit -> winLoss -1.25.
+    venue_client.get_bet_status = AsyncMock(
+        return_value=_bet_response(BetStatus.LOSS, stake="1.25", win_loss="-1.25"),
+    )
+    client, settlements = _settlement_client(venue_client, cache, TestComponentStubs.msgbus())
+    client.connection_account_state = AsyncMock()
+    client.venue_order_id_to_client_order_id[VenueOrderId("venue-ref")] = order.client_order_id
+
+    await client._reconcile_settlements()
+
+    assert len(settlements) == 1
+    assert settlements[0].result == SettlementResult.LOST
+    assert settlements[0].settle_value == -1.25
+
+
+@pytest.mark.asyncio
+async def test_settlement_poll_maps_push_to_void_stake_refunded():
+    cache = TestComponentStubs.cache()
+    _instrument, order = _tracked_order(cache)
+    venue_client = Mock()
+    venue_client.connected = False
+    # PUSH: market not applicable (e.g. draw on 2-way) -> stake refunded, zero P&L.
+    venue_client.get_bet_status = AsyncMock(
+        return_value=_bet_response(BetStatus.PUSH, stake="1.25", win_loss="0"),
+    )
+    client, settlements = _settlement_client(venue_client, cache, TestComponentStubs.msgbus())
+    client.connection_account_state = AsyncMock()
+    client.venue_order_id_to_client_order_id[VenueOrderId("venue-ref")] = order.client_order_id
+
+    await client._reconcile_settlements()
+
+    assert len(settlements) == 1
+    assert settlements[0].result == SettlementResult.VOID
+    assert settlements[0].settle_value == 0.0
+
+
+@pytest.mark.asyncio
+async def test_settlement_poll_maps_half_win_and_half_loss():
+    # Quarter-ball Asian handicaps settle half the stake at odds and refund the other half; the
+    # three-state venue-neutral model books the dominant side while the signed venue figure rides
+    # on settle_value for diagnostics.
+    for status, expected_result, win_loss, expected_value in (
+        (BetStatus.HALF_WIN, SettlementResult.WON, "0.6875", 0.6875),
+        (BetStatus.HALF_LOSS, SettlementResult.LOST, "-0.625", -0.625),
+    ):
+        cache = TestComponentStubs.cache()
+        _instrument, order = _tracked_order(cache)
+        venue_client = Mock()
+        venue_client.connected = False
+        venue_client.get_bet_status = AsyncMock(
+            return_value=_bet_response(status, stake="1.25", win_loss=win_loss),
+        )
+        client, settlements = _settlement_client(venue_client, cache, TestComponentStubs.msgbus())
+        client.connection_account_state = AsyncMock()
+        client.venue_order_id_to_client_order_id[VenueOrderId("venue-ref")] = order.client_order_id
+
+        await client._reconcile_settlements()
+
+        assert len(settlements) == 1, status
+        assert settlements[0].result == expected_result, status
+        assert settlements[0].settle_value == expected_value, status
+
+
+@pytest.mark.asyncio
+async def test_settlement_poll_ignores_ungraded_and_is_idempotent_across_polls():
+    cache = TestComponentStubs.cache()
+    _instrument, order = _tracked_order(cache)
+    venue_client = Mock()
+    venue_client.connected = False
+    # First two polls: still matched-but-ungraded (ACCEPTED) -> no settlement emitted. Then the bet
+    # grades to WIN and every subsequent poll must not re-emit.
+    venue_client.get_bet_status = AsyncMock(
+        side_effect=[
+            _bet_response(BetStatus.ACCEPTED, stake="1.25"),
+            _bet_response(BetStatus.ACCEPTED, stake="1.25"),
+            _bet_response(BetStatus.WIN, stake="1.25", win_loss="1.375"),
+            _bet_response(BetStatus.WIN, stake="1.25", win_loss="1.375"),
+        ],
+    )
+    client, settlements = _settlement_client(venue_client, cache, TestComponentStubs.msgbus())
+    client.connection_account_state = AsyncMock()
+    client.venue_order_id_to_client_order_id[VenueOrderId("venue-ref")] = order.client_order_id
+
+    await client._reconcile_settlements()
+    await client._reconcile_settlements()
+    assert settlements == []
+
+    await client._reconcile_settlements()
+    await client._reconcile_settlements()
+
+    # Graded exactly once; the settled reference is skipped on later polls (no re-query either).
+    assert len(settlements) == 1
+    assert settlements[0].result == SettlementResult.WON
+    assert venue_client.get_bet_status.await_count == 3
+    assert client.connection_account_state.await_count == 1
