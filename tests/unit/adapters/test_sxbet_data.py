@@ -21,6 +21,7 @@ from nautilus_trader.adapters.sxbet.constants import SXBET_TOKENS
 from nautilus_trader.adapters.sxbet.data import SXBetDataClient
 from nautilus_trader.adapters.sxbet.http_client import SXBetHttpClientError
 from nautilus_trader.adapters.sxbet.providers import SXBetInstrumentProvider
+from nautilus_trader.adapters.sxbet.realtime import order_book_channel
 from nautilus_trader.adapters.sxbet.signing import decimal_odds_to_percentage
 from nautilus_trader.common.component import Logger
 from nautilus_trader.common.functions import get_event_loop
@@ -1091,3 +1092,269 @@ async def test_fetch_and_publish_best_odds_uses_opposite_side_and_skips_unsubscr
     quote = client._handle_data.call_args.args[0]
     assert quote.instrument_id == subscribed.id
     assert quote.bid_price.as_decimal() == EXPECTED_ONE_SIDED_ODDS
+
+
+# -------------------------------------------------------------------------------------------------
+#  Realtime (WebSocket) streaming path — reuses the SAME pricing helpers as the poll loop.
+# -------------------------------------------------------------------------------------------------
+
+
+def _stream_order(
+    *,
+    outcome_one: bool,
+    implied: float,
+    size: int,
+    order_hash: str,
+    status: str = "ACTIVE",
+) -> dict:
+    # An order object as delivered by the SX.bet order-book-update channel.
+    return {
+        "orderHash": order_hash,
+        "marketHash": "market-1",
+        "isMakerBettingOutcomeOne": outcome_one,
+        "percentageOdds": _maker_pct(implied),
+        "totalBetSize": size,
+        "status": status,
+    }
+
+
+def _stream_client(instrument_provider: SXBetInstrumentProvider) -> SXBetDataClient:
+    client = _make_client(
+        instrument_provider=instrument_provider,
+        config=SXBetDataClientConfig(order_book_transport="stream"),
+    )
+    client._handle_data = Mock()
+    return client
+
+
+@pytest.mark.asyncio
+async def test_stream_emits_identical_quote_to_poll_for_equivalent_book():
+    # The streaming path must price an equivalent raw order book byte-for-byte
+    # the same as the REST poll path (same taker-complement odds and depth).
+    instrument = _make_instrument(outcome="away", outcome_one=False)
+    orders = [_stream_order(outcome_one=True, implied=0.50, size=120_000000, order_hash="0x1")]
+
+    # Poll path quote.
+    poll_provider = _make_provider()
+    poll_provider.find_by_market_hash = Mock(return_value=[instrument])
+    poll_client = _make_client(instrument_provider=poll_provider)
+    poll_client._http_client.get_order_book = AsyncMock(
+        return_value={"data": {"orders": orders}},
+    )
+    poll_client._subscribed_instruments = {instrument.id}
+    poll_client._handle_data = Mock()
+    await poll_client._fetch_and_publish_quotes("market-1")
+    poll_quote = poll_client._handle_data.call_args.args[0]
+
+    # Stream path quote for the same book.
+    stream_provider = _make_provider()
+    stream_provider.find_by_market_hash = Mock(return_value=[instrument])
+    client = _stream_client(stream_provider)
+    client._subscribed_instruments = {instrument.id}
+    client._stream_books["market-1"] = {o["orderHash"]: o for o in orders}
+    published = client._emit_stream_quotes("market-1")
+    stream_quote = client._handle_data.call_args.args[0]
+
+    assert published == 1
+    assert stream_quote.bid_price == poll_quote.bid_price
+    assert stream_quote.ask_price == poll_quote.ask_price
+    assert stream_quote.bid_size == poll_quote.bid_size
+    assert stream_quote.ask_size == poll_quote.ask_size
+    # Taker complement of a 0.50 maker is 1 / (1 - 0.50) = 2.0, depth 120.
+    assert stream_quote.bid_price.as_decimal() == EXPECTED_ONE_SIDED_ODDS
+    assert stream_quote.bid_size.as_decimal() == 120
+
+
+@pytest.mark.asyncio
+async def test_stream_publication_applies_delta_and_sums_depth():
+    instrument = _make_instrument(outcome="away", outcome_one=False)
+    provider = _make_provider()
+    provider.find_by_market_hash = Mock(return_value=[instrument])
+    client = _stream_client(provider)
+    client._subscribed_instruments = {instrument.id}
+
+    # Two opposite-side makers → summed depth 150, best odds from implied 0.45.
+    await client._on_stream_publication(
+        order_book_channel("market-1"),
+        [
+            _stream_order(outcome_one=True, implied=0.40, size=100_000000, order_hash="0x1"),
+            _stream_order(outcome_one=True, implied=0.45, size=50_000000, order_hash="0x2"),
+        ],
+    )
+    quote = client._handle_data.call_args.args[0]
+    assert float(quote.bid_price) == round(1 / (1 - 0.45), 2)
+    assert quote.bid_size.as_decimal() == 150
+
+
+def test_stream_one_sided_book_produces_no_phantom_quote():
+    # A book with only outcome-one makers gives taker liquidity to the
+    # outcome-two side only; the outcome-one side must NOT get a phantom quote.
+    one = _make_instrument(outcome="home", outcome_one=True)
+    two = _make_instrument(outcome="away", outcome_one=False)
+    provider = _make_provider()
+    provider.find_by_market_hash = Mock(return_value=[one, two])
+    client = _stream_client(provider)
+    client._subscribed_instruments = {one.id, two.id}
+    client._stream_books["market-1"] = {
+        "0x1": _stream_order(outcome_one=True, implied=0.50, size=100_000000, order_hash="0x1"),
+    }
+
+    published = client._emit_stream_quotes("market-1")
+
+    assert published == 1
+    quote = client._handle_data.call_args.args[0]
+    assert quote.instrument_id == two.id
+
+
+def test_apply_order_book_delta_upserts_active_and_removes_terminal():
+    client = _make_client(config=SXBetDataClientConfig(order_book_transport="stream"))
+
+    client._apply_order_book_delta(
+        "market-1",
+        [_stream_order(outcome_one=True, implied=0.5, size=100_000000, order_hash="0x1")],
+    )
+    assert set(client._stream_books["market-1"]) == {"0x1"}
+
+    # Cancelled (INACTIVE) and filled orders are removed.
+    client._apply_order_book_delta(
+        "market-1",
+        [
+            _stream_order(
+                outcome_one=True,
+                implied=0.5,
+                size=100_000000,
+                order_hash="0x1",
+                status="INACTIVE",
+            ),
+        ],
+    )
+    assert client._stream_books["market-1"] == {}
+
+
+def test_apply_order_book_delta_is_idempotent_for_duplicates():
+    client = _make_client(config=SXBetDataClientConfig(order_book_transport="stream"))
+    order = _stream_order(outcome_one=True, implied=0.5, size=100_000000, order_hash="0x1")
+
+    client._apply_order_book_delta("market-1", [order])
+    client._apply_order_book_delta("market-1", [order, order])
+
+    assert client._stream_books["market-1"] == {"0x1": order}
+
+
+def test_apply_order_book_delta_accepts_rest_orderstatus_field():
+    # Seed snapshots come from the REST /orders endpoint which uses ``orderStatus``.
+    client = _make_client(config=SXBetDataClientConfig(order_book_transport="stream"))
+    client._apply_order_book_delta(
+        "market-1",
+        [
+            {
+                "orderHash": "0x1",
+                "isMakerBettingOutcomeOne": True,
+                "percentageOdds": _maker_pct(0.5),
+                "totalBetSize": 100_000000,
+                "orderStatus": "ACTIVE",
+            },
+        ],
+    )
+    assert set(client._stream_books["market-1"]) == {"0x1"}
+
+
+@pytest.mark.asyncio
+async def test_poll_loop_idle_while_stream_healthy():
+    instrument = _make_instrument()
+    provider = _make_provider()
+    provider.find = Mock(return_value=instrument)
+    provider.find_by_market_hash = Mock(return_value=[instrument])
+    client = _stream_client(provider)
+    client._subscribed_instruments = {instrument.id}
+    client._http_client.get_order_book = AsyncMock()
+    client._stream_healthy = True
+
+    await client._poll_order_books_once()
+
+    client._http_client.get_order_book.assert_not_awaited()
+    client._handle_data.assert_not_called()
+    assert client._cache.get(venue_quote_poll_stats_key("SXBET")) is None
+
+
+@pytest.mark.asyncio
+async def test_poll_loop_takes_over_when_stream_unhealthy():
+    instrument = _make_instrument(outcome="away", outcome_one=False)
+    provider = _make_provider()
+    provider.find = Mock(return_value=instrument)
+    provider.find_by_market_hash = Mock(return_value=[instrument])
+    client = _stream_client(provider)
+    client._subscribed_instruments = {instrument.id}
+    client._http_client.get_order_book = AsyncMock(
+        return_value={
+            "data": {
+                "orders": [
+                    _stream_order(outcome_one=True, implied=0.5, size=120_000000, order_hash="0x1"),
+                ],
+            },
+        },
+    )
+    client._stream_healthy = False
+
+    await client._poll_order_books_once()
+
+    client._http_client.get_order_book.assert_awaited()
+    client._handle_data.assert_called_once()
+    quote = client._handle_data.call_args.args[0]
+    assert quote.bid_price.as_decimal() == EXPECTED_ONE_SIDED_ODDS
+
+
+def test_poll_transport_default_creates_no_realtime_client():
+    client = _make_client()
+    assert client._order_book_transport == "poll"
+    assert client._realtime_client is None
+
+
+def test_rejects_unknown_order_book_transport():
+    with pytest.raises(ValueError, match="order_book_transport"):
+        _make_client(config=SXBetDataClientConfig(order_book_transport="grpc"))
+
+
+@pytest.mark.asyncio
+async def test_start_stream_creates_client_and_subscribes_market_channels(monkeypatch):
+    created: list = []
+
+    class _FakeRealtime:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.started = False
+            self.subscribed: list[str] = []
+            created.append(self)
+
+        async def start(self):
+            self.started = True
+
+        async def subscribe(self, channel):
+            self.subscribed.append(channel)
+
+        async def unsubscribe(self, channel):
+            pass
+
+        async def stop(self):
+            pass
+
+    monkeypatch.setattr(
+        "nautilus_trader.adapters.sxbet.data.SXBetRealtimeClient",
+        _FakeRealtime,
+    )
+
+    instrument = _make_instrument(market_hash="market-1")
+    provider = _make_provider()
+    provider.find = Mock(return_value=instrument)
+    client = _make_client(
+        instrument_provider=provider,
+        config=SXBetDataClientConfig(order_book_transport="stream"),
+    )
+    client._subscribed_instruments = {instrument.id}
+
+    await client._start_stream()
+
+    assert len(created) == 1
+    assert created[0].started is True
+    assert order_book_channel("market-1") in created[0].subscribed
+    assert client._realtime_client is created[0]

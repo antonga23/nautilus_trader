@@ -26,6 +26,15 @@ SXBET_VENUE = Venue("SXBET")
 SXBET_API_BASE_URL = "https://api.sx.bet"
 SXBET_WS_BASE_URL = "wss://api.sx.bet"
 
+# Realtime streaming (Centrifugo bidirectional client protocol; replaces the
+# Ably feed deprecated 2026-07-01). A JWT is obtained from the ``realtime_token``
+# REST endpoint and passed in the Centrifugo connect frame.
+SXBET_REALTIME_WS_URL = "wss://realtime.sx.bet/connection/websocket"
+
+# Order-book update channel template. ``{market_hash}`` is a market hash such as
+# ``order_book:market_0x1234...``.
+SXBET_ORDER_BOOK_CHANNEL_TEMPLATE = "order_book:market_{market_hash}"
+
 # API endpoints
 SXBET_ENDPOINTS = {
     # Market data (no API key required)
