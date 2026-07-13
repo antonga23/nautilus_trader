@@ -1,0 +1,60 @@
+{
+  "node_id": "sxbet-poll-validation",
+  "trader_id": "BETARB-SX-POLL-001",
+  "validation_mode": true,
+  "allow_dummy_credentials": true,
+  "log_level": "INFO",
+  "rendered_config_path": "artifacts/strategy-nodes/sxbet-poll-validation/trading-node-config.json",
+  "status_path": "artifacts/strategy-nodes/sxbet-poll-validation/status.json",
+  "heartbeat_path": "artifacts/strategy-nodes/sxbet-poll-validation/heartbeat.json",
+  "semantic_rule_cache_dir": "artifacts/semantic-rule-cache/sxbet-poll-validation",
+  "timeout_connection": 240.0,
+  "strategy": {
+    "min_profit_margin": "0.02",
+    "max_total_stake": "250",
+    "sport_filter": null,
+    "market_timing_filter": "all",
+    "quote_freshness_profile": "live",
+    "max_resolution_horizon_hours": 48.0,
+    "instrument_refresh_interval_secs": 300.0,
+    "rollover_aware": true,
+    "opportunity_graph_engine": "semantic_rust",
+    "devig_enabled": true,
+    "devig_method": "auto",
+    "value_diagnostics_enabled": true,
+    "value_execution_enabled": false,
+    "min_value_edge": "0.015",
+    "auto_execute": false
+  },
+  "venues": [
+    {
+      "venue": "SXBET",
+      "client_key": "SXBET_PRIMARY",
+      "data_enabled": true,
+      "execution_enabled": false,
+      "credential_prefix": "SXBET",
+      "load_all_instruments": true,
+      "sport_ids": [
+        3,
+        6
+      ],
+      "instrument_load_limit": 100,
+      "market_discovery_limit": 200,
+      "prefer_liquid_markets": true,
+      "liquidity_probe_limit": 250,
+      "min_two_sided_markets": 1,
+      "auto_subscribe_quote_ticks": true,
+      "quote_subscription_limit": 120,
+      "order_book_poll_interval_secs": 10.0,
+      "order_book_poll_summary_interval_secs": 30.0,
+      "order_book_concurrency": 4,
+      "order_book_transport": "poll",
+      "live_only": false
+    }
+  ],
+  "metadata": {
+    "phase": "sxbet-poll-validation",
+    "track": "sxbet-realtime-stream",
+    "note": "Validation-mode only, data-only. REST-poll (order_book_transport=poll) A/B baseline for sxbet-stream-validation.json: identical scope (baseball+tennis, 48h horizon, instrument_load_limit=100, quote_subscription_limit=120) so streamed quotes can be compared against polled quotes over the same markets. Execution is disabled and structurally unarmed."
+  }
+}

@@ -534,6 +534,54 @@ class TestBettingArbitrageNodeBuilder:
         assert data_client.config["order_book_poll_mode"] == "best_odds_batch"
         assert data_client.config["order_book_best_odds_batch_size"] == 30
         assert data_client.config["api_key_pool"] == ("dummy-sxbet-api-key",)
+        # Absent from the manifest, order_book_transport threads its "poll" default.
+        assert data_client.config["order_book_transport"] == "poll"
+        assert "realtime_ws_url" not in data_client.config
+
+    def test_sxbet_data_client_receives_stream_transport(self, monkeypatch):
+        monkeypatch.delenv("SXBET_API_KEY", raising=False)
+        manifest = BettingArbitrageNodeManifest(
+            node_id="sxbet-stream",
+            trader_id="BETARB-TEST-STREAM",
+            validation_mode=True,
+            allow_dummy_credentials=True,
+            venues=[
+                BettingVenueManifest(
+                    venue="SXBET",
+                    client_key="SXBET_PRIMARY",
+                    order_book_transport="stream",
+                    realtime_ws_url="wss://realtime.example/connection/websocket",
+                ),
+            ],
+        )
+
+        config = build_trading_node_config(manifest)
+        data_client = config.data_clients["SXBET_PRIMARY"]
+
+        assert data_client.path == ("nautilus_trader.adapters.sxbet.config:SXBetDataClientConfig")
+        assert data_client.config["order_book_transport"] == "stream"
+        assert (
+            data_client.config["realtime_ws_url"] == "wss://realtime.example/connection/websocket"
+        )
+
+    def test_sxbet_stream_validation_manifest_streams_without_exec_clients(self, monkeypatch):
+        monkeypatch.delenv("SXBET_API_KEY", raising=False)
+        monkeypatch.delenv("SXBET_PRIVATE_KEY", raising=False)
+        monkeypatch.delenv("SXBET_WALLET_ADDRESS", raising=False)
+
+        manifest = node_builder.load_manifest(
+            Path("deploy/strategy_nodes/betting_arbitrage/sxbet-stream-validation.json"),
+        )
+        config = build_trading_node_config(manifest)
+
+        assert manifest.validation_mode is True
+        assert config.exec_clients == {}
+        assert config.strategies[0].config["auto_execute"] is False
+        assert config.strategies[0].config["enabled_venues"] == ["SXBET"]
+        data_client = config.data_clients["SXBET_PRIMARY"]
+        assert data_client.config["order_book_transport"] == "stream"
+        # realtime_ws_url is unset in the manifest so the adapter mainnet default applies.
+        assert "realtime_ws_url" not in data_client.config
 
     def test_cloudbet_data_client_receives_runtime_settings(self, monkeypatch):
         monkeypatch.delenv("CLOUDBET_API_KEY", raising=False)
