@@ -5704,10 +5704,197 @@ class TestBettingArbitrageNodeRunner:
         )
 
         assert quality["rejectionBucket"] == "equivalent_selection"
-        assert (
-            quality["candidateValueClassification"]
-            == "positive_non_executable_semantic_edge:equivalent_selection"
+        # An EQUIVALENT_SELECTION is the same outcome on two books, not a
+        # complementary partition, so the complementary-partition arb margin must be
+        # suppressed and the pair surfaced through the independent devig value-edge
+        # stream rather than as a positive semantic arbitrage edge.
+        assert quality["profitMargin"] == "0"
+        assert quality["rawProfitMargin"] == "0"
+        assert quality["feeAdjustedProfitMargin"] == "0"
+        assert quality["candidateValueClassification"] == "sportsbook_value_edge"
+
+    def test_runtime_probe_excludes_equivalent_selection_from_positive_arb_stream(self):
+        config = BettingArbitrageConfig(
+            min_profit_margin=Decimal("0.02"),
+            devig_enabled=True,
+            devig_method="proportional",
+            value_diagnostics_enabled=True,
+            value_execution_enabled=False,
+            min_value_edge=Decimal("0.005"),
         )
+        strategy = SimpleNamespace(
+            _config=config,
+            devigged_book=lambda odds: devig_probabilities(odds, method=config.devig_method),
+            fee_adjusted_opportunity=lambda opportunity: opportunity,
+            matcher_suspect_reason=BettingArbitrageStrategy.matcher_suspect_reason,
+            semantic_fixture_suspect_reason=(
+                BettingArbitrageStrategy.semantic_fixture_suspect_reason
+            ),
+            quote_age_secs=lambda _observed_ns, _quote: 0.1,
+            _quote_pair_skew_secs=lambda _quote_a, _quote_b: 0.0,
+            quote_fetch_latency_secs=lambda _quote: 0.1,
+            quote_available_size=lambda _quote: Decimal(100),
+            quote_freshness_thresholds=lambda _instrument_a, _instrument_b: SimpleNamespace(
+                profile="pre_match",
+                max_quote_age_secs=30.0,
+                max_pair_skew_secs=5.0,
+                max_fetch_latency_secs=10.0,
+            ),
+        )
+
+        def _quote(odds):
+            return SimpleNamespace(
+                odds=Decimal(odds),
+                received_ns=10_000_000_000,
+                quote=SimpleNamespace(ts_event=9_900_000_000, size=Decimal(100)),
+            )
+
+        # EQUIVALENT_SELECTION: the same "home" outcome priced on two CLOUDBET books.
+        # The lopsided 10.86 / 12.84 odds imply probabilities summing well below 1, so
+        # the complementary-partition formula would fabricate a ~+488% "arb" margin.
+        equivalent_edge = SimpleNamespace(
+            rule_id="eq-rule",
+            template_id="eq-template",
+            relationship_type="EQUIVALENT_SELECTION",
+            safety_tier="EXECUTION_SAFE_SAME_VENUE_ELIGIBLE",
+            execution_safe=False,
+            same_venue_execution_eligible=True,
+            caveats=(),
+        )
+        equivalent_quality = node_runner._probe_candidate_quality(
+            strategy,
+            edge=equivalent_edge,
+            source_node=SimpleNamespace(
+                instrument=_instrument(venue="CLOUDBET", market_type="match_odds", outcome="home"),
+                market_name="match_odds",
+                outcome="home",
+            ),
+            target_node=SimpleNamespace(
+                instrument=_instrument(
+                    venue="CLOUDBET",
+                    market_type="draw_no_bet",
+                    outcome="home",
+                ),
+                market_name="draw_no_bet",
+                outcome="home",
+            ),
+            quote_a=_quote("10.86"),
+            quote_b=_quote("12.84"),
+            min_profit_margin=Decimal("0.02"),
+            allow_same_venue=True,
+        )
+
+        # COMPLEMENTARY_COVERAGE: genuine two-sided coverage with a real positive margin.
+        complementary_edge = SimpleNamespace(
+            rule_id="cc-rule",
+            template_id="cc-template",
+            relationship_type="COMPLEMENTARY_COVERAGE",
+            safety_tier="EXECUTION_SAFE",
+            execution_safe=True,
+            same_venue_execution_eligible=False,
+            caveats=(),
+        )
+        complementary_quality = node_runner._probe_candidate_quality(
+            strategy,
+            edge=complementary_edge,
+            source_node=SimpleNamespace(
+                instrument=_instrument(
+                    venue="CLOUDBET",
+                    market_type="match_odds",
+                    outcome="home",
+                    event_id="event-2",
+                ),
+                market_name="match_odds",
+                outcome="home",
+            ),
+            target_node=SimpleNamespace(
+                instrument=_instrument(
+                    venue="SXBET",
+                    market_type="match_odds",
+                    outcome="away",
+                    event_id="event-2",
+                ),
+                market_name="match_odds",
+                outcome="away",
+            ),
+            quote_a=_quote("2.10"),
+            quote_b=_quote("2.05"),
+            min_profit_margin=Decimal("0.02"),
+            allow_same_venue=False,
+        )
+
+        # Fix point 1: no complementary-partition arb margin for the equivalent pair,
+        # while the genuine complementary pair keeps its real positive margin.
+        assert equivalent_quality["profitMargin"] == "0"
+        assert equivalent_quality["rawProfitMargin"] == "0"
+        assert Decimal(complementary_quality["profitMargin"]) > 0
+
+        counters = node_runner.ProbeProfitabilityCounters()
+        node_runner._record_probe_quality(counters, equivalent_quality)
+        node_runner._record_probe_quality(counters, complementary_quality)
+        payload = counters.to_payload()
+
+        positive_relationships = {
+            candidate["relationshipType"] for candidate in payload["sample_candidates"]
+        }
+        value_relationships = {
+            candidate["relationshipType"] for candidate in payload["value_edge_candidates"]
+        }
+
+        # Fix point 2: the equivalent pair is excluded from the positive-arb stream,
+        # while the genuine complementary pair is still recorded there.
+        assert "EQUIVALENT_SELECTION" not in positive_relationships
+        assert "COMPLEMENTARY_COVERAGE" in positive_relationships
+        # Fix point 3: the equivalent pair is still surfaced in the value-edge stream.
+        assert "EQUIVALENT_SELECTION" in value_relationships
+
+    def test_record_probe_quality_keeps_positive_equivalent_out_of_positive_stream(self):
+        # Even if a positive complementary-partition margin reaches the recorder, an
+        # EQUIVALENT_SELECTION candidate must never be filed as a positive-arb sample.
+        counters = node_runner.ProbeProfitabilityCounters()
+        quality = {
+            "profitMargin": "4.88",
+            "marginBand": "positive",
+            "rejectionBucket": "positive",
+            "venuePair": "CLOUDBET->CLOUDBET",
+            "marketFamily": "match_odds",
+            "relationshipType": "EQUIVALENT_SELECTION",
+            "devig": {"enabled": False},
+        }
+
+        node_runner._record_probe_quality(counters, quality)
+
+        assert counters.to_payload()["sample_candidates"] == []
+
+    def test_record_probe_opportunity_positive_counters_ignore_equivalent_selection(self):
+        counters = node_runner.ProbeProfitabilityCounters()
+        opportunity = SimpleNamespace(profit_margin=Decimal("0.05"))
+
+        node_runner._record_probe_opportunity(
+            counters,
+            opportunity=opportunity,
+            edge=SimpleNamespace(relationship_type="EQUIVALENT_SELECTION"),
+            source_node=None,
+            target_node=None,
+            allow_same_venue=True,
+            min_profit_margin=Decimal("0.02"),
+        )
+
+        assert counters.positive_same_venue == 0
+        assert counters.threshold_same_venue == 0
+
+        node_runner._record_probe_opportunity(
+            counters,
+            opportunity=opportunity,
+            edge=SimpleNamespace(relationship_type="COMPLEMENTARY_COVERAGE"),
+            source_node=None,
+            target_node=None,
+            allow_same_venue=False,
+            min_profit_margin=Decimal("0.02"),
+        )
+
+        assert counters.positive_execution == 1
+        assert counters.threshold_execution == 1
 
     def test_runtime_probe_coverage_book_devig_uses_quoted_hyperedges(self):
         instrument_a = _instrument(venue="CLOUDBET", market_type="match_odds", outcome="home")

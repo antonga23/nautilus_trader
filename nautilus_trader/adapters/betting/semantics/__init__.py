@@ -57,6 +57,7 @@ from nautilus_trader.adapters.betting.semantics.types import CoverageSet
 from nautilus_trader.adapters.betting.semantics.types import MinedRule
 from nautilus_trader.adapters.betting.semantics.types import NormalizedSelection
 from nautilus_trader.adapters.betting.semantics.types import NormalizedSelectionRecord
+from nautilus_trader.adapters.betting.semantics.types import ARB_MARGIN_RELATIONSHIP_TYPES
 from nautilus_trader.adapters.betting.semantics.types import OutcomeState
 from nautilus_trader.adapters.betting.semantics.types import OutcomeUniverse
 from nautilus_trader.adapters.betting.semantics.types import PayoffVector
@@ -74,6 +75,7 @@ from nautilus_trader.adapters.betting.semantics.validation import HistoricalRule
 
 
 __all__ = [
+    "ARB_MARGIN_RELATIONSHIP_TYPES",
     "DEFAULT_MIN_CANDIDATES",
     "DEFAULT_REQUIRED_PROVIDERS",
     "DEFAULT_TARGET_CANDIDATES",

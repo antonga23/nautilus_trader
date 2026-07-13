@@ -22,6 +22,7 @@ from typing import Any
 from nautilus_trader.adapters.betting.fixture_identity import DEFAULT_FIXTURE_IDENTITY_RESOLVER
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.betting.market_matcher import ArbitrageOpportunity
+from nautilus_trader.adapters.betting.semantics import ARB_MARGIN_RELATIONSHIP_TYPES
 from nautilus_trader.adapters.betting.semantics import CoverageBlockerReason
 from nautilus_trader.adapters.betting.semantics import MarketNormalizer
 from nautilus_trader.live.strategy_nodes.betting_arbitrage.builder import build_trading_node_config
@@ -3810,6 +3811,17 @@ def _probe_candidate_quality(
         strategy,
         raw_opportunity,
     )
+    # The complementary-partition formula above only yields a real arbitrage margin
+    # when the two legs form a complementary partition of the outcome space. For a
+    # non-complementary relationship (e.g. EQUIVALENT_SELECTION, the same outcome on
+    # two books) the number is meaningless, so we suppress the arb margin while
+    # leaving the implied probabilities intact for the independent devig value-edge
+    # stream.
+    is_arbitrage_relationship = str(edge.relationship_type) in ARB_MARGIN_RELATIONSHIP_TYPES
+    raw_profit_margin = raw_profit_margin if is_arbitrage_relationship else Decimal(0)
+    fee_adjusted_profit_margin = (
+        opportunity.profit_margin if is_arbitrage_relationship else Decimal(0)
+    )
     devig_diagnostics = _probe_devig_diagnostics(
         strategy,
         edge=edge,
@@ -3822,10 +3834,10 @@ def _probe_candidate_quality(
         fee_adjusted_probability_a=opportunity.probability_a,
         fee_adjusted_probability_b=opportunity.probability_b,
         raw_profit_margin=raw_profit_margin,
-        fee_adjusted_profit_margin=opportunity.profit_margin,
+        fee_adjusted_profit_margin=fee_adjusted_profit_margin,
     )
     total_probability = opportunity.total_probability
-    profit_margin = opportunity.profit_margin
+    profit_margin = fee_adjusted_profit_margin
     observed_ns = max(int(quote_a.received_ns), int(quote_b.received_ns))
     quote_age_a_secs = strategy.quote_age_secs(observed_ns, quote_a.quote)
     quote_age_b_secs = strategy.quote_age_secs(observed_ns, quote_b.quote)
@@ -3915,7 +3927,7 @@ def _probe_candidate_quality(
         "rawProfitMargin": str(raw_profit_margin),
         "rawTotalProbability": str(raw_total_probability),
         "feeAdjusted": opportunity.fee_adjusted,
-        "feeAdjustedProfitMargin": str(opportunity.profit_margin),
+        "feeAdjustedProfitMargin": str(fee_adjusted_profit_margin),
         "feeAdjustedTotalProbability": str(opportunity.total_probability),
         "feeDrag": str(opportunity.fee_drag),
         "feeAdjustedOddsA": str(opportunity.fee_adjusted_odds_a or opportunity.odds_a),
@@ -4091,6 +4103,9 @@ def _probe_devig_diagnostics(
             if bool(getattr(edge, "execution_safe", False))
             else _semantic_non_execution_bucket(edge)
         ),
+        is_arbitrage_relationship=(
+            str(getattr(edge, "relationship_type", "")) in ARB_MARGIN_RELATIONSHIP_TYPES
+        ),
         raw_profit_margin=raw_profit_margin,
         fee_adjusted_profit_margin=fee_adjusted_profit_margin,
         max_gross_value_edge=max_gross_value_edge,
@@ -4163,6 +4178,7 @@ def _probe_value_classification(
     execution_safe: bool,
     same_venue_execution_eligible: bool,
     semantic_blocker_reason: str,
+    is_arbitrage_relationship: bool,
     raw_profit_margin: Decimal,
     fee_adjusted_profit_margin: Decimal,
     max_gross_value_edge: Decimal,
@@ -4170,7 +4186,7 @@ def _probe_value_classification(
 ) -> str:
     min_value_edge = Decimal(str(getattr(config, "min_value_edge", Decimal("0.015"))))
     min_profit_margin = Decimal(str(getattr(config, "min_profit_margin", 0)))
-    if fee_adjusted_profit_margin >= min_profit_margin:
+    if is_arbitrage_relationship and fee_adjusted_profit_margin >= min_profit_margin:
         if execution_safe:
             return "locked_execution_safe_arbitrage"
         if same_venue_execution_eligible:
@@ -4352,7 +4368,10 @@ def _record_probe_quality(
         quote_age_secs=quote_age_b_secs,
         fetch_latency_secs=fetch_latency_b_secs,
     )
-    if margin > 0:
+    is_arbitrage_relationship = (
+        str(quality.get("relationshipType") or "") in ARB_MARGIN_RELATIONSHIP_TYPES
+    )
+    if is_arbitrage_relationship and margin > 0:
         counters.samples.append((margin, quality))
     elif margin > Decimal("-0.05"):
         counters.negative_samples.append((margin, quality))
@@ -4620,8 +4639,11 @@ def _record_probe_opportunity(
     allow_same_venue: bool,
     min_profit_margin: Decimal,
 ) -> None:
-    is_positive = opportunity.profit_margin > 0
-    meets_threshold = opportunity.profit_margin >= min_profit_margin
+    is_arbitrage_relationship = (
+        str(getattr(edge, "relationship_type", "")) in ARB_MARGIN_RELATIONSHIP_TYPES
+    )
+    is_positive = is_arbitrage_relationship and opportunity.profit_margin > 0
+    meets_threshold = is_arbitrage_relationship and opportunity.profit_margin >= min_profit_margin
     if allow_same_venue:
         counters.positive_same_venue += int(is_positive)
         counters.threshold_same_venue += int(meets_threshold)
