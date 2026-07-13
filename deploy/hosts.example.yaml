@@ -11,8 +11,10 @@
 #
 # Real hosts, IPs, and key paths are operator-supplied and gitignored: only this
 # example is committed. Never put secrets here — `identity_file_hint` is a path/label
-# the operator resolves locally, not a key. Phase 2 (multi-host deploy targeting) and
-# Phase 3 (nodeops multi-host roll-up) consume this same file.
+# the operator resolves locally, not a key. scripts/host/hostctl.sh consumes this
+# file for multi-host deploy targeting; Phase 3 (nodeops multi-host roll-up) builds
+# on it too. Parsed by scripts/host/registry.py without PyYAML: keep this exact
+# list-of-maps shape, or commit deploy/hosts.json instead (see deploy/README.md).
 
 version: 1
 hosts:
