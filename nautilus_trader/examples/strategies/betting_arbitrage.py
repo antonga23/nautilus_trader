@@ -1575,6 +1575,11 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         not create semantic edges or execution authority; it only ensures the
         runtime can observe prices for already loaded shared fixtures.
 
+        Both endpoints of every formed cross-venue graph edge are reserved first:
+        the graph's rule-matcher can pair fixtures the alias index normalizes
+        differently, and an edge without both legs quoted can never produce a
+        candidate. Edge legs are bounded only by the per-venue quote ceiling.
+
         """
         # The reserve has its own limit: the unmatched-probe limit is sized for
         # Polymarket audit probes (default 20) and is far too small for shared-fixture
@@ -1586,6 +1591,13 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         if len(self._config.enabled_venues) < 2:
             return 0
 
+        subscribed_by_venue = self._quote_subscription_counts_by_venue()
+        reserved_by_venue: Counter[str] = Counter()
+        subscribed_count = self._reserve_cross_venue_edge_leg_quote_slots(
+            subscribed_by_venue,
+            reserved_by_venue,
+        )
+
         subscribed_snapshot = tuple(self._subscribed_instruments)
         candidate_instruments = [
             instrument
@@ -1593,9 +1605,6 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             if instrument.id.venue.value.upper() in self._config.enabled_venues
             and self._instrument_resolution_horizon_quote_allowed(instrument)
         ]
-        if not candidate_instruments:
-            return 0
-
         alias_keys_by_instrument_id, alias_venues_by_key = (
             self._semantic_unmatched_quote_probe_alias_index(candidate_instruments)
         )
@@ -1615,13 +1624,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 alias_venues_by_key=alias_venues_by_key,
             )
         ]
-        if not ranked:
-            return 0
-
         ranked.sort(key=lambda item: item[0])
-        subscribed_by_venue = self._quote_subscription_counts_by_venue()
-        reserved_by_venue: Counter[str] = Counter()
-        subscribed_count = 0
         for _, instrument in ranked:
             venue = instrument.id.venue.value.upper()
             venue_limit = self._config.semantic_quote_subscription_limit_by_venue.get(venue)
@@ -1643,6 +1646,56 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 f"{dict(sorted(reserved_by_venue.items()))}",
             )
         return subscribed_count
+
+    def _reserve_cross_venue_edge_leg_quote_slots(
+        self,
+        subscribed_by_venue: Counter[str],
+        reserved_by_venue: Counter[str],
+    ) -> int:
+        subscribed_count = 0
+        for instrument in self._cross_venue_edge_leg_instruments():
+            venue = instrument.id.venue.value.upper()
+            if venue not in self._config.enabled_venues:
+                continue
+            if not self._instrument_resolution_horizon_quote_allowed(instrument):
+                continue
+            venue_limit = self._config.semantic_quote_subscription_limit_by_venue.get(venue)
+            if venue_limit is not None and subscribed_by_venue[venue] >= venue_limit:
+                continue
+            if self._subscribe_quote_ticks_for_instrument(instrument):
+                subscribed_by_venue[venue] += 1
+                reserved_by_venue[venue] += 1
+                subscribed_count += 1
+        return subscribed_count
+
+    def _cross_venue_edge_leg_instruments(self) -> list[BettingInstrument]:
+        """
+        Return both endpoint instruments of every cross-venue opportunity graph edge.
+
+        The graph is the authoritative source of formed cross-venue pairs: its
+        rule-matcher can pair fixtures whose alias keys normalize differently per
+        venue, so the fixture-alias index alone under-classifies edge legs as
+        cross-venue and lets the same-venue bucket squeeze them out.
+
+        """
+        graph = self._opportunity_graph
+        nodes = graph.nodes_by_id
+        legs: dict[str, BettingInstrument] = {}
+        for edge_id in sorted(graph.edges_by_id):
+            edge = graph.edges_by_id.get(edge_id)
+            if edge is None:
+                continue
+            source_node = nodes.get(edge.source_node_id)
+            target_node = nodes.get(edge.target_node_id)
+            source_venue = self._node_venue_value(source_node)
+            target_venue = self._node_venue_value(target_node)
+            if not source_venue or not target_venue or source_venue == target_venue:
+                continue
+            for node in (source_node, target_node):
+                instrument = getattr(node, "instrument", None)
+                if instrument is not None:
+                    legs.setdefault(str(instrument.id), instrument)
+        return list(legs.values())
 
     def _cross_venue_common_fixture_quote_priority(
         self,
@@ -5817,6 +5870,9 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             "opportunity_graph_coverage_proof_count": self._opportunity_graph.coverage_proof_count,
             "opportunity_graph_coverage_hyperedge_count": (
                 self._opportunity_graph.coverage_hyperedge_count
+            ),
+            "opportunity_graph_cross_venue_edges_dropped": (
+                self._opportunity_graph.cross_venue_edges_dropped_missing_endpoint
             ),
             "opportunity_graph_coverage_summary": (
                 self._opportunity_graph.semantic_coverage_summary()
