@@ -1,0 +1,62 @@
+{
+  "node_id": "sxbet-stream-validation",
+  "trader_id": "BETARB-SX-STREAM-001",
+  "validation_mode": true,
+  "allow_dummy_credentials": true,
+  "log_level": "INFO",
+  "rendered_config_path": "artifacts/strategy-nodes/sxbet-stream-validation/trading-node-config.json",
+  "status_path": "artifacts/strategy-nodes/sxbet-stream-validation/status.json",
+  "heartbeat_path": "artifacts/strategy-nodes/sxbet-stream-validation/heartbeat.json",
+  "semantic_rule_cache_dir": "artifacts/semantic-rule-cache/sxbet-stream-validation",
+  "timeout_connection": 240.0,
+  "strategy": {
+    "min_profit_margin": "0.02",
+    "max_total_stake": "250",
+    "sport_filter": null,
+    "market_timing_filter": "all",
+    "quote_freshness_profile": "live",
+    "max_resolution_horizon_hours": 48.0,
+    "instrument_refresh_interval_secs": 300.0,
+    "rollover_aware": true,
+    "opportunity_graph_engine": "semantic_rust",
+    "devig_enabled": true,
+    "devig_method": "auto",
+    "value_diagnostics_enabled": true,
+    "value_execution_enabled": false,
+    "min_value_edge": "0.015",
+    "auto_execute": false
+  },
+  "venues": [
+    {
+      "venue": "SXBET",
+      "client_key": "SXBET_PRIMARY",
+      "data_enabled": true,
+      "execution_enabled": false,
+      "credential_prefix": "SXBET",
+      "load_all_instruments": true,
+      "sport_ids": [
+        3,
+        6
+      ],
+      "instrument_load_limit": 100,
+      "market_discovery_limit": 200,
+      "prefer_liquid_markets": true,
+      "liquidity_probe_limit": 250,
+      "min_two_sided_markets": 1,
+      "auto_subscribe_quote_ticks": true,
+      "quote_subscription_limit": 120,
+      "order_book_poll_interval_secs": 10.0,
+      "order_book_poll_summary_interval_secs": 30.0,
+      "order_book_concurrency": 4,
+      "order_book_transport": "stream",
+      "live_only": false
+    }
+  ],
+  "metadata": {
+    "phase": "sxbet-stream-validation",
+    "track": "sxbet-realtime-stream",
+    "note": "Validation-mode only, data-only. SXBET-only node that opens the SX.bet Centrifugo realtime feed (order_book_transport=stream) as the primary quote source with the REST poll loop as automatic fallback. Execution is disabled and structurally unarmed (validation_mode forces auto_execute=false and builds no execution client; venue execution_enabled=false). Bounded to baseball+tennis with a 48h horizon and instrument_load_limit=100 so quote subscriptions stay under the current ~120 cap, keeping the streamed-vs-polled comparison clean before the cap is raised.",
+    "stream_transport": "SX.bet realtime is Centrifugo (not Ably). The stream client authenticates with the venue API key to fetch a realtime token, then subscribes order_book:market_{marketHash} channels. realtime_ws_url is unset and defaults to the mainnet endpoint wss://realtime.sx.bet/connection/websocket.",
+    "credentials": "allow_dummy_credentials=true keeps the manifest buildable without secrets; streaming needs a real SXBET_API_KEY/SXBET_API_KEYS in the deploy environment (the strategy-node-release runner provides it). Without a real key the realtime-token fetch fails and the node degrades to REST poll, so confirm stream health from the node logs after deploy."
+  }
+}
