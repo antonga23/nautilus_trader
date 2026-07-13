@@ -113,6 +113,41 @@ def test_normalizer_preserves_sxbet_two_way_match_odds_numeric_type_mapping():
     assert normalized.selection == "HOME"
 
 
+def test_sxbet_soccer_match_odds_home_away_do_not_form_phantom_coverage():
+    # A draw-capable soccer 1X2 must normalize three-way (MATCH_ODDS), so backing
+    # home and away is NOT complementary coverage: a draw loses both legs. Flagging
+    # the market two-way (the pre-fix provider behaviour) instead projects it onto a
+    # WINNER two-way partition and mints a phantom COMPLEMENTARY_COVERAGE arb.
+    normalizer = MarketNormalizer()
+    classifier = RuleClassifier(normalizer=normalizer)
+
+    def sxbet_soccer(outcome: str, *, two_way: bool):
+        return betting_instrument(
+            market_name="match_odds",
+            market_type="match_odds",
+            outcome=outcome,
+            sport="soccer",
+            info={
+                "raw_market_type": 1,
+                "is_two_way_market": two_way,
+                "sxbet_market_hash": f"market-{outcome}",
+            },
+        )
+
+    home = sxbet_soccer("home", two_way=False)
+    away = sxbet_soccer("away", two_way=False)
+    assert normalizer.normalize(home).market_type == CanonicalMarketType.MATCH_ODDS.value
+    assert classifier.classify(home, away) is None
+
+    # Pre-fix flag: the same fixture is wrongly projected two-way and mints the phantom.
+    phantom = classifier.classify(
+        sxbet_soccer("home", two_way=True),
+        sxbet_soccer("away", two_way=True),
+    )
+    assert phantom is not None
+    assert phantom.relationship_type == RelationshipType.COMPLEMENTARY_COVERAGE.value
+
+
 def test_dnb_home_and_asian_handicap_zero_home_are_equivalent():
     classifier = RuleClassifier()
     dnb_home = betting_instrument(
