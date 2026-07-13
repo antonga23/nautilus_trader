@@ -344,6 +344,18 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         Maximum reserved cross-venue common-fixture quote subscriptions per venue.
         ``None`` sizes the reserve to the common fixtures actually loaded (still bounded
         by ``semantic_quote_subscription_limit_by_venue``); ``0`` disables the reserve.
+    cross_venue_liquidity_priority_enabled : bool, default False
+        When True, the cross-venue common-fixture quote reserve and instrument-refresh
+        rotation rank a co-listed fixture by how deep it is on *both* venues (the
+        smaller of this leg's own venue depth and the deepest co-listed leg on another
+        venue), so limited quote slots rotate onto the fixtures an arb can actually
+        fill. When False (default) the depth term is a constant and ordering is
+        unchanged.
+    min_quote_depth_by_venue : dict[str, float], default {}
+        Optional per-venue minimum instrument liquidity depth required before a
+        cross-venue common-fixture quote slot is spent on it. A venue absent from the
+        mapping (the default for every venue) applies no depth gate, so existing
+        manifests subscribe exactly as before.
     quote_freshness_profile : str, default "pre_match"
         Quote timing policy: "pre_match", "live", or "custom".
     quote_max_pair_skew_secs : float | None, default None
@@ -444,6 +456,8 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
     semantic_unmatched_quote_probe_venues: frozenset[str] = frozenset({"POLYMARKET"})
     semantic_unmatched_quote_probe_limit_per_venue: int = 20
     cross_venue_common_fixture_quote_reserve_limit_per_venue: int | None = None
+    cross_venue_liquidity_priority_enabled: bool = False
+    min_quote_depth_by_venue: dict[str, float] = {}
     quote_freshness_profile: str = "pre_match"
     quote_max_pair_skew_secs: float | None = None
     quote_max_fetch_latency_secs: float | None = None
@@ -509,6 +523,9 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
             self._normalize_semantic_quote_subscription_limits(
                 self.semantic_quote_subscription_limit_by_venue,
             )
+        )
+        min_quote_depth_by_venue = self._normalize_min_quote_depth_by_venue(
+            self.min_quote_depth_by_venue,
         )
         venue_taker_fee_rates = normalize_venue_fee_rates(
             self.venue_taker_fee_rates,
@@ -582,6 +599,11 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
             self,
             "semantic_quote_subscription_limit_by_venue",
             semantic_quote_subscription_limit_by_venue,
+        )
+        msgspec.structs.force_setattr(
+            self,
+            "min_quote_depth_by_venue",
+            min_quote_depth_by_venue,
         )
         msgspec.structs.force_setattr(self, "venue_taker_fee_rates", venue_taker_fee_rates)
         msgspec.structs.force_setattr(
@@ -797,6 +819,21 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
             msg = (
                 f"semantic_quote_subscription_limit_by_venue values must be non-negative: {invalid}"
             )
+            raise ValueError(msg)
+        return normalized
+
+    @staticmethod
+    def _normalize_min_quote_depth_by_venue(
+        depths: dict[str, float],
+    ) -> dict[str, float]:
+        normalized = {
+            str(venue).strip().upper(): float(depth)
+            for venue, depth in depths.items()
+            if str(venue).strip() and depth is not None
+        }
+        invalid = {venue: depth for venue, depth in normalized.items() if depth < 0}
+        if invalid:
+            msg = f"min_quote_depth_by_venue values must be non-negative: {invalid}"
             raise ValueError(msg)
         return normalized
 
@@ -1327,6 +1364,18 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self,
         instruments: list[BettingInstrument],
     ) -> list[BettingInstrument]:
+        # Calendar rotation: at each ~300s catalog refresh, feed the deepest instruments
+        # into the subscription passes first so bounded quote slots follow the sports
+        # calendar (a World Cup / NBA slate day fills the book on the fixtures actually
+        # trading now). When the depth feature is off this is a stable no-op, preserving
+        # the cache's arrival order. Downstream, the semantic path re-ranks every slot
+        # through the depth-aware cross-venue priority.
+        if self._config.cross_venue_liquidity_priority_enabled:
+            instruments = sorted(
+                instruments,
+                key=self._instrument_liquidity_depth,
+                reverse=True,
+            )
         existing_ids = {str(instrument.id) for instrument in set(self._subscribed_instruments)}
         added: list[BettingInstrument] = []
         for instrument in instruments:
@@ -1608,12 +1657,17 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         alias_keys_by_instrument_id, alias_venues_by_key = (
             self._semantic_unmatched_quote_probe_alias_index(candidate_instruments)
         )
+        alias_venue_depth = self._cross_venue_alias_venue_depth(
+            candidate_instruments,
+            alias_keys_by_instrument_id=alias_keys_by_instrument_id,
+        )
         ranked = [
             (
                 self._cross_venue_common_fixture_quote_priority(
                     instrument,
                     alias_keys_by_instrument_id=alias_keys_by_instrument_id,
                     alias_venues_by_key=alias_venues_by_key,
+                    alias_venue_depth=alias_venue_depth,
                 ),
                 instrument,
             )
@@ -1625,6 +1679,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             )
         ]
         ranked.sort(key=lambda item: item[0])
+        depth_gated = 0
         for _, instrument in ranked:
             venue = instrument.id.venue.value.upper()
             venue_limit = self._config.semantic_quote_subscription_limit_by_venue.get(venue)
@@ -1632,10 +1687,20 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 continue
             if per_venue_limit is not None and reserved_by_venue[venue] >= per_venue_limit:
                 continue
+            min_depth = self._config.min_quote_depth_by_venue.get(venue)
+            if min_depth is not None and self._instrument_liquidity_depth(instrument) < min_depth:
+                depth_gated += 1
+                continue
             if self._subscribe_quote_ticks_for_instrument(instrument):
                 subscribed_by_venue[venue] += 1
                 reserved_by_venue[venue] += 1
                 subscribed_count += 1
+
+        if depth_gated:
+            self.log.info(
+                "Skipped shallow cross-venue common-fixture quote candidates: "
+                f"depth_gated={depth_gated}",
+            )
 
         if subscribed_count:
             self.log.info(
@@ -1703,7 +1768,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         *,
         alias_keys_by_instrument_id: dict[str, set[str]],
         alias_venues_by_key: dict[str, set[str]],
-    ) -> tuple[int, int, int, int, str]:
+        alias_venue_depth: dict[str, dict[str, float]] | None = None,
+    ) -> tuple[int, float, int, int, int, str]:
         aliases = alias_keys_by_instrument_id.get(str(instrument.id), set())
         other_venue_count = 0
         venue = instrument.id.venue.value.upper()
@@ -1713,13 +1779,91 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 other_venue_count,
                 len({alias_venue for alias_venue in alias_venues if alias_venue != venue}),
             )
+        both_venue_depth = self._cross_venue_both_side_depth(
+            instrument,
+            aliases=aliases,
+            alias_venue_depth=alias_venue_depth,
+        )
         return (
             -other_venue_count,
+            -both_venue_depth,
             self._instrument_resolution_horizon_priority(instrument),
             self._instrument_market_family_quote_priority(instrument),
             0 if aliases else 1,
             str(instrument.id),
         )
+
+    def _cross_venue_both_side_depth(
+        self,
+        instrument: BettingInstrument,
+        *,
+        aliases: set[str],
+        alias_venue_depth: dict[str, dict[str, float]] | None,
+    ) -> float:
+        # "Deep on both venues": for each co-listed fixture alias, the tradeable size is
+        # the smaller of this leg's own venue depth and the deepest co-listed leg on
+        # another venue -- a fixture that is deep on one book but empty on the other
+        # cannot be arbed. Take the best such min across the instrument's aliases.
+        if not self._config.cross_venue_liquidity_priority_enabled or not alias_venue_depth:
+            return 0.0
+        venue = instrument.id.venue.value.upper()
+        own_depth = self._instrument_liquidity_depth(instrument)
+        best = 0.0
+        for alias in aliases:
+            depth_by_venue = alias_venue_depth.get(alias)
+            if not depth_by_venue:
+                continue
+            own_venue_depth = max(own_depth, depth_by_venue.get(venue, 0.0))
+            other_venue_depth = max(
+                (depth for alias_venue, depth in depth_by_venue.items() if alias_venue != venue),
+                default=0.0,
+            )
+            best = max(best, min(own_venue_depth, other_venue_depth))
+        return best
+
+    def _cross_venue_alias_venue_depth(
+        self,
+        instruments: list[BettingInstrument],
+        *,
+        alias_keys_by_instrument_id: dict[str, set[str]],
+    ) -> dict[str, dict[str, float]]:
+        alias_venue_depth: dict[str, dict[str, float]] = {}
+        if not self._config.cross_venue_liquidity_priority_enabled:
+            return alias_venue_depth
+        for instrument in instruments:
+            aliases = alias_keys_by_instrument_id.get(str(instrument.id))
+            if not aliases:
+                continue
+            venue = instrument.id.venue.value.upper()
+            depth = self._instrument_liquidity_depth(instrument)
+            for alias in aliases:
+                by_venue = alias_venue_depth.setdefault(alias, {})
+                if depth > by_venue.get(venue, 0.0):
+                    by_venue[venue] = depth
+        return alias_venue_depth
+
+    @staticmethod
+    def _instrument_liquidity_depth(instrument: BettingInstrument) -> float:
+        # Venue-agnostic depth read. Providers publish a normalized ``liquidity_depth``
+        # on instrument ``info`` (SX.bet two-sided order-book size, Cloudbet max stake);
+        # Polymarket instruments carry ``volume24hr``/``volume`` on ``info`` from the
+        # gamma discovery. Missing or unparsable depth degrades to 0.0 (no boost).
+        info = getattr(instrument, "info", None)
+        if isinstance(info, dict):
+            for key in ("liquidity_depth", "volume24hr", "volume"):
+                value = info.get(key)
+                if isinstance(value, (int, float, str)) and value != "":
+                    try:
+                        return float(value)
+                    except (TypeError, ValueError):
+                        continue
+        max_size = getattr(instrument, "max_size", None)
+        if isinstance(max_size, (int, float, Decimal, str)) and max_size != "":
+            try:
+                return float(max_size)
+            except (TypeError, ValueError):
+                return 0.0
+        return 0.0
 
     @staticmethod
     def _instrument_market_family_quote_priority(instrument: BettingInstrument) -> int:

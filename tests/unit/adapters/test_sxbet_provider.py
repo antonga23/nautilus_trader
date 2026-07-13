@@ -19,6 +19,7 @@ from nautilus_trader.adapters.sxbet.providers import SXBetInstrumentProvider
 from nautilus_trader.adapters.sxbet.providers import SXBET_MARKET_BATCH_SIZE
 from nautilus_trader.adapters.sxbet.providers import SXBET_MARKET_PAGE_SIZE
 from nautilus_trader.adapters.sxbet.signing import decimal_odds_to_percentage
+from nautilus_trader.adapters.sxbet.signing import to_wei
 
 
 TWO_INSTRUMENTS = 2
@@ -1267,3 +1268,167 @@ async def test_sxbet_provider_load_all_continues_when_best_odds_hydration_fails(
     assert len(instruments) == TWO_INSTRUMENTS
     assert all(instrument.price == 2.0 for instrument in instruments)
     assert all(instrument.info["has_best_odds"] is False for instrument in instruments)
+
+
+def _two_sided_order_book(depth: float) -> dict:
+    # A market with equal fillable size on both outcomes, so its two-sided depth
+    # (the smaller of the two sides) equals ``depth`` base-currency units.
+    size = to_wei(str(depth))
+    return {
+        "data": {
+            "orders": [
+                {
+                    "isMakerBettingOutcomeOne": True,
+                    "percentageOdds": decimal_odds_to_percentage(2.0),
+                    "totalBetSize": size,
+                },
+                {
+                    "isMakerBettingOutcomeOne": False,
+                    "percentageOdds": decimal_odds_to_percentage(2.0),
+                    "totalBetSize": size,
+                },
+            ],
+        },
+    }
+
+
+class _DepthHttpClient:
+    def __init__(self, depth_by_market: dict[str, float]) -> None:
+        self._depth_by_market = depth_by_market
+        self.order_book_calls: list[str] = []
+
+    async def get_order_book(self, market_hash: str) -> dict:
+        self.order_book_calls.append(market_hash)
+        return _two_sided_order_book(self._depth_by_market.get(market_hash, 0.0))
+
+
+@pytest.mark.asyncio
+async def test_sxbet_provider_selects_deepest_two_sided_markets_by_depth():
+    depth_by_market = {"market-0": 5.0, "market-1": 200.0, "market-2": 50.0}
+    http_client = _DepthHttpClient(depth_by_market)
+    markets = [{"marketHash": market_hash} for market_hash in depth_by_market]
+    provider = SXBetInstrumentProvider(
+        http_client=http_client,
+        config=SXBetInstrumentProviderConfig(
+            prefer_liquid_markets=True,
+            liquidity_probe_limit=3,
+            min_market_depth=10.0,
+            top_markets_by_depth=2,
+        ),
+    )
+
+    selected = await provider._select_markets_for_processing(markets, target_market_count=3)
+
+    # market-0 is below the 10.0 floor and dropped; the rest rank deepest-first.
+    assert [market["marketHash"] for market in selected] == ["market-1", "market-2"]
+    assert selected[0]["_liquidity_depth"] == pytest.approx(200.0)
+    assert selected[1]["_liquidity_depth"] == pytest.approx(50.0)
+
+
+@pytest.mark.asyncio
+async def test_sxbet_provider_reselects_deepest_market_when_depth_shifts():
+    markets = [{"marketHash": f"market-{index}"} for index in range(2)]
+    config = SXBetInstrumentProviderConfig(
+        prefer_liquid_markets=True,
+        liquidity_probe_limit=2,
+        min_market_depth=1.0,
+        top_markets_by_depth=1,
+    )
+
+    first = SXBetInstrumentProvider(
+        http_client=_DepthHttpClient({"market-0": 100.0, "market-1": 10.0}),
+        config=config,
+    )
+    first_selected = await first._select_markets_for_processing(
+        [dict(market) for market in markets],
+        target_market_count=2,
+    )
+    assert [market["marketHash"] for market in first_selected] == ["market-0"]
+
+    # Calendar shift: depth rotates onto the other fixture on the next refresh.
+    second = SXBetInstrumentProvider(
+        http_client=_DepthHttpClient({"market-0": 10.0, "market-1": 100.0}),
+        config=config,
+    )
+    second_selected = await second._select_markets_for_processing(
+        [dict(market) for market in markets],
+        target_market_count=2,
+    )
+    assert [market["marketHash"] for market in second_selected] == ["market-1"]
+
+
+@pytest.mark.asyncio
+async def test_sxbet_provider_depth_selection_is_noop_without_thresholds():
+    depth_by_market = {"market-0": 5.0, "market-1": 200.0, "market-2": 50.0}
+    markets = [{"marketHash": market_hash} for market_hash in depth_by_market]
+    provider = SXBetInstrumentProvider(
+        http_client=_DepthHttpClient(depth_by_market),
+        config=SXBetInstrumentProviderConfig(
+            prefer_liquid_markets=True,
+            liquidity_probe_limit=3,
+        ),
+    )
+
+    selected = await provider._select_markets_for_processing(markets, target_market_count=3)
+
+    # With no depth thresholds set, probe order is preserved (no depth reordering).
+    assert [market["marketHash"] for market in selected] == [
+        "market-0",
+        "market-1",
+        "market-2",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_sxbet_provider_depth_ranking_tolerates_missing_depth():
+    class MissingDepthHttpClient:
+        async def get_order_book(self, market_hash: str) -> dict:
+            return {
+                "data": {
+                    "orders": [
+                        {
+                            "isMakerBettingOutcomeOne": True,
+                            "percentageOdds": decimal_odds_to_percentage(2.0),
+                        },
+                        {
+                            "isMakerBettingOutcomeOne": False,
+                            "percentageOdds": decimal_odds_to_percentage(2.0),
+                        },
+                    ],
+                },
+            }
+
+    markets = [{"marketHash": f"market-{index}"} for index in range(3)]
+    provider = SXBetInstrumentProvider(
+        http_client=MissingDepthHttpClient(),
+        config=SXBetInstrumentProviderConfig(
+            prefer_liquid_markets=True,
+            liquidity_probe_limit=3,
+            min_market_depth=1.0,
+        ),
+    )
+
+    # Orders carry no ``totalBetSize`` so every market reads as zero depth: the floor
+    # drops them all without raising.
+    selected = await provider._select_markets_for_processing(markets, target_market_count=3)
+
+    assert selected == []
+
+
+def test_sxbet_provider_market_two_sided_depth_uses_thinner_side():
+    orders = [
+        {
+            "isMakerBettingOutcomeOne": False,
+            "percentageOdds": decimal_odds_to_percentage(2.0),
+            "totalBetSize": to_wei(100.0),
+        },
+        {
+            "isMakerBettingOutcomeOne": True,
+            "percentageOdds": decimal_odds_to_percentage(2.0),
+            "totalBetSize": to_wei(30.0),
+        },
+    ]
+
+    # Depth backing outcome one = 100 (opposite side), backing outcome two = 30;
+    # the market is only as deep as its thinner side.
+    assert SXBetInstrumentProvider._market_two_sided_depth(orders) == pytest.approx(30.0)

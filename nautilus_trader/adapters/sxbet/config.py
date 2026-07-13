@@ -51,6 +51,14 @@ class SXBetInstrumentProviderConfig(InstrumentProviderConfig, frozen=True):
         Maximum markets to probe while searching for liquid markets.
     min_two_sided_markets : PositiveInt, default 1
         Minimum desired count of markets with active orders on both outcomes.
+    min_market_depth : PositiveFloat, optional
+        Minimum two-sided fillable depth (summed opposite-side ``totalBetSize`` in base
+        currency, taken as the smaller of the two outcomes) a probed market must show to
+        be kept during liquidity selection. ``None`` keeps every two-sided market
+        regardless of size, preserving pre-depth selection behaviour.
+    top_markets_by_depth : PositiveInt, optional
+        When set, keep only the deepest N two-sided markets after depth ranking.
+        ``None`` applies no depth cap.
     max_resolution_horizon_hours : PositiveFloat, optional
         Prefer markets whose fixture starts within this many hours when applying
         discovery and liquidity-selection budgets.
@@ -72,6 +80,8 @@ class SXBetInstrumentProviderConfig(InstrumentProviderConfig, frozen=True):
     prefer_liquid_markets: bool = False
     liquidity_probe_limit: PositiveInt = 100
     min_two_sided_markets: PositiveInt = 1
+    min_market_depth: PositiveFloat | None = None
+    top_markets_by_depth: PositiveInt | None = None
     max_resolution_horizon_hours: PositiveFloat | None = None
     api_key_pool: tuple[str, ...] | None = None
     log_warnings: bool = True

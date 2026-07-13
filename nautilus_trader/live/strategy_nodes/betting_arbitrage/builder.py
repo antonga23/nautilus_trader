@@ -258,6 +258,16 @@ def _build_strategy_importable_config(
     }
     if semantic_quote_limits:
         strategy_config["semantic_quote_subscription_limit_by_venue"] = semantic_quote_limits
+    min_quote_depth_by_venue = {
+        venue.venue: float(venue.min_quote_depth)
+        for venue in enabled_venues
+        if venue.min_quote_depth is not None
+    }
+    if min_quote_depth_by_venue:
+        strategy_config["min_quote_depth_by_venue"] = min_quote_depth_by_venue
+        # A per-venue depth gate is only coherent alongside depth-aware ranking, so
+        # arm the cross-venue liquidity priority when any venue declares a floor.
+        strategy_config["cross_venue_liquidity_priority_enabled"] = True
     if manifest.semantic_rule_cache_dir:
         strategy_config["semantic_rule_cache_dir"] = manifest.semantic_rule_cache_dir
     if manifest.status_path and not strategy_config.get("execution_approval_command_dir"):
@@ -297,6 +307,8 @@ def _build_sxbet_data_importable(
         "prefer_liquid_markets": venue.prefer_liquid_markets,
         "liquidity_probe_limit": venue.liquidity_probe_limit,
         "min_two_sided_markets": venue.min_two_sided_markets,
+        "min_market_depth": venue.min_market_depth,
+        "top_markets_by_depth": venue.top_markets_by_depth,
         "max_resolution_horizon_hours": manifest.strategy.max_resolution_horizon_hours,
     }
     config = {
@@ -354,6 +366,8 @@ def _build_sxbet_exec_importable(
         "prefer_liquid_markets": venue.prefer_liquid_markets,
         "liquidity_probe_limit": venue.liquidity_probe_limit,
         "min_two_sided_markets": venue.min_two_sided_markets,
+        "min_market_depth": venue.min_market_depth,
+        "top_markets_by_depth": venue.top_markets_by_depth,
         "max_resolution_horizon_hours": manifest.strategy.max_resolution_horizon_hours,
     }
     config = {

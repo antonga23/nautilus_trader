@@ -535,6 +535,62 @@ class TestBettingArbitrageNodeBuilder:
         assert data_client.config["order_book_best_odds_batch_size"] == 30
         assert data_client.config["api_key_pool"] == ("dummy-sxbet-api-key",)
 
+    def test_liquidity_depth_manifest_fields_thread_through_builder(self, monkeypatch):
+        monkeypatch.delenv("SXBET_API_KEY", raising=False)
+        manifest = BettingArbitrageNodeManifest(
+            node_id="sxbet-depth",
+            trader_id="BETARB-TEST-DEPTH",
+            validation_mode=True,
+            allow_dummy_credentials=True,
+            venues=[
+                BettingVenueManifest(
+                    venue="SXBET",
+                    client_key="SXBET_PRIMARY",
+                    prefer_liquid_markets=True,
+                    min_market_depth=25.0,
+                    top_markets_by_depth=8,
+                    min_quote_depth=25.0,
+                ),
+                BettingVenueManifest(
+                    venue="CLOUDBET",
+                    client_key="CLOUDBET_PRIMARY",
+                    min_quote_depth=50.0,
+                ),
+            ],
+        )
+
+        config = build_trading_node_config(manifest)
+        provider_config = config.data_clients["SXBET_PRIMARY"].config["instrument_provider"]
+        strategy_config = config.strategies[0].config
+
+        assert provider_config["min_market_depth"] == 25.0
+        assert provider_config["top_markets_by_depth"] == 8
+        assert strategy_config["min_quote_depth_by_venue"] == {"SXBET": 25.0, "CLOUDBET": 50.0}
+        assert strategy_config["cross_venue_liquidity_priority_enabled"] is True
+
+    def test_liquidity_depth_manifest_fields_default_off(self, monkeypatch):
+        monkeypatch.delenv("SXBET_API_KEY", raising=False)
+        manifest = BettingArbitrageNodeManifest(
+            node_id="sxbet-nodepth",
+            trader_id="BETARB-TEST-NODEPTH",
+            validation_mode=True,
+            allow_dummy_credentials=True,
+            venues=[
+                BettingVenueManifest(venue="SXBET", client_key="SXBET_PRIMARY"),
+            ],
+        )
+
+        config = build_trading_node_config(manifest)
+        provider_config = config.data_clients["SXBET_PRIMARY"].config["instrument_provider"]
+        strategy_config = config.strategies[0].config
+
+        # Unset depth thresholds stay None on the provider config and the strategy keeps
+        # the feature off with an empty gate, so existing manifests behave as before.
+        assert provider_config["min_market_depth"] is None
+        assert provider_config["top_markets_by_depth"] is None
+        assert strategy_config["min_quote_depth_by_venue"] == {}
+        assert strategy_config["cross_venue_liquidity_priority_enabled"] is False
+
     def test_cloudbet_data_client_receives_runtime_settings(self, monkeypatch):
         monkeypatch.delenv("CLOUDBET_API_KEY", raising=False)
         manifest = BettingArbitrageNodeManifest(
