@@ -9,6 +9,8 @@ from nautilus_trader.common.clock import LiveClock
 from nautilus_trader.common.enums import LogColor
 from nautilus_trader.common.logging import Logger
 from nautilus_trader.core.correctness import PyCondition
+from nautilus_trader.core.rust.model import LiquiditySide
+from nautilus_trader.core.rust.model import OrderSide
 from nautilus_trader.core.rust.model import OrderStatus
 from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.execution.messages import CancelAllOrders
@@ -32,8 +34,9 @@ from nautilus_trader.model.identifiers import AccountId, PositionId
 from nautilus_trader.model.identifiers import ClientId
 from nautilus_trader.model.identifiers import ClientOrderId
 from nautilus_trader.model.identifiers import InstrumentId
+from nautilus_trader.model.identifiers import TradeId
 from nautilus_trader.model.identifiers import VenueOrderId
-from nautilus_trader.model.objects import Money, AccountBalance, Quantity
+from nautilus_trader.model.objects import Money, AccountBalance, Price, Quantity
 from nautilus_trader.model.position import Position
 from nautilus_trader.msgbus.bus import MessageBus
 
@@ -63,6 +66,23 @@ from nautilus_trader.live.execution_client import LiveExecutionClient
 from nautilus_trader.model.events import AccountState
 from nautilus_trader.model.instruments.crypto_betting import CryptoBettingInstrument
 from nautilus_trader.model.orders import Order
+
+
+# Cloudbet bet statuses that mean the stake is matched (money is live at the venue): a matched
+# straight bet plus every settled outcome. Any of these => the leg is real exposure, so it must be
+# resolved to a fill and can never be treated as a cancel.
+_CLOUDBET_MATCHED_STATUSES = frozenset(
+    {
+        BetStatus.ACCEPTED,
+        BetStatus.PARTIAL,
+        BetStatus.WIN,
+        BetStatus.LOSS,
+        BetStatus.HALF_WIN,
+        BetStatus.HALF_LOSS,
+        BetStatus.PUSH,
+        BetStatus.COMPLETED,
+    },
+)
 
 
 class CloudbetLiveExecutionClient(LiveExecutionClient):
@@ -139,6 +159,9 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
         )
 
         self.venue_order_id_to_client_order_id: dict[VenueOrderId, ClientOrderId] = {}
+        # Client order IDs already filled; guards against double-emitting a fill for the same
+        # bet across the submit path, pending-acceptance reconciliation, and cancel resolution.
+        self._filled_client_order_ids: Set[ClientOrderId] = set()
         # self.pending_update_order_client_ids: set[tuple[ClientOrderId, VenueOrderId]] = set()
         # self.published_executions: dict[ClientOrderId, list[TradeId]] = defaultdict(list)
         #
@@ -235,6 +258,7 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
 
     def reset(self) -> None:
         self.venue_order_id_to_client_order_id.clear()
+        self._filled_client_order_ids.clear()
 
     def dispose(self) -> None:
         async def close_resources() -> None:
@@ -1211,6 +1235,14 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
                 reference_id,
                 place_bet_response,
             )
+            if place_bet_response.status is BetStatus.PENDING_ACCEPTANCE:
+                # The poll window is exhausted but the reference is still LIVE at Cloudbet and can
+                # match after we stop polling. Re-resolve to the true terminal state before ever
+                # trusting a reject; the caller fails toward "still exposed" if this stays pending.
+                place_bet_response = await self._reconcile_pending_acceptance(
+                    reference_id,
+                    place_bet_response,
+                )
         except Exception as e:
             # if isinstance(CloudbetAPIError):
             #     await self.on_api_exception(error=e)
@@ -1225,7 +1257,15 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
             return  # end execution
         self._log.debug(f"result={place_bet_response.status.value}")
         # using the message bus, notify relevant components of results eg. RiskEngine, DataEngine, etc
-        if place_bet_response.status is BetStatus.ACCEPTED:
+        status = place_bet_response.status
+        if status in _CLOUDBET_MATCHED_STATUSES or status is BetStatus.PENDING_ACCEPTANCE:
+            # A matched/settled status means the stake is live at Cloudbet (money on the leg);
+            # in-play markets can settle inside the poll+reconcile window, so a re-query can surface
+            # PARTIAL/COMPLETED/WIN/etc. right here. PENDING_ACCEPTANCE only reaches this branch
+            # after reconciliation could not confirm a genuine reject, so the reference may still be
+            # live. Both accept the leg (fail toward "still exposed") rather than rejecting a bet
+            # that is or could be matched and leaving a naked leg — mirroring _cancel_order's
+            # matched-status handling, where the same statuses resolve to a fill (never a cancel).
             venue_order_id = VenueOrderId(place_bet_response.reference_id)
             self._log.debug(
                 f"Matching venue_order_id: {venue_order_id} to client_order_id: {client_order_id}",
@@ -1239,14 +1279,23 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
                 ts_event=self._clock.timestamp_ns(),
             )
             self._log.debug("Generated _generate_order_accepted")
+            if status in _CLOUDBET_MATCHED_STATUSES:
+                # Matched/settled => real exposure. Emit the fill immediately (idempotent via the
+                # _filled_client_order_ids guard, so a later reconcile/cancel query cannot double
+                # -fill). PENDING_ACCEPTANCE is left un-filled: it is "still live", not yet matched.
+                self._emit_bet_fill(
+                    strategy_id=command.strategy_id,
+                    instrument_id=command.instrument_id,
+                    client_order_id=client_order_id,
+                    venue_order_id=venue_order_id,
+                    bet_response=place_bet_response,
+                )
         else:
             self.generate_order_rejected(
                 strategy_id=command.strategy_id,
                 instrument_id=command.instrument_id,
                 client_order_id=client_order_id,
-                reason=place_bet_response.status.value
-                if place_bet_response.status
-                else "client error/exception",
+                reason=status.value if status else "client error/exception",
                 ts_event=self._clock.timestamp_ns(),
             )
 
@@ -1262,10 +1311,63 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
         )  # pragma: no cover
 
     async def _cancel_order(self, command: CancelOrder) -> None:
-        # TODO : message the cloudbet team about cancelling a Bet that hasn't been accepted yet or is only partially fileld
-        raise NotImplementedError(
-            "Cloudbet doesn't support cancelling an order"
-        )  # pragma: no cover
+        # Cloudbet sportsbook bets are NOT cancelable once matched: core.py exposes no cancel
+        # endpoint. Fabricating an OrderCanceled would tell the strategy the leg is gone while
+        # real money is on it => an unwind must FLATTEN the exposure, not cancel it. So instead
+        # of raising, resolve the order to its true terminal state at the venue.
+        client_order_id = command.client_order_id
+        venue_order_id = command.venue_order_id
+        if venue_order_id is None:
+            cached_order: Optional[Order] = self._cache.order(client_order_id)
+            venue_order_id = cached_order.venue_order_id if cached_order is not None else None
+        if venue_order_id is None:
+            # No venue reference exists => the bet was never placed; canceling is safe (no exposure).
+            self.generate_order_canceled(
+                strategy_id=command.strategy_id,
+                instrument_id=command.instrument_id,
+                client_order_id=client_order_id,
+                venue_order_id=None,
+                ts_event=self._clock.timestamp_ns(),
+            )
+            return
+
+        try:
+            bet_response: GetBetResponse = await self._client.get_bet_status(venue_order_id.value)
+        except Exception as e:
+            # Fail toward "still exposed": if we cannot confirm the terminal state, never fabricate
+            # a cancel — the bet could be live. Leave the order untouched for the next reconcile.
+            self._log.warning(
+                f"Cloudbet cancel resolution failed for {venue_order_id}; leaving order live: {e!r}",
+            )
+            return
+
+        status = bet_response.status
+        if status in _CLOUDBET_MATCHED_STATUSES:
+            # Matched/settled => terminal and live. Resolve to a fill (idempotent), never a cancel.
+            self._log.info(
+                f"Cloudbet cannot cancel matched bet {venue_order_id}; resolving to fill",
+            )
+            self._emit_bet_fill(
+                strategy_id=command.strategy_id,
+                instrument_id=command.instrument_id,
+                client_order_id=client_order_id,
+                venue_order_id=venue_order_id,
+                bet_response=bet_response,
+            )
+        elif status is BetStatus.PENDING_ACCEPTANCE:
+            # Still resolving at the venue => could still match. Do not cancel; fail toward exposed.
+            self._log.info(
+                f"Cloudbet bet {venue_order_id} still pending; not canceling (may still match)",
+            )
+        else:
+            # Genuinely not placed / rejected => no exposure, so the cancel request is honoured.
+            self.generate_order_canceled(
+                strategy_id=command.strategy_id,
+                instrument_id=command.instrument_id,
+                client_order_id=client_order_id,
+                venue_order_id=venue_order_id,
+                ts_event=self._clock.timestamp_ns(),
+            )
 
     async def _cancel_all_orders(self, command: CancelAllOrders) -> None:
         # TODO : message the cloudbet team about cancelling a Bet that hasn't been accepted yet or is only partially fileld
@@ -1323,3 +1425,97 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
             if resolved.status is not BetStatus.PENDING_ACCEPTANCE:
                 break
         return resolved
+
+    async def _reconcile_pending_acceptance(
+        self,
+        reference_id: str,
+        response: GetBetResponse,
+    ) -> GetBetResponse:
+        """
+        Authoritatively re-resolve a still-PENDING_ACCEPTANCE reference to its true terminal state.
+
+        A pending reference remains LIVE at Cloudbet after the poll window and can still match, so
+        the strategy must never be told it was rejected while the bet could match (that would hide a
+        naked leg). This performs one final query of the reference: only an explicit venue status is
+        trusted. If the query fails or the venue still reports pending, the original (pending)
+        response is returned so the caller fails toward "still exposed". Safe to call repeatedly.
+        """
+        try:
+            reconciled = await self._client.get_bet_status(reference_id)
+        except Exception as e:
+            self._log.warning(
+                f"Cloudbet pending-acceptance reconciliation failed for {reference_id}; "
+                f"treating as still live: {e!r}",
+            )
+            return response
+        return reconciled
+
+    def _matched_stake(self, bet_response: GetBetResponse, order: Order) -> float:
+        """
+        Return the matched (accepted) stake for a fill.
+
+        Cloudbet accepts a bet at the actually-matched stake, which for a partial match is less than
+        the requested stake; the response ``stake`` carries that matched amount. Falls back to the
+        order's requested quantity only when the venue omits the stake.
+        """
+        raw_stake = getattr(bet_response, "stake", None)
+        if raw_stake is None:
+            return order.quantity.as_double()
+        return float(raw_stake)
+
+    def _emit_bet_fill(
+        self,
+        strategy_id: Any,
+        instrument_id: InstrumentId,
+        client_order_id: ClientOrderId,
+        venue_order_id: VenueOrderId,
+        bet_response: GetBetResponse,
+    ) -> None:
+        """
+        Emit a single `OrderFilled` for a matched Cloudbet bet.
+
+        Idempotent: a client order is filled at most once (Cloudbet matches a straight bet atomically
+        at ACCEPTED, so there is no incremental-fill loop), guarding against double-emit across the
+        submit path, pending-acceptance reconciliation, and cancel resolution.
+        """
+        if client_order_id in self._filled_client_order_ids:
+            self._log.debug(f"Fill already emitted for {client_order_id}; skipping")
+            return
+
+        order: Optional[Order] = self._cache.order(client_order_id)
+        if order is None:
+            self._log.warning(
+                f"Cannot emit Cloudbet fill; order not in cache ({client_order_id})",
+            )
+            return
+
+        instrument = self._cache.instrument(order.instrument_id)
+        matched_stake = self._matched_stake(bet_response, order)
+        last_qty: Quantity = instrument.make_qty(matched_stake)
+        last_px: Price = instrument.make_price(float(bet_response.price))
+        order_side: OrderSide = order.side
+        liquidity_side = LiquiditySide.MAKER if order_side == OrderSide.BUY else LiquiditySide.TAKER
+        quote_currency = self._cache.instrument(order.instrument_id).quote_currency
+        # Deterministic trade ID keyed on the venue reference keeps repeated resolutions idempotent.
+        trade_id = TradeId(venue_order_id.value)
+        info = bet_response.to_dict() if hasattr(bet_response, "to_dict") else None
+
+        self.generate_order_filled(
+            strategy_id=strategy_id,
+            instrument_id=instrument_id,
+            client_order_id=client_order_id,
+            venue_order_id=venue_order_id,
+            venue_position_id=None,
+            trade_id=trade_id,
+            order_side=order_side,
+            order_type=order.order_type,
+            last_qty=last_qty,
+            last_px=last_px,
+            quote_currency=quote_currency,
+            commission=Money(0, quote_currency),
+            liquidity_side=liquidity_side,
+            ts_event=self._clock.timestamp_ns(),
+            info=info,
+        )
+        self._filled_client_order_ids.add(client_order_id)
+        self._log.debug(f"Generated OrderFilled for {client_order_id} qty={last_qty} px={last_px}")
