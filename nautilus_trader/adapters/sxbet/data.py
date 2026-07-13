@@ -33,6 +33,9 @@ from nautilus_trader.adapters.sxbet.constants import SXBET_VENUE
 from nautilus_trader.adapters.sxbet.http_client import SXBetHttpClient
 from nautilus_trader.adapters.sxbet.http_client import SXBetHttpClientError
 from nautilus_trader.adapters.sxbet.providers import SXBetInstrumentProvider
+from nautilus_trader.adapters.sxbet.realtime import SXBetRealtimeClient
+from nautilus_trader.adapters.sxbet.realtime import market_hash_from_channel
+from nautilus_trader.adapters.sxbet.realtime import order_book_channel
 from nautilus_trader.adapters.sxbet.signing import from_wei
 from nautilus_trader.adapters.sxbet.signing import percentage_to_decimal_odds
 from nautilus_trader.adapters.sxbet.signing import taker_decimal_odds_from_maker_percentage
@@ -57,6 +60,15 @@ SXBET_BEST_ODDS_BATCH_POLL_MODE = "best_odds_batch"
 SUPPORTED_SXBET_ORDER_BOOK_POLL_MODES = frozenset(
     {SXBET_ORDER_BOOK_POLL_MODE, SXBET_BEST_ODDS_BATCH_POLL_MODE},
 )
+
+SXBET_TRANSPORT_POLL = "poll"
+SXBET_TRANSPORT_STREAM = "stream"
+SUPPORTED_SXBET_ORDER_BOOK_TRANSPORTS = frozenset(
+    {SXBET_TRANSPORT_POLL, SXBET_TRANSPORT_STREAM},
+)
+
+# SX.bet realtime order status values (delta ``status`` / REST ``orderStatus``).
+_SXBET_ORDER_STATUS_ACTIVE = "ACTIVE"
 
 
 class SXBetDataClient(LiveMarketDataClient):
@@ -139,6 +151,23 @@ class SXBetDataClient(LiveMarketDataClient):
         self._logger = logger
         self._quote_poll_cycle_id = 0
 
+        self._order_book_transport = (
+            str(getattr(config, "order_book_transport", SXBET_TRANSPORT_POLL)).strip().lower()
+        )
+        if self._order_book_transport not in SUPPORTED_SXBET_ORDER_BOOK_TRANSPORTS:
+            msg = (
+                "SX.bet order_book_transport must be one of "
+                f"{sorted(SUPPORTED_SXBET_ORDER_BOOK_TRANSPORTS)}; "
+                f"received {self._order_book_transport!r}"
+            )
+            raise ValueError(msg)
+        # Streaming state (only used when transport == "stream").
+        self._realtime_client: SXBetRealtimeClient | None = None
+        self._stream_healthy = False
+        # market_hash -> {orderHash: order_dict}. Local delta-applied book state.
+        self._stream_books: dict[str, dict[str, dict]] = {}
+        self._stream_subscribed_markets: set[str] = set()
+
     async def _connect(self) -> None:
         """
         Connect to the data source.
@@ -174,6 +203,9 @@ class SXBetDataClient(LiveMarketDataClient):
             f"SX.bet auto-subscription completed in {time.perf_counter() - subscribe_started_at:.2f}s",
         )
 
+        if self._order_book_transport == SXBET_TRANSPORT_STREAM:
+            await self._start_stream()
+
         self._log.info(f"SXBetDataClient connected in {time.perf_counter() - started_at:.2f}s")
 
     async def _disconnect(self) -> None:
@@ -183,6 +215,11 @@ class SXBetDataClient(LiveMarketDataClient):
         self._log.info("Disconnecting SXBetDataClient...")
 
         self._running = False
+
+        if self._realtime_client is not None:
+            await self._realtime_client.stop()
+            self._realtime_client = None
+            self._stream_healthy = False
 
         if self._polling_task and not self._polling_task.done():
             self._polling_task.cancel()
@@ -204,6 +241,9 @@ class SXBetDataClient(LiveMarketDataClient):
         if not self._running:
             self._running = True
             self._polling_task = asyncio.create_task(self._poll_order_books())
+
+        if self._realtime_client is not None:
+            await self._ensure_stream_subscription(instrument_id)
 
     async def _unsubscribe_quote_ticks(self, command: UnsubscribeQuoteTicks) -> None:
         """
@@ -238,6 +278,12 @@ class SXBetDataClient(LiveMarketDataClient):
         self._log.info("Stopped SX.bet order-book polling loop")
 
     async def _poll_order_books_once(self) -> None:
+        # In stream mode the poll loop is the fallback: it stays idle while the
+        # realtime feed is healthy so the two paths never double-emit, and
+        # automatically takes over the moment the stream is unhealthy.
+        if self._order_book_transport == SXBET_TRANSPORT_STREAM and self._stream_healthy:
+            return
+
         market_hashes = self._subscribed_market_hashes()
         if not market_hashes:
             return
@@ -875,33 +921,15 @@ class SXBetDataClient(LiveMarketDataClient):
                 if instrument.id not in self._subscribed_instruments:
                     continue
 
-                is_outcome_one = self._instrument_is_outcome_one(instrument)
-                best_bid, best_ask, bid_size = self._best_bid_ask(orders, is_outcome_one)
-
-                if best_bid <= 0 and best_ask <= 0:
-                    continue
-
-                if best_bid > 0 and best_ask > 0 and not self._has_valid_spread(best_bid, best_ask):
-                    self._log.warning(
-                        f"Skipping locked/crossed SX.bet quote for {instrument.id}: "
-                        f"bid={best_bid}, ask={best_ask}",
-                    )
-                    continue
-
-                zero_size = Quantity.zero(precision=instrument.size_precision)
-                quote = QuoteTick(
-                    instrument_id=instrument.id,
-                    bid_price=Price(best_bid, precision=2),
-                    ask_price=Price(best_ask, precision=2),
-                    bid_size=(
-                        instrument.make_qty(bid_size)
-                        if best_bid > 0 and bid_size > 0
-                        else zero_size
-                    ),
-                    ask_size=zero_size,
+                quote = self._build_quote(
+                    instrument,
+                    orders,
                     ts_event=quote_event_ns or request_started_ns,
                     ts_init=response_received_ns,
                 )
+                if quote is None:
+                    continue
+
                 self._handle_data(quote)
                 published += 1
 
@@ -975,6 +1003,44 @@ class SXBetDataClient(LiveMarketDataClient):
 
         return best_bid, 0.0, available_size
 
+    def _build_quote(
+        self,
+        instrument: CryptoBettingInstrument,
+        orders: list[dict],
+        *,
+        ts_event: int,
+        ts_init: int,
+    ) -> QuoteTick | None:
+        # Single pricing path shared by the REST poll loop and the realtime
+        # stream: both feed the same order representation into ``_best_bid_ask``
+        # (taker-complement odds + summed opposite-side depth) so a phantom arb
+        # cannot arise from a divergent stream implementation.
+        is_outcome_one = self._instrument_is_outcome_one(instrument)
+        best_bid, best_ask, bid_size = self._best_bid_ask(orders, is_outcome_one)
+
+        if best_bid <= 0 and best_ask <= 0:
+            return None
+
+        if best_bid > 0 and best_ask > 0 and not self._has_valid_spread(best_bid, best_ask):
+            self._log.warning(
+                f"Skipping locked/crossed SX.bet quote for {instrument.id}: "
+                f"bid={best_bid}, ask={best_ask}",
+            )
+            return None
+
+        zero_size = Quantity.zero(precision=instrument.size_precision)
+        return QuoteTick(
+            instrument_id=instrument.id,
+            bid_price=Price(best_bid, precision=2),
+            ask_price=Price(best_ask, precision=2),
+            bid_size=(
+                instrument.make_qty(bid_size) if best_bid > 0 and bid_size > 0 else zero_size
+            ),
+            ask_size=zero_size,
+            ts_event=ts_event,
+            ts_init=ts_init,
+        )
+
     @staticmethod
     def _market_order_sides(orders: list[dict]) -> tuple[bool, bool]:
         has_outcome_one = False
@@ -995,6 +1061,112 @@ class SXBetDataClient(LiveMarketDataClient):
     @staticmethod
     def _has_valid_spread(best_bid: float, best_ask: float) -> bool:
         return best_bid > 0 and best_ask > 0 and best_bid < best_ask
+
+    # -- realtime streaming ------------------------------------------------------------------
+
+    async def _start_stream(self) -> None:
+        if self._realtime_client is not None:
+            return
+        self._realtime_client = SXBetRealtimeClient(
+            http_client=self._http_client,
+            on_publication=self._on_stream_publication,
+            logger=self._logger,
+            ws_url=self._config.realtime_ws_url,
+            max_reconnect_attempts=(None if self._config.reconnect_on_disconnect else 0),
+            on_connected=self._on_stream_connected,
+            on_disconnected=self._on_stream_disconnected,
+        )
+        await self._realtime_client.start()
+        for instrument_id in list(self._subscribed_instruments):
+            await self._ensure_stream_subscription(instrument_id)
+
+    async def _ensure_stream_subscription(self, instrument_id: InstrumentId) -> None:
+        if self._realtime_client is None:
+            return
+        instrument = self._instrument_provider.find(instrument_id)
+        if not isinstance(instrument, CryptoBettingInstrument) or not instrument.market_id:
+            return
+        market_hash = instrument.market_id
+        if market_hash in self._stream_subscribed_markets:
+            return
+        self._stream_subscribed_markets.add(market_hash)
+        await self._realtime_client.subscribe(order_book_channel(market_hash))
+        if self._stream_healthy:
+            await self._seed_market_book(market_hash)
+
+    async def _seed_market_book(self, market_hash: str) -> None:
+        # REST snapshot + WS deltas: seed the local book from the order-book REST
+        # endpoint so the delta stream applies on top of a known state. Re-run on
+        # every (re)connect so a failed recovery window cannot leave a stale book.
+        try:
+            order_book = await self._http_client.get_order_book(market_hash)
+        except (ValueError, TypeError, KeyError, SXBetHttpClientError) as e:
+            self._log.warning(f"Failed to seed SX.bet stream book for {market_hash}: {e}")
+            return
+        orders = order_book.get("data", {}).get("orders", [])
+        book: dict[str, dict] = {}
+        for order in orders:
+            if not isinstance(order, dict):
+                continue
+            order_hash = order.get("orderHash")
+            if order_hash:
+                book[str(order_hash)] = order
+        self._stream_books[market_hash] = book
+        self._emit_stream_quotes(market_hash)
+
+    async def _on_stream_publication(self, channel: str, data: object) -> None:
+        market_hash = market_hash_from_channel(channel)
+        if market_hash is None or not isinstance(data, list):
+            return
+        self._apply_order_book_delta(market_hash, data)
+        self._emit_stream_quotes(market_hash)
+
+    def _apply_order_book_delta(self, market_hash: str, orders: list[dict]) -> None:
+        # Deltas upsert ACTIVE orders and remove everything else (cancelled /
+        # filled). Keying by orderHash makes re-applying the same delta a no-op,
+        # so duplicate publications are idempotent.
+        book = self._stream_books.setdefault(market_hash, {})
+        for order in orders:
+            if not isinstance(order, dict):
+                continue
+            order_hash = order.get("orderHash")
+            if not order_hash:
+                continue
+            status = str(order.get("status") or order.get("orderStatus") or "").upper()
+            if status == _SXBET_ORDER_STATUS_ACTIVE:
+                book[str(order_hash)] = order
+            else:
+                book.pop(str(order_hash), None)
+
+    def _emit_stream_quotes(self, market_hash: str) -> int:
+        book = self._stream_books.get(market_hash)
+        orders = list(book.values()) if book else []
+        instruments = self._instrument_provider.find_by_market_hash(market_hash)
+        ts = self._clock.timestamp_ns()
+        published = 0
+        for instrument in instruments:
+            if instrument.id not in self._subscribed_instruments:
+                continue
+            quote = self._build_quote(instrument, orders, ts_event=ts, ts_init=ts)
+            if quote is None:
+                continue
+            self._handle_data(quote)
+            published += 1
+        return published
+
+    async def _on_stream_connected(self) -> None:
+        self._stream_healthy = True
+        self._log.info(
+            "SX.bet realtime stream healthy; REST poll loop on standby as fallback",
+        )
+        for market_hash in sorted(self._stream_subscribed_markets):
+            await self._seed_market_book(market_hash)
+
+    async def _on_stream_disconnected(self) -> None:
+        self._stream_healthy = False
+        self._log.warning(
+            "SX.bet realtime stream unhealthy; REST poll fallback taking over",
+        )
 
     async def _subscribe_instrument(self, instrument_id: InstrumentId) -> None:
         """

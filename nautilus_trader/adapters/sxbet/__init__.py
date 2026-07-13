@@ -28,6 +28,7 @@ from nautilus_trader.adapters.sxbet.factories import get_sxbet_http_client
 from nautilus_trader.adapters.sxbet.factories import get_sxbet_instrument_provider
 from nautilus_trader.adapters.sxbet.http_client import SXBetHttpClient
 from nautilus_trader.adapters.sxbet.providers import SXBetInstrumentProvider
+from nautilus_trader.adapters.sxbet.realtime import SXBetRealtimeClient
 
 
 __all__ = [
@@ -45,6 +46,7 @@ __all__ = [
     # Factories
     "SXBetLiveDataClientFactory",
     "SXBetLiveExecClientFactory",
+    "SXBetRealtimeClient",
     "get_sxbet_http_client",
     "get_sxbet_instrument_provider",
 ]

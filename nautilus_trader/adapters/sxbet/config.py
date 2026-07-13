@@ -129,6 +129,13 @@ class SXBetDataClientConfig(LiveDataClientConfig, frozen=True):
         and recorded as failures. Defaults to ``2 * order_book_poll_interval_secs``.
     api_key_pool : tuple[str, ...], optional
         SX.bet API keys for realtime/WebSocket-capable surfaces.
+    order_book_transport : str, default "poll"
+        Order-book data transport. ``"poll"`` (default) uses the REST polling loop
+        only. ``"stream"`` opens the Centrifugo realtime feed as the primary quote
+        source and keeps the poll loop as an automatic fallback while the stream is
+        unhealthy. Streaming requires an API key.
+    realtime_ws_url : str, optional
+        Centrifugo realtime WebSocket URL. Defaults to the SX mainnet endpoint.
 
     """
 
@@ -139,6 +146,8 @@ class SXBetDataClientConfig(LiveDataClientConfig, frozen=True):
     sport_ids: frozenset[int] | None = None
     reconnect_on_disconnect: bool = True
     max_reconnect_attempts: int = 5
+    order_book_transport: str = "poll"
+    realtime_ws_url: str | None = None
     auto_subscribe_quote_ticks: bool = False
     quote_subscription_limit: PositiveInt | None = None
     order_book_poll_interval_secs: PositiveFloat = 3.0
