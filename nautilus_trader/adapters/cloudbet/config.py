@@ -110,6 +110,8 @@ class CloudbetExecClientConfig(LiveExecClientConfig, kw_only=True, frozen=True):
         Number of status checks for Cloudbet bets that remain pending after submit.
     pending_acceptance_poll_interval_secs : float, default 0.5
         Delay between pending-acceptance status checks.
+    settlement_poll_interval_secs : float, default 30.0
+        Delay between graded-bet settlement reconciliation polls.
     """
 
     base_currency: Currency = None
@@ -120,3 +122,4 @@ class CloudbetExecClientConfig(LiveExecClientConfig, kw_only=True, frozen=True):
     accept_price_change: str = "BETTER"
     pending_acceptance_poll_attempts: int = 3
     pending_acceptance_poll_interval_secs: float = 0.5
+    settlement_poll_interval_secs: float = 30.0

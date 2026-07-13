@@ -58,6 +58,9 @@ from nautilus_trader.adapters.cloudbet.client.util import (
     datetime_to_cloudbet_timestamp,
     cb_bet_to_position_report,
 )
+from nautilus_trader.adapters.betting.common.settlement import BET_SETTLEMENTS_TOPIC
+from nautilus_trader.adapters.betting.common.settlement import BetSettlement
+from nautilus_trader.adapters.betting.common.settlement import SettlementResult
 from nautilus_trader.adapters.cloudbet.common import CLOUDBET_VENUE
 from nautilus_trader.adapters.cloudbet.providers import CloudbetInstrumentProvider
 from nautilus_trader.adapters.cloudbet.sockets import CloudbetStreamClient
@@ -83,6 +86,20 @@ _CLOUDBET_MATCHED_STATUSES = frozenset(
         BetStatus.COMPLETED,
     },
 )
+
+# Cloudbet grading outcomes that finalize a bet, mapped to the venue-neutral settlement result the
+# strategy books P&L from. Cloudbet's half-lines (quarter-ball Asian handicaps) settle half the
+# stake at odds and refund the other half; the venue-neutral model is three-state (WON / LOST /
+# VOID), so a half grades to its dominant side while the signed venue figure rides on
+# ``settle_value`` for diagnostics. PUSH refunds the stake (no P&L). COMPLETED / ACCEPTED / PARTIAL
+# are matched-but-ungraded and are not settlements.
+_CLOUDBET_SETTLEMENT_RESULTS: dict[BetStatus, SettlementResult] = {
+    BetStatus.WIN: SettlementResult.WON,
+    BetStatus.HALF_WIN: SettlementResult.WON,
+    BetStatus.LOSS: SettlementResult.LOST,
+    BetStatus.HALF_LOSS: SettlementResult.LOST,
+    BetStatus.PUSH: SettlementResult.VOID,
+}
 
 
 class CloudbetLiveExecutionClient(LiveExecutionClient):
@@ -162,6 +179,9 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
         # Client order IDs already filled; guards against double-emitting a fill for the same
         # bet across the submit path, pending-acceptance reconciliation, and cancel resolution.
         self._filled_client_order_ids: Set[ClientOrderId] = set()
+        # Orders whose settlement was already published, so grading never re-emits.
+        self._settled_client_order_ids: Set[ClientOrderId] = set()
+        self._settlement_poll_task: Optional[asyncio.Task] = None
         # self.pending_update_order_client_ids: set[tuple[ClientOrderId, VenueOrderId]] = set()
         # self.published_executions: dict[ClientOrderId, list[TradeId]] = defaultdict(list)
         #
@@ -244,10 +264,20 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
             # if self._watch_stream_task is None:
             #     self._log.info("Starting stream watch task...")
             #     self._watch_stream_task = asyncio.create_task(self.watch_stream())
+
+            # Cloudbet exposes no push feed for grading, so settlements are reconciled by polling
+            # the bet-status endpoint for tracked orders (mirrors the SXBET settlement poll).
+            if self._settlement_poll_task is None:
+                self._settlement_poll_task = asyncio.create_task(self._settlement_poll_loop())
         except Exception as e:
             self._log.error(f"An error occurred during the connection process: {str(e)}")
 
     async def _disconnect(self) -> None:
+        # Stop the settlement poll
+        if self._settlement_poll_task is not None and not self._settlement_poll_task.done():
+            self._settlement_poll_task.cancel()
+        self._settlement_poll_task = None
+
         # Close socket
         self._log.info("Closing streaming socket...")
         await self.stream.disconnect()
@@ -259,6 +289,7 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
     def reset(self) -> None:
         self.venue_order_id_to_client_order_id.clear()
         self._filled_client_order_ids.clear()
+        self._settled_client_order_ids.clear()
 
     def dispose(self) -> None:
         async def close_resources() -> None:
@@ -283,6 +314,112 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
                 await asyncio.sleep(1)
             except Exception as e:
                 self._log.error(f"Encountered an error while watching the stream: {e}")
+
+    # -- SETTLEMENT -------------------------------------------------------------------------------
+    async def _settlement_poll_loop(self) -> None:
+        interval = float(getattr(self._config, "settlement_poll_interval_secs", 30.0))
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await self._reconcile_settlements()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                self._log.error(f"Cloudbet settlement reconciliation failed: {e}")
+
+    async def _reconcile_settlements(self) -> None:
+        """
+        Poll graded Cloudbet bets and publish one ``BetSettlement`` per graded order.
+
+        Cross-venue arbitrage pairs realize P&L venue-agnostically: each execution client
+        publishes a ``BetSettlement`` for every graded leg on ``BET_SETTLEMENTS_TOPIC`` and the
+        strategy books the pair once every leg has graded. Cloudbet has no push feed for grading,
+        so this reads the bet-status endpoint for each tracked (matched) order still awaiting
+        settlement and maps its terminal Cloudbet status to WON / LOST / VOID.
+
+        Idempotent: a settled order is tracked in ``_settled_client_order_ids`` and never re-emits,
+        across polls and across repeated grading reads. A grading pays out or refunds the wallet, so
+        the account state is refreshed once after any settlement is published.
+
+        """
+        pending = {
+            venue_order_id: client_order_id
+            for venue_order_id, client_order_id in self.venue_order_id_to_client_order_id.items()
+            if client_order_id not in self._settled_client_order_ids
+        }
+        if not pending:
+            return
+
+        emitted = 0
+        for venue_order_id, client_order_id in pending.items():
+            if client_order_id in self._settled_client_order_ids:
+                continue
+            try:
+                bet_response: GetBetResponse = await self._client.get_bet_status(
+                    venue_order_id.value,
+                )
+            except Exception as e:
+                self._log.error(
+                    f"Could not fetch Cloudbet bet status for settlement "
+                    f"(venue_order_id={venue_order_id}): {e}",
+                )
+                continue
+
+            result = self._settlement_result(bet_response)
+            if result is None:
+                continue
+
+            self._settled_client_order_ids.add(client_order_id)
+            self._publish_settlement(client_order_id, result, bet_response)
+            emitted += 1
+
+        if emitted:
+            try:
+                await self.connection_account_state()
+            except Exception as e:  # pragma: no cover - best-effort balance refresh
+                self._log.warning(f"Account state refresh after settlement failed: {e}")
+
+    @staticmethod
+    def _settlement_result(bet_response: GetBetResponse) -> Optional[SettlementResult]:
+        """
+        Derive WON / LOST / VOID from a graded Cloudbet bet, or ``None`` if not yet graded.
+        """
+        return _CLOUDBET_SETTLEMENT_RESULTS.get(bet_response.status)
+
+    def _publish_settlement(
+        self,
+        client_order_id: ClientOrderId,
+        result: SettlementResult,
+        bet_response: GetBetResponse,
+    ) -> None:
+        order: Optional[Order] = self._cache.order(client_order_id)
+        # winLoss is Cloudbet's signed net P&L for the bet; it is passed through untouched as a
+        # diagnostic (realized P&L is booked by the strategy from tracked fills, never from this).
+        settle_value = self._as_float(bet_response.win_loss)
+        if settle_value is None:
+            settle_value = self._as_float(bet_response.return_amount)
+        settlement = BetSettlement(
+            venue=CLOUDBET_VENUE.value,
+            client_order_id=client_order_id.value,
+            instrument_id=str(order.instrument_id) if order is not None else None,
+            result=result,
+            settle_value=settle_value,
+            ts_event=self._clock.timestamp_ns(),
+        )
+        self._log.info(
+            f"Cloudbet bet settled: {client_order_id} {result} "
+            f"(status={bet_response.status.value}, winLoss={bet_response.win_loss})",
+        )
+        self._msgbus.publish(topic=BET_SETTLEMENTS_TOPIC, msg=settlement)
+
+    @staticmethod
+    def _as_float(value: Union[float, str, None]) -> Optional[float]:
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
 
     # -- ERROR HANDLING ---------------------------------------------------------------------------
     async def on_api_exception(self, error: Exception) -> None:
