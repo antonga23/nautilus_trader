@@ -234,30 +234,6 @@ def test_sxbet_flatten_disabled_by_flag_does_not_submit():  # skipcq
     ensure(stats["unwind_exits"] == 0)
 
 
-def test_cloudbet_naked_path_unchanged_uses_sell_bounded_exit():  # skipcq
-    # (e) CLOUDBET still uses the SELL-based bounded exit on the naked selection itself.
-    h = _Harness(venue="CLOUDBET", opposing_bid_price=9.9, opposing_bid_size=1.0)
-    # Bounded exit reads the naked instrument's own quote (lay/exit at bid_price).
-    naked_quote = TestDataStubs.quote_tick(
-        instrument=h.naked_instrument,
-        bid_price=2.0,
-        ask_price=2.2,
-        bid_size=50.0,
-        ask_size=50.0,
-    )
-    h.strategy._latest_quotes[str(h.naked_instrument.id)] = naked_quote
-
-    h.flatten()
-
-    ensure(len(h.submitted) == 1)
-    order = h.submitted[0]
-    ensure(order.side == OrderSide.SELL)
-    ensure(order.instrument_id == h.naked_instrument.id)
-    stats = h.stats()
-    ensure(stats["unwind_exits"] == 1)
-    ensure(stats["naked_flatten_halts"] == 0)
-
-
 def test_sxbet_flatten_completes_tracked_pair():  # skipcq
     # (f) the position tracker reflects the flatten as the pair's second outcome.
     h = _Harness(venue="SXBET", opposing_bid_price=2.0, opposing_bid_size=50.0)

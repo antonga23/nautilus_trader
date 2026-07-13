@@ -95,8 +95,11 @@ VALID_EXECUTION_APPROVAL_MODES = frozenset({"manual", "auto"})
 DEFAULT_ENABLED_VENUES = frozenset({"CLOUDBET", "SXBET", "10BET"})
 # Venues whose execution adapter provably honours OrderSide.SELL as a position-reducing
 # exit. SX.bet's adapter ignores order side (it always posts the instrument's outcome),
-# so a SELL there would ADD exposure instead of closing it — never auto-exit elsewhere.
-UNWIND_EXIT_SUPPORTED_VENUES = frozenset({"CLOUDBET", "POLYMARKET"})
+# so a SELL there would ADD exposure instead of closing it. CLOUDBET is a sportsbook whose
+# place-bets path rejects any non-BACK side outright, and a SELL/LAY would only add a new
+# sportsbook stake — its naked legs are flattened with a complementary BACK instead (see
+# _attempt_cloudbet_opposing_back_flatten), never listed here.
+UNWIND_EXIT_SUPPORTED_VENUES = frozenset({"POLYMARKET"})
 NANOSECONDS_PER_SECOND = 1_000_000_000
 INSTRUMENT_REFRESH_TIMER_NAME = "betting-arbitrage-instrument-refresh"
 INSTRUMENT_RECONCILE_TIMER_PREFIX = "betting-arbitrage-instrument-reconcile"
@@ -5659,12 +5662,17 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         if self._live_execution_kill_switch_active():
             self.log.error(f"Naked-exposure exit skipped, kill switch active: {leg_id}")
             return
-        # SX.bet cannot be exited with a SELL: its taker-fill adapter posts the
-        # instrument's own outcome regardless of order side, so a SELL only ADDS a second
-        # back. Flatten instead by backing the complementary selection (below); every
-        # other venue keeps the proven sell-side bounded exit.
-        if str(order.instrument_id.venue).upper() == "SXBET":
+        # Neither betting venue can be exited with a SELL. SX.bet's taker-fill adapter
+        # posts the instrument's own outcome regardless of order side, and CLOUDBET is a
+        # sportsbook whose place-bets path rejects any non-BACK side — a SELL/LAY there
+        # only ADDS a stake. Flatten both by backing the complementary selection instead;
+        # every remaining venue keeps the proven sell-side bounded exit.
+        venue = str(order.instrument_id.venue).upper()
+        if venue == "SXBET":
             self._attempt_opposing_back_flatten(order, failed_leg_id)
+            return
+        if venue == "CLOUDBET":
+            self._attempt_cloudbet_opposing_back_flatten(order)
             return
         self._attempt_bounded_exit(order)
 
@@ -5687,6 +5695,46 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             self._halt_naked_flatten(naked_leg_id, "complementary selection unavailable")
             return
         opposing_instrument, opposing_id = opposing
+        self._submit_opposing_back_flatten(order, opposing_instrument, opposing_id, "SXBET")
+
+    def _attempt_cloudbet_opposing_back_flatten(self, order: Order) -> None:
+        """
+        Flatten a naked CLOUDBET back by backing the complementary outcome.
+
+        CLOUDBET is a sportsbook: its place-bets path rejects any non-BACK side, so a
+        SELL/LAY cannot exit and would only add a second stake. The naked back on
+        selection X is neutralised instead by placing a marketable back on the mutually
+        exclusive outcome Y of the *same CLOUDBET market*. Unlike the SX.bet flatten, the
+        complement is not the failed sibling leg — in a cross-venue arb that sibling lives
+        on the other venue — so the opposing selection is resolved from the CLOUDBET
+        market itself. The back is placed only within the slippage bound and the real
+        opposing depth; otherwise the leg is halted for manual handling rather than
+        force-hedged into a larger loss.
+
+        """
+        naked_leg_id = str(order.client_order_id)
+        opposing = self._resolve_cloudbet_opposing_selection(order)
+        if opposing is None:
+            self._halt_naked_flatten(
+                naked_leg_id,
+                "complementary CLOUDBET selection unavailable",
+            )
+            return
+        opposing_instrument, opposing_id = opposing
+        self._submit_opposing_back_flatten(order, opposing_instrument, opposing_id, "CLOUDBET")
+
+    def _submit_opposing_back_flatten(
+        self,
+        order: Order,
+        opposing_instrument: Instrument,
+        opposing_id: InstrumentId,
+        venue: str,
+    ) -> None:
+        # Shared complementary-BACK flatten for the betting venues (SX.bet and CLOUDBET):
+        # size a marketable back on the opposing selection so the two backs hedge, bounded
+        # by the slippage tolerance and the real opposing depth. This path only ever
+        # submits an OrderSide.BUY (a BACK) or halts — it never emits a SELL/LAY.
+        naked_leg_id = str(order.client_order_id)
         quote = self._latest_quotes.get(str(opposing_id))
         opposing_odds = self._quote_odds(quote)
         entry_odds = Decimal(str(order.avg_px)) if order.avg_px else None
@@ -5709,7 +5757,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         # selection at effective odds opposing_odds / (opposing_odds - 1); hold that
         # synthetic lay to the same adverse-move bound as a native sell-side exit.
         effective_lay = opposing_odds / (opposing_odds - Decimal(1))
-        if not self._exit_price_within_slippage("SXBET", entry_odds, effective_lay):
+        if not self._exit_price_within_slippage(venue, entry_odds, effective_lay):
             self._halt_naked_flatten(
                 naked_leg_id,
                 "opposing odds outside slippage bound: "
@@ -5729,7 +5777,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             return
         flatten_order = self.order_factory.limit(
             instrument_id=opposing_id,
-            order_side=OrderSide.BUY,  # SX.bet flatten is a BACK on the complement; never SELL
+            order_side=OrderSide.BUY,  # betting-venue flatten is a BACK on the complement; never SELL
             quantity=opposing_instrument.make_qty(float(hedge_stake)),
             price=opposing_instrument.make_price(
                 float(self._order_price_for_instrument(opposing_instrument, opposing_odds)),
@@ -5744,7 +5792,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         )
         self._live_execution_unwind_exits += 1
         self.log.warning(
-            f"Submitting SX.bet opposing-back flatten: {flatten_order.client_order_id} "
+            f"Submitting {venue} opposing-back flatten: {flatten_order.client_order_id} "
             f"naked_leg={naked_leg_id} opposing={opposing_id} qty={hedge_stake} "
             f"opposing_odds={opposing_odds}",
         )
@@ -5766,6 +5814,30 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         if opposing_instrument is None:
             return None
         return opposing_instrument, opposing_id
+
+    def _resolve_cloudbet_opposing_selection(
+        self,
+        order: Order,
+    ) -> tuple[Instrument, InstrumentId] | None:
+        # Find the mutually exclusive selection on the same CLOUDBET market. The failed
+        # sibling cannot be reused here: for a cross-venue arb it lives on the other
+        # venue, so the complement is resolved from the CLOUDBET market itself.
+        naked = self._coerce_betting_instrument(self.cache.instrument(order.instrument_id))
+        if naked is None:
+            return None
+        naked_id = str(order.instrument_id)
+        naked_venue = str(order.instrument_id.venue).upper()
+        for candidate in self.cache.instruments():
+            if str(candidate.id) == naked_id:
+                continue
+            if str(candidate.id.venue).upper() != naked_venue:
+                continue
+            opposing = self._coerce_betting_instrument(candidate)
+            if opposing is None:
+                continue
+            if opposing.matches_market(naked) and opposing.is_opposite_outcome(naked):
+                return opposing, opposing.id
+        return None
 
     @staticmethod
     def _opposing_hedge_stake(
