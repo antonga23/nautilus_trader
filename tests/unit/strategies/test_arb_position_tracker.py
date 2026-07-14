@@ -437,3 +437,84 @@ def test_f_sign_aware_floor_conservative_when_other_outcome_is_the_loss():
     assert guaranteed == Decimal("-0.225")
     assert guaranteed <= Decimal("-0.1")
     assert pair.floor_currency_risk is False
+
+
+# --- cross-venue tagging + per-leg realization ------------------------------------------
+#
+#   BACK 2.1 stake 10: outcome_win_payoff = 10*1.1 = 11 ; outcome_lose_payoff = -10.
+#   A cross-venue pair grades each leg independently, so realized P&L is the SUM of each
+#   leg's actual result -- WON contributes win, LOST contributes lose, VOID contributes 0
+#   (stake refunded) -- NOT the single-market joint payoff that books the sibling lost.
+
+
+def _venued_tracker(venue_a, venue_b):
+    tracker = ArbPositionTracker()
+    tracker.record_fill(LEG_A, OUTCOME_A, "BUY", "2.1", "10", sibling_id=LEG_B, venue=venue_a)
+    tracker.record_fill(LEG_B, OUTCOME_B, "BUY", "2.1", "10", sibling_id=LEG_A, venue=venue_b)
+    return tracker, tracker.pair_key(LEG_A, LEG_B)
+
+
+def test_is_cross_venue_detects_distinct_venues():
+    tracker, pair_id = _venued_tracker("CLOUDBET", "SXBET")
+    assert tracker.pair(pair_id).is_cross_venue is True
+
+
+def test_is_cross_venue_false_for_same_or_unknown_venue():
+    same, same_id = _venued_tracker("SXBET", "SXBET")
+    assert same.pair(same_id).is_cross_venue is False
+    # Legs recorded without a venue (the pre-PR path) must never read as cross-venue.
+    unknown, unknown_id = _tracker_with_pair("2.1", "10", "2.1", "10")
+    assert unknown.pair(unknown_id).is_cross_venue is False
+
+
+def test_settle_from_leg_results_won_and_lost_sums_actual_payoffs():
+    tracker, pair_id = _venued_tracker("CLOUDBET", "SXBET")
+    pair = tracker.pair(pair_id)
+
+    realized = pair.settle_from_leg_results({LEG_A: "WON", LEG_B: "LOST"})
+
+    assert realized == Decimal("1.0")  # 11 + (-10)
+    assert pair.realized_pnl == Decimal("1.0")
+    assert pair.settled is True
+    assert pair.void is False
+
+
+def test_settle_from_leg_results_void_leg_refunds_stake_not_full_loss():
+    tracker, pair_id = _venued_tracker("CLOUDBET", "SXBET")
+    pair = tracker.pair(pair_id)
+
+    realized = pair.settle_from_leg_results({LEG_A: "WON", LEG_B: "VOID"})
+
+    assert realized == Decimal("11.0")  # 11 + 0, NOT the joint 11 + (-10) = 1
+    assert pair.void is False
+
+
+def test_settle_from_leg_results_all_void_realizes_zero_and_void_flag():
+    tracker, pair_id = _venued_tracker("CLOUDBET", "SXBET")
+    pair = tracker.pair(pair_id)
+
+    realized = pair.settle_from_leg_results({LEG_A: "VOID", LEG_B: "VOID"})
+
+    assert realized == Decimal(0)
+    assert pair.void is True
+
+
+def test_settle_from_leg_results_both_lost_realizes_full_downside():
+    tracker, pair_id = _venued_tracker("CLOUDBET", "SXBET")
+    pair = tracker.pair(pair_id)
+
+    realized = pair.settle_from_leg_results({LEG_A: "LOST", LEG_B: "LOST"})
+
+    assert realized == Decimal(-20)  # -10 + -10
+
+
+def test_settle_from_leg_results_cross_currency_void_refund_in_base():
+    # EUR/USDC floor scenario: WON legA 8*1.5 = 12 EUR -> 12*1.25*0.999 = 14.985 base ;
+    # VOID legB refunds its stake -> 0. Realized = 14.985 base USD, sibling not booked lost.
+    tracker, pair_id = _currency_tracker(_CROSS_POLICY, "EUR", "USDC", "2.5", "8", "2.5", "10")
+    pair = tracker.pair(pair_id)
+
+    realized = pair.settle_from_leg_results({LEG_A: "WON", LEG_B: "VOID"})
+
+    assert realized == Decimal("14.985")
+    assert pair.void is False
