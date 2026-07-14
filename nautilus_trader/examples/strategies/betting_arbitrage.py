@@ -102,6 +102,10 @@ DEFAULT_ENABLED_VENUES = frozenset({"CLOUDBET", "SXBET", "10BET"})
 # sportsbook stake — its naked legs are flattened with a complementary BACK instead (see
 # _attempt_cloudbet_opposing_back_flatten), never listed here.
 UNWIND_EXIT_SUPPORTED_VENUES = frozenset({"POLYMARKET"})
+# Anchor priority for the event-gated cross-venue sequencer: the leg that must be placed
+# and confirmed FIRST. CLOUDBET is un-cancelable once matched, so it can never be the
+# leg left dangling if the sibling fails; it therefore anchors the sequence by default.
+CROSS_VENUE_ANCHOR_VENUE_PRIORITY = ("CLOUDBET",)
 NANOSECONDS_PER_SECOND = 1_000_000_000
 INSTRUMENT_REFRESH_TIMER_NAME = "betting-arbitrage-instrument-refresh"
 INSTRUMENT_RECONCILE_TIMER_PREFIX = "betting-arbitrage-instrument-reconcile"
@@ -277,6 +281,29 @@ class PendingArbitrageApproval:
             "fee_drag": str(opportunity.fee_drag),
             "expected_profit": str(self.expected_profit),
         }
+
+
+@dataclass(slots=True)
+class PendingCrossVenueSequence:
+    """
+    In-flight state for one event-gated cross-venue arbitrage.
+
+    The anchor leg (un-cancelable venue) has been submitted; the second leg is held,
+    fully constructed, until the anchor's terminal fill arrives. A terminal non-fill on
+    the anchor drops this record and the second leg is never submitted, so a rejected
+    anchor leaves no exposure. Records live only in strategy memory: a node restart
+    clears every pending sequence.
+
+    """
+
+    anchor_leg_id: str
+    anchor_venue: str
+    second_order: Order
+    second_venue: str
+    opportunity: ArbitrageOpportunity
+    stake_a: Decimal
+    stake_b: Decimal
+    created_ts_ns: int
 
 
 class BettingArbitrageConfig(StrategyConfig, frozen=True):
@@ -462,6 +489,8 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
     semantic_unmatched_quote_probe_limit_per_venue: int = 20
     cross_venue_common_fixture_quote_reserve_limit_per_venue: int | None = None
     cross_venue_liquidity_priority_enabled: bool = False
+    cross_venue_sequential_execution: bool = False
+    cross_venue_anchor_venue: str | None = None
     min_quote_depth_by_venue: dict[str, float] = {}
     quote_freshness_profile: str = "pre_match"
     quote_max_pair_skew_secs: float | None = None
@@ -553,6 +582,11 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         quote_freshness_profile = self.quote_freshness_profile.strip().lower()
         devig_method, devig_reference_venues = self._normalize_devig_config()
         execution_venue_mode = self.execution_venue_mode.strip().lower()
+        cross_venue_anchor_venue = (
+            self.cross_venue_anchor_venue.strip().upper()
+            if self.cross_venue_anchor_venue and self.cross_venue_anchor_venue.strip()
+            else None
+        )
         execution_price_change_policy = self.execution_price_change_policy.strip().lower()
         portfolio_base_currency = self.portfolio_base_currency.strip().upper() or "USD"
         stablecoin_currencies = frozenset(
@@ -640,6 +674,7 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
             execution_price_change_policy,
         )
         msgspec.structs.force_setattr(self, "execution_venue_mode", execution_venue_mode)
+        msgspec.structs.force_setattr(self, "cross_venue_anchor_venue", cross_venue_anchor_venue)
         msgspec.structs.force_setattr(self, "portfolio_base_currency", portfolio_base_currency)
         msgspec.structs.force_setattr(self, "stablecoin_currencies", stablecoin_currencies)
         msgspec.structs.force_setattr(self, "configured_fx_rates", configured_fx_rates)
@@ -917,6 +952,11 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._live_execution_block_reasons: Counter[str] = Counter()
         self._live_execution_submissions_by_venue: Counter[str] = Counter()
         self._pending_approvals: dict[str, PendingArbitrageApproval] = {}
+        self._pending_cross_venue_sequences: dict[str, PendingCrossVenueSequence] = {}
+        self._cross_venue_sequences_opened = 0
+        self._cross_venue_sequences_completed = 0
+        self._cross_venue_sequences_aborted = 0
+        self._cross_venue_second_leg_blocked = 0
         self._approval_decisions: list[dict[str, object]] = []
         self._approvals_staged = 0
         self._approvals_approved_executed = 0
@@ -4671,13 +4711,51 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             time.perf_counter_ns() - construction_started_ns,
         )
 
+        # Cross-venue legs sit on different venues with real latency and the CLOUDBET leg
+        # is un-cancelable once matched, so submitting both at once can leave a naked
+        # anchor if the second leg is rejected. When enabled, sequence them: place and
+        # confirm the anchor first, then place the second leg from on_order_filled.
+        # Reordering the two submit_order calls would NOT achieve this — submit_order is
+        # fire-and-forget (it enqueues a command and returns; the real submit runs later
+        # in the exec client), so both legs would still race. The event-gated state
+        # machine below is what actually serialises them.
+        if self._config.cross_venue_sequential_execution and not opportunity.is_same_venue:
+            return self._submit_cross_venue_sequenced(
+                order_a=order_a,
+                order_b=order_b,
+                opportunity=opportunity,
+                stake_a=stake_a,
+                stake_b=stake_b,
+            )
+        return self._submit_arbitrage_simultaneous(
+            order_a=order_a,
+            order_b=order_b,
+            opportunity=opportunity,
+            stake_a=stake_a,
+            stake_b=stake_b,
+        )
+
+    def _submit_arbitrage_simultaneous(
+        self,
+        *,
+        order_a: Order,
+        order_b: Order,
+        opportunity: ArbitrageOpportunity,
+        stake_a: Decimal,
+        stake_b: Decimal,
+    ) -> list[str]:
+        """
+        Submit both legs at once (the default, non-sequenced path).
+
+        Terminal non-fill events on either leg trigger the sibling unwind in
+        on_order_rejected/on_order_denied/on_order_canceled.
+
+        """
         leg_a_id = str(order_a.client_order_id)
         leg_b_id = str(order_b.client_order_id)
         self._arb_leg_siblings[leg_a_id] = leg_b_id
         self._arb_leg_siblings[leg_b_id] = leg_a_id
 
-        # Submit both orders; terminal non-fill events on either leg trigger the
-        # sibling unwind in on_order_rejected/on_order_denied/on_order_canceled.
         submit_started_ns = time.perf_counter_ns()
         self._live_execution_attempts += 1
         submitted_count = 0
@@ -4724,6 +4802,242 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             if order.is_closed:
                 self._unwind_sibling_leg_for(str(order.client_order_id))
         return []
+
+    def _cross_venue_anchor_and_second(
+        self,
+        order_a: Order,
+        order_b: Order,
+    ) -> tuple[Order, Order]:
+        """
+        Pick the anchor (submit-first, confirm-first) and second (deferred) legs.
+
+        Priority: an explicitly configured anchor venue, then the un-cancelable-venue
+        default (CLOUDBET). With no match the first leg anchors deterministically.
+
+        """
+        venue_a = str(order_a.instrument_id.venue).upper()
+        venue_b = str(order_b.instrument_id.venue).upper()
+        configured = self._config.cross_venue_anchor_venue
+        if configured:
+            if venue_a == configured:
+                return order_a, order_b
+            if venue_b == configured:
+                return order_b, order_a
+        for anchor_venue in CROSS_VENUE_ANCHOR_VENUE_PRIORITY:
+            if venue_a == anchor_venue:
+                return order_a, order_b
+            if venue_b == anchor_venue:
+                return order_b, order_a
+        return order_a, order_b
+
+    def _submit_cross_venue_sequenced(
+        self,
+        *,
+        order_a: Order,
+        order_b: Order,
+        opportunity: ArbitrageOpportunity,
+        stake_a: Decimal,
+        stake_b: Decimal,
+    ) -> list[str]:
+        """
+        Submit only the anchor leg and hold the second leg until the anchor confirms.
+
+        Records the pending sequence keyed by the anchor client order id BEFORE
+        submitting, so a synchronous local denial (which fires its handler inline) still
+        finds and aborts the sequence — the second leg is never submitted. The sibling
+        map is left empty until the second leg is actually placed, so an anchor terminal
+        non-fill unwinds nothing and leaves no exposure.
+
+        """
+        anchor, second = self._cross_venue_anchor_and_second(order_a, order_b)
+        anchor_id = str(anchor.client_order_id)
+        anchor_venue = str(anchor.instrument_id.venue).upper()
+        second_venue = str(second.instrument_id.venue).upper()
+
+        self._pending_cross_venue_sequences[anchor_id] = PendingCrossVenueSequence(
+            anchor_leg_id=anchor_id,
+            anchor_venue=anchor_venue,
+            second_order=second,
+            second_venue=second_venue,
+            opportunity=opportunity,
+            stake_a=stake_a,
+            stake_b=stake_b,
+            created_ts_ns=self.clock.timestamp_ns(),
+        )
+        self._cross_venue_sequences_opened += 1
+        self._live_execution_attempts += 1
+
+        submit_started_ns = time.perf_counter_ns()
+        try:
+            self.submit_order(anchor)
+        except Exception as e:  # pragma: no cover - submit_order is normally non-throwing
+            self._pending_cross_venue_sequences.pop(anchor_id, None)
+            self._live_execution_halt_reason = "submit_order_exception"
+            self._live_execution_block_reasons["submit_order_exception"] += 1
+            self._record_latency_sample(
+                self._order_submit_latency_ns,
+                time.perf_counter_ns() - submit_started_ns,
+            )
+            self.log.error(f"Cross-venue anchor submission raised for {anchor.instrument_id}: {e}")
+            return ["submit_order_exception"]
+        self._record_latency_sample(
+            self._order_submit_latency_ns,
+            time.perf_counter_ns() - submit_started_ns,
+        )
+        self._live_execution_submissions_by_venue[anchor_venue] += 1
+        self.log.info(
+            "Cross-venue anchor leg submitted, holding second leg until terminal fill: "
+            f"anchor={anchor_id} anchor_venue={anchor_venue} "
+            f"second_leg={second.client_order_id} second_venue={second_venue}",
+        )
+
+        # A synchronous local denial/rejection already fired its handler and aborted the
+        # sequence, so nothing is pending; the second leg was never submitted. Otherwise
+        # handle the (rare) synchronous terminal fill inline, mirroring how the
+        # simultaneous path re-runs unwind for a leg that closed inside submit_order.
+        seq = self._pending_cross_venue_sequences.get(anchor_id)
+        if seq is None:
+            return []
+        if anchor.is_closed:
+            self._pending_cross_venue_sequences.pop(anchor_id, None)
+            if anchor.filled_qty.as_decimal() > 0:
+                self._commit_cross_venue_second_leg(seq)
+            else:
+                self._cross_venue_sequences_aborted += 1
+        return []
+
+    def _advance_cross_venue_sequence_on_fill(self, event: Event) -> None:
+        """
+        On the anchor's terminal fill, place the held second leg (or flatten).
+
+        Side-effect-light and never raises into the order-event handler. Waits for a
+        terminal (fully closed) anchor fill: a partial fill leaves the sequence pending.
+        A terminal close with zero filled quantity is a non-fill handled by the abort
+        path, not here.
+
+        """
+        try:
+            client_order_id = getattr(event, "client_order_id", None)
+            if client_order_id is None:
+                return
+            key = str(client_order_id)
+            seq = self._pending_cross_venue_sequences.get(key)
+            if seq is None:
+                return
+            anchor = self.cache.order(ClientOrderId(key))
+            if anchor is None or not anchor.is_closed:
+                return
+            self._pending_cross_venue_sequences.pop(key, None)
+            if anchor.filled_qty.as_decimal() <= 0:
+                self._cross_venue_sequences_aborted += 1
+                return
+            self._commit_cross_venue_second_leg(seq)
+        except Exception as e:  # pragma: no cover - defensive; never raise into the handler
+            self.log.warning(f"Cross-venue sequence advance skipped: {e}")
+
+    def _commit_cross_venue_second_leg(self, seq: PendingCrossVenueSequence) -> None:
+        """
+        Re-check the opportunity on fresh quotes, then submit the held second leg.
+
+        The anchor is already matched, so the only remaining question is whether the arb
+        still holds on current quotes. Re-run the live final-quote gate; if it moved
+        adversely (stale, thin, or below the profit floor) the second leg is NOT placed
+        and the now-naked anchor is routed to the existing flatten path. The sibling map
+        is populated only here, so a second-leg terminal non-fill unwinds the anchor.
+
+        """
+        _, block_reasons = self._live_execution_refresh_opportunity(seq.opportunity)
+        if block_reasons:
+            self._cross_venue_second_leg_blocked += 1
+            self._live_execution_halt_reason = "cross_venue_second_leg_adverse"
+            self.log.warning(
+                "Cross-venue second leg not placed, opportunity moved adversely on anchor "
+                f"fill: anchor={seq.anchor_leg_id} reasons={','.join(block_reasons)}; "
+                "flattening naked anchor",
+            )
+            self._flatten_naked_cross_venue_anchor(seq)
+            return
+
+        second = seq.second_order
+        second_id = str(second.client_order_id)
+        self._arb_leg_siblings[seq.anchor_leg_id] = second_id
+        self._arb_leg_siblings[second_id] = seq.anchor_leg_id
+
+        submit_started_ns = time.perf_counter_ns()
+        try:
+            self.submit_order(second)
+        except Exception as e:  # pragma: no cover - submit_order is normally non-throwing
+            self._live_execution_halt_reason = "submit_order_exception"
+            self._live_execution_block_reasons["submit_order_exception"] += 1
+            self.log.error(
+                f"Cross-venue second-leg submission raised for {second.instrument_id}: {e}",
+            )
+            self._flatten_naked_cross_venue_anchor(seq)
+            return
+        self._record_latency_sample(
+            self._order_submit_latency_ns,
+            time.perf_counter_ns() - submit_started_ns,
+        )
+        self._live_execution_submissions_by_venue[seq.second_venue] += 1
+        self._opportunities_executed += 1
+        self._live_execution_submissions += 1
+        self._live_execution_notional_used += self._usd_equivalent_notional(
+            seq.opportunity,
+            seq.stake_a,
+            seq.stake_b,
+        )
+        self._cross_venue_sequences_completed += 1
+        self.log.info(
+            "Cross-venue second leg submitted after anchor fill: "
+            f"anchor={seq.anchor_leg_id} second_leg={second_id}",
+        )
+        # A second leg denied/rejected synchronously inside submit_order fires its handler
+        # before it is cached; re-run the unwind now that both legs are cached so the
+        # filled anchor is flattened rather than left naked.
+        if second.is_closed:
+            self._unwind_sibling_leg_for(second_id)
+
+    def _abort_cross_venue_sequence_on_terminal(self, event: Event) -> None:
+        """
+        Abort a pending sequence when the anchor terminally fails (reject/deny/cancel).
+
+        The second leg is never submitted, so there is no exposure. If the anchor
+        somehow carries a partial fill (should not happen once matched on an un-
+        cancelable venue), route it to flatten rather than dropping it silently. Side-
+        effect-light and never raises into the order-event handler.
+
+        """
+        try:
+            client_order_id = getattr(event, "client_order_id", None)
+            if client_order_id is None:
+                return
+            key = str(client_order_id)
+            seq = self._pending_cross_venue_sequences.pop(key, None)
+            if seq is None:
+                return
+            self._cross_venue_sequences_aborted += 1
+            anchor = self.cache.order(ClientOrderId(key))
+            if anchor is not None and anchor.filled_qty.as_decimal() > 0:
+                self.log.error(
+                    f"Cross-venue anchor terminated with a partial fill; flattening: anchor={key}",
+                )
+                self._flatten_naked_cross_venue_anchor(seq)
+                return
+            self.log.warning(
+                "Cross-venue anchor terminal non-fill; sequence aborted, second leg not "
+                f"submitted (no exposure): anchor={key} second_leg={seq.second_order.client_order_id}",
+            )
+        except Exception as e:  # pragma: no cover - defensive; never raise into the handler
+            self.log.warning(f"Cross-venue sequence abort skipped: {e}")
+
+    def _flatten_naked_cross_venue_anchor(self, seq: PendingCrossVenueSequence) -> None:
+        anchor = self.cache.order(ClientOrderId(seq.anchor_leg_id))
+        if anchor is None:
+            self.log.error(
+                f"Cross-venue naked anchor not cached, cannot flatten: {seq.anchor_leg_id}",
+            )
+            return
+        self._handle_naked_filled_leg(anchor, str(seq.second_order.client_order_id))
 
     def _stage_arbitrage_approval(
         self,
@@ -5473,6 +5787,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self.log.info(msg)
         self._record_arb_position_fill(event)
         self._handle_unwind_cancel_fill_race(event)
+        self._advance_cross_venue_sequence_on_fill(event)
 
     def _record_arb_position_fill(self, event: Event) -> None:
         """
@@ -5627,6 +5942,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             self._live_execution_block_reasons["order_rejected"] += 1
         msg = f"Order rejected: {event}"
         self.log.warning(msg)
+        self._abort_cross_venue_sequence_on_terminal(event)
         self._unwind_sibling_leg(event)
 
     def on_order_denied(self, event: Event) -> None:
@@ -5646,6 +5962,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             self._live_execution_block_reasons["order_denied"] += 1
         msg = f"Order denied: {event}"
         self.log.warning(msg)
+        self._abort_cross_venue_sequence_on_terminal(event)
         self._unwind_sibling_leg(event)
 
     def on_order_canceled(self, event: Event) -> None:
@@ -5669,6 +5986,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             self._live_execution_block_reasons["order_canceled"] += 1
         msg = f"Order canceled: {event}"
         self.log.warning(msg)
+        self._abort_cross_venue_sequence_on_terminal(event)
         self._unwind_sibling_leg(event)
 
     def _pop_unwind_cancel_confirmation(self, event: Event) -> bool:
@@ -6225,6 +6543,13 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 "unwind_exits": self._live_execution_unwind_exits,
                 "unwind_filled_leg_enabled": self._config.unwind_filled_leg_enabled,
                 "unwind_max_slippage_bps": self._config.unwind_max_slippage_bps,
+                "cross_venue_sequential_execution": (self._config.cross_venue_sequential_execution),
+                "cross_venue_anchor_venue": self._config.cross_venue_anchor_venue,
+                "cross_venue_sequences_opened": self._cross_venue_sequences_opened,
+                "cross_venue_sequences_completed": self._cross_venue_sequences_completed,
+                "cross_venue_sequences_aborted": self._cross_venue_sequences_aborted,
+                "cross_venue_second_leg_blocked": self._cross_venue_second_leg_blocked,
+                "cross_venue_sequences_pending": len(self._pending_cross_venue_sequences),
                 "order_lifecycle_counts_by_venue": {
                     venue: dict(sorted(counts.items()))
                     for venue, counts in sorted(self._order_lifecycle_counts_by_venue.items())
