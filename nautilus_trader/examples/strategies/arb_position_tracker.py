@@ -41,14 +41,24 @@ from __future__ import annotations
 from dataclasses import dataclass
 from dataclasses import field
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 from nautilus_trader.core.nautilus_pyo3 import Bet
 from nautilus_trader.core.nautilus_pyo3 import BetSide
 
 
+if TYPE_CHECKING:
+    from nautilus_trader.adapters.betting.fx import PortfolioCurrencyPolicy
+
+
 # Synthetic scenario key for "none of the tracked outcomes win" -- used only while a pair
 # has fewer than two distinct outcomes covered (a naked leg), so its downside is surfaced.
 _COMPLEMENT_OUTCOME = "__other__"
+
+
+def _currency_code(value: object) -> str:
+    code = getattr(value, "code", None)
+    return str(code or value or "").strip().upper()
 
 
 def bet_side_for_order_side(order_side: object) -> BetSide:
@@ -86,6 +96,7 @@ class LegState:
     client_order_id: str
     outcome: str
     side: BetSide
+    currency: str = ""
     fills: list[Bet] = field(default_factory=list)
 
     def add_fill(self, price: object, stake: object) -> None:
@@ -130,10 +141,24 @@ class ArbPairState:
     void: bool = False
     winning_outcome: str | None = None
     realized_pnl: Decimal | None = None
+    policy: PortfolioCurrencyPolicy | None = None
 
     @property
     def filled_legs(self) -> list[LegState]:
         return [leg for leg in self.legs.values() if leg.filled]
+
+    @property
+    def base_currency(self) -> str:
+        if self.policy is not None:
+            return _currency_code(self.policy.base_currency) or "USD"
+        return "USD"
+
+    @property
+    def is_cross_currency(self) -> bool:
+        # Only distinct, known currency codes count: an unknown ("") leg currency must not
+        # spuriously mark a single-currency pair as cross-currency (which would drop it
+        # into the conversion path and diverge from the pre-PR raw sum).
+        return len({leg.currency for leg in self.filled_legs if leg.currency}) > 1
 
     @property
     def is_fully_hedged(self) -> bool:
@@ -143,62 +168,111 @@ class ArbPairState:
     def exposure(self) -> Decimal:
         return sum((leg.exposure for leg in self.filled_legs), Decimal(0))
 
-    def outcome_pnls(self) -> dict[str, Decimal]:
+    def outcome_pnls(self) -> dict[str, Decimal | None]:
         """
         P&L in each candidate winning outcome while the pair is open.
 
-        Each covered outcome maps to the joint payoff if that outcome wins. When fewer
-        than two outcomes are covered (a naked single leg), a synthetic complement
-        scenario is added so the unhedged downside is visible rather than hidden.
+        Each covered outcome maps to the joint payoff if that outcome wins, expressed in
+        the base currency when the legs settle in different currencies (see
+        ``_joint_payoff``). When fewer than two outcomes are covered (a naked single
+        leg), a synthetic complement scenario is added so the unhedged downside is
+        visible rather than hidden. A ``None`` value marks an outcome whose base-currency
+        payoff cannot be computed because a leg currency is not convertible.
 
         """
         legs = self.filled_legs
         outcomes = {leg.outcome for leg in legs}
-        pnls: dict[str, Decimal] = {}
+        pnls: dict[str, Decimal | None] = {}
         for outcome in outcomes:
             pnls[outcome] = self._joint_payoff(outcome)
         if len(outcomes) < 2:
-            pnls[_COMPLEMENT_OUTCOME] = sum((leg.lose_payoff for leg in legs), Decimal(0))
+            pnls[_COMPLEMENT_OUTCOME] = self._joint_payoff(_COMPLEMENT_OUTCOME)
         return pnls
 
-    def _joint_payoff(self, winning_outcome: str) -> Decimal:
+    def _joint_payoff(self, winning_outcome: str) -> Decimal | None:
+        """
+        Joint two-leg payoff if ``winning_outcome`` wins.
+
+        Same-currency legs (every leg settling in one currency, e.g. USDC vs USDC) sum
+        their native payoffs directly, reproducing the single-currency behaviour exactly.
+        Cross-currency legs convert each leg payoff into the base currency
+        PESSIMISTICALLY by sign, so the floor is a genuine lower bound. A received
+        (positive) payoff takes the haircut-reducing ``convert_payoff`` (smallest base
+        value, never over-stating the edge); a loss (negative payoff) has its magnitude
+        converted with the inflating ``convert`` and re-negated (largest base loss).
+        Converting a loss with the reducing haircut would shrink it toward zero, and
+        against an identity/base-currency leg (scaled by 1.0) the differing factors could
+        flip the worst case positive — a false locked floor on a pair that actually loses.
+        ``None`` is returned when a leg currency has no available rate: the pair then
+        bears currency risk and must not report a bogus locked floor.
+
+        """
+        legs = self.filled_legs
+        if not self.is_cross_currency:
+            total = Decimal(0)
+            for leg in legs:
+                total += leg.win_payoff if leg.outcome == winning_outcome else leg.lose_payoff
+            return total
+        if self.policy is None:
+            return None
         total = Decimal(0)
-        for leg in self.filled_legs:
-            if leg.outcome == winning_outcome:
-                total += leg.win_payoff
+        for leg in legs:
+            native = leg.win_payoff if leg.outcome == winning_outcome else leg.lose_payoff
+            if native < 0:
+                conversion = self.policy.convert(-native, leg.currency)
+                if conversion.converted_amount is None:
+                    return None
+                total -= conversion.converted_amount
             else:
-                total += leg.lose_payoff
+                conversion = self.policy.convert_payoff(native, leg.currency)
+                if conversion.converted_amount is None:
+                    return None
+                total += conversion.converted_amount
         return total
+
+    @property
+    def floor_currency_risk(self) -> bool:
+        """
+        True when an open pair cannot compute a base-currency floor for some outcome.
+        """
+        if self.settled:
+            return False
+        pnls = self.outcome_pnls()
+        return bool(pnls) and any(v is None for v in pnls.values())
 
     def guaranteed_pnl(self) -> Decimal | None:
         """
-        Worst-case P&L across outcomes while open (the arb floor).
+        Worst-case base-currency P&L across outcomes while open (the arb floor).
 
-        None if settled/empty.
+        None if settled/empty, or if the pair bears unconverted currency risk (some
+        outcome payoff cannot be expressed in the base currency) — never a raw sum of
+        mismatched currencies.
 
         """
         if self.settled:
             return None
         pnls = self.outcome_pnls()
-        if not pnls:
+        if not pnls or any(v is None for v in pnls.values()):
             return None
-        return min(pnls.values())
+        return min(v for v in pnls.values() if v is not None)
 
     def best_case_pnl(self) -> Decimal | None:
         if self.settled:
             return None
         pnls = self.outcome_pnls()
-        if not pnls:
+        if not pnls or any(v is None for v in pnls.values()):
             return None
-        return max(pnls.values())
+        return max(v for v in pnls.values() if v is not None)
 
-    def settle(self, winning_outcome: str | None = None, *, void: bool = False) -> Decimal:
+    def settle(self, winning_outcome: str | None = None, *, void: bool = False) -> Decimal | None:
         """
-        Realize P&L on settlement.
+        Realize base-currency P&L on settlement.
 
         ``void`` refunds both stakes, so realized P&L is exactly zero. Otherwise realized
-        P&L is the joint payoff for ``winning_outcome`` (an outcome not backed by any leg
-        settles every leg at its lose payoff).
+        P&L is the base-currency joint payoff for ``winning_outcome`` (an outcome not
+        backed by any leg settles every leg at its lose payoff). Cross-currency legs are
+        normalised through ``convert_payoff``; a leg with no available rate realizes
+        ``None`` (currency-risk-bearing) rather than a raw sum of mismatched currencies.
 
         """
         self.settled = True
@@ -220,6 +294,9 @@ class ArbPairState:
             "settled": self.settled,
             "void": self.void,
             "fully_hedged": self.is_fully_hedged,
+            "cross_currency": self.is_cross_currency,
+            "base_currency": self.base_currency,
+            "floor_currency_risk": self.floor_currency_risk,
             "winning_outcome": self.winning_outcome,
             "exposure": self.exposure,
             "guaranteed_pnl": self.guaranteed_pnl(),
@@ -231,6 +308,7 @@ class ArbPairState:
                     "client_order_id": leg.client_order_id,
                     "outcome": leg.outcome,
                     "side": str(leg.side),
+                    "currency": leg.currency,
                     "fills": len(leg.fills),
                     "stake": leg.stake,
                     "exposure": leg.exposure,
@@ -247,9 +325,10 @@ class ArbPositionTracker:
     canonical key the strategy uses for unwind bookkeeping).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, policy: PortfolioCurrencyPolicy | None = None) -> None:
         self._pairs: dict[str, ArbPairState] = {}
         self._leg_to_pair: dict[str, str] = {}
+        self._policy = policy
 
     @staticmethod
     def pair_key(leg_a_id: object, leg_b_id: object) -> str:
@@ -268,15 +347,21 @@ class ArbPositionTracker:
         last_px: object,
         last_qty: object,
         sibling_id: object = None,
+        currency: object = None,
     ) -> ArbPairState:
         """
         Record a single fill (or partial fill) for a leg, accumulating it as a ``Bet``.
+
+        ``currency`` is the leg's settlement currency; a pair whose legs settle in
+        different currencies has its joint payoff and floor normalised into the base
+        currency of the tracker's ``PortfolioCurrencyPolicy``.
+
         """
         coid = str(client_order_id)
         pair_id = self._resolve_pair_id(coid, sibling_id)
         pair = self._pairs.get(pair_id)
         if pair is None:
-            pair = ArbPairState(pair_id=pair_id)
+            pair = ArbPairState(pair_id=pair_id, policy=self._policy)
             self._pairs[pair_id] = pair
         self._leg_to_pair[coid] = pair_id
         leg = pair.legs.get(coid)
@@ -285,6 +370,7 @@ class ArbPositionTracker:
                 client_order_id=coid,
                 outcome=str(outcome),
                 side=bet_side_for_order_side(order_side),
+                currency=_currency_code(currency),
             )
             pair.legs[coid] = leg
         leg.add_fill(last_px, last_qty)
@@ -312,7 +398,7 @@ class ArbPositionTracker:
         winning_outcome: str | None = None,
         *,
         void: bool = False,
-    ) -> Decimal:
+    ) -> Decimal | None:
         pair = self._pairs[pair_id]
         return pair.settle(winning_outcome, void=void)
 
@@ -322,7 +408,7 @@ class ArbPositionTracker:
         winning_outcome: str | None = None,
         *,
         void: bool = False,
-    ) -> Decimal:
+    ) -> Decimal | None:
         pair_id = self._leg_to_pair[str(client_order_id)]
         return self.settle(pair_id, winning_outcome, void=void)
 
@@ -348,11 +434,13 @@ class ArbPositionTracker:
             Decimal(0),
         )
         exposure_total = sum((p.exposure for p in open_pairs), Decimal(0))
+        currency_risk_pairs = sum(1 for p in open_pairs if p.floor_currency_risk)
         return {
             "pairs_tracked": len(self._pairs),
             "pairs_open": len(open_pairs),
             "open_exposure": exposure_total,
             "open_guaranteed_pnl": guaranteed_total,
+            "open_currency_risk_pairs": currency_risk_pairs,
             "realized_pnl": realized_total,
             "pairs": pairs,
         }

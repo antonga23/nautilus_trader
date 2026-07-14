@@ -24,6 +24,7 @@ binary market with mutually exclusive outcomes A and B:
 
 from decimal import Decimal
 
+from nautilus_trader.adapters.betting.fx import PortfolioCurrencyPolicy
 from nautilus_trader.core.nautilus_pyo3 import BetSide
 from nautilus_trader.examples.strategies.arb_position_tracker import ArbPositionTracker
 from nautilus_trader.examples.strategies.arb_position_tracker import bet_side_for_order_side
@@ -39,6 +40,29 @@ def _tracker_with_pair(odds_a, stake_a, odds_b, stake_b):
     tracker = ArbPositionTracker()
     tracker.record_fill(LEG_A, OUTCOME_A, "BUY", odds_a, stake_a, sibling_id=LEG_B)
     tracker.record_fill(LEG_B, OUTCOME_B, "BUY", odds_b, stake_b, sibling_id=LEG_A)
+    return tracker, tracker.pair_key(LEG_A, LEG_B)
+
+
+def _currency_tracker(policy, currency_a, currency_b, odds_a, stake_a, odds_b, stake_b):
+    tracker = ArbPositionTracker(policy=policy)
+    tracker.record_fill(
+        LEG_A,
+        OUTCOME_A,
+        "BUY",
+        odds_a,
+        stake_a,
+        sibling_id=LEG_B,
+        currency=currency_a,
+    )
+    tracker.record_fill(
+        LEG_B,
+        OUTCOME_B,
+        "BUY",
+        odds_b,
+        stake_b,
+        sibling_id=LEG_A,
+        currency=currency_b,
+    )
     return tracker, tracker.pair_key(LEG_A, LEG_B)
 
 
@@ -197,3 +221,219 @@ def test_sell_side_leg_maps_to_lay_payoffs():
     pnls = pair.outcome_pnls()
     assert pnls[OUTCOME_A] == Decimal(-10)
     assert pnls["__other__"] == Decimal(10)
+
+
+# --------------------------------------------------------------------------------------
+# Cross-currency normalisation (M2 PR5).
+#
+# The pre-PR tracker raw-summed per-leg Decimals with no currency awareness: for a pair
+# whose legs settle in different currencies that sum was a garbage number and the floor a
+# false guarantee. Each leg payoff is now converted into the base currency through the
+# haircut-reducing ``PortfolioCurrencyPolicy.convert_payoff`` before combining. All numbers
+# below are hand-computed from that identity with a 10 bps payoff haircut (factor 0.999).
+# --------------------------------------------------------------------------------------
+
+# EUR is priced at 1.25 USD; USDC is a USD stablecoin (parity, 10 bps haircut).
+_CROSS_POLICY = PortfolioCurrencyPolicy(
+    base_currency="USD",
+    static_fx_rates={"EUR/USD": Decimal("1.25")},
+    stablecoin_haircut_bps=10,
+)
+
+
+def test_a_same_currency_pair_is_identity_no_regression():
+    # Both legs settle in USDC with a live policy present. A same-currency pair carries no
+    # cross-currency risk, so the floor must reduce EXACTLY to the pre-PR raw sum: the
+    # genuine 2.1/2.1 stake-10 arb still locks +1.0 in both outcomes, no haircut applied.
+    tracker, pair_id = _currency_tracker(
+        _CROSS_POLICY,
+        "USDC",
+        "USDC",
+        "2.1",
+        "10",
+        "2.1",
+        "10",
+    )
+    pair = tracker.pair(pair_id)
+
+    pnls = pair.outcome_pnls()
+    assert pnls[OUTCOME_A] == Decimal("1.0")
+    assert pnls[OUTCOME_B] == Decimal("1.0")
+    assert pair.guaranteed_pnl() == Decimal("1.0")
+    assert pair.best_case_pnl() == Decimal("1.0")
+    assert pair.is_cross_currency is False
+    assert pair.floor_currency_risk is False
+    # Identical to the no-policy, no-currency baseline (test_a_genuine_arb...).
+    baseline, baseline_id = _tracker_with_pair("2.1", "10", "2.1", "10")
+    assert pair.guaranteed_pnl() == baseline.pair(baseline_id).guaranteed_pnl()
+
+
+def test_b_cross_currency_floor_normalised_to_base_and_conservative():
+    # legA BACK EUR 2.5 stake 8 ; legB BACK USDC 2.5 stake 10 ; base USD, EUR/USD = 1.25.
+    # 8 EUR of stake == 10 USD, so the base-currency legs are balanced.
+    # Sign-aware conversion: a won payoff shrinks under the reducing haircut (x0.999); a
+    # lost payoff is inflated under the raising haircut (x1.001) so the floor is a true
+    # lower bound.
+    # A wins: legA.win 8*1.5=12 EUR -> 12*1.25*0.999 = 14.985 ; legB.lose -10 USDC
+    #         -> -(10*1.001) = -10.01  => +4.975
+    # B wins: legB.win 10*1.5=15 USDC -> 15*0.999 = 14.985 ; legA.lose -8 EUR
+    #         -> -(8*1.25*1.001) = -10.01  => +4.975
+    tracker, pair_id = _currency_tracker(
+        _CROSS_POLICY,
+        "EUR",
+        "USDC",
+        "2.5",
+        "8",
+        "2.5",
+        "10",
+    )
+    pair = tracker.pair(pair_id)
+
+    pnls = pair.outcome_pnls()
+    assert pnls[OUTCOME_A] == Decimal("4.975")
+    assert pnls[OUTCOME_B] == Decimal("4.975")
+    assert pair.guaranteed_pnl() == Decimal("4.975")
+    assert pair.best_case_pnl() == Decimal("4.975")
+    assert pair.is_cross_currency is True
+    assert pair.floor_currency_risk is False
+    # Conservative: the sign-aware haircut strictly reduces the +5.0 zero-haircut floor,
+    # and the loss-inflation makes it strictly lower than the old reducing-only 4.995.
+    assert pair.guaranteed_pnl() < Decimal("4.995")
+
+
+def test_c_non_convertible_leg_marks_floor_unavailable_not_raw_sum():
+    # legA settles in GBP with no configured rate (not a stablecoin) ; legB in USDC.
+    # The base-currency payoff cannot be formed, so every outcome is unavailable and the
+    # pair must be flagged currency-risk-bearing -- NEVER a raw sum of GBP and USDC.
+    tracker, pair_id = _currency_tracker(
+        _CROSS_POLICY,
+        "GBP",
+        "USDC",
+        "2.1",
+        "10",
+        "2.1",
+        "10",
+    )
+    pair = tracker.pair(pair_id)
+
+    pnls = pair.outcome_pnls()
+    assert pnls[OUTCOME_A] is None
+    assert pnls[OUTCOME_B] is None
+    assert pair.guaranteed_pnl() is None
+    assert pair.best_case_pnl() is None
+    assert pair.floor_currency_risk is True
+    assert pair.is_cross_currency is True
+    assert tracker.summary()["open_currency_risk_pairs"] == 1
+
+
+def test_d_cross_currency_void_refunds_both_stakes_pnl_zero():
+    tracker, pair_id = _currency_tracker(
+        _CROSS_POLICY,
+        "EUR",
+        "USDC",
+        "2.5",
+        "8",
+        "2.5",
+        "10",
+    )
+    realized = tracker.settle(pair_id, void=True)
+
+    assert realized == Decimal(0)
+    pair = tracker.pair(pair_id)
+    assert pair.void is True
+    assert pair.realized_pnl == Decimal(0)
+
+
+def test_e_cross_currency_settlement_realizes_base_currency_pnl():
+    # Settling on OUTCOME_A must realize the pre-settlement base-currency payoff (+4.975),
+    # matching the sign-aware floor scenario for that outcome exactly.
+    tracker, pair_id = _currency_tracker(
+        _CROSS_POLICY,
+        "EUR",
+        "USDC",
+        "2.5",
+        "8",
+        "2.5",
+        "10",
+    )
+    pre_settlement = tracker.pair(pair_id).outcome_pnls()[OUTCOME_A]
+    realized = tracker.settle(pair_id, OUTCOME_A)
+
+    assert realized == Decimal("4.975")
+    assert realized == pre_settlement
+    assert tracker.pair(pair_id).realized_pnl == Decimal("4.975")
+
+    # And the losing outcome realizes the symmetric base-currency payoff.
+    tracker_b, pair_id_b = _currency_tracker(
+        _CROSS_POLICY,
+        "EUR",
+        "USDC",
+        "2.5",
+        "8",
+        "2.5",
+        "10",
+    )
+    assert tracker_b.settle(pair_id_b, OUTCOME_B) == Decimal("4.975")
+
+
+def test_f_sign_aware_floor_never_flips_a_losing_pair_positive():
+    # Regression: a base-currency leg (identity, factor 1.0) paired with a foreign losing
+    # leg must NOT report a positive locked floor. legA BACK USD 2.0 stake 124.9 ; legB
+    # BACK EUR 3.0 stake 100 ; base USD, EUR/USD = 1.25.
+    #   OUTCOME_A wins: legA.win 124.9*1.0 = 124.9 USD (identity, no haircut)
+    #                   legB.lose -100 EUR -> loss inflated: -(100*1.25*1.001) = -125.125
+    #                   => 124.9 - 125.125 = -0.225   (a genuine loss, not a false lock)
+    #   OUTCOME_B wins: legB.win 100*2.0 = 200 EUR -> 200*1.25*0.999 = 249.75
+    #                   legA.lose -124.9 USD (identity) = -124.9  => +124.85
+    # The old reducing-only conversion shrank the -125 EUR loss to -124.875 and reported a
+    # phantom +0.025 floor with floor_currency_risk False. The true exact-rate worst case
+    # is 124.9 - 125 = -0.1 (a loss); loss-inflation makes the reported floor -0.225.
+    tracker, pair_id = _currency_tracker(
+        _CROSS_POLICY,
+        "USD",
+        "EUR",
+        "2.0",
+        "124.9",
+        "3.0",
+        "100",
+    )
+    pair = tracker.pair(pair_id)
+
+    pnls = pair.outcome_pnls()
+    assert pnls[OUTCOME_A] == Decimal("-0.225")
+    assert pnls[OUTCOME_B] == Decimal("124.85")
+    guaranteed = pair.guaranteed_pnl()
+    # The floor is a real loss, not a false positive lock.
+    assert guaranteed == Decimal("-0.225")
+    assert guaranteed <= Decimal("-0.1")
+    assert guaranteed < Decimal(0)
+    assert pair.is_cross_currency is True
+    # Both legs are convertible, so this is a genuine computed floor, not currency risk.
+    assert pair.floor_currency_risk is False
+
+
+def test_f_sign_aware_floor_conservative_when_other_outcome_is_the_loss():
+    # Symmetric probe: mirror the pair so the LOSS falls in the other outcome. legA BACK
+    # EUR 3.0 stake 100 ; legB BACK USD 2.0 stake 124.9 ; base USD, EUR/USD = 1.25.
+    #   OUTCOME_B wins: legB.win 124.9*1.0 = 124.9 USD (identity)
+    #                   legA.lose -100 EUR -> -(100*1.25*1.001) = -125.125  => -0.225
+    #   OUTCOME_A wins: legA.win 100*2.0 = 200 EUR -> 200*1.25*0.999 = 249.75
+    #                   legB.lose -124.9 USD (identity) = -124.9  => +124.85
+    tracker, pair_id = _currency_tracker(
+        _CROSS_POLICY,
+        "EUR",
+        "USD",
+        "3.0",
+        "100",
+        "2.0",
+        "124.9",
+    )
+    pair = tracker.pair(pair_id)
+
+    pnls = pair.outcome_pnls()
+    assert pnls[OUTCOME_B] == Decimal("-0.225")
+    assert pnls[OUTCOME_A] == Decimal("124.85")
+    guaranteed = pair.guaranteed_pnl()
+    assert guaranteed == Decimal("-0.225")
+    assert guaranteed <= Decimal("-0.1")
+    assert pair.floor_currency_risk is False
