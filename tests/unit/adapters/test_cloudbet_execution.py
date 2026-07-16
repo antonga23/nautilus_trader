@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC
 from datetime import datetime
 from types import SimpleNamespace
@@ -22,6 +23,9 @@ from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.cloudbet.common import CLOUDBET_VENUE
 from nautilus_trader.adapters.cloudbet.client.schema import AcceptPriceChange
 from nautilus_trader.adapters.cloudbet.client.schema import BetStatus
+from nautilus_trader.adapters.cloudbet.client.schema import GetAccountBalance
+from nautilus_trader.adapters.cloudbet.client.schema import GetAccountCurrencies
+from nautilus_trader.adapters.cloudbet.client.schema import GetAccountInfoResponse
 from nautilus_trader.adapters.cloudbet.client.schema import GetBetResponse
 from nautilus_trader.adapters.cloudbet.client.schema import SelectionSide as CloudbetSelectionSide
 from nautilus_trader.adapters.cloudbet.config import CloudbetExecClientConfig
@@ -39,14 +43,18 @@ from nautilus_trader.model.identifiers import ClientOrderId
 from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.identifiers import VenueOrderId
 from nautilus_trader.model.objects import Currency
+from nautilus_trader.model.objects import Money
 from nautilus_trader.test_kit.stubs.component import TestComponentStubs
 from nautilus_trader.test_kit.stubs.execution import TestExecStubs
 
 
-def _betting_instrument() -> CryptoBettingInstrument:
+def _betting_instrument(
+    currency: Currency | None = None,
+    event_id: str = "event-1",
+) -> CryptoBettingInstrument:
     return CryptoBettingInstrument(
         venue=Venue("CLOUDBET"),
-        event_id="event-1",
+        event_id=event_id,
         event_name="Team A vs Team B",
         home_name="Team A",
         away_name="Team B",
@@ -57,7 +65,7 @@ def _betting_instrument() -> CryptoBettingInstrument:
         outcome="home",
         side=SelectionSide.BACK,
         price=2.1,
-        currency=Currency.from_str("PLAY_EUR"),
+        currency=currency or Currency.from_str("PLAY_EUR"),
         params="",
     )
 
@@ -89,13 +97,14 @@ def _bet_response(
     reference_id: str = "venue-ref",
     win_loss: str | None = None,
     return_amount: str | None = None,
+    currency: str = "PLAY_EUR",
 ):
     return GetBetResponse(
         legacy_status=status,
         legacy_price=price,
         legacy_side=CloudbetSelectionSide.BACK,
         stake=stake,
-        currency="PLAY_EUR",
+        currency=currency,
         reference_id=reference_id,
         create_time="2024-01-01T00:00:00Z",
         win_loss=win_loss,
@@ -1063,3 +1072,262 @@ async def test_settlement_poll_ignores_ungraded_and_is_idempotent_across_polls()
     assert settlements[0].result == SettlementResult.WON
     assert venue_client.get_bet_status.await_count == 3
     assert client.connection_account_state.await_count == 1
+
+
+# -- Account-state loop + locked-funds modeling ----------------------------------------------------
+# Periodic account-state refresh (mirrors the SXBET account-state poll) with locked = sum of stakes
+# of open (matched but not yet settled) bets, computed from cached fill state — no per-tick venue
+# re-queries of bet status. free = total - locked, floored at 0 (venue total is authoritative).
+
+
+def _install_account_endpoints(venue_client, balances: dict[str, str]) -> None:
+    venue_client.login = AsyncMock(
+        return_value=GetAccountInfoResponse(
+            uuid="acct-uuid-0001",
+            email="test@example.com",
+            nickname="tester",
+        ),
+    )
+    venue_client.get_account_currencies = AsyncMock(
+        return_value=GetAccountCurrencies(currencies=list(balances)),
+    )
+    venue_client.get_balances = AsyncMock(
+        side_effect=lambda currency: GetAccountBalance(amount=balances[currency]),
+    )
+
+
+def _account_client(balances: dict[str, str], cache, **config_kwargs):
+    venue_client = Mock()
+    venue_client.connected = True
+    _install_account_endpoints(venue_client, balances)
+    client = _make_exec_client(
+        venue_client,
+        cache,
+        TestComponentStubs.msgbus(),
+        CloudbetExecClientConfig(dry_run=False, accept_price_change="BETTER", **config_kwargs),
+    )
+    states: list = []
+    client._send_account_state = states.append
+    return client, venue_client, states
+
+
+def _fill_order(
+    cache,
+    client,
+    *,
+    client_order_id: str,
+    stake: str,
+    currency: str = "PLAY_EUR",
+    bet_currency: str | None = None,
+):
+    # `currency` is the wallet/quote denomination the market settles in (drives the locked bucket);
+    # `bet_currency` overrides only the bet response's own currency field, letting a test pin the
+    # "EUR"-defaulting response independently of the wallet the stake is held against.
+    instrument = _betting_instrument(
+        currency=Currency.from_str(currency),
+        event_id=f"event-{client_order_id}",
+    )
+    cache.add_instrument(instrument)
+    order = TestExecStubs.limit_order(
+        instrument=instrument,
+        price=instrument.make_price(2.1),
+        quantity=instrument.make_qty(float(stake)),
+        client_order_id=ClientOrderId(client_order_id),
+    )
+    cache.add_order(order)
+    venue_order_id = VenueOrderId(f"ref-{client_order_id}")
+    client.venue_order_id_to_client_order_id[venue_order_id] = order.client_order_id
+    client._emit_bet_fill(
+        strategy_id=order.strategy_id,
+        instrument_id=order.instrument_id,
+        client_order_id=order.client_order_id,
+        venue_order_id=venue_order_id,
+        bet_response=_bet_response(
+            BetStatus.ACCEPTED,
+            stake=stake,
+            reference_id=venue_order_id.value,
+            currency=bet_currency if bet_currency is not None else currency,
+        ),
+    )
+    return order
+
+
+def _balances_by_code(state) -> dict[str, object]:
+    return {balance.currency.code: balance for balance in state.balances}
+
+
+@pytest.mark.asyncio
+async def test_account_state_loop_ticks_at_interval_and_cancels_on_disconnect():
+    # (a) the loop regenerates the account state at the configured interval and the task is
+    # cancelled on disconnect (no leak).
+    cache = TestComponentStubs.cache()
+    client, venue_client, _states = _account_client(
+        {"PLAY_EUR": "100"},
+        cache,
+        account_state_interval_secs=0.01,
+    )
+    client.connection_account_state = AsyncMock()
+    venue_client.disconnect = AsyncMock()
+    client.stream = SimpleNamespace(is_connected=True, disconnect=AsyncMock())
+
+    await client._connect()
+    task = client._account_state_task
+    assert task is not None
+
+    await asyncio.sleep(0.05)
+    assert client.connection_account_state.await_count >= 2
+
+    await client._disconnect()
+    assert client._account_state_task is None
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert task.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_account_state_locked_sums_open_matched_stakes_and_releases_on_settlement():
+    # (b) two open matched bets (5 + 7.5) -> locked=12.50, free=total-12.50; one settles ->
+    # locked=5; all settled -> locked=0.
+    play_eur = Currency.from_str("PLAY_EUR")
+    cache = TestComponentStubs.cache()
+    client, _venue_client, states = _account_client({"PLAY_EUR": "100"}, cache)
+    order_a = _fill_order(cache, client, client_order_id="order-a", stake="5")
+    order_b = _fill_order(cache, client, client_order_id="order-b", stake="7.5")
+
+    await client.connection_account_state()
+    balance = states[-1].balances[0]
+    assert balance.total == Money(100, play_eur)
+    assert balance.locked == Money(12.50, play_eur)
+    assert balance.free == Money(87.50, play_eur)
+
+    client._settled_client_order_ids.add(order_b.client_order_id)
+    await client.connection_account_state()
+    balance = states[-1].balances[0]
+    assert balance.locked == Money(5, play_eur)
+    assert balance.free == Money(95, play_eur)
+
+    client._settled_client_order_ids.add(order_a.client_order_id)
+    await client.connection_account_state()
+    balance = states[-1].balances[0]
+    assert balance.locked == Money(0, play_eur)
+    assert balance.free == Money(100, play_eur)
+
+
+@pytest.mark.asyncio
+async def test_account_state_locked_exceeding_total_floors_free_at_zero():
+    # (c) locked > venue-reported total -> the venue total is authoritative: free floors at 0 and
+    # locked caps at total (never a negative free balance).
+    play_eur = Currency.from_str("PLAY_EUR")
+    cache = TestComponentStubs.cache()
+    client, _venue_client, states = _account_client({"PLAY_EUR": "3"}, cache)
+    _fill_order(cache, client, client_order_id="order-big", stake="5")
+
+    await client.connection_account_state()
+
+    balance = states[-1].balances[0]
+    assert balance.total == Money(3, play_eur)
+    assert balance.locked == Money(3, play_eur)
+    assert balance.free == Money(0, play_eur)
+
+
+@pytest.mark.asyncio
+async def test_account_state_locked_buckets_mixed_currencies_separately():
+    # (d) stakes lock in the currency of their own bet, never mixed across buckets.
+    eur = Currency.from_str("EUR")
+    btc = Currency.from_str("BTC")
+    cache = TestComponentStubs.cache()
+    client, _venue_client, states = _account_client({"EUR": "50", "BTC": "1.0"}, cache)
+    _fill_order(cache, client, client_order_id="order-eur", stake="5", currency="EUR")
+    _fill_order(cache, client, client_order_id="order-btc", stake="0.25", currency="BTC")
+
+    await client.connection_account_state()
+
+    balances = _balances_by_code(states[-1])
+    assert balances["EUR"].locked == Money(5, eur)
+    assert balances["EUR"].free == Money(45, eur)
+    assert balances["BTC"].locked == Money(0.25, btc)
+    assert balances["BTC"].free == Money(0.75, btc)
+
+
+@pytest.mark.asyncio
+async def test_account_state_locks_open_bet_on_non_eur_wallet_despite_eur_default_bet_currency():
+    # Regression: GetBetResponse.currency defaults to "EUR", so an open matched bet on a PLAY_EUR
+    # wallet must still lock against PLAY_EUR (resolved from the instrument quote currency), not
+    # leak into an "EUR" bucket the venue balances never report. The dangerous direction is a
+    # bet that reads locked=0 / free=full while it is live, over-stating available funds.
+    play_eur = Currency.from_str("PLAY_EUR")
+    cache = TestComponentStubs.cache()
+    client, _venue_client, states = _account_client({"PLAY_EUR": "100"}, cache)
+    _fill_order(
+        cache,
+        client,
+        client_order_id="order-play-eur",
+        stake="20",
+        currency="PLAY_EUR",
+        bet_currency="EUR",
+    )
+
+    await client.connection_account_state()
+
+    balance = states[-1].balances[0]
+    assert balance.total == Money(100, play_eur)
+    assert balance.locked == Money(20, play_eur)
+    assert balance.free == Money(80, play_eur)
+
+
+@pytest.mark.asyncio
+async def test_account_state_loop_survives_venue_error_and_last_state_stands():
+    # (e) a venue API failure mid-loop neither crashes the loop nor emits a partial state; the
+    # last-known state stands until the next successful refresh.
+    cache = TestComponentStubs.cache()
+    client, venue_client, states = _account_client(
+        {"PLAY_EUR": "100"},
+        cache,
+        account_state_interval_secs=0.01,
+    )
+
+    await client.connection_account_state()
+    assert len(states) == 1
+
+    venue_client.login = AsyncMock(side_effect=RuntimeError("venue down"))
+    task = asyncio.create_task(client._account_state_loop())
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # The loop kept ticking through failures and no partial/empty state replaced the last one.
+    assert venue_client.login.await_count >= 2
+    assert len(states) == 1
+
+
+@pytest.mark.asyncio
+async def test_settlement_and_account_refresh_interleave_without_double_count():
+    # (f) the settlement poll's own refresh and the account loop's refresh agree: once a bet
+    # settles its stake unlocks exactly once and stays unlocked on subsequent ticks.
+    play_eur = Currency.from_str("PLAY_EUR")
+    cache = TestComponentStubs.cache()
+    client, venue_client, states = _account_client({"PLAY_EUR": "100"}, cache)
+    _fill_order(cache, client, client_order_id="order-graded", stake="5")
+
+    await client.connection_account_state()
+    assert states[-1].balances[0].locked == Money(5, play_eur)
+
+    venue_client.get_bet_status = AsyncMock(
+        return_value=_bet_response(
+            BetStatus.WIN,
+            stake="5",
+            reference_id="ref-order-graded",
+            win_loss="5.5",
+        ),
+    )
+    await client._reconcile_settlements()
+
+    # The settlement path refreshed the account state itself: stake released.
+    assert states[-1].balances[0].locked == Money(0, play_eur)
+    assert states[-1].balances[0].free == Money(100, play_eur)
+
+    # A subsequent account-loop tick reproduces the same state (no re-lock, no double release).
+    await client.connection_account_state()
+    assert states[-1].balances[0].locked == Money(0, play_eur)
+    assert states[-1].balances[0].free == Money(100, play_eur)
