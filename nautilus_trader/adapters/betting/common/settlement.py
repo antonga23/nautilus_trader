@@ -35,11 +35,21 @@ BET_SETTLEMENTS_TOPIC = "betting.settlements"
 class SettlementResult(str, Enum):
     """
     Final grading of a single bet from the bettor's perspective.
+
+    ``HALF_WON`` / ``HALF_LOST`` are Asian half-line (quarter-ball handicap) gradings:
+    half the stake settles at odds (win or loss) and the other half is refunded, so their
+    realized P&L is exactly half the corresponding full ``WON`` / ``LOST`` payoff. ``PUSH``
+    refunds the full stake (economically identical to ``VOID``); it is kept distinct from
+    ``VOID`` so the venue's own PUSH grading is preserved end-to-end rather than collapsed.
+
     """
 
     WON = "WON"
     LOST = "LOST"
     VOID = "VOID"
+    HALF_WON = "HALF_WON"
+    HALF_LOST = "HALF_LOST"
+    PUSH = "PUSH"
 
     def __str__(self) -> str:
         return self.value

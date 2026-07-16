@@ -914,9 +914,11 @@ async def test_matched_submit_then_cancel_requery_does_not_double_fill():
 
 # -- Settlement publisher: graded Cloudbet bets -> BetSettlement on BET_SETTLEMENTS_TOPIC ----------
 # Mirrors the SXBET settlement poll (#289): a graded-bet poll maps Cloudbet's terminal status
-# vocabulary (WIN / LOSS / PUSH / HALF_WIN / HALF_LOSS) to the venue-neutral WON / LOST / VOID and
+# vocabulary (WIN / LOSS / PUSH / HALF_WIN / HALF_LOSS) to the venue-neutral settlement result and
 # publishes one BetSettlement per graded leg so the venue-agnostic strategy consumer books
-# cross-venue arb P&L instead of leaving CB legs OPEN.
+# cross-venue arb P&L instead of leaving CB legs OPEN. HALF_WIN / HALF_LOSS / PUSH now map to their
+# own HALF_WON / HALF_LOST / PUSH results (no longer collapsed to WON / LOST / VOID) so the strategy
+# realizes half-line P&L per leg.
 
 
 def _settlement_client(venue_client, cache, msgbus):
@@ -993,12 +995,13 @@ async def test_settlement_poll_maps_loss_to_negative_pnl():
 
 
 @pytest.mark.asyncio
-async def test_settlement_poll_maps_push_to_void_stake_refunded():
+async def test_settlement_poll_maps_push_to_push_stake_refunded():
     cache = TestComponentStubs.cache()
     _instrument, order = _tracked_order(cache)
     venue_client = Mock()
     venue_client.connected = False
-    # PUSH: market not applicable (e.g. draw on 2-way) -> stake refunded, zero P&L.
+    # PUSH: market not applicable (e.g. draw on 2-way) -> stake refunded, zero P&L. Kept as its own
+    # PUSH result rather than collapsed into VOID.
     venue_client.get_bet_status = AsyncMock(
         return_value=_bet_response(BetStatus.PUSH, stake="1.25", win_loss="0"),
     )
@@ -1009,18 +1012,18 @@ async def test_settlement_poll_maps_push_to_void_stake_refunded():
     await client._reconcile_settlements()
 
     assert len(settlements) == 1
-    assert settlements[0].result == SettlementResult.VOID
+    assert settlements[0].result == SettlementResult.PUSH
     assert settlements[0].settle_value == 0.0
 
 
 @pytest.mark.asyncio
 async def test_settlement_poll_maps_half_win_and_half_loss():
-    # Quarter-ball Asian handicaps settle half the stake at odds and refund the other half; the
-    # three-state venue-neutral model books the dominant side while the signed venue figure rides
-    # on settle_value for diagnostics.
+    # Quarter-ball Asian handicaps settle half the stake at odds and refund the other half; these
+    # now map to the dedicated HALF_WON / HALF_LOST results so the strategy realizes exactly half
+    # the full payoff per leg. The signed venue figure still rides on settle_value.
     for status, expected_result, win_loss, expected_value in (
-        (BetStatus.HALF_WIN, SettlementResult.WON, "0.6875", 0.6875),
-        (BetStatus.HALF_LOSS, SettlementResult.LOST, "-0.625", -0.625),
+        (BetStatus.HALF_WIN, SettlementResult.HALF_WON, "0.6875", 0.6875),
+        (BetStatus.HALF_LOSS, SettlementResult.HALF_LOST, "-0.625", -0.625),
     ):
         cache = TestComponentStubs.cache()
         _instrument, order = _tracked_order(cache)

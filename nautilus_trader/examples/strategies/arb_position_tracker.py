@@ -323,9 +323,14 @@ class ArbPairState:
         void, limit void) and refund its stake while the sibling wins or loses -- so this
         realizes the sum of each leg's *actual* per-leg payoff: WON contributes
         ``win_payoff``, LOST contributes ``lose_payoff``, VOID contributes zero (stake
-        returned). Cross-currency legs are normalised into the base currency; an
-        unconvertible leg realizes ``None``. ``results`` maps each leg's client order id to
-        its grading string (``WON`` / ``LOST`` / ``VOID``).
+        returned). Asian half-lines grade half the stake at odds and refund the other half,
+        so HALF_WON contributes ``win_payoff / 2`` and HALF_LOST contributes
+        ``lose_payoff / 2`` (the full-win / full-loss payoff scaled by the half that settled
+        at odds; the refunded half contributes zero). PUSH refunds the full stake and
+        contributes zero, exactly like VOID. Cross-currency legs are normalised into the base
+        currency; an unconvertible leg realizes ``None``. ``results`` maps each leg's client
+        order id to its grading string (``WON`` / ``LOST`` / ``VOID`` / ``HALF_WON`` /
+        ``HALF_LOST`` / ``PUSH``).
 
         """
         self.settled = True
@@ -334,7 +339,7 @@ class ArbPairState:
             leg.client_order_id: str(results.get(leg.client_order_id, "")).upper()
             for leg in self.filled_legs
         }
-        self.void = bool(graded) and all(result == "VOID" for result in graded.values())
+        self.void = bool(graded) and all(result in ("VOID", "PUSH") for result in graded.values())
         cross_currency = self.is_cross_currency
         if cross_currency and self.policy is None:
             self.realized_pnl = None
@@ -342,12 +347,16 @@ class ArbPairState:
         total = Decimal(0)
         for leg in self.filled_legs:
             result = graded[leg.client_order_id]
-            if result == "VOID":
+            if result in ("VOID", "PUSH"):
                 continue  # Stake refunded; no P&L and no currency exposure on this leg.
             if result == "WON":
                 native = leg.win_payoff
             elif result == "LOST":
                 native = leg.lose_payoff
+            elif result == "HALF_WON":
+                native = leg.win_payoff / 2  # Half the stake won at odds; the other half pushed.
+            elif result == "HALF_LOST":
+                native = leg.lose_payoff / 2  # Half the stake lost; the other half pushed.
             else:
                 self.realized_pnl = None  # Ungraded/unknown leg; cannot realize a number.
                 return None
