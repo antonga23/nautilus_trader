@@ -84,7 +84,7 @@ class _Harness:
         self.strategy = BettingArbitrageStrategy(
             config=BettingArbitrageConfig(
                 enabled_venues=frozenset({over_venue, under_venue}),
-                **config_kwargs,
+                **config_kwargs,  # type: ignore[arg-type]
             ),
         )
         self.strategy.register(
