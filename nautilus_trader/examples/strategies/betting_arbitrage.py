@@ -439,8 +439,9 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
     max_daily_notional : Decimal, default Decimal("100")
         Maximum live execution notional allowed for the process lifetime.
     max_daily_loss : Decimal, default Decimal("25")
-        Daily realized loss guardrail reported in runtime status. This slice
-        blocks new live execution when externally updated realized loss reaches the cap.
+        Realized loss guardrail for the process lifetime. Cumulative base-currency
+        realized losses from settled arbitrage pairs accumulate against this cap, and new
+        live execution is blocked once the accumulated loss reaches it.
     allow_same_venue_live_execution : bool, default True
         Permit same-venue execution only after strict same-venue risk checks pass.
     allow_cross_currency_live_execution : bool, default False
@@ -5816,6 +5817,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 last_qty=event.last_qty,
                 sibling_id=self._arb_leg_siblings.get(key),
                 currency=self._instrument_currency_code(instrument),
+                venue=instrument.id.venue.value,
             )
         except Exception as e:  # pragma: no cover - defensive; never raise into the handler
             self.log.warning(f"Arb position tracker skipped fill: {e}")
@@ -5824,12 +5826,16 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         """
         Realize arbitrage P&L when an execution client reports a graded bet.
 
-        Pair-settlement rule (legs back mutually exclusive outcomes of a binary market,
-        so at most one leg can win): a leg grading WON fixes the pair's winning outcome
-        immediately, even while the sibling's grading lags; otherwise the pair waits
+        Pair-settlement rule. A same-venue pair backs mutually exclusive outcomes of one
+        market, so at most one leg can win: a leg grading WON fixes the pair's winning
+        outcome immediately, even while the sibling's grading lags; otherwise it waits
         until every tracked leg has graded — all VOID realizes zero (stakes returned),
-        no WON realizes every leg at its lose payoff. Each pair settles exactly once;
-        gradings for an already-settled pair are ignored.
+        no WON realizes every leg at its lose payoff. A cross-venue pair's legs rest on
+        independent venues that void/grade separately, so the WON shortcut is disabled:
+        it waits for both legs to grade and realizes from each leg's actual result (a
+        VOID refunds that stake) rather than booking the sibling at a full loss it may
+        not take. Each pair settles exactly once; gradings for an already-settled pair
+        are ignored.
 
         """
         try:
@@ -5858,13 +5864,22 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         leg_id: str,
         result: SettlementResult,
     ) -> None:
-        if result == SettlementResult.WON:
+        if result == SettlementResult.WON and not pair.is_cross_venue:
+            # Same-venue single-market invariant: at most one selection wins, so a WON leg
+            # fixes the pair's outcome immediately (sibling booked at its lose payoff).
             self._realize_arb_pair(pair, winning_outcome=self._arb_leg_outcome(pair, leg_id))
             return
 
         graded = {lid: self._arb_leg_settlements.get(lid) for lid in pair.legs}
         if any(res is None for res in graded.values()):
             return  # A sibling leg has not graded yet; settle when it does
+
+        if pair.is_cross_venue:
+            # Legs rest on independent venues that void/grade separately, so the WON
+            # shortcut would book the sibling at a full loss it may not take (a VOID
+            # refunds its stake). Realize from each leg's actual grading instead.
+            self._realize_arb_pair_from_leg_results(pair, graded)
+            return
 
         won_leg = next(
             (lid for lid, res in graded.items() if res == SettlementResult.WON),
@@ -5909,12 +5924,31 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             )
             return
         realized = pair.settle(winning_outcome, void=void)
+        self._finalize_realized_pair(pair, realized)
+
+    def _realize_arb_pair_from_leg_results(
+        self,
+        pair: ArbPairState,
+        graded: dict[str, SettlementResult | None],
+    ) -> None:
+        results = {lid: str(res) for lid, res in graded.items() if res is not None}
+        realized = pair.settle_from_leg_results(results)
+        self._finalize_realized_pair(pair, realized)
+
+    def _finalize_realized_pair(self, pair: ArbPairState, realized: Decimal | None) -> None:
         self._arb_pairs_settled += 1
         self.log.info(
             f"Arbitrage pair settled: pair_id={pair.pair_id} "
             f"winning_outcome={pair.winning_outcome} void={pair.void} "
             f"realized_pnl={realized}",
         )
+        # Feed a realized LOSS into the daily-loss kill switch so the max_daily_loss gate
+        # trips on actual losses. A win (positive) or void/zero must not raise the counter,
+        # and each pair settles exactly once (guarded in _on_bet_settlement), so repeated
+        # settlement events for one pair cannot double-count. A None realized value is a
+        # currency-risk-bearing pair whose base-currency loss is unknown; it is not counted.
+        if realized is not None and realized < 0:
+            self._live_execution_realized_loss += -realized
 
     def on_order_accepted(self, event: Event) -> None:
         """

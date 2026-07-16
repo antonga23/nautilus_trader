@@ -97,6 +97,7 @@ class LegState:
     outcome: str
     side: BetSide
     currency: str = ""
+    venue: str = ""
     fills: list[Bet] = field(default_factory=list)
 
     def add_fill(self, price: object, stake: object) -> None:
@@ -161,6 +162,15 @@ class ArbPairState:
         return len({leg.currency for leg in self.filled_legs if leg.currency}) > 1
 
     @property
+    def is_cross_venue(self) -> bool:
+        # Legs resting on two distinct venues grade independently: each venue voids or
+        # grades its own leg, so the single-market "exactly one selection wins" invariant
+        # does not hold and the pair must realize from per-leg results (see
+        # ``settle_from_leg_results``). An unknown ("") leg venue never marks a pair as
+        # cross-venue, mirroring ``is_cross_currency``.
+        return len({leg.venue for leg in self.filled_legs if leg.venue}) > 1
+
+    @property
     def is_fully_hedged(self) -> bool:
         return len({leg.outcome for leg in self.filled_legs}) >= 2
 
@@ -218,17 +228,33 @@ class ArbPairState:
         total = Decimal(0)
         for leg in legs:
             native = leg.win_payoff if leg.outcome == winning_outcome else leg.lose_payoff
-            if native < 0:
-                conversion = self.policy.convert(-native, leg.currency)
-                if conversion.converted_amount is None:
-                    return None
-                total -= conversion.converted_amount
-            else:
-                conversion = self.policy.convert_payoff(native, leg.currency)
-                if conversion.converted_amount is None:
-                    return None
-                total += conversion.converted_amount
+            contribution = self._convert_native_payoff(native, leg.currency)
+            if contribution is None:
+                return None
+            total += contribution
         return total
+
+    def _convert_native_payoff(self, native: Decimal, currency: str) -> Decimal | None:
+        """
+        Base-currency value of one leg's native payoff, converted pessimistically by
+        sign.
+
+        A received (positive) payoff takes the haircut-reducing ``convert_payoff`` (never
+        over-stating the edge); a loss (negative) has its magnitude converted with the
+        inflating ``convert`` and re-negated (largest base loss). ``None`` when the leg
+        currency has no available rate. Requires ``self.policy``.
+
+        """
+        assert self.policy is not None  # only called for cross-currency pairs (policy set)
+        if native < 0:
+            conversion = self.policy.convert(-native, currency)
+            if conversion.converted_amount is None:
+                return None
+            return -conversion.converted_amount
+        conversion = self.policy.convert_payoff(native, currency)
+        if conversion.converted_amount is None:
+            return None
+        return conversion.converted_amount
 
     @property
     def floor_currency_risk(self) -> bool:
@@ -286,6 +312,55 @@ class ArbPairState:
         self.winning_outcome = winning_outcome
         self.realized_pnl = self._joint_payoff(winning_outcome)
         return self.realized_pnl
+
+    def settle_from_leg_results(self, results: dict[str, str]) -> Decimal | None:
+        """
+        Realize base-currency P&L for a cross-venue pair from each leg's own grading.
+
+        The joint ``settle`` assumes one market with a single winning selection, so a WON
+        leg fixes the whole pair and every other leg is booked at its lose payoff. Legs on
+        different venues grade independently -- one can VOID (postponement, palpable-error
+        void, limit void) and refund its stake while the sibling wins or loses -- so this
+        realizes the sum of each leg's *actual* per-leg payoff: WON contributes
+        ``win_payoff``, LOST contributes ``lose_payoff``, VOID contributes zero (stake
+        returned). Cross-currency legs are normalised into the base currency; an
+        unconvertible leg realizes ``None``. ``results`` maps each leg's client order id to
+        its grading string (``WON`` / ``LOST`` / ``VOID``).
+
+        """
+        self.settled = True
+        self.winning_outcome = None
+        graded = {
+            leg.client_order_id: str(results.get(leg.client_order_id, "")).upper()
+            for leg in self.filled_legs
+        }
+        self.void = bool(graded) and all(result == "VOID" for result in graded.values())
+        cross_currency = self.is_cross_currency
+        if cross_currency and self.policy is None:
+            self.realized_pnl = None
+            return None
+        total = Decimal(0)
+        for leg in self.filled_legs:
+            result = graded[leg.client_order_id]
+            if result == "VOID":
+                continue  # Stake refunded; no P&L and no currency exposure on this leg.
+            if result == "WON":
+                native = leg.win_payoff
+            elif result == "LOST":
+                native = leg.lose_payoff
+            else:
+                self.realized_pnl = None  # Ungraded/unknown leg; cannot realize a number.
+                return None
+            if not cross_currency:
+                total += native
+                continue
+            contribution = self._convert_native_payoff(native, leg.currency)
+            if contribution is None:
+                self.realized_pnl = None
+                return None
+            total += contribution
+        self.realized_pnl = total
+        return total
 
     def summary(self) -> dict:
         outcome_pnls = {} if self.settled else self.outcome_pnls()
@@ -348,13 +423,16 @@ class ArbPositionTracker:
         last_qty: object,
         sibling_id: object = None,
         currency: object = None,
+        venue: object = None,
     ) -> ArbPairState:
         """
         Record a single fill (or partial fill) for a leg, accumulating it as a ``Bet``.
 
         ``currency`` is the leg's settlement currency; a pair whose legs settle in
         different currencies has its joint payoff and floor normalised into the base
-        currency of the tracker's ``PortfolioCurrencyPolicy``.
+        currency of the tracker's ``PortfolioCurrencyPolicy``. ``venue`` tags the leg's
+        execution venue so a pair spanning two venues (``is_cross_venue``) is realized from
+        per-leg gradings rather than the single-market joint payoff.
 
         """
         coid = str(client_order_id)
@@ -371,6 +449,7 @@ class ArbPositionTracker:
                 outcome=str(outcome),
                 side=bet_side_for_order_side(order_side),
                 currency=_currency_code(currency),
+                venue=_currency_code(venue),
             )
             pair.legs[coid] = leg
         leg.add_fill(last_px, last_qty)

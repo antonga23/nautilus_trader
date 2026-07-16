@@ -25,6 +25,7 @@ from nautilus_trader.adapters.betting.common.settlement import BET_SETTLEMENTS_T
 from nautilus_trader.adapters.betting.common.settlement import BetSettlement
 from nautilus_trader.adapters.betting.common.settlement import SettlementResult
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
+from nautilus_trader.adapters.betting.market_matcher import ArbitrageOpportunity
 from nautilus_trader.examples.strategies.betting_arbitrage import BettingArbitrageConfig
 from nautilus_trader.examples.strategies.betting_arbitrage import BettingArbitrageStrategy
 from nautilus_trader.model.identifiers import TraderId
@@ -63,16 +64,28 @@ class _Harness:
     A registered strategy with one tracked SX.bet arbitrage pair (both legs filled).
     """
 
-    def __init__(self, *, fill_second_leg: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        fill_second_leg: bool = True,
+        over_venue: str = "SXBET",
+        under_venue: str = "SXBET",
+        **config_kwargs: object,
+    ) -> None:
         self.cache = TestComponentStubs.cache()
         self.msgbus = TestComponentStubs.msgbus()
-        self.over_instrument = _betting_instrument(venue="SXBET", outcome="over")
-        self.under_instrument = _betting_instrument(venue="SXBET", outcome="under")
+        self.over_venue = over_venue
+        self.under_venue = under_venue
+        self.over_instrument = _betting_instrument(venue=over_venue, outcome="over")
+        self.under_instrument = _betting_instrument(venue=under_venue, outcome="under")
         self.cache.add_instrument(self.over_instrument)
         self.cache.add_instrument(self.under_instrument)
 
         self.strategy = BettingArbitrageStrategy(
-            config=BettingArbitrageConfig(enabled_venues=frozenset({"SXBET"})),
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset({over_venue, under_venue}),
+                **config_kwargs,  # type: ignore[arg-type]
+            ),
         )
         self.strategy.register(
             trader_id=TraderId("TESTER-SETTLE"),
@@ -95,6 +108,7 @@ class _Harness:
             Decimal("2.10"),
             Decimal(5),
             sibling_id=self.under_leg_id,
+            venue=over_venue,
         )
         if fill_second_leg:
             tracker.record_fill(
@@ -104,6 +118,7 @@ class _Harness:
                 Decimal("2.10"),
                 Decimal(5),
                 sibling_id=self.over_leg_id,
+                venue=under_venue,
             )
         self.pair = tracker.pair_for_leg(self.over_leg_id)
 
@@ -272,3 +287,139 @@ def test_on_start_subscribes_settlement_topic():  # skipcq
         ),
     )
     ensure(h.tracker_stats()["settlements_received"] == 1)
+
+
+def _cap_block_reasons(h: _Harness, stake: Decimal = Decimal(5)) -> list[str]:
+    """
+    Run the live-execution cap gate against the harness pair's own instruments.
+
+    The daily-loss gate reads ``_live_execution_realized_loss``; both legs settle in USDC,
+    so the stake conversions are 1:1 and the only cap under test is ``max_daily_loss``.
+
+    """
+    same_venue = h.over_venue == h.under_venue
+    opportunity = ArbitrageOpportunity(
+        instrument_a=h.over_instrument,
+        instrument_b=h.under_instrument,
+        probability_a=Decimal("0.45"),
+        probability_b=Decimal("0.45"),
+        total_probability=Decimal("0.90"),
+        profit_margin=Decimal("0.11"),
+        odds_a=Decimal("2.10"),
+        odds_b=Decimal("2.10"),
+        is_same_venue=same_venue,
+        match_type="same_market" if same_venue else "cross_venue",
+    )
+    return h.strategy._live_execution_cap_block_reasons(opportunity, stake, stake)
+
+
+# --- FIX 1: realized loss feeds the daily-loss kill switch --------------------------------
+
+
+def test_realized_loss_accumulates_and_trips_daily_loss_gate():  # skipcq
+    h = _Harness(max_daily_loss=Decimal(5))
+    ensure("max_daily_loss_exceeded" not in _cap_block_reasons(h))
+
+    # Both backs lose their stake: lose_payoff = -5 each, so realized = -10 (USDC base).
+    h.settle(h.over_leg_id, SettlementResult.LOST)
+    h.settle(h.under_leg_id, SettlementResult.LOST)
+
+    ensure(h.pair.realized_pnl == Decimal(-10))
+    ensure(h.strategy._live_execution_realized_loss == Decimal(10))
+    ensure(h.strategy.get_stats()["live_execution"]["realized_loss"] == "10")
+    ensure("max_daily_loss_exceeded" in _cap_block_reasons(h))
+
+
+def test_realized_win_does_not_increase_loss_counter():  # skipcq
+    h = _Harness()
+
+    h.settle(h.over_leg_id, SettlementResult.WON)  # +0.50 locked either way
+
+    ensure(h.pair.realized_pnl == Decimal("0.50"))
+    ensure(h.strategy._live_execution_realized_loss == Decimal(0))
+
+
+def test_void_pair_does_not_increase_loss_counter():  # skipcq
+    h = _Harness()
+
+    h.settle(h.over_leg_id, SettlementResult.VOID)
+    h.settle(h.under_leg_id, SettlementResult.VOID)
+
+    ensure(h.pair.void is True)
+    ensure(h.pair.realized_pnl == Decimal(0))
+    ensure(h.strategy._live_execution_realized_loss == Decimal(0))
+
+
+def test_realized_loss_not_double_counted_across_repeated_settlements():  # skipcq
+    h = _Harness()
+
+    h.settle(h.over_leg_id, SettlementResult.LOST)
+    h.settle(h.under_leg_id, SettlementResult.LOST)
+    ensure(h.strategy._live_execution_realized_loss == Decimal(10))
+
+    # Re-serves of the sibling grading (and the venue re-publishing) must not re-add loss.
+    h.settle(h.under_leg_id, SettlementResult.LOST)
+    h.settle(h.over_leg_id, SettlementResult.LOST)
+
+    ensure(h.strategy._live_execution_realized_loss == Decimal(10))
+    ensure(h.tracker_stats()["pairs_settled"] == 1)
+
+
+# --- FIX 2: cross-venue pairs disable the WON shortcut ------------------------------------
+
+
+def test_cross_venue_won_leg_does_not_settle_pair_immediately():  # skipcq
+    h = _Harness(over_venue="CLOUDBET", under_venue="SXBET")
+    ensure(h.pair.is_cross_venue is True)
+
+    h.settle(h.over_leg_id, SettlementResult.WON)
+
+    ensure(h.pair.settled is False)  # waits for the independent sibling venue to grade
+    ensure(h.tracker_stats()["pairs_settled"] == 0)
+
+
+def test_cross_venue_won_then_void_refunds_sibling_rather_than_full_loss():  # skipcq
+    h = _Harness(over_venue="CLOUDBET", under_venue="SXBET")
+
+    h.settle(h.over_leg_id, SettlementResult.WON)
+    h.settle(h.under_leg_id, SettlementResult.VOID)
+
+    ensure(h.pair.settled is True)
+    ensure(h.pair.void is False)
+    # WON leg +5.50, VOID leg refunds its stake -> 0. NOT the shortcut's +5.50 + (-5.00).
+    ensure(h.pair.realized_pnl == Decimal("5.50"))
+    ensure(h.strategy._live_execution_realized_loss == Decimal(0))
+
+
+def test_cross_venue_both_graded_normally_realizes_arb_floor():  # skipcq
+    h = _Harness(over_venue="CLOUDBET", under_venue="SXBET")
+
+    h.settle(h.over_leg_id, SettlementResult.WON)
+    h.settle(h.under_leg_id, SettlementResult.LOST)
+
+    ensure(h.pair.settled is True)
+    # WON +5.50, LOST -5.00 -> +0.50, the locked arbitrage floor.
+    ensure(h.pair.realized_pnl == Decimal("0.50"))
+    ensure(h.strategy._live_execution_realized_loss == Decimal(0))
+
+
+def test_cross_venue_both_lost_accumulates_loss_into_gate():  # skipcq
+    h = _Harness(over_venue="CLOUDBET", under_venue="SXBET", max_daily_loss=Decimal(5))
+
+    h.settle(h.over_leg_id, SettlementResult.LOST)
+    h.settle(h.under_leg_id, SettlementResult.LOST)
+
+    ensure(h.pair.realized_pnl == Decimal(-10))
+    ensure(h.strategy._live_execution_realized_loss == Decimal(10))
+    ensure("max_daily_loss_exceeded" in _cap_block_reasons(h))
+
+
+def test_same_venue_won_shortcut_unchanged():  # skipcq
+    h = _Harness()  # both legs on SXBET
+    ensure(h.pair.is_cross_venue is False)
+
+    h.settle(h.over_leg_id, SettlementResult.WON)
+
+    ensure(h.pair.settled is True)  # one WON event settles immediately, as before
+    ensure(h.pair.winning_outcome == h.over_instrument.outcome)
+    ensure(h.pair.realized_pnl == Decimal("0.50"))
