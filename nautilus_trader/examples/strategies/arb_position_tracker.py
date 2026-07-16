@@ -245,6 +245,7 @@ class ArbPairState:
         currency has no available rate. Requires ``self.policy``.
 
         """
+        assert self.policy is not None  # only called for cross-currency pairs (policy set)
         if native < 0:
             conversion = self.policy.convert(-native, currency)
             if conversion.converted_amount is None:
