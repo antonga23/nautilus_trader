@@ -518,3 +518,86 @@ def test_settle_from_leg_results_cross_currency_void_refund_in_base():
 
     assert realized == Decimal("14.985")
     assert pair.void is False
+
+
+# --- Asian half-line (HALF_WON / HALF_LOST) and PUSH per-leg settlement (B3) --------------
+#
+#   A quarter-ball Asian handicap splits the stake across two adjacent lines: HALF_WON means
+#   one half won at odds and the other half pushed (refunded); HALF_LOST means one half lost
+#   and the other pushed. So the net payoff is EXACTLY half the full-WON / full-LOST payoff
+#   for that leg. PUSH refunds the full stake (net 0), identical to VOID.
+#
+#   BACK 2.0 stake 10: outcome_win_payoff = 10*(2.0-1) = +10 ; outcome_lose_payoff = -10.
+#     HALF_WON  = +10 / 2 = +5     HALF_LOST = -10 / 2 = -5     PUSH = 0
+
+
+def _venued_tracker_at(odds_a, stake_a, odds_b, stake_b, venue_a="CLOUDBET", venue_b="SXBET"):
+    tracker = ArbPositionTracker()
+    tracker.record_fill(LEG_A, OUTCOME_A, "BUY", odds_a, stake_a, sibling_id=LEG_B, venue=venue_a)
+    tracker.record_fill(LEG_B, OUTCOME_B, "BUY", odds_b, stake_b, sibling_id=LEG_A, venue=venue_b)
+    return tracker, tracker.pair_key(LEG_A, LEG_B)
+
+
+def test_settle_from_leg_results_half_won_is_exactly_half_the_full_win():
+    # legA BACK 2.0 stake 10 -> full WON = +10 ; HALF_WON = +5. Sibling VOID -> 0.
+    half_t, half_id = _venued_tracker_at("2.0", "10", "2.0", "10")
+    half = half_t.pair(half_id).settle_from_leg_results({LEG_A: "HALF_WON", LEG_B: "VOID"})
+
+    full_t, full_id = _venued_tracker_at("2.0", "10", "2.0", "10")
+    full = full_t.pair(full_id).settle_from_leg_results({LEG_A: "WON", LEG_B: "VOID"})
+
+    assert full == Decimal(10)
+    assert half == Decimal(5)
+    assert half == full / 2
+
+
+def test_settle_from_leg_results_half_lost_is_exactly_half_the_full_loss():
+    # legA BACK 2.0 stake 10 -> full LOST = -10 ; HALF_LOST = -5. Sibling VOID -> 0.
+    half_t, half_id = _venued_tracker_at("2.0", "10", "2.0", "10")
+    half = half_t.pair(half_id).settle_from_leg_results({LEG_A: "HALF_LOST", LEG_B: "VOID"})
+
+    full_t, full_id = _venued_tracker_at("2.0", "10", "2.0", "10")
+    full = full_t.pair(full_id).settle_from_leg_results({LEG_A: "LOST", LEG_B: "VOID"})
+
+    assert full == Decimal(-10)
+    assert half == Decimal(-5)
+    assert half == full / 2
+
+
+def test_settle_from_leg_results_push_realizes_zero_like_void():
+    # Both legs PUSH: every stake refunded -> 0, and (like all-VOID) the pair reads as void.
+    push_t, push_id = _venued_tracker_at("2.0", "10", "2.0", "10")
+    push = push_t.pair(push_id).settle_from_leg_results({LEG_A: "PUSH", LEG_B: "PUSH"})
+
+    assert push == Decimal(0)
+    assert push_t.pair(push_id).void is True
+
+    # A PUSH leg alongside a WON sibling contributes exactly 0, identical to a VOID leg.
+    mixed_t, mixed_id = _venued_tracker_at("2.0", "10", "2.0", "10")
+    mixed = mixed_t.pair(mixed_id).settle_from_leg_results({LEG_A: "WON", LEG_B: "PUSH"})
+
+    assert mixed == Decimal(10)  # 10 + 0, same as WON + VOID
+    assert mixed_t.pair(mixed_id).void is False
+
+
+def test_settle_from_leg_results_half_won_and_half_lost_sums_the_halves():
+    # legA HALF_WON (+5) + legB HALF_LOST (-5) -> 0, a fully-hedged quarter-ball wash.
+    tracker, pair_id = _venued_tracker_at("2.0", "10", "2.0", "10")
+    realized = tracker.pair(pair_id).settle_from_leg_results(
+        {LEG_A: "HALF_WON", LEG_B: "HALF_LOST"},
+    )
+
+    assert realized == Decimal(0)
+
+
+def test_settle_from_leg_results_cross_currency_half_won_normalised_to_base():
+    # legA HALF_WON EUR 2.5 stake 8: full win 8*1.5 = 12 EUR, half = 6 EUR
+    #   -> 6*1.25*0.999 = 7.4925 base USD (exactly half the full-WON 14.985). legB VOID -> 0.
+    tracker, pair_id = _currency_tracker(_CROSS_POLICY, "EUR", "USDC", "2.5", "8", "2.5", "10")
+    pair = tracker.pair(pair_id)
+
+    realized = pair.settle_from_leg_results({LEG_A: "HALF_WON", LEG_B: "VOID"})
+
+    assert realized == Decimal("7.4925")
+    assert realized == Decimal("14.985") / 2
+    assert pair.void is False

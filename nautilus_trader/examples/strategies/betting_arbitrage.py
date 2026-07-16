@@ -92,6 +92,16 @@ from nautilus_trader.model.orders import Order
 from nautilus_trader.trading.strategy import Strategy
 
 
+# Asian half-line and push gradings: a same-venue pair carrying any of these no longer fits the
+# single-winning-selection joint model and is realized from each leg's own per-leg payoff instead.
+_HALF_OR_PUSH_RESULTS = frozenset(
+    {
+        SettlementResult.HALF_WON,
+        SettlementResult.HALF_LOST,
+        SettlementResult.PUSH,
+    },
+)
+
 VALID_MARKET_TIMINGS = frozenset({"all", "pre_market", "live"})
 VALID_QUOTE_FRESHNESS_PROFILES = frozenset({"pre_match", "live", "custom"})
 VALID_DEVIG_METHODS = frozenset({"auto", "proportional", "shin", "logarithmic"})
@@ -5967,8 +5977,10 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         independent venues that void/grade separately, so the WON shortcut is disabled:
         it waits for both legs to grade and realizes from each leg's actual result (a
         VOID refunds that stake) rather than booking the sibling at a full loss it may
-        not take. Each pair settles exactly once; gradings for an already-settled pair
-        are ignored.
+        not take. A same-venue pair whose legs graded on Asian half-lines (any HALF_WON
+        / HALF_LOST / PUSH) likewise abandons the single-winning-outcome model and
+        realizes from each leg's per-leg payoff. Each pair settles exactly once;
+        gradings for an already-settled pair are ignored.
 
         """
         try:
@@ -6011,6 +6023,14 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             # Legs rest on independent venues that void/grade separately, so the WON
             # shortcut would book the sibling at a full loss it may not take (a VOID
             # refunds its stake). Realize from each leg's actual grading instead.
+            self._realize_arb_pair_from_leg_results(pair, graded)
+            return
+
+        if any(res in _HALF_OR_PUSH_RESULTS for res in graded.values()):
+            # Asian half-lines (quarter-ball handicaps) on one market can HALF_WON /
+            # HALF_LOST / PUSH per leg, so no single selection "wins" the whole market and
+            # the joint single-outcome model does not apply. Realize each leg at its actual
+            # per-leg payoff (a half settles half the stake at odds, PUSH refunds it).
             self._realize_arb_pair_from_leg_results(pair, graded)
             return
 

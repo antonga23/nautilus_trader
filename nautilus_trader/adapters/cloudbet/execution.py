@@ -89,16 +89,18 @@ _CLOUDBET_MATCHED_STATUSES = frozenset(
 
 # Cloudbet grading outcomes that finalize a bet, mapped to the venue-neutral settlement result the
 # strategy books P&L from. Cloudbet's half-lines (quarter-ball Asian handicaps) settle half the
-# stake at odds and refund the other half; the venue-neutral model is three-state (WON / LOST /
-# VOID), so a half grades to its dominant side while the signed venue figure rides on
-# ``settle_value`` for diagnostics. PUSH refunds the stake (no P&L). COMPLETED / ACCEPTED / PARTIAL
-# are matched-but-ungraded and are not settlements.
+# stake at odds and refund the other half; these now map to the dedicated HALF_WON / HALF_LOST
+# results so the strategy realizes exactly half the full-win / full-loss payoff per leg rather than
+# rounding a half to its dominant side. PUSH refunds the full stake (no P&L) and maps to its own
+# PUSH result rather than collapsing into VOID. The signed venue figure still rides on
+# ``settle_value`` for reconciliation. COMPLETED / ACCEPTED / PARTIAL are matched-but-ungraded and
+# are not settlements.
 _CLOUDBET_SETTLEMENT_RESULTS: dict[BetStatus, SettlementResult] = {
     BetStatus.WIN: SettlementResult.WON,
-    BetStatus.HALF_WIN: SettlementResult.WON,
+    BetStatus.HALF_WIN: SettlementResult.HALF_WON,
     BetStatus.LOSS: SettlementResult.LOST,
-    BetStatus.HALF_LOSS: SettlementResult.LOST,
-    BetStatus.PUSH: SettlementResult.VOID,
+    BetStatus.HALF_LOSS: SettlementResult.HALF_LOST,
+    BetStatus.PUSH: SettlementResult.PUSH,
 }
 
 
@@ -352,7 +354,8 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
         publishes a ``BetSettlement`` for every graded leg on ``BET_SETTLEMENTS_TOPIC`` and the
         strategy books the pair once every leg has graded. Cloudbet has no push feed for grading,
         so this reads the bet-status endpoint for each tracked (matched) order still awaiting
-        settlement and maps its terminal Cloudbet status to WON / LOST / VOID.
+        settlement and maps its terminal Cloudbet status to a venue-neutral settlement result
+        (WON / LOST / VOID / HALF_WON / HALF_LOST / PUSH).
 
         Idempotent: a settled order is tracked in ``_settled_client_order_ids`` and never re-emits,
         across polls and across repeated grading reads. A grading pays out or refunds the wallet, so
@@ -399,7 +402,8 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
     @staticmethod
     def _settlement_result(bet_response: GetBetResponse) -> Optional[SettlementResult]:
         """
-        Derive WON / LOST / VOID from a graded Cloudbet bet, or ``None`` if not yet graded.
+        Derive the venue-neutral settlement result from a graded Cloudbet bet (WON / LOST / VOID /
+        HALF_WON / HALF_LOST / PUSH), or ``None`` if not yet graded.
         """
         return _CLOUDBET_SETTLEMENT_RESULTS.get(bet_response.status)
 

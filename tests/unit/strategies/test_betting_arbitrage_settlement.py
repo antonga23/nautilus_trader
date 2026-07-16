@@ -423,3 +423,79 @@ def test_same_venue_won_shortcut_unchanged():  # skipcq
     ensure(h.pair.settled is True)  # one WON event settles immediately, as before
     ensure(h.pair.winning_outcome == h.over_instrument.outcome)
     ensure(h.pair.realized_pnl == Decimal("0.50"))
+
+
+# --- B3: Asian half-line (HALF_WON / HALF_LOST) and PUSH per-leg settlement ---------------
+#
+#   Both harness legs BACK 2.10 stake 5: win_payoff = 5*1.10 = 5.50 ; lose_payoff = -5.00.
+#     HALF_WON  = 5.50 / 2 = 2.75     HALF_LOST = -5.00 / 2 = -2.50     PUSH = 0
+#   A HALF / PUSH grading breaks the single-winning-selection joint model even on one venue,
+#   so the pair realizes from each leg's own per-leg payoff instead of the old log-only else.
+
+
+def test_same_venue_half_won_void_realizes_per_leg_not_log_only():  # skipcq
+    h = _Harness()  # both legs SXBET
+    ensure(h.pair.is_cross_venue is False)
+
+    h.settle(h.over_leg_id, SettlementResult.HALF_WON)
+    ensure(h.pair.settled is False)  # HALF is not the WON shortcut; waits for the sibling
+
+    h.settle(h.under_leg_id, SettlementResult.VOID)
+
+    ensure(h.pair.settled is True)  # realized per-leg, NOT left open on a log-only branch
+    ensure(h.pair.void is False)
+    # HALF_WON 0.5*5.50 = 2.75 ; VOID refunds its stake -> 0.
+    ensure(h.pair.realized_pnl == Decimal("2.75"))
+    ensure(h.tracker_stats()["pairs_settled"] == 1)
+
+
+def test_same_venue_half_won_and_half_lost_realizes_sum_of_halves():  # skipcq
+    h = _Harness()  # both legs SXBET, one quarter-ball market
+
+    h.settle(h.over_leg_id, SettlementResult.HALF_WON)
+    h.settle(h.under_leg_id, SettlementResult.HALF_LOST)
+
+    ensure(h.pair.settled is True)
+    # 0.5*5.50 + 0.5*(-5.00) = 2.75 - 2.50 = 0.25.
+    ensure(h.pair.realized_pnl == Decimal("0.25"))
+    ensure(h.strategy._live_execution_realized_loss == Decimal(0))
+
+
+def test_same_venue_all_push_realizes_zero_and_void_flag():  # skipcq
+    h = _Harness()
+
+    h.settle(h.over_leg_id, SettlementResult.PUSH)
+    ensure(h.pair.settled is False)
+    h.settle(h.under_leg_id, SettlementResult.PUSH)
+
+    ensure(h.pair.settled is True)
+    ensure(h.pair.void is True)  # every stake refunded, economically a void
+    ensure(h.pair.realized_pnl == Decimal(0))
+    ensure(h.strategy._live_execution_realized_loss == Decimal(0))
+
+
+def test_same_venue_half_lost_feeds_daily_loss_gate():  # skipcq
+    h = _Harness(max_daily_loss=Decimal(2))
+
+    # HALF_LOST -2.50 + PUSH 0 -> realized -2.50, a genuine loss into the daily-loss gate.
+    h.settle(h.over_leg_id, SettlementResult.HALF_LOST)
+    h.settle(h.under_leg_id, SettlementResult.PUSH)
+
+    ensure(h.pair.realized_pnl == Decimal("-2.50"))
+    ensure(h.strategy._live_execution_realized_loss == Decimal("2.50"))
+    ensure("max_daily_loss_exceeded" in _cap_block_reasons(h))
+
+
+def test_cross_venue_half_won_lost_realizes_per_leg():  # skipcq
+    h = _Harness(over_venue="CLOUDBET", under_venue="SXBET")
+    ensure(h.pair.is_cross_venue is True)
+
+    h.settle(h.over_leg_id, SettlementResult.HALF_WON)
+    ensure(h.pair.settled is False)  # independent sibling venue not graded yet
+
+    h.settle(h.under_leg_id, SettlementResult.LOST)
+
+    ensure(h.pair.settled is True)
+    # HALF_WON 0.5*5.50 = 2.75 ; LOST -5.00 -> -2.25.
+    ensure(h.pair.realized_pnl == Decimal("-2.25"))
+    ensure(h.strategy._live_execution_realized_loss == Decimal("2.25"))
