@@ -268,7 +268,11 @@ def test_sxbet_flatten_completes_tracked_pair():  # skipcq
     pair = tracker.pair(pair_id)
     ensure(pair.is_fully_hedged is True)
     pnls = pair.outcome_pnls()
-    # 5 @ 2.0 backed on each mutually exclusive outcome -> break-even in both.
+    # Two 5 @ 2.0 backs on the mutually exclusive outcomes; each leg's win payoff is 5.00.
+    # The flatten (opposing) leg is on SXBET, so when it wins its net profit is charged the
+    # 4% winning-profit commission: 5.00 * 0.96 - 5.00 = 4.80 - 5.00 = -0.20. The naked leg
+    # carries no venue tag in this fixture, so its winning outcome bears no commission and
+    # stays break-even.
     ensure(pnls[h.naked_instrument.outcome] == Decimal(0))
-    ensure(pnls[h.opposing_instrument.outcome] == Decimal(0))
-    ensure(pair.guaranteed_pnl() == Decimal(0))
+    ensure(pnls[h.opposing_instrument.outcome] == Decimal("-0.20"))
+    ensure(pair.guaranteed_pnl() == Decimal("-0.20"))

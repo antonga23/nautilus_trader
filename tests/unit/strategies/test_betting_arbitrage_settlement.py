@@ -147,9 +147,11 @@ def test_won_leg_settles_pair_immediately_with_pre_settlement_payoff():  # skipc
     ensure(h.pair.settled is True)
     ensure(h.pair.winning_outcome == h.over_instrument.outcome)
     ensure(h.pair.realized_pnl == expected)
-    ensure(h.pair.realized_pnl == Decimal("0.50"))
+    # Both legs are SX.bet: the +0.50 gross floor realizes net of the 4% winning-profit
+    # commission on the winning leg -> 5.50*0.96 - 5.00 = 5.28 - 5.00 = 0.28.
+    ensure(h.pair.realized_pnl == Decimal("0.28"))
     stats = h.tracker_stats()
-    ensure(stats["realized_pnl"] == "0.50")
+    ensure(stats["realized_pnl"] == "0.2800")
     ensure(stats["pairs_settled"] == 1)
     ensure(stats["pairs_open"] == 0)
 
@@ -219,7 +221,9 @@ def test_naked_single_leg_settles_from_its_own_grading():  # skipcq
     h.settle(h.over_leg_id, SettlementResult.WON)
 
     ensure(h.pair.settled is True)
-    ensure(h.pair.realized_pnl == win_payoff)
+    # The SX.bet leg realizes its winning payoff net of the 4% winning-profit commission.
+    ensure(h.pair.realized_pnl == win_payoff * (Decimal(1) - Decimal("0.04")))
+    ensure(h.pair.realized_pnl == Decimal("5.28"))
 
 
 def test_naked_single_leg_lost_realizes_lose_payoff():  # skipcq
@@ -333,9 +337,9 @@ def test_realized_loss_accumulates_and_trips_daily_loss_gate():  # skipcq
 def test_realized_win_does_not_increase_loss_counter():  # skipcq
     h = _Harness()
 
-    h.settle(h.over_leg_id, SettlementResult.WON)  # +0.50 locked either way
+    h.settle(h.over_leg_id, SettlementResult.WON)  # +0.28 net of SX.bet 4% commission
 
-    ensure(h.pair.realized_pnl == Decimal("0.50"))
+    ensure(h.pair.realized_pnl == Decimal("0.28"))
     ensure(h.strategy._live_execution_realized_loss == Decimal(0))
 
 
@@ -422,7 +426,8 @@ def test_same_venue_won_shortcut_unchanged():  # skipcq
 
     ensure(h.pair.settled is True)  # one WON event settles immediately, as before
     ensure(h.pair.winning_outcome == h.over_instrument.outcome)
-    ensure(h.pair.realized_pnl == Decimal("0.50"))
+    # Settlement path unchanged; the payoff is now net of the SX.bet 4% commission.
+    ensure(h.pair.realized_pnl == Decimal("0.28"))
 
 
 # --- B3: Asian half-line (HALF_WON / HALF_LOST) and PUSH per-leg settlement ---------------
@@ -444,8 +449,9 @@ def test_same_venue_half_won_void_realizes_per_leg_not_log_only():  # skipcq
 
     ensure(h.pair.settled is True)  # realized per-leg, NOT left open on a log-only branch
     ensure(h.pair.void is False)
-    # HALF_WON 0.5*5.50 = 2.75 ; VOID refunds its stake -> 0.
-    ensure(h.pair.realized_pnl == Decimal("2.75"))
+    # HALF_WON 0.5*5.50 = 2.75 gross, net of the SX.bet 4% commission -> 2.75*0.96 = 2.64 ;
+    # VOID refunds its stake -> 0.
+    ensure(h.pair.realized_pnl == Decimal("2.64"))
     ensure(h.tracker_stats()["pairs_settled"] == 1)
 
 
@@ -456,8 +462,9 @@ def test_same_venue_half_won_and_half_lost_realizes_sum_of_halves():  # skipcq
     h.settle(h.under_leg_id, SettlementResult.HALF_LOST)
 
     ensure(h.pair.settled is True)
-    # 0.5*5.50 + 0.5*(-5.00) = 2.75 - 2.50 = 0.25.
-    ensure(h.pair.realized_pnl == Decimal("0.25"))
+    # HALF_WON 2.75 net of the SX.bet 4% commission -> 2.64 ; HALF_LOST -2.50 (no commission
+    # on a loss) -> 2.64 - 2.50 = 0.14.
+    ensure(h.pair.realized_pnl == Decimal("0.14"))
     ensure(h.strategy._live_execution_realized_loss == Decimal(0))
 
 
@@ -496,6 +503,54 @@ def test_cross_venue_half_won_lost_realizes_per_leg():  # skipcq
     h.settle(h.under_leg_id, SettlementResult.LOST)
 
     ensure(h.pair.settled is True)
-    # HALF_WON 0.5*5.50 = 2.75 ; LOST -5.00 -> -2.25.
+    # CLOUDBET HALF_WON 0.5*5.50 = 2.75 (no commission) ; SX.bet LOST -5.00 -> -2.25.
     ensure(h.pair.realized_pnl == Decimal("-2.25"))
     ensure(h.strategy._live_execution_realized_loss == Decimal("2.25"))
+
+
+# --- B4: SX.bet winning-profit commission folded into realized P&L ------------------------
+#
+#   SX.bet charges 4% on the winning leg's net profit. The strategy config carries the
+#   venue -> rate map (defaulting to 4% SX.bet) and threads it into the position tracker, so
+#   a winning SX.bet leg realizes net of commission and that net figure feeds the daily-loss
+#   kill switch. Harness legs BACK 2.10 stake 5: win_payoff = 5.50, commission 4% = 0.22.
+
+
+def test_config_default_winning_commission_reduces_realized_win():  # skipcq
+    h = _Harness()  # both legs SX.bet, default config -> 4% winning-profit commission
+
+    h.settle(h.over_leg_id, SettlementResult.WON)
+
+    # WON 5.50 net of 4% -> 5.28 ; sibling booked at its -5.00 lose payoff -> +0.28.
+    ensure(h.pair.realized_pnl == Decimal("0.28"))
+
+
+def test_config_override_winning_commission_rate_is_threaded_to_tracker():  # skipcq
+    h = _Harness(venue_winning_profit_fee_rates={"SXBET": Decimal("0.02")})
+
+    h.settle(h.over_leg_id, SettlementResult.WON)
+
+    # Overridden to 2%: WON 5.50*0.98 = 5.39 ; sibling -5.00 -> +0.39.
+    ensure(h.pair.realized_pnl == Decimal("0.39"))
+
+
+def test_config_override_can_disable_winning_commission():  # skipcq
+    h = _Harness(venue_winning_profit_fee_rates={"SXBET": Decimal(0)})
+
+    h.settle(h.over_leg_id, SettlementResult.WON)
+
+    # Rate 0 restores the pre-commission +0.50 gross floor.
+    ensure(h.pair.realized_pnl == Decimal("0.50"))
+
+
+def test_sxbet_commission_composes_with_half_and_feeds_kill_switch_net():  # skipcq
+    # Both SX.bet, one quarter-ball market: HALF_WON 2.75 net 4% -> 2.64 ; HALF_LOST -2.50 ->
+    # net +0.14. The winning half is commissioned, the losing half is not, and the daily-loss
+    # kill switch consumes this net realized figure: a net win never raises the loss counter.
+    h = _Harness()
+
+    h.settle(h.over_leg_id, SettlementResult.HALF_WON)
+    h.settle(h.under_leg_id, SettlementResult.HALF_LOST)
+
+    ensure(h.pair.realized_pnl == Decimal("0.14"))
+    ensure(h.strategy._live_execution_realized_loss == Decimal(0))
