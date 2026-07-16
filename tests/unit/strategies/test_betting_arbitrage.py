@@ -27,6 +27,8 @@ import pytest
 
 from nautilus_trader.adapters.betting.common.enums import SelectionSide
 from nautilus_trader.adapters.betting.common.odds import calculate_arbitrage_stakes
+from nautilus_trader.adapters.betting.fx import PortfolioCurrencyPolicy
+from nautilus_trader.adapters.betting.fx_feeds import FxRateQuote
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.betting.instruments import make_crypto_betting_instrument_id
 from nautilus_trader.adapters.betting.market_matcher import ArbitrageOpportunity
@@ -40,6 +42,8 @@ from nautilus_trader.adapters.betting.semantics import RuleStore
 from nautilus_trader.adapters.cloudbet.client.schema import (
     SelectionSide as CloudbetSelectionSide,
 )
+from nautilus_trader.examples.strategies import betting_arbitrage as betting_arbitrage_module
+from nautilus_trader.examples.strategies.betting_arbitrage import FX_REFRESH_TIMER_NAME
 from nautilus_trader.examples.strategies.betting_arbitrage import BettingArbitrageConfig
 from nautilus_trader.examples.strategies.betting_arbitrage import BettingArbitrageStrategy
 from nautilus_trader.examples.strategies.betting_arbitrage import OpportunityPairState
@@ -5506,6 +5510,230 @@ class TestBettingArbitrageStrategy:  # skipcq
             info=info or {},
             live=live,
         )
+
+
+class TestFxRefresh:  # skipcq
+    """
+    Live FX refresh loop wired into the portfolio currency policy, plus the block-not-
+    sum notional fallback fix.
+    """
+
+    @staticmethod
+    def _registered_strategy(**config_kwargs) -> BettingArbitrageStrategy:
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["CLOUDBET", "SXBET"]),
+                **config_kwargs,
+            ),
+        )
+        strategy.register(
+            trader_id=TraderId("TESTER-FX"),
+            portfolio=TestComponentStubs.portfolio(),
+            msgbus=TestComponentStubs.msgbus(),
+            cache=TestComponentStubs.cache(),
+            clock=TestComponentStubs.clock(),
+        )
+        return strategy
+
+    @staticmethod
+    def _cross_currency_opportunity() -> ArbitrageOpportunity:
+        cloudbet = TestBettingArbitrageStrategy._sxbet_instrument(
+            event_id="event-fx",
+            venue="CLOUDBET",
+            outcome="over",
+            currency="EUR",
+        )
+        sxbet = TestBettingArbitrageStrategy._sxbet_instrument(
+            event_id="event-fx",
+            venue="SXBET",
+            outcome="under",
+            currency="USDC",
+        )
+        return ArbitrageOpportunity(
+            instrument_a=cloudbet,
+            instrument_b=sxbet,
+            probability_a=Decimal("0.45"),
+            probability_b=Decimal("0.45"),
+            total_probability=Decimal("0.90"),
+            profit_margin=Decimal("0.11"),
+            odds_a=Decimal("2.20"),
+            odds_b=Decimal("2.20"),
+            is_same_venue=False,
+            match_type="cross_venue",
+        )
+
+    def test_config_rejects_non_positive_refresh_interval(self):  # skipcq
+        with pytest.raises(ValueError, match="fx_refresh_interval_secs"):
+            BettingArbitrageConfig(fx_refresh_interval_secs=0.0)
+
+    def test_config_rejects_unsupported_refresh_pair(self):  # skipcq
+        with pytest.raises(ValueError, match="fx_refresh_pairs"):
+            BettingArbitrageConfig(fx_refresh_pairs=["EUR/GBP"])
+
+    def test_config_normalizes_and_dedupes_refresh_pairs(self):  # skipcq
+        config = BettingArbitrageConfig(fx_refresh_pairs=[" btc/usd ", "BTC/USD", "eur/usd"])
+        ensure(config.fx_refresh_pairs == ["BTC/USD", "EUR/USD"])
+        ensure(BettingArbitrageConfig().fx_refresh_interval_secs is None)
+        ensure(BettingArbitrageConfig().fx_refresh_pairs is None)
+
+    def test_refresh_timer_fetch_lands_quote_and_policy_uses_live_rate(
+        self,
+        monkeypatch,
+    ):  # skipcq
+        # (a)+(c) timer registered, fetch invoked on the timer event, the fetched quote
+        # lands, and the policy converts on the LIVE rate over the static baseline.
+        strategy = self._registered_strategy(
+            fx_refresh_interval_secs=300.0,
+            configured_fx_rates={"EUR/USD": Decimal("1.00")},
+        )
+        now_ns = strategy.clock.timestamp_ns()
+        fetched: list[str] = []
+
+        def fake_fetch(pair, *, timeout_secs):
+            fetched.append(pair)
+            return FxRateQuote(pair, Decimal("1.10"), "hyperliquid", now_ns, now_ns)
+
+        monkeypatch.setattr(betting_arbitrage_module, "fetch_fx_rate", fake_fetch)
+        strategy._start_fx_refresh_timer()
+        ensure(FX_REFRESH_TIMER_NAME in strategy.clock.timer_names)
+
+        strategy.on_time_event(SimpleNamespace(name=FX_REFRESH_TIMER_NAME))
+
+        ensure(fetched == ["EUR/USD"])
+        conversion = strategy._portfolio_currency_policy().convert(Decimal(100), "EUR")
+        # 100 EUR * 1.10 live * 1.001 notional haircut = 110.11, not 100.10 static.
+        ensure(conversion.converted_amount == Decimal("110.11"))
+        ensure(conversion.source == "hyperliquid")
+        ensure(strategy.get_stats()["fx_refresh_fetches"] == 1)
+
+    def test_stale_live_quote_blocks_conversion_at_policy_age_gate(self):  # skipcq
+        # (b) The stored FxRateQuote's own age_secs is the FETCH latency (~0), so a
+        # naive pass-through would never look stale; the policy snapshot must recompute
+        # the age from the fetch event so a 61s-old rate trips the 30s gate.
+        strategy = self._registered_strategy(fx_refresh_interval_secs=300.0)
+        stale_ns = strategy.clock.timestamp_ns() - 61 * 1_000_000_000
+        strategy._live_fx_quotes["EUR/USD"] = FxRateQuote(
+            "EUR/USD",
+            Decimal("1.10"),
+            "hyperliquid",
+            stale_ns,
+            stale_ns,
+        )
+
+        conversion = strategy._portfolio_currency_policy().convert(Decimal(100), "EUR")
+
+        ensure(conversion.converted_amount is None)
+        ensure(conversion.blocker_reason == "stale_fx_rate")
+
+    def test_refresh_disabled_is_byte_identical_policy_and_no_timer(self):  # skipcq
+        # (d) fx_refresh_interval_secs=None preserves current behavior exactly.
+        strategy = self._registered_strategy(configured_fx_rates={"EUR/USD": Decimal("1.09")})
+
+        strategy._start_fx_refresh_timer()
+
+        ensure(FX_REFRESH_TIMER_NAME not in strategy.clock.timer_names)
+        expected = PortfolioCurrencyPolicy(
+            base_currency="USD",
+            stablecoin_currencies=strategy._config.stablecoin_currencies,
+            stablecoin_haircut_bps=10,
+            fx_quote_max_age_secs=30.0,
+            static_fx_rates={"EUR/USD": Decimal("1.09")},
+        )
+        ensure(strategy._portfolio_currency_policy() == expected)
+
+    def test_refresh_fetches_configured_crypto_pair_for_conversion(
+        self,
+        monkeypatch,
+    ):  # skipcq
+        strategy = self._registered_strategy(
+            fx_refresh_interval_secs=300.0,
+            fx_refresh_pairs=["EUR/USD", "BTC/USD"],
+        )
+        now_ns = strategy.clock.timestamp_ns()
+        rates = {"EUR/USD": Decimal("1.10"), "BTC/USD": Decimal(97_000)}
+
+        monkeypatch.setattr(
+            betting_arbitrage_module,
+            "fetch_fx_rate",
+            lambda pair, *, timeout_secs: FxRateQuote(
+                pair,
+                rates[pair],
+                "hyperliquid",
+                now_ns,
+                now_ns,
+            ),
+        )
+        strategy._refresh_fx_rates()
+
+        conversion = strategy._portfolio_currency_policy().convert(Decimal("0.001"), "BTC")
+        # 0.001 BTC * 97000 * 1.001 = 97.097 USD — never the raw 0.001 counted 1:1.
+        ensure(conversion.converted_amount == Decimal("97.097"))
+
+    def test_refresh_fetch_failure_is_counted_and_stores_no_quote(
+        self,
+        monkeypatch,
+    ):  # skipcq
+        strategy = self._registered_strategy(fx_refresh_interval_secs=300.0)
+        monkeypatch.setattr(
+            betting_arbitrage_module,
+            "fetch_fx_rate",
+            Mock(side_effect=RuntimeError("all sources down")),
+        )
+
+        strategy._refresh_fx_rates()
+
+        ensure(strategy._fx_refresh_failures == 1)
+        ensure(strategy._live_fx_quotes == {})
+        ensure(strategy._portfolio_currency_policy().fx_quotes is None)
+
+    def test_usd_equivalent_notional_blocks_when_rate_missing(self):  # skipcq
+        # (e) THE BUG: the old fallback returned stake_a + stake_b 1:1 (20) exactly when
+        # a rate was missing, under-stating notional against the caps.
+        strategy = self._registered_strategy(execution_venue_mode="cross_venue")
+        opportunity = self._cross_currency_opportunity()
+
+        notional = strategy._usd_equivalent_notional(opportunity, Decimal(10), Decimal(10))
+
+        ensure(notional is None)
+        reasons = strategy._live_execution_cap_block_reasons(
+            opportunity,
+            Decimal(10),
+            Decimal(10),
+        )
+        ensure("missing_fx_rate" in reasons)
+
+    def test_usd_equivalent_notional_converts_when_rate_available(self):  # skipcq
+        strategy = self._registered_strategy(
+            execution_venue_mode="cross_venue",
+            configured_fx_rates={"EUR/USD": Decimal("1.10")},
+        )
+        opportunity = self._cross_currency_opportunity()
+
+        notional = strategy._usd_equivalent_notional(opportunity, Decimal(10), Decimal(10))
+
+        # EUR leg 10 * 1.10 * 1.001 = 11.011; USDC leg 10 * 1.001 = 10.01.
+        ensure(notional == Decimal("21.021"))
+
+    def test_simultaneous_submit_fails_closed_when_notional_unavailable(self):  # skipcq
+        # A missing conversion at submit time must block the pair outright: no orders,
+        # no attempt, no understated notional accrual.
+        strategy = self._registered_strategy(execution_venue_mode="cross_venue")
+        strategy.submit_order = Mock()
+        opportunity = self._cross_currency_opportunity()
+
+        reasons = strategy._submit_arbitrage_simultaneous(
+            order_a=cast("Any", SimpleNamespace()),
+            order_b=cast("Any", SimpleNamespace()),
+            opportunity=opportunity,
+            stake_a=Decimal(10),
+            stake_b=Decimal(10),
+        )
+
+        ensure(reasons == ["usd_notional_unavailable"])
+        ensure(strategy.submit_order.call_count == 0)
+        ensure(strategy._live_execution_attempts == 0)
+        ensure(strategy._live_execution_notional_used == Decimal(0))
+        ensure(strategy._arb_leg_siblings == {})
 
 
 # Note: Full integration tests with actual instrument subscriptions and quote ticks

@@ -26,6 +26,7 @@ import pytest
 
 from nautilus_trader.adapters.betting.common.fees import fx_adjusted_effective_odds
 from nautilus_trader.adapters.betting.common.odds import calculate_cross_currency_arbitrage_stakes
+from nautilus_trader.adapters.betting.fx import FxMarketQuote
 from nautilus_trader.adapters.betting.fx import PortfolioCurrencyPolicy
 
 
@@ -171,3 +172,48 @@ class TestCrossCurrencyStakeSolver:
         assert result.base_payoff == Decimal("1048.95")
         assert result.base_notional == Decimal("1000.00")
         assert result.guaranteed_profit == Decimal("48.95")
+
+
+class TestLiveFxQuotes:
+    def test_fresh_live_quote_takes_precedence_over_static_rate(self):
+        policy = PortfolioCurrencyPolicy(
+            base_currency="USD",
+            static_fx_rates={"EUR/USD": Decimal("1.00")},
+            fx_quotes={
+                "EUR/USD": FxMarketQuote(
+                    pair="EUR/USD",
+                    rate=Decimal("1.10"),
+                    source="hyperliquid",
+                    age_secs=1.0,
+                ),
+            },
+        )
+
+        conversion = policy.convert(Decimal(100), "EUR")
+
+        # 100 * 1.10 live * 1.001 notional haircut — NOT the static 1.00 rate.
+        assert conversion.converted_amount == Decimal("110.11")
+        assert conversion.rate == Decimal("1.10")
+        assert conversion.source == "hyperliquid"
+
+    def test_stale_live_quote_blocks_instead_of_falling_back_to_static(self):
+        # A present-but-stale live quote must fail closed, not silently revert to the
+        # configured static rate the live feed exists to supersede.
+        policy = PortfolioCurrencyPolicy(
+            base_currency="USD",
+            fx_quote_max_age_secs=30.0,
+            static_fx_rates={"EUR/USD": Decimal("1.10")},
+            fx_quotes={
+                "EUR/USD": FxMarketQuote(
+                    pair="EUR/USD",
+                    rate=Decimal("1.10"),
+                    source="hyperliquid",
+                    age_secs=31.0,
+                ),
+            },
+        )
+
+        conversion = policy.convert(Decimal(100), "EUR")
+
+        assert conversion.converted_amount is None
+        assert conversion.blocker_reason == "stale_fx_rate"
