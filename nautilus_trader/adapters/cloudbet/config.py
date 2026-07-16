@@ -112,6 +112,8 @@ class CloudbetExecClientConfig(LiveExecClientConfig, kw_only=True, frozen=True):
         Delay between pending-acceptance status checks.
     settlement_poll_interval_secs : float, default 30.0
         Delay between graded-bet settlement reconciliation polls.
+    account_state_interval_secs : float, default 30.0
+        Delay between periodic account-state refreshes.
     """
 
     base_currency: Currency = None
@@ -123,3 +125,4 @@ class CloudbetExecClientConfig(LiveExecClientConfig, kw_only=True, frozen=True):
     pending_acceptance_poll_attempts: int = 3
     pending_acceptance_poll_interval_secs: float = 0.5
     settlement_poll_interval_secs: float = 30.0
+    account_state_interval_secs: float = 30.0

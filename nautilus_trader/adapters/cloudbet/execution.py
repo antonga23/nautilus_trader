@@ -181,7 +181,11 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
         self._filled_client_order_ids: Set[ClientOrderId] = set()
         # Orders whose settlement was already published, so grading never re-emits.
         self._settled_client_order_ids: Set[ClientOrderId] = set()
+        # Matched stake and currency code per filled order, recorded at fill time so locked-funds
+        # modeling never re-queries the venue per account-state tick.
+        self._matched_stakes: dict[ClientOrderId, tuple[float, str]] = {}
         self._settlement_poll_task: Optional[asyncio.Task] = None
+        self._account_state_task: Optional[asyncio.Task] = None
         # self.pending_update_order_client_ids: set[tuple[ClientOrderId, VenueOrderId]] = set()
         # self.published_executions: dict[ClientOrderId, list[TradeId]] = defaultdict(list)
         #
@@ -269,6 +273,10 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
             # the bet-status endpoint for tracked orders (mirrors the SXBET settlement poll).
             if self._settlement_poll_task is None:
                 self._settlement_poll_task = asyncio.create_task(self._settlement_poll_loop())
+
+            # Periodic real-money balance/caps visibility (mirrors the SXBET account-state poll).
+            if self._account_state_task is None:
+                self._account_state_task = asyncio.create_task(self._account_state_loop())
         except Exception as e:
             self._log.error(f"An error occurred during the connection process: {str(e)}")
 
@@ -277,6 +285,11 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
         if self._settlement_poll_task is not None and not self._settlement_poll_task.done():
             self._settlement_poll_task.cancel()
         self._settlement_poll_task = None
+
+        # Stop the account-state poll
+        if self._account_state_task is not None and not self._account_state_task.done():
+            self._account_state_task.cancel()
+        self._account_state_task = None
 
         # Close socket
         self._log.info("Closing streaming socket...")
@@ -290,6 +303,10 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
         self.venue_order_id_to_client_order_id.clear()
         self._filled_client_order_ids.clear()
         self._settled_client_order_ids.clear()
+        self._matched_stakes.clear()
+        if self._account_state_task is not None and not self._account_state_task.done():
+            self._account_state_task.cancel()
+        self._account_state_task = None
 
     def dispose(self) -> None:
         async def close_resources() -> None:
@@ -434,6 +451,32 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
 
     # -- ACCOUNT HANDLERS -------------------------------------------------------------------------
 
+    async def _account_state_loop(self) -> None:
+        interval = float(getattr(self._config, "account_state_interval_secs", 30.0))
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await self.connection_account_state()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                # A failed refresh leaves the last-known account state standing.
+                self._log.error(f"Cloudbet account state refresh failed: {e}")
+
+    def _open_stakes_by_currency(self) -> dict[str, float]:
+        """
+        Sum the matched stakes of open (matched but not yet settled) bets per currency code.
+
+        Reads only state the client already tracks (stakes recorded at fill time, settlements
+        from the settlement poll) — no venue queries per tick.
+        """
+        locked: dict[str, float] = {}
+        for client_order_id, (stake, code) in self._matched_stakes.items():
+            if client_order_id in self._settled_client_order_ids:
+                continue
+            locked[code] = locked.get(code, 0.0) + stake
+        return locked
+
     async def connection_account_state(self) -> None:
         """
         Retrieves the account state and sends it to the server.
@@ -447,17 +490,30 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
             )  # iterable string
             account_balances: List[AccountBalance] = []
             timestamp = self._clock.timestamp_ns()
+            locked_by_currency = self._open_stakes_by_currency()
 
             for currency in account_details.currencies:
                 # TODO: use asyncio.gather` to make concurrent requests for each currency balance can significantly improve the performance of the `connection_account_state` method
                 try:
                     currency_balance: GetAccountBalance = await self._client.get_balances(currency)
                     typed_currency: Currency = Currency.from_str(currency)
+                    total = Money(currency_balance.amount, typed_currency)
+                    locked = Money(
+                        locked_by_currency.get(typed_currency.code, 0.0),
+                        typed_currency,
+                    )
+                    if locked > total:
+                        # The venue-reported total is authoritative; floor free at 0.
+                        self._log.warning(
+                            f"Cloudbet open stakes {locked} exceed the reported total {total}; "
+                            f"flooring free balance at 0",
+                        )
+                        locked = total
                     account_balances.append(
                         AccountBalance(
-                            total=Money(currency_balance.amount, typed_currency),
-                            locked=Money(0, typed_currency),
-                            free=Money(currency_balance.amount, typed_currency),
+                            total=total,
+                            locked=locked,
+                            free=Money(total.as_decimal() - locked.as_decimal(), typed_currency),
                         )
                     )
                 except Exception as e:
@@ -1655,4 +1711,8 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
             info=info,
         )
         self._filled_client_order_ids.add(client_order_id)
+        # Record the matched stake in the bet's own currency so the account-state refresh can
+        # model locked funds from cached state (the fill guard above makes this record-once).
+        stake_currency = getattr(bet_response, "currency", None) or quote_currency.code
+        self._matched_stakes[client_order_id] = (matched_stake, stake_currency)
         self._log.debug(f"Generated OrderFilled for {client_order_id} qty={last_qty} px={last_px}")
