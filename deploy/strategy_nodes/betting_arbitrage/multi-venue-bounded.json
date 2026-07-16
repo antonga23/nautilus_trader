@@ -1,0 +1,135 @@
+{
+  "node_id": "multi-venue-bounded",
+  "trader_id": "BETARB-MULTI-001",
+  "validation_mode": true,
+  "allow_dummy_credentials": true,
+  "log_level": "INFO",
+  "rendered_config_path": "artifacts/strategy-nodes/multi-venue-bounded/trading-node-config.json",
+  "status_path": "artifacts/strategy-nodes/multi-venue-bounded/status.json",
+  "heartbeat_path": "artifacts/strategy-nodes/multi-venue-bounded/heartbeat.json",
+  "semantic_rule_cache_dir": "artifacts/semantic-rule-cache/multi-venue-bounded",
+  "timeout_connection": 240.0,
+  "strategy": {
+    "min_profit_margin": "0.02",
+    "max_total_stake": "250",
+    "sport_filter": null,
+    "market_timing_filter": "all",
+    "quote_freshness_profile": "pre_match",
+    "max_resolution_horizon_hours": 168.0,
+    "instrument_refresh_interval_secs": 300.0,
+    "rollover_aware": true,
+    "opportunity_graph_engine": "semantic_rust",
+    "semantic_unmatched_quote_probe_venues": [
+      "POLYMARKET"
+    ],
+    "semantic_unmatched_quote_probe_limit_per_venue": 80,
+    "devig_enabled": true,
+    "devig_method": "auto",
+    "devig_reference_venues": [
+      "CLOUDBET",
+      "SXBET"
+    ],
+    "value_diagnostics_enabled": true,
+    "value_execution_enabled": false,
+    "min_value_edge": "0.015",
+    "auto_execute": false
+  },
+  "venues": [
+    {
+      "venue": "SXBET",
+      "client_key": "SXBET_PRIMARY",
+      "data_enabled": true,
+      "execution_enabled": false,
+      "credential_prefix": "SXBET",
+      "load_all_instruments": true,
+      "sport_ids": [
+        1,
+        2,
+        3,
+        5,
+        6
+      ],
+      "instrument_load_limit": 150,
+      "market_discovery_limit": 600,
+      "prefer_liquid_markets": true,
+      "liquidity_probe_limit": 250,
+      "min_two_sided_markets": 1,
+      "auto_subscribe_quote_ticks": true,
+      "quote_subscription_limit": 120,
+      "order_book_poll_interval_secs": 10.0,
+      "order_book_poll_summary_interval_secs": 30.0,
+      "order_book_concurrency": 4,
+      "live_only": false,
+      "top_markets_by_depth": 50,
+      "sports": [
+        "soccer",
+        "tennis",
+        "basketball"
+      ]
+    },
+    {
+      "venue": "CLOUDBET",
+      "client_key": "CLOUDBET_PRIMARY",
+      "data_enabled": true,
+      "execution_enabled": false,
+      "credential_prefix": "CLOUDBET",
+      "load_all_instruments": true,
+      "sport_keys": [
+        "soccer",
+        "basketball",
+        "tennis",
+        "american_football",
+        "ice_hockey",
+        "baseball"
+      ],
+      "instrument_load_limit": 120,
+      "market_discovery_limit": 240,
+      "auto_subscribe_quote_ticks": true,
+      "quote_subscription_limit": 120,
+      "order_book_poll_interval_secs": 1.0,
+      "order_book_poll_summary_interval_secs": 30.0,
+      "order_book_concurrency": 24,
+      "live_only": false,
+      "order_book_min_concurrency": 4,
+      "order_book_max_concurrency": 48,
+      "order_book_target_cycle_secs": 4.0,
+      "order_book_adaptive_concurrency": true,
+      "order_book_event_batching": true,
+      "top_markets_by_depth": 50,
+      "sports": [
+        "soccer",
+        "tennis",
+        "basketball"
+      ]
+    },
+    {
+      "venue": "POLYMARKET",
+      "client_key": "POLYMARKET_PRIMARY",
+      "data_enabled": true,
+      "execution_enabled": false,
+      "credential_prefix": "POLYMARKET",
+      "load_all_instruments": true,
+      "sport_keys": [
+        "soccer",
+        "basketball",
+        "tennis",
+        "american_football",
+        "ice_hockey",
+        "baseball"
+      ],
+      "instrument_load_limit": 80,
+      "quote_subscription_limit": 180,
+      "top_markets_by_depth": 30,
+      "sports": [
+        "soccer",
+        "tennis",
+        "basketball"
+      ]
+    }
+  ],
+  "metadata": {
+    "phase": "multi-venue-validation",
+    "track": "sportsbook-polymarket",
+    "note": "Validation-mode only. Execution is disabled until risk-engine policy explicitly authorizes multi-venue live trading."
+  }
+}
