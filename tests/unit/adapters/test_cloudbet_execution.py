@@ -48,10 +48,13 @@ from nautilus_trader.test_kit.stubs.component import TestComponentStubs
 from nautilus_trader.test_kit.stubs.execution import TestExecStubs
 
 
-def _betting_instrument() -> CryptoBettingInstrument:
+def _betting_instrument(
+    currency: Currency | None = None,
+    event_id: str = "event-1",
+) -> CryptoBettingInstrument:
     return CryptoBettingInstrument(
         venue=Venue("CLOUDBET"),
-        event_id="event-1",
+        event_id=event_id,
         event_name="Team A vs Team B",
         home_name="Team A",
         away_name="Team B",
@@ -62,7 +65,7 @@ def _betting_instrument() -> CryptoBettingInstrument:
         outcome="home",
         side=SelectionSide.BACK,
         price=2.1,
-        currency=Currency.from_str("PLAY_EUR"),
+        currency=currency or Currency.from_str("PLAY_EUR"),
         params="",
     )
 
@@ -1108,8 +1111,22 @@ def _account_client(balances: dict[str, str], cache, **config_kwargs):
     return client, venue_client, states
 
 
-def _fill_order(cache, client, *, client_order_id: str, stake: str, currency: str = "PLAY_EUR"):
-    instrument = _betting_instrument()
+def _fill_order(
+    cache,
+    client,
+    *,
+    client_order_id: str,
+    stake: str,
+    currency: str = "PLAY_EUR",
+    bet_currency: str | None = None,
+):
+    # `currency` is the wallet/quote denomination the market settles in (drives the locked bucket);
+    # `bet_currency` overrides only the bet response's own currency field, letting a test pin the
+    # "EUR"-defaulting response independently of the wallet the stake is held against.
+    instrument = _betting_instrument(
+        currency=Currency.from_str(currency),
+        event_id=f"event-{client_order_id}",
+    )
     cache.add_instrument(instrument)
     order = TestExecStubs.limit_order(
         instrument=instrument,
@@ -1129,7 +1146,7 @@ def _fill_order(cache, client, *, client_order_id: str, stake: str, currency: st
             BetStatus.ACCEPTED,
             stake=stake,
             reference_id=venue_order_id.value,
-            currency=currency,
+            currency=bet_currency if bet_currency is not None else currency,
         ),
     )
     return order
@@ -1230,6 +1247,32 @@ async def test_account_state_locked_buckets_mixed_currencies_separately():
     assert balances["EUR"].free == Money(45, eur)
     assert balances["BTC"].locked == Money(0.25, btc)
     assert balances["BTC"].free == Money(0.75, btc)
+
+
+@pytest.mark.asyncio
+async def test_account_state_locks_open_bet_on_non_eur_wallet_despite_eur_default_bet_currency():
+    # Regression: GetBetResponse.currency defaults to "EUR", so an open matched bet on a PLAY_EUR
+    # wallet must still lock against PLAY_EUR (resolved from the instrument quote currency), not
+    # leak into an "EUR" bucket the venue balances never report. The dangerous direction is a
+    # bet that reads locked=0 / free=full while it is live, over-stating available funds.
+    play_eur = Currency.from_str("PLAY_EUR")
+    cache = TestComponentStubs.cache()
+    client, _venue_client, states = _account_client({"PLAY_EUR": "100"}, cache)
+    _fill_order(
+        cache,
+        client,
+        client_order_id="order-play-eur",
+        stake="20",
+        currency="PLAY_EUR",
+        bet_currency="EUR",
+    )
+
+    await client.connection_account_state()
+
+    balance = states[-1].balances[0]
+    assert balance.total == Money(100, play_eur)
+    assert balance.locked == Money(20, play_eur)
+    assert balance.free == Money(80, play_eur)
 
 
 @pytest.mark.asyncio

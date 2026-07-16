@@ -1711,8 +1711,11 @@ class CloudbetLiveExecutionClient(LiveExecutionClient):
             info=info,
         )
         self._filled_client_order_ids.add(client_order_id)
-        # Record the matched stake in the bet's own currency so the account-state refresh can
-        # model locked funds from cached state (the fill guard above makes this record-once).
-        stake_currency = getattr(bet_response, "currency", None) or quote_currency.code
+        # Record the matched stake under the instrument's quote currency — the denomination the
+        # venue balances (and connection_account_state's locked lookup) are keyed in — so the
+        # account-state refresh always locks the stake in the wallet it is actually held against.
+        # The bet response's own `currency` defaults to "EUR", which would mis-key non-EUR wallets
+        # (e.g. PLAY_EUR) into a bucket the balances never report, over-stating free funds.
+        stake_currency = quote_currency.code
         self._matched_stakes[client_order_id] = (matched_stake, stake_currency)
         self._log.debug(f"Generated OrderFilled for {client_order_id} qty={last_qty} px={last_px}")
