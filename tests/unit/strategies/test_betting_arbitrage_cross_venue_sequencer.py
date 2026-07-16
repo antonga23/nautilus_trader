@@ -117,8 +117,10 @@ class _Harness:
 
         self.strategy.submit_order = _submit
         if not real_gates:
-            self.strategy._live_execution_block_reasons_for = Mock(return_value=[])
-            self.strategy._live_execution_refresh_opportunity = Mock(
+            self.strategy._live_execution_block_reasons_for = Mock(  # type: ignore[method-assign]
+                return_value=[],
+            )
+            self.strategy._live_execution_refresh_opportunity = Mock(  # type: ignore[method-assign]
                 side_effect=lambda opp: (opp, []),
             )
 
