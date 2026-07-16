@@ -142,6 +142,13 @@ class BettingArbitrageNodeManifest(NautilusConfig, frozen=True):
     semantic_rule_cache_max_age_hours : float, optional
         Maximum age of a registered default mine that ``'default'`` mode will
         reuse. ``None`` disables the age check.
+    semantic_rule_cache_seed_allow_scope_mismatch : bool, default False
+        Accept a seed cache whose compatibility version matches but whose scope
+        key differs from this node's scope. Templates are venue-agnostic
+        patterns, so a superset-corpus mine can safely seed a narrower node —
+        extra templates simply may not match live instruments. The adopted
+        cache is re-stamped with this node's scope. The compatibility version
+        check is never bypassed.
     semantic_diagnostics_interval_secs : PositiveFloat, default 90.0
         Minimum seconds between recomputes of the expensive semantic/coverage
         probe diagnostics. Trading-relevant probe fields still refresh every
@@ -156,6 +163,7 @@ class BettingArbitrageNodeManifest(NautilusConfig, frozen=True):
     strategy: BettingArbitrageConfig = BettingArbitrageConfig(auto_execute=False)
     semantic_rule_cache_dir: str | None = None
     semantic_rule_cache_seed_dir: str | None = None
+    semantic_rule_cache_seed_allow_scope_mismatch: bool = False
     semantic_rule_cache_mode: str = "fresh"
     semantic_rule_cache_default_root: str | None = None
     semantic_rule_cache_max_age_hours: float | None = None

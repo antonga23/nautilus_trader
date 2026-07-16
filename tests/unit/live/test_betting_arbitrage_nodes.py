@@ -200,11 +200,29 @@ def _seed_promoted_template(
     node_cache._write_semantic_cache_compatibility(cache_dir, manifest=manifest)
 
 
+class _RecordingLogger:
+    def __init__(self) -> None:
+        self.records: list[tuple[str, str]] = []
+
+    def debug(self, message: str) -> None:
+        self.records.append(("debug", message))
+
+    def info(self, message: str) -> None:
+        self.records.append(("info", message))
+
+    def warning(self, message: str) -> None:
+        self.records.append(("warning", message))
+
+    def error(self, message: str) -> None:
+        self.records.append(("error", message))
+
+
 def _manifest(
     tmp_path: Path,
     *,
     cache_dir: Path | None = None,
     seed_dir: Path | None = None,
+    seed_allow_scope_mismatch: bool = False,
     cache_mode: str = "fresh",
     cache_default_root: Path | None = None,
     cache_max_age_hours: float | None = None,
@@ -216,6 +234,7 @@ def _manifest(
         allow_dummy_credentials=True,
         semantic_rule_cache_dir=str(cache_dir) if cache_dir is not None else None,
         semantic_rule_cache_seed_dir=str(seed_dir) if seed_dir is not None else None,
+        semantic_rule_cache_seed_allow_scope_mismatch=seed_allow_scope_mismatch,
         semantic_rule_cache_mode=cache_mode,
         semantic_rule_cache_default_root=(
             str(cache_default_root) if cache_default_root is not None else None
@@ -1608,6 +1627,52 @@ class TestBettingArbitrageNodeBuilder:
         created = config.data_clients["POLYMARKET_PRIMARY"].create()
         assert isinstance(hash(created.instrument_provider), int)
 
+    def test_comprehensive_mine_manifest_builds_without_exec_clients(self, monkeypatch):
+        monkeypatch.setenv("SXBET_API_KEY", "sxbet-api-key")
+        monkeypatch.setenv("SXBET_PRIVATE_KEY", "0x" + "1" * 64)
+        monkeypatch.setenv("SXBET_WALLET_ADDRESS", "0x" + "2" * 40)
+        monkeypatch.setenv("CLOUDBET_API_KEY", "cloudbet-api-key")
+        monkeypatch.setenv("POLYMARKET_PRIVATE_KEY", "0x" + "3" * 64)
+        monkeypatch.setenv("POLYMARKET_FUNDER", "0x" + "4" * 40)
+        monkeypatch.setenv("POLYMARKET_API_KEY", "polymarket-api-key")
+        monkeypatch.setenv("POLYMARKET_API_SECRET", "polymarket-api-secret")
+        monkeypatch.setenv("POLYMARKET_PASSPHRASE", "polymarket-passphrase")
+
+        manifest = node_builder.load_manifest(
+            Path("deploy/strategy_nodes/betting_arbitrage/comprehensive-mine.json"),
+        )
+        config = build_trading_node_config(manifest)
+
+        assert manifest.validation_mode is True
+        assert manifest.allow_dummy_credentials is False
+        assert manifest.semantic_rule_cache_mode == "fresh"
+        assert manifest.semantic_rule_cache_dir == "/scratch/cache"
+        assert manifest.semantic_rule_cache_default_root == "/registry"
+        assert manifest.semantic_rule_cache_seed_allow_scope_mismatch is False
+        expected_sports = frozenset(
+            {
+                "soccer",
+                "basketball",
+                "tennis",
+                "american_football",
+                "ice_hockey",
+                "baseball",
+            },
+        )
+        for venue in manifest.venues:
+            assert venue.sport_keys == expected_sports
+            assert venue.live_only is False
+            assert venue.prefer_liquid_markets is True
+            assert venue.execution_enabled is False
+        assert sorted(config.data_clients) == [
+            "CLOUDBET_PRIMARY",
+            "POLYMARKET_PRIMARY",
+            "SXBET_PRIMARY",
+        ]
+        assert config.exec_clients == {}
+        assert config.strategies[0].config["auto_execute"] is False
+        assert config.strategies[0].config["opportunity_graph_engine"] == "semantic_rust"
+
     def test_custom_credential_prefix_and_secret_pool_are_applied(self, monkeypatch):
         monkeypatch.setenv("CUSTOMSXBET_API_KEY", "explicit-api-key")
         monkeypatch.setenv("CUSTOMSXBET_API_KEYS", "pool-a, pool-b pool-c")
@@ -1929,6 +1994,116 @@ class TestSemanticCacheBootstrap:
 
         assert status.source == "seeded"
         assert (cache_dir / "marker").read_text(encoding="utf-8") == "manifest-seed"
+
+    @staticmethod
+    def _superset_scope_manifest(tmp_path: Path) -> BettingArbitrageNodeManifest:
+        return BettingArbitrageNodeManifest(
+            node_id="comprehensive-mine",
+            trader_id="BETARB-TEST-SEM",
+            validation_mode=True,
+            allow_dummy_credentials=True,
+            rendered_config_path=str(tmp_path / "mine-trading-node-config.json"),
+            status_path=str(tmp_path / "mine-status.json"),
+            heartbeat_path=str(tmp_path / "mine-heartbeat.json"),
+            venues=[
+                BettingVenueManifest(
+                    venue="SXBET",
+                    client_key="SXBET_PRIMARY",
+                    execution_enabled=False,
+                    instrument_load_limit=600,
+                    market_discovery_limit=800,
+                ),
+            ],
+        )
+
+    def test_scope_mismatched_seed_rejected_by_default(self, tmp_path, monkeypatch):
+        cache_dir = tmp_path / "semantic-cache"
+        seed_dir = tmp_path / "seed-cache"
+        manifest = _manifest(tmp_path, cache_dir=cache_dir, seed_dir=seed_dir, cache_mode="reuse")
+        _seed_promoted_template(seed_dir, manifest=self._superset_scope_manifest(tmp_path))
+        bootstrapped: list[Path] = []
+
+        def fake_bootstrap(*, cache_dir, **_):
+            bootstrapped.append(cache_dir)
+            _seed_promoted_template(cache_dir, manifest=manifest)
+
+        monkeypatch.setattr(
+            "nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache._run_bootstrap",
+            fake_bootstrap,
+        )
+
+        status = ensure_semantic_cache_ready(manifest)
+
+        assert bootstrapped == [cache_dir]
+        assert status.source == "bootstrapped"
+        assert status.ready is True
+        assert status.compatible is True
+
+    def test_scope_mismatched_seed_adopted_when_opted_in(self, tmp_path, monkeypatch):
+        cache_dir = tmp_path / "semantic-cache"
+        seed_dir = tmp_path / "seed-cache"
+        manifest = _manifest(
+            tmp_path,
+            cache_dir=cache_dir,
+            seed_dir=seed_dir,
+            seed_allow_scope_mismatch=True,
+            cache_mode="reuse",
+        )
+        _seed_promoted_template(seed_dir, manifest=self._superset_scope_manifest(tmp_path))
+        seed_scope = node_cache._read_semantic_cache_compatibility(seed_dir)["scope"]
+        node_scope = node_cache._semantic_cache_scope_key(manifest)
+        assert seed_scope != node_scope
+        logger = _RecordingLogger()
+
+        monkeypatch.setattr(
+            "nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache._run_bootstrap",
+            lambda **_: (_ for _ in ()).throw(AssertionError("bootstrap should not run")),
+        )
+
+        status = ensure_semantic_cache_ready(manifest, logger=logger)
+
+        assert status.source == "seeded"
+        assert status.ready is True
+        assert status.compatible is True
+        adopted = node_cache._read_semantic_cache_compatibility(cache_dir)
+        assert adopted["version"] == node_cache.SEMANTIC_CACHE_COMPATIBILITY_VERSION
+        assert adopted["scope"] == node_scope
+        assert any(
+            level == "warning" and "Semantic seed scope mismatch accepted" in message
+            for level, message in logger.records
+        )
+
+    def test_scope_mismatch_opt_in_never_overrides_version_mismatch(self, tmp_path, monkeypatch):
+        cache_dir = tmp_path / "semantic-cache"
+        seed_dir = tmp_path / "seed-cache"
+        manifest = _manifest(
+            tmp_path,
+            cache_dir=cache_dir,
+            seed_dir=seed_dir,
+            seed_allow_scope_mismatch=True,
+            cache_mode="reuse",
+        )
+        _seed_promoted_template(seed_dir, manifest=self._superset_scope_manifest(tmp_path))
+        (seed_dir / node_cache.SEMANTIC_CACHE_COMPATIBILITY_FILE).write_text(
+            json.dumps({"version": "stale-version", "scope": None}) + "\n",
+            encoding="utf-8",
+        )
+        bootstrapped: list[Path] = []
+
+        def fake_bootstrap(*, cache_dir, **_):
+            bootstrapped.append(cache_dir)
+            _seed_promoted_template(cache_dir, manifest=manifest)
+
+        monkeypatch.setattr(
+            "nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache._run_bootstrap",
+            fake_bootstrap,
+        )
+
+        status = ensure_semantic_cache_ready(manifest)
+
+        assert bootstrapped == [cache_dir]
+        assert status.source == "bootstrapped"
+        assert status.compatible is True
 
     def test_unusable_semantic_cache_fails_validation(self, tmp_path, monkeypatch):
         manifest = _manifest(tmp_path, cache_dir=tmp_path / "semantic-cache")
