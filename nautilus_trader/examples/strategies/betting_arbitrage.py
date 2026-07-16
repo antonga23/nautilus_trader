@@ -903,7 +903,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._live_execution_unwind_cancels = 0
         self._live_execution_unwind_exits = 0
         self._arb_leg_siblings: dict[str, str] = {}
-        self._arb_position_tracker = ArbPositionTracker()
+        self._arb_position_tracker = ArbPositionTracker(policy=self._portfolio_currency_policy())
         self._arb_leg_settlements: dict[str, SettlementResult] = {}
         self._bet_settlements_received = 0
         self._bet_settlements_unmatched = 0
@@ -5500,6 +5500,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 last_px=event.last_px,
                 last_qty=event.last_qty,
                 sibling_id=self._arb_leg_siblings.get(key),
+                currency=self._instrument_currency_code(instrument),
             )
         except Exception as e:  # pragma: no cover - defensive; never raise into the handler
             self.log.warning(f"Arb position tracker skipped fill: {e}")
