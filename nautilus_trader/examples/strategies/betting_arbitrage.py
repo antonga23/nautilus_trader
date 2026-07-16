@@ -53,7 +53,11 @@ from nautilus_trader.adapters.betting.common.settlement import BetSettlement
 from nautilus_trader.adapters.betting.common.settlement import SettlementResult
 from nautilus_trader.adapters.betting.fixture_identity import DEFAULT_FIXTURE_IDENTITY_RESOLVER
 from nautilus_trader.adapters.betting.fx import FxConversion
+from nautilus_trader.adapters.betting.fx import FxMarketQuote
 from nautilus_trader.adapters.betting.fx import PortfolioCurrencyPolicy
+from nautilus_trader.adapters.betting.fx_feeds import SUPPORTED_FX_REFRESH_PAIRS
+from nautilus_trader.adapters.betting.fx_feeds import FxRateQuote
+from nautilus_trader.adapters.betting.fx_feeds import fetch_fx_rate
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.betting.market_matcher import ArbitrageOpportunity
 from nautilus_trader.adapters.betting.market_matcher import MarketMatcher
@@ -107,6 +111,9 @@ UNWIND_EXIT_SUPPORTED_VENUES = frozenset({"POLYMARKET"})
 # leg left dangling if the sibling fails; it therefore anchors the sequence by default.
 CROSS_VENUE_ANCHOR_VENUE_PRIORITY = ("CLOUDBET",)
 NANOSECONDS_PER_SECOND = 1_000_000_000
+FX_REFRESH_TIMER_NAME = "betting-arbitrage-fx-refresh"
+FX_REFRESH_FETCH_TIMEOUT_SECS = 3.0
+DEFAULT_FX_REFRESH_PAIRS = ("EUR/USD",)
 INSTRUMENT_REFRESH_TIMER_NAME = "betting-arbitrage-instrument-refresh"
 INSTRUMENT_RECONCILE_TIMER_PREFIX = "betting-arbitrage-instrument-reconcile"
 INSTRUMENT_RECONCILE_DELAY_SECS = 5.0
@@ -523,6 +530,8 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
     stablecoin_haircut_bps: int = 10
     fx_quote_max_age_secs: float = 30.0
     configured_fx_rates: dict[str, Decimal] = {}
+    fx_refresh_interval_secs: float | None = None
+    fx_refresh_pairs: list[str] | None = None
     execution_price_change_policy: str = "better"
     live_execution_kill_switch_path: str | None = None
     unwind_filled_leg_enabled: bool = False
@@ -600,6 +609,7 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
             for pair, rate in self.configured_fx_rates.items()
             if str(pair).strip()
         }
+        fx_refresh_pairs = self._normalize_fx_refresh_pairs(self.fx_refresh_pairs)
 
         self._validate_filter_config(
             market_timing_filter=market_timing_filter,
@@ -679,6 +689,7 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         msgspec.structs.force_setattr(self, "portfolio_base_currency", portfolio_base_currency)
         msgspec.structs.force_setattr(self, "stablecoin_currencies", stablecoin_currencies)
         msgspec.structs.force_setattr(self, "configured_fx_rates", configured_fx_rates)
+        msgspec.structs.force_setattr(self, "fx_refresh_pairs", fx_refresh_pairs)
         msgspec.structs.force_setattr(
             self,
             "live_quote_age_slo_secs",
@@ -823,6 +834,9 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         ):
             msg = "stale_quote_refresh_cooldown_secs must be positive when set"
             raise ValueError(msg)
+        if self.fx_refresh_interval_secs is not None and self.fx_refresh_interval_secs <= 0:
+            msg = "fx_refresh_interval_secs must be positive when set"
+            raise ValueError(msg)
 
     def _normalize_devig_config(self) -> tuple[str, frozenset[str] | None]:
         devig_method = self.devig_method.strip().lower()
@@ -845,6 +859,25 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
             else None
         )
         return devig_method, reference_venues
+
+    @staticmethod
+    def _normalize_fx_refresh_pairs(pairs: list[str] | None) -> list[str] | None:
+        if pairs is None:
+            return None
+        normalized: list[str] = []
+        for pair in pairs:
+            value = str(pair).strip().upper()
+            if not value:
+                continue
+            if value not in SUPPORTED_FX_REFRESH_PAIRS:
+                msg = (
+                    f"Unsupported fx_refresh_pairs entry: {value}. "
+                    f"Must be one of {sorted(SUPPORTED_FX_REFRESH_PAIRS)}"
+                )
+                raise ValueError(msg)
+            if value not in normalized:
+                normalized.append(value)
+        return normalized or None
 
     @staticmethod
     def _normalize_semantic_quote_subscription_limits(
@@ -939,6 +972,10 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._live_execution_unwind_cancels = 0
         self._live_execution_unwind_exits = 0
         self._arb_leg_siblings: dict[str, str] = {}
+        self._live_fx_quotes: dict[str, FxRateQuote] = {}
+        self._fx_refresh_fetches = 0
+        self._fx_refresh_failures = 0
+        self._fx_refresh_failures_by_pair: Counter[str] = Counter()
         self._arb_position_tracker = ArbPositionTracker(policy=self._portfolio_currency_policy())
         self._arb_leg_settlements: dict[str, SettlementResult] = {}
         self._bet_settlements_received = 0
@@ -1077,6 +1114,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             "cross_venue_common_fixture_quote_reserve_limit_per_venue="
             f"{self._config.cross_venue_common_fixture_quote_reserve_limit_per_venue} "
             f"instrument_refresh_interval_secs={self._config.instrument_refresh_interval_secs} "
+            f"fx_refresh_interval_secs={self._config.fx_refresh_interval_secs} "
+            f"fx_refresh_pairs={self._fx_refresh_pairs()} "
             "stale_quote_refresh_cooldown_secs="
             f"{self._config.stale_quote_refresh_cooldown_secs} "
             f"manual_instructions={self._config.opportunity_log_manual_instructions}"
@@ -1086,6 +1125,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._subscribe_enabled_venue_instrument_updates()
         self._subscribe_cached_instruments()
         self._start_instrument_refresh_timer()
+        self._start_fx_refresh_timer()
         self._start_approval_command_timer()
 
     def _semantic_rule_store(self) -> RuleStore | None:
@@ -1108,6 +1148,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         if self.msgbus is not None:  # None when stopped before registration
             self.msgbus.unsubscribe(topic=BET_SETTLEMENTS_TOPIC, handler=self._on_bet_settlement)
         self._stop_instrument_refresh_timer()
+        self._stop_fx_refresh_timer()
         self._stop_approval_command_timer()
         self._cancel_instrument_reconcile_timers()
         msg = f"Opportunities found: {self._opportunities_found}"
@@ -1122,6 +1163,9 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         """
         if event.name == INSTRUMENT_REFRESH_TIMER_NAME:
             self._refresh_enabled_venue_instruments()
+            return
+        if event.name == FX_REFRESH_TIMER_NAME:
+            self._refresh_fx_rates()
             return
         if event.name == APPROVAL_COMMAND_TIMER_NAME:
             self._process_approval_command_files()
@@ -1203,6 +1247,71 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             self.clock.cancel_timer(INSTRUMENT_REFRESH_TIMER_NAME)
         except Exception as exc:
             self.log.warning(f"Unable to cancel instrument refresh timer: error={exc}")
+
+    def _start_fx_refresh_timer(self) -> None:
+        interval_secs = self._config.fx_refresh_interval_secs
+        if interval_secs is None:
+            return
+        self.clock.set_timer(
+            name=FX_REFRESH_TIMER_NAME,
+            interval=timedelta(seconds=float(interval_secs)),
+            callback=self.on_time_event,
+        )
+        self.log.info(
+            f"Started FX rate refresh timer: interval_secs={float(interval_secs):.3f} "
+            f"pairs={self._fx_refresh_pairs()}",
+        )
+
+    def _stop_fx_refresh_timer(self) -> None:
+        if self._config.fx_refresh_interval_secs is None:
+            return
+        try:
+            self.clock.cancel_timer(FX_REFRESH_TIMER_NAME)
+        except Exception as exc:
+            self.log.warning(f"Unable to cancel FX refresh timer: error={exc}")
+
+    def _fx_refresh_pairs(self) -> list[str]:
+        return list(self._config.fx_refresh_pairs or DEFAULT_FX_REFRESH_PAIRS)
+
+    def _refresh_fx_rates(self) -> None:
+        # The fx_feeds fetchers block on urllib, so they run on the kernel-registered
+        # strategy executor instead of the timer handler's event loop; without a
+        # registered executor (backtest, unit tests) run_in_executor executes inline.
+        for pair in self._fx_refresh_pairs():
+            self.run_in_executor(self._fetch_fx_pair, (pair,))
+
+    def _fetch_fx_pair(self, pair: str) -> None:
+        try:
+            quote = fetch_fx_rate(pair, timeout_secs=FX_REFRESH_FETCH_TIMEOUT_SECS)
+        except Exception as exc:
+            self._fx_refresh_failures += 1
+            self._fx_refresh_failures_by_pair[pair] += 1
+            self.log.warning(f"FX rate refresh failed: pair={pair} error={exc}")
+            return
+        self._live_fx_quotes[pair] = quote
+        self._fx_refresh_fetches += 1
+
+    def _live_fx_quote_snapshot(self) -> dict[str, FxMarketQuote] | None:
+        # dict() is a GIL-atomic copy; executor threads may be storing new quotes.
+        quotes = dict(self._live_fx_quotes)
+        if not quotes:
+            return None
+        now_ns = self.clock.timestamp_ns()
+        return {
+            pair: FxMarketQuote(
+                pair=pair,
+                rate=quote.rate,
+                source=quote.source,
+                # FxRateQuote.age_secs is the fetch latency, not the time since the
+                # fetch; recompute from the fetch event so the staleness gate sees how
+                # old the rate is at decision time.
+                age_secs=max(
+                    0.0,
+                    (now_ns - quote.ts_event_ns) / NANOSECONDS_PER_SECOND,
+                ),
+            )
+            for pair, quote in quotes.items()
+        }
 
     def _approval_command_polling_enabled(self) -> bool:
         return bool(
@@ -4752,6 +4861,16 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         on_order_rejected/on_order_denied/on_order_canceled.
 
         """
+        usd_notional = self._usd_equivalent_notional(opportunity, stake_a, stake_b)
+        if usd_notional is None:
+            self._live_execution_block_reasons["usd_notional_unavailable"] += 1
+            self.log.warning(
+                "Live arbitrage execution blocked, USD-equivalent notional unavailable: "
+                f"instrument_a={opportunity.instrument_a.id} "
+                f"instrument_b={opportunity.instrument_b.id}",
+            )
+            return ["usd_notional_unavailable"]
+
         leg_a_id = str(order_a.client_order_id)
         leg_b_id = str(order_b.client_order_id)
         self._arb_leg_siblings[leg_a_id] = leg_b_id
@@ -4786,11 +4905,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
 
         self._opportunities_executed += 1
         self._live_execution_submissions += 1
-        self._live_execution_notional_used += self._usd_equivalent_notional(
-            opportunity,
-            stake_a,
-            stake_b,
-        )
+        self._live_execution_notional_used += usd_notional
 
         order_ids = f"{order_a.client_order_id}, {order_b.client_order_id}"
         msg = f"Arbitrage orders submitted: {order_ids}"
@@ -4959,6 +5074,18 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             self._flatten_naked_cross_venue_anchor(seq)
             return
 
+        usd_notional = self._usd_equivalent_notional(seq.opportunity, seq.stake_a, seq.stake_b)
+        if usd_notional is None:
+            self._cross_venue_second_leg_blocked += 1
+            self._live_execution_halt_reason = "usd_notional_unavailable"
+            self._live_execution_block_reasons["usd_notional_unavailable"] += 1
+            self.log.warning(
+                "Cross-venue second leg not placed, USD-equivalent notional unavailable "
+                f"on anchor fill: anchor={seq.anchor_leg_id}; flattening naked anchor",
+            )
+            self._flatten_naked_cross_venue_anchor(seq)
+            return
+
         second = seq.second_order
         second_id = str(second.client_order_id)
         self._arb_leg_siblings[seq.anchor_leg_id] = second_id
@@ -4982,11 +5109,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._live_execution_submissions_by_venue[seq.second_venue] += 1
         self._opportunities_executed += 1
         self._live_execution_submissions += 1
-        self._live_execution_notional_used += self._usd_equivalent_notional(
-            seq.opportunity,
-            seq.stake_a,
-            seq.stake_b,
-        )
+        self._live_execution_notional_used += usd_notional
         self._cross_venue_sequences_completed += 1
         self.log.info(
             "Cross-venue second leg submitted after anchor fill: "
@@ -5552,14 +5675,23 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         opportunity: ArbitrageOpportunity,
         stake_a: Decimal,
         stake_b: Decimal,
-    ) -> Decimal:
+    ) -> Decimal | None:
+        """
+        Base-currency notional for both legs, or ``None`` when a conversion is
+        unavailable.
+
+        ``None`` must fail closed at every caller: the previous raw ``stake_a +
+        stake_b`` fallback under-stated committed notional against the daily cap
+        exactly when a rate was missing (a crypto stake counted 1:1 as USD).
+
+        """
         conversion_a, conversion_b = self._live_execution_stake_conversions(
             opportunity,
             stake_a,
             stake_b,
         )
         if conversion_a.converted_amount is None or conversion_b.converted_amount is None:
-            return stake_a + stake_b
+            return None
         return conversion_a.converted_amount + conversion_b.converted_amount
 
     def _live_execution_stake_conversions(
@@ -5581,6 +5713,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             stablecoin_haircut_bps=self._config.stablecoin_haircut_bps,
             fx_quote_max_age_secs=self._config.fx_quote_max_age_secs,
             static_fx_rates=self._config.configured_fx_rates,
+            fx_quotes=self._live_fx_quote_snapshot(),
         )
 
     def _fx_net_profit_margin(
@@ -6503,6 +6636,16 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             "stablecoin_haircut_bps": self._config.stablecoin_haircut_bps,
             "fx_quote_max_age_secs": self._config.fx_quote_max_age_secs,
             "configured_fx_rate_pairs": sorted(self._config.configured_fx_rates),
+            "fx_refresh_interval_secs": self._config.fx_refresh_interval_secs,
+            "fx_refresh_pairs": (
+                self._fx_refresh_pairs()
+                if self._config.fx_refresh_interval_secs is not None
+                else []
+            ),
+            "fx_refresh_fetches": self._fx_refresh_fetches,
+            "fx_refresh_failures": self._fx_refresh_failures,
+            "fx_refresh_failures_by_pair": dict(sorted(self._fx_refresh_failures_by_pair.items())),
+            "live_fx_rate_pairs": sorted(self._live_fx_quotes),
             "fx_policy": {
                 "baseCurrency": self._config.portfolio_base_currency,
                 "stablecoinCurrencies": sorted(self._config.stablecoin_currencies),

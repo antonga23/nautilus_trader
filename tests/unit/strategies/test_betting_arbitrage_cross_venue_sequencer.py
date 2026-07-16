@@ -244,6 +244,43 @@ def test_sequencer_second_leg_adverse_move_flattens_naked_anchor():  # skipcq
     ensure(str(flattened_order.client_order_id) == str(anchor.client_order_id))
 
 
+def test_sequencer_second_leg_notional_unavailable_flattens_anchor():  # skipcq
+    # The USD-equivalent notional became unavailable between anchor submit and anchor
+    # fill (e.g. the live FX rate went stale): the second leg must NOT be placed with
+    # unaccountable notional — block, halt, and flatten the naked anchor.
+    h = _Harness(sequential=True)
+    flatten = Mock()
+    h.strategy._handle_naked_filled_leg = flatten
+
+    h.execute()
+    ensure(len(h.submitted) == 1)
+    anchor = h.submitted[0]
+    h.strategy._usd_equivalent_notional = Mock(return_value=None)
+
+    fill = h.fill_terminally(anchor)
+    h.strategy.on_order_filled(fill)
+
+    ensure(h.submitted_venues() == ["CLOUDBET"])
+    ensure(h.stats()["cross_venue_second_leg_blocked"] == 1)
+    ensure(h.stats()["cross_venue_sequences_completed"] == 0)
+    ensure(h.stats()["halt_reason"] == "usd_notional_unavailable")
+    ensure(h.strategy._live_execution_notional_used == Decimal(0))
+    flatten.assert_called_once()
+
+
+def test_simultaneous_submit_blocks_when_notional_unavailable():  # skipcq
+    # Non-sequenced path: an unavailable conversion blocks the pair before ANY order is
+    # submitted instead of accruing a raw 1:1 stake sum against the daily notional cap.
+    h = _Harness(sequential=False)
+    h.strategy._usd_equivalent_notional = Mock(return_value=None)
+
+    reasons = h.execute()
+
+    ensure(reasons == ["usd_notional_unavailable"])
+    ensure(len(h.submitted) == 0)
+    ensure(h.strategy._live_execution_notional_used == Decimal(0))
+
+
 def test_same_venue_arb_submits_both_legs_simultaneously_when_sequencer_on():  # skipcq
     # (d) A same-venue arb does not use the sequencer even when it is enabled: both legs
     # are submitted simultaneously, exactly as before.
