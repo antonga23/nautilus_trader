@@ -75,7 +75,9 @@ AUDIT_COLUMNS: tuple[str, ...] = (
 
 
 class SqliteTableSpec:
-    """One SQLite source table and how it maps into Postgres."""
+    """
+    One SQLite source table and how it maps into Postgres.
+    """
 
     def __init__(
         self,
@@ -120,7 +122,9 @@ SQLITE_TABLES: tuple[SqliteTableSpec, ...] = (
 
 
 class Config:
-    """Runtime configuration resolved from ``SHIPPER_*`` / ``PG*`` env vars."""
+    """
+    Runtime configuration resolved from ``SHIPPER_*`` / ``PG*`` env vars.
+    """
 
     def __init__(self, env: Mapping[str, str] | None = None) -> None:
         env = os.environ if env is None else env
@@ -135,7 +139,9 @@ class Config:
 
 
 def _resolve_dsn(env: Mapping[str, str]) -> str:
-    """Build a psycopg connection string from SHIPPER_PG_* / PG* / DATABASE_URL."""
+    """
+    Build a psycopg connection string from SHIPPER_PG_* / PG* / DATABASE_URL.
+    """
     url = env.get("SHIPPER_DATABASE_URL") or env.get("DATABASE_URL")
     if url:
         return url
@@ -193,7 +199,9 @@ class PgWriter(Protocol):
 
 
 class PsycopgWriter:
-    """Concrete :class:`PgWriter` over a psycopg (v3) connection."""
+    """
+    Concrete :class:`PgWriter` over a psycopg (v3) connection.
+    """
 
     def __init__(self, dsn: str) -> None:
         self._dsn = dsn
@@ -297,7 +305,9 @@ class PsycopgWriter:
 
 
 class SqliteSource:
-    """Read-only, non-intrusive reader over the live nodeops WAL database."""
+    """
+    Read-only, non-intrusive reader over the live nodeops WAL database.
+    """
 
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
@@ -353,7 +363,12 @@ class Shipper:
         self._writer.ensure_schema(schema_path.read_text(encoding="utf8"))
 
     def run_cycle(self) -> None:
-        """One full cycle. Each step is isolated so one failure never blocks the rest."""
+        """
+        One full cycle.
+
+        Each step is isolated so one failure never blocks the rest.
+
+        """
         self._safely(self._ship_sqlite, "sqlite replication")
         self._safely(self._ship_status_and_logs, "node directory shipping")
         self._safely(self._prune, "retention prune")
@@ -382,7 +397,10 @@ class Shipper:
         total = 0
         while True:
             batch = self._source.read_new_rows(
-                spec.name, spec.columns, after_rowid, self._config.batch_rows
+                spec.name,
+                spec.columns,
+                after_rowid,
+                self._config.batch_rows,
             )
             if not batch:
                 break
@@ -516,7 +534,9 @@ class Shipper:
         logger.info("shipped %d lines from %s (offset -> %d)", len(rows), source, new_offset)
 
     def _read_complete_lines(self, path: Path, offset: int) -> tuple[list[str], int]:
-        """Read newline-terminated lines from ``offset``; a partial trailing line waits."""
+        """
+        Read newline-terminated lines from ``offset``; a partial trailing line waits.
+        """
         with path.open("rb") as handle:
             handle.seek(offset)
             data = handle.read()
@@ -536,10 +556,10 @@ class Shipper:
     def _prune(self) -> None:
         now = datetime.now(UTC)
         log_cutoff = (now - timedelta(days=self._config.log_retention_days)).strftime(
-            "%Y-%m-%dT%H:%M:%SZ"
+            "%Y-%m-%dT%H:%M:%SZ",
         )
         status_cutoff = (now - timedelta(days=self._config.status_retention_days)).strftime(
-            "%Y-%m-%dT%H:%M:%SZ"
+            "%Y-%m-%dT%H:%M:%SZ",
         )
         for table, column, cutoff in (
             ("node_logs", "ts_ingest", log_cutoff),
@@ -571,7 +591,9 @@ def _parse_json(text: Any) -> Any:
 
 
 def _wrap_jsonb(obj: Any) -> Any:
-    """Wrap a python object for a jsonb column when psycopg is present."""
+    """
+    Wrap a python object for a jsonb column when psycopg is present.
+    """
     try:
         from psycopg.types.json import Jsonb
     except Exception:  # pragma: no cover - fake writer path in tests

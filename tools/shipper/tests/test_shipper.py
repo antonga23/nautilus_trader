@@ -1,4 +1,9 @@
-"""Hermetic tests for the nodeops -> Postgres shipper. No network DB is used."""
+"""
+Hermetic tests for the nodeops -> Postgres shipper.
+
+No network DB is used.
+
+"""
 
 from __future__ import annotations
 

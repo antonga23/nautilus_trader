@@ -51,7 +51,7 @@ if [[ ! -f "${ENV_FILE}" ]]; then
   echo "WARNING: ${ENV_FILE} does not exist. Create it (chmod 600, root) with the RDS"
   echo "         credentials before the service can connect. See the header of this script."
   install -m 0600 /dev/null "${ENV_FILE}"
-  echo "# Fill in SHIPPER_PG_* / NODEOPS_DB / NODES_ROOT — see install.sh header." >"${ENV_FILE}"
+  echo "# Fill in SHIPPER_PG_* / NODEOPS_DB / NODES_ROOT — see install.sh header." > "${ENV_FILE}"
 fi
 chmod 600 "${ENV_FILE}"
 

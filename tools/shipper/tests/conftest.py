@@ -6,6 +6,7 @@ No test touches a network database. The fake mirrors the exactly-once contract o
 injected failure leaves both untouched (the row re-ships next cycle) and a replay
 collides on the unique key (no duplicate). ``insert_status`` dedups on
 (node, content_sha).
+
 """
 
 from __future__ import annotations
@@ -28,7 +29,9 @@ def _unwrap(value: Any) -> Any:
 
 
 class FailNow(Exception):
-    """Injected DB error, mimicking a psycopg failure inside a transaction."""
+    """
+    Injected DB error, mimicking a psycopg failure inside a transaction.
+    """
 
 
 class FakePgWriter:
@@ -68,7 +71,10 @@ class FakePgWriter:
         if self.fail_ship_predicate is not None and self.fail_ship_predicate(self._ship_calls):
             # Transaction rolls back: NOTHING is stored and the cursor is NOT advanced.
             raise FailNow(f"injected ship failure #{self._ship_calls}")
-        conflict_cols = [c.strip() for c in _CONFLICT_RE.search(conflict).group(1).split(",")]
+        match = _CONFLICT_RE.search(conflict)
+        if match is None:
+            raise ValueError(f"no conflict columns in {conflict!r}")
+        conflict_cols = [c.strip() for c in match.group(1).split(",")]
         store = self.tables.setdefault(table, [])
         keys = self.table_keys.setdefault(table, set())
         inserted = 0
@@ -118,7 +124,9 @@ def fake_writer() -> FakePgWriter:
 
 @pytest.fixture
 def nodeops_db(tmp_path: Path) -> Path:
-    """Build a real temp SQLite DB shaped like the nodeops one (WAL mode, seeded)."""
+    """
+    Build a real temp SQLite DB shaped like the nodeops one (WAL mode, seeded).
+    """
     db_path = tmp_path / "nodeops.db"
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA journal_mode=WAL")
@@ -145,7 +153,7 @@ def nodeops_db(tmp_path: Path) -> Path:
             ts_utc TEXT NOT NULL, username TEXT, action TEXT NOT NULL,
             node TEXT, params_summary TEXT, status TEXT NOT NULL
         );
-        """
+        """,
     )
     conn.commit()
     conn.close()
