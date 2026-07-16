@@ -1,0 +1,21 @@
+[Unit]
+Description=Nodeops data shipper (SQLite + node dirs -> RDS Postgres)
+# Purely additive: reads nodeops.db read-only and tails node dirs. It never writes
+# to or restarts nodeops or the trading nodes. Ordering after nodeops is a soft
+# preference only; the shipper tolerates the DB/dirs being absent and retries.
+After=network-online.target nodeops.service docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Runs as root: the node status.json/heartbeat.json/session logs and nodeops.db are
+# root-owned on the deploy host.
+User=root
+# DB credentials + tuning live here (600, root-owned, NOT committed to the repo).
+EnvironmentFile=/opt/cloudbet/shipper/shipper.env
+ExecStart=/opt/cloudbet/shipper/venv/bin/python /opt/cloudbet/shipper/shipper.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
