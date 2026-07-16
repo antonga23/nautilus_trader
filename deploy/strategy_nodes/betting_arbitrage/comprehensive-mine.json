@@ -1,0 +1,85 @@
+{
+  "node_id": "comprehensive-mine",
+  "trader_id": "BETARB-MINE-001",
+  "validation_mode": true,
+  "allow_dummy_credentials": false,
+  "log_level": "INFO",
+  "rendered_config_path": "/scratch/artifacts/comprehensive-mine/trading-node-config.json",
+  "status_path": "/scratch/artifacts/comprehensive-mine/status.json",
+  "heartbeat_path": "/scratch/artifacts/comprehensive-mine/heartbeat.json",
+  "semantic_rule_cache_dir": "/scratch/cache",
+  "semantic_rule_cache_mode": "fresh",
+  "semantic_rule_cache_default_root": "/registry",
+  "timeout_connection": 240.0,
+  "strategy": {
+    "opportunity_graph_engine": "semantic_rust",
+    "auto_execute": false
+  },
+  "venues": [
+    {
+      "venue": "SXBET",
+      "client_key": "SXBET_PRIMARY",
+      "data_enabled": true,
+      "execution_enabled": false,
+      "credential_prefix": "SXBET",
+      "load_all_instruments": true,
+      "sport_keys": [
+        "soccer",
+        "basketball",
+        "tennis",
+        "american_football",
+        "ice_hockey",
+        "baseball"
+      ],
+      "instrument_load_limit": 600,
+      "market_discovery_limit": 800,
+      "prefer_liquid_markets": true,
+      "live_only": false
+    },
+    {
+      "venue": "CLOUDBET",
+      "client_key": "CLOUDBET_PRIMARY",
+      "data_enabled": true,
+      "execution_enabled": false,
+      "credential_prefix": "CLOUDBET",
+      "load_all_instruments": true,
+      "sport_keys": [
+        "soccer",
+        "basketball",
+        "tennis",
+        "american_football",
+        "ice_hockey",
+        "baseball"
+      ],
+      "instrument_load_limit": 400,
+      "market_discovery_limit": 400,
+      "prefer_liquid_markets": true,
+      "live_only": false
+    },
+    {
+      "venue": "POLYMARKET",
+      "client_key": "POLYMARKET_PRIMARY",
+      "data_enabled": true,
+      "execution_enabled": false,
+      "credential_prefix": "POLYMARKET",
+      "load_all_instruments": true,
+      "sport_keys": [
+        "soccer",
+        "basketball",
+        "tennis",
+        "american_football",
+        "ice_hockey",
+        "baseball"
+      ],
+      "instrument_load_limit": 400,
+      "market_discovery_limit": 400,
+      "prefer_liquid_markets": true,
+      "live_only": false
+    }
+  ],
+  "metadata": {
+    "phase": "comprehensive-mine",
+    "track": "semantic-cache-superset-seed",
+    "note": "Mine-only manifest: run with validate-manifest to fresh-mine a superset semantic template corpus across all three venues and register it under semantic_rule_cache_default_root. The registered mine is consumed as a seed by narrower-scoped deployed nodes via semantic_rule_cache_seed_dir with semantic_rule_cache_seed_allow_scope_mismatch=true. Never deployed as a trading node."
+  }
+}

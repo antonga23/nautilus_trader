@@ -287,16 +287,19 @@ def _try_seed_semantic_cache(
         return None
 
     seed_status = semantic_cache_status(seed_dir, manifest=manifest)
-    if not seed_status.ready or not seed_status.compatible:
-        if logger is not None:
-            logger.warning(
-                "Ignoring incompatible semantic cache seed: "
-                f"path={seed_dir} ready={seed_status.ready} compatible={seed_status.compatible}",
-            )
+    scope_mismatch_accepted = _seed_compatibility_gate(
+        seed_status,
+        seed_dir,
+        manifest=manifest,
+        logger=logger,
+    )
+    if scope_mismatch_accepted is None:
         return None
 
     _reset_semantic_cache_dir(cache_dir)
     shutil.copytree(seed_dir, cache_dir, dirs_exist_ok=True)
+    if scope_mismatch_accepted:
+        _write_semantic_cache_compatibility(cache_dir, manifest=manifest)
     status = semantic_cache_status(cache_dir, source="seeded", manifest=manifest)
     if status.ready and status.compatible:
         if logger is not None:
@@ -306,6 +309,50 @@ def _try_seed_semantic_cache(
             )
         return status
     return None
+
+
+def _seed_compatibility_gate(
+    seed_status: SemanticCacheStatus,
+    seed_dir: Path,
+    *,
+    manifest: BettingArbitrageNodeManifest,
+    logger: Logger | None,
+) -> bool | None:
+    """
+    Return ``False`` for a fully compatible seed, ``True`` for a scope-mismatched seed
+    accepted via the manifest opt-in (compatibility version must still match), or
+    ``None`` when the seed is rejected.
+    """
+    if seed_status.ready and seed_status.compatible:
+        return False
+    if _accept_scope_mismatched_seed(seed_status, manifest=manifest):
+        if logger is not None:
+            logger.warning(
+                "Semantic seed scope mismatch accepted: "
+                f"seed_scope={seed_status.compatibility_scope} "
+                f"node_scope={_semantic_cache_scope_key(manifest)} path={seed_dir}",
+            )
+        return True
+    if logger is not None:
+        logger.warning(
+            "Ignoring incompatible semantic cache seed: "
+            f"path={seed_dir} ready={seed_status.ready} "
+            f"compatible={seed_status.compatible}",
+        )
+    return None
+
+
+def _accept_scope_mismatched_seed(
+    seed_status: SemanticCacheStatus,
+    *,
+    manifest: BettingArbitrageNodeManifest,
+) -> bool:
+    if not bool(getattr(manifest, "semantic_rule_cache_seed_allow_scope_mismatch", False)):
+        return False
+    return (
+        seed_status.ready
+        and seed_status.compatibility_version == SEMANTIC_CACHE_COMPATIBILITY_VERSION
+    )
 
 
 def _default_mine_dir(default_root: str, manifest: BettingArbitrageNodeManifest) -> Path:
