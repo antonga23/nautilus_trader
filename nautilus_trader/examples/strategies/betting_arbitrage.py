@@ -986,7 +986,10 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._fx_refresh_fetches = 0
         self._fx_refresh_failures = 0
         self._fx_refresh_failures_by_pair: Counter[str] = Counter()
-        self._arb_position_tracker = ArbPositionTracker(policy=self._portfolio_currency_policy())
+        self._arb_position_tracker = ArbPositionTracker(
+            policy=self._portfolio_currency_policy(),
+            winning_profit_fee_rates=self._config.venue_winning_profit_fee_rates,
+        )
         self._arb_leg_settlements: dict[str, SettlementResult] = {}
         self._bet_settlements_received = 0
         self._bet_settlements_unmatched = 0

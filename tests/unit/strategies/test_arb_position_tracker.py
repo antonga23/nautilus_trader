@@ -24,6 +24,7 @@ binary market with mutually exclusive outcomes A and B:
 
 from decimal import Decimal
 
+from nautilus_trader.adapters.betting.common.fees import DEFAULT_WINNING_PROFIT_FEE_RATES
 from nautilus_trader.adapters.betting.fx import PortfolioCurrencyPolicy
 from nautilus_trader.core.nautilus_pyo3 import BetSide
 from nautilus_trader.examples.strategies.arb_position_tracker import ArbPositionTracker
@@ -601,3 +602,150 @@ def test_settle_from_leg_results_cross_currency_half_won_normalised_to_base():
     assert realized == Decimal("7.4925")
     assert realized == Decimal("14.985") / 2
     assert pair.void is False
+
+
+# --- SX.bet winning-profit commission on realized P&L (B4) --------------------------------
+#
+#   SX.bet charges a 4% taker commission on NET WINNINGS (the profit portion), not on gross
+#   return: a BACK at odds p for stake s wins the profit (p-1)*s, and win_payoff is already
+#   that net profit (stake excluded), so the commission is 4% of win_payoff. It applies only
+#   to a winning leg (WON, or the won half of a HALF_WON) on the SX.bet venue -- never to a
+#   loss, void, or push, and never to a non-SX.bet venue. All expected numbers below are
+#   hand-computed from that identity.
+#
+#   BACK 2.0 stake 10: win_payoff = 10*(2.0-1) = +10 ; commission 0.04*10 = 0.4 -> net +9.6.
+
+_SXBET_WINNING_FEE = {"SXBET": Decimal("0.04")}
+
+
+def _fee_tracker(venue_a, venue_b, *, fees=_SXBET_WINNING_FEE, policy=None):
+    # LEG_A on venue_a, LEG_B on venue_b, both BACK 2.0 stake 10.
+    tracker = ArbPositionTracker(policy=policy, winning_profit_fee_rates=fees)
+    tracker.record_fill(LEG_A, OUTCOME_A, "BUY", "2.0", "10", sibling_id=LEG_B, venue=venue_a)
+    tracker.record_fill(LEG_B, OUTCOME_B, "BUY", "2.0", "10", sibling_id=LEG_A, venue=venue_b)
+    return tracker, tracker.pair_key(LEG_A, LEG_B)
+
+
+def test_a_sxbet_won_realizes_net_of_4pct_winning_commission():
+    # SX.bet leg WON (+10 gross profit) -> commission 0.04*10 = 0.4 -> net +9.6. Sibling VOID.
+    tracker, pair_id = _fee_tracker("CLOUDBET", "SXBET")
+    realized = tracker.pair(pair_id).settle_from_leg_results({LEG_A: "VOID", LEG_B: "WON"})
+    assert realized == Decimal("9.6")
+
+
+def test_b_sxbet_half_won_charges_commission_on_the_half():
+    # HALF_WON realizes half the winning profit (+5) -> commission 0.04*5 = 0.2 -> net +4.8.
+    tracker, pair_id = _fee_tracker("CLOUDBET", "SXBET")
+    realized = tracker.pair(pair_id).settle_from_leg_results({LEG_A: "VOID", LEG_B: "HALF_WON"})
+    assert realized == Decimal("4.8")
+
+
+def test_c_sxbet_loss_void_push_carry_no_commission():
+    # A commission is a fee on winnings only: LOST keeps its full -10, VOID/PUSH stay 0.
+    lost_t, lost_id = _fee_tracker("CLOUDBET", "SXBET")
+    assert lost_t.pair(lost_id).settle_from_leg_results(
+        {LEG_A: "VOID", LEG_B: "LOST"},
+    ) == Decimal(-10)
+
+    void_t, void_id = _fee_tracker("CLOUDBET", "SXBET")
+    assert void_t.pair(void_id).settle_from_leg_results(
+        {LEG_A: "VOID", LEG_B: "VOID"},
+    ) == Decimal(0)
+
+    push_t, push_id = _fee_tracker("CLOUDBET", "SXBET")
+    assert push_t.pair(push_id).settle_from_leg_results(
+        {LEG_A: "VOID", LEG_B: "PUSH"},
+    ) == Decimal(0)
+
+
+def test_d_non_sxbet_win_carries_no_commission():
+    # The 4% SX.bet rate is venue-scoped: a CLOUDBET or POLYMARKET win is untouched (+10).
+    cb_t, cb_id = _fee_tracker("CLOUDBET", "SXBET")
+    assert cb_t.pair(cb_id).settle_from_leg_results(
+        {LEG_A: "WON", LEG_B: "VOID"},
+    ) == Decimal(10)
+
+    pm_t, pm_id = _fee_tracker("POLYMARKET", "SXBET")
+    assert pm_t.pair(pm_id).settle_from_leg_results(
+        {LEG_A: "WON", LEG_B: "VOID"},
+    ) == Decimal(10)
+
+
+def test_e_cross_venue_pair_only_reduces_the_sxbet_leg():
+    # CB WON (+10, no commission) + SX WON (+10 gross -> net +9.6) -> joint 19.6, not 20.
+    tracker, pair_id = _fee_tracker("CLOUDBET", "SXBET")
+    realized = tracker.pair(pair_id).settle_from_leg_results({LEG_A: "WON", LEG_B: "WON"})
+    assert realized == Decimal("19.6")
+
+
+def test_f_cross_currency_sxbet_commission_applied_before_fx_normalisation():
+    # SX.bet leg WON in EUR: full win 8*1.5 = 12 EUR, commission 0.04*12 = 0.48 EUR -> 11.52
+    # EUR net, then FX-normalised 11.52*1.25*0.999 = 14.3856 base USD. Sibling USDC VOID -> 0.
+    # A commission is a scalar fraction so native-then-FX equals FX-then-commission; the gross
+    # 14.985 base (test_settle_from_leg_results_cross_currency_void_refund_in_base) * 0.96.
+    tracker = ArbPositionTracker(policy=_CROSS_POLICY, winning_profit_fee_rates=_SXBET_WINNING_FEE)
+    tracker.record_fill(
+        LEG_A,
+        OUTCOME_A,
+        "BUY",
+        "2.5",
+        "8",
+        sibling_id=LEG_B,
+        currency="EUR",
+        venue="SXBET",
+    )
+    tracker.record_fill(
+        LEG_B,
+        OUTCOME_B,
+        "BUY",
+        "2.5",
+        "10",
+        sibling_id=LEG_A,
+        currency="USDC",
+        venue="CLOUDBET",
+    )
+    pair = tracker.pair(tracker.pair_key(LEG_A, LEG_B))
+
+    realized = pair.settle_from_leg_results({LEG_A: "WON", LEG_B: "VOID"})
+
+    assert realized == Decimal("14.3856")
+    assert realized == Decimal("14.985") * (Decimal(1) - Decimal("0.04"))
+
+
+def test_g_default_rate_is_4pct_sxbet_and_config_map_overrides_it():
+    # The shared default maps SX.bet to 4%.
+    assert {"SXBET": Decimal("0.04")} == DEFAULT_WINNING_PROFIT_FEE_RATES
+    default_t, default_id = _fee_tracker("CLOUDBET", "SXBET", fees=DEFAULT_WINNING_PROFIT_FEE_RATES)
+    assert default_t.pair(default_id).settle_from_leg_results(
+        {LEG_A: "VOID", LEG_B: "WON"},
+    ) == Decimal("9.6")
+
+    # An override map replaces the rate: 2% -> commission 0.2 -> net +9.8.
+    override_t, override_id = _fee_tracker("CLOUDBET", "SXBET", fees={"SXBET": Decimal("0.02")})
+    assert override_t.pair(override_id).settle_from_leg_results(
+        {LEG_A: "VOID", LEG_B: "WON"},
+    ) == Decimal("9.8")
+
+    # No configured rate (the pre-B4 default construction) leaves the winning payoff whole.
+    none_t, none_id = _fee_tracker("CLOUDBET", "SXBET", fees=None)
+    assert none_t.pair(none_id).settle_from_leg_results(
+        {LEG_A: "VOID", LEG_B: "WON"},
+    ) == Decimal(10)
+
+
+def test_h_same_market_sxbet_win_folds_commission_into_settle_and_floor():
+    # Same-market SX.bet pair (both legs SX.bet) settles via the joint payoff, and both the
+    # open-outcome floor and the realized payoff are net of the winning-leg commission, so a
+    # locked arb never reports a guaranteed floor it cannot realize. BACK 2.0 stake 10 both:
+    # A wins -> A.win net 9.6 + B.lose -10 = -0.4 ; B wins symmetric.
+    tracker, pair_id = _fee_tracker("SXBET", "SXBET")
+    pair = tracker.pair(pair_id)
+    assert pair.is_cross_venue is False
+
+    pnls = pair.outcome_pnls()
+    assert pnls[OUTCOME_A] == Decimal("-0.4")
+    assert pnls[OUTCOME_B] == Decimal("-0.4")
+
+    realized = pair.settle(OUTCOME_A)
+    assert realized == Decimal("-0.4")
+    assert realized == pnls[OUTCOME_A]

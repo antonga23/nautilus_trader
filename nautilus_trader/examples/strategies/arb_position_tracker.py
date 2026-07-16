@@ -38,6 +38,7 @@ joint computation is side-agnostic and never hand-rolls odds math.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field
 from decimal import Decimal
@@ -143,6 +144,7 @@ class ArbPairState:
     winning_outcome: str | None = None
     realized_pnl: Decimal | None = None
     policy: PortfolioCurrencyPolicy | None = None
+    winning_profit_fee_rates: Mapping[str, Decimal] = field(default_factory=dict)
 
     @property
     def filled_legs(self) -> list[LegState]:
@@ -216,23 +218,52 @@ class ArbPairState:
         ``None`` is returned when a leg currency has no available rate: the pair then
         bears currency risk and must not report a bogus locked floor.
 
+        The winning leg's payoff is booked net of its venue's winning-profit commission
+        (e.g. SX.bet's 4%), applied in native currency before FX conversion. This keeps the
+        open-outcome floor and the realized payoff on one footing, so a locked arb never
+        reports a guaranteed floor it cannot actually realize after commission.
+
         """
         legs = self.filled_legs
-        if not self.is_cross_currency:
-            total = Decimal(0)
-            for leg in legs:
-                total += leg.win_payoff if leg.outcome == winning_outcome else leg.lose_payoff
-            return total
-        if self.policy is None:
+        cross_currency = self.is_cross_currency
+        if cross_currency and self.policy is None:
             return None
         total = Decimal(0)
         for leg in legs:
-            native = leg.win_payoff if leg.outcome == winning_outcome else leg.lose_payoff
+            if leg.outcome == winning_outcome:
+                native = self._net_winning_native(leg.win_payoff, leg)
+            else:
+                native = leg.lose_payoff
+            if not cross_currency:
+                total += native
+                continue
             contribution = self._convert_native_payoff(native, leg.currency)
             if contribution is None:
                 return None
             total += contribution
         return total
+
+    def _winning_profit_fee_rate(self, venue: str) -> Decimal:
+        """
+        Winning-profit commission rate for ``venue`` (0 when none is configured).
+        """
+        return self.winning_profit_fee_rates.get(venue.strip().upper(), Decimal(0))
+
+    def _net_winning_native(self, native: Decimal, leg: LegState) -> Decimal:
+        """
+        Subtract the leg venue's winning-profit commission from a realized winning
+        payoff.
+
+        Commission is ``rate * max(native, 0)``: it applies only to the winning profit
+        (``win_payoff`` is already net of stake, so the profit is the payoff itself), is
+        venue-scoped (a venue with no configured rate leaves the payoff untouched), and is
+        never charged on a non-positive payoff (a loss or refund carries no winning profit).
+
+        """
+        rate = self._winning_profit_fee_rate(leg.venue)
+        if rate <= 0 or native <= 0:
+            return native
+        return native - (rate * native)
 
     def _convert_native_payoff(self, native: Decimal, currency: str) -> Decimal | None:
         """
@@ -296,9 +327,11 @@ class ArbPairState:
 
         ``void`` refunds both stakes, so realized P&L is exactly zero. Otherwise realized
         P&L is the base-currency joint payoff for ``winning_outcome`` (an outcome not
-        backed by any leg settles every leg at its lose payoff). Cross-currency legs are
-        normalised through ``convert_payoff``; a leg with no available rate realizes
-        ``None`` (currency-risk-bearing) rather than a raw sum of mismatched currencies.
+        backed by any leg settles every leg at its lose payoff), net of each venue's
+        winning-profit commission on the winning leg (e.g. SX.bet's 4%; applied in native
+        currency before FX conversion). Cross-currency legs are normalised through
+        ``convert_payoff``; a leg with no available rate realizes ``None``
+        (currency-risk-bearing) rather than a raw sum of mismatched currencies.
 
         """
         self.settled = True
@@ -327,7 +360,10 @@ class ArbPairState:
         so HALF_WON contributes ``win_payoff / 2`` and HALF_LOST contributes
         ``lose_payoff / 2`` (the full-win / full-loss payoff scaled by the half that settled
         at odds; the refunded half contributes zero). PUSH refunds the full stake and
-        contributes zero, exactly like VOID. Cross-currency legs are normalised into the base
+        contributes zero, exactly like VOID. A winning leg's payoff is booked net of its
+        venue's winning-profit commission (e.g. SX.bet's 4% on net winnings), applied to the
+        actual realized winning amount -- so HALF_WON is charged on ``win_payoff / 2`` -- in
+        native currency before FX conversion. Cross-currency legs are normalised into the base
         currency; an unconvertible leg realizes ``None``. ``results`` maps each leg's client
         order id to its grading string (``WON`` / ``LOST`` / ``VOID`` / ``HALF_WON`` /
         ``HALF_LOST`` / ``PUSH``).
@@ -350,11 +386,13 @@ class ArbPairState:
             if result in ("VOID", "PUSH"):
                 continue  # Stake refunded; no P&L and no currency exposure on this leg.
             if result == "WON":
-                native = leg.win_payoff
+                native = self._net_winning_native(leg.win_payoff, leg)
             elif result == "LOST":
                 native = leg.lose_payoff
             elif result == "HALF_WON":
-                native = leg.win_payoff / 2  # Half the stake won at odds; the other half pushed.
+                # Half the stake won at odds; the other half pushed. Commission applies to
+                # the actual realized winning profit, i.e. the post-half-scaling payoff.
+                native = self._net_winning_native(leg.win_payoff / 2, leg)
             elif result == "HALF_LOST":
                 native = leg.lose_payoff / 2  # Half the stake lost; the other half pushed.
             else:
@@ -409,10 +447,16 @@ class ArbPositionTracker:
     canonical key the strategy uses for unwind bookkeeping).
     """
 
-    def __init__(self, policy: PortfolioCurrencyPolicy | None = None) -> None:
+    def __init__(
+        self,
+        policy: PortfolioCurrencyPolicy | None = None,
+        *,
+        winning_profit_fee_rates: Mapping[str, Decimal] | None = None,
+    ) -> None:
         self._pairs: dict[str, ArbPairState] = {}
         self._leg_to_pair: dict[str, str] = {}
         self._policy = policy
+        self._winning_profit_fee_rates: dict[str, Decimal] = dict(winning_profit_fee_rates or {})
 
     @staticmethod
     def pair_key(leg_a_id: object, leg_b_id: object) -> str:
@@ -448,7 +492,11 @@ class ArbPositionTracker:
         pair_id = self._resolve_pair_id(coid, sibling_id)
         pair = self._pairs.get(pair_id)
         if pair is None:
-            pair = ArbPairState(pair_id=pair_id, policy=self._policy)
+            pair = ArbPairState(
+                pair_id=pair_id,
+                policy=self._policy,
+                winning_profit_fee_rates=self._winning_profit_fee_rates,
+            )
             self._pairs[pair_id] = pair
         self._leg_to_pair[coid] = pair_id
         leg = pair.legs.get(coid)
