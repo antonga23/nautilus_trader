@@ -172,6 +172,34 @@ def fee_adjusted_odds(
     )
 
 
+def fx_adjusted_effective_odds(
+    effective_odds: Decimal | float | str,
+    *,
+    payoff_factor: Decimal,
+    notional_factor: Decimal,
+) -> Decimal:
+    """
+    Fold the cost of a cross-currency conversion into fee-adjusted effective odds.
+
+    ``effective_odds`` is the net-of-fee return per unit stake denominated in the
+    leg's own currency. To express it per unit of base-currency notional, the stake
+    outlay is converted with ``notional_factor`` (base per one unit of the leg
+    currency, haircut-inflated) and the resulting payoff is converted back with
+    ``payoff_factor`` (haircut-reduced). The ratio ``payoff_factor / notional_factor``
+    is therefore the round-trip FX cost, which is strictly below 1 for a genuine
+    cross-currency leg and exactly 1 for a same-currency (identity) conversion.
+
+    """
+    odds = Decimal(str(effective_odds))
+    if notional_factor <= 0 or payoff_factor <= 0:
+        msg = (
+            "FX conversion factors must be positive, got "
+            f"payoff_factor={payoff_factor}, notional_factor={notional_factor}"
+        )
+        raise ValueError(msg)
+    return odds * payoff_factor / notional_factor
+
+
 def fee_adjusted_basket_margin(
     probabilities: list[Decimal] | tuple[Decimal, ...],
     *,

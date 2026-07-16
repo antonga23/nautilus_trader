@@ -41,9 +41,11 @@ from nautilus_trader.adapters.betting.common.fees import FeeAdjustedCoverageBask
 from nautilus_trader.adapters.betting.common.fees import fee_adjusted_basket_margin
 from nautilus_trader.adapters.betting.common.fees import fee_adjusted_coverage_basket
 from nautilus_trader.adapters.betting.common.fees import fee_adjusted_odds
+from nautilus_trader.adapters.betting.common.fees import fx_adjusted_effective_odds
 from nautilus_trader.adapters.betting.common.fees import normalize_venue_fee_rates
 from nautilus_trader.adapters.betting.common.odds import DeviggedBook
 from nautilus_trader.adapters.betting.common.odds import calculate_arbitrage_stakes
+from nautilus_trader.adapters.betting.common.odds import calculate_cross_currency_arbitrage_stakes
 from nautilus_trader.adapters.betting.common.odds import decimal_to_probability
 from nautilus_trader.adapters.betting.common.odds import devig_probabilities
 from nautilus_trader.adapters.betting.common.settlement import BET_SETTLEMENTS_TOPIC
@@ -3305,10 +3307,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             fetch_latency_a_secs > freshness.max_fetch_latency_secs
             or fetch_latency_b_secs > freshness.max_fetch_latency_secs
         )
-        stake_odds_a, stake_odds_b = self._stake_pricing_odds(opportunity)
-        suggested_stake_a, suggested_stake_b, expected_profit = calculate_arbitrage_stakes(
-            odds_a=stake_odds_a,
-            odds_b=stake_odds_b,
+        suggested_stake_a, suggested_stake_b, expected_profit = self._sized_arbitrage_stakes(
+            opportunity,
             total_stake=self._config.max_total_stake,
         )
         available_size_a = self._quote_available_size(quote_a)
@@ -3788,10 +3788,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             or fetch_latency_b_secs > freshness.max_fetch_latency_secs
         )
         matcher_suspect, suspect_reason = self._matcher_suspect_reason(inst_a, inst_b)
-        stake_odds_a, stake_odds_b = self._stake_pricing_odds(opportunity)
-        suggested_stake_a, suggested_stake_b, expected_profit = calculate_arbitrage_stakes(
-            odds_a=stake_odds_a,
-            odds_b=stake_odds_b,
+        suggested_stake_a, suggested_stake_b, expected_profit = self._sized_arbitrage_stakes(
+            opportunity,
             total_stake=self._config.max_total_stake,
         )
         available_size_a = self._quote_available_size(quote_a)
@@ -4056,7 +4054,19 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             basket_boost_rate=basket_boost_rate,
         )
         adjusted_total_probability = adjusted_basket.effective_total_probability
-        adjusted_profit_margin = adjusted_basket.effective_profit_margin
+        fee_only_profit_margin = adjusted_basket.effective_profit_margin
+        # For a genuine cross-currency pair the fee-adjusted margin is denominated in two
+        # different currencies and is not a realisable edge. Recompute it net of FX so a
+        # phantom edge (positive single-currency margin that FX erases) reports its true,
+        # non-positive post-FX margin and is rejected by the min-profit-margin gate.
+        fx_net_profit_margin = self._fx_net_profit_margin(
+            opportunity,
+            fee_a.effective_odds,
+            fee_b.effective_odds,
+        )
+        adjusted_profit_margin = (
+            fx_net_profit_margin if fx_net_profit_margin is not None else fee_only_profit_margin
+        )
         return replace(
             opportunity,
             probability_a=fee_a.effective_probability,
@@ -4068,7 +4078,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             raw_total_probability=raw_total_probability,
             raw_profit_margin=raw_profit_margin,
             fee_adjusted=True,
-            fee_drag=raw_profit_margin - adjusted_profit_margin,
+            fee_drag=raw_profit_margin - fee_only_profit_margin,
             fee_adjusted_odds_a=fee_a.effective_odds,
             fee_adjusted_odds_b=fee_b.effective_odds,
             taker_fee_rate_a=fee_a.taker_fee_rate,
@@ -4607,10 +4617,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 return refresh_reasons
         opportunity = self.fee_adjusted_opportunity(opportunity)
         # Calculate optimal stakes
-        stake_odds_a, stake_odds_b = self._stake_pricing_odds(opportunity)
-        stake_a, stake_b, profit = calculate_arbitrage_stakes(
-            odds_a=stake_odds_a,
-            odds_b=stake_odds_b,
+        stake_a, stake_b, profit = self._sized_arbitrage_stakes(
+            opportunity,
             total_stake=self._config.max_total_stake,
         )
         risk_reasons = self._live_execution_block_reasons_for(
@@ -4744,10 +4752,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 )
                 return None
         opportunity = self.fee_adjusted_opportunity(opportunity)
-        stake_odds_a, stake_odds_b = self._stake_pricing_odds(opportunity)
-        stake_a, stake_b, expected_profit = calculate_arbitrage_stakes(
-            odds_a=stake_odds_a,
-            odds_b=stake_odds_b,
+        stake_a, stake_b, expected_profit = self._sized_arbitrage_stakes(
+            opportunity,
             total_stake=self._config.max_total_stake,
         )
         risk_reasons = self._live_execution_block_reasons_for(
@@ -5089,10 +5095,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         quote_delta_secs = self._quote_pair_skew_secs(quote_a, quote_b)
         fetch_latency_a_secs = self._quote_fetch_latency_secs(quote_a)
         fetch_latency_b_secs = self._quote_fetch_latency_secs(quote_b)
-        stake_odds_a, stake_odds_b = self._stake_pricing_odds(opportunity)
-        stake_a, stake_b, _expected_profit = calculate_arbitrage_stakes(
-            odds_a=stake_odds_a,
-            odds_b=stake_odds_b,
+        stake_a, stake_b, _expected_profit = self._sized_arbitrage_stakes(
+            opportunity,
             total_stake=self._config.max_total_stake,
         )
 
@@ -5212,16 +5216,21 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         stablecoins = policy.stablecoin_currencies
         if currency_a in stablecoins and currency_b in stablecoins:
             return []
-        if opportunity.is_same_venue or self._config.allow_cross_currency_live_execution:
+        # Same-venue pairs settle in one currency; there is no cross-currency exposure
+        # between the two legs.
+        if opportunity.is_same_venue or currency_a == currency_b:
             return []
-        if (
-            policy.convert(Decimal(1), currency_a).is_available
-            and policy.convert(Decimal(1), currency_b).is_available
-        ):
+        # Genuine cross-currency pair. Interlock execution on BOTH legs being convertible
+        # into the base currency: the FX sizing above needs a rate for each leg, so a
+        # missing or stale rate must block the pair. The allow_cross_currency_live_execution
+        # flag is deliberately NOT a standalone bypass here — bypassing convertibility left
+        # a raw 1:1 notional fallback active, which under-states crypto-leg notional and
+        # re-opens the phantom cross-currency edge. Fail safe: block on any unavailable leg.
+        conversion_a = policy.convert(Decimal(1), currency_a)
+        conversion_b = policy.convert(Decimal(1), currency_b)
+        if conversion_a.is_available and conversion_b.is_available:
             return []
-        if currency_a != currency_b:
-            return ["cross_currency_live_execution_blocked"]
-        return []
+        return ["cross_currency_live_execution_blocked"]
 
     def _usd_equivalent_notional(
         self,
@@ -5257,6 +5266,81 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             stablecoin_haircut_bps=self._config.stablecoin_haircut_bps,
             fx_quote_max_age_secs=self._config.fx_quote_max_age_secs,
             static_fx_rates=self._config.configured_fx_rates,
+        )
+
+    def _fx_net_profit_margin(
+        self,
+        opportunity: ArbitrageOpportunity,
+        effective_odds_a: Decimal,
+        effective_odds_b: Decimal,
+    ) -> Decimal | None:
+        """
+        Post-FX arb margin in base currency, or ``None`` when FX does not apply.
+
+        Returns ``None`` for a same-currency pair (no FX exposure between the legs, so
+        the fee-adjusted margin already reflects the realisable edge) and when a required
+        rate is unavailable (execution is blocked by the currency interlock instead).
+
+        """
+        currency_a = self._instrument_currency_code(opportunity.instrument_a)
+        currency_b = self._instrument_currency_code(opportunity.instrument_b)
+        if not currency_a or not currency_b or currency_a == currency_b:
+            return None
+        policy = self._portfolio_currency_policy()
+        notional_a = policy.convert(Decimal(1), currency_a).converted_amount
+        notional_b = policy.convert(Decimal(1), currency_b).converted_amount
+        payoff_a = policy.convert_payoff(Decimal(1), currency_a).converted_amount
+        payoff_b = policy.convert_payoff(Decimal(1), currency_b).converted_amount
+        if notional_a is None or notional_b is None or payoff_a is None or payoff_b is None:
+            return None
+        base_odds_a = fx_adjusted_effective_odds(
+            effective_odds_a,
+            payoff_factor=payoff_a,
+            notional_factor=notional_a,
+        )
+        base_odds_b = fx_adjusted_effective_odds(
+            effective_odds_b,
+            payoff_factor=payoff_b,
+            notional_factor=notional_b,
+        )
+        total_probability = (Decimal(1) / base_odds_a) + (Decimal(1) / base_odds_b)
+        return (Decimal(1) / total_probability) - Decimal(1)
+
+    def _sized_arbitrage_stakes(
+        self,
+        opportunity: ArbitrageOpportunity,
+        *,
+        total_stake: Decimal,
+    ) -> tuple[Decimal, Decimal, Decimal]:
+        """
+        Size both legs, equalising post-FX payoffs for a cross-currency pair.
+
+        A genuine cross-currency pair whose legs are both convertible is sized so the
+        base-currency payoffs match across outcomes; the returned profit is then the
+        guaranteed base-currency profit. Every other pair (same currency, or a cross-
+        currency pair with an unavailable rate) falls back to the single-currency split.
+        A cross-currency pair with a missing rate never executes on these stakes: the
+        currency interlock blocks it before submission.
+
+        """
+        stake_odds_a, stake_odds_b = self._stake_pricing_odds(opportunity)
+        currency_a = self._instrument_currency_code(opportunity.instrument_a)
+        currency_b = self._instrument_currency_code(opportunity.instrument_b)
+        if currency_a and currency_b and currency_a != currency_b:
+            result = calculate_cross_currency_arbitrage_stakes(
+                odds_a=stake_odds_a,
+                odds_b=stake_odds_b,
+                total_stake=total_stake,
+                policy=self._portfolio_currency_policy(),
+                currency_a=currency_a,
+                currency_b=currency_b,
+            )
+            if result.is_available:
+                return result.stake_a, result.stake_b, result.guaranteed_profit
+        return calculate_arbitrage_stakes(
+            odds_a=stake_odds_a,
+            odds_b=stake_odds_b,
+            total_stake=total_stake,
         )
 
     @staticmethod
