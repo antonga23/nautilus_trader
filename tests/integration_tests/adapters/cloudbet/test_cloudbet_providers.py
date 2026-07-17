@@ -16,7 +16,7 @@ import asyncio
 import json
 import time
 from typing import List
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from nautilus_trader.common.clock import LiveClock
@@ -26,7 +26,7 @@ from nautilus_trader.common.clock import TestClock
 from nautilus_trader.common.logging import Logger
 
 from nautilus_trader.adapters.cloudbet.client.core import CloudbetClient
-from nautilus_trader.adapters.cloudbet.client.schema import Selection, GetLatestOddsResponse
+from nautilus_trader.adapters.cloudbet.client.schema import Selection, GetLatestOddsResponse, SelectionStatus
 from nautilus_trader.adapters.cloudbet.common import CLOUDBET_VENUE
 from nautilus_trader.adapters.cloudbet.providers import CloudbetInstrumentProvider
 from nautilus_trader.model.instruments.crypto_betting import CryptoBettingInstrument
@@ -237,3 +237,88 @@ class TestCloudbetInstrumentProvider:
         # Test already in self._subscribed_instruments
         instrument = self.provider.get_betting_instrument(**kw)
         assert instrument is None
+
+
+def _cap_selection(index: int, max_stake: float) -> Selection:
+    return Selection(
+        competition_name="Comp",
+        sport_name="Soccer",
+        event_id=1000 + index,
+        home_name="Home",
+        away_name="Away",
+        status="TRADING",
+        market_name="soccer.match_odds",
+        submarket_name="match_odds",
+        outcome=f"outcome-{index}",
+        price=2.0,
+        min_stake=1.0,
+        max_stake=float(max_stake),
+        selection_status=SelectionStatus.ENABLED,
+        side="BACK",
+        params=None,
+        event_name="Home vs Away",
+    )
+
+
+class TestCloudbetInstrumentLoadCap:
+    """
+    FIX-2: load_all_async enforces instrument_load_limit as a live-subscription hard
+    cap, keeping the deepest markets and leaving the API pagination `limit` untouched.
+    """
+
+    def _provider(self, filters: dict) -> CloudbetInstrumentProvider:
+        from nautilus_trader.config import InstrumentProviderConfig
+
+        return CloudbetInstrumentProvider(
+            client=MagicMock(),
+            logger=TestComponentStubs.logger(),
+            config=InstrumentProviderConfig(filters=filters),
+        )
+
+    @pytest.mark.asyncio()
+    async def test_cap_keeps_only_the_deepest_markets(self):
+        # 10 selections offered, shallow-to-deep max_stake; cap keeps the 4 deepest.
+        selections = [_cap_selection(i, max_stake=(i + 1) * 10) for i in range(10)]
+        provider = self._provider({"instrument_load_limit": 4, "sport_key": ["soccer"], "limit": 50})
+        provider._client.load_selection = AsyncMock(return_value=[selections])
+
+        loaded = await provider.load_all_async()
+
+        assert loaded == 4
+        assert provider.count == 4
+        kept_depths = sorted(int(inst.max_size) for inst in provider.list_all())
+        assert kept_depths == [70, 80, 90, 100]
+
+    @pytest.mark.asyncio()
+    async def test_cap_pops_limit_key_but_preserves_pagination_limit(self):
+        selections = [_cap_selection(i, max_stake=(i + 1) * 10) for i in range(5)]
+        provider = self._provider({"instrument_load_limit": 2, "sport_key": ["soccer"], "limit": 25})
+        provider._client.load_selection = AsyncMock(return_value=[selections])
+
+        await provider.load_all_async()
+
+        sent_filter = provider._client.load_selection.await_args.args[0]
+        assert "instrument_load_limit" not in sent_filter
+        assert sent_filter["limit"] == 25  # pagination limit is preserved
+
+    @pytest.mark.asyncio()
+    async def test_no_limit_is_unbounded(self):
+        selections = [_cap_selection(i, max_stake=(i + 1) * 10) for i in range(7)]
+        provider = self._provider({"sport_key": ["soccer"], "limit": 50})
+        provider._client.load_selection = AsyncMock(return_value=[selections])
+
+        loaded = await provider.load_all_async()
+
+        assert loaded == 7
+        assert provider.count == 7
+
+    @pytest.mark.asyncio()
+    async def test_zero_limit_is_unbounded(self):
+        selections = [_cap_selection(i, max_stake=(i + 1) * 10) for i in range(6)]
+        provider = self._provider({"instrument_load_limit": 0, "sport_key": ["soccer"], "limit": 50})
+        provider._client.load_selection = AsyncMock(return_value=[selections])
+
+        loaded = await provider.load_all_async()
+
+        assert loaded == 6
+        assert provider.count == 6

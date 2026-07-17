@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 import sys
 
+import pytest
+
 
 SCRIPT_PATH = Path("scripts/strategy_nodes/lint_live_pilot_manifest.py")
 
@@ -142,3 +144,61 @@ def test_betting_node_manifests_pin_semantic_rust_topology() -> None:
         strategy = payload.get("strategy")
         assert isinstance(strategy, dict), path
         assert strategy.get("opportunity_graph_engine") == "semantic_rust", path
+
+
+PER_SPORT_SHARDS = {
+    "soccer": 5,
+    "tennis": 6,
+    "basketball": 1,
+}
+
+
+@pytest.mark.parametrize("sport", sorted(PER_SPORT_SHARDS))
+def test_per_sport_shard_is_scoped_all_venue_and_unarmed(sport: str) -> None:
+    from nautilus_trader.live.strategy_nodes.betting_arbitrage.builder import (
+        build_trading_node_config,
+    )
+    from nautilus_trader.live.strategy_nodes.betting_arbitrage.builder import load_manifest
+
+    path = Path(
+        f"deploy/strategy_nodes/betting_arbitrage/cloudbet-sxbet-polymarket-{sport}.json",
+    )
+    manifest = load_manifest(path)
+    config = build_trading_node_config(manifest)
+
+    # Sport-filtered to exactly one sport.
+    assert manifest.strategy.sport_filter == sport
+
+    # All three venues co-located so cross-venue edges still form.
+    venues_by_name = {venue.venue: venue for venue in manifest.venues}
+    assert set(venues_by_name) == {"CLOUDBET", "SXBET", "POLYMARKET"}
+    assert len(config.data_clients) == 3
+
+    # Structurally unarmed: no execution clients and every execution flag is off.
+    assert len(config.exec_clients) == 0
+    assert manifest.validation_mode is True
+    assert manifest.strategy.live_execution_armed is False
+    assert manifest.strategy.auto_execute is False
+    assert manifest.strategy.value_execution_enabled is False
+    assert all(not venue.execution_enabled for venue in manifest.venues)
+    assert manifest.strategy.opportunity_graph_engine == "semantic_rust"
+
+    # Cross-venue sequencer wiring is present.
+    assert manifest.strategy.cross_venue_sequential_execution is True
+    assert manifest.strategy.cross_venue_anchor_venue == "CLOUDBET"
+
+    # Each venue is bounded by the live-subscription caps.
+    for venue in manifest.venues:
+        assert venue.instrument_load_limit is not None
+        assert venue.market_discovery_limit is not None
+        assert venue.quote_subscription_limit is not None
+        assert venue.top_markets_by_depth is not None
+
+    # Per-venue sport scoping uses the venue-native key/id space.
+    assert venues_by_name["CLOUDBET"].sport_keys == frozenset({sport})
+    assert venues_by_name["POLYMARKET"].sport_keys == frozenset({sport})
+    assert venues_by_name["SXBET"].sport_ids == frozenset({PER_SPORT_SHARDS[sport]})
+
+    # Total live-instrument budget stays near baseball scale (<= ~2000).
+    total_cap = sum(int(venue.instrument_load_limit or 0) for venue in manifest.venues)
+    assert total_cap <= 2000

@@ -409,10 +409,15 @@ def _build_cloudbet_data_importable(
     prefix = _credential_prefix(venue)
     api_url, _ = _resolve_venue_endpoints(venue)
     filters = _cloudbet_selection_filters(venue)
+    provider_filters = dict(filters)
+    if venue.instrument_load_limit is not None:
+        # Distinct from the pagination `limit` above: this is the live-subscription hard
+        # cap enforced in CloudbetInstrumentProvider.load_all_async (kept off market_filter).
+        provider_filters["instrument_load_limit"] = int(venue.instrument_load_limit)
     provider_config = {
         "load_all": venue.load_all_instruments,
         "load_ids": sorted(venue.instrument_ids or []) if not venue.load_all_instruments else None,
-        "filters": filters,
+        "filters": provider_filters,
     }
     config = {
         "api_key": _resolve_secret(prefix, "API_KEY", manifest.allow_dummy_credentials),

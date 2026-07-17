@@ -550,3 +550,95 @@ async def test_gamma_load_all_prefers_sports_event_markets(mock_clob_client, liv
         for instrument in instruments
     )
     mock_list_markets.assert_not_called()
+
+
+def _soccer_gamma_market(index: int) -> dict:
+    condition_id = f"0x{index:064x}"
+    yes_token = f"1{index:063d}"
+    no_token = f"2{index:063d}"
+    return {
+        "conditionId": condition_id,
+        "clobTokenIds": f'["{yes_token}", "{no_token}"]',
+        "outcomes": '["Yes", "No"]',
+        "outcomePrices": '["0.5", "0.5"]',
+        "question": "Will Arsenal beat Chelsea in the Premier League?",
+        "sportsTag": "soccer",
+        "endDateIso": "2026-12-31",
+        "orderPriceMinTickSize": 0.001,
+        "orderMinSize": 5,
+        "active": True,
+        "closed": False,
+        "enableOrderBook": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_filtered_gamma_markets_enforces_max_results_cap(mock_clob_client, live_clock):
+    """
+    FIX-2: the general Gamma market loader must stop at max_results instead of loading
+    every sports-matching market, keeping the top-ranked (deepest) markets.
+    """
+    from datetime import UTC
+    from datetime import datetime
+
+    provider = PolymarketInstrumentProvider(
+        client=mock_clob_client,
+        clock=live_clock,
+        config=InstrumentProviderConfig(use_gamma_markets=True),
+    )
+    candidate_markets = [_soccer_gamma_market(i) for i in range(6)]
+
+    with patch("nautilus_trader.adapters.polymarket.providers.list_markets") as mock_list_markets:
+
+        async def ranked_markets(*args, **kwargs):
+            return candidate_markets
+
+        mock_list_markets.side_effect = ranked_markets
+        loaded_condition_ids: set[str] = set()
+
+        loaded = await provider._load_filtered_gamma_markets(
+            filters={},
+            sports_filter={"soccer"},
+            max_results=2,
+            loaded_condition_ids=loaded_condition_ids,
+            now=datetime.now(tz=UTC),
+            horizon=None,
+        )
+
+    assert loaded == 2  # exactly the cap, not all 6 candidate markets
+    assert len(loaded_condition_ids) == 2
+    # horizon=None preserves candidate order, so the first two (top-ranked) are kept.
+    assert loaded_condition_ids == {market["conditionId"] for market in candidate_markets[:2]}
+    assert provider.count == 4  # two markets x two tokens each
+
+
+@pytest.mark.asyncio
+async def test_filtered_gamma_markets_unbounded_without_max_results(mock_clob_client, live_clock):
+    from datetime import UTC
+    from datetime import datetime
+
+    provider = PolymarketInstrumentProvider(
+        client=mock_clob_client,
+        clock=live_clock,
+        config=InstrumentProviderConfig(use_gamma_markets=True),
+    )
+    candidate_markets = [_soccer_gamma_market(i) for i in range(6)]
+
+    with patch("nautilus_trader.adapters.polymarket.providers.list_markets") as mock_list_markets:
+
+        async def ranked_markets(*args, **kwargs):
+            return candidate_markets
+
+        mock_list_markets.side_effect = ranked_markets
+
+        loaded = await provider._load_filtered_gamma_markets(
+            filters={},
+            sports_filter={"soccer"},
+            max_results=None,
+            loaded_condition_ids=set(),
+            now=datetime.now(tz=UTC),
+            horizon=None,
+        )
+
+    assert loaded == 6  # no cap -> every sports-matching market is loaded
+    assert provider.count == 12

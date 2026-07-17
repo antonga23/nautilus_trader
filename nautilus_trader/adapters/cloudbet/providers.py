@@ -314,20 +314,32 @@ class CloudbetInstrumentProvider(InstrumentProvider):
         int
             The number of instruments loaded.
         """
-        selection_filter = filters or self._filters
+        selection_filter = dict(filters if filters is not None else (self._filters or {}))
+        # `instrument_load_limit` is the live-subscription hard cap. It is distinct from
+        # the API pagination `limit` (per-sport event page size passed to load_selection),
+        # so pop it out before the network call and enforce it locally.
+        load_limit = selection_filter.pop("instrument_load_limit", None)
+        if load_limit is not None:
+            load_limit = int(load_limit)
         self._log.info(f"Loading selections with selection_filter={selection_filter}")
         selections: list[list[Selection]] = await self._client.load_selection(selection_filter)
         self._log.info("Creating instruments..")
+        flattened = [selection for events in selections for selection in events]
+        if load_limit is not None and load_limit > 0 and len(flattened) > load_limit:
+            # Keep the deepest markets: Cloudbet exposes a real per-selection max stake as
+            # its native depth signal, so ordering by it before the cap drops the shallowest
+            # markets first instead of arbitrary ones.
+            flattened.sort(key=lambda selection: float(selection.max_stake or 0.0), reverse=True)
         instrument_count = 0
-        for events in selections:
-            if len(events) > 0:
-                for selection in events:
-                    self.add(instrument=self.selection_to_instrument(selection))
-                    instrument_count += 1
-            else:
-                self._log.info(f"Selection {events} has no markets")
-                continue
-        self._log.info(f"{len(selections)} Instruments created")
+        for selection in flattened:
+            if load_limit is not None and load_limit > 0 and instrument_count >= load_limit:
+                break
+            self.add(instrument=self.selection_to_instrument(selection))
+            instrument_count += 1
+        self._log.info(
+            f"{instrument_count} instruments created from {len(selections)} events "
+            f"(instrument_load_limit={load_limit})",
+        )
         return instrument_count
 
     def selection_to_instrument(self, selection: Selection) -> CryptoBettingInstrument:
