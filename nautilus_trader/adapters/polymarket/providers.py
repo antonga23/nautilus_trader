@@ -721,6 +721,8 @@ class PolymarketInstrumentProvider(InstrumentProvider):
                 loaded_markets += loaded
                 if condition_id:
                     loaded_condition_ids.add(condition_id)
+            if max_results is not None and loaded_markets >= max_results:
+                break
         return loaded_markets
 
     async def _load_filtered_sport_tag_gamma_markets(
