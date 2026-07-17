@@ -74,6 +74,7 @@ from nautilus_trader.common.events import TimeEvent
 from nautilus_trader.examples.strategies.arb_position_tracker import _COMPLEMENT_OUTCOME
 from nautilus_trader.examples.strategies.arb_position_tracker import ArbPairState
 from nautilus_trader.examples.strategies.arb_position_tracker import ArbPositionTracker
+from nautilus_trader.examples.strategies.arb_position_tracker import LegState
 from nautilus_trader.examples.strategies.opportunity_graph import FastCandidateSnapshot
 from nautilus_trader.examples.strategies.opportunity_graph import OpportunityCandidate
 from nautilus_trader.examples.strategies.opportunity_graph import OpportunityGraph
@@ -479,6 +480,23 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         by the automated exit. When the exit-side quote is outside this bound, or
         any input needed for a safe exit is missing, the strategy only alerts and
         leaves the position to the operator.
+    max_leg_fill_imbalance_pct : float | None, default None
+        Cross-leg partial-fill imbalance guard. Neither betting venue offers
+        fill-or-kill, so a two-leg arb can end up with one leg matched far more than
+        its sibling, leaving directional exposure. When set, the relative gap between
+        the two legs' accumulated matched stake (currency-normalized for a
+        cross-currency pair) is compared against this fraction on every fill; a gap
+        above it routes the over-filled leg into the same naked-leg flatten path used
+        for a terminally failed sibling. ``None`` (the default) disables the guard and
+        preserves current behavior. The flatten it triggers is still gated by
+        ``unwind_filled_leg_enabled`` and the kill switch.
+    require_same_stablecoin_settlement : bool, default False
+        Hard settlement gate for cross-venue execution. When true, a cross-venue pair
+        is blocked unless both legs settle in the *same* stablecoin (both in
+        ``stablecoin_currencies`` and equal to each other). Enforced ahead of every
+        currency allowance — including a configured FX rate — so it cannot be bypassed,
+        and it rejects two *different* stablecoins (e.g. USDT vs USDC) as well as any
+        fiat leg. Same-venue pairs are unaffected.
 
     """
 
@@ -546,6 +564,8 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
     live_execution_kill_switch_path: str | None = None
     unwind_filled_leg_enabled: bool = False
     unwind_max_slippage_bps: int = 50
+    max_leg_fill_imbalance_pct: float | None = None
+    require_same_stablecoin_settlement: bool = False
 
     def __post_init__(self) -> None:
         """
@@ -801,6 +821,9 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         if self.unwind_max_slippage_bps < 0:
             msg = "unwind_max_slippage_bps must be non-negative"
             raise ValueError(msg)
+        if self.max_leg_fill_imbalance_pct is not None and self.max_leg_fill_imbalance_pct <= 0:
+            msg = "max_leg_fill_imbalance_pct must be positive when set"
+            raise ValueError(msg)
         self._validate_portfolio_currency_config(stablecoin_currencies)
 
     def _validate_execution_approval_config(self, execution_approval_mode: str) -> None:
@@ -981,6 +1004,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._live_execution_naked_flatten_halts = 0
         self._live_execution_unwind_cancels = 0
         self._live_execution_unwind_exits = 0
+        self._live_execution_leg_imbalance_flattens = 0
         self._arb_leg_siblings: dict[str, str] = {}
         self._live_fx_quotes: dict[str, FxRateQuote] = {}
         self._fx_refresh_fetches = 0
@@ -5665,6 +5689,17 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             return ["sandbox_currency_not_live_settlement"]
         policy = self._portfolio_currency_policy()
         stablecoins = policy.stablecoin_currencies
+        # Hard settlement gate: a cross-venue pair may be required to settle both legs in
+        # the SAME stablecoin. Enforced BEFORE every currency allowance below (including the
+        # configured-FX-rate path) so it cannot be bypassed, and it rejects two DIFFERENT
+        # stablecoins (e.g. USDT vs USDC) as well as any fiat leg. Same-venue pairs, which
+        # bear no cross-currency exposure between the legs, are untouched.
+        if self._config.require_same_stablecoin_settlement and not opportunity.is_same_venue:
+            same_stablecoin = (
+                currency_a in stablecoins and currency_b in stablecoins and currency_a == currency_b
+            )
+            if not same_stablecoin:
+                return ["cross_venue_requires_same_stablecoin"]
         if currency_a in stablecoins and currency_b in stablecoins:
             return []
         # Same-venue pairs settle in one currency; there is no cross-currency exposure
@@ -5935,6 +5970,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._record_arb_position_fill(event)
         self._handle_unwind_cancel_fill_race(event)
         self._advance_cross_venue_sequence_on_fill(event)
+        self._handle_partial_fill_imbalance(event)
 
     def _record_arb_position_fill(self, event: Event) -> None:
         """
@@ -6205,6 +6241,108 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             )
             return
         self._handle_naked_filled_leg(order, self._arb_leg_siblings.get(key, "unknown"))
+
+    def _handle_partial_fill_imbalance(self, event: Event) -> None:
+        """
+        Route an over-filled leg to the naked-leg flatten path when its sibling lags too
+        far behind.
+
+        Neither betting venue offers fill-or-kill (SX.bet's maker/taker payloads carry no
+        all-or-nothing flag), so a two-leg arb can end up with one leg matched far more than
+        the other, leaving directional exposure the pair math never intended. When
+        ``max_leg_fill_imbalance_pct`` is set, the relative gap between the two legs'
+        accumulated matched stake (currency-normalized for a cross-currency pair) is checked
+        on every fill; a gap above the threshold hands the over-filled leg to
+        ``_handle_naked_filled_leg`` -- the same bounded flatten the terminal-failure unwind
+        uses, still gated by ``unwind_filled_leg_enabled`` and the kill switch. Disabled by
+        default (``None``), so current behavior is unchanged unless the operator opts in.
+
+        Never raises: imbalance detection is a safety overlay, not part of fill accounting,
+        so a bug here must not break order-event handling.
+
+        """
+        try:
+            routing = self._detect_leg_fill_imbalance(event)
+            if routing is None:
+                return
+            over_leg_id, under_leg_id, imbalance = routing
+            pair_key = "|".join(sorted((over_leg_id, under_leg_id)))
+            if pair_key in self._unwound_arb_pairs:
+                return  # Already terminal/flattening; don't route it a second time.
+            order = self.cache.order(ClientOrderId(over_leg_id))
+            if order is None or order.filled_qty.as_decimal() <= 0:
+                return
+            self._unwound_arb_pairs.add(pair_key)
+            self._live_execution_leg_imbalance_flattens += 1
+            self.log.error(
+                "LEG FILL IMBALANCE: routing over-filled leg to flatten: "
+                f"over_leg={over_leg_id} under_leg={under_leg_id} "
+                f"imbalance={imbalance} threshold={self._config.max_leg_fill_imbalance_pct}",
+            )
+            self._handle_naked_filled_leg(order, under_leg_id)
+        except Exception as e:  # pragma: no cover - defensive; never raise into the handler
+            self.log.warning(f"Leg fill imbalance check skipped: {e}")
+
+    def _detect_leg_fill_imbalance(
+        self,
+        event: Event,
+    ) -> tuple[str, str, Decimal] | None:
+        """
+        Decide whether a fill leaves the pair too imbalanced to hold, returning
+        ``(over_leg_id, under_leg_id, imbalance)`` when it does and ``None`` otherwise.
+
+        The over-filled leg carries the excess directional exposure, so it is the one
+        flattened; the under-filled sibling is returned so the betting-venue flatten can
+        resolve the complementary selection.
+
+        """
+        threshold = self._config.max_leg_fill_imbalance_pct
+        if threshold is None or threshold <= 0:
+            return None
+        client_order_id = getattr(event, "client_order_id", None)
+        if client_order_id is None:
+            return None
+        key = str(client_order_id)
+        sibling_id = self._arb_leg_siblings.get(key)
+        if not sibling_id or sibling_id == "unknown":
+            return None
+        pair = self._arb_position_tracker.pair_for_leg(key)
+        if pair is None or pair.settled:
+            return None
+        this_leg = pair.legs.get(key)
+        if this_leg is None:
+            return None
+        sibling_leg = pair.legs.get(str(sibling_id))
+        this_norm = self._normalized_leg_stake(pair, this_leg)
+        sibling_norm = self._normalized_leg_stake(pair, sibling_leg) if sibling_leg else Decimal(0)
+        if this_norm is None or sibling_norm is None:
+            return None  # A leg currency has no available rate: never judge imbalance blind.
+        larger = max(this_norm, sibling_norm)
+        if larger <= 0:
+            return None
+        imbalance = abs(this_norm - sibling_norm) / larger
+        if imbalance <= Decimal(str(threshold)):
+            return None
+        if this_norm >= sibling_norm:
+            return key, str(sibling_id), imbalance
+        return str(sibling_id), key, imbalance
+
+    def _normalized_leg_stake(self, pair: ArbPairState, leg: LegState) -> Decimal | None:
+        """
+        Accumulated matched stake for one leg, normalized into the base currency only
+        when the pair genuinely spans two currencies.
+
+        A single-currency pair returns the raw stake (the ratio is currency-agnostic and the
+        haircut cancels), matching the pre-change comparison. A cross-currency pair converts
+        each leg's stake so the gap is measured on one footing; ``None`` when the leg
+        currency has no available rate.
+
+        """
+        stake = leg.stake
+        policy = pair.policy
+        if policy is None or not leg.currency or not pair.is_cross_currency:
+            return stake
+        return policy.convert(stake, leg.currency).converted_amount
 
     def _unwind_sibling_leg(self, event: Event) -> None:
         client_order_id = getattr(event, "client_order_id", None)
@@ -6744,6 +6882,11 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 "unwind_exits": self._live_execution_unwind_exits,
                 "unwind_filled_leg_enabled": self._config.unwind_filled_leg_enabled,
                 "unwind_max_slippage_bps": self._config.unwind_max_slippage_bps,
+                "leg_imbalance_flattens": self._live_execution_leg_imbalance_flattens,
+                "max_leg_fill_imbalance_pct": self._config.max_leg_fill_imbalance_pct,
+                "require_same_stablecoin_settlement": (
+                    self._config.require_same_stablecoin_settlement
+                ),
                 "cross_venue_sequential_execution": (self._config.cross_venue_sequential_execution),
                 "cross_venue_anchor_venue": self._config.cross_venue_anchor_venue,
                 "cross_venue_sequences_opened": self._cross_venue_sequences_opened,
