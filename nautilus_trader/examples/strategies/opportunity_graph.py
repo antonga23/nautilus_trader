@@ -36,6 +36,7 @@ from typing import Any
 
 from nautilus_trader.adapters.betting.common.enums import MarketType
 from nautilus_trader.adapters.betting.common.enums import Outcome
+from nautilus_trader.adapters.betting.fixture_identity import DEFAULT_FIXTURE_IDENTITY_RESOLVER
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.betting.market_matcher import ArbitrageOpportunity
 from nautilus_trader.adapters.betting.market_matcher import HedgeCandidate
@@ -1066,9 +1067,19 @@ class OpportunityGraph:
     ) -> dict[str, object]:
         event_key_func = cls._safe_attr(instrument, "event_key", None)
         if callable(event_key_func):
-            event_key_no_time = str(event_key_func(include_start_time=False))
+            # Bucket on the same expanding canonical form the runtime probe computes,
+            # so the graph can never fall behind the probe (a multi-word sport rendered
+            # with an underscore here and a space there used to orphan identical
+            # fixtures). Only a genuine resolver event key is canonicalized; the bare
+            # instrument-id fallback is not an event key and is left untouched.
+            raw_event_key_no_time = str(event_key_func(include_start_time=False))
+            event_key_no_time = (
+                DEFAULT_FIXTURE_IDENTITY_RESOLVER.canonical_event_key_text(raw_event_key_no_time)
+                or raw_event_key_no_time
+            )
         else:
-            event_key_no_time = node.canonical_event_key
+            raw_event_key_no_time = node.canonical_event_key
+            event_key_no_time = raw_event_key_no_time
         event_alias_keys_func = cls._safe_attr(instrument, "event_alias_keys", None)
         if callable(event_alias_keys_func):
             try:
@@ -1078,6 +1089,9 @@ class OpportunityGraph:
             event_alias_keys = cls._event_alias_keys_payload(raw_event_alias_keys)
             if not event_alias_keys:
                 event_alias_keys = (event_key_no_time,)
+            # Keep both the canonical and the raw resolver forms as aliases so a peer
+            # node buckets whichever form it carries.
+            event_alias_keys = cls._canonicalized_alias_keys(event_alias_keys, event_key_no_time)
         else:
             event_alias_keys = (event_key_no_time,)
 
@@ -1113,6 +1127,21 @@ class OpportunityGraph:
         if not isinstance(value, list | tuple | set | frozenset):
             return ()
         return tuple(str(key) for key in value if str(key))
+
+    @staticmethod
+    def _canonicalized_alias_keys(
+        alias_keys: tuple[str, ...],
+        canonical_event_key: str,
+    ) -> tuple[str, ...]:
+        keys = {canonical_event_key} if canonical_event_key else set()
+        for key in alias_keys:
+            if not key:
+                continue
+            keys.add(key)
+            canonical = DEFAULT_FIXTURE_IDENTITY_RESOLVER.canonical_event_key_text(key)
+            if canonical:
+                keys.add(canonical)
+        return tuple(sorted(keys))
 
     @classmethod
     def _semantic_node_payload(cls, instrument: CryptoBettingInstrument) -> dict[str, object]:

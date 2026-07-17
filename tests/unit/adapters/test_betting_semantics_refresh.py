@@ -3974,3 +3974,182 @@ def test_semantic_rule_mining_provider_coverage_summary_reports_unresolved_targe
         "sparse_sports": [],
         "blocker_counts": {"not_in_sxbet_active_sports_catalog": 1},
     }
+
+
+def _cb_baseball(market_name: str, outcome: str, *, home: str, away: str, start: str) -> dict:
+    return {
+        "provider": "CLOUDBET",
+        "sport_name": "baseball",
+        "event_id": "cb-1",
+        "event_name": f"{home} vs {away}",
+        "home_name": home,
+        "away_name": away,
+        "cutoff_time": start,
+        "market_name": market_name,
+        "market_type": market_name,
+        "outcome": outcome,
+    }
+
+
+def _sx_baseball(outcome: str, *, home: str, away: str, start: str) -> dict:
+    return {
+        "provider": "SXBET",
+        "sport_name": "baseball",
+        "event_id": "sx-1",
+        "event_name": f"{home} vs {away}",
+        "home_name": home,
+        "away_name": away,
+        "cutoff_time": start,
+        "market_name": "match_odds",
+        "market_type": "match_odds",
+        "outcome": outcome,
+        "raw_market_type": 52,
+        "info": {
+            "raw_market_type": 52,
+            "is_two_way_market": True,
+            "sxbet_market_hash": f"h-{outcome}",
+        },
+    }
+
+
+def test_cloudbet_first_five_innings_never_matches_full_game_identity():
+    # PHANTOM GUARD (XV-FIX finding B, must-never-regress). A CloudBet first-5-innings
+    # moneyline carries its settlement span only in the market name (no period param).
+    # If that span is not parsed the scope collapses to full_time and the F5 market
+    # becomes byte-identical to the full-game market of the same fixture, so a
+    # first-5-innings leg would spuriously hedge a full-game leg on a different
+    # settlement event.
+    normalizer = MarketNormalizer()
+    start = "2026-07-12T02:40:00Z"
+    home, away = "Cleveland Guardians", "Pittsburgh Pirates"
+
+    cb_f5 = normalizer.normalize(
+        _cb_baseball(
+            "baseball.moneyline_innings_1_to_5",
+            "home",
+            home=home,
+            away=away,
+            start=start,
+        ),
+    )
+    cb_full = normalizer.normalize(
+        _cb_baseball("baseball.moneyline", "home", home=home, away=away, start=start),
+    )
+    sx_full = normalizer.normalize(_sx_baseball("home", home=home, away=away, start=start))
+
+    assert cb_f5.scope == "innings_1_to_5"
+    assert cb_full.scope == "full_time"
+    assert _semantic_identity(cb_f5) != _semantic_identity(cb_full)
+    assert _semantic_identity(cb_f5) != _semantic_identity(sx_full)
+    # The handicap and totals F5 submarkets share the same name-only span encoding.
+    for market_name in (
+        "baseball.handicap_innings_1_to_5",
+        "baseball.totals_innings_1_to_5",
+    ):
+        f5 = normalizer.normalize(
+            _cb_baseball(market_name, "home", home=home, away=away, start=start),
+        )
+        assert f5.scope == "innings_1_to_5"
+
+
+def test_cloudbet_full_game_matches_sxbet_after_mlb_alias_expansion():
+    # (b) A CloudBet full-game moneyline quoted under folded abbreviations and an
+    # SXBET full-game two-way market for the same fixture share one semantic identity
+    # once the MLB abbreviations expand, so a genuine cross-venue template forms.
+    normalizer = MarketNormalizer()
+    start = "2026-07-12T02:40:00Z"
+
+    cb_full = normalizer.normalize(
+        _cb_baseball(
+            "baseball.moneyline",
+            "home",
+            home="LAD Dodgers",
+            away="NYY Yankees",
+            start=start,
+        ),
+    )
+    sx_full = normalizer.normalize(
+        _sx_baseball("home", home="Los Angeles Dodgers", away="New York Yankees", start=start),
+    )
+    assert cb_full.scope == "full_time"
+    assert cb_full.market_type == CanonicalMarketType.WINNER.value
+    assert cb_full.event_key == sx_full.event_key
+    assert _semantic_identity(cb_full) == _semantic_identity(sx_full)
+
+
+def test_mini_mine_yields_cross_venue_template_from_abbreviated_cloudbet_names(tmp_path):
+    # (b) End-to-end: the same fixture quoted as CloudBet abbreviations and SXBET full
+    # names mines a venue-spanning template. Before alias completion these never
+    # co-bucketed, so no cross-venue template could exist.
+    normalizer = MarketNormalizer()
+    start = "2026-07-12T02:40:00Z"
+
+    def cb_record(outcome: str, index: int) -> NormalizedSelectionRecord:
+        return NormalizedSelectionRecord(
+            record_id=f"cb-{index}",
+            provider="CLOUDBET",
+            selection=normalizer.normalize(
+                _cb_baseball(
+                    "baseball.moneyline",
+                    outcome,
+                    home="LAD Dodgers",
+                    away="NYY Yankees",
+                    start=start,
+                ),
+            ),
+        )
+
+    def sx_record(outcome: str, index: int) -> NormalizedSelectionRecord:
+        return NormalizedSelectionRecord(
+            record_id=f"sx-{index}",
+            provider="SXBET",
+            selection=normalizer.normalize(
+                _sx_baseball(
+                    outcome,
+                    home="Los Angeles Dodgers",
+                    away="New York Yankees",
+                    start=start,
+                ),
+            ),
+        )
+
+    records = [
+        cb_record("home", 0),
+        cb_record("away", 1),
+        sx_record("home", 0),
+        sx_record("away", 1),
+    ]
+    miner = RuleMiner(RuleStore(FileRuleCache(tmp_path)))
+    templates = miner.mine_templates(records, persist=False, persist_event_candidates=False)
+
+    cross_venue = [
+        template for template in templates if set(template.provider_scope) == {"CLOUDBET", "SXBET"}
+    ]
+    assert cross_venue
+    assert all(template.scope == "full_time" for template in cross_venue)
+
+
+def test_same_venue_first_five_and_full_game_are_scope_distinct():
+    # (g) The same-venue first-5-innings vs full-game pair used to collapse to one
+    # scope and surface as same_market_params_mismatch; distinct scopes keep them
+    # apart at the identity level so they are never treated as the same market.
+    normalizer = MarketNormalizer()
+    start = "2026-07-12T02:40:00Z"
+    home, away = "Cleveland Guardians", "Pittsburgh Pirates"
+
+    cb_f5 = normalizer.normalize(
+        _cb_baseball(
+            "baseball.moneyline_innings_1_to_5",
+            "home",
+            home=home,
+            away=away,
+            start=start,
+        ),
+    )
+    cb_full = normalizer.normalize(
+        _cb_baseball("baseball.moneyline", "home", home=home, away=away, start=start),
+    )
+    assert cb_f5.venue == cb_full.venue == "CLOUDBET"
+    assert cb_f5.event_key == cb_full.event_key
+    assert cb_f5.scope != cb_full.scope
+    assert _semantic_identity(cb_f5) != _semantic_identity(cb_full)

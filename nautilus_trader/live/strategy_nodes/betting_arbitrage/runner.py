@@ -20,7 +20,6 @@ from pathlib import Path
 from typing import Any
 
 from nautilus_trader.adapters.betting.fixture_identity import DEFAULT_FIXTURE_IDENTITY_RESOLVER
-from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.betting.market_matcher import ArbitrageOpportunity
 from nautilus_trader.adapters.betting.semantics import ARB_MARGIN_RELATIONSHIP_TYPES
 from nautilus_trader.adapters.betting.semantics import CoverageBlockerReason
@@ -3069,25 +3068,7 @@ def _probe_event_keys_no_time(node) -> set[str]:
 
 
 def _canonical_event_key_text(value: str) -> str:
-    raw = str(value or "")
-    if not raw:
-        return ""
-    parts = [part.strip() for part in raw.replace("|", ":").split(":") if part.strip()]
-    if not parts:
-        return ""
-    sport = CryptoBettingInstrument._normalize_event_component(parts[0].replace("_", " "))
-    team_parts: list[str] = []
-    for part in parts[1:]:
-        lowered = part.lower()
-        if "t" in lowered and lowered[:4].isdigit():
-            continue
-        if len(lowered) >= 4 and lowered[:4].isdigit():
-            continue
-        normalized = CryptoBettingInstrument._normalize_team_name(part.replace("_", " "))
-        if normalized:
-            team_parts.append(normalized)
-    teams = sorted(set(team_parts))
-    return ":".join(part for part in (sport, *teams) if part)
+    return DEFAULT_FIXTURE_IDENTITY_RESOLVER.canonical_event_key_text(value)
 
 
 def _probe_pattern_payload(node) -> dict[str, str]:

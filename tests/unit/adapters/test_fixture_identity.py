@@ -703,3 +703,102 @@ def test_fixture_identity_reconciles_venue_specific_soccer_labels():
 
     assert proof.same_fixture is True
     assert proof.blocker_reason is None
+
+
+# MLB abbreviation coverage (XV-FIX finding D). CloudBet emits folded short names
+# ("CLE Guardians") while SXBET emits full names; before the MLB abbreviations were
+# added only the handful already borrowed from the NBA/NFL table (cle, pit, la, ny)
+# co-bucketed, so most baseball fixtures never matched across venues.
+_MLB_KNOWN_FIXTURES = (
+    ("CLE Guardians", "PIT Pirates", "Cleveland Guardians", "Pittsburgh Pirates"),
+    ("LAD Dodgers", "NYY Yankees", "Los Angeles Dodgers", "New York Yankees"),
+    ("CHC Cubs", "MIN Twins", "Chicago Cubs", "Minnesota Twins"),
+    ("BOS Red Sox", "TB Rays", "Boston Red Sox", "Tampa Bay Rays"),
+    ("MIA Marlins", "MIL Brewers", "Miami Marlins", "Milwaukee Brewers"),
+)
+
+
+def test_fixture_identity_co_buckets_known_mlb_abbreviation_fixtures():
+    resolver = FixtureIdentityResolver()
+    for cb_home, cb_away, sx_home, sx_away in _MLB_KNOWN_FIXTURES:
+        cloudbet = _instrument(
+            venue="CLOUDBET",
+            event_name=f"{cb_home} v {cb_away}",
+            home_name=cb_home,
+            away_name=cb_away,
+            sport_name="baseball",
+        )
+        sxbet = _instrument(
+            venue="SXBET",
+            event_name=f"{sx_home} vs {sx_away}",
+            home_name=sx_home,
+            away_name=sx_away,
+            sport_name="baseball",
+        )
+        proof = resolver.resolve(cloudbet, sxbet)
+        assert proof.same_fixture is True, (cb_home, cb_away)
+        assert proof.blocker_reason is None
+        assert cloudbet.event_key(include_start_time=False) == sxbet.event_key(
+            include_start_time=False,
+        )
+
+
+def test_mlb_token_aliases_expand_to_city():
+    resolver = FixtureIdentityResolver()
+    assert resolver.normalize_team_name("TEX Rangers") == "texas rangers"
+    assert resolver.normalize_team_name("AZ Diamondbacks") == "arizona diamondbacks"
+    assert resolver.normalize_team_name("LAD Dodgers") == "los angeles dodgers"
+    assert resolver.normalize_team_name("NYY Yankees") == "new york yankees"
+    assert resolver.normalize_team_name("KCR Royals") == "kansas city royals"
+    assert resolver.normalize_team_name("SDP Padres") == "san diego padres"
+
+
+def test_chicago_white_sox_and_cubs_stay_distinct():
+    resolver = FixtureIdentityResolver()
+    # With the mascot present the city-level token alias keeps the two Chicago clubs
+    # apart, and a bare abbreviation resolves to the specific club via the phrase map.
+    assert resolver.normalize_team_name("CHW White Sox") == "chicago white sox"
+    assert resolver.normalize_team_name("CHC Cubs") == "chicago cubs"
+    assert resolver.normalize_team_name("chw") == "chicago white sox"
+    assert resolver.normalize_team_name("chc") == "chicago cubs"
+    assert resolver.normalize_team_name("cws") == "chicago white sox"
+
+    white_sox = _instrument(
+        venue="CLOUDBET",
+        event_name="CHW White Sox v DET Tigers",
+        home_name="CHW White Sox",
+        away_name="DET Tigers",
+        sport_name="baseball",
+    )
+    cubs = _instrument(
+        venue="SXBET",
+        event_name="Chicago Cubs vs Detroit Tigers",
+        home_name="Chicago Cubs",
+        away_name="Detroit Tigers",
+        sport_name="baseball",
+    )
+    # Same city, same opponent, different club: the fixtures must not be conflated.
+    assert resolver.resolve(white_sox, cubs).same_fixture is False
+
+
+def test_non_baseball_event_keys_are_unchanged_by_mlb_aliases():
+    nba = _instrument(
+        venue="CLOUDBET",
+        event_name="LAL Lakers v BOS Celtics",
+        home_name="LAL Lakers",
+        away_name="BOS Celtics",
+        sport_name="basketball",
+    )
+    nfl = _instrument(
+        venue="CLOUDBET",
+        event_name="KC Chiefs v BUF Bills",
+        home_name="KC Chiefs",
+        away_name="BUF Bills",
+        sport_name="american football",
+    )
+    assert nba.event_key(include_start_time=False) == (
+        "basketball:boston celtics:los angeles lakers"
+    )
+    assert nfl.event_key(include_start_time=False) == (
+        "american_football:buffalo bills:kansas city chiefs"
+    )

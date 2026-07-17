@@ -151,19 +151,29 @@ class FixtureIdentityResolver:
             "women",
         },
     )
+    # City-level abbreviation -> city expansion. These keep the club mascot intact
+    # ("cle guardians" -> "cleveland guardians"), so two clubs that share a city
+    # (Chicago Cubs/White Sox, LA Dodgers/Angels, NY Yankees/Mets) stay distinct as
+    # long as the mascot is present; bare mascot-less abbreviations are disambiguated
+    # in PHRASE_ALIASES. MLB abbreviations are folded in alongside the NBA/NFL set so
+    # a single resolver expands every provider short name (graph and probe alike).
     TOKEN_ALIASES = {
         "ari": "arizona",
         "atl": "atlanta",
+        "az": "arizona",
         "bal": "baltimore",
         "bkn": "brooklyn",
         "bos": "boston",
         "buf": "buffalo",
         "car": "carolina",
         "cha": "charlotte",
+        "chc": "chicago",
         "chi": "chicago",
+        "chw": "chicago",
         "cin": "cincinnati",
         "cle": "cleveland",
         "col": "colorado",
+        "cws": "chicago",
         "dal": "dallas",
         "den": "denver",
         "det": "detroit",
@@ -174,8 +184,11 @@ class FixtureIdentityResolver:
         "ind": "indianapolis",
         "jax": "jacksonville",
         "kc": "kansas city",
+        "kcr": "kansas city",
         "la": "los angeles",
+        "laa": "los angeles",
         "lac": "los angeles",
+        "lad": "los angeles",
         "lal": "los angeles",
         "lar": "los angeles",
         "lv": "las vegas",
@@ -190,6 +203,8 @@ class FixtureIdentityResolver:
         "nyc": "new york",
         "nyg": "new york",
         "nyj": "new york",
+        "nym": "new york",
+        "nyy": "new york",
         "oak": "oakland",
         "okc": "oklahoma city",
         "orl": "orlando",
@@ -201,11 +216,15 @@ class FixtureIdentityResolver:
         "sa": "san antonio",
         "sas": "san antonio",
         "sd": "san diego",
-        "sf": "san francisco",
+        "sdp": "san diego",
         "sea": "seattle",
+        "sf": "san francisco",
+        "sfg": "san francisco",
         "stl": "st louis",
         "tb": "tampa bay",
+        "tbr": "tampa bay",
         "ten": "tennessee",
+        "tex": "texas",
         "tor": "toronto",
         "utd": "united",
         "uta": "utah",
@@ -271,6 +290,18 @@ class FixtureIdentityResolver:
         "man city": "manchester city",
         "man utd": "manchester united",
         "man united": "manchester united",
+        # Mascot-less MLB abbreviations that map onto a city shared by two clubs; the
+        # city-level TOKEN_ALIASES entry cannot disambiguate them on its own, so pin
+        # the bare form to the specific club. Forms that still carry the mascot
+        # ("chw white sox") resolve through TOKEN_ALIASES instead and land here too.
+        "ath": "athletics",
+        "chc": "chicago cubs",
+        "chw": "chicago white sox",
+        "cws": "chicago white sox",
+        "laa": "los angeles angels",
+        "lad": "los angeles dodgers",
+        "nym": "new york mets",
+        "nyy": "new york yankees",
     }
     MARKET_GROUP_SUFFIXES = (
         " exact score",
@@ -496,6 +527,43 @@ class FixtureIdentityResolver:
         if include_start_time and start_time is not None:
             parts.append(start_time.strftime("%Y-%m-%dT%H"))
         return ":".join(part for part in parts if part)
+
+    def canonical_event_key_text(self, value: str) -> str:
+        """
+        Re-canonicalize a ``sport:team:team`` (or ``|``-joined) event key string.
+
+        Splits an already-formed event key, folds the sport and re-expands every
+        participant through the same alias table, then re-sorts. This is the single
+        function both the graph node payload and the runtime probe route their event
+        key through, so the two can never bucket on divergent forms (a multi-word
+        sport rendered ``american_football`` on one side and ``american football``
+        on the other used to orphan otherwise-identical fixtures).
+
+        """
+        raw = str(value or "")
+        if not raw:
+            return ""
+        parts = [part.strip() for part in raw.replace("|", ":").split(":") if part.strip()]
+        if not parts:
+            return ""
+        sport = self.normalize_event_component(parts[0].replace("_", " "))
+        team_parts: list[str] = []
+        for part in parts[1:]:
+            lowered = part.lower()
+            if "t" in lowered and lowered[:4].isdigit():
+                continue
+            if len(lowered) >= 4 and lowered[:4].isdigit():
+                continue
+            normalized = self.normalize_team_name(part.replace("_", " "))
+            if normalized:
+                team_parts.append(normalized)
+        teams = sorted(set(team_parts))
+        return ":".join(part for part in (sport, *teams) if part)
+
+    def canonical_event_key(self, instrument: Any, *, include_start_time: bool = False) -> str:
+        return self.canonical_event_key_text(
+            self.event_key(instrument, include_start_time=include_start_time),
+        )
 
     @staticmethod
     def parsed_start_time(instrument: Any) -> datetime | None:
