@@ -749,3 +749,122 @@ def test_h_same_market_sxbet_win_folds_commission_into_settle_and_floor():
     realized = pair.settle(OUTCOME_A)
     assert realized == Decimal("-0.4")
     assert realized == pnls[OUTCOME_A]
+
+
+# --- Trades-detail exposure for the DB shipper (PR-B; observability only) -----------------
+#
+#   These assert the per-pair / per-leg detail added to ``summary()`` for the flat trades
+#   tables. None of it feeds settlement: every realized-P&L number pinned above is unchanged,
+#   and each test below re-checks the realized value alongside the detail it exposes.
+
+
+def test_fill_events_carry_ts_px_qty_per_fill():
+    tracker = ArbPositionTracker()
+    tracker.record_fill(LEG_A, OUTCOME_A, "BUY", "2.1", "6", sibling_id=LEG_B, ts_event=1_000)
+    tracker.record_fill(LEG_A, OUTCOME_A, "BUY", "2.2", "4", sibling_id=LEG_B, ts_event=2_000)
+    leg = tracker.pair_for_leg(LEG_A).legs[LEG_A]
+
+    assert leg.fill_events == [
+        {"ts": 1_000, "px": Decimal("2.1"), "qty": Decimal(6)},
+        {"ts": 2_000, "px": Decimal("2.2"), "qty": Decimal(4)},
+    ]
+    # A non-int ts (or a caller that omits it) records None rather than coercing.
+    tracker.record_fill(LEG_A, OUTCOME_A, "BUY", "2.0", "1", sibling_id=LEG_B)
+    assert leg.fill_events[-1]["ts"] is None
+    # The unbounded settlement source of truth still sees every fill, and the summary carries
+    # both the back-compat count and the detailed events.
+    assert len(leg.fills) == 3
+    summary_leg = next(
+        item
+        for item in tracker.pair_for_leg(LEG_A).summary()["legs"]
+        if item["client_order_id"] == LEG_A
+    )
+    assert summary_leg["fills"] == 3
+    assert len(summary_leg["fill_events"]) == 3
+
+
+def test_fill_events_bounded_but_stake_and_count_span_every_fill():
+    tracker = ArbPositionTracker(leg_fills_cap=50)
+    for i in range(51):
+        tracker.record_fill(LEG_A, OUTCOME_A, "BUY", "2.0", "1", sibling_id=LEG_B, ts_event=i)
+    leg = tracker.pair_for_leg(LEG_A).legs[LEG_A]
+
+    # 51st fill drops the oldest event (ts=0) but keeps the newest 50 (ts 1..50).
+    assert len(leg.fill_events) == 50
+    assert leg.fill_events[0]["ts"] == 1
+    assert leg.fill_events[-1]["ts"] == 50
+    # The Bet list and every derived aggregate see all 51 fills -- math is untouched by the cap.
+    assert len(leg.fills) == 51
+    assert leg.stake == Decimal(51)
+
+
+def test_summary_pairs_cap_keeps_most_recent_by_activity_aggregates_span_all():
+    tracker = ArbPositionTracker()
+    for i in range(3):
+        a, b = f"A{i}", f"B{i}"
+        tracker.record_fill(a, OUTCOME_A, "BUY", "2.1", "10", sibling_id=b)
+        tracker.record_fill(b, OUTCOME_B, "BUY", "2.1", "10", sibling_id=a)
+    # Re-touch pair 0 via a settlement so it becomes the most recently active.
+    tracker.settle(tracker.pair_key("A0", "B0"), OUTCOME_A)
+
+    capped = tracker.summary(pairs_cap=2)
+    # Aggregates always span every tracked pair regardless of the cap.
+    assert capped["pairs_tracked"] == 3
+    assert len(capped["pairs"]) == 2
+    ids = [p["pair_id"] for p in capped["pairs"]]
+    # Most-recent-first: pair 0 (just settled) leads, then pair 2 (last filled). Pair 1 evicts.
+    assert ids == [tracker.pair_key("A0", "B0"), tracker.pair_key("A2", "B2")]
+
+    # The uncapped default is unchanged: every pair, insertion order.
+    uncapped = tracker.summary()
+    assert [p["pair_id"] for p in uncapped["pairs"]] == [
+        tracker.pair_key("A0", "B0"),
+        tracker.pair_key("A1", "B1"),
+        tracker.pair_key("A2", "B2"),
+    ]
+
+
+def test_summary_pairs_cap_201_pairs_evicts_oldest_activity_pair():
+    tracker = ArbPositionTracker()
+    for i in range(201):
+        a, b = f"A{i}", f"B{i}"
+        tracker.record_fill(a, OUTCOME_A, "BUY", "2.1", "10", sibling_id=b)
+        tracker.record_fill(b, OUTCOME_B, "BUY", "2.1", "10", sibling_id=a)
+
+    capped = tracker.summary(pairs_cap=200)
+    assert capped["pairs_tracked"] == 201  # tracking never evicts
+    assert len(capped["pairs"]) == 200
+    emitted_ids = {p["pair_id"] for p in capped["pairs"]}
+    # The very first pair (oldest activity) is the one dropped from the emitted list.
+    assert tracker.pair_key("A0", "B0") not in emitted_ids
+    assert tracker.pair_key("A200", "B200") in emitted_ids
+
+
+def test_settle_from_leg_results_persists_leg_results_and_realized_native():
+    # HALF_WON (+2.75 half-win on 2.10 stake 5) + HALF_LOST (-2.50 half-loss on stake 5).
+    #   legA BACK 2.10 stake 5 -> full win 5*1.10 = 5.5 ; HALF_WON native = 2.75.
+    #   legB BACK 2.00 stake 5 -> full loss -5 ; HALF_LOST native = -2.5.
+    tracker, pair_id = _venued_tracker_at("2.10", "5", "2.00", "5")
+    pair = tracker.pair(pair_id)
+
+    realized = pair.settle_from_leg_results({LEG_A: "HALF_WON", LEG_B: "HALF_LOST"})
+
+    assert realized == Decimal("0.25")  # 2.75 - 2.50, unchanged settlement arithmetic
+    assert pair.leg_results == {LEG_A: "HALF_WON", LEG_B: "HALF_LOST"}
+    assert pair.leg_realized_native == {LEG_A: Decimal("2.75"), LEG_B: Decimal("-2.5")}
+
+    summary = pair.summary()
+    assert summary["leg_results"] == {LEG_A: "HALF_WON", LEG_B: "HALF_LOST"}
+    assert summary["leg_realized_native"] == {LEG_A: Decimal("2.75"), LEG_B: Decimal("-2.5")}
+
+
+def test_settle_from_leg_results_leg_results_cover_won_and_push():
+    tracker, pair_id = _venued_tracker_at("2.0", "10", "2.0", "10")
+    pair = tracker.pair(pair_id)
+
+    realized = pair.settle_from_leg_results({LEG_A: "WON", LEG_B: "PUSH"})
+
+    assert realized == Decimal(10)  # 10 + 0, unchanged
+    assert pair.leg_results == {LEG_A: "WON", LEG_B: "PUSH"}
+    # WON books its win_payoff native; PUSH refunds the stake -> 0.
+    assert pair.leg_realized_native == {LEG_A: Decimal(10), LEG_B: Decimal(0)}

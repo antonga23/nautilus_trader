@@ -593,3 +593,118 @@ def test_sxbet_commission_composes_with_half_and_feeds_kill_switch_net():  # ski
 
     ensure(h.pair.realized_pnl == Decimal("0.14"))
     ensure(h.strategy._live_execution_realized_loss == Decimal(0))
+
+
+# --- PR-B: per-pair / per-leg trades detail in get_stats (observability only) --------------
+#
+#   ``get_stats()["arb_position_tracker"]["pairs"]`` carries the flat trades detail the DB
+#   shipper turns into arb_pairs / trade_legs rows. It is JSON-safe (Decimal -> str), capped
+#   to arb_pairs_stats_cap pairs, and derived entirely from the same settlement the tests
+#   above pin -- so every aggregate scalar and realized-P&L number is unchanged by its
+#   presence. Harness legs BACK 2.10 stake 5 on SX.bet: win_payoff 5.50, 4% commission.
+
+
+def test_get_stats_pairs_carry_half_won_commission_detail():  # skipcq
+    h = _Harness()  # both legs SX.bet, one quarter-ball market
+
+    h.settle(h.over_leg_id, SettlementResult.HALF_WON)
+    h.settle(h.under_leg_id, SettlementResult.HALF_LOST)
+
+    stats = h.tracker_stats()
+    # Aggregates are unchanged by the added detail (same realized 0.14 pinned above).
+    ensure(stats["realized_pnl"] == "0.1400")
+    ensure(stats["pairs_settled"] == 1)
+    ensure(stats["pairs_open"] == 0)
+    ensure(stats["pairs_tracked"] == 1)
+
+    pairs = stats["pairs"]
+    ensure(len(pairs) == 1)
+    pair = pairs[0]
+    ensure(pair["pair_id"] == "O-OVER-1|O-UNDER-1")
+    ensure(pair["realized_pnl"] == "0.1400")
+    # Per-leg grading and realized native, JSON-safe: HALF_WON net 4% -> 2.64, HALF_LOST -2.5.
+    ensure(pair["leg_results"] == {"O-OVER-1": "HALF_WON", "O-UNDER-1": "HALF_LOST"})
+    ensure(
+        pair["leg_realized_native"] == {"O-OVER-1": "2.6400", "O-UNDER-1": "-2.5"},
+    )
+    legs = {leg["client_order_id"]: leg for leg in pair["legs"]}
+    over = legs["O-OVER-1"]
+    ensure(over["stake"] == "5")
+    ensure(over["exposure"] == "10.50")
+    ensure(over["fills"] == 1)  # back-compat count retained
+    ensure(over["fill_events"] == [{"ts": None, "px": "2.10", "qty": "5"}])
+
+
+def test_get_stats_pairs_cover_won_and_push_leg_results():  # skipcq
+    h = _Harness()
+
+    h.settle(h.over_leg_id, SettlementResult.WON)  # WON shortcut fixes the pair immediately
+
+    pair = h.tracker_stats()["pairs"][0]
+    # A same-venue WON settles via the joint path (no per-leg grading map), so leg_results is
+    # empty there; the per-leg grading map is populated on the cross-venue per-leg path below.
+    ensure(pair["winning_outcome"] == "over")
+    ensure(pair["realized_pnl"] == "0.2800")
+
+    # Cross-venue disables the WON shortcut, so a WON + PUSH pair realizes from each leg's own
+    # grading -- the path that persists the per-leg map.
+    push_h = _Harness(over_venue="CLOUDBET", under_venue="SXBET")
+    push_h.settle(push_h.over_leg_id, SettlementResult.WON)
+    push_h.settle(push_h.under_leg_id, SettlementResult.PUSH)
+    push_pair = push_h.tracker_stats()["pairs"][0]
+    ensure(push_pair["leg_results"] == {"O-OVER-1": "WON", "O-UNDER-1": "PUSH"})
+    # CLOUDBET WON native 5.50 (no commission) ; SX.bet PUSH refunds its stake -> 0.
+    ensure(push_pair["leg_realized_native"] == {"O-OVER-1": "5.50", "O-UNDER-1": "0"})
+
+
+def test_get_stats_is_json_serializable():  # skipcq
+    import json
+
+    h = _Harness()
+    h.settle(h.over_leg_id, SettlementResult.HALF_WON)
+    h.settle(h.under_leg_id, SettlementResult.HALF_LOST)
+
+    # The full stats payload -- including the nested per-pair trades detail -- round-trips
+    # through json without a custom encoder.
+    dumped = json.dumps(h.strategy.get_stats())
+    reloaded = json.loads(dumped)
+    ensure(reloaded["arb_position_tracker"]["pairs"][0]["realized_pnl"] == "0.1400")
+
+
+def test_get_stats_pairs_capped_to_arb_pairs_stats_cap():  # skipcq
+    # The cap bounds only the emitted list; tracking still counts every pair.
+    h = _Harness(arb_pairs_stats_cap=2)
+    tracker = h.strategy._arb_position_tracker
+    for i in range(5):
+        a, b = f"X{i}", f"Y{i}"
+        tracker.record_fill(a, "over", "BUY", Decimal("2.1"), Decimal(5), sibling_id=b)
+        tracker.record_fill(b, "under", "BUY", Decimal("2.1"), Decimal(5), sibling_id=a)
+
+    stats = h.tracker_stats()
+    ensure(stats["pairs_tracked"] == 6)  # the harness pair plus five, none evicted
+    ensure(len(stats["pairs"]) == 2)  # only the two most-recently-active emitted
+
+
+def test_get_stats_pairs_saturated_and_realistic_payload_sizes_bounded():  # skipcq
+    # JSON-size guard for the DB shipper. Two bounds are pinned: a saturated worst case
+    # (cap-200 pairs x 2 legs x 50 fill events each) under a sane hard ceiling, and a
+    # realistic load (200 pairs x ~1 fill/leg) comfortably small. Fill-event dicts are used
+    # for shipper clarity; the saturated ceiling is generous by design (~1-1.3 MB), while the
+    # realistic path -- what a live node actually emits -- stays well under a few hundred KB.
+    import json
+
+    def _fill(size: int) -> str:
+        h = _Harness(arb_pairs_stats_cap=200, arb_leg_fills_cap=50)
+        tracker = h.strategy._arb_position_tracker
+        for i in range(200):
+            a, b = f"X{i}", f"Y{i}"
+            for _ in range(size):
+                tracker.record_fill(a, "over", "BUY", Decimal("2.1"), Decimal(5), sibling_id=b)
+                tracker.record_fill(b, "under", "BUY", Decimal("2.1"), Decimal(5), sibling_id=a)
+        return json.dumps(h.strategy.get_stats())
+
+    saturated = _fill(50)  # 200 pairs, both legs at the 50-fill cap
+    realistic = _fill(1)  # 200 pairs, one fill per leg
+
+    ensure(len(saturated.encode()) < 2_000_000)  # generous hard ceiling for the worst case
+    ensure(len(realistic.encode()) < 400_000)  # the load a live node actually ships

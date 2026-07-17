@@ -38,6 +38,7 @@ joint computation is side-agnostic and never hand-rolls odds math.
 
 from __future__ import annotations
 
+import itertools
 from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field
@@ -55,6 +56,11 @@ if TYPE_CHECKING:
 # Synthetic scenario key for "none of the tracked outcomes win" -- used only while a pair
 # has fewer than two distinct outcomes covered (a naked leg), so its downside is surfaced.
 _COMPLEMENT_OUTCOME = "__other__"
+
+# Monotonic activity clock: every fill or settlement stamps a pair with the next value so
+# the stats layer can keep the most-recently-active pairs when it caps the emitted list.
+# Purely observability ordering -- it never gates tracking, settlement, or realization.
+_PAIR_ACTIVITY_COUNTER = itertools.count(1)
 
 
 def _currency_code(value: object) -> str:
@@ -100,9 +106,23 @@ class LegState:
     currency: str = ""
     venue: str = ""
     fills: list[Bet] = field(default_factory=list)
+    # Bounded per-fill detail for the trades shipper (ts/price/stake). The unbounded
+    # ``fills`` Bet list above stays the settlement source of truth; this parallel list is
+    # observability only and trims to the last ``fill_events_cap`` entries.
+    fill_events: list[dict[str, object]] = field(default_factory=list)
+    fill_events_cap: int = 50
 
-    def add_fill(self, price: object, stake: object) -> None:
-        self.fills.append(Bet(_to_decimal(price), _to_decimal(stake), self.side))
+    def add_fill(self, price: object, stake: object, ts_event: object = None) -> None:
+        px = _to_decimal(price)
+        qty = _to_decimal(stake)
+        self.fills.append(Bet(px, qty, self.side))
+        # ``OrderFilled.ts_event`` is nanoseconds since epoch (int); anything else is
+        # recorded as None rather than coerced, keeping the shipped payload honest.
+        self.fill_events.append(
+            {"ts": ts_event if isinstance(ts_event, int) else None, "px": px, "qty": qty},
+        )
+        if len(self.fill_events) > self.fill_events_cap:
+            del self.fill_events[: len(self.fill_events) - self.fill_events_cap]
 
     @property
     def filled(self) -> bool:
@@ -145,6 +165,17 @@ class ArbPairState:
     realized_pnl: Decimal | None = None
     policy: PortfolioCurrencyPolicy | None = None
     winning_profit_fee_rates: Mapping[str, Decimal] = field(default_factory=dict)
+    # Per-leg settlement grading, captured from the already-computed map in
+    # ``settle_from_leg_results`` so the shipper can build a trade_legs table. Observability
+    # only -- populated after realization, never read by the P&L arithmetic.
+    leg_results: dict[str, str] = field(default_factory=dict)
+    leg_realized_native: dict[str, Decimal] = field(default_factory=dict)
+    # Most-recent activity stamp (fill or settlement), used only to order the capped stats
+    # list; 0 until the first fill.
+    last_activity: int = 0
+
+    def touch(self) -> None:
+        self.last_activity = next(_PAIR_ACTIVITY_COUNTER)
 
     @property
     def filled_legs(self) -> list[LegState]:
@@ -335,6 +366,7 @@ class ArbPairState:
 
         """
         self.settled = True
+        self.touch()
         if void:
             self.void = True
             self.winning_outcome = None
@@ -370,11 +402,17 @@ class ArbPairState:
 
         """
         self.settled = True
+        self.touch()
         self.winning_outcome = None
         graded = {
             leg.client_order_id: str(results.get(leg.client_order_id, "")).upper()
             for leg in self.filled_legs
         }
+        # Persist the grading map for the trades shipper before the loop consumes it. This is
+        # a copy of the values the realization arithmetic already uses -- it neither feeds
+        # nor alters the P&L computed below.
+        self.leg_results = dict(graded)
+        self.leg_realized_native = {}
         self.void = bool(graded) and all(result in ("VOID", "PUSH") for result in graded.values())
         cross_currency = self.is_cross_currency
         if cross_currency and self.policy is None:
@@ -384,6 +422,7 @@ class ArbPairState:
         for leg in self.filled_legs:
             result = graded[leg.client_order_id]
             if result in ("VOID", "PUSH"):
+                self.leg_realized_native[leg.client_order_id] = Decimal(0)
                 continue  # Stake refunded; no P&L and no currency exposure on this leg.
             if result == "WON":
                 native = self._net_winning_native(leg.win_payoff, leg)
@@ -398,6 +437,7 @@ class ArbPairState:
             else:
                 self.realized_pnl = None  # Ungraded/unknown leg; cannot realize a number.
                 return None
+            self.leg_realized_native[leg.client_order_id] = native
             if not cross_currency:
                 total += native
                 continue
@@ -425,6 +465,8 @@ class ArbPairState:
             "best_case_pnl": self.best_case_pnl(),
             "realized_pnl": self.realized_pnl,
             "outcome_pnls": dict(outcome_pnls),
+            "leg_results": dict(self.leg_results),
+            "leg_realized_native": dict(self.leg_realized_native),
             "legs": [
                 {
                     "client_order_id": leg.client_order_id,
@@ -432,6 +474,7 @@ class ArbPairState:
                     "side": str(leg.side),
                     "currency": leg.currency,
                     "fills": len(leg.fills),
+                    "fill_events": [dict(event) for event in leg.fill_events],
                     "stake": leg.stake,
                     "exposure": leg.exposure,
                 }
@@ -452,11 +495,13 @@ class ArbPositionTracker:
         policy: PortfolioCurrencyPolicy | None = None,
         *,
         winning_profit_fee_rates: Mapping[str, Decimal] | None = None,
+        leg_fills_cap: int = 50,
     ) -> None:
         self._pairs: dict[str, ArbPairState] = {}
         self._leg_to_pair: dict[str, str] = {}
         self._policy = policy
         self._winning_profit_fee_rates: dict[str, Decimal] = dict(winning_profit_fee_rates or {})
+        self._leg_fills_cap = leg_fills_cap
 
     @staticmethod
     def pair_key(leg_a_id: object, leg_b_id: object) -> str:
@@ -477,6 +522,7 @@ class ArbPositionTracker:
         sibling_id: object = None,
         currency: object = None,
         venue: object = None,
+        ts_event: object = None,
     ) -> ArbPairState:
         """
         Record a single fill (or partial fill) for a leg, accumulating it as a ``Bet``.
@@ -507,9 +553,11 @@ class ArbPositionTracker:
                 side=bet_side_for_order_side(order_side),
                 currency=_currency_code(currency),
                 venue=_currency_code(venue),
+                fill_events_cap=self._leg_fills_cap,
             )
             pair.legs[coid] = leg
-        leg.add_fill(last_px, last_qty)
+        leg.add_fill(last_px, last_qty, ts_event)
+        pair.touch()
         return pair
 
     def link_leg_to_pair(self, leg_id: object, existing_leg_id: object) -> str | None:
@@ -555,11 +603,26 @@ class ArbPositionTracker:
         pair_id = self._leg_to_pair.get(str(client_order_id))
         return self._pairs.get(pair_id) if pair_id is not None else None
 
-    def summary(self) -> dict:
+    def summary(self, pairs_cap: int | None = None) -> dict:
         """
         Compact snapshot for the runtime probe / nodeops dashboard.
+
+        ``pairs_cap`` bounds only the emitted ``pairs`` list: with ``None`` (default) every
+        tracked pair is emitted in insertion order (unchanged behaviour); with an int the
+        list is the most-recently-active ``pairs_cap`` pairs, most-recent first. The
+        aggregate scalars always span every tracked pair -- capping is a payload-size guard
+        for the trades shipper and never evicts a pair from tracking or settlement.
+
         """
-        pairs = [pair.summary() for pair in self._pairs.values()]
+        if pairs_cap is None:
+            emitted = list(self._pairs.values())
+        else:
+            emitted = sorted(
+                self._pairs.values(),
+                key=lambda p: p.last_activity,
+                reverse=True,
+            )[: max(pairs_cap, 0)]
+        pairs = [pair.summary() for pair in emitted]
         open_pairs = [p for p in self._pairs.values() if not p.settled]
         realized_total = sum(
             (p.realized_pnl for p in self._pairs.values() if p.realized_pnl is not None),
