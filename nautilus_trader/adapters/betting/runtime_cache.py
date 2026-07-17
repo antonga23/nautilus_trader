@@ -49,6 +49,7 @@ class VenueQuotePollStats:
     quote_init_timestamp_source: str = ""
     failure_count: int = 0
     rate_limit_count: int = 0
+    delisted_count: int = 0
     backoff_secs: float = 0.0
     last_error: str | None = None
 
@@ -124,6 +125,7 @@ def encode_venue_quote_poll_stats(
     quote_init_timestamp_source: str = "",
     failure_count: int = 0,
     rate_limit_count: int = 0,
+    delisted_count: int = 0,
     backoff_secs: float = 0.0,
     last_error: str | None = None,
 ) -> bytes:
@@ -161,6 +163,7 @@ def encode_venue_quote_poll_stats(
         "quote_init_timestamp_source": str(quote_init_timestamp_source or ""),
         "failure_count": max(0, int(failure_count)),
         "rate_limit_count": max(0, int(rate_limit_count)),
+        "delisted_count": max(0, int(delisted_count)),
         "backoff_secs": max(0.0, float(backoff_secs)),
         "last_error": str(last_error)[:240] if last_error else None,
     }
@@ -240,6 +243,7 @@ def decode_venue_quote_poll_stats(raw: bytes | None) -> VenueQuotePollStats | No
             quote_init_timestamp_source=str(payload.get("quote_init_timestamp_source") or ""),
             failure_count=int(payload.get("failure_count") or 0),
             rate_limit_count=int(payload.get("rate_limit_count") or 0),
+            delisted_count=int(payload.get("delisted_count") or 0),
             backoff_secs=float(payload.get("backoff_secs") or 0.0),
             last_error=str(payload.get("last_error") or "") or None,
         )

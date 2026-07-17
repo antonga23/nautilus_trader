@@ -540,11 +540,24 @@ class CloudbetDataClient(LiveMarketDataClient):
         max_fetch_latency_secs = 0.0
         failure_count = 0
         rate_limit_count = 0
+        delisted_count = 0
         last_error: str | None = None
         pruned_subscription_count = 0
         pruned_instrument_ids: set[InstrumentId] = set()
         for instrument_id, quote, error in results:
             if error is not None:
+                if self._is_delisted_quote_error(error):
+                    # A 404 means the event is settled/delisted on the venue, not a
+                    # transient failure: count it like a missing quote so the
+                    # subscription is pruned instead of re-polled forever.
+                    delisted_count += 1
+                    if self._record_missing_quote_subscription(
+                        instrument_id,
+                        reason="consecutive 404s (delisted event)",
+                    ):
+                        pruned_subscription_count += 1
+                        pruned_instrument_ids.add(instrument_id)
+                    continue
                 failure_count += 1
                 last_error = error
                 if "429" in error or "code='429'" in error or "code=429" in error:
@@ -590,6 +603,7 @@ class CloudbetDataClient(LiveMarketDataClient):
             fetch_latency_percentiles=latency_percentiles(fetch_latencies_secs),
             failure_count=failure_count,
             rate_limit_count=rate_limit_count,
+            delisted_count=delisted_count,
             backoff_secs=float(rate_limit_count),
             last_error=last_error,
         )
@@ -783,7 +797,16 @@ class CloudbetDataClient(LiveMarketDataClient):
                     )
         return group_results, fallback_count
 
-    def _record_missing_quote_subscription(self, instrument_id: InstrumentId) -> bool:
+    @staticmethod
+    def _is_delisted_quote_error(error: str) -> bool:
+        return "code='404'" in error or "code=404" in error
+
+    def _record_missing_quote_subscription(
+        self,
+        instrument_id: InstrumentId,
+        *,
+        reason: str = "consecutive missing polls",
+    ) -> bool:
         if instrument_id not in self._subscribed_quote_instruments:
             return False
         if instrument_id in self._requested_quote_instruments:
@@ -801,7 +824,7 @@ class CloudbetDataClient(LiveMarketDataClient):
         self._quote_poll_missing_counts.pop(instrument_id, None)
         self._subscribed_quote_instruments.discard(instrument_id)
         self._log.info(
-            "Pruned Cloudbet quote subscription after consecutive missing polls: "
+            f"Pruned Cloudbet quote subscription after {reason}: "
             f"instrument_id={instrument_id} misses={missing_count}",
         )
         if not self._subscribed_quote_instruments:
@@ -1012,6 +1035,7 @@ class CloudbetDataClient(LiveMarketDataClient):
         fetch_latency_percentiles: tuple[float, float, float] = (0.0, 0.0, 0.0),
         failure_count: int = 0,
         rate_limit_count: int = 0,
+        delisted_count: int = 0,
         backoff_secs: float = 0.0,
         last_error: str | None = None,
     ) -> None:
@@ -1049,6 +1073,7 @@ class CloudbetDataClient(LiveMarketDataClient):
                 quote_init_timestamp_source="response_received",
                 failure_count=failure_count,
                 rate_limit_count=rate_limit_count,
+                delisted_count=delisted_count,
                 backoff_secs=backoff_secs,
                 last_error=last_error,
             ),
