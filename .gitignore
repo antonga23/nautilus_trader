@@ -75,6 +75,7 @@ env/
 *.bak
 *.sh
 !scripts/**/*.sh
+!tools/**/*.sh
 !.docker/bootstrap-self-hosted-runner-host.sh
 !.docker/install-github-actions-runner.sh
 !.docker/repair-github-runner-workspace.sh

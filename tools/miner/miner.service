@@ -1,0 +1,26 @@
+[Unit]
+Description=Standing semantic-rule miner (accumulating master mine -> slim node seeds)
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+# Runs as root: node dirs under /opt/cloudbet/strategy-nodes are root-owned.
+User=root
+# Image ref + venue credentials + MINER_* tuning live here (600, root-owned,
+# NOT committed to the repo). See install.sh header for the expected keys.
+EnvironmentFile=/opt/cloudbet/miner/miner.env
+# The miner loop runs INSIDE the strategy-node image so it uses the exact
+# nautilus_trader the nodes run. Host paths are mounted at identical container
+# paths, so every MINER_* default holds unchanged inside the container.
+ExecStartPre=-/usr/bin/docker rm -f cloudbet-miner
+ExecStart=/usr/bin/docker run --rm --name cloudbet-miner --entrypoint python --env-file /opt/cloudbet/miner/miner.env -v /opt/cloudbet/miner:/opt/cloudbet/miner -v /opt/cloudbet/strategy-nodes:/opt/cloudbet/strategy-nodes ${MINER_NODE_IMAGE} /opt/cloudbet/miner/miner_service.py
+Restart=always
+RestartSec=30
+# SIGTERM lets the miner finish its in-flight stage; a hard kill is also safe
+# (cache writes are per-file atomic and the next cycle re-mines).
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target
