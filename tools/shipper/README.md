@@ -18,7 +18,20 @@ does can block or corrupt the concurrent nodeops writer or the running nodes.
 | `status_snapshots` | `<node>/status.json` | full `runtimeProbe` blob, deduped by content hash |
 | `node_logs` | `<node>/sessions/<id>/node.log` | line-by-line, exactly-once by `(node, session, seq)` |
 | `node_events` | `<node>/sessions/<id>/events.jsonl` | parsed JSON events |
+| `arb_pnl_samples` | `status.json` `runtimeProbe.arbPositionPnl` | P&L tracker rollup per snapshot; PK `(node, snapshot_ts)` |
+| `live_execution_samples` | `runtimeProbe.strategyStats.live_execution` | execution counters + kill switch per snapshot |
+| `arb_approvals` | `runtimeProbe.executionApprovals.pending[]` | one row per approval, odds/stakes upserted, `last_seen` tracks the newest snapshot |
+| `arb_approval_stats` | `runtimeProbe.executionApprovals` envelope | approval-queue counters per snapshot |
+| `arb_pairs` | `runtimeProbe.arbPositionPnl.pairs[]` | one row per tracked arb pair (upserted) |
+| `trade_legs` | `runtimeProbe.arbPositionPnl.pairs[].legs[]` | one row per leg, PK `(node, pair_id, client_order_id)` |
 | `shipper_state` | — | persistent high-water marks (see below) |
+
+The six flat trade tables are defensive flatteners over the already-parsed status
+payload, keyed by the probe's own `updatedAt` (`snapshot_ts`) so re-shipping an
+unchanged status upserts idempotently. A missing or malformed block skips only that
+table with a warning, never the cycle. `arbPositionPnl.pairs` is shipped by a separate
+node-side change, so its absence is expected and tolerated silently until every node
+carries it.
 
 Schema is `schema.sql` (all `CREATE TABLE IF NOT EXISTS`); the shipper runs it every
 startup, so it self-heals and is safe to re-run.
@@ -52,7 +65,14 @@ and the cursor advance commit in the **same transaction**: a Postgres failure ro
 back, so the un-acked batch re-ships on the next cycle and a row is **never skipped**.
 The unique constraints make the replay idempotent (`ON CONFLICT DO NOTHING` → no dupes).
 
-- SQLite tables: cursor = max `rowid` shipped.
+- SQLite tables: cursor = `{"rowid": <max rowid shipped>, "sha": <sha256 of the spec
+  columns at that rowid>}` (a legacy bare-int cursor is still read and upgrades on the
+  next advance). The fingerprint distinguishes a **rebuilt** source db from a
+  **pruned** one: stored rowid above the source max, or a fingerprint mismatch at the
+  stored rowid, means the db was rebuilt and shipping restarts from 0 (`ON CONFLICT`
+  dedups the replay); a missing cursor row with higher rowids surviving is retention
+  pruning and shipping resumes as-is. Without the identity check a rebuilt db whose
+  rowids restart below the high-water mark would be silently skipped.
 - Log files: cursor = `{"offset": <bytes>, "seq": <last seq>}` keyed by
   `log:<node>|<session>|<filename>`.
 

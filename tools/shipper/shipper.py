@@ -8,7 +8,7 @@ read-only (``mode=ro`` + ``PRAGMA query_only=ON``) so the concurrent WAL writer 
 undisturbed, tails the node directory artefacts, and streams everything into Postgres.
 
 Exactly-once is anchored in Postgres, not on local disk: high-water marks
-(SQLite rowids per source table; per-logfile byte offset + last seq) live in the
+(per-table SQLite rowid + row fingerprint; per-logfile byte offset + last seq) live in the
 ``shipper_state`` table and advance only inside the same transaction that commits the
 data they describe. A Postgres outage therefore re-ships the un-acked batch on the next
 cycle and never skips a row. Any psycopg/connection error is caught, the transaction is
@@ -115,6 +115,144 @@ SQLITE_TABLES: tuple[SqliteTableSpec, ...] = (
     ),
 )
 
+# ---------------------------------------------------------------------------
+# Flat trade tables flattened from status.json at ship time.
+# ---------------------------------------------------------------------------
+
+ARB_PNL_COLUMNS: tuple[str, ...] = (
+    "node",
+    "snapshot_ts",
+    "pairs_tracked",
+    "pairs_open",
+    "pairs_settled",
+    "open_exposure",
+    "open_guaranteed_pnl",
+    "realized_pnl",
+    "settlements_received",
+    "settlements_unmatched",
+)
+LIVE_EXECUTION_COLUMNS: tuple[str, ...] = (
+    "node",
+    "snapshot_ts",
+    "kill_switch_active",
+    "halt_reason",
+    "realized_loss",
+    "notional_used",
+    "max_daily_notional",
+    "max_daily_loss",
+    "attempts",
+    "blocks",
+    "submissions",
+    "block_reasons",
+    "submissions_by_venue",
+)
+APPROVAL_COLUMNS: tuple[str, ...] = (
+    "node",
+    "approval_id",
+    "canonical_pair_id",
+    "created_at",
+    "expires_at",
+    "match_type",
+    "venue_a",
+    "venue_b",
+    "instrument_id_a",
+    "instrument_id_b",
+    "market_a",
+    "market_b",
+    "outcome_a",
+    "outcome_b",
+    "odds_a",
+    "odds_b",
+    "stake_a",
+    "stake_b",
+    "fee_adjusted_profit_margin",
+    "raw_profit_margin",
+    "expected_profit",
+    "last_seen",
+)
+APPROVAL_UPDATE_COLUMNS: tuple[str, ...] = (
+    "expires_at",
+    "odds_a",
+    "odds_b",
+    "stake_a",
+    "stake_b",
+    "fee_adjusted_profit_margin",
+    "raw_profit_margin",
+    "expected_profit",
+    "last_seen",
+)
+APPROVAL_STATS_COLUMNS: tuple[str, ...] = (
+    "node",
+    "snapshot_ts",
+    "mode",
+    "ttl_secs",
+    "max_pending",
+    "staged",
+    "approved_executed",
+    "approved_blocked",
+    "rejected",
+    "expired",
+    "evicted",
+    "commands_processed",
+    "commands_invalid",
+    "pending_count",
+    "recent_decisions",
+)
+ARB_PAIR_COLUMNS: tuple[str, ...] = (
+    "node",
+    "pair_id",
+    "settled",
+    "void",
+    "fully_hedged",
+    "cross_currency",
+    "base_currency",
+    "winning_outcome",
+    "exposure",
+    "guaranteed_pnl",
+    "best_case_pnl",
+    "realized_pnl",
+    "last_seen",
+)
+ARB_PAIR_UPDATE_COLUMNS: tuple[str, ...] = (
+    "settled",
+    "void",
+    "fully_hedged",
+    "cross_currency",
+    "winning_outcome",
+    "exposure",
+    "guaranteed_pnl",
+    "best_case_pnl",
+    "realized_pnl",
+    "last_seen",
+)
+TRADE_LEG_COLUMNS: tuple[str, ...] = (
+    "node",
+    "pair_id",
+    "client_order_id",
+    "venue",
+    "outcome",
+    "side",
+    "currency",
+    "stake",
+    "exposure",
+    "fill_count",
+    "fills",
+    "settlement_result",
+    "last_seen",
+)
+TRADE_LEG_UPDATE_COLUMNS: tuple[str, ...] = (
+    "venue",
+    "outcome",
+    "side",
+    "currency",
+    "stake",
+    "exposure",
+    "fill_count",
+    "fills",
+    "settlement_result",
+    "last_seen",
+)
+
 
 # ---------------------------------------------------------------------------
 # Config
@@ -184,6 +322,15 @@ class PgWriter(Protocol):
         rows: Sequence[Sequence[Any]],
         cursor_source: str,
         cursor_value: str,
+    ) -> int: ...
+
+    def upsert_rows(
+        self,
+        table: str,
+        columns: Sequence[str],
+        conflict: str,
+        rows: Sequence[Sequence[Any]],
+        update_columns: Sequence[str] = (),
     ) -> int: ...
 
     def insert_status(
@@ -260,6 +407,35 @@ class PsycopgWriter:
                     inserted = cur.rowcount if cur.rowcount is not None else 0
             self._upsert_cursor(cursor_source, cursor_value)
         return inserted
+
+    def upsert_rows(
+        self,
+        table: str,
+        columns: Sequence[str],
+        conflict: str,
+        rows: Sequence[Sequence[Any]],
+        update_columns: Sequence[str] = (),
+    ) -> int:
+        if not rows:
+            return 0
+        self.connect()
+        placeholders = ", ".join(["%s"] * len(columns))
+        col_sql = ", ".join(columns)
+        if update_columns:
+            action = "DO UPDATE SET " + ", ".join(
+                f"{column} = EXCLUDED.{column}" for column in update_columns
+            )
+        else:
+            action = "DO NOTHING"
+        upsert_sql = (
+            # table/columns/conflict come from the fixed flat-table specs, never user
+            # input; values are bound parameters.
+            f"INSERT INTO {table} ({col_sql}) VALUES ({placeholders}) "  # noqa: S608
+            f"ON CONFLICT {conflict} {action}"
+        )
+        with self._conn.transaction(), self._conn.cursor() as cur:
+            cur.executemany(upsert_sql, rows)
+            return cur.rowcount if cur.rowcount is not None else 0
 
     def insert_status(
         self,
@@ -346,6 +522,28 @@ class SqliteSource:
         finally:
             conn.close()
 
+    def max_rowid(self, table: str) -> int:
+        conn = self._connect()
+        try:
+            row = conn.execute(f"SELECT max(rowid) FROM {table}").fetchone()  # noqa: S608 - table from fixed spec
+            return 0 if row is None or row[0] is None else int(row[0])
+        finally:
+            conn.close()
+
+    def read_row(self, table: str, columns: Sequence[str], rowid: int) -> dict[str, Any] | None:
+        col_sql = ", ".join(columns)
+        conn = self._connect()
+        try:
+            record = conn.execute(
+                f"SELECT {col_sql} FROM {table} WHERE rowid = ?",  # noqa: S608 - columns from fixed spec
+                (rowid,),
+            ).fetchone()
+            if record is None:
+                return None
+            return {column: record[column] for column in columns}
+        finally:
+            conn.close()
+
 
 # ---------------------------------------------------------------------------
 # Shipper orchestration
@@ -392,8 +590,10 @@ class Shipper:
                 logger.warning("shipping %s failed (will retry): %s", spec.name, exc)
 
     def _ship_one_table(self, spec: SqliteTableSpec) -> None:
-        cursor_raw = self._writer.read_cursor(spec.cursor_source)
-        after_rowid = int(cursor_raw) if cursor_raw else 0
+        stored_rowid, stored_sha = _parse_sqlite_cursor(
+            self._writer.read_cursor(spec.cursor_source),
+        )
+        after_rowid = self._verified_start_rowid(spec, stored_rowid, stored_sha)
         total = 0
         while True:
             batch = self._source.read_new_rows(
@@ -406,6 +606,9 @@ class Shipper:
                 break
             max_rowid = batch[-1][0]
             rows = [self._pg_row(spec, mapping) for _, mapping in batch]
+            cursor_value = json.dumps(
+                {"rowid": max_rowid, "sha": _row_sha(spec.columns, batch[-1][1])},
+            )
             # The insert and the cursor advance commit in ONE transaction: a PG failure
             # rolls both back, so the same rows re-ship next cycle (never skipped).
             self._writer.ship_batch(
@@ -414,14 +617,67 @@ class Shipper:
                 spec.conflict,
                 rows,
                 spec.cursor_source,
-                str(max_rowid),
+                cursor_value,
             )
             after_rowid = max_rowid
             total += len(batch)
             if len(batch) < self._config.batch_rows:
                 break
+        if total == 0 and after_rowid < stored_rowid:
+            # Rebuild detected but the fresh db had nothing to ship: persist the reset
+            # so the next cycle does not re-detect. A cursor retreat with no data is
+            # safe (never an advance past unshipped rows).
+            self._writer.ship_batch(
+                spec.name,
+                spec.pg_columns,
+                spec.conflict,
+                [],
+                spec.cursor_source,
+                json.dumps({"rowid": 0, "sha": None}),
+            )
+            return
         if total:
             logger.info("shipped %d %s rows (cursor -> %d)", total, spec.name, after_rowid)
+
+    def _verified_start_rowid(
+        self,
+        spec: SqliteTableSpec,
+        stored_rowid: int,
+        stored_sha: str | None,
+    ) -> int:
+        """
+        Decide where to resume, distinguishing a rebuilt source db (rowids restarted;
+        the bare high-water mark would silently skip everything below it) from retention
+        pruning (same db, low rowids deleted; resuming is correct).
+        """
+        if stored_rowid <= 0:
+            return 0
+        max_rowid = self._source.max_rowid(spec.name)
+        if stored_rowid > max_rowid:
+            logger.warning(
+                "cursor %s at rowid %d but source max rowid is %d: source db was "
+                "rebuilt; re-shipping from 0 (ON CONFLICT dedups)",
+                spec.cursor_source,
+                stored_rowid,
+                max_rowid,
+            )
+            return 0
+        row = self._source.read_row(spec.name, spec.columns, stored_rowid)
+        if row is None:
+            # Cursor row deleted but higher rowids survive: retention prune, same db.
+            return stored_rowid
+        if stored_sha is None:
+            # Legacy bare-int cursor: no fingerprint to check; upgrades on next advance.
+            return stored_rowid
+        if _row_sha(spec.columns, row) != stored_sha:
+            logger.warning(
+                "cursor %s fingerprint mismatch at rowid %d: source db was rebuilt; "
+                "re-shipping from 0 (ON CONFLICT dedups)",
+                spec.cursor_source,
+                stored_rowid,
+            )
+            return 0
+        return stored_rowid
 
     def _pg_row(self, spec: SqliteTableSpec, mapping: dict[str, Any]) -> list[Any]:
         if spec.jsonb_source is None:
@@ -466,6 +722,168 @@ class Shipper:
         inserted = self._writer.insert_status(node, ts_utc, updated_at, payload, content_sha)
         if inserted:
             logger.info("status snapshot stored for %s (sha=%s)", node, content_sha[:12])
+        self._ship_flat_trades(node, payload)
+
+    # -- flat trade tables from status.json ----------------------------------
+
+    def _ship_flat_trades(self, node: str, payload: dict[str, Any]) -> None:
+        """
+        Flatten the already-parsed status payload into the queryable trade tables.
+
+        Every row is keyed on snapshot_ts = the probe's own updatedAt, so re-shipping an
+        unchanged status collides on the PK and the upserts stay idempotent.
+
+        """
+        probe = payload.get("runtimeProbe")
+        if not isinstance(probe, dict):
+            return
+        snapshot_ts = _status_updated_at(payload)
+        if snapshot_ts is None or not _is_parseable_ts(snapshot_ts):
+            logger.debug(
+                "status for %s has no parseable updatedAt; skipping flat trade tables",
+                node,
+            )
+            return
+        flatteners: tuple[tuple[str, Any], ...] = (
+            ("arb_pnl_samples", self._flatten_arb_pnl),
+            ("live_execution_samples", self._flatten_live_execution),
+            ("arb_approvals", self._flatten_approvals),
+            ("arb_approval_stats", self._flatten_approval_stats),
+            ("arb_pairs/trade_legs", self._flatten_pairs_and_legs),
+        )
+        for label, flatten in flatteners:
+            try:
+                flatten(node, snapshot_ts, probe)
+            except Exception as exc:
+                logger.warning("flattening %s for %s failed (will retry): %s", label, node, exc)
+
+    def _flatten_arb_pnl(self, node: str, snapshot_ts: str, probe: dict[str, Any]) -> None:
+        block = probe.get("arbPositionPnl")
+        if not isinstance(block, dict) or not block:
+            return
+        row = [node, snapshot_ts, *(block.get(column) for column in ARB_PNL_COLUMNS[2:])]
+        self._writer.upsert_rows("arb_pnl_samples", ARB_PNL_COLUMNS, "(node, snapshot_ts)", [row])
+
+    def _flatten_live_execution(self, node: str, snapshot_ts: str, probe: dict[str, Any]) -> None:
+        stats = probe.get("strategyStats")
+        if not isinstance(stats, dict):
+            return
+        block = stats.get("live_execution")
+        if block is None:
+            return
+        if not isinstance(block, dict):
+            raise TypeError(f"live_execution block is {type(block).__name__}, expected dict")
+        row: list[Any] = [node, snapshot_ts]
+        for column in LIVE_EXECUTION_COLUMNS[2:]:
+            value = block.get(column)
+            if column in ("block_reasons", "submissions_by_venue") and value is not None:
+                value = _wrap_jsonb(value)
+            row.append(value)
+        self._writer.upsert_rows(
+            "live_execution_samples",
+            LIVE_EXECUTION_COLUMNS,
+            "(node, snapshot_ts)",
+            [row],
+        )
+
+    def _flatten_approvals(self, node: str, snapshot_ts: str, probe: dict[str, Any]) -> None:
+        envelope = probe.get("executionApprovals")
+        if not isinstance(envelope, dict):
+            return
+        pending = envelope.get("pending")
+        if not isinstance(pending, list):
+            return
+        rows: list[list[Any]] = []
+        skipped = 0
+        for entry in pending:
+            if not isinstance(entry, dict) or not entry.get("approval_id"):
+                skipped += 1
+                continue
+            rows.append(
+                [node, *(entry.get(column) for column in APPROVAL_COLUMNS[1:-1]), snapshot_ts],
+            )
+        if skipped:
+            logger.warning("skipped %d malformed pending approvals for %s", skipped, node)
+        if rows:
+            self._writer.upsert_rows(
+                "arb_approvals",
+                APPROVAL_COLUMNS,
+                "(node, approval_id)",
+                rows,
+                APPROVAL_UPDATE_COLUMNS,
+            )
+
+    def _flatten_approval_stats(self, node: str, snapshot_ts: str, probe: dict[str, Any]) -> None:
+        envelope = probe.get("executionApprovals")
+        if not isinstance(envelope, dict) or not envelope:
+            return
+        pending = envelope.get("pending")
+        row: list[Any] = [node, snapshot_ts]
+        for column in APPROVAL_STATS_COLUMNS[2:]:
+            if column == "pending_count":
+                row.append(len(pending) if isinstance(pending, list) else None)
+            elif column == "recent_decisions":
+                value = envelope.get(column)
+                row.append(None if value is None else _wrap_jsonb(value))
+            else:
+                row.append(envelope.get(column))
+        self._writer.upsert_rows(
+            "arb_approval_stats",
+            APPROVAL_STATS_COLUMNS,
+            "(node, snapshot_ts)",
+            [row],
+        )
+
+    def _flatten_pairs_and_legs(self, node: str, snapshot_ts: str, probe: dict[str, Any]) -> None:
+        block = probe.get("arbPositionPnl")
+        if not isinstance(block, dict):
+            return
+        pairs = block.get("pairs")
+        if pairs is None:
+            # The per-pair breakdown ships in a separate node-side change; until every
+            # node carries it, absence is expected and not a warning.
+            logger.debug("arbPositionPnl.pairs absent for %s; skipping pair/leg tables", node)
+            return
+        if not isinstance(pairs, list):
+            raise TypeError(f"arbPositionPnl.pairs is {type(pairs).__name__}, expected list")
+        pair_rows: list[list[Any]] = []
+        leg_rows: list[list[Any]] = []
+        for pair in pairs:
+            if not isinstance(pair, dict) or not pair.get("pair_id"):
+                continue
+            pair_id = pair["pair_id"]
+            pair_rows.append(
+                [
+                    node,
+                    pair_id,
+                    *(pair.get(column) for column in ARB_PAIR_COLUMNS[2:-1]),
+                    snapshot_ts,
+                ],
+            )
+            legs = pair.get("legs")
+            if not isinstance(legs, list):
+                continue
+            leg_rows.extend(
+                _leg_row(node, pair_id, leg, snapshot_ts)
+                for leg in legs
+                if isinstance(leg, dict) and leg.get("client_order_id")
+            )
+        if pair_rows:
+            self._writer.upsert_rows(
+                "arb_pairs",
+                ARB_PAIR_COLUMNS,
+                "(node, pair_id)",
+                pair_rows,
+                ARB_PAIR_UPDATE_COLUMNS,
+            )
+        if leg_rows:
+            self._writer.upsert_rows(
+                "trade_legs",
+                TRADE_LEG_COLUMNS,
+                "(node, pair_id, client_order_id)",
+                leg_rows,
+                TRADE_LEG_UPDATE_COLUMNS,
+            )
 
     def _ship_logs(self, node: str, node_dir: Path) -> None:
         sessions_dir = node_dir / "sessions"
@@ -617,6 +1035,78 @@ def _status_updated_at(payload: dict[str, Any]) -> str | None:
         if isinstance(value, str):
             return value
     return None
+
+
+def _parse_sqlite_cursor(raw: str | None) -> tuple[int, str | None]:
+    """
+    Parse a sqlite-table cursor: JSON ``{"rowid": N, "sha": "..."}`` or a legacy bare
+    int (pre-fingerprint format, read as sha=None).
+    """
+    if not raw:
+        return 0, None
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return 0, None
+    if isinstance(data, dict):
+        try:
+            rowid = int(data.get("rowid", 0))
+        except (ValueError, TypeError):
+            return 0, None
+        sha = data.get("sha")
+        return rowid, sha if isinstance(sha, str) else None
+    try:
+        return int(data), None
+    except (ValueError, TypeError):
+        return 0, None
+
+
+def _row_sha(columns: Sequence[str], mapping: Mapping[str, Any]) -> str:
+    """
+    Deterministic fingerprint of the stable column values at a rowid (rowid excluded):
+
+    the identity check that tells a rebuilt source db from the one the cursor came from.
+
+    """
+    canonical = json.dumps(
+        [mapping[column] for column in columns],
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(canonical.encode("utf8")).hexdigest()
+
+
+def _leg_row(node: str, pair_id: str, leg: dict[str, Any], snapshot_ts: str) -> list[Any]:
+    fills = leg.get("fills")
+    if isinstance(fills, list):
+        fill_count: int | None = len(fills)
+    elif isinstance(fills, int):
+        fill_count = fills
+    else:
+        fill_count = None
+    return [
+        node,
+        pair_id,
+        leg["client_order_id"],
+        leg.get("venue"),
+        leg.get("outcome"),
+        leg.get("side"),
+        leg.get("currency"),
+        leg.get("stake"),
+        leg.get("exposure"),
+        fill_count,
+        _wrap_jsonb(fills) if isinstance(fills, list) else None,
+        leg.get("settlement_result"),
+        snapshot_ts,
+    ]
+
+
+def _is_parseable_ts(value: str) -> bool:
+    try:
+        datetime.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
 
 
 def _parse_log_cursor(raw: str | None) -> tuple[int, int]:

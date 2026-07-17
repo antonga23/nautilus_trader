@@ -89,6 +89,37 @@ class FakePgWriter:
         self.cursors[cursor_source] = cursor_value
         return inserted
 
+    def upsert_rows(
+        self,
+        table: str,
+        columns: Any,
+        conflict: str,
+        rows: Any,
+        update_columns: Any = (),
+    ) -> int:
+        match = _CONFLICT_RE.search(conflict)
+        if match is None:
+            raise ValueError(f"no conflict columns in {conflict!r}")
+        conflict_cols = [c.strip() for c in match.group(1).split(",")]
+        store = self.tables.setdefault(table, [])
+        keys = self.table_keys.setdefault(table, set())
+        affected = 0
+        for row in rows:
+            record = {col: _unwrap(val) for col, val in zip(columns, row, strict=True)}
+            key = tuple(record[c] for c in conflict_cols)
+            if key in keys:
+                if not update_columns:
+                    continue  # ON CONFLICT DO NOTHING
+                existing = next(r for r in store if tuple(r[c] for c in conflict_cols) == key)
+                for col in update_columns:
+                    existing[col] = record[col]
+                affected += 1
+                continue
+            keys.add(key)
+            store.append(record)
+            affected += 1
+        return affected
+
     def insert_status(
         self,
         node: str,
@@ -128,6 +159,21 @@ def nodeops_db(tmp_path: Path) -> Path:
     Build a real temp SQLite DB shaped like the nodeops one (WAL mode, seeded).
     """
     db_path = tmp_path / "nodeops.db"
+    make_nodeops_db(db_path)
+    return db_path
+
+
+def rebuild_nodeops_db(db_path: Path) -> None:
+    """
+    Simulate a host rebuild / db recreation: delete the file (and WAL sidecars) and
+    create a fresh one whose rowids restart at 1.
+    """
+    for suffix in ("", "-wal", "-shm"):
+        Path(str(db_path) + suffix).unlink(missing_ok=True)
+    make_nodeops_db(db_path)
+
+
+def make_nodeops_db(db_path: Path) -> None:
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(
@@ -157,7 +203,6 @@ def nodeops_db(tmp_path: Path) -> Path:
     )
     conn.commit()
     conn.close()
-    return db_path
 
 
 def insert_sample(db_path: Path, node: str, ts_utc: str) -> None:
