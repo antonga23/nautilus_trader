@@ -214,6 +214,45 @@ def test_void_legs_realize_zero():  # skipcq
     ensure(h.tracker_stats()["realized_pnl"] == "0")
 
 
+def test_middle_push_realizes_zero_and_leaves_kill_switch_untripped():  # skipcq
+    # (f) a middle's shared push state refunds both stakes: realized P&L is exactly zero
+    # with no commission, and the daily-loss kill-switch counter must stay at zero (a
+    # break-even is not a loss).
+    h = _Harness(
+        execute_void_compatible_middles=True,
+        min_middle_profit_margin=Decimal("0.05"),
+    )
+
+    h.settle(h.over_leg_id, SettlementResult.VOID)
+    h.settle(h.under_leg_id, SettlementResult.VOID)
+
+    ensure(h.pair.settled is True)
+    ensure(h.pair.void is True)
+    ensure(h.pair.realized_pnl == Decimal(0))
+    ensure(h.strategy._live_execution_realized_loss == Decimal(0))
+    ensure(h.strategy._live_execution_kill_switch_active() is False)
+
+
+def test_middle_decisive_win_realizes_margin_net_of_sxbet_commission():  # skipcq
+    # (f) a decisive state wins the whole edge; the winning SX.bet leg pays the 4%
+    # net-winnings commission and the losing leg pays no fee.
+    h = _Harness(
+        execute_void_compatible_middles=True,
+        min_middle_profit_margin=Decimal("0.05"),
+    )
+    expected = h.pair.outcome_pnls()[h.over_instrument.outcome]
+
+    h.settle(h.over_leg_id, SettlementResult.WON)
+
+    ensure(h.pair.settled is True)
+    ensure(h.pair.winning_outcome == h.over_instrument.outcome)
+    ensure(h.pair.realized_pnl == expected)
+    # 5.50 gross floor -> 5.50*0.96 net of the 4% winning commission, minus the 5.00
+    # losing leg's stake = 0.28.
+    ensure(h.pair.realized_pnl == Decimal("0.28"))
+    ensure(h.strategy._live_execution_realized_loss == Decimal(0))
+
+
 def test_naked_single_leg_settles_from_its_own_grading():  # skipcq
     h = _Harness(fill_second_leg=False)
     win_payoff = h.pair.legs[h.over_leg_id].win_payoff

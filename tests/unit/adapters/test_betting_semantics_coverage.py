@@ -187,6 +187,89 @@ def test_incomplete_full_book_reports_uncovered_draw_state():
     assert proof.safety_tier == SafetyTier.AUDIT_ONLY.value
 
 
+def _void_book() -> tuple[SelectionPredicate, SelectionPredicate]:
+    # A complete two-leg book whose leg A pushes on the middle state S2 (leg B wins it),
+    # so the book stays complete but carries a void_settlement risk — the coverage-layer
+    # shape of a positive-EV middle.
+    states = ("S1", "S2", "S3")
+    leg_a = SelectionPredicate(
+        predicate_id="void-leg-a",
+        instrument_id="void-leg-a",
+        sport="basketball",
+        scope="full_time",
+        market_type="ASIAN_HANDICAP",
+        market_family="ASIAN_HANDICAP",
+        selection="HOME",
+        params=(),
+        result_states=states,
+        win_states=("S1",),
+        lose_states=("S3",),
+        void_states=("S2",),
+        provider="CLOUDBET",
+        event_key="basketball-event-1",
+        caveats=(CoverageBlockerReason.VOID_SETTLEMENT.value,),
+    )
+    leg_b = SelectionPredicate(
+        predicate_id="void-leg-b",
+        instrument_id="void-leg-b",
+        sport="basketball",
+        scope="full_time",
+        market_type="ASIAN_HANDICAP",
+        market_family="ASIAN_HANDICAP",
+        selection="AWAY",
+        params=(),
+        result_states=states,
+        win_states=("S2", "S3"),
+        lose_states=("S1",),
+        provider="CLOUDBET",
+        event_key="basketball-event-1",
+    )
+    return leg_a, leg_b
+
+
+def test_void_only_book_stays_coverage_safe_without_middle_flag():
+    leg_a, leg_b = _void_book()
+
+    proof = CoverageEngine().evaluate((leg_a, leg_b))
+
+    assert proof.complete is True
+    assert CoverageBlockerReason.VOID_SETTLEMENT.value in proof.blocker_reasons
+    assert proof.safety_tier == SafetyTier.COVERAGE_SAFE.value
+    assert proof.execution_safe is False
+    assert proof.same_venue_execution_eligible is False
+
+
+def test_void_only_book_is_same_venue_eligible_under_middle_flag():
+    leg_a, leg_b = _void_book()
+
+    proof = CoverageEngine().evaluate((leg_a, leg_b), allow_void_compatible_middles=True)
+
+    assert proof.complete is True
+    assert proof.safety_tier == SafetyTier.EXECUTION_SAFE_SAME_VENUE_ELIGIBLE.value
+    assert proof.same_venue_execution_eligible is True
+
+
+def test_book_with_non_void_risk_stays_coverage_safe_even_under_middle_flag():
+    # A partial-settlement risk is not the clean void/push shape, so the flag must not
+    # elevate it: the demotion is preserved for any non-void settlement risk.
+    leg_a, leg_b = _void_book()
+    leg_a = SelectionPredicate(
+        **{
+            **leg_a.__dict__,
+            "partial_states": ("S1",),
+            "caveats": (
+                CoverageBlockerReason.VOID_SETTLEMENT.value,
+                CoverageBlockerReason.PARTIAL_SETTLEMENT.value,
+            ),
+        },
+    )
+
+    proof = CoverageEngine().evaluate((leg_a, leg_b), allow_void_compatible_middles=True)
+
+    assert proof.complete is True
+    assert proof.safety_tier == SafetyTier.COVERAGE_SAFE.value
+
+
 def test_range_bucket_overlap_is_reported_as_coverage_risk():
     result_states = ("MARGIN_0_9", "MARGIN_10_19", "MARGIN_20_PLUS")
     low = _predicate(

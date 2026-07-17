@@ -51,6 +51,7 @@ from nautilus_trader.adapters.betting.semantics.types import RelationshipType
 from nautilus_trader.adapters.betting.semantics.types import SafetyTier
 from nautilus_trader.adapters.betting.semantics.types import SelectionPredicate
 from nautilus_trader.adapters.betting.semantics.types import SettlementState
+from nautilus_trader.adapters.betting.semantics.types import has_only_void_push_settlement_risk
 
 
 WIN = SettlementState.WIN.value
@@ -317,6 +318,7 @@ class CoverageEngine:
         *,
         universe: OutcomeUniverse | None = None,
         relationship_type: str = RelationshipType.COMPLEMENTARY_COVERAGE.value,
+        allow_void_compatible_middles: bool = False,
     ) -> CoverageProof:
         predicate_list = tuple(predicates)
         if not predicate_list:
@@ -407,6 +409,7 @@ class CoverageEngine:
             gaps=gaps,
             risks=tuple(risks),
             relationship_type=relationship_type,
+            allow_void_compatible_middles=allow_void_compatible_middles,
         )
 
     def discover_event_coverage(
@@ -582,6 +585,7 @@ def _coverage_safety_tier(
     risks: tuple[CoverageRisk, ...],
     provider_scope: tuple[str, ...],
     blocker_reasons: tuple[str, ...],
+    allow_void_compatible_middles: bool = False,
 ) -> SafetyTier:
     if not complete:
         return SafetyTier.AUDIT_ONLY
@@ -594,7 +598,13 @@ def _coverage_safety_tier(
         for reason in blocker_reasons
     ):
         return SafetyTier.AUDIT_ONLY
-    if risks:
+    # A void-only book (both legs push together, no non-void settlement risk) is the
+    # positive-EV middle shape. Behind the opt-in it resolves to an execution tier instead
+    # of being demoted; any non-void risk still demotes to COVERAGE_SAFE.
+    void_middle = allow_void_compatible_middles and has_only_void_push_settlement_risk(
+        blocker_reasons,
+    )
+    if risks and not void_middle:
         return SafetyTier.COVERAGE_SAFE
     if len(provider_scope) == 1:
         return SafetyTier.EXECUTION_SAFE_SAME_VENUE_ELIGIBLE
@@ -612,6 +622,7 @@ def _coverage_proof(
     gaps: tuple[CoverageGap, ...],
     risks: tuple[CoverageRisk, ...],
     relationship_type: str,
+    allow_void_compatible_middles: bool = False,
 ) -> CoverageProof:
     blocker_reasons = _blocker_reasons(gaps, risks)
     safety_tier = _coverage_safety_tier(
@@ -619,6 +630,7 @@ def _coverage_proof(
         risks=risks,
         provider_scope=coverage_set.provider_scope,
         blocker_reasons=blocker_reasons,
+        allow_void_compatible_middles=allow_void_compatible_middles,
     )
     proof_payload = {
         "universe_id": universe.universe_id,

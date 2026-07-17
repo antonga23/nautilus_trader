@@ -58,6 +58,10 @@ from nautilus_trader.adapters.betting.semantics.types import MinedRule
 from nautilus_trader.adapters.betting.semantics.types import NormalizedSelection
 from nautilus_trader.adapters.betting.semantics.types import NormalizedSelectionRecord
 from nautilus_trader.adapters.betting.semantics.types import ARB_MARGIN_RELATIONSHIP_TYPES
+from nautilus_trader.adapters.betting.semantics.types import NON_VOID_SETTLEMENT_RISK_CAVEATS
+from nautilus_trader.adapters.betting.semantics.types import VOID_PUSH_SETTLEMENT_CAVEATS
+from nautilus_trader.adapters.betting.semantics.types import has_only_void_push_settlement_risk
+from nautilus_trader.adapters.betting.semantics.types import is_void_compatible_middle
 from nautilus_trader.adapters.betting.semantics.types import OutcomeState
 from nautilus_trader.adapters.betting.semantics.types import OutcomeUniverse
 from nautilus_trader.adapters.betting.semantics.types import PayoffVector
@@ -80,7 +84,9 @@ __all__ = [
     "DEFAULT_REQUIRED_PROVIDERS",
     "DEFAULT_TARGET_CANDIDATES",
     "DEFAULT_TARGET_SPORTS",
+    "NON_VOID_SETTLEMENT_RISK_CAVEATS",
     "SEMANTIC_TARGET_SPORTS",
+    "VOID_PUSH_SETTLEMENT_CAVEATS",
     "CanonicalMarketType",
     "CorpusSnapshot",
     "CoverageBlockerReason",
@@ -127,6 +133,8 @@ __all__ = [
     "SportCompletion",
     "TemplateSupportStats",
     "build_completion_report",
+    "has_only_void_push_settlement_risk",
+    "is_void_compatible_middle",
     "load_aws_secret_payload",
     "restore_gcp_service_account",
 ]

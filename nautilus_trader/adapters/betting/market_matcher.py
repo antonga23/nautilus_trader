@@ -153,6 +153,7 @@ class MarketMatcher:
         rule_store: RuleStore | None = None,
         fixture_identity_resolver: FixtureIdentityResolver | None = None,
         allow_unpromoted_topology: bool = True,
+        execute_void_compatible_middles: bool = False,
     ) -> None:
         """
         Initialize the MarketMatcher.
@@ -170,6 +171,10 @@ class MarketMatcher:
             resolver proofs instead of raw event names or provider event IDs.
         allow_unpromoted_topology : bool, default True
             Whether candidate-only semantic edges can be exposed as non-executable topology.
+        execute_void_compatible_middles : bool, default False
+            When True, a positive-EV ``VOID_COMPATIBLE_HEDGE`` with only void/push
+            settlement risk is elevated by the promotion tier instead of being demoted for
+            void handling. Off by default so tier resolution is unchanged.
 
         """
         self.min_confidence = min_confidence
@@ -179,6 +184,7 @@ class MarketMatcher:
             fixture_identity_resolver or DEFAULT_FIXTURE_IDENTITY_RESOLVER
         )
         self._allow_unpromoted_topology = allow_unpromoted_topology
+        self._execute_void_compatible_middles = execute_void_compatible_middles
         self._promotion_policy = RulePromotionPolicy()
 
     def set_rule_store(self, rule_store: RuleStore | None) -> None:
@@ -290,7 +296,11 @@ class MarketMatcher:
         rule = self._rule_classifier.classify(instrument, candidate)
         if rule is None:
             return None
-        tier, reasons = self._promotion_policy.classify_rule_tier(rule, None)
+        tier, reasons = self._promotion_policy.classify_rule_tier(
+            rule,
+            None,
+            allow_void_compatible_middles=self._execute_void_compatible_middles,
+        )
         rule = replace(rule, safety_tier=tier.value, eligibility_reasons=reasons)
         if self._rule_store is None:
             return (

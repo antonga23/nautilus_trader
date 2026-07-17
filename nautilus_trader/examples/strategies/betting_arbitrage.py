@@ -68,6 +68,7 @@ from nautilus_trader.adapters.betting.runtime_cache import venue_quote_poll_stat
 from nautilus_trader.adapters.betting.semantics import FileRuleCache
 from nautilus_trader.adapters.betting.semantics import PolymarketSportsTransformer
 from nautilus_trader.adapters.betting.semantics import RuleStore
+from nautilus_trader.adapters.betting.semantics import is_void_compatible_middle
 from nautilus_trader.config import StrategyConfig
 from nautilus_trader.core.message import Event
 from nautilus_trader.common.events import TimeEvent
@@ -117,6 +118,10 @@ DEFAULT_ENABLED_VENUES = frozenset({"CLOUDBET", "SXBET", "10BET"})
 # sportsbook stake — its naked legs are flattened with a complementary BACK instead (see
 # _attempt_cloudbet_opposing_back_flatten), never listed here.
 UNWIND_EXIT_SUPPORTED_VENUES = frozenset({"POLYMARKET"})
+# Venues whose legs a void-compatible middle may execute on. POLYMARKET is excluded on
+# purpose: its taker fee is charged AT PLACEMENT and is NOT refunded on a push, so a
+# PM-leg middle books a real loss on the very state where a middle is meant to break even.
+MIDDLE_EXECUTION_VENUES = frozenset({"CLOUDBET", "SXBET"})
 # Anchor priority for the event-gated cross-venue sequencer: the leg that must be placed
 # and confirmed FIRST. CLOUDBET is un-cancelable once matched, so it can never be the
 # leg left dangling if the sibling fails; it therefore anchors the sequence by default.
@@ -257,6 +262,12 @@ class PendingArbitrageApproval:
     stake_a: Decimal
     stake_b: Decimal
     expected_profit: Decimal
+    relationship_type: str | None = None
+    bet_type: str = "ARB"
+
+    @property
+    def is_middle(self) -> bool:
+        return self.bet_type == "MIDDLE"
 
     def to_payload(self) -> dict[str, object]:
         """
@@ -266,6 +277,9 @@ class PendingArbitrageApproval:
         opportunity = self.opportunity
         instrument_a = opportunity.instrument_a
         instrument_b = opportunity.instrument_b
+        # A middle only breaks even on the push state, so the operator approves a split
+        # profit: the whole edge is realized only on the decisive states, the push refunds
+        # both stakes for exactly zero. A plain arb has no push leg.
         return {
             "approval_id": self.approval_id,
             "canonical_pair_id": self.canonical_pair_id,
@@ -274,6 +288,9 @@ class PendingArbitrageApproval:
             "created_ts_ns": self.created_ts_ns,
             "expires_ts_ns": self.expires_ts_ns,
             "match_type": opportunity.match_type,
+            "relationship_type": self.relationship_type,
+            "bet_type": self.bet_type,
+            "push_outcome": "break_even" if self.is_middle else None,
             "venue_a": str(instrument_a.id.venue),
             "venue_b": str(instrument_b.id.venue),
             "instrument_id_a": str(instrument_a.id),
@@ -298,6 +315,8 @@ class PendingArbitrageApproval:
             ),
             "fee_drag": str(opportunity.fee_drag),
             "expected_profit": str(self.expected_profit),
+            "decisive_profit": str(self.expected_profit),
+            "push_profit": str(Decimal(0)),
         }
 
 
@@ -566,6 +585,8 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
     unwind_max_slippage_bps: int = 50
     max_leg_fill_imbalance_pct: float | None = None
     require_same_stablecoin_settlement: bool = False
+    execute_void_compatible_middles: bool = False
+    min_middle_profit_margin: Decimal = Decimal("0.02")
 
     def __post_init__(self) -> None:
         """
@@ -824,6 +845,16 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         if self.max_leg_fill_imbalance_pct is not None and self.max_leg_fill_imbalance_pct <= 0:
             msg = "max_leg_fill_imbalance_pct must be positive when set"
             raise ValueError(msg)
+        # A middle only breaks even on the push state, so its executable floor must sit
+        # strictly above the ordinary arb floor — the decisive-state edge has to clear a
+        # higher bar to be worth staking through a push. Only enforced when the opt-in is
+        # on, so existing configs (any ``min_profit_margin``) are unaffected.
+        if (
+            self.execute_void_compatible_middles
+            and self.min_middle_profit_margin <= self.min_profit_margin
+        ):
+            msg = "min_middle_profit_margin must be greater than min_profit_margin"
+            raise ValueError(msg)
         self._validate_portfolio_currency_config(stablecoin_currencies)
 
     def _validate_execution_approval_config(self, execution_approval_mode: str) -> None:
@@ -975,7 +1006,9 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._config = config
 
         # Market matcher for finding arbitrage
-        self._matcher = MarketMatcher()
+        self._matcher = MarketMatcher(
+            execute_void_compatible_middles=config.execute_void_compatible_middles,
+        )
         self._opportunity_graph = OpportunityGraph(
             self._matcher,
             engine=config.opportunity_graph_engine,
@@ -5270,6 +5303,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             opportunity.instrument_a,
             opportunity.instrument_b,
         )
+        relationship_type, bet_type = self._approval_bet_label(opportunity)
         expires_ts_ns = now_ns + int(
             self._config.execution_approval_ttl_secs * NANOSECONDS_PER_SECOND,
         )
@@ -5290,6 +5324,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             existing.stake_b = stake_b
             existing.expected_profit = expected_profit
             existing.expires_ts_ns = expires_ts_ns
+            existing.relationship_type = relationship_type
+            existing.bet_type = bet_type
             return existing
         while len(self._pending_approvals) >= self._config.execution_approval_max_pending:
             oldest = min(
@@ -5315,12 +5351,15 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             stake_a=stake_a,
             stake_b=stake_b,
             expected_profit=expected_profit,
+            relationship_type=relationship_type,
+            bet_type=bet_type,
         )
         self._pending_approvals[record.approval_id] = record
         self._approvals_staged += 1
         self.log.info(
             "Arbitrage staged for manual approval: "
             f"approval_id={record.approval_id} "
+            f"bet_type={bet_type} "
             f"instrument_a={opportunity.instrument_a.id} "
             f"instrument_b={opportunity.instrument_b.id} "
             f"odds_a={opportunity.odds_a} odds_b={opportunity.odds_b} "
@@ -5330,6 +5369,29 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             f"expires_at={_utc_iso_from_ns(expires_ts_ns)}",
         )
         return record
+
+    def _approval_bet_label(
+        self,
+        opportunity: ArbitrageOpportunity,
+    ) -> tuple[str | None, str]:
+        """
+        Derive ``(relationship_type, bet_type)`` for a staged approval from its edge.
+
+        A middle-eligible void-compatible hedge is labeled ``MIDDLE`` so the operator
+        approves a break-even-on-push bet knowingly; everything else stays ``ARB``.
+
+        """
+        edge = self._opportunity_edge_for(
+            opportunity.instrument_a,
+            opportunity.instrument_b,
+        )
+        relationship_type = (
+            str(getattr(edge, "relationship_type", "") or "") or None if edge is not None else None
+        )
+        bet_type = (
+            "MIDDLE" if (edge is not None and self._middle_eligible(opportunity, edge)) else "ARB"
+        )
+        return relationship_type, bet_type
 
     def handle_execution_approval_command(self, command: dict[str, Any]) -> dict[str, object]:
         """
@@ -5856,9 +5918,69 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         edge = self._opportunity_edge_for(opportunity.instrument_a, opportunity.instrument_b)
         if edge is None:
             return ["no_semantic_edge"]
+        # A void-compatible middle is authorized by its own policy under the opt-in,
+        # surfacing explicit block reasons (PM-leg, middle margin floor, unsupported
+        # cross-venue pair) instead of the opaque generic block.
+        if self._is_void_compatible_middle_edge(edge):
+            return self._middle_execution_block_reasons(opportunity, edge)
         if not self._live_execution_semantic_policy_allows(opportunity, edge):
             return ["semantic_execution_policy_blocked"]
         return []
+
+    def _is_void_compatible_middle_edge(self, edge: object) -> bool:
+        """
+        Whether the flag is on and this edge is a middle-shaped void-compatible hedge.
+
+        Shape only: a ``VOID_COMPATIBLE_HEDGE`` whose only settlement risks are VOID/PUSH.
+        The PM-leg exclusion and margin floor are eligibility conditions surfaced as block
+        reasons, not part of the routing test, so an ineligible middle still reports *why*.
+
+        """
+        if not self._config.execute_void_compatible_middles:
+            return False
+        return is_void_compatible_middle(
+            getattr(edge, "relationship_type", None),
+            getattr(edge, "caveats", ()),
+        )
+
+    def _middle_execution_block_reasons(
+        self,
+        opportunity: ArbitrageOpportunity,
+        edge: object,
+    ) -> list[str]:
+        """
+        Block reasons for a void-compatible middle under the opt-in (GATE B/C/D).
+
+        The structural no-both-lose guarantee is the proof, so the advisory
+        ``price_correlation_not_proof`` caveat and the expected VOID/PUSH caveats are not
+        blockers here; ``is_void_compatible_middle`` already rejected any UNKNOWN /
+        PARTIAL / AMBIGUOUS settlement risk before routing in.
+
+        """
+        reasons: list[str] = []
+        venue_a = str(opportunity.instrument_a.id.venue).upper()
+        venue_b = str(opportunity.instrument_b.id.venue).upper()
+        if venue_a == "POLYMARKET" or venue_b == "POLYMARKET":
+            reasons.append("middle_polymarket_push_fee")
+        if opportunity.profit_margin < self._config.min_middle_profit_margin:
+            reasons.append("below_min_middle_profit_margin")
+        if opportunity.is_same_venue:
+            if not self._config.allow_same_venue_live_execution:
+                reasons.append("same_venue_execution_disabled")
+            elif not self._same_venue_runtime_identity_allows(opportunity):
+                reasons.append("same_venue_identity_unverified")
+        elif not {venue_a, venue_b} <= MIDDLE_EXECUTION_VENUES:
+            reasons.append("middle_cross_venue_unsupported")
+        return reasons
+
+    def _middle_eligible(self, opportunity: ArbitrageOpportunity, edge: object) -> bool:
+        """
+        Return whether the edge is a fully eligible middle: middle-shaped under the opt-in
+        with no residual block reason. The single predicate reused across the gates.
+        """
+        return self._is_void_compatible_middle_edge(edge) and not (
+            self._middle_execution_block_reasons(opportunity, edge)
+        )
 
     @staticmethod
     def _live_execution_diagnostic_block_reasons(
@@ -5887,6 +6009,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         opportunity: ArbitrageOpportunity,
         edge: object,
     ) -> bool:
+        if self._is_void_compatible_middle_edge(edge):
+            return self._middle_eligible(opportunity, edge)
         if bool(getattr(edge, "execution_safe", False)) and not opportunity.is_same_venue:
             return True
         if not opportunity.is_same_venue:
