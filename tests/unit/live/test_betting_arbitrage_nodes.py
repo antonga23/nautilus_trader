@@ -3881,6 +3881,80 @@ class TestBettingArbitrageNodeRunner:
 
         writer.run()  # must return without propagating the collection error
 
+    def _semantic_status_writer(self, tmp_path, cache_dir, initial_payload):
+        manifest = _manifest(tmp_path, cache_dir=cache_dir)
+        return node_runner.RuntimeProbeStatusWriter(
+            status_path=tmp_path / "status.json",
+            manifest=manifest,
+            strategy=SimpleNamespace(),
+            semantic_cache=initial_payload,
+            manifest_snapshot=tmp_path / "manifest.json",
+            rendered_config_path=tmp_path / "rendered.json",
+            heartbeat_path=tmp_path / "heartbeat.json",
+            interval_secs=0.0,
+            stop_event=SimpleNamespace(wait=lambda _t: True),
+        )
+
+    def test_status_semantic_cache_refreshes_after_hot_swap(self, tmp_path, monkeypatch):  # skipcq
+        # The once-at-startup semanticCache capture goes stale after an in-node hot swap.
+        # A changed .semantic-cache-version mtime must trigger a recompute that surfaces
+        # the new promotedTemplateCount plus a reloadedAt stamp.
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        marker = cache_dir / node_cache.SEMANTIC_CACHE_COMPATIBILITY_FILE
+        marker.write_text(
+            json.dumps(
+                {"version": node_cache.SEMANTIC_CACHE_COMPATIBILITY_VERSION, "scope": "s"},
+            ),
+            encoding="utf-8",
+        )
+        writer = self._semantic_status_writer(
+            tmp_path,
+            cache_dir,
+            {"promotedTemplateCount": 10, "ready": True},
+        )
+
+        swapped = SemanticCacheStatus(
+            path=str(cache_dir),
+            source="existing",
+            manifest_count=2,
+            promoted_template_count=42,
+            execution_safe_template_count=5,
+            same_venue_execution_eligible_template_count=1,
+            compatibility_version=node_cache.SEMANTIC_CACHE_COMPATIBILITY_VERSION,
+            compatibility_scope="s",
+        )
+        monkeypatch.setattr(node_runner, "semantic_cache_status", lambda *a, **k: swapped)
+        bumped = marker.stat().st_mtime + 10.0
+        os.utime(marker, (bumped, bumped))
+
+        writer._maybe_refresh_semantic_cache()
+
+        assert writer._semantic_cache["promotedTemplateCount"] == 42
+        assert "reloadedAt" in writer._semantic_cache
+        assert writer._semantic_cache["compatibilityScope"] == "s"
+
+    def test_status_semantic_cache_not_recomputed_without_swap(self, tmp_path, monkeypatch):
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        marker = cache_dir / node_cache.SEMANTIC_CACHE_COMPATIBILITY_FILE
+        marker.write_text("{}", encoding="utf-8")
+        writer = self._semantic_status_writer(
+            tmp_path,
+            cache_dir,
+            {"promotedTemplateCount": 10},
+        )
+
+        def _fail(*_a, **_k):
+            raise AssertionError("semantic_cache_status must not run without an mtime change")
+
+        monkeypatch.setattr(node_runner, "semantic_cache_status", _fail)
+
+        writer._maybe_refresh_semantic_cache()
+
+        assert writer._semantic_cache == {"promotedTemplateCount": 10}
+        assert "reloadedAt" not in writer._semantic_cache
+
     def test_runtime_probe_throttles_expensive_diagnostics_within_interval(self, monkeypatch):
         # The status writer runs every heartbeat, but the semantic/coverage diagnostics do
         # O(graph) work. They must recompute at most once per interval and be reused between

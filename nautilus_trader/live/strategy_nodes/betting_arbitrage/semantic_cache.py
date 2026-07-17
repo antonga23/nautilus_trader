@@ -996,6 +996,31 @@ def _write_semantic_cache_compatibility(
     )
 
 
+def read_semantic_cache_scope(cache_dir: str | Path) -> str | None:
+    """
+    Return the compatibility scope stamped in ``cache_dir`` (``None`` if unstamped).
+    """
+    return _read_semantic_cache_compatibility(Path(cache_dir)).get("scope")
+
+
+def stamp_semantic_cache_compatibility(cache_dir: str | Path, *, scope: str | None) -> None:
+    """
+    Stamp ``cache_dir`` with the current compatibility version and an explicit scope.
+
+    Used by the in-node hot swap to re-assert the node's own scope after publishing a
+    staged cache mined under a possibly different scope (the seed_allow_scope_mismatch
+    precedent), so status stays scope-compatible against the node manifest.
+
+    """
+    path = Path(cache_dir)
+    path.mkdir(parents=True, exist_ok=True)
+    payload = {"version": SEMANTIC_CACHE_COMPATIBILITY_VERSION, "scope": scope}
+    (path / SEMANTIC_CACHE_COMPATIBILITY_FILE).write_text(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+
+
 def _semantic_cache_scope_key(manifest: BettingArbitrageNodeManifest | None) -> str | None:
     if manifest is None:
         return None

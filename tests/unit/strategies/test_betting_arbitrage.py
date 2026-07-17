@@ -38,7 +38,13 @@ from nautilus_trader.adapters.betting.runtime_cache import encode_active_venue_i
 from nautilus_trader.adapters.betting.runtime_cache import encode_venue_quote_poll_stats
 from nautilus_trader.adapters.betting.runtime_cache import venue_quote_poll_stats_key
 from nautilus_trader.adapters.betting.semantics import FileRuleCache
+from nautilus_trader.adapters.betting.semantics import PromotionStatus
+from nautilus_trader.adapters.betting.semantics import RuleClassifier
+from nautilus_trader.adapters.betting.semantics import RuleCorpusManifest
 from nautilus_trader.adapters.betting.semantics import RuleStore
+from nautilus_trader.adapters.betting.semantics import SafetyTier
+from nautilus_trader.adapters.betting.semantics import SemanticRuleTemplate
+from nautilus_trader.adapters.betting.semantics import TemplateSupportStats
 from nautilus_trader.adapters.cloudbet.client.schema import (
     SelectionSide as CloudbetSelectionSide,
 )
@@ -5644,6 +5650,377 @@ class TestBettingArbitrageStrategy:  # skipcq
             info=info or {},
             live=live,
         )
+
+
+def _build_semantic_cache(
+    cache_dir: Path,
+    source: CryptoBettingInstrument,
+    target: CryptoBettingInstrument,
+    *,
+    scope: str,
+) -> str:
+    """
+    Write a self-consistent, ready semantic cache (manifest + one promoted template +
+    compatibility stamp) into ``cache_dir`` and return the template id.
+    """
+    from nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache import (
+        stamp_semantic_cache_compatibility,
+    )
+
+    store = RuleStore(FileRuleCache(cache_dir))
+    store.save_manifest(
+        RuleCorpusManifest(
+            manifest_id="manifest-1",
+            provider="SXBET",
+            fetched_at="2026-01-01T00:00:00Z",
+            endpoint_version="v1",
+            sport_count=1,
+            event_count=1,
+            selection_count=2,
+            market_taxonomy_hash="hash",
+        ),
+    )
+    rule = RuleClassifier().classify(source, target)
+    if rule is None:
+        raise AssertionError("Expected classifier to produce a semantic rule")
+    template = SemanticRuleTemplate.from_rule(
+        rule,
+        support=TemplateSupportStats(
+            template_id=SemanticRuleTemplate.from_rule(rule).template_id,
+            observed_count=10,
+            event_count=3,
+            provider_count=1,
+            providers=("SXBET",),
+            sports=(source.sport_name.lower(),),
+            confidence=1.0,
+        ),
+        provider_scope=("SXBET", "CLOUDBET"),
+        promotion_status=PromotionStatus.PROMOTED.value,
+        safety_tier=SafetyTier.EXECUTION_SAFE.value,
+    )
+    store.save_promoted_template(template)
+    stamp_semantic_cache_compatibility(cache_dir, scope=scope)
+    return template.template_id
+
+
+def _cache_bytes_snapshot(cache_dir: Path) -> dict[str, bytes]:
+    return {
+        str(path.relative_to(cache_dir)): path.read_bytes()
+        for path in sorted(cache_dir.rglob("*"))
+        if path.is_file()
+    }
+
+
+class TestSemanticCacheHotSwap:  # skipcq
+    """
+    In-node reload_semantic_cache admin command: swap-safe, rollback-clean hot swap of
+    the semantic template store into a RUNNING node with no restart (PR-C).
+    """
+
+    @staticmethod
+    def ensure(condition: bool) -> None:
+        if not condition:
+            raise AssertionError
+
+    def _hot_swap_strategy(
+        self,
+        cache_dir: Path,
+        *,
+        execution_approval_mode: str = "auto",
+        execution_approval_command_dir: str | None = None,
+    ):  # untyped: mock method-assignment below is intentional
+        config_kwargs: dict[str, Any] = {
+            "enabled_venues": frozenset(["CLOUDBET", "SXBET"]),
+            "semantic_rule_cache_dir": str(cache_dir),
+            "opportunity_graph_engine": "semantic_rust",
+            "execution_approval_mode": execution_approval_mode,
+        }
+        if execution_approval_command_dir is not None:
+            config_kwargs["execution_approval_command_dir"] = execution_approval_command_dir
+        strategy = BettingArbitrageStrategy(config=BettingArbitrageConfig(**config_kwargs))
+        strategy.register(
+            trader_id=TraderId("TESTER-SWAP"),
+            portfolio=TestComponentStubs.portfolio(),
+            msgbus=TestComponentStubs.msgbus(),
+            cache=TestComponentStubs.cache(),
+            clock=TestComponentStubs.clock(),
+        )
+        # Isolate the graph rebuild from the quote-subscription side effects; the
+        # semantic-priority branch is exercised via these mocks.
+        strategy._subscribe_cross_venue_common_fixture_quote_ticks = Mock()  # type: ignore[method-assign]
+        strategy._subscribe_semantic_connected_quote_ticks = Mock()  # type: ignore[method-assign]
+        strategy._subscribe_semantic_unmatched_quote_probe_ticks = Mock()  # type: ignore[method-assign]
+        return strategy
+
+    def _baseball_and_soccer_legs(self):
+        make = TestBettingArbitrageStrategy._sxbet_instrument
+        line = "line=2.5"
+        bb_over = make(
+            event_id="evt-bb",
+            venue="CLOUDBET",
+            outcome="over",
+            sport_name="Baseball",
+            params=line,
+        )
+        bb_under = make(
+            event_id="evt-bb",
+            venue="SXBET",
+            outcome="under",
+            sport_name="Baseball",
+            params=line,
+        )
+        soc_over = make(
+            event_id="evt-soc",
+            venue="CLOUDBET",
+            outcome="over",
+            sport_name="Soccer",
+            params=line,
+        )
+        soc_under = make(
+            event_id="evt-soc",
+            venue="SXBET",
+            outcome="under",
+            sport_name="Soccer",
+            params=line,
+        )
+        return bb_over, bb_under, soc_over, soc_under
+
+    def _prime_live_graph(
+        self,
+        strategy: BettingArbitrageStrategy,
+        cache_dir: Path,
+        subscribed,
+    ) -> None:
+        strategy._subscribed_instruments.update(subscribed)
+        strategy._matcher.set_rule_store(RuleStore(FileRuleCache(cache_dir)))
+        strategy._rebuild_opportunity_graph_and_resubscribe(list(subscribed))
+
+    def test_swap_adopts_new_templates_with_identical_count(self, tmp_path: Path):  # skipcq
+        # Live cache carries a soccer template that does NOT connect the subscribed
+        # baseball legs; staging carries a baseball template that DOES — same promoted
+        # AND semantic template COUNT (1), different content. A correct swap goes through
+        # build() (full build_semantic replace), so the graph adopts the new templates;
+        # the count-keyed add_instrument fast path would have skipped them.
+        live = tmp_path / "cache"
+        staging = tmp_path / "staging"
+        bb_over, bb_under, soc_over, soc_under = self._baseball_and_soccer_legs()
+        soc_id = _build_semantic_cache(live, soc_over, soc_under, scope="node-scope")
+        bb_id = _build_semantic_cache(staging, bb_over, bb_under, scope="miner-scope")
+        self.ensure(soc_id != bb_id)
+
+        strategy = self._hot_swap_strategy(live)
+        self._prime_live_graph(strategy, live, {bb_over, bb_under})
+        self.ensure(strategy._opportunity_graph.edge_count == 0)
+        template_count_before = strategy._opportunity_graph.semantic_template_count
+        self.ensure(template_count_before == 1)
+
+        decision = strategy._reload_semantic_cache(str(staging), command_id="miner-1")
+
+        self.ensure(decision["result"] == "reloaded")
+        self.ensure(decision["details"]["promoted_template_count"] == 1)
+        # Same count, but the graph now forms the baseball edge: new content adopted.
+        self.ensure(strategy._opportunity_graph.semantic_template_count == template_count_before)
+        self.ensure(strategy._opportunity_graph.edge_count >= 1)
+        payload_ids = {
+            payload["template_id"]
+            for payload in strategy._opportunity_graph._semantic_template_payloads()
+        }
+        self.ensure(payload_ids == {bb_id})
+        # Node scope is re-stamped over the miner's scope after publish.
+        from nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache import (
+            read_semantic_cache_scope,
+        )
+
+        self.ensure(read_semantic_cache_scope(live) == "node-scope")
+        self.ensure(not staging.exists())
+        prev_dirs = list(live.parent.glob(f"{live.name}.prev-*"))
+        self.ensure(len(prev_dirs) == 1)
+        stats = strategy.get_stats()["execution_approvals"]
+        self.ensure(stats["semantic_cache_reloads_succeeded"] == 1)
+        # Quote subscriptions re-established via the semantic-priority path.
+        strategy._subscribe_semantic_connected_quote_ticks.assert_called()
+        strategy._subscribe_cross_venue_common_fixture_quote_ticks.assert_called()
+
+    def test_invalid_not_ready_staging_rejected_live_untouched(self, tmp_path: Path):  # skipcq
+        live = tmp_path / "cache"
+        staging = tmp_path / "staging"
+        bb_over, bb_under, soc_over, soc_under = self._baseball_and_soccer_legs()
+        _build_semantic_cache(live, soc_over, soc_under, scope="node-scope")
+        staging.mkdir()  # empty: manifest_count == 0 → not ready
+
+        strategy = self._hot_swap_strategy(live)
+        self._prime_live_graph(strategy, live, {bb_over, bb_under})
+        before = _cache_bytes_snapshot(live)
+
+        decision = strategy._reload_semantic_cache(str(staging), command_id="miner-2")
+
+        self.ensure(decision["result"] == "rejected")
+        self.ensure("staging_cache_not_ready" in decision["reasons"])
+        self.ensure(_cache_bytes_snapshot(live) == before)
+        stats = strategy.get_stats()["execution_approvals"]
+        self.ensure(stats["semantic_cache_reloads_rejected"] == 1)
+        self.ensure(stats["recent_decisions"][-1]["action"] == "reload_semantic_cache")
+
+    def test_incompatible_version_staging_rejected_live_untouched(self, tmp_path: Path):  # skipcq
+        live = tmp_path / "cache"
+        staging = tmp_path / "staging"
+        bb_over, bb_under, soc_over, soc_under = self._baseball_and_soccer_legs()
+        _build_semantic_cache(live, soc_over, soc_under, scope="node-scope")
+        _build_semantic_cache(staging, bb_over, bb_under, scope="miner-scope")
+        (staging / ".semantic-cache-version").write_text(
+            json.dumps({"version": "semantic-rule-cache:OLD", "scope": "miner-scope"}),
+            encoding="utf-8",
+        )
+
+        strategy = self._hot_swap_strategy(live)
+        self._prime_live_graph(strategy, live, {bb_over, bb_under})
+        before = _cache_bytes_snapshot(live)
+
+        decision = strategy._reload_semantic_cache(str(staging), command_id="miner-3")
+
+        self.ensure(decision["result"] == "rejected")
+        self.ensure("compatibility_version_mismatch" in decision["reasons"])
+        self.ensure(_cache_bytes_snapshot(live) == before)
+        self.ensure(strategy._opportunity_graph.edge_count == 0)
+
+    def test_rebuild_failure_restores_previous_cache(self, tmp_path: Path):  # skipcq
+        live = tmp_path / "cache"
+        staging = tmp_path / "staging"
+        bb_over, bb_under, soc_over, soc_under = self._baseball_and_soccer_legs()
+        _build_semantic_cache(live, soc_over, soc_under, scope="node-scope")
+        _build_semantic_cache(staging, bb_over, bb_under, scope="miner-scope")
+
+        strategy = self._hot_swap_strategy(live)
+        self._prime_live_graph(strategy, live, {bb_over, bb_under})
+        before = _cache_bytes_snapshot(live)
+
+        real_build = strategy._opportunity_graph.build
+        calls = {"count": 0}
+
+        def _flaky_build(instruments):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise RuntimeError("injected rebuild failure")
+            return real_build(instruments)
+
+        strategy._opportunity_graph.build = _flaky_build
+
+        decision = strategy._reload_semantic_cache(str(staging), command_id="miner-4")
+
+        self.ensure(decision["result"] == "failed")
+        self.ensure(any("rebuild_failed" in reason for reason in decision["reasons"]))
+        # Live cache restored byte-for-byte from the retained .prev generation.
+        self.ensure(_cache_bytes_snapshot(live) == before)
+        # Graph rebuilt against the restored old cache: soccer template, no baseball edge.
+        self.ensure(strategy._opportunity_graph.edge_count == 0)
+        self.ensure(strategy._opportunity_graph.semantic_template_count == 1)
+        stats = strategy.get_stats()["execution_approvals"]
+        self.ensure(stats["semantic_cache_reloads_failed"] == 1)
+
+    def test_reload_works_in_manual_mode(self, tmp_path: Path) -> None:  # skipcq
+        live = tmp_path / "cache"
+        staging = tmp_path / "staging"
+        bb_over, bb_under, soc_over, soc_under = self._baseball_and_soccer_legs()
+        _build_semantic_cache(live, soc_over, soc_under, scope="node-scope")
+        _build_semantic_cache(staging, bb_over, bb_under, scope="miner-scope")
+
+        strategy = self._hot_swap_strategy(live, execution_approval_mode="manual")
+        self._prime_live_graph(strategy, live, {bb_over, bb_under})
+
+        decision = strategy.handle_execution_approval_command(
+            {"command": "reload_semantic_cache", "id": "miner-5", "staging_dir": str(staging)},
+        )
+
+        self.ensure(decision["result"] == "reloaded")
+        self.ensure(strategy._opportunity_graph.edge_count >= 1)
+
+    def test_approve_reject_gated_to_manual_mode(self, tmp_path: Path) -> None:  # skipcq
+        live = tmp_path / "cache"
+        bb_over, bb_under, soc_over, soc_under = self._baseball_and_soccer_legs()
+        _build_semantic_cache(live, soc_over, soc_under, scope="node-scope")
+        strategy = self._hot_swap_strategy(live, execution_approval_mode="auto")
+
+        approve = strategy.handle_execution_approval_command(
+            {"command": "approve_arb", "approval_id": "abc"},
+        )
+        reject = strategy.handle_execution_approval_command(
+            {"command": "reject_arb", "approval_id": "abc"},
+        )
+
+        self.ensure(approve["result"] == "approval_mode_disabled")
+        self.ensure(reject["result"] == "approval_mode_disabled")
+        stats = strategy.get_stats()["execution_approvals"]
+        self.ensure(stats["commands_invalid"] == 2)
+        self.ensure(stats["commands_processed"] == 0)
+
+    def test_command_polling_starts_timer_in_auto_mode(self, tmp_path: Path) -> None:  # skipcq
+        strategy = self._hot_swap_strategy(
+            tmp_path / "cache",
+            execution_approval_mode="auto",
+            execution_approval_command_dir=str(tmp_path / "commands"),
+        )
+        self.ensure(strategy._command_polling_enabled() is True)
+        self.ensure(strategy._approval_command_polling_enabled() is False)
+
+        strategy._start_approval_command_timer()
+
+        from nautilus_trader.examples.strategies.betting_arbitrage import (
+            APPROVAL_COMMAND_TIMER_NAME,
+        )
+
+        self.ensure(APPROVAL_COMMAND_TIMER_NAME in strategy.clock.timer_names)
+
+    def test_reload_command_file_processed_and_removed(self, tmp_path: Path) -> None:  # skipcq
+        # End-to-end through the miner's shared schema and the read→unlink→dispatch path.
+        live = tmp_path / "cache"
+        staging = tmp_path / "staging"
+        command_dir = tmp_path / "commands"
+        command_dir.mkdir()
+        bb_over, bb_under, soc_over, soc_under = self._baseball_and_soccer_legs()
+        _build_semantic_cache(live, soc_over, soc_under, scope="node-scope")
+        _build_semantic_cache(staging, bb_over, bb_under, scope="miner-scope")
+
+        strategy = self._hot_swap_strategy(
+            live,
+            execution_approval_mode="auto",
+            execution_approval_command_dir=str(command_dir),
+        )
+        self._prime_live_graph(strategy, live, {bb_over, bb_under})
+        command_file = command_dir / "miner-20260101T000000000000Z-reload_semantic_cache.json"
+        command_file.write_text(
+            json.dumps(
+                {
+                    "command": "reload_semantic_cache",
+                    "id": "miner-6",
+                    "staging_dir": str(staging),
+                },
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+
+        strategy._process_approval_command_files()
+
+        self.ensure(not command_file.exists())
+        self.ensure(strategy._opportunity_graph.edge_count >= 1)
+        stats = strategy.get_stats()["execution_approvals"]
+        self.ensure(stats["semantic_cache_reloads_succeeded"] == 1)
+
+    def test_reload_prunes_old_prev_generations(self, tmp_path: Path) -> None:  # skipcq
+        live = tmp_path / "cache"
+        bb_over, bb_under, soc_over, soc_under = self._baseball_and_soccer_legs()
+        _build_semantic_cache(live, soc_over, soc_under, scope="node-scope")
+        strategy = self._hot_swap_strategy(live)
+        self._prime_live_graph(strategy, live, {bb_over, bb_under})
+
+        for index in range(4):
+            staging = tmp_path / f"staging-{index}"
+            _build_semantic_cache(staging, bb_over, bb_under, scope="miner-scope")
+            decision = strategy._reload_semantic_cache(str(staging), command_id=f"miner-{index}")
+            self.ensure(decision["result"] == "reloaded")
+
+        prev_dirs = list(live.parent.glob(f"{live.name}.prev-*"))
+        self.ensure(len(prev_dirs) <= 2)
 
 
 class TestFxRefresh:  # skipcq
