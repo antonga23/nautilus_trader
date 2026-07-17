@@ -1,0 +1,74 @@
+{
+  "node_id": "standing-miner",
+  "trader_id": "BETARB-MINER-001",
+  "validation_mode": true,
+  "allow_dummy_credentials": false,
+  "log_level": "INFO",
+  "venues": [
+    {
+      "venue": "SXBET",
+      "client_key": "SXBET_PRIMARY",
+      "data_enabled": true,
+      "execution_enabled": false,
+      "credential_prefix": "SXBET",
+      "load_all_instruments": true,
+      "sport_keys": [
+        "soccer",
+        "basketball",
+        "tennis",
+        "american_football",
+        "ice_hockey",
+        "baseball"
+      ],
+      "instrument_load_limit": 600,
+      "market_discovery_limit": 800,
+      "prefer_liquid_markets": true,
+      "live_only": false
+    },
+    {
+      "venue": "CLOUDBET",
+      "client_key": "CLOUDBET_PRIMARY",
+      "data_enabled": true,
+      "execution_enabled": false,
+      "credential_prefix": "CLOUDBET",
+      "load_all_instruments": true,
+      "sport_keys": [
+        "soccer",
+        "basketball",
+        "tennis",
+        "american_football",
+        "ice_hockey",
+        "baseball"
+      ],
+      "instrument_load_limit": 400,
+      "market_discovery_limit": 400,
+      "prefer_liquid_markets": true,
+      "live_only": false
+    },
+    {
+      "venue": "POLYMARKET",
+      "client_key": "POLYMARKET_PRIMARY",
+      "data_enabled": true,
+      "execution_enabled": false,
+      "credential_prefix": "POLYMARKET",
+      "load_all_instruments": true,
+      "sport_keys": [
+        "soccer",
+        "basketball",
+        "tennis",
+        "american_football",
+        "ice_hockey",
+        "baseball"
+      ],
+      "instrument_load_limit": 400,
+      "market_discovery_limit": 400,
+      "prefer_liquid_markets": true,
+      "live_only": false
+    }
+  ],
+  "metadata": {
+    "phase": "standing-miner",
+    "track": "semantic-cache-superset-seed",
+    "note": "Mine-only manifest for the standing miner service: the same three-venue superset scope as comprehensive-mine.json minus the node-only path/strategy/cache-mode fields (the bootstrap engine only reads the venue blocks). Never deployed as a trading node."
+  }
+}
