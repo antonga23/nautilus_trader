@@ -45,6 +45,13 @@ from nautilus_trader.model.instruments import BinaryOption
 
 LINE_PATTERN = re.compile(r"(?<![a-zA-Z0-9])([+-]?\d+(?:\.\d+)?)(?![a-zA-Z0-9])")
 NON_WORD_PATTERN = re.compile(r"[^a-z0-9]+")
+# CloudBet whole-name sub-game markets (baseball.moneyline_innings_1_to_5,
+# handicap_innings_1_to_5, totals_innings_1_to_5) carry the settlement span only
+# in the market name, not in a period param. Left unparsed, the scope collapses to
+# full_time and a first-5-innings market becomes byte-identical to the full-game
+# market of the same fixture -> a phantom cross-venue edge on different settlement
+# events. Read the span from the name so its scope stays distinct.
+INNINGS_SPAN_PATTERN = re.compile(r"innings?_(\d+)_to_(\d+)")
 TEXT_MARKET_TYPE_RULES: tuple[tuple[CanonicalMarketType, tuple[str, ...]], ...] = (
     (CanonicalMarketType.BINARY_OPTION, ("binary_option",)),
     (CanonicalMarketType.DRAW_NO_BET, ("draw_no_bet", "tie_no_bet")),
@@ -898,6 +905,9 @@ class MarketNormalizer:
     def _direct_period_scope(*, normalized_periods: set[str], text: str) -> str | None:
         if "team_to_win_a_set" in text:
             return "winner_only"
+        innings_span = INNINGS_SPAN_PATTERN.search(text)
+        if innings_span is not None:
+            return f"innings_{int(innings_span.group(1))}_to_{int(innings_span.group(2))}"
         if "first_half" in text or ("1h" in normalized_periods and "2h" not in normalized_periods):
             return "first_half"
         if "second_half" in text or "2h" in normalized_periods:

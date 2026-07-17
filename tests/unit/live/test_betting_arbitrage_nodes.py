@@ -7282,3 +7282,53 @@ def test_distinct_line_node_pattern_stays_unsupported() -> None:
     node_counts = Counter({node_key: 5})
     template_counts = Counter({template_key: 1})
     assert node_runner._supported_provider_node_count(node_counts, template_counts) == 0
+
+
+def test_graph_and_probe_event_keys_are_byte_identical_across_venues():
+    # (d) The graph node payload and the runtime probe must canonicalize the event key
+    # through the same shared resolver function, so the graph can never bucket on a form
+    # the probe has already expanded past (a multi-word sport rendered american_football
+    # here and american football there used to orphan otherwise-identical fixtures).
+    # Both the CloudBet abbreviated leg and the SXBET full-name leg of one fixture must
+    # land on a single byte-identical canonical key.
+    from nautilus_trader.examples.strategies.opportunity_graph import OpportunityGraph
+    from nautilus_trader.live.strategy_nodes.betting_arbitrage.runner import (
+        _canonical_probe_event_key_no_time,
+    )
+
+    cloudbet = _instrument(
+        venue="CLOUDBET",
+        event_id="cb-1",
+        event_name="LAD Dodgers vs NYY Yankees",
+        home_name="LAD Dodgers",
+        away_name="NYY Yankees",
+        sport_name="baseball",
+        market_name="baseball.moneyline",
+        market_type="baseball.moneyline",
+        outcome="home",
+        start_time="2026-07-12T02:40:00Z",
+    )
+    sxbet = _instrument(
+        venue="SXBET",
+        event_id="sx-1",
+        event_name="Los Angeles Dodgers vs New York Yankees",
+        home_name="Los Angeles Dodgers",
+        away_name="New York Yankees",
+        sport_name="baseball",
+        market_name="match_odds",
+        market_type="match_odds",
+        outcome="home",
+        start_time="2026-07-12T02:40:00Z",
+    )
+
+    keys = []
+    for instrument in (cloudbet, sxbet):
+        node = OpportunityGraph._node_from_instrument(instrument)
+        payload = OpportunityGraph._node_payload_from_node(node, instrument)
+        graph_key = payload["event_key_no_time"]
+        probe_key = _canonical_probe_event_key_no_time(node)
+        assert graph_key == probe_key
+        keys.append(graph_key)
+
+    assert keys[0] == keys[1]
+    assert keys[0] == "baseball:los angeles dodgers:new york yankees"
