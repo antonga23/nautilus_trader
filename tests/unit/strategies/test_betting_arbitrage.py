@@ -4301,6 +4301,140 @@ class TestBettingArbitrageStrategy:  # skipcq
 
         ensure(reasons == ["cross_currency_live_execution_blocked"])
 
+    def _stablecoin_gate_opportunity(
+        self,
+        *,
+        currency_a: str,
+        currency_b: str,
+        is_same_venue: bool,
+        venue_a: str = "CLOUDBET",
+        venue_b: str = "SXBET",
+    ) -> ArbitrageOpportunity:
+        instrument_a = self._sxbet_instrument(
+            event_id="event-1",
+            venue=venue_a,
+            outcome="over",
+            currency=currency_a,
+        )
+        instrument_b = self._sxbet_instrument(
+            event_id="event-1",
+            venue=venue_b,
+            outcome="under",
+            currency=currency_b,
+        )
+        return ArbitrageOpportunity(
+            instrument_a=instrument_a,
+            instrument_b=instrument_b,
+            probability_a=Decimal("0.45"),
+            probability_b=Decimal("0.45"),
+            total_probability=Decimal("0.90"),
+            profit_margin=Decimal("0.11"),
+            odds_a=Decimal("2.20"),
+            odds_b=Decimal("2.20"),
+            is_same_venue=is_same_venue,
+            match_type="same_venue" if is_same_venue else "cross_venue",
+        )
+
+    def test_require_same_stablecoin_blocks_cross_venue_fiat_even_with_fx_rate(self):  # skipcq
+        # (f) require_same_stablecoin_settlement must reject a cross-venue USDC<->EUR pair even
+        # when a configured FX rate would otherwise make it convertible, because the hard gate
+        # is enforced BEFORE the FX-rate allowance.
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["CLOUDBET", "SXBET"]),
+                execution_venue_mode="cross_venue",
+                configured_fx_rates={"EUR/USD": Decimal("1.09")},
+                require_same_stablecoin_settlement=True,
+            ),
+        )
+        opportunity = self._stablecoin_gate_opportunity(
+            currency_a="EUR",
+            currency_b="USDC",
+            is_same_venue=False,
+        )
+
+        reasons = strategy._live_execution_currency_block_reasons(opportunity)
+
+        ensure(reasons == ["cross_venue_requires_same_stablecoin"])
+
+    def test_require_same_stablecoin_allows_cross_venue_same_stablecoin(self):  # skipcq
+        # (g) both legs in the SAME stablecoin (USDC<->USDC) cross-venue is the one allowed shape.
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["CLOUDBET", "SXBET"]),
+                execution_venue_mode="cross_venue",
+                require_same_stablecoin_settlement=True,
+            ),
+        )
+        opportunity = self._stablecoin_gate_opportunity(
+            currency_a="USDC",
+            currency_b="USDC",
+            is_same_venue=False,
+        )
+
+        ensure(strategy._live_execution_currency_block_reasons(opportunity) == [])
+
+    def test_require_same_stablecoin_leaves_same_venue_unaffected(self):  # skipcq
+        # (h) same-venue pairs carry no cross-currency exposure between the legs, so the gate
+        # never applies; a same-venue same-currency pair stays allowed.
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["SXBET"]),
+                require_same_stablecoin_settlement=True,
+            ),
+        )
+        opportunity = self._stablecoin_gate_opportunity(
+            currency_a="USDC",
+            currency_b="USDC",
+            is_same_venue=True,
+            venue_a="SXBET",
+            venue_b="SXBET",
+        )
+
+        ensure(strategy._live_execution_currency_block_reasons(opportunity) == [])
+
+    def test_require_same_stablecoin_default_off_preserves_fx_allowance(self):  # skipcq
+        # (i) with the flag off (default) the cross-venue USDC<->EUR pair keeps the existing
+        # convertible-with-FX behavior and is NOT blocked by the new reason.
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["CLOUDBET", "SXBET"]),
+                execution_venue_mode="cross_venue",
+                configured_fx_rates={"EUR/USD": Decimal("1.09")},
+            ),
+        )
+        opportunity = self._stablecoin_gate_opportunity(
+            currency_a="EUR",
+            currency_b="USDC",
+            is_same_venue=False,
+        )
+
+        reasons = strategy._live_execution_currency_block_reasons(opportunity)
+
+        ensure("cross_venue_requires_same_stablecoin" not in reasons)
+        ensure(reasons == [])
+
+    def test_require_same_stablecoin_blocks_two_different_stablecoins(self):  # skipcq
+        # (j) USDT<->USDC are both stablecoins but NOT the same one, so a cross-venue pair is
+        # still blocked: the gate demands identical settlement stablecoins on both legs.
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["CLOUDBET", "SXBET"]),
+                execution_venue_mode="cross_venue",
+                require_same_stablecoin_settlement=True,
+            ),
+        )
+        opportunity = self._stablecoin_gate_opportunity(
+            currency_a="USDT",
+            currency_b="USDC",
+            is_same_venue=False,
+        )
+
+        ensure(
+            strategy._live_execution_currency_block_reasons(opportunity)
+            == ["cross_venue_requires_same_stablecoin"],
+        )
+
     def test_same_currency_pair_unchanged_by_fx_adjustment(self):  # skipcq
         # USDC/USDC cross-venue is the stablecoin-first path: no FX exposure between the legs,
         # so the FX-net recomputation is skipped and sizing matches the single-currency solver.
