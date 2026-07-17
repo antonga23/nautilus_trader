@@ -8,6 +8,9 @@
   "status_path": "artifacts/strategy-nodes/sxbet-stream-validation/status.json",
   "heartbeat_path": "artifacts/strategy-nodes/sxbet-stream-validation/heartbeat.json",
   "semantic_rule_cache_dir": "artifacts/semantic-rule-cache/sxbet-stream-validation",
+  "semantic_rule_cache_seed_dir": "artifacts/strategy-nodes/sxbet-stream-validation/semantic-rule-cache-seed",
+  "semantic_rule_cache_mode": "reuse",
+  "semantic_rule_cache_seed_allow_scope_mismatch": true,
   "timeout_connection": 240.0,
   "strategy": {
     "min_profit_margin": "0.02",

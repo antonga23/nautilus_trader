@@ -8,6 +8,9 @@
   "status_path": "artifacts/strategy-nodes/multi-venue-bounded/status.json",
   "heartbeat_path": "artifacts/strategy-nodes/multi-venue-bounded/heartbeat.json",
   "semantic_rule_cache_dir": "artifacts/semantic-rule-cache/multi-venue-bounded",
+  "semantic_rule_cache_seed_dir": "artifacts/strategy-nodes/multi-venue-bounded/semantic-rule-cache-seed",
+  "semantic_rule_cache_mode": "reuse",
+  "semantic_rule_cache_seed_allow_scope_mismatch": true,
   "timeout_connection": 240.0,
   "strategy": {
     "min_profit_margin": "0.02",
@@ -32,7 +35,9 @@
     "value_diagnostics_enabled": true,
     "value_execution_enabled": false,
     "min_value_edge": "0.015",
-    "auto_execute": false
+    "auto_execute": false,
+    "cross_venue_sequential_execution": true,
+    "cross_venue_anchor_venue": "CLOUDBET"
   },
   "venues": [
     {
