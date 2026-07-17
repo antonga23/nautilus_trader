@@ -459,6 +459,212 @@ class TestCloudbetDataClient:
         assert b'"line_request_count":1' in stats
         mock_get_latest_odds.assert_called_once()
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 2)], indirect=["instruments"])
+    @patch.object(CloudbetClient, "get_latest_odds", new_callable=AsyncMock)
+    async def test_poll_quote_ticks_prunes_delisted_instrument_after_consecutive_404s(
+        self,
+        mock_get_latest_odds,
+        data_client,
+        instruments,
+        monkeypatch,
+    ):
+        instrument = instruments[0]
+        data_client.instrument_provider.add(instrument)
+        data_client._subscribed_quote_instruments.add(instrument.id)
+        data_client._quote_poll_event_batching = False
+        data_client._quote_poll_missing_prune_threshold = 3
+        mock_get_latest_odds.side_effect = CloudbetAPIError(
+            message="Failed to retrieve latests odds from the Cloudbet API.",
+            code=404,
+        )
+        prune_events = []
+        record_missing = data_client._record_missing_quote_subscription
+
+        def recording_record_missing(instrument_id, **kwargs):
+            pruned = record_missing(instrument_id, **kwargs)
+            if pruned:
+                prune_events.append((instrument_id, kwargs.get("reason")))
+            return pruned
+
+        monkeypatch.setattr(
+            data_client,
+            "_record_missing_quote_subscription",
+            recording_record_missing,
+        )
+
+        for _ in range(3):
+            await data_client._poll_quote_ticks_once()
+
+        assert instrument.id not in data_client._subscribed_quote_instruments
+        assert prune_events == [(instrument.id, "consecutive 404s (delisted event)")]
+        assert mock_get_latest_odds.await_count == 3
+        stats = data_client._cache.get("betting:venue_quote_poll_stats:CLOUDBET")
+        assert b'"failure_count":0' in stats
+        assert b'"delisted_count":1' in stats
+        assert b'"pruned_subscription_count":1' in stats
+
+        mock_get_latest_odds.reset_mock()
+        await data_client._poll_quote_ticks_once()
+
+        polled_event_ids = {
+            str(call.kwargs["event_id"]) for call in mock_get_latest_odds.await_args_list
+        }
+        assert str(instrument.event_id) not in polled_event_ids
+        assert instrument.id not in data_client._subscribed_quote_instruments
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 2)], indirect=["instruments"])
+    @patch.object(CloudbetClient, "get_latest_odds", new_callable=AsyncMock)
+    async def test_poll_quote_ticks_resets_404_count_on_success(
+        self,
+        mock_get_latest_odds,
+        data_client,
+        instruments,
+        monkeypatch,
+    ):
+        instrument = instruments[0]
+        data_client.instrument_provider.add(instrument)
+        data_client._subscribed_quote_instruments.add(instrument.id)
+        data_client._quote_poll_event_batching = False
+        data_client._quote_poll_missing_prune_threshold = 3
+        handled = []
+        monkeypatch.setattr(data_client, "_handle_data", handled.append)
+        delisted_error = CloudbetAPIError(
+            message="Failed to retrieve latests odds from the Cloudbet API.",
+            code=404,
+        )
+        odds = GetLatestOddsResponse(
+            max_stake=123,
+            min_stake=1,
+            price=2.34,
+            status=SelectionStatus.ENABLED,
+            outcome=instrument.outcome,
+            params=instrument.params,
+            probability=0.3,
+            side=instrument.side,
+        )
+        mock_get_latest_odds.side_effect = [delisted_error, delisted_error, odds]
+
+        for _ in range(3):
+            await data_client._poll_quote_ticks_once()
+
+        assert instrument.id in data_client._subscribed_quote_instruments
+        assert instrument.id not in data_client._quote_poll_missing_counts
+        assert len(handled) == 1
+        stats = data_client._cache.get("betting:venue_quote_poll_stats:CLOUDBET")
+        assert b'"pruned_subscription_count":0' in stats
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 5)], indirect=["instruments"])
+    @patch.object(CloudbetClient, "get_latest_odds", new_callable=AsyncMock)
+    async def test_poll_quote_ticks_prunes_delisted_without_affecting_healthy(
+        self,
+        mock_get_latest_odds,
+        data_client,
+        instruments,
+        monkeypatch,
+    ):
+        delisted = instruments[0]
+        healthy = [
+            instrument
+            for instrument in instruments[1:]
+            if str(instrument.event_id) != str(delisted.event_id)
+        ]
+        assert healthy, "expected at least one instrument on another event"
+        for instrument in [delisted, *healthy]:
+            data_client.instrument_provider.add(instrument)
+            data_client._subscribed_quote_instruments.add(instrument.id)
+        data_client._quote_poll_event_batching = False
+        data_client._quote_poll_missing_prune_threshold = 3
+        handled = []
+        monkeypatch.setattr(data_client, "_handle_data", handled.append)
+
+        async def fetch_odds(event_id, market_url):
+            if str(event_id) == str(delisted.event_id):
+                raise CloudbetAPIError(
+                    message="Failed to retrieve latests odds from the Cloudbet API.",
+                    code=404,
+                )
+            return GetLatestOddsResponse(
+                max_stake=123,
+                min_stake=1,
+                price=2.34,
+                status=SelectionStatus.ENABLED,
+                outcome="outcome",
+                params="",
+                probability=0.3,
+                side=SelectionSide.BACK,
+            )
+
+        mock_get_latest_odds.side_effect = fetch_odds
+
+        for _ in range(3):
+            await data_client._poll_quote_ticks_once()
+
+        assert delisted.id not in data_client._subscribed_quote_instruments
+        for instrument in healthy:
+            assert instrument.id in data_client._subscribed_quote_instruments
+        assert len(handled) == len(healthy) * 3
+        stats = data_client._cache.get("betting:venue_quote_poll_stats:CLOUDBET")
+        assert b'"failure_count":0' in stats
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 5)], indirect=["instruments"])
+    @patch.object(CloudbetClient, "get_latest_odds", new_callable=AsyncMock)
+    @patch.object(CloudbetClient, "get_event", new_callable=AsyncMock)
+    async def test_poll_quote_ticks_prunes_delisted_event_via_event_batch_fallback(
+        self,
+        mock_get_event,
+        mock_get_latest_odds,
+        data_client,
+        instruments,
+        monkeypatch,
+    ):
+        delisted = instruments[0]
+        healthy = next(
+            instrument
+            for instrument in instruments[1:]
+            if str(instrument.event_id) != str(delisted.event_id)
+        )
+        for instrument in (delisted, healthy):
+            data_client.instrument_provider.add(instrument)
+            data_client._subscribed_quote_instruments.add(instrument.id)
+        data_client._quote_poll_missing_prune_threshold = 3
+        handled = []
+        monkeypatch.setattr(data_client, "_handle_data", handled.append)
+
+        async def fetch_event(event_id, *args, **kwargs):
+            if int(event_id) == int(delisted.event_id):
+                raise CloudbetAPIError(
+                    message="Failed to retrieve event from the Cloudbet API.",
+                    code=404,
+                )
+            return build_event_response(
+                healthy,
+                build_markets_with_selection(data_client, healthy),
+            )
+
+        async def fetch_odds(event_id, market_url):
+            raise CloudbetAPIError(
+                message="Failed to retrieve latests odds from the Cloudbet API.",
+                code=404,
+            )
+
+        mock_get_event.side_effect = fetch_event
+        mock_get_latest_odds.side_effect = fetch_odds
+
+        for _ in range(3):
+            await data_client._poll_quote_ticks_once()
+
+        assert delisted.id not in data_client._subscribed_quote_instruments
+        assert healthy.id in data_client._subscribed_quote_instruments
+        assert len(handled) == 3
+        assert all(quote.instrument_id == healthy.id for quote in handled)
+        stats = data_client._cache.get("betting:venue_quote_poll_stats:CLOUDBET")
+        assert b'"failure_count":0' in stats
+        assert b'"pruned_subscription_count":1' in stats
+
     def test_quote_poll_schedule_adapts_cloudbet_concurrency(self, data_client):
         data_client._quote_poll_concurrency = 4
         data_client._quote_poll_max_concurrency = 16
