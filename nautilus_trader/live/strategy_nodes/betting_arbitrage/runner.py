@@ -1081,17 +1081,18 @@ def _safe_call(target: object | None, method_name: str) -> object:
 
 class _RuntimeProbeDiagnosticsThrottle:
     """
-    Rate-limit the O(graph) semantic and coverage probe sections.
+    Rate-limit the O(graph) probe sections.
 
-    The status writer runs every ``heartbeat_interval_secs`` (default 5s), but
-    ``_semantic_probe_diagnostics`` and ``_probe_coverage_book_devig_diagnostics``
-    do work proportional to the whole graph. On a large multivenue graph a single
-    pass runs for far longer than a heartbeat, so recomputing them every cycle
-    holds the GIL back-to-back and starves the asyncio venue quote-poll loops.
-    The trading-relevant probe fields keep refreshing every heartbeat; these two
-    sections refresh at most once per ``interval_secs`` and are reused in between,
-    which releases the GIL so the quote path keeps running regardless of graph
-    size.
+    The status writer runs every ``heartbeat_interval_secs`` (default 5s), but the
+    graph snapshot copy and every pass over it (edge profitability, venue-pair
+    coverage, resolution horizon, semantic and coverage diagnostics) do work
+    proportional to the whole graph. On a large multivenue graph one pass runs for
+    far longer than a heartbeat, so recomputing every cycle holds the GIL
+    back-to-back and starves the asyncio venue quote-poll loops. The
+    trading-relevant counters keep refreshing every heartbeat from O(1) strategy
+    stats; the heavy sections refresh at most once per ``interval_secs`` and are
+    carried forward in between, marked with the time they were computed, which
+    releases the GIL so the quote path keeps running regardless of graph size.
 
     """
 
@@ -1099,32 +1100,30 @@ class _RuntimeProbeDiagnosticsThrottle:
         self._interval_secs = max(0.0, float(interval_secs))
         self._clock = clock
         self._last_computed_at: float | None = None
-        self._semantic_diagnostics: dict[str, object] = {}
-        self._coverage_book_devig: dict[str, object] = _empty_coverage_book_devig_payload()
+        self._heavy_sections: dict[str, Any] = {}
+        self._computed_at: str | None = None
 
     @property
-    def semantic_diagnostics(self) -> dict[str, object]:
-        return self._semantic_diagnostics
+    def interval_secs(self) -> float:
+        return self._interval_secs
 
     @property
-    def coverage_book_devig(self) -> dict[str, object]:
-        return self._coverage_book_devig
+    def heavy_sections(self) -> dict[str, Any]:
+        return self._heavy_sections
+
+    @property
+    def computed_at(self) -> str | None:
+        return self._computed_at
 
     def should_recompute(self) -> bool:
-        # Always compute on the first cycle so the section is never empty.
-        if self._last_computed_at is None:
+        # Always compute on the first cycle so the sections are never empty.
+        if self._last_computed_at is None or not self._heavy_sections:
             return True
         return (self._clock() - self._last_computed_at) >= self._interval_secs
 
-    def store(
-        self,
-        *,
-        semantic_diagnostics: dict[str, object],
-        coverage_book_devig: dict[str, object] | None = None,
-    ) -> None:
-        self._semantic_diagnostics = semantic_diagnostics
-        if coverage_book_devig is not None:
-            self._coverage_book_devig = coverage_book_devig
+    def store(self, heavy_sections: dict[str, Any], *, computed_at: str) -> None:
+        self._heavy_sections = heavy_sections
+        self._computed_at = computed_at
         self._last_computed_at = self._clock()
 
 
@@ -1135,121 +1134,25 @@ def _collect_runtime_probe_payload(
     elapsed_seconds: float,
     diagnostics: _RuntimeProbeDiagnosticsThrottle | None = None,
 ) -> dict[str, object]:
-    graph = strategy.opportunity_graph
     stats = strategy.get_stats()
-    snapshot = _snapshot_probe_graph_state(graph)
-    # The semantic/coverage sections are the O(graph) hotspots; throttle them via
-    # ``diagnostics`` when supplied (the live status writer), otherwise compute
-    # them fresh every call (validation probe and direct callers).
-    recompute_diagnostics = diagnostics is None or diagnostics.should_recompute()
-    if recompute_diagnostics:
-        semantic_diagnostics = _semantic_probe_diagnostics(graph)
+    # The graph snapshot copy and every O(nodes)/O(edges) pass over it are the probe
+    # hotspots; throttle them via ``diagnostics`` when supplied (the live status
+    # writer), otherwise compute them fresh every call (validation probe and direct
+    # callers). Everything else below reads O(1) strategy stats so heartbeat-critical
+    # fields stay fresh every cycle.
+    reused = diagnostics is not None and not diagnostics.should_recompute()
+    if reused:
+        heavy = diagnostics.heavy_sections
+        computed_at = diagnostics.computed_at
     else:
-        semantic_diagnostics = diagnostics.semantic_diagnostics
-    if snapshot is None:
-        venue_coverage = _venue_pair_coverage(
+        heavy = _collect_probe_heavy_sections(
             strategy,
-            edges=[],
-            nodes={},
-            quotes={},
-            matched_node_ids=set(),
-            candidate_venue_pairs={},
-        )
-        empty_profitability = _empty_candidate_quality_payload()
-        latency_diagnostics = _runtime_latency_diagnostics(stats, empty_profitability)
-        if recompute_diagnostics and diagnostics is not None:
-            diagnostics.store(semantic_diagnostics=semantic_diagnostics)
-        return {
-            "elapsedSeconds": round(elapsed_seconds, 2),
-            "minProfitMargin": str(min_profit_margin),
-            "subscribedInstruments": stats["subscribed_instruments"],
-            "graphNodes": stats["opportunity_graph_nodes"],
-            "graphEdges": stats["opportunity_graph_edges"],
-            "graphQuoteStates": stats["opportunity_graph_quote_states"],
-            "connectedNodes": stats["opportunity_graph_connected_nodes"],
-            "graphEngine": "rust" if stats.get("opportunity_graph_rust_enabled") else "python",
-            "topologySource": stats.get("opportunity_graph_topology_source", "unknown"),
-            "semanticTemplateCount": stats.get("opportunity_graph_semantic_template_count", 0),
-            "coverageProofCount": stats.get("opportunity_graph_coverage_proof_count", 0),
-            "coverageHyperedgeCount": stats.get(
-                "opportunity_graph_coverage_hyperedge_count",
-                0,
-            ),
-            "coverageDiagnostics": stats.get("opportunity_graph_coverage_summary", {}),
-            "semanticMatchInstruments": 0,
-            "quotedSemanticMatchInstruments": 0,
-            "executionSafeEdges": 0,
-            "sameVenueExecutionEligibleEdges": 0,
-            "quotedEdges": 0,
-            "positiveMarginCandidates": {
-                "executionSafe": 0,
-                "sameVenueExecutionEligible": 0,
-                "total": 0,
-            },
-            "thresholdMarginCandidates": {
-                "executionSafe": 0,
-                "sameVenueExecutionEligible": 0,
-                "total": 0,
-            },
-            "candidateQuality": _empty_candidate_quality_payload(),
-            "executionApprovals": stats.get("execution_approvals", {}),
-            "instrumentRefresh": _instrument_refresh_payload(stats),
-            "arbPositionPnl": stats.get("arb_position_tracker", {}),
-            "strategyStats": stats,
-            "latencyDiagnostics": latency_diagnostics,
-            "semanticDiagnostics": semantic_diagnostics,
-            "providerQuotePollStats": stats.get("provider_quote_poll_stats", {}),
-            "quoteObservationState": _probe_quote_observation_state(
-                stats,
-                venue_coverage,
-            ),
-            "fxPolicy": stats.get("fx_policy", {}),
-            "venueCoverage": venue_coverage,
-            "resolutionHorizon": _resolution_horizon_payload(
-                stats,
-                nodes={},
-                quotes={},
-                edges=[],
-            ),
-            "sampleCandidates": [],
-            "negativeNearMisses": [],
-        }
-    execution_safe_edges = sum(1 for edge in snapshot["edges"] if edge.execution_safe)
-    same_venue_eligible_edges = sum(
-        1 for edge in snapshot["edges"] if edge.same_venue_execution_eligible
-    )
-    profitability = _probe_edge_profitability(
-        strategy,
-        edges=snapshot["edges"],
-        nodes=snapshot["nodes"],
-        quotes=snapshot["quotes"],
-        min_profit_margin=min_profit_margin,
-    )
-    if recompute_diagnostics:
-        coverage_book_devig = _probe_coverage_book_devig_diagnostics(
-            strategy,
-            coverage_diagnostics=stats.get("opportunity_graph_coverage_summary", {}),
-            nodes=snapshot["nodes"],
-            quotes=snapshot["quotes"],
+            stats=stats,
             min_profit_margin=min_profit_margin,
         )
-    else:
-        coverage_book_devig = diagnostics.coverage_book_devig
-    if recompute_diagnostics and diagnostics is not None:
-        diagnostics.store(
-            semantic_diagnostics=semantic_diagnostics,
-            coverage_book_devig=coverage_book_devig,
-        )
-    latency_diagnostics = _runtime_latency_diagnostics(stats, profitability)
-    venue_coverage = _venue_pair_coverage(
-        strategy,
-        edges=snapshot["edges"],
-        nodes=snapshot["nodes"],
-        quotes=snapshot["quotes"],
-        matched_node_ids=snapshot["matched_node_ids"],
-        candidate_venue_pairs=profitability["venue_pairs"],
-    )
-
+        computed_at = _utc_now()
+        if diagnostics is not None:
+            diagnostics.store(heavy, computed_at=computed_at)
     return {
         "elapsedSeconds": round(elapsed_seconds, 2),
         "minProfitMargin": str(min_profit_margin),
@@ -1279,9 +1182,114 @@ def _collect_runtime_probe_payload(
         },
         "liveExecution": stats.get("live_execution", {}),
         "executionApprovals": stats.get("execution_approvals", {}),
-        "semanticMatchInstruments": len(snapshot["matched_node_ids"]),
+        **heavy["sections"],
+        "instrumentRefresh": _instrument_refresh_payload(stats),
+        "arbPositionPnl": stats.get("arb_position_tracker", {}),
+        "strategyStats": stats,
+        "latencyDiagnostics": _runtime_latency_diagnostics(stats, heavy["profitability"]),
+        "providerQuotePollStats": stats.get("provider_quote_poll_stats", {}),
+        "quoteObservationState": _probe_quote_observation_state(
+            stats,
+            heavy["venueCoverage"],
+        ),
+        "fxPolicy": stats.get("fx_policy", {}),
+        "heavySections": {
+            "computedAt": computed_at,
+            "reused": reused,
+            "refreshIntervalSecs": diagnostics.interval_secs if diagnostics is not None else 0.0,
+        },
+    }
+
+
+def _collect_probe_heavy_sections(
+    strategy,
+    *,
+    stats: dict[str, object],
+    min_profit_margin: Decimal,
+) -> dict[str, Any]:
+    graph = strategy.opportunity_graph
+    snapshot = _snapshot_probe_graph_state(graph)
+    semantic_diagnostics = _semantic_probe_diagnostics(
+        graph,
+        nodes=snapshot["nodes"] if snapshot is not None else None,
+    )
+    if snapshot is None:
+        venue_coverage = _venue_pair_coverage(
+            strategy,
+            edges=[],
+            nodes={},
+            quotes={},
+            matched_node_ids=set(),
+            candidate_venue_pairs={},
+        )
+        return {
+            "profitability": _empty_candidate_quality_payload(),
+            "venueCoverage": venue_coverage,
+            "sections": {
+                "semanticMatchInstruments": 0,
+                "quotedSemanticMatchInstruments": 0,
+                "executionSafeEdges": 0,
+                "sameVenueExecutionEligibleEdges": 0,
+                "quotedEdges": 0,
+                "positiveMarginCandidates": {
+                    "executionSafe": 0,
+                    "sameVenueExecutionEligible": 0,
+                    "total": 0,
+                },
+                "thresholdMarginCandidates": {
+                    "executionSafe": 0,
+                    "sameVenueExecutionEligible": 0,
+                    "total": 0,
+                },
+                "candidateQuality": _empty_candidate_quality_payload(),
+                "semanticDiagnostics": semantic_diagnostics,
+                "venueCoverage": venue_coverage,
+                "resolutionHorizon": _resolution_horizon_payload(
+                    stats,
+                    nodes={},
+                    quotes={},
+                    edges=[],
+                ),
+                "sampleCandidates": [],
+                "negativeNearMisses": [],
+            },
+        }
+    edges = snapshot["edges"]
+    nodes = snapshot["nodes"]
+    quotes = snapshot["quotes"]
+    matched_node_ids = snapshot["matched_node_ids"]
+    execution_safe_edges = 0
+    same_venue_eligible_edges = 0
+    for edge in edges:
+        execution_safe_edges += bool(edge.execution_safe)
+        same_venue_eligible_edges += bool(edge.same_venue_execution_eligible)
+    profitability = _probe_edge_profitability(
+        strategy,
+        edges=edges,
+        nodes=nodes,
+        quotes=quotes,
+        min_profit_margin=min_profit_margin,
+    )
+    coverage_book_devig = _probe_coverage_book_devig_diagnostics(
+        strategy,
+        coverage_diagnostics=stats.get("opportunity_graph_coverage_summary", {}),
+        nodes=nodes,
+        quotes=quotes,
+        min_profit_margin=min_profit_margin,
+    )
+    venue_coverage = _venue_pair_coverage(
+        strategy,
+        edges=edges,
+        nodes=nodes,
+        quotes=quotes,
+        matched_node_ids=matched_node_ids,
+        candidate_venue_pairs=profitability["venue_pairs"],
+    )
+
+    sections = {
+        "semanticMatchInstruments": len(matched_node_ids),
         "quotedSemanticMatchInstruments": sum(
-            1 for node_id in snapshot["matched_node_ids"] if node_id in snapshot["quotes"]
+            1 for node_id in matched_node_ids if node_id in quotes
         ),
         "executionSafeEdges": execution_safe_edges,
         "sameVenueExecutionEligibleEdges": same_venue_eligible_edges,
@@ -1393,26 +1401,21 @@ def _collect_runtime_probe_payload(
             "topValueEdgeCandidates": profitability["value_edge_candidates"],
             "topVigErasedCandidates": profitability["vig_erased_candidates"],
         },
-        "instrumentRefresh": _instrument_refresh_payload(stats),
-        "arbPositionPnl": stats.get("arb_position_tracker", {}),
-        "strategyStats": stats,
-        "latencyDiagnostics": latency_diagnostics,
-        "providerQuotePollStats": stats.get("provider_quote_poll_stats", {}),
-        "quoteObservationState": _probe_quote_observation_state(
-            stats,
-            venue_coverage,
-        ),
         "semanticDiagnostics": semantic_diagnostics,
-        "fxPolicy": stats.get("fx_policy", {}),
         "venueCoverage": venue_coverage,
         "resolutionHorizon": _resolution_horizon_payload(
             stats,
-            nodes=snapshot["nodes"],
-            quotes=snapshot["quotes"],
-            edges=snapshot["edges"],
+            nodes=nodes,
+            quotes=quotes,
+            edges=edges,
         ),
         "sampleCandidates": profitability["sample_candidates"],
         "negativeNearMisses": profitability["negative_near_misses"],
+    }
+    return {
+        "profitability": profitability,
+        "venueCoverage": venue_coverage,
+        "sections": sections,
     }
 
 
@@ -3115,11 +3118,18 @@ def _is_cross_venue_pair(pair: str) -> bool:
     return source != target
 
 
-def _semantic_probe_diagnostics(graph) -> dict[str, object]:
-    try:
-        nodes = dict(graph.nodes_by_id)
-    except RuntimeError:
-        return {"available": False, "reason": "graph_mutated_during_snapshot"}
+def _semantic_probe_diagnostics(
+    graph,
+    *,
+    nodes: dict[str, object] | None = None,
+) -> dict[str, object]:
+    # Reuse the caller's snapshot when it has one instead of copying the whole
+    # node dict a second time.
+    if nodes is None:
+        try:
+            nodes = dict(graph.nodes_by_id)
+        except RuntimeError:
+            return {"available": False, "reason": "graph_mutated_during_snapshot"}
 
     node_diagnostics = _semantic_node_diagnostics(nodes)
     template_diagnostics = _semantic_template_diagnostics(graph)
@@ -3922,6 +3932,16 @@ def _probe_candidate_quality(
         "normalizedScope": normalized_a.get("scope") or normalized_b.get("scope"),
         "outcomeA": source_node.outcome,
         "outcomeB": target_node.outcome,
+        "eventNameA": _instrument_display_text(source_node.instrument, "event_name"),
+        "eventNameB": _instrument_display_text(target_node.instrument, "event_name"),
+        "homeNameA": _instrument_display_text(source_node.instrument, "home_name"),
+        "homeNameB": _instrument_display_text(target_node.instrument, "home_name"),
+        "awayNameA": _instrument_display_text(source_node.instrument, "away_name"),
+        "awayNameB": _instrument_display_text(target_node.instrument, "away_name"),
+        "eventKeyA": _probe_event_key_no_time(source_node) or None,
+        "eventKeyB": _probe_event_key_no_time(target_node) or None,
+        "marketLabelA": _probe_market_label(normalized_a),
+        "marketLabelB": _probe_market_label(normalized_b),
         "profitMargin": str(profit_margin),
         "totalProbability": str(total_probability),
         "rawProfitMargin": str(raw_profit_margin),
@@ -4613,6 +4633,28 @@ def _normalized_probe_payload(node) -> dict[str, object]:
         "providerRuleFlags": list(normalized.rules_flags),
         "resolutionPolicy": dict(normalized.resolution_policy),
     }
+
+
+def _instrument_display_text(instrument, attribute: str) -> str | None:
+    value = getattr(instrument, attribute, None)
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _probe_market_label(normalized: dict[str, object]) -> str | None:
+    market_type = str(normalized.get("marketType") or "").strip()
+    line = normalized.get("line")
+    selection = str(normalized.get("selectionRole") or "").strip()
+    parts = []
+    if market_type:
+        parts.append(market_type.upper())
+    if line not in (None, ""):
+        parts.append(str(line))
+    if selection:
+        parts.append(f"({selection.upper()})")
+    return " ".join(parts) or None
 
 
 def _quoted_probe_edge(edge, nodes, quotes) -> tuple[object, object, object, object] | None:

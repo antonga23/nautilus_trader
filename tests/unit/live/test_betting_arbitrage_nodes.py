@@ -3892,7 +3892,7 @@ class TestBettingArbitrageNodeRunner:
         semantic_calls = {"count": 0}
         coverage_calls = {"count": 0}
 
-        def _spy_semantic(_graph):
+        def _spy_semantic(_graph, **_kwargs):
             semantic_calls["count"] += 1
             return {"available": True, "call": semantic_calls["count"]}
 
@@ -3953,7 +3953,7 @@ class TestBettingArbitrageNodeRunner:
 
         semantic_calls = {"count": 0}
 
-        def _spy_semantic(_graph):
+        def _spy_semantic(_graph, **_kwargs):
             semantic_calls["count"] += 1
             return {"available": True, "call": semantic_calls["count"]}
 
@@ -4003,7 +4003,7 @@ class TestBettingArbitrageNodeRunner:
 
         heavy_calls = {"semantic": 0, "coverage": 0}
 
-        def _spy_semantic(_graph):
+        def _spy_semantic(_graph, **_kwargs):
             heavy_calls["semantic"] += 1
             return {"available": True}
 
@@ -4034,6 +4034,275 @@ class TestBettingArbitrageNodeRunner:
         assert last_payload["graphNodes"] == 39_010
         assert heavy_calls["semantic"] == 2
         assert heavy_calls["coverage"] == 2
+
+    def test_runtime_probe_throttles_full_graph_snapshot_and_scans(self, monkeypatch):
+        # The graph snapshot copy and the O(edges)/O(nodes) scans over it (edge
+        # profitability, venue-pair coverage) must run at the throttled cadence,
+        # not every heartbeat.
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(enabled_venues=frozenset(["SXBET"])),
+        )
+
+        calls = {"snapshot": 0, "profitability": 0, "coverage": 0}
+        real_snapshot = node_runner._snapshot_probe_graph_state
+        real_profitability = node_runner._probe_edge_profitability
+        real_coverage = node_runner._venue_pair_coverage
+
+        def _spy_snapshot(*args, **kwargs):
+            calls["snapshot"] += 1
+            return real_snapshot(*args, **kwargs)
+
+        def _spy_profitability(*args, **kwargs):
+            calls["profitability"] += 1
+            return real_profitability(*args, **kwargs)
+
+        def _spy_coverage(*args, **kwargs):
+            calls["coverage"] += 1
+            return real_coverage(*args, **kwargs)
+
+        monkeypatch.setattr(node_runner, "_snapshot_probe_graph_state", _spy_snapshot)
+        monkeypatch.setattr(node_runner, "_probe_edge_profitability", _spy_profitability)
+        monkeypatch.setattr(node_runner, "_venue_pair_coverage", _spy_coverage)
+
+        now = [0.0]
+        throttle = node_runner._RuntimeProbeDiagnosticsThrottle(90.0, clock=lambda: now[0])
+        for _ in range(20):
+            now[0] += 5.0
+            node_runner._collect_runtime_probe_payload(
+                strategy,
+                min_profit_margin=Decimal("0.02"),
+                elapsed_seconds=now[0],
+                diagnostics=throttle,
+            )
+
+        # 20 heartbeats over 100s with a 90s interval -> two heavy refreshes.
+        assert calls == {"snapshot": 2, "profitability": 2, "coverage": 2}
+
+    def test_runtime_probe_payload_schema_stable_when_heavy_sections_reused(self):
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(enabled_venues=frozenset(["SXBET"])),
+        )
+        now = [1_000.0]
+        throttle = node_runner._RuntimeProbeDiagnosticsThrottle(90.0, clock=lambda: now[0])
+
+        def _collect():
+            return node_runner._collect_runtime_probe_payload(
+                strategy,
+                min_profit_margin=Decimal("0.02"),
+                elapsed_seconds=now[0] - 1_000.0,
+                diagnostics=throttle,
+            )
+
+        fresh = _collect()
+        assert fresh["heavySections"]["reused"] is False
+        assert fresh["heavySections"]["computedAt"]
+        assert fresh["heavySections"]["refreshIntervalSecs"] == 90.0
+
+        now[0] += 30.0  # within the interval -> heavy sections carried forward
+        reused = _collect()
+        assert set(reused) == set(fresh)
+        assert reused["heavySections"]["reused"] is True
+        assert reused["heavySections"]["computedAt"] == fresh["heavySections"]["computedAt"]
+        assert reused["venueCoverage"] == fresh["venueCoverage"]
+        assert reused["candidateQuality"] == fresh["candidateQuality"]
+        assert reused["resolutionHorizon"] == fresh["resolutionHorizon"]
+
+        # The unthrottled path (validation probe) emits the same schema.
+        unthrottled = node_runner._collect_runtime_probe_payload(
+            strategy,
+            min_profit_margin=Decimal("0.02"),
+            elapsed_seconds=1.0,
+        )
+        assert set(unthrottled) == set(fresh)
+        for key in (
+            "feePolicy",
+            "liveExecution",
+            "candidateQuality",
+            "venueCoverage",
+            "semanticDiagnostics",
+            "resolutionHorizon",
+            "latencyDiagnostics",
+            "quoteObservationState",
+            "sampleCandidates",
+            "negativeNearMisses",
+        ):
+            assert key in fresh
+
+    def test_probe_candidate_quality_rows_include_event_and_market_labels(self):
+        instrument_a = _instrument(
+            venue="SXBET",
+            market_type="point_spread",
+            market_name="point_spread",
+            outcome="home",
+            params="line=-1.5",
+            handicap=-1.5,
+            event_name="Lakers vs Celtics",
+            home_name="Lakers",
+            away_name="Celtics",
+            sport_name="basketball",
+        )
+        instrument_b = _instrument(
+            venue="CLOUDBET",
+            market_type="point_spread",
+            market_name="point_spread",
+            outcome="away",
+            params="line=1.5",
+            handicap=1.5,
+            event_name="Lakers vs Celtics",
+            home_name="Lakers",
+            away_name="Celtics",
+            sport_name="basketball",
+        )
+        strategy = SimpleNamespace(
+            matcher_suspect_reason=lambda _a, _b: (False, "none"),
+            semantic_fixture_suspect_reason=lambda _a, _b: (False, "none"),
+            quote_age_secs=lambda _observed_ns, _quote: 0.1,
+            _quote_pair_skew_secs=lambda _quote_a, _quote_b: 0.0,
+            quote_fetch_latency_secs=lambda _quote: 0.1,
+            quote_available_size=lambda _quote: Decimal(100),
+            quote_freshness_thresholds=lambda _instrument_a, _instrument_b: SimpleNamespace(
+                profile="pre_match",
+                max_quote_age_secs=30.0,
+                max_pair_skew_secs=5.0,
+                max_fetch_latency_secs=10.0,
+            ),
+        )
+        edge = SimpleNamespace(
+            rule_id="rule-1",
+            template_id="template-1",
+            relationship_type="COMPLEMENTARY_COVERAGE",
+            safety_tier="EXECUTION_SAFE",
+            execution_safe=True,
+            same_venue_execution_eligible=False,
+        )
+        quote = SimpleNamespace(
+            odds=Decimal("2.20"),
+            received_ns=10_000_000_000,
+            quote=SimpleNamespace(ts_event=9_900_000_000),
+        )
+
+        quality = node_runner._probe_candidate_quality(
+            strategy,
+            edge=edge,
+            source_node=SimpleNamespace(
+                instrument=instrument_a,
+                market_name="point_spread",
+                outcome="home",
+            ),
+            target_node=SimpleNamespace(
+                instrument=instrument_b,
+                market_name="point_spread",
+                outcome="away",
+            ),
+            quote_a=quote,
+            quote_b=quote,
+            min_profit_margin=Decimal("0.02"),
+            allow_same_venue=False,
+        )
+
+        assert quality["eventNameA"] == "Lakers vs Celtics"
+        assert quality["eventNameB"] == "Lakers vs Celtics"
+        assert quality["homeNameA"] == "Lakers"
+        assert quality["homeNameB"] == "Lakers"
+        assert quality["awayNameA"] == "Celtics"
+        assert quality["awayNameB"] == "Celtics"
+        assert quality["eventKeyA"]
+        assert quality["eventKeyB"]
+        normalized_a = quality["normalizedA"]
+        expected_label_a = " ".join(
+            part
+            for part in (
+                str(normalized_a["marketType"]).upper(),
+                str(normalized_a["line"]) if normalized_a["line"] not in (None, "") else "",
+                f"({str(normalized_a['selectionRole']).upper()})",
+            )
+            if part
+        )
+        assert quality["marketLabelA"] == expected_label_a
+        assert str(normalized_a["marketType"]).upper() in quality["marketLabelA"]
+        assert quality["marketLabelB"]
+
+    def test_probe_candidate_quality_row_enrichment_is_none_safe(self):
+        bare_instrument_a = SimpleNamespace(
+            id=SimpleNamespace(venue="SXBET"),
+            venue_name="SXBET",
+        )
+        bare_instrument_b = SimpleNamespace(
+            id=SimpleNamespace(venue="SXBET"),
+            venue_name="SXBET",
+        )
+        strategy = SimpleNamespace(
+            matcher_suspect_reason=lambda _a, _b: (False, "none"),
+            semantic_fixture_suspect_reason=lambda _a, _b: (False, "none"),
+            quote_age_secs=lambda _observed_ns, _quote: 0.1,
+            _quote_pair_skew_secs=lambda _quote_a, _quote_b: 0.0,
+            quote_fetch_latency_secs=lambda _quote: 0.1,
+            quote_available_size=lambda _quote: Decimal(100),
+            quote_freshness_thresholds=lambda _instrument_a, _instrument_b: SimpleNamespace(
+                profile="pre_match",
+                max_quote_age_secs=30.0,
+                max_pair_skew_secs=5.0,
+                max_fetch_latency_secs=10.0,
+            ),
+        )
+        edge = SimpleNamespace(
+            rule_id="rule-1",
+            template_id="template-1",
+            relationship_type="COMPLEMENTARY_COVERAGE",
+            safety_tier="EXECUTION_SAFE",
+            execution_safe=True,
+            same_venue_execution_eligible=False,
+        )
+        quote = SimpleNamespace(
+            odds=Decimal("2.20"),
+            received_ns=10_000_000_000,
+            quote=SimpleNamespace(ts_event=9_900_000_000),
+        )
+
+        quality = node_runner._probe_candidate_quality(
+            strategy,
+            edge=edge,
+            source_node=SimpleNamespace(
+                instrument=bare_instrument_a,
+                market_name="point_spread",
+                outcome="home",
+            ),
+            target_node=SimpleNamespace(
+                instrument=bare_instrument_b,
+                market_name="point_spread",
+                outcome="",
+            ),
+            quote_a=quote,
+            quote_b=quote,
+            min_profit_margin=Decimal("0.02"),
+            allow_same_venue=False,
+        )
+
+        assert quality["eventNameA"] is None
+        assert quality["eventNameB"] is None
+        assert quality["homeNameA"] is None
+        assert quality["awayNameA"] is None
+        assert quality["eventKeyA"] is None
+        assert quality["eventKeyB"] is None
+        # Bare instruments normalize to the OTHER bucket; the label still renders
+        # instead of raising on the missing display fields.
+        assert quality["marketLabelA"] == "OTHER (OTHER)"
+        assert quality["marketLabelB"] == "OTHER (OTHER)"
+
+    def test_probe_market_label_composes_market_line_and_selection(self):
+        assert (
+            node_runner._probe_market_label(
+                {"marketType": "point_spread", "line": "-1.5", "selectionRole": "home"},
+            )
+            == "POINT_SPREAD -1.5 (HOME)"
+        )
+        assert (
+            node_runner._probe_market_label(
+                {"marketType": "moneyline", "line": None, "selectionRole": "away"},
+            )
+            == "MONEYLINE (AWAY)"
+        )
+        assert node_runner._probe_market_label({}) is None
 
     def test_runtime_probe_venue_coverage_explains_zero_cross_venue_pairs(self):
         sxbet_instrument = _instrument(
