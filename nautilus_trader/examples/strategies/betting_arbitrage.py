@@ -516,6 +516,16 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         currency allowance — including a configured FX rate — so it cannot be bypassed,
         and it rejects two *different* stablecoins (e.g. USDT vs USDC) as well as any
         fiat leg. Same-venue pairs are unaffected.
+    arb_pairs_stats_cap : int, default 200
+        Maximum number of arbitrage pairs emitted in the per-pair ``pairs`` list of the
+        ``arb_position_tracker`` stats block (observability only; the DB shipper builds its
+        flat trades tables from this list). The most-recently-active pairs are kept; the
+        aggregate scalars in the same block always span every tracked pair, and tracking or
+        settlement is never affected.
+    arb_leg_fills_cap : int, default 50
+        Maximum number of per-fill detail records (ts/price/stake) retained per leg for the
+        trades shipper. The unbounded fill list backing settlement P&L is unaffected; this
+        caps only the observability ``fill_events``, keeping the newest fills.
 
     """
 
@@ -587,6 +597,8 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
     require_same_stablecoin_settlement: bool = False
     execute_void_compatible_middles: bool = False
     min_middle_profit_margin: Decimal = Decimal("0.02")
+    arb_pairs_stats_cap: int = 200
+    arb_leg_fills_cap: int = 50
 
     def __post_init__(self) -> None:
         """
@@ -1046,6 +1058,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._arb_position_tracker = ArbPositionTracker(
             policy=self._portfolio_currency_policy(),
             winning_profit_fee_rates=self._config.venue_winning_profit_fee_rates,
+            leg_fills_cap=self._config.arb_leg_fills_cap,
         )
         self._arb_leg_settlements: dict[str, SettlementResult] = {}
         self._bet_settlements_received = 0
@@ -6124,6 +6137,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 sibling_id=self._arb_leg_siblings.get(key),
                 currency=self._instrument_currency_code(instrument),
                 venue=instrument.id.venue.value,
+                ts_event=getattr(event, "ts_event", None),
             )
         except Exception as e:  # pragma: no cover - defensive; never raise into the handler
             self.log.warning(f"Arb position tracker skipped fill: {e}")
@@ -6843,11 +6857,38 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         index = max(0, min(len(ordered_samples) - 1, int((len(ordered_samples) - 1) * percentile)))
         return ordered_samples[index] / 1_000_000
 
+    @classmethod
+    def _json_safe(cls, value: object) -> object:
+        """
+        Recursively coerce a stats value into a JSON-serializable form.
+
+        ``Decimal`` becomes ``str`` (matching the ``str(Decimal)`` convention already used
+        for the scalar stats above); dicts, lists, and tuples are walked; ``None`` / ``bool``
+        / ``int`` / ``str`` pass through unchanged. Used to make the per-pair trades detail
+        (which carries native ``Decimal`` stakes, exposures, and payoffs) safe for the DB
+        shipper without touching the tracker's internal precision.
+
+        """
+        if isinstance(value, Decimal):
+            return str(value)
+        if isinstance(value, dict):
+            return {key: cls._json_safe(val) for key, val in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [cls._json_safe(item) for item in value]
+        return value
+
     def _arb_position_tracker_stats(self) -> dict:
         """
         JSON-safe rollup of the arbitrage P&L tracker for stats and the runtime probe.
+
+        The scalar aggregates span every tracked pair; the ``pairs`` list carries per-pair /
+        per-leg trades detail (order ids, gradings, fill events) for the DB shipper, capped
+        to the most-recently-active ``arb_pairs_stats_cap`` pairs to bound payload size.
+
         """
-        summary = self._arb_position_tracker.summary()
+        summary = self._arb_position_tracker.summary(
+            pairs_cap=self._config.arb_pairs_stats_cap,
+        )
         return {
             "pairs_tracked": summary["pairs_tracked"],
             "pairs_open": summary["pairs_open"],
@@ -6857,6 +6898,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             "realized_pnl": str(summary["realized_pnl"]),
             "settlements_received": self._bet_settlements_received,
             "settlements_unmatched": self._bet_settlements_unmatched,
+            "pairs": self._json_safe(summary["pairs"]),
         }
 
     def get_stats(self) -> dict:
