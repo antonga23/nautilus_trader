@@ -29,6 +29,7 @@ from decimal import Decimal
 import json
 import os
 from pathlib import Path
+import shutil
 import time
 from typing import Any
 from uuid import uuid4
@@ -136,6 +137,9 @@ INSTRUMENT_RECONCILE_DELAY_SECS = 5.0
 APPROVAL_COMMAND_TIMER_NAME = "betting-arbitrage-approval-commands"
 APPROVAL_COMMAND_POLL_INTERVAL_SECS = 2.0
 APPROVAL_DECISION_HISTORY_LIMIT = 20
+APPROVE_ARB_ACTIONS = frozenset({"approve_arb", "reject_arb"})
+RELOAD_SEMANTIC_CACHE_ACTION = "reload_semantic_cache"
+SEMANTIC_CACHE_RELOAD_RETAINED_GENERATIONS = 2
 RESOLUTION_HORIZON_STALE_GRACE_HOURS = 6.0
 LATENCY_SAMPLE_LIMIT = 2_000
 BettingInstrument = CryptoBettingInstrument | LegacyCryptoBettingInstrument
@@ -1087,6 +1091,10 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._approvals_evicted = 0
         self._approval_commands_processed = 0
         self._approval_commands_invalid = 0
+        self._semantic_cache_reloads_succeeded = 0
+        self._semantic_cache_reloads_rejected = 0
+        self._semantic_cache_reloads_failed = 0
+        self._semantic_cache_reload_generation = 0
         self._order_lifecycle_counts_by_venue: dict[str, Counter[str]] = {}
         self._instrument_refresh_requests = 0
         self._instrument_refresh_failures = 0
@@ -1397,13 +1405,20 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         }
 
     def _approval_command_polling_enabled(self) -> bool:
+        # Approve/reject staging only exists in manual mode; the file poll itself
+        # is broader (see _command_polling_enabled) so admin commands work in any mode.
         return bool(
             self._config.execution_approval_command_dir
             and self._config.execution_approval_mode == "manual",
         )
 
+    def _command_polling_enabled(self) -> bool:
+        # Poll whenever a command dir is set: admin commands (reload_semantic_cache)
+        # must reach a RUNNING node even in auto mode, not only manual-approval nodes.
+        return bool(self._config.execution_approval_command_dir)
+
     def _start_approval_command_timer(self) -> None:
-        if not self._approval_command_polling_enabled():
+        if not self._command_polling_enabled():
             return
         self.clock.set_timer(
             name=APPROVAL_COMMAND_TIMER_NAME,
@@ -1411,13 +1426,14 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             callback=self.on_time_event,
         )
         self.log.info(
-            "Started execution approval command polling: "
+            "Started execution command polling: "
             f"dir={self._config.execution_approval_command_dir} "
+            f"mode={self._config.execution_approval_mode} "
             f"interval_secs={APPROVAL_COMMAND_POLL_INTERVAL_SECS}",
         )
 
     def _stop_approval_command_timer(self) -> None:
-        if not self._approval_command_polling_enabled():
+        if not self._command_polling_enabled():
             return
         try:
             self.clock.cancel_timer(APPROVAL_COMMAND_TIMER_NAME)
@@ -1633,15 +1649,24 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             self._config.opportunity_graph_enabled and self._config.graph_rebuild_on_new_instrument
         ):
             return
-        self._opportunity_graph.build(list(self._subscribed_instruments))
+        self._rebuild_opportunity_graph_and_resubscribe(added_instruments)
         self._instrument_refresh_graph_rebuilds += 1
         self._instrument_refresh_graph_rebuilds_by_venue[venue_value] += 1
+
+    def _rebuild_opportunity_graph_and_resubscribe(
+        self,
+        resubscribe_instruments: list[BettingInstrument],
+    ) -> None:
+        # Full-snapshot build() forces the Rust build_semantic full-template replace
+        # (never the count-keyed add_instrument fast path), so a semantic swap with an
+        # unchanged template count still adopts new template content.
+        self._opportunity_graph.build(list(self._subscribed_instruments))
         if self._semantic_quote_priority_enabled():
             self._subscribe_cross_venue_common_fixture_quote_ticks()
             self._subscribe_semantic_connected_quote_ticks()
             self._subscribe_semantic_unmatched_quote_probe_ticks()
             return
-        for instrument in added_instruments:
+        for instrument in resubscribe_instruments:
             self._subscribe_quote_ticks_for_instrument(instrument)
 
     def _instrument_available_for_refresh(
@@ -5412,14 +5437,30 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         """
         command_id = str(command.get("id") or "").strip() or None
         action = str(command.get("command") or "").strip().lower()
+        if action == RELOAD_SEMANTIC_CACHE_ACTION:
+            # Admin command: always allowed, independent of the approval gate.
+            return self._reload_semantic_cache(
+                str(command.get("staging_dir") or "").strip(),
+                command_id=command_id,
+            )
         approval_id = str(command.get("approval_id") or "").strip()
-        if action not in {"approve_arb", "reject_arb"} or not approval_id:
+        if action not in APPROVE_ARB_ACTIONS or not approval_id:
             self._approval_commands_invalid += 1
             return self._record_approval_decision(
                 command_id=command_id,
                 approval_id=approval_id or None,
                 action=action or "unknown",
                 result="invalid_command",
+                reasons=[],
+            )
+        if self._config.execution_approval_mode != "manual":
+            # approve/reject only make sense against the manual-mode staging queue.
+            self._approval_commands_invalid += 1
+            return self._record_approval_decision(
+                command_id=command_id,
+                approval_id=approval_id,
+                action=action,
+                result="approval_mode_disabled",
                 reasons=[],
             )
         self._approval_commands_processed += 1
@@ -5513,6 +5554,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         action: str,
         result: str,
         reasons: Sequence[str],
+        details: dict[str, object] | None = None,
     ) -> dict[str, object]:
         now_ns = self._safe_clock_timestamp_ns()
         decision: dict[str, object] = {
@@ -5523,6 +5565,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             "reasons": [str(reason) for reason in reasons],
             "at": _utc_iso_from_ns(now_ns) if now_ns is not None else None,
         }
+        if details is not None:
+            decision["details"] = details
         self._approval_decisions.append(decision)
         overflow = len(self._approval_decisions) - APPROVAL_DECISION_HISTORY_LIMIT
         if overflow > 0:
@@ -5534,6 +5578,203 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             f"command_id={command_id}",
         )
         return decision
+
+    def _reload_semantic_cache(
+        self,
+        staging_dir_value: str,
+        *,
+        command_id: str | None = None,
+    ) -> dict[str, object]:
+        """
+        Hot-swap the semantic template store into this RUNNING node with no restart.
+
+        Runs on the strategy timer thread (single-threaded with quote handling), so the
+        publish + graph rebuild never race the quote hot path. Publishes the staged
+        cache atomically, points a fresh RuleStore at it, and forces a full-snapshot
+        graph rebuild so the new templates are actually adopted. On any failure the
+        previous live cache is restored and the graph rebuilt against it.
+
+        """
+        # Imported lazily: the node config module imports this strategy module, so a
+        # top-level import of semantic_cache (which imports that config) would cycle.
+        from nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache import (
+            read_semantic_cache_scope,
+            semantic_cache_status,
+            stamp_semantic_cache_compatibility,
+        )
+
+        cache_dir_value = self._config.semantic_rule_cache_dir
+        rejection = self._semantic_reload_rejection_reasons(cache_dir_value, staging_dir_value)
+        if rejection:
+            return self._record_semantic_reload_failure(
+                command_id,
+                "rejected",
+                rejection,
+                staging_dir=staging_dir_value or None,
+            )
+
+        assert cache_dir_value is not None
+        staging_dir = Path(staging_dir_value)
+        cache_dir = Path(cache_dir_value)
+        node_scope = read_semantic_cache_scope(cache_dir)
+        # Wall-clock ns plus a monotonic counter keeps generation labels unique across
+        # rapid successive swaps (and independent of any frozen strategy clock).
+        self._semantic_cache_reload_generation += 1
+        generation = f"{time.time_ns()}-{self._semantic_cache_reload_generation}"
+        prev_dir = cache_dir.with_name(f"{cache_dir.name}.prev-{generation}")
+
+        publish_error = self._publish_semantic_cache(staging_dir, cache_dir, prev_dir)
+        if publish_error is not None:
+            return self._record_semantic_reload_failure(
+                command_id,
+                "failed",
+                [publish_error],
+                staging_dir=staging_dir_value,
+            )
+
+        # Re-assert the node's own scope over the staged tree's version marker.
+        stamp_semantic_cache_compatibility(cache_dir, scope=node_scope)
+
+        try:
+            self._point_and_rebuild_semantic_store(cache_dir_value)
+        except Exception as exc:
+            self._restore_semantic_cache_from_prev(cache_dir, prev_dir, cache_dir_value)
+            self.log.error(f"Semantic cache reload rebuild failed; restored previous cache: {exc}")
+            return self._record_semantic_reload_failure(
+                command_id,
+                "failed",
+                [f"rebuild_failed:{exc.__class__.__name__}"],
+                staging_dir=staging_dir_value,
+            )
+
+        self._prune_semantic_cache_prev_dirs(cache_dir)
+        self._semantic_cache_reloads_succeeded += 1
+        new_status = semantic_cache_status(cache_dir)
+        self.log.info(
+            "Semantic cache hot-swapped: "
+            f"staging_dir={staging_dir_value} cache_dir={cache_dir_value} "
+            f"promoted_templates={new_status.promoted_template_count} "
+            f"scope={node_scope} command_id={command_id}",
+        )
+        return self._record_approval_decision(
+            command_id=command_id,
+            approval_id=None,
+            action=RELOAD_SEMANTIC_CACHE_ACTION,
+            result="reloaded",
+            reasons=[],
+            details={
+                "staging_dir": staging_dir_value,
+                "cache_dir": cache_dir_value,
+                "generation": str(generation),
+                "promoted_template_count": new_status.promoted_template_count,
+                "manifest_count": new_status.manifest_count,
+                "compatibility_scope": node_scope,
+            },
+        )
+
+    def _semantic_reload_rejection_reasons(
+        self,
+        cache_dir_value: str | None,
+        staging_dir_value: str,
+    ) -> list[str]:
+        from nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache import (
+            SEMANTIC_CACHE_COMPATIBILITY_VERSION,
+            semantic_cache_status,
+        )
+
+        if not cache_dir_value:
+            return ["semantic_rule_cache_dir_not_configured"]
+        if not staging_dir_value:
+            return ["missing_staging_dir"]
+        if not Path(staging_dir_value).is_dir():
+            return ["staging_dir_not_found"]
+        # manifest=None ⇒ scope-agnostic: scope mismatch is accepted (the
+        # seed_allow_scope_mismatch precedent); the node scope is re-stamped on publish.
+        status = semantic_cache_status(staging_dir_value)
+        reasons: list[str] = []
+        if not status.ready:
+            reasons.append("staging_cache_not_ready")
+        if status.compatibility_version != SEMANTIC_CACHE_COMPATIBILITY_VERSION:
+            reasons.append("compatibility_version_mismatch")
+        return reasons
+
+    def _publish_semantic_cache(
+        self,
+        staging_dir: Path,
+        cache_dir: Path,
+        prev_dir: Path,
+    ) -> str | None:
+        # Retain the live cache aside, then atomically rename the staged tree into place
+        # (same bind-mounted fs ⇒ no torn dir). Returns a reason on failure, else None.
+        try:
+            if cache_dir.exists():
+                os.rename(cache_dir, prev_dir)
+            os.replace(staging_dir, cache_dir)
+        except OSError as exc:
+            # Never leave a torn/empty live dir: put the old cache back if we moved it.
+            if not cache_dir.exists() and prev_dir.exists():
+                os.rename(prev_dir, cache_dir)
+            return f"publish_failed:{exc.__class__.__name__}"
+        return None
+
+    def _point_and_rebuild_semantic_store(self, cache_dir_value: str) -> None:
+        # A fresh RuleStore object defeats the graph's identity/generation-keyed
+        # template payload cache, so the swapped-in templates are re-read.
+        new_store = RuleStore(FileRuleCache(cache_dir_value))
+        self._matcher.set_rule_store(new_store)
+        if self._config.opportunity_graph_enabled:
+            self._rebuild_opportunity_graph_and_resubscribe(list(self._subscribed_instruments))
+
+    def _restore_semantic_cache_from_prev(
+        self,
+        cache_dir: Path,
+        prev_dir: Path,
+        cache_dir_value: str,
+    ) -> None:
+        try:
+            if prev_dir.exists():
+                failed_dir = cache_dir.with_name(f"{cache_dir.name}.failed-{prev_dir.name}")
+                if cache_dir.exists():
+                    os.rename(cache_dir, failed_dir)
+                os.rename(prev_dir, cache_dir)
+                shutil.rmtree(failed_dir, ignore_errors=True)
+            self._point_and_rebuild_semantic_store(cache_dir_value)
+        except Exception as exc:
+            self.log.error(f"Semantic cache rollback failed: {exc}")
+
+    def _prune_semantic_cache_prev_dirs(self, cache_dir: Path) -> None:
+        try:
+            prev_dirs = [
+                child
+                for child in cache_dir.parent.iterdir()
+                if child.is_dir() and child.name.startswith(f"{cache_dir.name}.prev-")
+            ]
+        except OSError:
+            return
+        prev_dirs.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+        for stale in prev_dirs[SEMANTIC_CACHE_RELOAD_RETAINED_GENERATIONS:]:
+            shutil.rmtree(stale, ignore_errors=True)
+
+    def _record_semantic_reload_failure(
+        self,
+        command_id: str | None,
+        result: str,
+        reasons: Sequence[str],
+        *,
+        staging_dir: str | None = None,
+    ) -> dict[str, object]:
+        if result == "rejected":
+            self._semantic_cache_reloads_rejected += 1
+        else:
+            self._semantic_cache_reloads_failed += 1
+        return self._record_approval_decision(
+            command_id=command_id,
+            approval_id=None,
+            action=RELOAD_SEMANTIC_CACHE_ACTION,
+            result=result,
+            reasons=reasons,
+            details={"staging_dir": staging_dir} if staging_dir is not None else None,
+        )
 
     def _process_approval_command_files(self) -> None:
         command_dir = self._config.execution_approval_command_dir
@@ -7159,6 +7400,9 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             "evicted": self._approvals_evicted,
             "commands_processed": self._approval_commands_processed,
             "commands_invalid": self._approval_commands_invalid,
+            "semantic_cache_reloads_succeeded": self._semantic_cache_reloads_succeeded,
+            "semantic_cache_reloads_rejected": self._semantic_cache_reloads_rejected,
+            "semantic_cache_reloads_failed": self._semantic_cache_reloads_failed,
             "pending": [record.to_payload() for record in pending],
             "recent_decisions": list(self._approval_decisions),
         }

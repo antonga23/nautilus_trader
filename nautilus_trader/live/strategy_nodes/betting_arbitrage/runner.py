@@ -33,10 +33,16 @@ from nautilus_trader.live.strategy_nodes.betting_arbitrage.builder import (
 from nautilus_trader.live.strategy_nodes.betting_arbitrage.builder import write_manifest_snapshot
 from nautilus_trader.live.strategy_nodes.betting_arbitrage.builder import write_rendered_node_config
 from nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache import (
+    SEMANTIC_CACHE_COMPATIBILITY_FILE,
+)
+from nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache import (
     SemanticCacheStatus,
 )
 from nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache import (
     ensure_semantic_cache_ready,
+)
+from nautilus_trader.live.strategy_nodes.betting_arbitrage.semantic_cache import (
+    semantic_cache_status,
 )
 
 
@@ -389,6 +395,39 @@ class RuntimeProbeStatusWriter(threading.Thread):
         self._diagnostics_throttle = _RuntimeProbeDiagnosticsThrottle(
             getattr(manifest, "semantic_diagnostics_interval_secs", 90.0),
         )
+        cache_dir = getattr(manifest, "semantic_rule_cache_dir", None)
+        self._semantic_cache_dir = Path(cache_dir) if cache_dir else None
+        # Once-at-startup capture goes stale the moment a hot swap re-mines the cache
+        # under this RUNNING node. Track the compatibility marker's mtime and recompute
+        # the block when it changes so the status stays truthful (reloadedAt + new counts).
+        self._semantic_cache_version_mtime = self._read_semantic_cache_version_mtime()
+
+    def _semantic_cache_version_path(self) -> Path | None:
+        if self._semantic_cache_dir is None:
+            return None
+        return self._semantic_cache_dir / SEMANTIC_CACHE_COMPATIBILITY_FILE
+
+    def _read_semantic_cache_version_mtime(self) -> float | None:
+        marker = self._semantic_cache_version_path()
+        if marker is None:
+            return None
+        try:
+            return marker.stat().st_mtime
+        except OSError:
+            return None
+
+    def _maybe_refresh_semantic_cache(self) -> None:
+        if self._semantic_cache_dir is None:
+            return
+        mtime = self._read_semantic_cache_version_mtime()
+        if mtime is None or mtime == self._semantic_cache_version_mtime:
+            return
+        self._semantic_cache_version_mtime = mtime
+        status = semantic_cache_status(self._semantic_cache_dir, manifest=self._manifest)
+        payload = _semantic_cache_payload(status)
+        if payload is not None:
+            payload["reloadedAt"] = _utc_now()
+        self._semantic_cache = payload
 
     def run(self) -> None:
         min_profit_margin = Decimal(str(self._manifest.strategy.min_profit_margin))
@@ -397,6 +436,7 @@ class RuntimeProbeStatusWriter(threading.Thread):
             # status.json at its last snapshot while the node keeps running. Keep the writer
             # alive across transient collection/write errors so the probe stays fresh.
             try:
+                self._maybe_refresh_semantic_cache()
                 runtime_probe = _collect_runtime_probe_payload(
                     self._strategy,
                     min_profit_margin=min_profit_margin,
