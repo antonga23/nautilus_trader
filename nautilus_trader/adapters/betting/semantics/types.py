@@ -79,6 +79,69 @@ ARB_MARGIN_RELATIONSHIP_TYPES: frozenset[str] = frozenset(
 )
 
 
+# Settlement-risk caveat/reason tokens marking a void/push outcome. The vocabulary is
+# deliberately split across layers: ``coverage.py`` emits ``CoverageBlockerReason`` values
+# (``void_settlement``) while ``classifier.py`` / runtime edges carry ``void_states_present``
+# and ``push_states_present``. A middle's legs both push together on the void state, so
+# these are the *expected* shape of a positive-EV middle, not a danger.
+VOID_PUSH_SETTLEMENT_CAVEATS: frozenset[str] = frozenset(
+    {
+        "void_settlement",
+        "void_states_present",
+        "push_states_present",
+    },
+)
+
+# Settlement risks that DISQUALIFY a middle: a leg that can settle UNKNOWN / PARTIAL /
+# AMBIGUOUS (or an unresolved provider rule) is not a clean void-only pair. Spelled across
+# both the coverage and classifier vocabularies so whichever token a live edge carries is
+# caught.
+NON_VOID_SETTLEMENT_RISK_CAVEATS: frozenset[str] = frozenset(
+    {
+        "unknown_settlement",
+        "unknown_settlement_present",
+        "partial_settlement",
+        "partial_settlement_present",
+        "partial_states_present",
+        "ambiguous_resolution",
+        "unresolved_provider_rule",
+    },
+)
+
+
+def is_void_compatible_middle(
+    relationship_type: str | None,
+    caveats: Any,
+) -> bool:
+    """
+    Whether a pair is a positive-EV middle: a ``VOID_COMPATIBLE_HEDGE`` (the structural
+    no-both-lose guarantee) whose only settlement risks are VOID / PUSH.
+
+    A non-void settlement risk (UNKNOWN / PARTIAL / AMBIGUOUS) disqualifies it regardless
+    of any opt-in flag. This is the single structural predicate reused by the promotion
+    tier, the runtime execution gate, and the approval-staging path.
+    """
+    if relationship_type != RelationshipType.VOID_COMPATIBLE_HEDGE.value:
+        return False
+    return not (set(caveats) & NON_VOID_SETTLEMENT_RISK_CAVEATS)
+
+
+def has_only_void_push_settlement_risk(caveats: Any) -> bool:
+    """
+    Whether a settlement-risk set is void/push-only — at least one VOID/PUSH risk and no
+    UNKNOWN / PARTIAL / AMBIGUOUS risk.
+
+    Used by the coverage tier, where a two-leg book is keyed on ``COMPLEMENTARY_COVERAGE``
+    rather than the pairwise ``VOID_COMPATIBLE_HEDGE`` relationship, so eligibility turns
+    on the risk shape alone.
+
+    """
+    reasons = set(caveats)
+    return bool(reasons & VOID_PUSH_SETTLEMENT_CAVEATS) and not (
+        reasons & NON_VOID_SETTLEMENT_RISK_CAVEATS
+    )
+
+
 class PromotionStatus(str, Enum):
     CANDIDATE = "CANDIDATE"
     PROMOTED = "PROMOTED"

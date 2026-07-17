@@ -29,6 +29,7 @@ from nautilus_trader.adapters.betting.semantics.types import RuleValidationStats
 from nautilus_trader.adapters.betting.semantics.types import SafetyTier
 from nautilus_trader.adapters.betting.semantics.types import SemanticRuleTemplate
 from nautilus_trader.adapters.betting.semantics.types import SettlementState
+from nautilus_trader.adapters.betting.semantics.types import is_void_compatible_middle
 
 
 def _deterministic_complementary_partition(template: SemanticRuleTemplate) -> bool:
@@ -58,6 +59,35 @@ class RulePromotionPolicy:
     def __init__(self, allowlisted_venue_scopes: set[tuple[str, ...]] | None = None) -> None:
         self._allowlisted_venue_scopes = allowlisted_venue_scopes or set()
 
+    @staticmethod
+    def _cross_venue_void_middle_executable(
+        rule: MinedRule,
+        *,
+        tier: SafetyTier,
+        venue_agnostic: bool,
+        execution_scope_ok: bool,
+    ) -> bool:
+        return (
+            tier == SafetyTier.VENUE_SAFE
+            and is_void_compatible_middle(rule.relationship_type, rule.caveats)
+            and not rule.has_partial
+            and len(set(rule.venue_scope)) >= 2
+            and (execution_scope_ok or not venue_agnostic)
+        )
+
+    @staticmethod
+    def _cross_venue_void_middle_template_executable(
+        template: SemanticRuleTemplate,
+        *,
+        tier: SafetyTier,
+    ) -> bool:
+        return (
+            tier == SafetyTier.VENUE_SAFE
+            and is_void_compatible_middle(template.relationship_type, template.caveats)
+            and not template.has_partial
+            and template.support.provider_count >= 2
+        )
+
     def classify_rule_tier(
         self,
         rule: MinedRule,
@@ -65,6 +95,7 @@ class RulePromotionPolicy:
         *,
         allowlisted: bool = False,
         venue_agnostic: bool = False,
+        allow_void_compatible_middles: bool = False,
     ) -> tuple[SafetyTier, tuple[str, ...]]:
         reasons: list[str] = []
         if rule.relationship_type == RelationshipType.DANGEROUS_NON_EQUIVALENT.value:
@@ -93,6 +124,27 @@ class RulePromotionPolicy:
         execution_scope_ok = (
             allowlisted or tuple(sorted(rule.venue_scope)) in self._allowlisted_venue_scopes
         )
+        tier, extra_reasons = self._resolve_rule_execution_tier(
+            rule,
+            stats,
+            tier=tier,
+            venue_agnostic=venue_agnostic,
+            execution_scope_ok=execution_scope_ok,
+            allow_void_compatible_middles=allow_void_compatible_middles,
+        )
+        reasons.extend(extra_reasons)
+        return tier, tuple(sorted(set(reasons)))
+
+    def _resolve_rule_execution_tier(
+        self,
+        rule: MinedRule,
+        stats: RuleValidationStats | None,
+        *,
+        tier: SafetyTier,
+        venue_agnostic: bool,
+        execution_scope_ok: bool,
+        allow_void_compatible_middles: bool,
+    ) -> tuple[SafetyTier, tuple[str, ...]]:
         if (
             tier != SafetyTier.AUDIT_ONLY
             and rule.relationship_type == RelationshipType.COMPLEMENTARY_COVERAGE.value
@@ -102,20 +154,29 @@ class RulePromotionPolicy:
             and stats.promotable
             and (execution_scope_ok or not venue_agnostic)
         ):
-            tier = SafetyTier.EXECUTION_SAFE
-            reasons.append("execution_safe_complementary_coverage")
-        elif (
+            return SafetyTier.EXECUTION_SAFE, ("execution_safe_complementary_coverage",)
+        if allow_void_compatible_middles and self._cross_venue_void_middle_executable(
+            rule,
+            tier=tier,
+            venue_agnostic=venue_agnostic,
+            execution_scope_ok=execution_scope_ok,
+        ):
+            # Cross-venue positive-EV middle: the structural no-both-lose guarantee makes it
+            # executable across venues under the opt-in. A single-venue void middle stays
+            # same-venue-eligible via the final branch, unchanged when the flag is off.
+            return SafetyTier.EXECUTION_SAFE, ("execution_safe_void_compatible_middle",)
+        if (
             tier == SafetyTier.VENUE_SAFE
             and rule.relationship_type == RelationshipType.COMPLEMENTARY_COVERAGE.value
             and (rule.has_void or rule.has_partial)
         ):
-            tier = SafetyTier.COVERAGE_SAFE
-            reasons.append("coverage_requires_void_partial_risk_handling")
-        elif tier == SafetyTier.VENUE_SAFE:
-            tier = SafetyTier.EXECUTION_SAFE_SAME_VENUE_ELIGIBLE
-            reasons.append("same_venue_risk_engine_elevation_required")
-
-        return tier, tuple(sorted(set(reasons)))
+            return SafetyTier.COVERAGE_SAFE, ("coverage_requires_void_partial_risk_handling",)
+        if tier == SafetyTier.VENUE_SAFE:
+            return (
+                SafetyTier.EXECUTION_SAFE_SAME_VENUE_ELIGIBLE,
+                ("same_venue_risk_engine_elevation_required",),
+            )
+        return tier, ()
 
     def can_promote(
         self,
@@ -200,6 +261,7 @@ class RulePromotionPolicy:
         *,
         allowlisted: bool = False,
         venue_agnostic: bool = False,
+        allow_void_compatible_middles: bool = False,
     ) -> tuple[SafetyTier, tuple[str, ...]]:
         reasons: list[str] = []
         if template.relationship_type == RelationshipType.DANGEROUS_NON_EQUIVALENT.value:
@@ -220,26 +282,49 @@ class RulePromotionPolicy:
             if template.has_partial:
                 reasons.append("partial_settlement_present")
 
+        tier, extra_reasons = self._resolve_template_execution_tier(
+            template,
+            tier=tier,
+            allowlisted=allowlisted,
+            venue_agnostic=venue_agnostic,
+            allow_void_compatible_middles=allow_void_compatible_middles,
+        )
+        reasons.extend(extra_reasons)
+        return tier, tuple(sorted(set(reasons)))
+
+    def _resolve_template_execution_tier(
+        self,
+        template: SemanticRuleTemplate,
+        *,
+        tier: SafetyTier,
+        allowlisted: bool,
+        venue_agnostic: bool,
+        allow_void_compatible_middles: bool,
+    ) -> tuple[SafetyTier, tuple[str, ...]]:
         execution_reasons = self._template_execution_safe_reasons(
             template,
             allowlisted=allowlisted,
             venue_agnostic=venue_agnostic,
         )
         if execution_reasons:
-            tier = SafetyTier.EXECUTION_SAFE
-            reasons.extend(execution_reasons)
-        elif (
+            return SafetyTier.EXECUTION_SAFE, execution_reasons
+        if allow_void_compatible_middles and self._cross_venue_void_middle_template_executable(
+            template,
+            tier=tier,
+        ):
+            return SafetyTier.EXECUTION_SAFE, ("execution_safe_void_compatible_middle",)
+        if (
             tier == SafetyTier.VENUE_SAFE
             and template.relationship_type == RelationshipType.COMPLEMENTARY_COVERAGE.value
             and (template.has_void or template.has_partial)
         ):
-            tier = SafetyTier.COVERAGE_SAFE
-            reasons.append("coverage_requires_void_partial_risk_handling")
-        elif tier == SafetyTier.VENUE_SAFE:
-            tier = SafetyTier.EXECUTION_SAFE_SAME_VENUE_ELIGIBLE
-            reasons.append("same_venue_risk_engine_elevation_required")
-
-        return tier, tuple(sorted(set(reasons)))
+            return SafetyTier.COVERAGE_SAFE, ("coverage_requires_void_partial_risk_handling",)
+        if tier == SafetyTier.VENUE_SAFE:
+            return (
+                SafetyTier.EXECUTION_SAFE_SAME_VENUE_ELIGIBLE,
+                ("same_venue_risk_engine_elevation_required",),
+            )
+        return tier, ()
 
     def can_promote_template(
         self,

@@ -1244,3 +1244,103 @@ def test_sxbet_same_market_handicap_complement_still_classifies():
 
     assert rule is not None
     assert rule.relationship_type == RelationshipType.COMPLEMENTARY_COVERAGE.value
+
+
+def _cross_venue_dnb_middle():
+    return RuleClassifier().classify(
+        betting_instrument(
+            market_name="draw_no_bet",
+            market_type="draw_no_bet",
+            outcome="home",
+            venue="CLOUDBET",
+        ),
+        betting_instrument(
+            market_name="draw_no_bet",
+            market_type="draw_no_bet",
+            outcome="away",
+            venue="SXBET",
+        ),
+    )
+
+
+def _venue_safe_stats(rule_id: str) -> RuleValidationStats:
+    return RuleValidationStats(
+        rule_id=rule_id,
+        venue_id="CLOUDBET",
+        sport="soccer",
+        sample_count=5,
+        match_count=5,
+        mismatch_count=0,
+        confidence=0.95,
+        last_validated_at="2026-04-26T00:00:00Z",
+    )
+
+
+def test_void_compatible_middle_shared_predicate():
+    from nautilus_trader.adapters.betting.semantics import has_only_void_push_settlement_risk
+    from nautilus_trader.adapters.betting.semantics import is_void_compatible_middle
+
+    assert is_void_compatible_middle(
+        RelationshipType.VOID_COMPATIBLE_HEDGE.value,
+        ("void_states_present", "price_correlation_not_proof"),
+    )
+    # A non-void settlement risk disqualifies it regardless of the flag.
+    assert not is_void_compatible_middle(
+        RelationshipType.VOID_COMPATIBLE_HEDGE.value,
+        ("void_states_present", "partial_states_present"),
+    )
+    # Only a VOID_COMPATIBLE_HEDGE is a middle; a complementary book with void is not.
+    assert not is_void_compatible_middle(
+        RelationshipType.COMPLEMENTARY_COVERAGE.value,
+        ("void_states_present",),
+    )
+    assert has_only_void_push_settlement_risk(("void_settlement",))
+    assert not has_only_void_push_settlement_risk(("void_settlement", "unknown_settlement"))
+    assert not has_only_void_push_settlement_risk(("overlapping_coverage",))
+
+
+def test_cross_venue_void_middle_stays_same_venue_eligible_without_flag():
+    rule = _cross_venue_dnb_middle()
+    assert rule is not None
+    assert rule.relationship_type == RelationshipType.VOID_COMPATIBLE_HEDGE.value
+
+    tier, reasons = RulePromotionPolicy().classify_rule_tier(
+        rule,
+        _venue_safe_stats(rule.rule_id),
+    )
+
+    assert tier == SafetyTier.EXECUTION_SAFE_SAME_VENUE_ELIGIBLE
+    assert "execution_safe_void_compatible_middle" not in reasons
+
+
+def test_cross_venue_void_middle_is_execution_safe_under_flag():
+    rule = _cross_venue_dnb_middle()
+    assert rule is not None
+
+    tier, reasons = RulePromotionPolicy().classify_rule_tier(
+        rule,
+        _venue_safe_stats(rule.rule_id),
+        allow_void_compatible_middles=True,
+    )
+
+    assert tier == SafetyTier.EXECUTION_SAFE
+    assert "execution_safe_void_compatible_middle" in reasons
+
+
+def test_same_venue_void_middle_unchanged_under_flag():
+    # A single-venue void middle stays same-venue-eligible even with the flag on: the
+    # cross-venue elevation only fires for a genuinely multi-venue scope.
+    rule = RuleClassifier().classify(
+        betting_instrument(market_name="draw_no_bet", market_type="draw_no_bet", outcome="home"),
+        betting_instrument(market_name="draw_no_bet", market_type="draw_no_bet", outcome="away"),
+    )
+    assert rule is not None
+    assert rule.venue_scope == ("SXBET",)
+
+    tier, _ = RulePromotionPolicy().classify_rule_tier(
+        rule,
+        _venue_safe_stats(rule.rule_id),
+        allow_void_compatible_middles=True,
+    )
+
+    assert tier == SafetyTier.EXECUTION_SAFE_SAME_VENUE_ELIGIBLE
