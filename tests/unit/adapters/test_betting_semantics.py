@@ -1407,3 +1407,99 @@ def test_cloudbet_soccer_asian_handicap_cross_line_phantom_pair_is_rejected():
 
     assert away_plus_half.param("line") == "-0.5"
     assert RuleClassifier().classify(home_minus_half, away_plus_half) is None
+
+
+def _sxbet_soccer_ah(outcome: str, line: str, *, market_hash: str) -> CryptoBettingInstrument:
+    return betting_instrument(
+        sport="soccer",
+        market_name="asian_handicap",
+        market_type="asian_handicap",
+        outcome=outcome,
+        params=f"line={line}",
+        handicap=float(line),
+        info={"raw_market_type": 3, "sxbet_market_hash": market_hash},
+    )
+
+
+def test_sxbet_soccer_away_plus_half_pays_draw_or_away():
+    # SX.bet lists both orientations of a soccer fixture's half line as separate markets
+    # (e.g. live /markets/active carries line=-0.5 "Fenerbahçe -0.5 / Gornik Zabrze +0.5"
+    # AND line=+0.5 "Fenerbahçe +0.5 / Gornik Zabrze -0.5", team-one relative). The away
+    # leg of the -0.5 market is away +0.5: a draw-or-away payoff over the three-way
+    # partition, not an away-must-win leg.
+    classifier = RuleClassifier()
+    away_plus_half = MarketNormalizer.normalize(
+        _sxbet_soccer_ah("away", "-0.5", market_hash="line-minus-half"),
+    )
+
+    assert away_plus_half.param("line") == "0.5"
+    vector = classifier.build_payoff_vector(away_plus_half)
+    assert vector.result_states == ("HOME_WIN", "DRAW", "AWAY_WIN")
+    assert vector.settlement == ("LOSE", "WIN", "WIN")
+
+
+def test_sxbet_soccer_cross_line_half_handicap_pair_is_not_a_hedge():
+    # The two win-only legs across the sibling half-line markets: home -0.5 (home must
+    # win) and the away leg of the +0.5 market (really away -0.5, away must win). Both
+    # lose on a draw, so their combined implied probability is only ~1 - P(draw)
+    # (0.73-0.79 on the live soccer node) — an underround phantom, not a hedge. The
+    # classifier must prove no relationship for them.
+    classifier = RuleClassifier()
+    home_must_win = MarketNormalizer.normalize(
+        _sxbet_soccer_ah("home", "-0.5", market_hash="line-minus-half"),
+    )
+    away_must_win = MarketNormalizer.normalize(
+        _sxbet_soccer_ah("away", "0.5", market_hash="line-plus-half"),
+    )
+
+    assert home_must_win.param("line") == "-0.5"
+    assert away_must_win.param("line") == "-0.5"
+    assert classifier.classify(home_must_win, away_must_win) is None
+
+
+def test_sxbet_soccer_same_line_half_handicap_complement_still_classifies():
+    # The genuine complement inside ONE half-line market: home -0.5 vs away +0.5
+    # (draw-or-away). Post-normalization the legs are mirrored (lines sum to zero) and
+    # remain a complementary pair with a normal overround.
+    classifier = RuleClassifier()
+    home = _sxbet_soccer_ah("home", "-0.5", market_hash="line-minus-half")
+    away = _sxbet_soccer_ah("away", "-0.5", market_hash="line-minus-half")
+
+    rule = classifier.classify(home, away)
+
+    assert rule is not None
+    assert rule.relationship_type == RelationshipType.COMPLEMENTARY_COVERAGE.value
+
+
+def test_sxbet_tennis_games_handicap_complement_survives_with_overround():
+    # Sign-direction sanity: a genuine SX.bet tennis games handicap pair -1.5/+1.5 at
+    # 1.90/1.90 stays complementary and prices as a normal overround (sum ~1.05 > 1),
+    # so the fix does not over-suppress real two-outcome hedges.
+    classifier = RuleClassifier()
+    home = betting_instrument(
+        sport="tennis",
+        market_name="asian_handicap",
+        market_type="asian_handicap",
+        outcome="home",
+        params="line=-1.5",
+        handicap=-1.5,
+        price=1.90,
+        info={"raw_market_type": 201, "sxbet_market_hash": "games-line"},
+    )
+    away = betting_instrument(
+        sport="tennis",
+        market_name="asian_handicap",
+        market_type="asian_handicap",
+        outcome="away",
+        params="line=-1.5",
+        handicap=-1.5,
+        price=1.90,
+        info={"raw_market_type": 201, "sxbet_market_hash": "games-line"},
+    )
+
+    rule = classifier.classify(home, away)
+
+    assert rule is not None
+    assert rule.relationship_type == RelationshipType.COMPLEMENTARY_COVERAGE.value
+    implied_sum = Decimal(1) / Decimal("1.90") + Decimal(1) / Decimal("1.90")
+    assert implied_sum > 1
