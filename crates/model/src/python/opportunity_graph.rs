@@ -719,56 +719,23 @@ impl OpportunityGraphCore {
     fn edge_snapshots(&self) -> Vec<EdgeExportSnapshot> {
         self.edges_by_id
             .values()
-            .map(edge_export_snapshot)
+            .map(|edge| {
+                (
+                    edge.edge_id.clone(),
+                    edge.source_node_id.clone(),
+                    edge.target_node_id.clone(),
+                    edge.hedge_type.clone(),
+                    edge.confidence,
+                    edge.flags.same_venue,
+                    semantic_edge_metadata(edge),
+                    edge.flags.push_capable,
+                    edge.flags.execution_safe,
+                    edge.last_margin,
+                    edge.last_evaluated_ns,
+                    edge.last_updated_ns,
+                )
+            })
             .collect()
-    }
-
-    fn edge_snapshots_for_node(&self, node_id: &str) -> Vec<EdgeExportSnapshot> {
-        let Some(edge_ids) = self.edge_ids_by_node_id.get(node_id) else {
-            return Vec::default();
-        };
-        edge_ids
-            .iter()
-            .filter_map(|edge_id| self.edges_by_id.get(edge_id))
-            .map(edge_export_snapshot)
-            .collect()
-    }
-
-    fn remove_instrument(&mut self, node_id: &str) -> Vec<String> {
-        let Some(node) = self.nodes_by_id.remove(node_id) else {
-            return Vec::default();
-        };
-        for event_key in event_bucket_keys_for_node(&node) {
-            if let Some(bucket) = self.event_buckets.get_mut(&event_key) {
-                bucket.retain(|id| id != node_id);
-                if bucket.is_empty() {
-                    self.event_buckets.remove(&event_key);
-                }
-            }
-        }
-        let venue_event_key = format!("{}|{}", node.venue, node.event_id);
-        if let Some(bucket) = self.venue_event_buckets.get_mut(&venue_event_key) {
-            bucket.retain(|id| id != node_id);
-            if bucket.is_empty() {
-                self.venue_event_buckets.remove(&venue_event_key);
-            }
-        }
-        self.quotes_by_node_id.remove(node_id);
-        let removed_edge_ids = self.edge_ids_by_node_id.remove(node_id).unwrap_or_default();
-        for edge_id in &removed_edge_ids {
-            let Some(edge) = self.edges_by_id.remove(edge_id) else {
-                continue;
-            };
-            let neighbor_id = if edge.source_node_id == node_id {
-                &edge.target_node_id
-            } else {
-                &edge.source_node_id
-            };
-            if let Some(neighbor_edge_ids) = self.edge_ids_by_node_id.get_mut(neighbor_id) {
-                neighbor_edge_ids.retain(|id| id != edge_id);
-            }
-        }
-        removed_edge_ids
     }
 }
 
@@ -1434,23 +1401,6 @@ fn edge_id(source_id: &str, target_id: &str) -> String {
     } else {
         format!("{target_id}|{source_id}")
     }
-}
-
-fn edge_export_snapshot(edge: &EdgeSnapshot) -> EdgeExportSnapshot {
-    (
-        edge.edge_id.clone(),
-        edge.source_node_id.clone(),
-        edge.target_node_id.clone(),
-        edge.hedge_type.clone(),
-        edge.confidence,
-        edge.flags.same_venue,
-        semantic_edge_metadata(edge),
-        edge.flags.push_capable,
-        edge.flags.execution_safe,
-        edge.last_margin,
-        edge.last_evaluated_ns,
-        edge.last_updated_ns,
-    )
 }
 
 fn semantic_edge_metadata(edge: &EdgeSnapshot) -> String {
@@ -2731,107 +2681,6 @@ mod tests {
         assert_eq!(snapshots[0].9, Some(candidates[0].7));
         assert_eq!(snapshots[0].10, Some(12));
         assert_eq!(snapshots[0].11, Some(12));
-    }
-
-    #[rstest]
-    fn edge_snapshots_for_node_filters_to_connected_edges() {
-        let mut core = OpportunityGraphCore::new(true, 0.5);
-        core.insert_node(node("a", "over"));
-        core.insert_node(node("b", "under"));
-        let mut other_over = node("c", "over");
-        other_over.event_id = "event-2".to_string();
-        other_over.event_key_no_time = "soccer:team c:team d".to_string();
-        other_over.event_alias_keys = vec![other_over.event_key_no_time.clone()];
-        let mut other_under = node("d", "under");
-        other_under.event_id = "event-2".to_string();
-        other_under.event_key_no_time = "soccer:team c:team d".to_string();
-        other_under.event_alias_keys = vec![other_under.event_key_no_time.clone()];
-        core.insert_node(other_over);
-        core.insert_node(other_under);
-        core.rebuild_edges();
-        assert_eq!(core.edge_count(), 2);
-
-        let snapshots = core.edge_snapshots_for_node("a");
-        assert_eq!(snapshots.len(), 1);
-        assert_eq!(snapshots[0].0, edge_id("a", "b"));
-
-        assert!(core.edge_snapshots_for_node("missing").is_empty());
-        assert_eq!(core.edge_snapshots().len(), 2);
-    }
-
-    #[rstest]
-    fn remove_instrument_detaches_node_edges_and_buckets() {
-        let mut core = OpportunityGraphCore::new(true, 0.5);
-        core.insert_node(node("a", "over"));
-        core.insert_node(node("b", "under"));
-        core.insert_node(node_with(
-            "c",
-            "BLACKBET",
-            "event-2",
-            "Total Goals",
-            "total_goals",
-            "over",
-        ));
-        core.insert_node(node_with(
-            "d",
-            "BLACKBET",
-            "event-2",
-            "Total Goals",
-            "total_goals",
-            "under",
-        ));
-        core.rebuild_edges();
-        assert!(core.update_quote("a", 2.4, 1, 1));
-        assert!(core.update_quote("b", 2.55, 2, 2));
-        // Same-venue pairs a-b and c-d plus cross-venue a-d and b-c.
-        assert_eq!(core.edge_count(), 4);
-        assert_eq!(core.connected_edge_count("a"), 2);
-
-        let removed = core.remove_instrument("a");
-
-        assert_eq!(removed.len(), 2);
-        assert!(removed.contains(&edge_id("a", "b")));
-        assert!(removed.contains(&edge_id("a", "d")));
-        assert_eq!(core.node_count(), 3);
-        assert_eq!(core.edge_count(), 2);
-        assert_eq!(core.connected_edge_count("a"), 0);
-        assert_eq!(core.connected_edge_count("b"), 1);
-        assert_eq!(core.connected_edge_count("c"), 2);
-        assert_eq!(core.connected_edge_count("d"), 1);
-        // The removed node's quote state is dropped; the neighbor's survives.
-        assert_eq!(core.quote_state_count(), 1);
-        assert!(!core.update_quote("a", 2.4, 3, 3));
-
-        // Unknown node is a no-op.
-        assert!(core.remove_instrument("missing").is_empty());
-        assert_eq!(core.edge_count(), 2);
-    }
-
-    #[rstest]
-    fn remove_then_re_add_reconnects_via_buckets() {
-        pyo3::Python::initialize();
-
-        Python::attach(|py| {
-            let over = py_payload(py, &node("a", "over"));
-            let under = py_payload(py, &node("b", "under"));
-            let nodes = PyList::empty(py);
-            nodes.append(&over).unwrap();
-            nodes.append(&under).unwrap();
-
-            let mut core = OpportunityGraphCore::new(true, 0.5);
-            core.build(nodes.as_any()).unwrap();
-            assert_eq!(core.edge_count(), 1);
-
-            let removed = core.remove_instrument("b");
-            assert_eq!(removed, vec![edge_id("a", "b")]);
-            assert_eq!(core.edge_count(), 0);
-
-            // Stale bucket entries would break reconnection or duplicate edges here.
-            assert!(core.add_instrument(under.as_any()).unwrap());
-            assert_eq!(core.edge_count(), 1);
-            assert_eq!(core.connected_edge_count("a"), 1);
-            assert_eq!(core.connected_edge_count("b"), 1);
-        });
     }
 
     #[rstest]

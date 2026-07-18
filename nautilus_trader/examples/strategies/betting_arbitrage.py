@@ -1103,7 +1103,6 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._instrument_refresh_delisted_removed = 0
         self._instrument_refresh_reconciles = 0
         self._instrument_refresh_graph_rebuilds = 0
-        self._instrument_refresh_graph_incremental_updates = 0
         self._instrument_refresh_stale_triggers = 0
         self._quote_unsubscribe_requests = 0
         self._instrument_refresh_requests_by_venue: Counter[str] = Counter()
@@ -1125,8 +1124,6 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._seen_opportunity_pairs: set[str] = set()
         self._active_opportunity_pairs: dict[str, OpportunityPairState] = {}
         self._graph_scan_latency_ns: list[int] = []
-        self._graph_rebuild_latency_ns: list[int] = []
-        self._edge_sync_latency_ns: list[int] = []
         self._candidate_decision_latency_ns: list[int] = []
         self._order_construction_latency_ns: list[int] = []
         self._order_submit_latency_ns: list[int] = []
@@ -1556,12 +1553,11 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             return
         active_ids = {str(instrument.id) for instrument in active_cached}
         added_instruments = self._add_refreshed_active_instruments(active_cached)
-        removed_instruments = self._remove_inactive_or_delisted_instruments(
+        removed = self._remove_inactive_or_delisted_instruments(
             venue_value=venue_value,
             active_instrument_ids=active_ids,
         )
         added = len(added_instruments)
-        removed = len(removed_instruments)
         if added <= 0 and removed <= 0:
             return
 
@@ -1569,7 +1565,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._instrument_refresh_removed += removed
         self._instrument_refresh_added_by_venue[venue_value] += added
         self._instrument_refresh_removed_by_venue[venue_value] += removed
-        self._rebuild_after_instrument_refresh(venue_value, added_instruments, removed_instruments)
+        self._rebuild_after_instrument_refresh(venue_value, added_instruments)
         self._log_graph_topology_summary()
         self.log.info(
             "Reconciled refreshed betting instruments: "
@@ -1648,57 +1644,14 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self,
         venue_value: str,
         added_instruments: list[BettingInstrument],
-        removed_instruments: list[BettingInstrument] | None = None,
     ) -> None:
         if not (
             self._config.opportunity_graph_enabled and self._config.graph_rebuild_on_new_instrument
         ):
             return
-        removed_instruments = removed_instruments or []
-        if self._graph_refresh_needs_full_build(added_instruments, removed_instruments):
-            self._rebuild_opportunity_graph_and_resubscribe(added_instruments)
-            self._instrument_refresh_graph_rebuilds += 1
-            self._instrument_refresh_graph_rebuilds_by_venue[venue_value] += 1
-            return
-        self._apply_incremental_graph_refresh(added_instruments, removed_instruments)
-        self._instrument_refresh_graph_incremental_updates += 1
-
-    def _graph_refresh_needs_full_build(
-        self,
-        added_instruments: list[BettingInstrument],
-        removed_instruments: list[BettingInstrument],
-    ) -> bool:
-        graph = self._opportunity_graph
-        if not graph.supports_incremental_refresh():
-            return True
-        # Template content changes only take effect through build() (the Rust
-        # add_instrument template reload is count-keyed, not content-keyed).
-        if graph.semantic_templates_stale():
-            return True
-        node_count = graph.node_count
-        if node_count <= 0:
-            return True
-        # A huge delta approaches full-rebuild work anyway while accumulating
-        # per-node sync overhead, so cut over to the single optimized build.
-        delta = len(added_instruments) + len(removed_instruments)
-        return delta * 4 > node_count
-
-    def _apply_incremental_graph_refresh(
-        self,
-        added_instruments: list[BettingInstrument],
-        removed_instruments: list[BettingInstrument],
-    ) -> None:
-        graph = self._opportunity_graph
-        started_ns = time.perf_counter_ns()
-        for instrument in removed_instruments:
-            graph.remove_instrument(str(instrument.id))
-        for instrument in added_instruments:
-            graph.add_instrument(instrument)
-        self._record_latency_sample(
-            self._edge_sync_latency_ns,
-            time.perf_counter_ns() - started_ns,
-        )
-        self._resubscribe_after_graph_change(added_instruments)
+        self._rebuild_opportunity_graph_and_resubscribe(added_instruments)
+        self._instrument_refresh_graph_rebuilds += 1
+        self._instrument_refresh_graph_rebuilds_by_venue[venue_value] += 1
 
     def _rebuild_opportunity_graph_and_resubscribe(
         self,
@@ -1707,18 +1660,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         # Full-snapshot build() forces the Rust build_semantic full-template replace
         # (never the count-keyed add_instrument fast path), so a semantic swap with an
         # unchanged template count still adopts new template content.
-        rebuild_started_ns = time.perf_counter_ns()
         self._opportunity_graph.build(list(self._subscribed_instruments))
-        self._record_latency_sample(
-            self._graph_rebuild_latency_ns,
-            time.perf_counter_ns() - rebuild_started_ns,
-        )
-        self._resubscribe_after_graph_change(resubscribe_instruments)
-
-    def _resubscribe_after_graph_change(
-        self,
-        resubscribe_instruments: list[BettingInstrument],
-    ) -> None:
         if self._semantic_quote_priority_enabled():
             self._subscribe_cross_venue_common_fixture_quote_ticks()
             self._subscribe_semantic_connected_quote_ticks()
@@ -1744,7 +1686,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         *,
         venue_value: str,
         active_instrument_ids: set[str],
-    ) -> list[BettingInstrument]:
+    ) -> int:
         subscribed_snapshot = tuple(self._subscribed_instruments)
         to_remove = [
             instrument
@@ -1760,7 +1702,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             self._remove_subscribed_instrument(instrument)
         self._instrument_refresh_delisted_removed += len(to_remove)
         self._instrument_refresh_delisted_removed_by_venue[venue_value] += len(to_remove)
-        return to_remove
+        return len(to_remove)
 
     def _remove_subscribed_instrument(self, instrument: BettingInstrument) -> None:
         self._subscribed_instruments.discard(instrument)
@@ -1823,7 +1765,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
 
         self._subscribed_instruments.add(betting_instrument)
         if self._config.opportunity_graph_enabled and self._config.graph_rebuild_on_new_instrument:
-            self._graph_add_instrument_timed(betting_instrument)
+            self._opportunity_graph.add_instrument(betting_instrument)
         if self._semantic_quote_priority_enabled():
             self._subscribe_cross_venue_common_fixture_quote_ticks()
             self._subscribe_semantic_connected_quote_ticks()
@@ -1831,15 +1773,6 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         else:
             self._subscribe_quote_ticks_for_instrument(betting_instrument)
         return True
-
-    def _graph_add_instrument_timed(self, instrument: BettingInstrument) -> bool:
-        started_ns = time.perf_counter_ns()
-        added = self._opportunity_graph.add_instrument(instrument)
-        self._record_latency_sample(
-            self._edge_sync_latency_ns,
-            time.perf_counter_ns() - started_ns,
-        )
-        return added
 
     def _coerce_betting_instrument(self, instrument: Instrument | None) -> BettingInstrument | None:
         if isinstance(instrument, BETTING_INSTRUMENT_TYPES):
@@ -1890,12 +1823,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         if len(self._subscribed_instruments) == subscribed_before:
             return
 
-        rebuild_started_ns = time.perf_counter_ns()
         self._opportunity_graph.build(list(self._subscribed_instruments))
-        self._record_latency_sample(
-            self._graph_rebuild_latency_ns,
-            time.perf_counter_ns() - rebuild_started_ns,
-        )
         self._subscribe_cross_venue_common_fixture_quote_ticks()
         self._subscribe_semantic_connected_quote_ticks()
         self._subscribe_semantic_unmatched_quote_probe_ticks()
@@ -2783,7 +2711,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         if str(tick.instrument_id) not in self._opportunity_graph.nodes_by_id:
             if not self._config.graph_rebuild_on_new_instrument:
                 return
-            self._graph_add_instrument_timed(instrument)
+            self._opportunity_graph.add_instrument(instrument)
 
         if self._handle_graph_quote_tick_fast(tick, current_odds=current_odds, now_ns=now_ns):
             return
@@ -7310,10 +7238,6 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             "opportunity_graph_cross_venue_edges_dropped": (
                 self._opportunity_graph.cross_venue_edges_dropped_missing_endpoint
             ),
-            "opportunity_graph_edge_sync_full_runs": self._opportunity_graph.edge_sync_full_runs,
-            "opportunity_graph_edge_sync_delta_runs": (
-                self._opportunity_graph.edge_sync_delta_runs
-            ),
             "opportunity_graph_coverage_summary": (
                 self._opportunity_graph.semantic_coverage_summary()
             ),
@@ -7391,9 +7315,6 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             "instrument_refresh_delisted_removed": self._instrument_refresh_delisted_removed,
             "instrument_refresh_reconciles": self._instrument_refresh_reconciles,
             "instrument_refresh_graph_rebuilds": self._instrument_refresh_graph_rebuilds,
-            "instrument_refresh_graph_incremental_updates": (
-                self._instrument_refresh_graph_incremental_updates
-            ),
             "instrument_refresh_stale_triggers": self._instrument_refresh_stale_triggers,
             "quote_unsubscribe_requests": self._quote_unsubscribe_requests,
             "instrument_cache_miss": self._instrument_cache_miss,
@@ -7418,8 +7339,6 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                     self._instrument_refresh_reconcile_latency_ns,
                 ),
                 "graph_scan": self._latency_summary(self._graph_scan_latency_ns),
-                "graph_rebuild": self._latency_summary(self._graph_rebuild_latency_ns),
-                "edge_sync": self._latency_summary(self._edge_sync_latency_ns),
                 "candidate_decision": self._latency_summary(
                     self._candidate_decision_latency_ns,
                 ),

@@ -389,21 +389,3 @@ def test_betting_arbitrage_strategy_public_scan(benchmark, duplicate_heavy: bool
         return len(candidates)
 
     assert benchmark(run) == len(initial_candidates)
-
-
-def test_opportunity_graph_incremental_add_remove_at_scale(benchmark) -> None:
-    # 500 events x 2 venues x 2 outcomes = 2,000 instruments. The add path must stay
-    # bucket-local (edge_snapshots_for_node), so this benchmark should not grow with
-    # total edge count the way a full edge re-sync per add did.
-    graph = _graph("rust")
-    graph.build(_instruments(500))
-    assert graph.node_count == 2_000
-    new_instrument = _instrument(event_idx=500, venue=Venue("SXBET"), outcome="over")
-    new_node_id = str(new_instrument.id)
-
-    def run() -> None:
-        assert graph.add_instrument(new_instrument) is True
-        assert graph.remove_instrument(new_node_id) is True
-
-    benchmark(run)
-    assert graph.node_count == 2_000

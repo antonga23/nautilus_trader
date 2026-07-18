@@ -32,7 +32,6 @@ from decimal import Decimal
 import json
 import logging
 import os
-import time
 from typing import Any
 
 from nautilus_trader.adapters.betting.common.enums import MarketType
@@ -218,9 +217,6 @@ class OpportunityGraph:
         self.quotes_by_node_id: dict[str, QuoteState] = {}
         self._mirrored_nodes_by_id: dict[str, OpportunityNode] = {}
         self._cross_venue_edges_dropped_missing_endpoint = 0
-        self.edge_sync_full_runs = 0
-        self.edge_sync_delta_runs = 0
-        self.last_edge_sync_ns = 0
 
     @property
     def node_count(self) -> int:
@@ -327,9 +323,7 @@ class OpportunityGraph:
             # never on genuine failure. Keep the freshly mirrored node so the
             # Python mirror stays consistent with Rust; popping it here would
             # strand a node Rust is quoting, making quotes for it drop forever.
-            # Rust only touched the new node's buckets, so mirroring only that
-            # node's edges keeps this O(bucket) instead of O(all edges).
-            self._sync_edges_for_node(node.node_id)
+            self._sync_edges_from_rust()
             return added
 
         candidates = [*existing, instrument]
@@ -340,39 +334,6 @@ class OpportunityGraph:
         for existing_instrument in existing:
             self._add_edges_for_instrument(existing_instrument, candidates)
         return True
-
-    def remove_instrument(self, node_id: str) -> bool:
-        """
-        Remove one instrument and its incident edges from the graph.
-
-        Removal is a pure detach: it cannot create or re-rank edges (every surviving
-        edge's endpoints, buckets, and template match are untouched by the removal),
-        so former neighbors need no re-match — their edge sets only shrink by the
-        returned removed edge ids, which are mirrored out of the Python maps here.
-
-        """
-        node = self.nodes_by_id.pop(node_id, None)
-        self._mirrored_nodes_by_id.pop(node_id, None)
-        self.quotes_by_node_id.pop(node_id, None)
-
-        removed_edge_ids: list[str] = []
-        rust_core = self._active_rust_core()
-        rust_remove = getattr(rust_core, "remove_instrument", None) if rust_core else None
-        if callable(rust_remove):
-            removed_edge_ids = list(rust_remove(node_id))
-        if not removed_edge_ids:
-            removed_edge_ids = list(self.edge_ids_by_node_id.get(node_id, ()))
-
-        for edge_id in removed_edge_ids:
-            edge = self.edges_by_id.pop(edge_id, None)
-            if edge is None:
-                continue
-            for endpoint_id in (edge.source_node_id, edge.target_node_id):
-                endpoint_edge_ids = self.edge_ids_by_node_id.get(endpoint_id)
-                if endpoint_edge_ids is not None:
-                    endpoint_edge_ids.discard(edge_id)
-        self.edge_ids_by_node_id.pop(node_id, None)
-        return node is not None or bool(removed_edge_ids)
 
     def update_quote(
         self,
@@ -597,9 +558,6 @@ class OpportunityGraph:
             "cross_venue_edges_dropped_missing_endpoint": (
                 self._cross_venue_edges_dropped_missing_endpoint
             ),
-            "edge_sync_full_runs": self.edge_sync_full_runs,
-            "edge_sync_delta_runs": self.edge_sync_delta_runs,
-            "last_edge_sync_ns": self.last_edge_sync_ns,
         }
 
     @property
@@ -659,173 +617,123 @@ class OpportunityGraph:
     def _sync_edges_from_rust(self) -> None:
         if self._rust_core is None:
             return
-        started_ns = time.perf_counter_ns()
         self.edges_by_id.clear()
         self.edge_ids_by_node_id = {node_id: set() for node_id in self.nodes_by_id}
         dropped_cross_venue = 0
         for snapshot in self._rust_core.edge_snapshots():
-            dropped_cross_venue += self._mirror_rust_edge_snapshot(snapshot)
-        self._record_dropped_cross_venue_edges(dropped_cross_venue)
-        self.edge_sync_full_runs += 1
-        self.last_edge_sync_ns = time.perf_counter_ns() - started_ns
-
-    def _sync_edges_for_node(self, node_id: str) -> None:
-        if self._rust_core is None:
-            return
-        snapshot_source = getattr(self._rust_core, "edge_snapshots_for_node", None)
-        if not callable(snapshot_source):
-            # Older Rust core without the filtered export: keep correctness via full sync.
-            self._sync_edges_from_rust()
-            return
-        started_ns = time.perf_counter_ns()
-        self._detach_edges_for_node(node_id)
-        self.edge_ids_by_node_id.setdefault(node_id, set())
-        dropped_cross_venue = 0
-        for snapshot in snapshot_source(node_id):
-            dropped_cross_venue += self._mirror_rust_edge_snapshot(snapshot)
-        if dropped_cross_venue:
-            self._cross_venue_edges_dropped_missing_endpoint += dropped_cross_venue
-            logger.warning(
-                "Dropped %d cross-venue Rust edges for node %s whose endpoint nodes are "
-                "missing from the Python mirror",
-                dropped_cross_venue,
-                node_id,
+            (
+                edge_id,
+                source_node_id,
+                target_node_id,
+                hedge_type,
+                confidence,
+                same_venue,
+                raw_market_relationship_type,
+                rust_push_capable,
+                rust_execution_safe,
+                last_margin,
+                last_evaluated_ns,
+                last_updated_ns,
+            ) = snapshot[:12]
+            metadata = self._rust_edge_metadata(raw_market_relationship_type)
+            if not metadata and len(snapshot) > 12:
+                metadata = self._rust_edge_metadata(snapshot[12])
+            market_relationship_type = (
+                self._metadata_str(metadata, "market_relationship_type")
+                or raw_market_relationship_type
             )
-        self.edge_sync_delta_runs += 1
-        self.last_edge_sync_ns = time.perf_counter_ns() - started_ns
-
-    def _detach_edges_for_node(self, node_id: str) -> None:
-        for edge_id in list(self.edge_ids_by_node_id.get(node_id, ())):
-            edge = self.edges_by_id.pop(edge_id, None)
-            self.edge_ids_by_node_id[node_id].discard(edge_id)
-            if edge is None:
+            template_id = self._metadata_str(metadata, "template_id")
+            relationship_type = self._metadata_str(metadata, "relationship_type")
+            promotion_status = self._metadata_str(metadata, "promotion_status")
+            safety_tier = self._metadata_str(metadata, "safety_tier")
+            same_venue_execution_eligible = bool(
+                metadata.get("same_venue_execution_eligible"),
+            )
+            partial_settlement = bool(metadata.get("partial_settlement"))
+            caveats = self._metadata_str_tuple(metadata, "caveats")
+            # A cross-venue topology-only edge (Rust decoupled venue scope for
+            # observability) must NEVER be re-flagged executable by the public-hedge
+            # mirror path — it exists purely to feed crossVenueCandidateCount/RAG.
+            rust_topology_only = not rust_execution_safe and (
+                safety_tier == "TOPOLOGY_SAFE" or "cross_venue_topology_only" in caveats
+            )
+            source_node, target_node = self._resolve_edge_endpoint_nodes(
+                source_node_id,
+                target_node_id,
+            )
+            if source_node is None or target_node is None:
+                dropped_cross_venue += not same_venue
                 continue
-            other_node_id = (
-                edge.target_node_id if edge.source_node_id == node_id else edge.source_node_id
+
+            hedge = self._best_public_hedge_candidate(
+                source_node.instrument,
+                target_node.instrument,
             )
-            other_edge_ids = self.edge_ids_by_node_id.get(other_node_id)
-            if other_edge_ids is not None:
-                other_edge_ids.discard(edge_id)
+            if hedge is None and not template_id and market_relationship_type != "same_market":
+                continue
+            hedge_match_type: str | None = None
+            hedge_confidence: float | None = None
+            hedge_push_capable = rust_push_capable
+            hedge_execution_safe = rust_execution_safe
+            hedge_rule_id: str | None = None
+            hedge_template_id = template_id
+            hedge_relationship_type: str | None = None
+            hedge_caveats: tuple[str, ...] = ()
+            hedge_promotion_status = promotion_status
+            hedge_safety_tier = safety_tier
+            hedge_same_venue_execution_eligible = same_venue_execution_eligible
+            hedge_partial_settlement = partial_settlement
+            if hedge is not None:
+                hedge_match_type = hedge.match_type
+                hedge_confidence = hedge.confidence
+                hedge_push_capable = hedge.push_capable
+                hedge_relationship_type = hedge.relationship_type
+                hedge_caveats = hedge.caveats
+                hedge_partial_settlement = hedge.partial_settlement
+                if template_id or hedge.relationship_type is not None:
+                    hedge_execution_safe = hedge.execution_safe
+                if template_id:
+                    hedge_rule_id = hedge.rule_id
+                    hedge_template_id = hedge.template_id
+                    hedge_promotion_status = hedge.promotion_status
+                    hedge_safety_tier = hedge.safety_tier
+                    hedge_same_venue_execution_eligible = hedge.same_venue_execution_eligible
 
-    def _mirror_rust_edge_snapshot(self, snapshot: tuple) -> int:
-        """
-        Mirror one Rust edge snapshot into the Python maps.
+            if rust_topology_only:
+                hedge_execution_safe = False
+                hedge_same_venue_execution_eligible = False
+                hedge_safety_tier = safety_tier or "TOPOLOGY_SAFE"
+                hedge_caveats = tuple(
+                    dict.fromkeys((*hedge_caveats, *caveats, "cross_venue_topology_only")),
+                )
 
-        Returns the number of cross-venue edges dropped for missing endpoints (0 or 1)
-        so callers can aggregate the diagnostic counter.
-
-        """
-        (
-            edge_id,
-            source_node_id,
-            target_node_id,
-            hedge_type,
-            confidence,
-            same_venue,
-            raw_market_relationship_type,
-            rust_push_capable,
-            rust_execution_safe,
-            last_margin,
-            last_evaluated_ns,
-            last_updated_ns,
-        ) = snapshot[:12]
-        metadata = self._rust_edge_metadata(raw_market_relationship_type)
-        if not metadata and len(snapshot) > 12:
-            metadata = self._rust_edge_metadata(snapshot[12])
-        market_relationship_type = (
-            self._metadata_str(metadata, "market_relationship_type") or raw_market_relationship_type
-        )
-        template_id = self._metadata_str(metadata, "template_id")
-        relationship_type = self._metadata_str(metadata, "relationship_type")
-        promotion_status = self._metadata_str(metadata, "promotion_status")
-        safety_tier = self._metadata_str(metadata, "safety_tier")
-        same_venue_execution_eligible = bool(
-            metadata.get("same_venue_execution_eligible"),
-        )
-        partial_settlement = bool(metadata.get("partial_settlement"))
-        caveats = self._metadata_str_tuple(metadata, "caveats")
-        # A cross-venue topology-only edge (Rust decoupled venue scope for
-        # observability) must NEVER be re-flagged executable by the public-hedge
-        # mirror path — it exists purely to feed crossVenueCandidateCount/RAG.
-        rust_topology_only = not rust_execution_safe and (
-            safety_tier == "TOPOLOGY_SAFE" or "cross_venue_topology_only" in caveats
-        )
-        source_node, target_node = self._resolve_edge_endpoint_nodes(
-            source_node_id,
-            target_node_id,
-        )
-        if source_node is None or target_node is None:
-            return int(not same_venue)
-
-        hedge = self._best_public_hedge_candidate(
-            source_node.instrument,
-            target_node.instrument,
-        )
-        if hedge is None and not template_id and market_relationship_type != "same_market":
-            return 0
-        hedge_match_type: str | None = None
-        hedge_confidence: float | None = None
-        hedge_push_capable = rust_push_capable
-        hedge_execution_safe = rust_execution_safe
-        hedge_rule_id: str | None = None
-        hedge_template_id = template_id
-        hedge_relationship_type: str | None = None
-        hedge_caveats: tuple[str, ...] = ()
-        hedge_promotion_status = promotion_status
-        hedge_safety_tier = safety_tier
-        hedge_same_venue_execution_eligible = same_venue_execution_eligible
-        hedge_partial_settlement = partial_settlement
-        if hedge is not None:
-            hedge_match_type = hedge.match_type
-            hedge_confidence = hedge.confidence
-            hedge_push_capable = hedge.push_capable
-            hedge_relationship_type = hedge.relationship_type
-            hedge_caveats = hedge.caveats
-            hedge_partial_settlement = hedge.partial_settlement
-            if template_id or hedge.relationship_type is not None:
-                hedge_execution_safe = hedge.execution_safe
-            if template_id:
-                hedge_rule_id = hedge.rule_id
-                hedge_template_id = hedge.template_id
-                hedge_promotion_status = hedge.promotion_status
-                hedge_safety_tier = hedge.safety_tier
-                hedge_same_venue_execution_eligible = hedge.same_venue_execution_eligible
-
-        if rust_topology_only:
-            hedge_execution_safe = False
-            hedge_same_venue_execution_eligible = False
-            hedge_safety_tier = safety_tier or "TOPOLOGY_SAFE"
-            hedge_caveats = tuple(
-                dict.fromkeys((*hedge_caveats, *caveats, "cross_venue_topology_only")),
+            edge = OpportunityEdge(
+                edge_id=edge_id,
+                source_node_id=source_node_id,
+                target_node_id=target_node_id,
+                hedge_type=hedge_match_type or hedge_type,
+                confidence=hedge_confidence or confidence,
+                same_venue=same_venue,
+                market_relationship_type=market_relationship_type,
+                push_capable=hedge_push_capable,
+                execution_safe=hedge_execution_safe,
+                rule_id=hedge_rule_id,
+                template_id=hedge_template_id,
+                relationship_type=hedge_relationship_type or relationship_type,
+                caveats=hedge_caveats or caveats,
+                promotion_status=hedge_promotion_status,
+                safety_tier=hedge_safety_tier,
+                same_venue_execution_eligible=hedge_same_venue_execution_eligible,
+                void_capable=hedge_push_capable,
+                partial_settlement=hedge_partial_settlement,
+                last_margin=Decimal(str(last_margin)) if last_margin is not None else None,
+                last_evaluated_ns=last_evaluated_ns,
+                last_updated_ns=last_updated_ns,
             )
-
-        edge = OpportunityEdge(
-            edge_id=edge_id,
-            source_node_id=source_node_id,
-            target_node_id=target_node_id,
-            hedge_type=hedge_match_type or hedge_type,
-            confidence=hedge_confidence or confidence,
-            same_venue=same_venue,
-            market_relationship_type=market_relationship_type,
-            push_capable=hedge_push_capable,
-            execution_safe=hedge_execution_safe,
-            rule_id=hedge_rule_id,
-            template_id=hedge_template_id,
-            relationship_type=hedge_relationship_type or relationship_type,
-            caveats=hedge_caveats or caveats,
-            promotion_status=hedge_promotion_status,
-            safety_tier=hedge_safety_tier,
-            same_venue_execution_eligible=hedge_same_venue_execution_eligible,
-            void_capable=hedge_push_capable,
-            partial_settlement=hedge_partial_settlement,
-            last_margin=Decimal(str(last_margin)) if last_margin is not None else None,
-            last_evaluated_ns=last_evaluated_ns,
-            last_updated_ns=last_updated_ns,
-        )
-        self.edges_by_id[edge_id] = edge
-        self.edge_ids_by_node_id.setdefault(source_node_id, set()).add(edge_id)
-        self.edge_ids_by_node_id.setdefault(target_node_id, set()).add(edge_id)
-        return 0
+            self.edges_by_id[edge_id] = edge
+            self.edge_ids_by_node_id.setdefault(source_node_id, set()).add(edge_id)
+            self.edge_ids_by_node_id.setdefault(target_node_id, set()).add(edge_id)
+        self._record_dropped_cross_venue_edges(dropped_cross_venue)
 
     def _record_dropped_cross_venue_edges(self, dropped: int) -> None:
         self._cross_venue_edges_dropped_missing_endpoint = dropped
@@ -1679,39 +1587,6 @@ class OpportunityGraph:
             ]
             return json.dumps(semantic_params, sort_keys=True, separators=(",", ":"))
         return str(params or "")
-
-    def supports_incremental_refresh(self) -> bool:
-        """
-        Return True when add/remove deltas can be applied without a full rebuild.
-
-        Requires the Rust core removal + filtered edge-export bindings when Rust
-        topology is active; the pure-Python engine always maintains its own maps
-        incrementally.
-
-        """
-        rust_core = self._active_rust_core()
-        if rust_core is None:
-            return True
-        return all(
-            callable(getattr(rust_core, method, None))
-            for method in ("remove_instrument", "edge_snapshots_for_node")
-        )
-
-    def semantic_templates_stale(self) -> bool:
-        """
-        Return True when promoted template content may differ from what the graph core
-        last loaded (rule store swapped or its generation bumped), in which case only a
-        full build re-adopts the new templates.
-        """
-        rule_store = self._semantic_rule_store()
-        if rule_store is None:
-            return False
-        if self._semantic_template_payloads_cache_store is not rule_store:
-            return True
-        generation = getattr(rule_store, "generation", None)
-        if generation is None:
-            return True
-        return self._semantic_template_payloads_cache_generation != generation
 
     def _should_use_semantic_rust(self, semantic_templates: list[dict[str, object]]) -> bool:
         if not self._rust_core_supports_semantic_topology():
