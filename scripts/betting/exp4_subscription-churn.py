@@ -319,7 +319,7 @@ def run_scenario(
             active_instrument_ids=exclusion_ids,
         )
         total_add_ops += len(added_instruments)
-        total_remove_ops += removed
+        total_remove_ops += len(removed)
         for inst in added_instruments:
             canonical_ids_added.add((str(inst.event_id), inst.market_name, inst.outcome))
 
