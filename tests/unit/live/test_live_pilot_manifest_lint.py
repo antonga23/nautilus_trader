@@ -194,6 +194,22 @@ def test_per_sport_shard_is_scoped_all_venue_and_unarmed(sport: str) -> None:
         assert venue.quote_subscription_limit is not None
         assert venue.top_markets_by_depth is not None
 
+    # CLOUDBET quoted-edge budget raised 300 -> 400 so the arb-relevant legs stay in-cap
+    # (the selection already spends the cap on cross-venue edge legs first) and refresh
+    # under the 1.0s poll, well inside the 3s CLOUDBET live quote-age gate.
+    assert venues_by_name["CLOUDBET"].quote_subscription_limit == 400
+    assert venues_by_name["CLOUDBET"].order_book_poll_interval_secs == 1.0
+
+    # SXBET quotes stream (Centrifugo) so subscribed legs clear the 5s live age gate that
+    # the 10s REST poll fallback cannot.
+    assert venues_by_name["SXBET"].order_book_transport == "stream"
+
+    # Void-compatible middles STAGE for manual approval, with the middle floor strictly
+    # above the ordinary arb floor. Staging only: the armed flags asserted false above are
+    # untouched by the flag.
+    assert manifest.strategy.execute_void_compatible_middles is True
+    assert manifest.strategy.min_middle_profit_margin > manifest.strategy.min_profit_margin
+
     # Per-venue sport scoping uses the venue-native key/id space.
     assert venues_by_name["CLOUDBET"].sport_keys == frozenset({sport})
     assert venues_by_name["POLYMARKET"].sport_keys == frozenset({sport})
@@ -202,3 +218,35 @@ def test_per_sport_shard_is_scoped_all_venue_and_unarmed(sport: str) -> None:
     # Total live-instrument budget stays near baseball scale (<= ~2000).
     total_cap = sum(int(venue.instrument_load_limit or 0) for venue in manifest.venues)
     assert total_cap <= 2000
+
+
+def test_baseball_shard_raises_cloudbet_budget_streams_sxbet_and_stages_middles() -> None:
+    from nautilus_trader.live.strategy_nodes.betting_arbitrage.builder import (
+        build_trading_node_config,
+    )
+    from nautilus_trader.live.strategy_nodes.betting_arbitrage.builder import load_manifest
+
+    path = Path("deploy/strategy_nodes/betting_arbitrage/cloudbet-sxbet-baseball.json")
+    manifest = load_manifest(path)
+    config = build_trading_node_config(manifest)
+
+    venues_by_name = {venue.venue: venue for venue in manifest.venues}
+    assert set(venues_by_name) == {"CLOUDBET", "SXBET"}
+
+    # CLOUDBET quoted-edge budget raised 120 -> 250; the arb-relevant legs stay in-cap and
+    # refresh under the 1.0s poll (inside the 3s CLOUDBET live quote-age gate).
+    assert venues_by_name["CLOUDBET"].quote_subscription_limit == 250
+    assert venues_by_name["CLOUDBET"].order_book_poll_interval_secs == 1.0
+
+    # SXBET streams so subscribed legs clear the 5s live age gate.
+    assert venues_by_name["SXBET"].order_book_transport == "stream"
+
+    # Middles STAGE (unarmed): flag on, middle floor above arb floor, every armed flag false
+    # and no execution client built.
+    assert manifest.strategy.execute_void_compatible_middles is True
+    assert manifest.strategy.min_middle_profit_margin > manifest.strategy.min_profit_margin
+    assert manifest.strategy.live_execution_armed is False
+    assert manifest.strategy.auto_execute is False
+    assert manifest.strategy.value_execution_enabled is False
+    assert len(config.exec_clients) == 0
+    assert all(not venue.execution_enabled for venue in manifest.venues)
