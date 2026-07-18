@@ -1344,3 +1344,66 @@ def test_same_venue_void_middle_unchanged_under_flag():
     )
 
     assert tier == SafetyTier.EXECUTION_SAFE_SAME_VENUE_ELIGIBLE
+
+
+def _cloudbet_soccer_ah(outcome: str, handicap: str, *, price: float) -> CryptoBettingInstrument:
+    # CloudBet stamps the home (team-one) relative handicap on BOTH outcomes of a
+    # ``soccer.asian_handicap`` line: the -0.5 line carries ``handicap=-0.5`` on its home
+    # leg (home -0.5) and the SAME ``handicap=-0.5`` on its away leg (really away +0.5).
+    return betting_instrument(
+        sport="soccer",
+        market_name="asian_handicap",
+        market_type="asian_handicap",
+        outcome=outcome,
+        params=f"handicap={handicap}",
+        handicap=float(handicap),
+        venue="CLOUDBET",
+        price=price,
+    )
+
+
+def test_cloudbet_soccer_asian_handicap_away_line_is_negated_to_selection_relative():
+    # The away leg arrives with the home-relative "handicap=-0.5"; only the away leg flips
+    # so it carries its own selection-relative line (+0.5 == away +0.5).
+    home = MarketNormalizer.normalize(_cloudbet_soccer_ah("home", "-0.5", price=1.872))
+    away = MarketNormalizer.normalize(_cloudbet_soccer_ah("away", "-0.5", price=1.906))
+
+    assert home.market_type == CanonicalMarketType.ASIAN_HANDICAP.value
+    assert home.param("line") == "-0.5"
+    assert away.selection == "AWAY"
+    # Pre-fix this stayed "-0.5" (home-relative), which wrongly proved the away leg as
+    # away-must-win and minted the underround phantom locked arb observed live.
+    assert away.param("line") == "0.5"
+
+
+def test_cloudbet_soccer_asian_handicap_true_complement_overrounds_not_arb():
+    # The real two-outcome hedge inside ONE CloudBet -0.5 line: home -0.5 vs away +0.5.
+    # Both legs arrive raw as "handicap=-0.5"; negating only the away leg restores the
+    # genuine complementary pair, whose implied probabilities overround (sum > 1).
+    home = MarketNormalizer.normalize(_cloudbet_soccer_ah("home", "-0.5", price=1.872))
+    away = MarketNormalizer.normalize(_cloudbet_soccer_ah("away", "-0.5", price=1.906))
+
+    rule = RuleClassifier().classify(home, away)
+    assert rule is not None
+    assert rule.relationship_type == RelationshipType.COMPLEMENTARY_COVERAGE.value
+
+    from nautilus_trader.adapters.betting.common.odds import is_arbitrage_opportunity
+
+    is_arb, _margin = is_arbitrage_opportunity(Decimal("1.872"), Decimal("1.906"))
+    assert is_arb is False
+
+
+def test_cloudbet_soccer_asian_handicap_cross_line_phantom_pair_is_rejected():
+    # The exact live smoking gun: home -0.5 @ 2.72 paired with the away leg of the +0.5
+    # line (CloudBet "handicap=0.5", really away -0.5) @ 2.58. These sit on different
+    # lines and both lose on a draw, so after the fix no hedge relationship is proven and
+    # the underround phantom (implied 0.368 + 0.388 = 0.755 < 1) never forms.
+    home_minus_half = MarketNormalizer.normalize(
+        _cloudbet_soccer_ah("home", "-0.5", price=2.72),
+    )
+    away_plus_half = MarketNormalizer.normalize(
+        _cloudbet_soccer_ah("away", "0.5", price=2.58),
+    )
+
+    assert away_plus_half.param("line") == "-0.5"
+    assert RuleClassifier().classify(home_minus_half, away_plus_half) is None

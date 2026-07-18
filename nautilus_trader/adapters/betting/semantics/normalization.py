@@ -68,12 +68,17 @@ WINNER_TEXT_TOKENS = ("moneyline", "winner")
 SPREAD_TEXT_TOKENS = ("handicap", "spread", "run_line")
 # Venues whose away-side handicap/spread ``line`` is quoted relative to the home
 # (team-one) side rather than the away selection, so the away leg must be negated
-# to become selection-relative. CloudBet only needs this for POINT_SPREAD (its
-# Asian handicaps are already per-side); SX.bet quotes a single team-one-relative
-# ``line`` on both outcomes of every handicap market (numeric type 3/342 ->
-# ASIAN_HANDICAP), so both handicap families need negating on the away leg.
+# to become selection-relative. CloudBet stamps the home-relative line on BOTH
+# outcomes of a handicap market: a ``soccer.asian_handicap`` line ``handicap=-0.5``
+# carries ``handicap=-0.5`` on its home leg (home -0.5) and the SAME ``handicap=-0.5``
+# on its away leg (really away +0.5), so both ASIAN_HANDICAP and POINT_SPREAD (run
+# line) away legs need negating. SX.bet quotes a single team-one-relative ``line`` on
+# both outcomes of every handicap market (numeric type 3/342 -> ASIAN_HANDICAP), so it
+# needs the same treatment.
 AWAY_SELECTION_RELATIVE_MARKET_TYPES: dict[str, frozenset[CanonicalMarketType]] = {
-    "CLOUDBET": frozenset({CanonicalMarketType.POINT_SPREAD}),
+    "CLOUDBET": frozenset(
+        {CanonicalMarketType.ASIAN_HANDICAP, CanonicalMarketType.POINT_SPREAD},
+    ),
     "SXBET": frozenset(
         {CanonicalMarketType.ASIAN_HANDICAP, CanonicalMarketType.POINT_SPREAD},
     ),
