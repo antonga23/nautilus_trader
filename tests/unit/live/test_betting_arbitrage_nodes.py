@@ -6519,8 +6519,10 @@ class TestBettingArbitrageNodeRunner:
         assert counters.threshold_execution == 1
 
     def test_runtime_probe_coverage_book_devig_uses_quoted_hyperedges(self):
+        # Cross-venue: two independent books whose implied probabilities sum below 1 is
+        # a genuine arbitrage, so the underround guard must leave this bucket locked.
         instrument_a = _instrument(venue="CLOUDBET", market_type="match_odds", outcome="home")
-        instrument_b = _instrument(venue="CLOUDBET", market_type="match_odds", outcome="away")
+        instrument_b = _instrument(venue="SXBET", market_type="match_odds", outcome="away")
         nodes = {
             str(instrument_a.id): SimpleNamespace(instrument=instrument_a),
             str(instrument_b.id): SimpleNamespace(instrument=instrument_b),
@@ -6541,7 +6543,7 @@ class TestBettingArbitrageNodeRunner:
                     "hyperedge_id": "hyperedge-1",
                     "coverage_proof_id": "proof-1",
                     "instrument_ids": [str(instrument_a.id), str(instrument_b.id)],
-                    "provider_scope": ["CLOUDBET"],
+                    "provider_scope": ["CLOUDBET", "SXBET"],
                     "safety_tier": "EXECUTION_SAFE",
                     "execution_safe": True,
                 },
@@ -6561,6 +6563,51 @@ class TestBettingArbitrageNodeRunner:
         assert payload["methodCounts"] == {"proportional": 1}
         assert payload["valueBuckets"] == {"coverage_locked_execution_safe_arbitrage": 1}
         assert payload["samples"][0]["hyperedgeId"] == "hyperedge-1"
+
+    def test_runtime_probe_coverage_book_devig_same_venue_underround_is_suspect(self):
+        # The live smoking-gun odds (2.72 & 2.58, implied sum 0.755) on ONE venue: a
+        # single book cannot underround its own coverage basket, so the hyperedge must
+        # land in the suspect bucket instead of minting a locked executable arb.
+        instrument_a = _instrument(venue="CLOUDBET", market_type="asian_handicap", outcome="home")
+        instrument_b = _instrument(venue="CLOUDBET", market_type="asian_handicap", outcome="away")
+        nodes = {
+            str(instrument_a.id): SimpleNamespace(instrument=instrument_a),
+            str(instrument_b.id): SimpleNamespace(instrument=instrument_b),
+        }
+        quotes = {
+            str(instrument_a.id): SimpleNamespace(odds=Decimal("2.72")),
+            str(instrument_b.id): SimpleNamespace(odds=Decimal("2.58")),
+        }
+        strategy = SimpleNamespace(
+            fee_adjusted_coverage_basket=lambda instruments, odds: fee_adjusted_coverage_basket(
+                odds,
+                devig_method="proportional",
+            ),
+        )
+        coverage_diagnostics = {
+            "sampleHyperedges": [
+                {
+                    "hyperedge_id": "hyperedge-underround",
+                    "coverage_proof_id": "proof-underround",
+                    "instrument_ids": [str(instrument_a.id), str(instrument_b.id)],
+                    "provider_scope": ["CLOUDBET"],
+                    "safety_tier": "EXECUTION_SAFE",
+                    "execution_safe": True,
+                },
+            ],
+        }
+
+        payload = node_runner._probe_coverage_book_devig_diagnostics(
+            strategy,
+            coverage_diagnostics=coverage_diagnostics,
+            nodes=nodes,
+            quotes=quotes,
+            min_profit_margin=Decimal("0.02"),
+        )
+
+        assert payload["quotedHyperedges"] == 1
+        assert payload["valueBuckets"] == {"coverage_suspect_same_venue_underround": 1}
+        assert payload["samples"][0]["classification"] == "coverage_suspect_same_venue_underround"
 
     def test_runtime_probe_coverage_book_devig_bridges_semantic_predicates_to_runtime_nodes(self):
         instrument_a = _instrument(
@@ -7122,6 +7169,150 @@ class TestBettingArbitrageNodeRunner:
         )
 
         assert result.returncode == 0, result.stderr
+
+    def test_runtime_probe_same_venue_underround_is_suspect_not_locked_arb(self):
+        # Live smoking gun (betting-arbitrage-node-soccer): a same-venue CLOUDBET
+        # COMPLEMENTARY_COVERAGE pair whose two odds (2.72 & 2.58) imply 0.368 + 0.388
+        # = 0.755 < 1. A single book cannot underround its own complement, so this must
+        # surface as suspect rather than a locked, executable arbitrage.
+        instrument_a = _instrument(
+            venue="CLOUDBET",
+            market_type="asian_handicap",
+            outcome="home",
+            params="line=-0.5",
+            handicap=-0.5,
+        )
+        instrument_b = _instrument(
+            venue="CLOUDBET",
+            market_type="asian_handicap",
+            outcome="away",
+            params="line=0.5",
+            handicap=0.5,
+        )
+        config = BettingArbitrageConfig(
+            min_profit_margin=Decimal("0.02"),
+            devig_enabled=True,
+            devig_method="proportional",
+            value_diagnostics_enabled=True,
+            value_execution_enabled=False,
+        )
+        strategy = SimpleNamespace(
+            _config=config,
+            devigged_book=lambda odds: devig_probabilities(odds, method=config.devig_method),
+            fee_adjusted_opportunity=lambda opportunity: opportunity,
+            matcher_suspect_reason=BettingArbitrageStrategy.matcher_suspect_reason,
+            semantic_fixture_suspect_reason=(
+                BettingArbitrageStrategy.semantic_fixture_suspect_reason
+            ),
+            quote_age_secs=lambda _observed_ns, _quote: 0.1,
+            _quote_pair_skew_secs=lambda _quote_a, _quote_b: 0.0,
+            quote_fetch_latency_secs=lambda _quote: 0.1,
+            quote_available_size=lambda _quote: Decimal(100),
+            quote_freshness_thresholds=lambda _instrument_a, _instrument_b: SimpleNamespace(
+                profile="pre_match",
+                max_quote_age_secs=30.0,
+                max_pair_skew_secs=5.0,
+                max_fetch_latency_secs=10.0,
+            ),
+        )
+        edge = SimpleNamespace(
+            rule_id="rule-1",
+            template_id="template-1",
+            relationship_type="COMPLEMENTARY_COVERAGE",
+            safety_tier="EXECUTION_SAFE",
+            execution_safe=True,
+            same_venue_execution_eligible=False,
+            caveats=(),
+        )
+        quote_a = SimpleNamespace(
+            odds=Decimal("2.72"),
+            received_ns=10_000_000_000,
+            quote=SimpleNamespace(ts_event=9_900_000_000, size=Decimal(100)),
+        )
+        quote_b = SimpleNamespace(
+            odds=Decimal("2.58"),
+            received_ns=10_000_000_000,
+            quote=SimpleNamespace(ts_event=9_900_000_000, size=Decimal(100)),
+        )
+
+        quality = node_runner._probe_candidate_quality(
+            strategy,
+            edge=edge,
+            source_node=SimpleNamespace(
+                instrument=instrument_a,
+                market_name="asian_handicap",
+                outcome="home",
+            ),
+            target_node=SimpleNamespace(
+                instrument=instrument_b,
+                market_name="asian_handicap",
+                outcome="away",
+            ),
+            quote_a=quote_a,
+            quote_b=quote_b,
+            min_profit_margin=Decimal("0.02"),
+            allow_same_venue=True,
+        )
+
+        devig = quality["devig"]
+        assert devig["bookStatus"] == "same_venue_complete_pair"
+        assert Decimal(devig["bookOverround"]) < 1
+        assert quality["candidateValueClassification"] == "suspect_same_venue_underround"
+
+        counters = node_runner.ProbeProfitabilityCounters()
+        node_runner._record_probe_quality(counters, quality)
+        payload = counters.to_payload()
+        # The suspect bucket is recorded for observability but never enters the positive
+        # value-edge stream that the nodeops UI surfaces as executable.
+        assert payload["devig_diagnostics"]["value_buckets"] == {
+            "suspect_same_venue_underround": 1,
+        }
+
+    def test_probe_value_classification_cross_venue_underround_stays_locked_arb(self):
+        # Two INDEPENDENT books (CLOUDBET + SXBET) whose implied probabilities sum below
+        # 1 is a genuine cross-venue arbitrage; the same-venue guard must not touch it.
+        config = SimpleNamespace(
+            min_value_edge=Decimal("0.015"),
+            min_profit_margin=Decimal(0),
+        )
+        classification = node_runner._probe_value_classification(
+            config=config,
+            venue_a="CLOUDBET",
+            venue_b="SXBET",
+            book_overround=Decimal("0.97"),
+            execution_safe=True,
+            same_venue_execution_eligible=False,
+            semantic_blocker_reason="",
+            is_arbitrage_relationship=True,
+            raw_profit_margin=Decimal("0.03"),
+            fee_adjusted_profit_margin=Decimal("0.03"),
+            max_gross_value_edge=Decimal("0.03"),
+            max_fee_adjusted_value_edge=Decimal("0.03"),
+        )
+        assert classification == "locked_execution_safe_arbitrage"
+
+    def test_probe_value_classification_same_venue_overround_is_unchanged(self):
+        # A real single-book complement always overrounds (implied sum > 1); the guard
+        # leaves such pairs on their normal negative-margin path.
+        config = SimpleNamespace(
+            min_value_edge=Decimal("0.015"),
+            min_profit_margin=Decimal(0),
+        )
+        classification = node_runner._probe_value_classification(
+            config=config,
+            venue_a="CLOUDBET",
+            venue_b="CLOUDBET",
+            book_overround=Decimal("1.05"),
+            execution_safe=True,
+            same_venue_execution_eligible=False,
+            semantic_blocker_reason="",
+            is_arbitrage_relationship=True,
+            raw_profit_margin=Decimal("-0.05"),
+            fee_adjusted_profit_margin=Decimal("-0.05"),
+            max_gross_value_edge=Decimal("-0.05"),
+            max_fee_adjusted_value_edge=Decimal("-0.05"),
+        )
+        assert classification == "vig_only_edge"
 
 
 def _cold_start_probe_payload(**overrides) -> dict[str, object]:

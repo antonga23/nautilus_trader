@@ -51,6 +51,16 @@ logger = logging.getLogger(__name__)
 
 ZERO_PAIR_SAMPLE_NODE_LIMIT = 160
 
+# A single book's own complementary two-way market always overrounds (its implied
+# probabilities sum to 1 + vig > 1); it is arithmetically impossible for one book to
+# underround its own complement. So a SAME-VENUE pair whose devig book overround falls
+# meaningfully below 1 is a data error (e.g. a wrongly signed handicap leg), not a locked
+# arbitrage — flag it as suspect instead of minting an executable edge. A genuine
+# CROSS-venue underround is two independent books disagreeing and stays a real arb, so
+# the guard is same-venue only. The tolerance absorbs benign rounding/quote-timing
+# noise around a fair (overround == 1) book.
+SAME_VENUE_UNDERROUND_TOLERANCE = Decimal("0.01")
+
 
 @dataclass(frozen=True)
 class RunnerContext:
@@ -3561,7 +3571,15 @@ def _probe_coverage_book_devig_diagnostics(  # noqa: C901
         raw_margin_samples.append(float(adjusted.basket.raw_profit_margin))
         adjusted_margin_samples.append(float(adjusted.basket.effective_profit_margin))
         execution_safe = bool(hyperedge.get("execution_safe"))
-        if adjusted.basket.effective_profit_margin >= min_profit_margin:
+        hyperedge_venues = {str(instrument.id.venue).upper() for instrument in instruments}
+        if (
+            len(hyperedge_venues) == 1
+            and adjusted.overround < Decimal(1) - SAME_VENUE_UNDERROUND_TOLERANCE
+        ):
+            # Same guard as _probe_value_classification: one book cannot underround its
+            # own coverage basket, so this hyperedge is a data error, never a locked arb.
+            classification = "coverage_suspect_same_venue_underround"
+        elif adjusted.basket.effective_profit_margin >= min_profit_margin:
             classification = (
                 "coverage_locked_execution_safe_arbitrage"
                 if execution_safe
@@ -4135,6 +4153,7 @@ def _probe_devig_diagnostics(
         config=config,
         venue_a=venue_a,
         venue_b=venue_b,
+        book_overround=devigged_book.overround,
         execution_safe=bool(getattr(edge, "execution_safe", False)),
         same_venue_execution_eligible=bool(
             getattr(edge, "same_venue_execution_eligible", False),
@@ -4216,6 +4235,7 @@ def _probe_value_classification(
     config,
     venue_a: str,
     venue_b: str,
+    book_overround: Decimal | None,
     execution_safe: bool,
     same_venue_execution_eligible: bool,
     semantic_blocker_reason: str,
@@ -4227,6 +4247,17 @@ def _probe_value_classification(
 ) -> str:
     min_value_edge = Decimal(str(getattr(config, "min_value_edge", Decimal("0.015"))))
     min_profit_margin = Decimal(str(getattr(config, "min_profit_margin", 0)))
+    if (
+        is_arbitrage_relationship
+        and venue_a == venue_b
+        and book_overround is not None
+        and book_overround < Decimal(1) - SAME_VENUE_UNDERROUND_TOLERANCE
+    ):
+        # A single book cannot underround its own complementary market; this pair is a
+        # data error (e.g. a wrongly signed handicap leg), never a locked arbitrage. Only
+        # arb relationships form a complete book -- an EQUIVALENT_SELECTION pair quotes
+        # ONE outcome twice, so its implied sum is legitimately below 1.
+        return "suspect_same_venue_underround"
     if is_arbitrage_relationship and fee_adjusted_profit_margin >= min_profit_margin:
         if execution_safe:
             return "locked_execution_safe_arbitrage"
