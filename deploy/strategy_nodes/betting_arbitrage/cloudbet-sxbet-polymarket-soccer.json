@@ -40,7 +40,9 @@
     "auto_execute": false,
     "live_execution_armed": false,
     "cross_venue_sequential_execution": true,
-    "cross_venue_anchor_venue": "CLOUDBET"
+    "cross_venue_anchor_venue": "CLOUDBET",
+    "execute_void_compatible_middles": true,
+    "min_middle_profit_margin": "0.025"
   },
   "venues": [
     {
@@ -58,7 +60,7 @@
       "prefer_liquid_markets": true,
       "top_markets_by_depth": 150,
       "auto_subscribe_quote_ticks": true,
-      "quote_subscription_limit": 300,
+      "quote_subscription_limit": 400,
       "order_book_poll_interval_secs": 1.0,
       "order_book_poll_summary_interval_secs": 30.0,
       "order_book_concurrency": 24,
@@ -90,6 +92,7 @@
       "order_book_poll_interval_secs": 10.0,
       "order_book_poll_summary_interval_secs": 30.0,
       "order_book_concurrency": 4,
+      "order_book_transport": "stream",
       "live_only": false
     },
     {

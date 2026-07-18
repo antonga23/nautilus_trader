@@ -285,6 +285,43 @@ def test_middle_is_staged_with_bet_type_label():
     ensure(record.approval_id in strategy._pending_approvals)
 
 
+def test_deploy_config_stages_middle_while_execution_stays_unarmed():
+    # The cross-venue shard + baseball manifests set execute_void_compatible_middles=true
+    # with every execution flag false. The flag opens staging only: a void-compatible middle
+    # is labelled MIDDLE and lands in the manual-approval queue, and no armed flag is flipped
+    # (nothing executes without a separate arming step).
+    strategy = _strategy(
+        auto_execute=False,
+        live_execution_armed=False,
+        value_execution_enabled=False,
+        execute_void_compatible_middles=True,
+        min_profit_margin=Decimal("0.02"),
+        min_middle_profit_margin=Decimal("0.025"),
+    )
+    # The opt-in did not arm any execution path.
+    ensure(strategy._config.auto_execute is False)
+    ensure(strategy._config.live_execution_armed is False)
+    ensure(strategy._config.value_execution_enabled is False)
+
+    home = _instrument(venue="CLOUDBET", outcome="home", line="-1")
+    away = _instrument(venue="SXBET", outcome="away", line="1")
+    _register_edge(strategy, home, away, _middle_edge())
+    opportunity = _opportunity(home, away)
+
+    record = strategy._store_pending_approval(
+        opportunity=opportunity,
+        diagnostics=None,
+        stake_a=Decimal("53.68"),
+        stake_b=Decimal("46.32"),
+        expected_profit=Decimal("35.25"),
+        now_ns=strategy.clock.timestamp_ns(),
+    )
+
+    ensure(record.bet_type == "MIDDLE")
+    ensure(strategy._approvals_staged == 1)
+    ensure(record.approval_id in strategy._pending_approvals)
+
+
 def test_plain_arb_edge_is_not_labelled_middle():
     # An ordinary complementary-coverage edge stays ARB even with the flag on.
     strategy = _strategy(
