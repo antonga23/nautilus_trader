@@ -1188,6 +1188,26 @@ class OpportunityGraphCore:
             int | None,
         ]
     ]: ...
+    def edge_snapshots_for_node(
+        self,
+        node_id: str,
+    ) -> list[
+        tuple[
+            str,
+            str,
+            str,
+            str,
+            float,
+            bool,
+            str,
+            bool,
+            bool,
+            float | None,
+            int | None,
+            int | None,
+        ]
+    ]: ...
+    def remove_instrument(self, node_id: str) -> list[str]: ...
 
 class InstrumentStatus:
     def __init__(
