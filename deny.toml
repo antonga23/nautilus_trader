@@ -66,6 +66,7 @@ ignore = [
   { id = "RUSTSEC-2026-0190", reason = "temporary CI waiver for inherited quick-xml advisory pending upstream dependency updates" },
   { id = "RUSTSEC-2026-0194", reason = "temporary CI waiver for inherited quick-xml advisory pending upstream dependency updates" },
   { id = "RUSTSEC-2026-0195", reason = "temporary CI waiver for inherited anyhow advisory pending upstream dependency updates" },
+  { id = "RUSTSEC-2026-0204", reason = "temporary CI waiver for inherited crossbeam-epoch advisory (fmt::Pointer null-deref, transitive); low severity, live execution disarmed, pending upstream dependency updates" },
 ]
 
 # =============================================================================
