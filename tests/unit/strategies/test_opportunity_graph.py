@@ -1332,21 +1332,9 @@ def test_add_instrument_edge_sync_is_bucket_local_not_all_edges() -> None:  # sk
 
     # The add must only re-mirror the new node's bucket-local edges, never re-run the
     # Python matcher across the whole edge set.
+    ensure(0 < matcher_calls["count"] < 10)
+    ensure(matcher_calls["count"] < graph.edge_count)
     stats = graph.stats()
-    _core = graph._rust_core
-    _diag = {
-        "matcher_calls": matcher_calls["count"],
-        "edge_count": graph.edge_count,
-        "delta_runs": stats.get("edge_sync_delta_runs"),
-        "full_runs": stats.get("edge_sync_full_runs"),
-        "topology_source": graph.topology_source,
-        "has_edge_snapshots_for_node": hasattr(_core, "edge_snapshots_for_node"),
-        "has_remove_instrument": hasattr(_core, "remove_instrument"),
-        "has_add_instrument_semantic": hasattr(_core, "add_instrument_semantic"),
-        "core_type": type(_core).__module__ + "." + type(_core).__name__ if _core else None,
-    }
-    assert 0 < matcher_calls["count"] < 10, f"SCALE2_DIAG {_diag}"
-    assert matcher_calls["count"] < graph.edge_count, f"SCALE2_DIAG {_diag}"
-    assert stats.get("edge_sync_delta_runs") == 1, f"SCALE2_DIAG {_diag}"
-    assert stats.get("edge_sync_full_runs") == 1, f"SCALE2_DIAG {_diag}"
+    ensure(stats["edge_sync_delta_runs"] == 1)
+    ensure(stats["edge_sync_full_runs"] == 1)
     _assert_edge_index_symmetric(graph)
