@@ -13,7 +13,7 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use pyo3::{exceptions::PyKeyError, prelude::*, types::PyDict};
 use serde_json::{Value, json};
@@ -424,8 +424,13 @@ pub struct OpportunityGraphCore {
     edges_by_id: HashMap<String, EdgeSnapshot>,
     edge_ids_by_node_id: HashMap<String, Vec<String>>,
     quotes_by_node_id: HashMap<String, QuoteSnapshot>,
-    event_buckets: HashMap<String, Vec<String>>,
-    venue_event_buckets: HashMap<String, Vec<String>>,
+    // Deterministic ordering: `rebuild_edges`/`rebuild_semantic_edges` iterate these
+    // buckets to seed edges, so a `HashMap`'s per-process random iteration order would
+    // leak into which endpoint is recorded as an edge's source/target (and, for the
+    // Python mirror, into the matcher-call order). A `BTreeMap` keeps a full rebuild
+    // byte-identical to the bucket-local incremental path regardless of hash seed.
+    event_buckets: BTreeMap<String, Vec<String>>,
+    venue_event_buckets: BTreeMap<String, Vec<String>>,
     semantic_templates: Vec<SemanticTemplateSnapshot>,
     coverage_proofs: Vec<CoverageProofSnapshot>,
     coverage_hyperedges: Vec<CoverageHyperedgeSnapshot>,
@@ -443,8 +448,8 @@ impl OpportunityGraphCore {
             edges_by_id: HashMap::default(),
             edge_ids_by_node_id: HashMap::default(),
             quotes_by_node_id: HashMap::default(),
-            event_buckets: HashMap::default(),
-            venue_event_buckets: HashMap::default(),
+            event_buckets: BTreeMap::default(),
+            venue_event_buckets: BTreeMap::default(),
             semantic_templates: Vec::default(),
             coverage_proofs: Vec::default(),
             coverage_hyperedges: Vec::default(),
@@ -719,23 +724,56 @@ impl OpportunityGraphCore {
     fn edge_snapshots(&self) -> Vec<EdgeExportSnapshot> {
         self.edges_by_id
             .values()
-            .map(|edge| {
-                (
-                    edge.edge_id.clone(),
-                    edge.source_node_id.clone(),
-                    edge.target_node_id.clone(),
-                    edge.hedge_type.clone(),
-                    edge.confidence,
-                    edge.flags.same_venue,
-                    semantic_edge_metadata(edge),
-                    edge.flags.push_capable,
-                    edge.flags.execution_safe,
-                    edge.last_margin,
-                    edge.last_evaluated_ns,
-                    edge.last_updated_ns,
-                )
-            })
+            .map(edge_export_snapshot)
             .collect()
+    }
+
+    fn edge_snapshots_for_node(&self, node_id: &str) -> Vec<EdgeExportSnapshot> {
+        let Some(edge_ids) = self.edge_ids_by_node_id.get(node_id) else {
+            return Vec::default();
+        };
+        edge_ids
+            .iter()
+            .filter_map(|edge_id| self.edges_by_id.get(edge_id))
+            .map(edge_export_snapshot)
+            .collect()
+    }
+
+    fn remove_instrument(&mut self, node_id: &str) -> Vec<String> {
+        let Some(node) = self.nodes_by_id.remove(node_id) else {
+            return Vec::default();
+        };
+        for event_key in event_bucket_keys_for_node(&node) {
+            if let Some(bucket) = self.event_buckets.get_mut(&event_key) {
+                bucket.retain(|id| id != node_id);
+                if bucket.is_empty() {
+                    self.event_buckets.remove(&event_key);
+                }
+            }
+        }
+        let venue_event_key = format!("{}|{}", node.venue, node.event_id);
+        if let Some(bucket) = self.venue_event_buckets.get_mut(&venue_event_key) {
+            bucket.retain(|id| id != node_id);
+            if bucket.is_empty() {
+                self.venue_event_buckets.remove(&venue_event_key);
+            }
+        }
+        self.quotes_by_node_id.remove(node_id);
+        let removed_edge_ids = self.edge_ids_by_node_id.remove(node_id).unwrap_or_default();
+        for edge_id in &removed_edge_ids {
+            let Some(edge) = self.edges_by_id.remove(edge_id) else {
+                continue;
+            };
+            let neighbor_id = if edge.source_node_id == node_id {
+                &edge.target_node_id
+            } else {
+                &edge.source_node_id
+            };
+            if let Some(neighbor_edge_ids) = self.edge_ids_by_node_id.get_mut(neighbor_id) {
+                neighbor_edge_ids.retain(|id| id != edge_id);
+            }
+        }
+        removed_edge_ids
     }
 }
 
@@ -1403,6 +1441,23 @@ fn edge_id(source_id: &str, target_id: &str) -> String {
     }
 }
 
+fn edge_export_snapshot(edge: &EdgeSnapshot) -> EdgeExportSnapshot {
+    (
+        edge.edge_id.clone(),
+        edge.source_node_id.clone(),
+        edge.target_node_id.clone(),
+        edge.hedge_type.clone(),
+        edge.confidence,
+        edge.flags.same_venue,
+        semantic_edge_metadata(edge),
+        edge.flags.push_capable,
+        edge.flags.execution_safe,
+        edge.last_margin,
+        edge.last_evaluated_ns,
+        edge.last_updated_ns,
+    )
+}
+
 fn semantic_edge_metadata(edge: &EdgeSnapshot) -> String {
     json!({
         "template_id": edge.template_id.as_deref(),
@@ -1471,12 +1526,31 @@ fn line_params_compatible(
                 node: node_line_b,
             },
         ) => {
-            (approx_eq(pattern_line_a, pattern_line_b) && approx_eq(node_line_a, node_line_b))
-                || (approx_eq(pattern_line_a + pattern_line_b, 0.0)
-                    && approx_eq(node_line_a + node_line_b, 0.0))
+            // The line shape a template may generalize over depends on how the two legs'
+            // lines relate. HOME/AWAY handicap legs carry selection-relative lines
+            // (normalization negates the away leg), so a genuine complement is mirrored:
+            // the lines sum to zero at every alternate line (home -1.5 / away +1.5).
+            // EQUAL HOME/AWAY lines are the opposite payoffs (home -0.5 / away -0.5 =
+            // home-must-win + away-must-win): generalizing an equal-line template (e.g. a
+            // quarter-line partial hedge mined at -0.25/-0.25, or a line-0 void hedge)
+            // onto them manufactured same-venue "hedges" whose legs both lose the draw
+            // and whose implied sum printed as a phantom 0.73-0.79 arb. Shared-line legs
+            // (TOTALS over/under, or the same selection quoted on two venues) genuinely
+            // ride one line, so the equal-line shape stays for them.
+            if is_mirrored_selection_pair(&pattern_a.selection, &pattern_b.selection) {
+                approx_eq(pattern_line_a + pattern_line_b, 0.0)
+                    && approx_eq(node_line_a + node_line_b, 0.0)
+            } else {
+                approx_eq(pattern_line_a, pattern_line_b) && approx_eq(node_line_a, node_line_b)
+            }
         }
         (LineSide::Absent, LineSide::Absent) => false,
     }
+}
+
+fn is_mirrored_selection_pair(selection_a: &str, selection_b: &str) -> bool {
+    (selection_a.eq_ignore_ascii_case("HOME") && selection_b.eq_ignore_ascii_case("AWAY"))
+        || (selection_a.eq_ignore_ascii_case("AWAY") && selection_b.eq_ignore_ascii_case("HOME"))
 }
 
 fn has_no_params(params_key: &str) -> bool {
@@ -2354,6 +2428,166 @@ mod tests {
         });
     }
 
+    fn handicap_pattern(selection: &str, line: &str) -> SemanticPatternSnapshot {
+        SemanticPatternSnapshot {
+            sport: "soccer".to_string(),
+            scope: "full_time".to_string(),
+            market_type: "ASIAN_HANDICAP".to_string(),
+            market_family: "ASIAN_HANDICAP".to_string(),
+            selection: selection.to_string(),
+            params_key: format!("[[\"line\",\"{line}\"]]"),
+        }
+    }
+
+    fn handicap_node(id: &str, selection: &str, line: &str) -> NodeSnapshot {
+        let mut node = node_with(
+            id,
+            "SXBET",
+            "event-1",
+            "Spread",
+            "ASIAN_HANDICAP",
+            selection,
+        );
+        node.params = format!("line={line}");
+        node.semantic_params_key = format!("[[\"line\",\"{line}\"]]");
+        node
+    }
+
+    #[rstest]
+    fn equal_line_home_away_templates_only_apply_at_mirrored_lines() {
+        // Live soccer phantom (SXBET->SXBET): normalization keeps handicap lines
+        // selection-relative, so HOME -0.5 + AWAY -0.5 are home-must-win + away-must-win
+        // (both lose the draw; implied sum ~1 - P(draw) = 0.73-0.79). The equal-line
+        // template shape (a genuine quarter-line partial hedge mined at -0.25/-0.25)
+        // must not generalize onto them.
+        let partial_pattern_a = handicap_pattern("HOME", "-0.25");
+        let partial_pattern_b = handicap_pattern("AWAY", "-0.25");
+        let phantom_home = handicap_node("home", "HOME", "-0.5");
+        let phantom_away = handicap_node("away", "AWAY", "-0.5");
+        assert!(!line_params_compatible(
+            &partial_pattern_a,
+            &phantom_home,
+            &partial_pattern_b,
+            &phantom_away,
+        ));
+
+        // Same shape via a line-0 void-hedge template onto deeper equal lines
+        // (HOME -2.5 + AWAY -2.5 has no push state; middle margins lose both legs).
+        assert!(!line_params_compatible(
+            &handicap_pattern("HOME", "0"),
+            &handicap_node("home-deep", "HOME", "-2.5"),
+            &handicap_pattern("AWAY", "0"),
+            &handicap_node("away-deep", "AWAY", "-2.5"),
+        ));
+
+        // The genuine complement is mirrored (lines sum to zero) and still generalizes.
+        assert!(line_params_compatible(
+            &handicap_pattern("HOME", "-1.5"),
+            &handicap_node("home-half", "HOME", "-0.5"),
+            &handicap_pattern("AWAY", "1.5"),
+            &handicap_node("away-half", "AWAY", "0.5"),
+        ));
+
+        // Shared-line shapes keep the equal-line generalization: TOTALS over/under...
+        let over_pattern = SemanticPatternSnapshot {
+            market_type: "TOTALS".to_string(),
+            market_family: "TOTALS".to_string(),
+            selection: "OVER".to_string(),
+            params_key: "[[\"line\",\"52.5\"]]".to_string(),
+            ..handicap_pattern("OVER", "52.5")
+        };
+        let under_pattern = SemanticPatternSnapshot {
+            selection: "UNDER".to_string(),
+            ..over_pattern.clone()
+        };
+        let mut over_node = node_with("over", "SXBET", "event-1", "Totals", "TOTALS", "OVER");
+        over_node.semantic_params_key = "[[\"line\",\"2.5\"]]".to_string();
+        let mut under_node = node_with("under", "SXBET", "event-1", "Totals", "TOTALS", "UNDER");
+        under_node.semantic_params_key = "[[\"line\",\"2.5\"]]".to_string();
+        assert!(line_params_compatible(
+            &over_pattern,
+            &over_node,
+            &under_pattern,
+            &under_node,
+        ));
+
+        // ...and the same selection quoted on two venues (equivalence rides one line).
+        assert!(line_params_compatible(
+            &handicap_pattern("HOME", "-1.5"),
+            &handicap_node("home-a", "HOME", "-2.5"),
+            &handicap_pattern("HOME", "-1.5"),
+            &handicap_node("home-b", "HOME", "-2.5"),
+        ));
+    }
+
+    #[rstest]
+    fn equal_line_home_away_phantom_forms_no_semantic_edge() {
+        pyo3::Python::initialize();
+
+        Python::attach(|py| {
+            let phantom_nodes = PyList::empty(py);
+            phantom_nodes
+                .append(py_payload(py, &handicap_node("home", "HOME", "-0.5")))
+                .unwrap();
+            phantom_nodes
+                .append(py_payload(py, &handicap_node("away", "AWAY", "-0.5")))
+                .unwrap();
+
+            let partial_template = PyDict::new(py);
+            partial_template
+                .set_item("template_id", "template-quarter-partial")
+                .unwrap();
+            partial_template
+                .set_item("relationship_type", "PARTIAL_SETTLEMENT_HEDGE")
+                .unwrap();
+            partial_template
+                .set_item(
+                    "pattern_a",
+                    py_pattern_with_params(py, "ASIAN_HANDICAP", "HOME", "[[\"line\",\"-0.25\"]]"),
+                )
+                .unwrap();
+            partial_template
+                .set_item(
+                    "pattern_b",
+                    py_pattern_with_params(py, "ASIAN_HANDICAP", "AWAY", "[[\"line\",\"-0.25\"]]"),
+                )
+                .unwrap();
+            partial_template.set_item("confidence", 1.0).unwrap();
+            partial_template
+                .set_item("provider_scope", vec!["SXBET"])
+                .unwrap();
+            partial_template.set_item("venue_agnostic", false).unwrap();
+            partial_template
+                .set_item("safety_tier", "TOPOLOGY_SAFE")
+                .unwrap();
+            partial_template
+                .set_item("promotion_status", "PROMOTED")
+                .unwrap();
+            partial_template.set_item("push_capable", true).unwrap();
+            partial_template.set_item("execution_safe", false).unwrap();
+            let templates = PyList::empty(py);
+            templates.append(&partial_template).unwrap();
+
+            // The -0.5/-0.5 pair must not inherit the quarter-line template.
+            let mut core = OpportunityGraphCore::new(true, 0.5);
+            core.build_semantic(phantom_nodes.as_any(), templates.as_any())
+                .unwrap();
+            assert_eq!(core.edge_count(), 0);
+
+            // The template still applies at its mined line (exact params match).
+            let mined_nodes = PyList::empty(py);
+            mined_nodes
+                .append(py_payload(py, &handicap_node("home", "HOME", "-0.25")))
+                .unwrap();
+            mined_nodes
+                .append(py_payload(py, &handicap_node("away", "AWAY", "-0.25")))
+                .unwrap();
+            core.build_semantic(mined_nodes.as_any(), templates.as_any())
+                .unwrap();
+            assert_eq!(core.edge_count(), 1);
+        });
+    }
+
     #[rstest]
     fn same_venue_event_id_mismatch_is_rejected_unless_trusted_match_odds() {
         let mut core = OpportunityGraphCore::new(true, 0.5);
@@ -2681,6 +2915,107 @@ mod tests {
         assert_eq!(snapshots[0].9, Some(candidates[0].7));
         assert_eq!(snapshots[0].10, Some(12));
         assert_eq!(snapshots[0].11, Some(12));
+    }
+
+    #[rstest]
+    fn edge_snapshots_for_node_filters_to_connected_edges() {
+        let mut core = OpportunityGraphCore::new(true, 0.5);
+        core.insert_node(node("a", "over"));
+        core.insert_node(node("b", "under"));
+        let mut other_over = node("c", "over");
+        other_over.event_id = "event-2".to_string();
+        other_over.event_key_no_time = "soccer:team c:team d".to_string();
+        other_over.event_alias_keys = vec![other_over.event_key_no_time.clone()];
+        let mut other_under = node("d", "under");
+        other_under.event_id = "event-2".to_string();
+        other_under.event_key_no_time = "soccer:team c:team d".to_string();
+        other_under.event_alias_keys = vec![other_under.event_key_no_time.clone()];
+        core.insert_node(other_over);
+        core.insert_node(other_under);
+        core.rebuild_edges();
+        assert_eq!(core.edge_count(), 2);
+
+        let snapshots = core.edge_snapshots_for_node("a");
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].0, edge_id("a", "b"));
+
+        assert!(core.edge_snapshots_for_node("missing").is_empty());
+        assert_eq!(core.edge_snapshots().len(), 2);
+    }
+
+    #[rstest]
+    fn remove_instrument_detaches_node_edges_and_buckets() {
+        let mut core = OpportunityGraphCore::new(true, 0.5);
+        core.insert_node(node("a", "over"));
+        core.insert_node(node("b", "under"));
+        core.insert_node(node_with(
+            "c",
+            "BLACKBET",
+            "event-2",
+            "Total Goals",
+            "total_goals",
+            "over",
+        ));
+        core.insert_node(node_with(
+            "d",
+            "BLACKBET",
+            "event-2",
+            "Total Goals",
+            "total_goals",
+            "under",
+        ));
+        core.rebuild_edges();
+        assert!(core.update_quote("a", 2.4, 1, 1));
+        assert!(core.update_quote("b", 2.55, 2, 2));
+        // Same-venue pairs a-b and c-d plus cross-venue a-d and b-c.
+        assert_eq!(core.edge_count(), 4);
+        assert_eq!(core.connected_edge_count("a"), 2);
+
+        let removed = core.remove_instrument("a");
+
+        assert_eq!(removed.len(), 2);
+        assert!(removed.contains(&edge_id("a", "b")));
+        assert!(removed.contains(&edge_id("a", "d")));
+        assert_eq!(core.node_count(), 3);
+        assert_eq!(core.edge_count(), 2);
+        assert_eq!(core.connected_edge_count("a"), 0);
+        assert_eq!(core.connected_edge_count("b"), 1);
+        assert_eq!(core.connected_edge_count("c"), 2);
+        assert_eq!(core.connected_edge_count("d"), 1);
+        // The removed node's quote state is dropped; the neighbor's survives.
+        assert_eq!(core.quote_state_count(), 1);
+        assert!(!core.update_quote("a", 2.4, 3, 3));
+
+        // Unknown node is a no-op.
+        assert!(core.remove_instrument("missing").is_empty());
+        assert_eq!(core.edge_count(), 2);
+    }
+
+    #[rstest]
+    fn remove_then_re_add_reconnects_via_buckets() {
+        pyo3::Python::initialize();
+
+        Python::attach(|py| {
+            let over = py_payload(py, &node("a", "over"));
+            let under = py_payload(py, &node("b", "under"));
+            let nodes = PyList::empty(py);
+            nodes.append(&over).unwrap();
+            nodes.append(&under).unwrap();
+
+            let mut core = OpportunityGraphCore::new(true, 0.5);
+            core.build(nodes.as_any()).unwrap();
+            assert_eq!(core.edge_count(), 1);
+
+            let removed = core.remove_instrument("b");
+            assert_eq!(removed, vec![edge_id("a", "b")]);
+            assert_eq!(core.edge_count(), 0);
+
+            // Stale bucket entries would break reconnection or duplicate edges here.
+            assert!(core.add_instrument(under.as_any()).unwrap());
+            assert_eq!(core.edge_count(), 1);
+            assert_eq!(core.connected_edge_count("a"), 1);
+            assert_eq!(core.connected_edge_count("b"), 1);
+        });
     }
 
     #[rstest]

@@ -107,7 +107,7 @@ jobs:
 
   build-linux-x86-py312:
     name: build-linux-x86-py312
-    timeout-minutes: 60
+    timeout-minutes: 75
     if: >-
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name == github.repository
@@ -119,6 +119,18 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
+      # This runner is shared with the live trading fleet. The release wheel
+      # build is memory-hungry and the host has no swap, so an unbounded build
+      # can exhaust RAM and livelock the whole box. Cap the build container so a
+      # runaway compile is cgroup-OOM-killed (build fails) instead of taking the
+      # host — and the fleet — down with it. The limit is sized to stay well
+      # under host RAM even alongside the running fleet + OS (no swap to absorb
+      # overshoot), so the cgroup kill fires before any box-level OOM. Paired
+      # with CARGO_BUILD_JOBS below to keep the real peak comfortably under it.
+      options: >-
+        --memory=20g
+        --memory-swap=20g
+        --cpus=6
     permissions:
       contents: read
       packages: read
@@ -225,6 +237,7 @@ jobs:
         if: steps.local-wheel-cache.outputs.cache-hit != 'true'
         env:
           BUILD_MODE: release
+          CARGO_BUILD_JOBS: "5"
         run: |
           uv build --wheel --python 3.12
           ls -lh dist/

@@ -16,12 +16,12 @@ PATTERNS = [
     "build.py",
     "capnp-version",
     "rust-toolchain.toml",
-    "crates/**",
+    "crates/**/*",
     "nautilus_trader/**/*.pyx",
     "nautilus_trader/**/*.pxd",
     "nautilus_trader/**/*.pxi",
     "nautilus_trader/**/*.h",
-    "nautilus_trader/core/includes/**",
+    "nautilus_trader/core/includes/**/*",
 ]
 
 hasher = hashlib.sha256()
