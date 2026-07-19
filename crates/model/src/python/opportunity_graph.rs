@@ -13,7 +13,7 @@
 //  limitations under the License.
 // -------------------------------------------------------------------------------------------------
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use pyo3::{exceptions::PyKeyError, prelude::*, types::PyDict};
 use serde_json::{Value, json};
@@ -424,8 +424,13 @@ pub struct OpportunityGraphCore {
     edges_by_id: HashMap<String, EdgeSnapshot>,
     edge_ids_by_node_id: HashMap<String, Vec<String>>,
     quotes_by_node_id: HashMap<String, QuoteSnapshot>,
-    event_buckets: HashMap<String, Vec<String>>,
-    venue_event_buckets: HashMap<String, Vec<String>>,
+    // Deterministic ordering: `rebuild_edges`/`rebuild_semantic_edges` iterate these
+    // buckets to seed edges, so a `HashMap`'s per-process random iteration order would
+    // leak into which endpoint is recorded as an edge's source/target (and, for the
+    // Python mirror, into the matcher-call order). A `BTreeMap` keeps a full rebuild
+    // byte-identical to the bucket-local incremental path regardless of hash seed.
+    event_buckets: BTreeMap<String, Vec<String>>,
+    venue_event_buckets: BTreeMap<String, Vec<String>>,
     semantic_templates: Vec<SemanticTemplateSnapshot>,
     coverage_proofs: Vec<CoverageProofSnapshot>,
     coverage_hyperedges: Vec<CoverageHyperedgeSnapshot>,
@@ -443,8 +448,8 @@ impl OpportunityGraphCore {
             edges_by_id: HashMap::default(),
             edge_ids_by_node_id: HashMap::default(),
             quotes_by_node_id: HashMap::default(),
-            event_buckets: HashMap::default(),
-            venue_event_buckets: HashMap::default(),
+            event_buckets: BTreeMap::default(),
+            venue_event_buckets: BTreeMap::default(),
             semantic_templates: Vec::default(),
             coverage_proofs: Vec::default(),
             coverage_hyperedges: Vec::default(),
