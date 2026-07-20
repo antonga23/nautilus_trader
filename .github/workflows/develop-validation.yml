@@ -238,7 +238,7 @@ jobs:
 
   build-linux-x86-py312:
     name: build-linux-x86-py312
-    timeout-minutes: 60
+    timeout-minutes: 75
     needs:
       - pre-commit-full
       - cargo-deny
@@ -250,6 +250,15 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
+      # This runner is shared with the live trading fleet on a swapless host, so
+      # an unbounded release compile can exhaust RAM and livelock the box. Cap
+      # the build container (sized to stay under host RAM alongside the fleet +
+      # OS) so a runaway compile is cgroup-OOM-killed instead of taking the host
+      # down. Mirrors pr-validation; paired with CARGO_BUILD_JOBS below.
+      options: >-
+        --memory=20g
+        --memory-swap=20g
+        --cpus=6
     permissions:
       contents: read
       packages: read
@@ -353,6 +362,7 @@ jobs:
         if: steps.local-wheel-cache.outputs.cache-hit != 'true'
         env:
           BUILD_MODE: release
+          CARGO_BUILD_JOBS: "5"
         run: |
           uv build --wheel --python 3.12
           ls -lh dist/

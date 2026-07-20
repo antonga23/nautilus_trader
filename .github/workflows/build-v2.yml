@@ -378,6 +378,11 @@ jobs:
       # Build the wheel for v2 under python/ using maturin
       - name: Build wheel (v2)
         working-directory: ${{ env.PACKAGE_DIR }}
+        env:
+          # Host build (no container to memory-cap) on a runner shared with the
+          # live trading fleet: bound cargo parallelism to keep the peak under
+          # host RAM so the compile can't livelock the box.
+          CARGO_BUILD_JOBS: "5"
         run: |
           pip install --upgrade maturin
           maturin build --release --out ../dist
