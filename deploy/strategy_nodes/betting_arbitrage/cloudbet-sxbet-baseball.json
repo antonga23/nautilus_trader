@@ -53,13 +53,13 @@
       "sport_ids": [
         3
       ],
-      "instrument_load_limit": 400,
-      "market_discovery_limit": 600,
+      "instrument_load_limit": 600,
+      "market_discovery_limit": 900,
       "prefer_liquid_markets": true,
       "liquidity_probe_limit": 250,
       "min_two_sided_markets": 1,
       "auto_subscribe_quote_ticks": true,
-      "quote_subscription_limit": 120,
+      "quote_subscription_limit": 180,
       "order_book_poll_interval_secs": 10.0,
       "order_book_poll_summary_interval_secs": 30.0,
       "order_book_concurrency": 4,
@@ -76,10 +76,10 @@
       "sport_keys": [
         "baseball"
       ],
-      "instrument_load_limit": 80,
-      "market_discovery_limit": 80,
+      "instrument_load_limit": 120,
+      "market_discovery_limit": 120,
       "auto_subscribe_quote_ticks": true,
-      "quote_subscription_limit": 250,
+      "quote_subscription_limit": 380,
       "order_book_poll_interval_secs": 1.0,
       "order_book_poll_summary_interval_secs": 30.0,
       "order_book_concurrency": 24,

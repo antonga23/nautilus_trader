@@ -248,7 +248,7 @@ class TestEmit:
         assert manifest.strategy.cross_venue_sequential_execution is True
         assert manifest.strategy.cross_venue_anchor_venue == "CLOUDBET"
         assert manifest.strategy.execute_void_compatible_middles is True
-        assert venues_by_name["CLOUDBET"].quote_subscription_limit == 400
+        assert venues_by_name["CLOUDBET"].quote_subscription_limit == 600
         assert venues_by_name["SXBET"].order_book_transport == "stream"
         # Cache reuse wiring.
         assert manifest.semantic_rule_cache_mode == "reuse"
@@ -281,8 +281,8 @@ class TestEmit:
         manifest = build_manifest(result.bins[0], load_template())
 
         cloudbet = next(v for v in manifest["venues"] if v["venue"] == "CLOUDBET")
-        assert cloudbet["instrument_load_limit"] == 750  # ceil(500 * 3000/2000)
-        assert cloudbet["quote_subscription_limit"] == 600  # ceil(400 * 3000/2000)
+        assert cloudbet["instrument_load_limit"] == 1125  # ceil(750 * 3000/2000)
+        assert cloudbet["quote_subscription_limit"] == 900  # ceil(600 * 3000/2000)
 
     def test_bin_without_sxbet_listing_drops_sxbet_venue(self) -> None:
         # american_football has no SXBET sport id, so the SXBET venue (and its

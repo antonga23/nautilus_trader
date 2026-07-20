@@ -194,10 +194,11 @@ def test_per_sport_shard_is_scoped_all_venue_and_unarmed(sport: str) -> None:
         assert venue.quote_subscription_limit is not None
         assert venue.top_markets_by_depth is not None
 
-    # CLOUDBET quoted-edge budget raised 300 -> 400 so the arb-relevant legs stay in-cap
-    # (the selection already spends the cap on cross-venue edge legs first) and refresh
-    # under the 1.0s poll, well inside the 3s CLOUDBET live quote-age gate.
-    assert venues_by_name["CLOUDBET"].quote_subscription_limit == 400
+    # CLOUDBET quoted-edge budget raised to 600 (post SCALE-2/3 the per-refresh rebuild
+    # cost is gone, so the cap is no longer the lever); the arb-relevant legs stay in-cap
+    # (the selection spends the cap on cross-venue edge legs first) and refresh under the
+    # 1.0s poll, well inside the 3s CLOUDBET live quote-age gate.
+    assert venues_by_name["CLOUDBET"].quote_subscription_limit == 600
     assert venues_by_name["CLOUDBET"].order_book_poll_interval_secs == 1.0
 
     # SXBET quotes stream (Centrifugo) so subscribed legs clear the 5s live age gate that
@@ -233,9 +234,10 @@ def test_baseball_shard_raises_cloudbet_budget_streams_sxbet_and_stages_middles(
     venues_by_name = {venue.venue: venue for venue in manifest.venues}
     assert set(venues_by_name) == {"CLOUDBET", "SXBET"}
 
-    # CLOUDBET quoted-edge budget raised 120 -> 250; the arb-relevant legs stay in-cap and
-    # refresh under the 1.0s poll (inside the 3s CLOUDBET live quote-age gate).
-    assert venues_by_name["CLOUDBET"].quote_subscription_limit == 250
+    # CLOUDBET quoted-edge budget raised to 380 (post SCALE-2/3); the arb-relevant legs
+    # stay in-cap and refresh under the 1.0s poll (inside the 3s CLOUDBET live quote-age
+    # gate).
+    assert venues_by_name["CLOUDBET"].quote_subscription_limit == 380
     assert venues_by_name["CLOUDBET"].order_book_poll_interval_secs == 1.0
 
     # SXBET streams so subscribed legs clear the 5s live age gate.

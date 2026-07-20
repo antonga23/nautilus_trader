@@ -55,12 +55,12 @@
       "sport_keys": [
         "tennis"
       ],
-      "instrument_load_limit": 500,
-      "market_discovery_limit": 500,
+      "instrument_load_limit": 750,
+      "market_discovery_limit": 750,
       "prefer_liquid_markets": true,
-      "top_markets_by_depth": 150,
+      "top_markets_by_depth": 220,
       "auto_subscribe_quote_ticks": true,
-      "quote_subscription_limit": 400,
+      "quote_subscription_limit": 600,
       "order_book_poll_interval_secs": 1.0,
       "order_book_poll_summary_interval_secs": 30.0,
       "order_book_concurrency": 24,
@@ -81,14 +81,14 @@
       "sport_ids": [
         6
       ],
-      "instrument_load_limit": 400,
-      "market_discovery_limit": 600,
+      "instrument_load_limit": 600,
+      "market_discovery_limit": 900,
       "prefer_liquid_markets": true,
-      "top_markets_by_depth": 150,
+      "top_markets_by_depth": 220,
       "liquidity_probe_limit": 250,
       "min_two_sided_markets": 1,
       "auto_subscribe_quote_ticks": true,
-      "quote_subscription_limit": 300,
+      "quote_subscription_limit": 450,
       "order_book_poll_interval_secs": 10.0,
       "order_book_poll_summary_interval_secs": 30.0,
       "order_book_concurrency": 4,
@@ -105,11 +105,11 @@
       "sport_keys": [
         "tennis"
       ],
-      "instrument_load_limit": 300,
-      "market_discovery_limit": 300,
+      "instrument_load_limit": 450,
+      "market_discovery_limit": 450,
       "prefer_liquid_markets": true,
-      "top_markets_by_depth": 100,
-      "quote_subscription_limit": 200
+      "top_markets_by_depth": 150,
+      "quote_subscription_limit": 300
     }
   ],
   "metadata": {
