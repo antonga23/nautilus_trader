@@ -5883,7 +5883,7 @@ class TestSemanticCacheHotSwap:  # skipcq
         self.ensure(_cache_bytes_snapshot(live) == before)
         self.ensure(strategy._opportunity_graph.edge_count == 0)
 
-    def test_rebuild_failure_restores_previous_cache(self, tmp_path: Path):  # skipcq
+    def test_rebuild_failure_restores_previous_cache(self, tmp_path: Path, monkeypatch):  # skipcq
         live = tmp_path / "cache"
         staging = tmp_path / "staging"
         bb_over, bb_under, soc_over, soc_under = self._baseball_and_soccer_legs()
@@ -5894,16 +5894,18 @@ class TestSemanticCacheHotSwap:  # skipcq
         self._prime_live_graph(strategy, live, {bb_over, bb_under})
         before = _cache_bytes_snapshot(live)
 
-        real_build = strategy._opportunity_graph.build
+        # The semantic hot-swap builds a FRESH OpportunityGraph and swaps it in, so inject
+        # the failure at the class level (the fresh graph's build, not the live instance).
+        real_build = OpportunityGraph.build
         calls = {"count": 0}
 
-        def _flaky_build(instruments):
+        def _flaky_build(graph_self, instruments):
             calls["count"] += 1
             if calls["count"] == 1:
                 raise RuntimeError("injected rebuild failure")
-            return real_build(instruments)
+            return real_build(graph_self, instruments)
 
-        strategy._opportunity_graph.build = _flaky_build
+        monkeypatch.setattr(OpportunityGraph, "build", _flaky_build)
 
         decision = strategy._reload_semantic_cache(str(staging), command_id="miner-4")
 

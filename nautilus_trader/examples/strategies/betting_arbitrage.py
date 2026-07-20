@@ -1764,9 +1764,14 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             new_graph.build(instruments)
         except Exception as exc:
             # Keep the current graph (never publish a partial one). Release the latch only
-            # if this build is still current, so a superseding rebuild keeps ownership.
+            # if this build is still current, so a superseding rebuild keeps ownership. Also
+            # clear any deferred-refresh flag: no adopt will run to consume it (nothing is
+            # published), and the deferred instruments are already in _subscribed_instruments
+            # for the next scheduled refresh to reconcile — leaving it set would strand it
+            # and fire one redundant rebuild on the next successful adopt.
             if epoch == self._graph_build_epoch:
                 self._graph_build_in_flight = False
+                self._refresh_pending_after_adopt = False
                 self._offloop_graph_build_failures += 1
             self.log.error(f"Off-loop opportunity graph rebuild failed: {exc!r}")
             return
@@ -1814,15 +1819,27 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self,
         resubscribe_instruments: list[BettingInstrument],
     ) -> None:
-        # Synchronous in-place rebuild for the semantic cache hot-swap, which must let a
-        # build error propagate so it can roll back the on-disk cache (restart safety).
-        # Bumping the epoch and dropping any pending build supersedes an in-flight off-loop
-        # rebuild so its result is discarded instead of overwriting this fresh graph.
+        # Synchronous rebuild for the semantic cache hot-swap, which must let a build error
+        # propagate so the caller can roll the on-disk cache back (restart safety). Build a
+        # FRESH graph and swap rather than rebuilding the live core in place: build_semantic
+        # detaches from the GIL during the match, and doing that on the *live* core would
+        # collide with the runtime probe thread's &self reads (PyBorrowError / stale
+        # status.json). The fresh core is unpublished so its detach is safe; the loop thread
+        # is blocked here throughout, so the swap is atomic. Bumping the epoch and dropping
+        # any pending build supersedes an in-flight off-loop rebuild so its result is
+        # discarded instead of overwriting this graph.
         self._graph_build_epoch += 1
         self._prepared_graph = None
         self._graph_build_in_flight = False
         rebuild_started_ns = time.perf_counter_ns()
-        self._opportunity_graph.build(list(self._subscribed_instruments))
+        new_graph = OpportunityGraph(
+            self._matcher,
+            engine=self._config.opportunity_graph_engine,
+        )
+        # Raises before the swap on failure, leaving the live graph in place for the
+        # caller's cache-rollback path.
+        new_graph.build(list(self._subscribed_instruments))
+        self._opportunity_graph = new_graph
         self._record_latency_sample(
             self._graph_rebuild_latency_ns,
             time.perf_counter_ns() - rebuild_started_ns,
@@ -2811,13 +2828,15 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             Latest quote tick.
 
         """
+        # Capture the receive time before the (rare) off-loop graph adopt below, so the
+        # swap + resubscribe cost never inflates this tick's quote-receive latency samples.
+        strategy_received_ns = self.clock.timestamp_ns()
         # SCALE-3: adopt a graph rebuilt off-loop as soon as a tick arrives, so the swap
         # lands within one tick of the build finishing (prompt) and always on the loop.
         # Common path is a bare attribute load; the method call only runs on adopt.
         if self._prepared_graph is not None:
             self._maybe_adopt_prepared_graph()
         # Store latest quote
-        strategy_received_ns = self.clock.timestamp_ns()
         self._record_quote_receive_latency(tick, strategy_received_ns)
         self._latest_quotes[str(tick.instrument_id)] = tick
 
