@@ -6387,7 +6387,9 @@ class TestIncrementalGraphRefresh:  # skipcq
         for instrument in added:
             self.ensure(str(instrument.id) in strategy._opportunity_graph.nodes_by_id)
 
-    def test_offloop_build_failure_retains_current_graph_and_releases_latch(self, monkeypatch):  # skipcq
+    def test_offloop_build_failure_retains_current_graph_and_releases_latch(
+        self, monkeypatch
+    ):  # skipcq
         # A build error raised inside the off-loop prepare must never publish a partial
         # graph: the current graph keeps serving quotes and the in-flight latch is
         # released so a later refresh can retry.
