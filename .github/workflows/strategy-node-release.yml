@@ -171,6 +171,10 @@ jobs:
         if: steps.local-wheel-cache.outputs.cache-hit != 'true'
         env:
           BUILD_MODE: release
+          # Host build (no container to memory-cap) on a runner shared with the
+          # live trading fleet: bound cargo parallelism to keep the peak well
+          # under host RAM so the compile can't livelock the box.
+          CARGO_BUILD_JOBS: "5"
         run: |
           uv build --wheel --python 3.12
           ls -lh dist/
@@ -226,6 +230,8 @@ jobs:
         if: steps.local-wheel-cache.outputs.cache-hit != 'true'
         env:
           BUILD_MODE: release
+          # See note above: host build on the shared trading-fleet runner.
+          CARGO_BUILD_JOBS: "5"
         run: |
           rm -f dist/*.whl
           uv build --wheel --python 3.12
