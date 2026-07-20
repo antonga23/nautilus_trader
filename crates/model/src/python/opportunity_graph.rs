@@ -532,13 +532,13 @@ impl OpportunityGraphCore {
             self.insert_node(NodeSnapshot::from_py(&item?)?);
         }
         // `rebuild_semantic_edges` is pure Rust (the O(bucket^2) semantic match over
-        // already-marshalled snapshots — no Python touched), so release the GIL for it.
-        // A caller that runs this build on a worker thread then lets the asyncio loop
+        // already-marshalled snapshots — no Python touched), so detach from the GIL for
+        // it. A caller that runs this build on a worker thread then lets the asyncio loop
         // keep servicing quote ticks on the *previously built* graph during the rebuild.
         // Safe only because callers build into a FRESH core and swap it in once done —
-        // releasing the GIL while another thread borrows this same core via on_quote_tick
-        // would double-borrow `&mut self` and raise pyo3's "Already borrowed" panic.
-        py.allow_threads(|| self.rebuild_semantic_edges());
+        // detaching while another thread borrows this same core via on_quote_tick would
+        // double-borrow `&mut self` and raise pyo3's "Already borrowed" panic.
+        py.detach(|| self.rebuild_semantic_edges());
         Ok(())
     }
 
