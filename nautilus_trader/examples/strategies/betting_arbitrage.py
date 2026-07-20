@@ -1138,6 +1138,23 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._quote_fetch_latency_ns_by_venue: dict[str, list[int]] = {}
         self._instrument_refresh_reconcile_latency_ns: list[int] = []
         self._last_arbitrage_summary_at_ns = 0
+        # SCALE-3: full opportunity-graph rebuilds run on the strategy executor so the
+        # asyncio loop keeps servicing quote ticks on the current graph while a fresh one
+        # is built off-loop (Rust releases the GIL during the semantic match). The built
+        # graph is published to `_prepared_graph` and adopted on-loop via an atomic swap.
+        # In backtest/tests run_in_executor executes inline, so the adopt is synchronous
+        # and behaviour matches an in-place rebuild.
+        self._prepared_graph: OpportunityGraph | None = None
+        self._prepared_graph_resubscribe: list[BettingInstrument] = []
+        self._prepared_graph_build_ns = 0
+        self._graph_build_in_flight = False
+        self._refresh_pending_after_adopt = False
+        # Monotonic epoch guards the executor->loop handoff: a synchronous hot-swap bumps
+        # it to supersede an in-flight off-loop build, whose stale result is then dropped.
+        self._graph_build_epoch = 0
+        self._prepared_graph_epoch = 0
+        self._offloop_graph_builds = 0
+        self._offloop_graph_build_failures = 0
 
     @property
     def market_matcher(self) -> MarketMatcher:
@@ -1654,6 +1671,14 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             self._config.opportunity_graph_enabled and self._config.graph_rebuild_on_new_instrument
         ):
             return
+        # Adopt any off-loop rebuild that finished since the last loop hop. If one is
+        # still in flight, the subscription set was already updated upstream (adds/removes
+        # applied before this call), so just flag a reconcile — the post-adopt rebuild
+        # reads the current set. Skipping avoids mutating a graph about to be replaced.
+        self._maybe_adopt_prepared_graph()
+        if self._graph_build_in_flight:
+            self._refresh_pending_after_adopt = True
+            return
         removed_instruments = removed_instruments or []
         if self._graph_refresh_needs_full_build(added_instruments, removed_instruments):
             self._rebuild_opportunity_graph_and_resubscribe(added_instruments)
@@ -1707,8 +1732,114 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         # Full-snapshot build() forces the Rust build_semantic full-template replace
         # (never the count-keyed add_instrument fast path), so a semantic swap with an
         # unchanged template count still adopts new template content.
+        #
+        # SCALE-3: prepare the fresh graph on the strategy executor so the asyncio loop
+        # keeps servicing quote ticks on the current graph during the (GIL-released)
+        # semantic match, then adopt it on-loop. If a prepare is already in flight, defer:
+        # the current subscription set is captured by the follow-up rebuild after adopt.
+        if self._graph_build_in_flight:
+            self._refresh_pending_after_adopt = True
+            return
+        self._graph_build_in_flight = True
+        self._graph_build_epoch += 1
+        epoch = self._graph_build_epoch
+        self._prepared_graph_resubscribe = list(resubscribe_instruments)
+        instruments_snapshot = list(self._subscribed_instruments)
+        self.run_in_executor(self._prepare_rebuilt_graph, (instruments_snapshot, epoch))
+        # Backtest/tests run the executor inline, so the prepared graph is already
+        # published; adopt it now to keep those runs synchronous and deterministic.
+        self._maybe_adopt_prepared_graph()
+
+    def _prepare_rebuilt_graph(self, instruments: list[BettingInstrument], epoch: int) -> None:
+        # Runs on the strategy executor thread in live (inline in backtest/tests). Builds
+        # a detached graph while on_quote_tick keeps hitting the current graph; Rust
+        # releases the GIL during the semantic match so the loop is not blocked. Nothing
+        # here touches the live graph, so there is no concurrent borrow of its Rust core.
         rebuild_started_ns = time.perf_counter_ns()
-        self._opportunity_graph.build(list(self._subscribed_instruments))
+        try:
+            new_graph = OpportunityGraph(
+                self._matcher,
+                engine=self._config.opportunity_graph_engine,
+            )
+            new_graph.build(instruments)
+        except Exception as exc:
+            # Keep the current graph (never publish a partial one). Release the latch only
+            # if this build is still current, so a superseding rebuild keeps ownership. Also
+            # clear any deferred-refresh flag: no adopt will run to consume it (nothing is
+            # published), and the deferred instruments are already in _subscribed_instruments
+            # for the next scheduled refresh to reconcile — leaving it set would strand it
+            # and fire one redundant rebuild on the next successful adopt.
+            if epoch == self._graph_build_epoch:
+                self._graph_build_in_flight = False
+                self._refresh_pending_after_adopt = False
+                self._offloop_graph_build_failures += 1
+            self.log.error(f"Off-loop opportunity graph rebuild failed: {exc!r}")
+            return
+        if epoch != self._graph_build_epoch:
+            # A newer rebuild (e.g. a synchronous semantic hot-swap) superseded this one
+            # while it built; drop the stale result rather than regress the live graph.
+            return
+        # Only scalar/reference writes cross the thread boundary (GIL-atomic); the latency
+        # list is appended on-loop in adopt so the loop never iterates it mid-append.
+        self._prepared_graph_build_ns = time.perf_counter_ns() - rebuild_started_ns
+        self._prepared_graph_epoch = epoch
+        self._prepared_graph = new_graph
+
+    def _maybe_adopt_prepared_graph(self) -> None:
+        # Must run on the event loop: atomically swaps the live graph reference (the old
+        # graph served every quote tick up to this point) and resubscribes.
+        prepared = self._prepared_graph
+        if prepared is None:
+            return
+        self._prepared_graph = None
+        if self._prepared_graph_epoch != self._graph_build_epoch:
+            # Superseded between publish and adopt; discard. The superseding path owns the
+            # in-flight latch, so do not clear it here.
+            return
+        self._opportunity_graph = prepared
+        if self._prepared_graph_build_ns:
+            self._record_latency_sample(
+                self._graph_rebuild_latency_ns,
+                self._prepared_graph_build_ns,
+            )
+            self._prepared_graph_build_ns = 0
+        self._offloop_graph_builds += 1
+        self._graph_build_in_flight = False
+        resubscribe = self._prepared_graph_resubscribe
+        self._prepared_graph_resubscribe = []
+        self._resubscribe_after_graph_change(resubscribe)
+        # A refresh that arrived while the build was in flight only updated the
+        # subscription set (source of truth), not the now-replaced graph; rebuild once
+        # more from the current set so the adopted graph converges to it.
+        if self._refresh_pending_after_adopt:
+            self._refresh_pending_after_adopt = False
+            self._rebuild_opportunity_graph_and_resubscribe(list(self._subscribed_instruments))
+
+    def _rebuild_opportunity_graph_sync(
+        self,
+        resubscribe_instruments: list[BettingInstrument],
+    ) -> None:
+        # Synchronous rebuild for the semantic cache hot-swap, which must let a build error
+        # propagate so the caller can roll the on-disk cache back (restart safety). Build a
+        # FRESH graph and swap rather than rebuilding the live core in place: build_semantic
+        # detaches from the GIL during the match, and doing that on the *live* core would
+        # collide with the runtime probe thread's &self reads (PyBorrowError / stale
+        # status.json). The fresh core is unpublished so its detach is safe; the loop thread
+        # is blocked here throughout, so the swap is atomic. Bumping the epoch and dropping
+        # any pending build supersedes an in-flight off-loop rebuild so its result is
+        # discarded instead of overwriting this graph.
+        self._graph_build_epoch += 1
+        self._prepared_graph = None
+        self._graph_build_in_flight = False
+        rebuild_started_ns = time.perf_counter_ns()
+        new_graph = OpportunityGraph(
+            self._matcher,
+            engine=self._config.opportunity_graph_engine,
+        )
+        # Raises before the swap on failure, leaving the live graph in place for the
+        # caller's cache-rollback path.
+        new_graph.build(list(self._subscribed_instruments))
+        self._opportunity_graph = new_graph
         self._record_latency_sample(
             self._graph_rebuild_latency_ns,
             time.perf_counter_ns() - rebuild_started_ns,
@@ -2697,8 +2828,15 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             Latest quote tick.
 
         """
-        # Store latest quote
+        # Capture the receive time before the (rare) off-loop graph adopt below, so the
+        # swap + resubscribe cost never inflates this tick's quote-receive latency samples.
         strategy_received_ns = self.clock.timestamp_ns()
+        # SCALE-3: adopt a graph rebuilt off-loop as soon as a tick arrives, so the swap
+        # lands within one tick of the build finishing (prompt) and always on the loop.
+        # Common path is a bare attribute load; the method call only runs on adopt.
+        if self._prepared_graph is not None:
+            self._maybe_adopt_prepared_graph()
+        # Store latest quote
         self._record_quote_receive_latency(tick, strategy_received_ns)
         self._latest_quotes[str(tick.instrument_id)] = tick
 
@@ -5795,7 +5933,10 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         new_store = RuleStore(FileRuleCache(cache_dir_value))
         self._matcher.set_rule_store(new_store)
         if self._config.opportunity_graph_enabled:
-            self._rebuild_opportunity_graph_and_resubscribe(list(self._subscribed_instruments))
+            # Synchronous rebuild here: the caller catches a build error to roll the
+            # on-disk cache back to the previous good version, which an off-loop build
+            # (exception on a worker thread) could not drive.
+            self._rebuild_opportunity_graph_sync(list(self._subscribed_instruments))
 
     def _restore_semantic_cache_from_prev(
         self,
@@ -7394,6 +7535,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             "instrument_refresh_graph_incremental_updates": (
                 self._instrument_refresh_graph_incremental_updates
             ),
+            "offloop_graph_builds": self._offloop_graph_builds,
+            "offloop_graph_build_failures": self._offloop_graph_build_failures,
             "instrument_refresh_stale_triggers": self._instrument_refresh_stale_triggers,
             "quote_unsubscribe_requests": self._quote_unsubscribe_requests,
             "instrument_cache_miss": self._instrument_cache_miss,

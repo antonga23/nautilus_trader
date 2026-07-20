@@ -5883,7 +5883,7 @@ class TestSemanticCacheHotSwap:  # skipcq
         self.ensure(_cache_bytes_snapshot(live) == before)
         self.ensure(strategy._opportunity_graph.edge_count == 0)
 
-    def test_rebuild_failure_restores_previous_cache(self, tmp_path: Path):  # skipcq
+    def test_rebuild_failure_restores_previous_cache(self, tmp_path: Path, monkeypatch):  # skipcq
         live = tmp_path / "cache"
         staging = tmp_path / "staging"
         bb_over, bb_under, soc_over, soc_under = self._baseball_and_soccer_legs()
@@ -5894,16 +5894,18 @@ class TestSemanticCacheHotSwap:  # skipcq
         self._prime_live_graph(strategy, live, {bb_over, bb_under})
         before = _cache_bytes_snapshot(live)
 
-        real_build = strategy._opportunity_graph.build
+        # The semantic hot-swap builds a FRESH OpportunityGraph and swaps it in, so inject
+        # the failure at the class level (the fresh graph's build, not the live instance).
+        real_build = OpportunityGraph.build
         calls = {"count": 0}
 
-        def _flaky_build(instruments):
+        def _flaky_build(graph_self, instruments):
             calls["count"] += 1
             if calls["count"] == 1:
                 raise RuntimeError("injected rebuild failure")
-            return real_build(instruments)
+            return real_build(graph_self, instruments)
 
-        strategy._opportunity_graph.build = _flaky_build
+        monkeypatch.setattr(OpportunityGraph, "build", _flaky_build)
 
         decision = strategy._reload_semantic_cache(str(staging), command_id="miner-4")
 
@@ -6349,6 +6351,85 @@ class TestIncrementalGraphRefresh:  # skipcq
         self.ensure(strategy._instrument_refresh_graph_rebuilds == 1)
         self.ensure(strategy._instrument_refresh_graph_incremental_updates == 0)
         self.ensure(strategy.get_stats()["latency_diagnostics"]["graph_rebuild"]["count"] >= 1)
+
+    def test_offloop_full_build_adopts_a_fresh_graph_object(self):  # skipcq
+        # SCALE-3: a full rebuild is prepared off the event loop and adopted by swapping
+        # in a freshly built graph object (the old one keeps serving until the swap),
+        # rather than mutating the live graph in place. run_in_executor is inline in
+        # tests, so the prepare+adopt complete synchronously here.
+        strategy = self._strategy()
+        instruments = self._paired_instruments(4)
+        strategy._subscribed_instruments.update(instruments)
+        strategy._rebuild_opportunity_graph_and_resubscribe(instruments)
+        first_graph = strategy._opportunity_graph
+        if first_graph._active_rust_core() is None:
+            pytest.skip("Rust OpportunityGraphCore is unavailable")
+        builds_before = strategy._offloop_graph_builds
+
+        added = [
+            TestBettingArbitrageStrategy._sxbet_instrument(
+                event_id=f"evt-x{index}",
+                event_name=f"Team {index}A vs Team {index}B",
+                home_name=f"Team {index}A",
+                away_name=f"Team {index}B",
+                outcome=outcome,
+                venue="BLACKBET",
+                params="line=2.5",
+            )
+            for index in range(3)
+            for outcome in ("over", "under")
+        ]
+        strategy._subscribed_instruments.update(added)
+        strategy._rebuild_after_instrument_refresh("BLACKBET", added, [])
+
+        self.ensure(strategy._opportunity_graph is not first_graph)
+        self.ensure(strategy._offloop_graph_builds == builds_before + 1)
+        self.ensure(strategy._graph_build_in_flight is False)
+        self.ensure(strategy._prepared_graph is None)
+        for instrument in added:
+            self.ensure(str(instrument.id) in strategy._opportunity_graph.nodes_by_id)
+
+    def test_offloop_build_failure_retains_current_graph_and_releases_latch(
+        self,
+        monkeypatch,
+    ):  # skipcq
+        # A build error raised inside the off-loop prepare must never publish a partial
+        # graph: the current graph keeps serving quotes and the in-flight latch is
+        # released so a later refresh can retry.
+        strategy = self._strategy()
+        instruments = self._paired_instruments(4)
+        strategy._subscribed_instruments.update(instruments)
+        strategy._rebuild_opportunity_graph_and_resubscribe(instruments)
+        current_graph = strategy._opportunity_graph
+        if current_graph._active_rust_core() is None:
+            pytest.skip("Rust OpportunityGraphCore is unavailable")
+        failures_before = strategy._offloop_graph_build_failures
+
+        def _boom(self, instruments):
+            raise RuntimeError("injected off-loop build failure")
+
+        monkeypatch.setattr(OpportunityGraph, "build", _boom)
+
+        added = [
+            TestBettingArbitrageStrategy._sxbet_instrument(
+                event_id=f"evt-boom{index}",
+                event_name=f"Team {index}A vs Team {index}B",
+                home_name=f"Team {index}A",
+                away_name=f"Team {index}B",
+                outcome=outcome,
+                venue="BLACKBET",
+                params="line=2.5",
+            )
+            for index in range(3)
+            for outcome in ("over", "under")
+        ]
+        strategy._subscribed_instruments.update(added)
+        strategy._rebuild_after_instrument_refresh("BLACKBET", added, [])
+
+        self.ensure(strategy._opportunity_graph is current_graph)
+        self.ensure(strategy._prepared_graph is None)
+        self.ensure(strategy._graph_build_in_flight is False)
+        self.ensure(strategy._offloop_graph_build_failures == failures_before + 1)
 
     def test_stale_semantic_templates_force_full_build(self, tmp_path: Path):  # skipcq
         strategy = self._strategy()

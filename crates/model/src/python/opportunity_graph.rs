@@ -522,6 +522,7 @@ impl OpportunityGraphCore {
 
     fn build_semantic(
         &mut self,
+        py: Python<'_>,
         nodes: &Bound<'_, PyAny>,
         templates: &Bound<'_, PyAny>,
     ) -> PyResult<()> {
@@ -530,7 +531,14 @@ impl OpportunityGraphCore {
         for item in nodes.try_iter()? {
             self.insert_node(NodeSnapshot::from_py(&item?)?);
         }
-        self.rebuild_semantic_edges();
+        // `rebuild_semantic_edges` is pure Rust (the O(bucket^2) semantic match over
+        // already-marshalled snapshots — no Python touched), so detach from the GIL for
+        // it. A caller that runs this build on a worker thread then lets the asyncio loop
+        // keep servicing quote ticks on the *previously built* graph during the rebuild.
+        // Safe only because callers build into a FRESH core and swap it in once done —
+        // detaching while another thread borrows this same core via on_quote_tick would
+        // double-borrow `&mut self` and raise pyo3's "Already borrowed" panic.
+        py.detach(|| self.rebuild_semantic_edges());
         Ok(())
     }
 
@@ -1906,7 +1914,7 @@ mod tests {
             templates.append(&exec_template).unwrap();
 
             let mut core = OpportunityGraphCore::new(true, 0.5);
-            core.build_semantic(nodes.as_any(), templates.as_any())
+            core.build_semantic(py, nodes.as_any(), templates.as_any())
                 .unwrap();
 
             assert_eq!(
@@ -1967,7 +1975,7 @@ mod tests {
             templates.append(&template).unwrap();
 
             let mut core = OpportunityGraphCore::new(true, 0.5);
-            core.build_semantic(nodes.as_any(), templates.as_any())
+            core.build_semantic(py, nodes.as_any(), templates.as_any())
                 .unwrap();
             assert_eq!(core.edge_count(), 1, "cross-venue edge should form");
 
@@ -2186,7 +2194,7 @@ mod tests {
             let empty_templates = PyList::empty(py);
 
             let mut core = OpportunityGraphCore::new(true, 0.5);
-            core.build_semantic(nodes.as_any(), empty_templates.as_any())
+            core.build_semantic(py, nodes.as_any(), empty_templates.as_any())
                 .unwrap();
             assert_eq!(core.edge_count(), 0);
 
@@ -2194,7 +2202,7 @@ mod tests {
             templates
                 .append(py_semantic_template(py, vec!["SXBET"], false))
                 .unwrap();
-            core.build_semantic(nodes.as_any(), templates.as_any())
+            core.build_semantic(py, nodes.as_any(), templates.as_any())
                 .unwrap();
 
             assert_eq!(core.semantic_template_count(), 1);
@@ -2231,7 +2239,7 @@ mod tests {
                 .unwrap();
 
             let mut core = OpportunityGraphCore::new(true, 0.5);
-            core.build_semantic(nodes.as_any(), templates.as_any())
+            core.build_semantic(py, nodes.as_any(), templates.as_any())
                 .unwrap();
             // Venue scope no longer suppresses the cross-venue edge entirely: a
             // deterministic complementary template observed on one of the two venues
@@ -2275,7 +2283,7 @@ mod tests {
                 .unwrap();
             let mut same_venue_core = OpportunityGraphCore::new(true, 0.5);
             same_venue_core
-                .build_semantic(same_venue_nodes.as_any(), templates.as_any())
+                .build_semantic(py, same_venue_nodes.as_any(), templates.as_any())
                 .unwrap();
             assert_eq!(same_venue_core.edge_count(), 0);
 
@@ -2284,7 +2292,7 @@ mod tests {
             venue_agnostic
                 .append(py_semantic_template(py, vec![], true))
                 .unwrap();
-            core.build_semantic(nodes.as_any(), venue_agnostic.as_any())
+            core.build_semantic(py, nodes.as_any(), venue_agnostic.as_any())
                 .unwrap();
             assert_eq!(core.edge_count(), 1);
             assert!(core.update_quote("a", 2.4, 20, 20));
@@ -2352,7 +2360,7 @@ mod tests {
             templates.append(same_line_template).unwrap();
 
             let mut core = OpportunityGraphCore::new(true, 0.5);
-            core.build_semantic(nodes.as_any(), templates.as_any())
+            core.build_semantic(py, nodes.as_any(), templates.as_any())
                 .unwrap();
             assert_eq!(core.edge_count(), 1);
 
@@ -2422,7 +2430,7 @@ mod tests {
             let spread_templates = PyList::empty(py);
             spread_templates.append(opposite_line_template).unwrap();
 
-            core.build_semantic(spread_nodes.as_any(), spread_templates.as_any())
+            core.build_semantic(py, spread_nodes.as_any(), spread_templates.as_any())
                 .unwrap();
             assert_eq!(core.edge_count(), 1);
         });
@@ -2570,7 +2578,7 @@ mod tests {
 
             // The -0.5/-0.5 pair must not inherit the quarter-line template.
             let mut core = OpportunityGraphCore::new(true, 0.5);
-            core.build_semantic(phantom_nodes.as_any(), templates.as_any())
+            core.build_semantic(py, phantom_nodes.as_any(), templates.as_any())
                 .unwrap();
             assert_eq!(core.edge_count(), 0);
 
@@ -2582,7 +2590,7 @@ mod tests {
             mined_nodes
                 .append(py_payload(py, &handicap_node("away", "AWAY", "-0.25")))
                 .unwrap();
-            core.build_semantic(mined_nodes.as_any(), templates.as_any())
+            core.build_semantic(py, mined_nodes.as_any(), templates.as_any())
                 .unwrap();
             assert_eq!(core.edge_count(), 1);
         });
