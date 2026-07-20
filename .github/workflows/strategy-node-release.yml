@@ -29,6 +29,13 @@ on:
         description: 'How the deploy job gets the built image onto EC2: archive or registry'
         required: false
         default: archive
+      probe_runtime:
+        description: >-
+          Run the live probe-runtime semantic-coverage check for the dispatched manifest before
+          deploying (adds ~7-10 min). Off by default; the node is verified post-launch by the
+          deploy job's status wait regardless.
+        required: false
+        default: 'false'
       force_rebuild:
         description: Rebuild the strategy-node image archive even when an R2 archive already exists
         required: false
@@ -73,7 +80,13 @@ jobs:
   validate-manifests:
     name: validate-strategy-node-manifests
     timeout-minutes: 45
+    # Runs after the fast deploy-runner check so a dead deploy runner fails the run
+    # in seconds rather than after the ~10 min validate.
+    needs: [check-deploy-runner]
     runs-on: [self-hosted, linux, x64, cloudbet-market-maker, ci, gcp, ubuntu24]
+    outputs:
+      # Resolved deploy node list ({manifest,container}[]) consumed by the deploy matrix.
+      nodes: ${{ steps.resolve.outputs.nodes }}
     env:
       UV_PYTHON: "3.12"
       CARGO_HOME: ${{ github.workspace }}/.cache/cargo-home
@@ -147,6 +160,17 @@ jobs:
 
       - name: Trust workspace
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      # Resolve the deploy target(s) into a canonical {manifest,container}[] list, exposed
+      # as a job output. Today this is the single dispatched node; the resolver also handles
+      # named `fleet` sets and explicit `nodes` arrays, which the batch/matrix deploy
+      # (follow-up) will wire in. Keeps validation scoped to exactly what is deployed.
+      - name: Resolve deploy node list
+        id: resolve
+        env:
+          MANIFEST: ${{ github.event.inputs.manifest_path }}
+          CONTAINER: ${{ github.event.inputs.container_name }}
+        run: python3 scripts/deploy/strategy_nodes/resolve_deploy_nodes.py >> "$GITHUB_OUTPUT"
 
       - name: Common setup
         uses: ./.github/actions/common-setup
@@ -251,32 +275,32 @@ jobs:
           bash scripts/ci/ci_transient_artifacts.sh \
             put "$wheel_path" "strategy-node-wheel/$(basename "$wheel_path")"
 
-      - name: Validate SX.bet manifest
-        env:
-          SXBET_API_KEY: ${{ secrets.SXBET_API_KEY }}
-          CLOUDBET_API_KEY: ${{ secrets.CLOUDBET_API_KEY }}
+      # Full multi-venue manifest battery + live SX.bet probe: a regression guard that
+      # runs on push/CI only. A workflow_dispatch deploy validates just the resolved
+      # node manifests below, and every deployed node is verified post-launch by the
+      # deploy job's status wait — so the deploy path doesn't pay this ~7-10 min cost.
+      # (The per-shard manifests are additionally covered by test_betting_arbitrage_nodes
+      # in the pr-validation / develop-validation gates.)
+      - name: Validate venue manifest battery (push/CI regression guard)
+        if: github.event_name != 'workflow_dispatch'
         run: |
           cd /tmp
-          "$GITHUB_WORKSPACE/.venv/bin/python" -m nautilus_trader.live.strategy_nodes.betting_arbitrage \
-            validate-manifest \
-            --manifest "$GITHUB_WORKSPACE/deploy/strategy_nodes/betting_arbitrage/sxbet-single-venue.json"
+          py="$GITHUB_WORKSPACE/.venv/bin/python"
+          base="$GITHUB_WORKSPACE/deploy/strategy_nodes/betting_arbitrage"
+          for m in \
+            sxbet-single-venue \
+            sxbet-testnet-execution-readiness \
+            cloudbet-single-venue \
+            cloudbet-execution-readiness \
+            polymarket-single-venue \
+            polymarket-plus-sxbet.example; do
+            echo "== validate-manifest ${m} =="
+            "$py" -m nautilus_trader.live.strategy_nodes.betting_arbitrage \
+              validate-manifest --manifest "${base}/${m}.json"
+          done
 
-      - name: Validate SX.bet testnet execution-readiness manifest
-        env:
-          SXBET_API_KEY: ${{ secrets.SXBET_API_KEY }}
-          CLOUDBET_API_KEY: ${{ secrets.CLOUDBET_API_KEY }}
-          SXBET_TESTNET_MANIFEST: >-
-            ${{ github.workspace }}/deploy/strategy_nodes/betting_arbitrage/sxbet-testnet-execution-readiness.json
-        run: |
-          cd /tmp
-          "$GITHUB_WORKSPACE/.venv/bin/python" -m nautilus_trader.live.strategy_nodes.betting_arbitrage \
-            validate-manifest \
-            --manifest "$SXBET_TESTNET_MANIFEST"
-
-      - name: Probe SX.bet runtime semantic coverage
-        env:
-          SXBET_API_KEY: ${{ secrets.SXBET_API_KEY }}
-          CLOUDBET_API_KEY: ${{ secrets.CLOUDBET_API_KEY }}
+      - name: Probe SX.bet runtime semantic coverage (push/CI regression guard)
+        if: github.event_name != 'workflow_dispatch'
         run: |
           cd /tmp
           "$GITHUB_WORKSPACE/.venv/bin/python" -m nautilus_trader.live.strategy_nodes.betting_arbitrage \
@@ -290,106 +314,41 @@ jobs:
             --min-positive-margin-candidates 0 \
             --require-rust-semantic-topology
 
-      - name: Validate Cloudbet manifest
-        env:
-          CLOUDBET_API_KEY: ${{ secrets.CLOUDBET_API_KEY }}
-        run: |
-          cd /tmp
-          "$GITHUB_WORKSPACE/.venv/bin/python" -m nautilus_trader.live.strategy_nodes.betting_arbitrage \
-            validate-manifest \
-            --manifest "$GITHUB_WORKSPACE/deploy/strategy_nodes/betting_arbitrage/cloudbet-single-venue.json"
-
-      - name: Validate Cloudbet execution-readiness manifest
-        env:
-          CLOUDBET_API_KEY: ${{ secrets.CLOUDBET_API_KEY }}
-        run: |
-          cd /tmp
-          "$GITHUB_WORKSPACE/.venv/bin/python" -m nautilus_trader.live.strategy_nodes.betting_arbitrage \
-            validate-manifest \
-            --manifest "$GITHUB_WORKSPACE/deploy/strategy_nodes/betting_arbitrage/cloudbet-execution-readiness.json"
-
-      - name: Probe Cloudbet runtime semantic coverage
-        if: >-
-          github.event_name == 'workflow_dispatch' &&
-          github.event.inputs.manifest_path ==
-          'deploy/strategy_nodes/betting_arbitrage/cloudbet-single-venue.json'
-        env:
-          CLOUDBET_API_KEY: ${{ secrets.CLOUDBET_API_KEY }}
-        run: |
-          cd /tmp
-          "$GITHUB_WORKSPACE/.venv/bin/python" -m nautilus_trader.live.strategy_nodes.betting_arbitrage \
-            probe-runtime \
-            --manifest "$GITHUB_WORKSPACE/deploy/strategy_nodes/betting_arbitrage/cloudbet-single-venue.json" \
-            --timeout-seconds 420 \
-            --poll-interval-secs 5 \
-            --min-connected-nodes 2 \
-            --min-match-instruments 2 \
-            --min-quoted-match-instruments 2 \
-            --min-positive-margin-candidates 0 \
-            --require-rust-semantic-topology
-
-      - name: Validate Polymarket manifest
-        run: |
-          cd /tmp
-          "$GITHUB_WORKSPACE/.venv/bin/python" -m nautilus_trader.live.strategy_nodes.betting_arbitrage \
-            validate-manifest \
-            --manifest "$GITHUB_WORKSPACE/deploy/strategy_nodes/betting_arbitrage/polymarket-single-venue.json"
-
-      - name: Validate Polymarket multi-venue example
-        run: |
-          cd /tmp
-          "$GITHUB_WORKSPACE/.venv/bin/python" -m nautilus_trader.live.strategy_nodes.betting_arbitrage \
-            validate-manifest \
-            --manifest "$GITHUB_WORKSPACE/deploy/strategy_nodes/betting_arbitrage/polymarket-plus-sxbet.example.json"
-
-      - name: Validate selected dispatch manifest
+      # Deploy path: validate only the resolved node manifests (one per fleet node).
+      - name: Validate resolved deploy manifests
         if: github.event_name == 'workflow_dispatch'
         env:
-          INPUT_MANIFEST_PATH: ${{ github.event.inputs.manifest_path }}
+          RESOLVED_MANIFESTS: ${{ steps.resolve.outputs.manifests }}
         run: |
           cd /tmp
-          manifest_path="${INPUT_MANIFEST_PATH:-deploy/strategy_nodes/betting_arbitrage/sxbet-single-venue.json}"
-          case "$manifest_path" in
-            deploy/strategy_nodes/*.json) ;;
-            *)
-              echo "Manifest path must stay under deploy/strategy_nodes and point to a JSON file" >&2
-              exit 1
-              ;;
-          esac
-          "$GITHUB_WORKSPACE/.venv/bin/python" -m nautilus_trader.live.strategy_nodes.betting_arbitrage \
-            validate-manifest \
-            --manifest "$GITHUB_WORKSPACE/$manifest_path"
+          py="$GITHUB_WORKSPACE/.venv/bin/python"
+          for m in ${RESOLVED_MANIFESTS}; do
+            echo "== validate-manifest ${m} =="
+            "$py" -m nautilus_trader.live.strategy_nodes.betting_arbitrage \
+              validate-manifest --manifest "$GITHUB_WORKSPACE/${m}"
+          done
 
-      - name: Probe selected multi-venue runtime semantic coverage
-        if: >-
-          github.event_name == 'workflow_dispatch' &&
-          github.event.inputs.manifest_path ==
-          'deploy/strategy_nodes/betting_arbitrage/multi-venue-validation.json'
+      # Optional live runtime probe of the resolved node manifests (off by default; the
+      # deploy job's status wait verifies the node regardless). Enable with probe_runtime=true.
+      - name: Probe resolved deploy manifests runtime (opt-in)
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.probe_runtime == 'true'
         env:
-          SXBET_API_KEY: ${{ secrets.SXBET_API_KEY }}
-          CLOUDBET_API_KEY: ${{ secrets.CLOUDBET_API_KEY }}
-          POLYMARKET_PRIVATE_KEY: ${{ secrets.POLYMARKET_PRIVATE_KEY }}
-          POLYMARKET_PK: ${{ secrets.POLYMARKET_PK }}
-          POLYMARKET_FUNDER: ${{ secrets.POLYMARKET_FUNDER }}
-          POLYMARKET_API_KEY: ${{ secrets.POLYMARKET_API_KEY }}
-          POLYMARKET_API_SECRET: ${{ secrets.POLYMARKET_API_SECRET }}
-          POLYMARKET_PASSPHRASE: ${{ secrets.POLYMARKET_PASSPHRASE }}
+          RESOLVED_MANIFESTS: ${{ steps.resolve.outputs.manifests }}
         run: |
           cd /tmp
-          "$GITHUB_WORKSPACE/.venv/bin/python" -m nautilus_trader.live.strategy_nodes.betting_arbitrage \
-            probe-runtime \
-            --manifest "$GITHUB_WORKSPACE/deploy/strategy_nodes/betting_arbitrage/multi-venue-validation.json" \
-            --timeout-seconds 600 \
-            --poll-interval-secs 5 \
-            --min-connected-nodes 2 \
-            --min-match-instruments 2 \
-            --min-quoted-match-instruments 2 \
-            --min-quoted-node-count SXBET:2 \
-            --min-quoted-node-count POLYMARKET:2 \
-            --require-cross-venue-candidates-or-blockers \
-            --min-positive-margin-candidates 1 \
-            --allow-subscription-fallback \
-            --require-rust-semantic-topology
+          py="$GITHUB_WORKSPACE/.venv/bin/python"
+          for m in ${RESOLVED_MANIFESTS}; do
+            echo "== probe-runtime ${m} =="
+            "$py" -m nautilus_trader.live.strategy_nodes.betting_arbitrage \
+              probe-runtime --manifest "$GITHUB_WORKSPACE/${m}" \
+              --timeout-seconds 600 \
+              --poll-interval-secs 5 \
+              --min-connected-nodes 2 \
+              --min-match-instruments 2 \
+              --min-quoted-match-instruments 2 \
+              --min-positive-margin-candidates 0 \
+              --require-rust-semantic-topology
+          done
 
       - name: Upload rendered strategy-node artifacts to transient CI storage
         if: failure()
@@ -407,7 +366,8 @@ jobs:
   check-deploy-runner:
     name: check-ec2-deploy-runner
     timeout-minutes: 5
-    needs: [validate-manifests]
+    # Runs first (no deps) so a dead/offline deploy runner aborts the run in seconds,
+    # before the ~10 min validate. validate-manifests then needs this job.
     runs-on: [self-hosted, linux, x64, cloudbet-market-maker, ci, gcp, ubuntu24]
     permissions:
       actions: read
