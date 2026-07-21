@@ -25,10 +25,27 @@ on:
         description: Target strategy-node container name
         required: false
         default: betting-arbitrage-node-sxbet
-      image_transport:
-        description: 'How the deploy job gets the built image onto EC2: archive or registry'
+      fleet:
+        description: >-
+          Named fleet from deploy/strategy_nodes/fleets.json to deploy as one batch
+          (e.g. cross-venue-shards): builds once, then fans the deploy out over every node.
+          Empty = single node from manifest_path/container_name. Overridden by `nodes`.
         required: false
-        default: archive
+        default: ''
+      nodes:
+        description: >-
+          Explicit JSON array of {"manifest","container"} objects to deploy as one batch,
+          overriding `fleet` and manifest_path/container_name. Example:
+          [{"manifest":"deploy/strategy_nodes/betting_arbitrage/cloudbet-sxbet-baseball.json","container":"betting-arbitrage-node-baseball"}]
+        required: false
+        default: ''
+      image_transport:
+        description: >-
+          How the deploy job gets the built image onto the host. auto (default) prefers the
+          fastest available: local same-box daemon hand-off -> GHCR registry pull (layer-deduped)
+          -> R2 archive backup. Explicit local|registry|archive force a single transport.
+        required: false
+        default: auto
       probe_runtime:
         description: >-
           Run the live probe-runtime semantic-coverage check for the dispatched manifest before
@@ -162,12 +179,14 @@ jobs:
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       # Resolve the deploy target(s) into a canonical {manifest,container}[] list, exposed
-      # as a job output. Today this is the single dispatched node; the resolver also handles
-      # named `fleet` sets and explicit `nodes` arrays, which the batch/matrix deploy
-      # (follow-up) will wire in. Keeps validation scoped to exactly what is deployed.
+      # as a job output consumed by the deploy matrix. Precedence: explicit `nodes` array >
+      # named `fleet` set (fleets.json) > single manifest_path/container_name. Keeps validation
+      # scoped to exactly what is deployed, and lets one dispatch fan out over a whole fleet.
       - name: Resolve deploy node list
         id: resolve
         env:
+          NODES: ${{ github.event.inputs.nodes }}
+          FLEET: ${{ github.event.inputs.fleet }}
           MANIFEST: ${{ github.event.inputs.manifest_path }}
           CONTAINER: ${{ github.event.inputs.container_name }}
         run: python3 scripts/deploy/strategy_nodes/resolve_deploy_nodes.py >> "$GITHUB_OUTPUT"
@@ -542,11 +561,19 @@ jobs:
       - name: Download validated wheel
         run: bash scripts/ci/ci_transient_artifacts.sh get-prefix strategy-node-wheel dist
 
+      # GHCR is the registry tier of the auto transport (and the release push on push events).
+      # For auto it is best-effort: a login/push failure degrades to the local same-box daemon
+      # hand-off or the R2 archive backup rather than failing the build. registry transport keeps
+      # it mandatory; local/archive skip GHCR entirely.
       - name: Log in to GHCR
         if: >-
           github.event_name != 'workflow_dispatch' ||
           (github.event.inputs.deploy_enabled == 'true' &&
-          github.event.inputs.image_transport != 'archive')
+          (github.event.inputs.image_transport == 'auto' ||
+          github.event.inputs.image_transport == 'registry'))
+        continue-on-error: >-
+          ${{ github.event_name == 'workflow_dispatch' &&
+          github.event.inputs.image_transport == 'auto' }}
         uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
         with:
           registry: ghcr.io
@@ -583,7 +610,8 @@ jobs:
         if: >-
           github.event_name == 'workflow_dispatch' &&
           github.event.inputs.deploy_enabled == 'true' &&
-          github.event.inputs.image_transport == 'archive' &&
+          (github.event.inputs.image_transport == 'archive' ||
+          github.event.inputs.image_transport == 'auto') &&
           github.event.inputs.force_rebuild != 'true'
         env:
           CI_TRANSIENT_RUN_PREFIX: >-
@@ -610,7 +638,11 @@ jobs:
           ${{ steps.image-archive-cache.outputs.archive_exists != 'true' &&
           (github.event_name != 'workflow_dispatch' ||
           (github.event.inputs.deploy_enabled == 'true' &&
-          github.event.inputs.image_transport != 'archive')) }}
+          (github.event.inputs.image_transport == 'auto' ||
+          github.event.inputs.image_transport == 'registry'))) }}
+        continue-on-error: >-
+          ${{ github.event_name == 'workflow_dispatch' &&
+          github.event.inputs.image_transport == 'auto' }}
         env:
           IMAGE_REF: ${{ steps.meta.outputs.image_ref }}
         run: |
@@ -621,7 +653,8 @@ jobs:
           steps.image-archive-cache.outputs.archive_exists != 'true' &&
           github.event_name == 'workflow_dispatch' &&
           github.event.inputs.deploy_enabled == 'true' &&
-          github.event.inputs.image_transport == 'archive'
+          (github.event.inputs.image_transport == 'archive' ||
+          github.event.inputs.image_transport == 'auto')
         env:
           IMAGE_REF: ${{ steps.meta.outputs.image_ref }}
         run: |
@@ -635,7 +668,8 @@ jobs:
           steps.image-archive-cache.outputs.archive_exists != 'true' &&
           github.event_name == 'workflow_dispatch' &&
           github.event.inputs.deploy_enabled == 'true' &&
-          github.event.inputs.image_transport == 'archive'
+          (github.event.inputs.image_transport == 'archive' ||
+          github.event.inputs.image_transport == 'auto')
         env:
           CI_TRANSIENT_RUN_PREFIX: >-
             ${{ github.repository }}/${{ steps.meta.outputs.image_archive_namespace }}
@@ -655,9 +689,17 @@ jobs:
   deploy-strategy-node:
     name: deploy-strategy-node
     timeout-minutes: 45
-    needs: [build-strategy-node-image]
+    needs: [validate-manifests, build-strategy-node-image]
     if: github.event_name == 'workflow_dispatch' && github.event.inputs.deploy_enabled == 'true'
     runs-on: [self-hosted, linux, x64, ec2, deploy, trading]
+    # Fan out over the resolved fleet: build once (shared image), then deploy each node.
+    # max-parallel: 1 because there is a single deploy runner and one shared Docker daemon;
+    # fail-fast: false so one node's failure still lets the others (and their diagnostics) run.
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        node: ${{ fromJSON(needs.validate-manifests.outputs.nodes) }}
     env:
       STRATEGY_NODE_ENV_FILE: ${{ secrets.STRATEGY_NODE_ENV_FILE }}
       STRATEGY_NODE_GHCR_USERNAME: ${{ secrets.STRATEGY_NODE_GHCR_USERNAME }}
@@ -672,7 +714,7 @@ jobs:
       POLYMARKET_API_KEY: ${{ secrets.POLYMARKET_API_KEY }}
       POLYMARKET_API_SECRET: ${{ secrets.POLYMARKET_API_SECRET }}
       POLYMARKET_PASSPHRASE: ${{ secrets.POLYMARKET_PASSPHRASE }}
-      STRATEGY_NODE_CONTAINER_NAME: ${{ github.event.inputs.container_name }}
+      STRATEGY_NODE_CONTAINER_NAME: ${{ matrix.node.container }}
       STRATEGY_NODE_IMAGE_TRANSPORT: ${{ github.event.inputs.image_transport }}
       BETTING_LIVE_EXECUTION_ARMED_INPUT: ${{ github.event.inputs.live_execution_armed }}
     steps:
@@ -745,9 +787,9 @@ jobs:
               ;;
           esac
           case "$STRATEGY_NODE_IMAGE_TRANSPORT" in
-            archive|registry) ;;
+            auto|local|registry|archive) ;;
             *)
-              echo "STRATEGY_NODE_IMAGE_TRANSPORT must be archive or registry" >&2
+              echo "STRATEGY_NODE_IMAGE_TRANSPORT must be auto, local, registry or archive" >&2
               exit 1
               ;;
           esac
@@ -782,32 +824,14 @@ jobs:
             echo "image_archive_namespace=strategy-node-images/$tag"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Download strategy-node image archive
-        if: github.event.inputs.image_transport == 'archive'
-        env:
-          CI_TRANSIENT_RUN_PREFIX: >-
-            ${{ github.repository }}/${{
-              needs.build-strategy-node-image.outputs.image_archive_namespace ||
-              steps.deploy-meta.outputs.image_archive_namespace
-            }}
-          IMAGE_ARCHIVE_KEY: >-
-            ${{
-              needs.build-strategy-node-image.outputs.image_archive_key ||
-              steps.deploy-meta.outputs.image_archive_key
-            }}
-        run: >-
-          bash scripts/ci/ci_transient_artifacts.sh get
-          "$IMAGE_ARCHIVE_KEY"
-          artifacts/strategy-node-image/betting-arbitrage-node.tar.gz
-
       - name: Prepare local deploy assets
         id: deploy-assets
         env:
-          INPUT_MANIFEST_PATH: ${{ github.event.inputs.manifest_path }}
+          INPUT_MANIFEST_PATH: ${{ matrix.node.manifest }}
           SEMANTIC_CACHE_MODE: ${{ github.event.inputs.semantic_cache_mode }}
           SEMANTIC_CACHE_DEFAULT_ROOT: ${{ github.event.inputs.semantic_cache_default_root }}
         run: |
-          deploy_tmp="${RUNNER_TEMP:-/tmp}/strategy-node-release-${GITHUB_RUN_ID}"
+          deploy_tmp="${RUNNER_TEMP:-/tmp}/strategy-node-release-${GITHUB_RUN_ID}-${STRATEGY_NODE_CONTAINER_NAME}"
           rm -rf "$deploy_tmp"
           install -d -m 700 "$deploy_tmp"
 
@@ -893,14 +917,65 @@ jobs:
             echo "registry_token_file=$deploy_tmp/strategy-node-ghcr-token"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Load strategy-node image archive
-        if: github.event.inputs.image_transport == 'archive'
+      # Get the built image onto the host by the preference chain (mirrors hostctl --transport
+      # auto): local same-box daemon hand-off (zero transfer) -> GHCR registry pull (layer
+      # dedup) -> R2 archive backup. Runs once per matrix leg, but the image is fleet-wide, so
+      # the first leg populates the daemon and later legs hit the local tier for free.
+      - name: Ensure strategy-node image present
+        env:
+          IMAGE_REF: ${{ needs.build-strategy-node-image.outputs.image_ref || steps.deploy-meta.outputs.image_ref }}
+          CI_TRANSIENT_RUN_PREFIX: >-
+            ${{ github.repository }}/${{
+              needs.build-strategy-node-image.outputs.image_archive_namespace ||
+              steps.deploy-meta.outputs.image_archive_namespace
+            }}
+          IMAGE_ARCHIVE_KEY: >-
+            ${{
+              needs.build-strategy-node-image.outputs.image_archive_key ||
+              steps.deploy-meta.outputs.image_archive_key
+            }}
         run: |
-          image_archive="artifacts/strategy-node-image/betting-arbitrage-node.tar.gz"
-          test -f "$image_archive"
-          if ! docker load -i "$image_archive"; then
-            sudo -n docker load -i "$image_archive"
+          transport="$STRATEGY_NODE_IMAGE_TRANSPORT"
+
+          # tier 1 — local daemon (same-box build hand-off: zero transfer)
+          if { [ "$transport" = "auto" ] || [ "$transport" = "local" ]; } \
+            && docker image inspect "$IMAGE_REF" > /dev/null 2>&1; then
+            echo "image already present in local daemon: $IMAGE_REF (no transfer)"
+            exit 0
           fi
+
+          # tier 2 — GHCR registry pull (only changed layers cross the wire)
+          if [ "$transport" = "auto" ] || [ "$transport" = "registry" ]; then
+            if [ -n "$STRATEGY_NODE_GHCR_TOKEN" ]; then
+              printf '%s' "$STRATEGY_NODE_GHCR_TOKEN" \
+                | docker login ghcr.io -u "$STRATEGY_NODE_GHCR_USERNAME" --password-stdin > /dev/null
+            fi
+            if docker pull "$IMAGE_REF"; then
+              echo "pulled image from GHCR: $IMAGE_REF"
+              exit 0
+            fi
+            if [ "$transport" = "registry" ]; then
+              echo "registry transport requested but GHCR pull failed for $IMAGE_REF" >&2
+              exit 1
+            fi
+            echo "GHCR pull unavailable; falling back to R2 archive backup"
+          fi
+
+          # tier 3 — R2 archive backup (durable fallback / explicit archive transport)
+          if [ "$transport" = "auto" ] || [ "$transport" = "archive" ]; then
+            image_archive="artifacts/strategy-node-image/betting-arbitrage-node.tar.gz"
+            mkdir -p "$(dirname "$image_archive")"
+            bash scripts/ci/ci_transient_artifacts.sh get "$IMAGE_ARCHIVE_KEY" "$image_archive"
+            test -f "$image_archive"
+            if ! docker load -i "$image_archive"; then
+              sudo -n docker load -i "$image_archive"
+            fi
+            echo "loaded image from R2 archive backup: $IMAGE_REF"
+            exit 0
+          fi
+
+          echo "unable to obtain image $IMAGE_REF via transport '$transport'" >&2
+          exit 1
 
       - name: Verify EC2 deploy host health
         run: |
@@ -941,7 +1016,7 @@ jobs:
 
       - name: Wait for deployed node status and semantic cache
         env:
-          INPUT_MANIFEST_PATH: ${{ github.event.inputs.manifest_path }}
+          INPUT_MANIFEST_PATH: ${{ matrix.node.manifest }}
         run: |
           manifest_path="$INPUT_MANIFEST_PATH"
           if [ -z "$manifest_path" ]; then
@@ -1125,7 +1200,7 @@ jobs:
       - name: Evaluate deployed runtime report
         if: always()
         env:
-          MANIFEST_PATH: ${{ github.event.inputs.manifest_path }}
+          MANIFEST_PATH: ${{ matrix.node.manifest }}
         run: |
           if [ ! -f artifacts/strategy-node-deploy/status.json ]; then
             echo "No deployed status artifact available for runtime report evaluation."
