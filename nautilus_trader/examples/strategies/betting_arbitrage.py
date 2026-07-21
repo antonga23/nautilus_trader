@@ -70,6 +70,8 @@ from nautilus_trader.adapters.betting.semantics import FileRuleCache
 from nautilus_trader.adapters.betting.semantics import PolymarketSportsTransformer
 from nautilus_trader.adapters.betting.semantics import RuleStore
 from nautilus_trader.adapters.betting.semantics import is_void_compatible_middle
+from nautilus_trader.config import PositiveFloat
+from nautilus_trader.config import PositiveInt
 from nautilus_trader.config import StrategyConfig
 from nautilus_trader.core.message import Event
 from nautilus_trader.common.events import TimeEvent
@@ -429,6 +431,18 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         cross-venue common-fixture quote slot is spent on it. A venue absent from the
         mapping (the default for every venue) applies no depth gate, so existing
         manifests subscribe exactly as before.
+    quote_rebalance_enabled : bool, default False
+        Release stale unquoted quote subscriptions on venues at their quote ceiling
+        after each subscription refresh. The subscription passes only ever add quote
+        streams, so a venue pinned at its ceiling can strand slots on instruments
+        that never quote. Disabled by default so existing manifests keep the
+        add-only behavior.
+    quote_rebalance_unquoted_grace_secs : PositiveFloat, default 900.0
+        Minimum seconds a quote subscription must have been held without producing a
+        quote tick before the rebalance may release it. Also protects freshly
+        (re)subscribed streams from release churn.
+    quote_rebalance_max_unsubscribes_per_refresh : PositiveInt, default 25
+        Maximum quote subscriptions released per refresh across all venues.
     quote_freshness_profile : str, default "pre_match"
         Quote timing policy: "pre_match", "live", or "custom".
     quote_max_pair_skew_secs : float | None, default None
@@ -561,6 +575,9 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
     cross_venue_sequential_execution: bool = False
     cross_venue_anchor_venue: str | None = None
     min_quote_depth_by_venue: dict[str, float] = {}
+    quote_rebalance_enabled: bool = False
+    quote_rebalance_unquoted_grace_secs: PositiveFloat = 900.0
+    quote_rebalance_max_unsubscribes_per_refresh: PositiveInt = 25
     quote_freshness_profile: str = "pre_match"
     quote_max_pair_skew_secs: float | None = None
     quote_max_fetch_latency_secs: float | None = None
@@ -1036,6 +1053,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._betting_instruments_by_source_id: dict[str, CryptoBettingInstrument] = {}
         self._source_ids_by_betting_instrument_id: dict[str, InstrumentId] = {}
         self._latest_quotes: dict[str, QuoteTick] = {}
+        self._last_quote_received_ns: dict[str, int] = {}
+        self._quote_subscribed_at_ns: dict[str, int] = {}
         self._opportunities_found = 0
         self._opportunities_executed = 0
         self._raw_arbitrage_detections = 0
@@ -1106,6 +1125,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._instrument_refresh_graph_incremental_updates = 0
         self._instrument_refresh_stale_triggers = 0
         self._quote_unsubscribe_requests = 0
+        self._quote_rebalance_released_total = 0
+        self._quote_rebalance_released_by_venue: Counter[str] = Counter()
         self._instrument_refresh_requests_by_venue: Counter[str] = Counter()
         self._instrument_refresh_failures_by_venue: Counter[str] = Counter()
         self._instrument_refresh_added_by_venue: Counter[str] = Counter()
@@ -1854,6 +1875,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             self._subscribe_cross_venue_common_fixture_quote_ticks()
             self._subscribe_semantic_connected_quote_ticks()
             self._subscribe_semantic_unmatched_quote_probe_ticks()
+            self._rebalance_quote_subscriptions()
             return
         for instrument in resubscribe_instruments:
             self._subscribe_quote_ticks_for_instrument(instrument)
@@ -1898,8 +1920,10 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         quote_instrument_id = self._quote_subscription_instrument_id(instrument)
         for instrument_id in (instrument.id, quote_instrument_id):
             self._latest_quotes.pop(str(instrument_id), None)
+            self._last_quote_received_ns.pop(str(instrument_id), None)
         if str(quote_instrument_id) in self._quote_subscribed_instrument_ids:
             self._quote_subscribed_instrument_ids.discard(str(quote_instrument_id))
+            self._quote_subscribed_at_ns.pop(str(quote_instrument_id), None)
             self._quote_unsubscribe_requests += 1
             self._quote_unsubscribe_requests_by_venue[instrument.id.venue.value.upper()] += 1
             try:
@@ -2038,6 +2062,9 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         if instrument_id in self._quote_subscribed_instrument_ids:
             return False
         self._quote_subscribed_instrument_ids.add(instrument_id)
+        subscribed_at_ns = self._safe_clock_timestamp_ns()
+        if subscribed_at_ns is not None:
+            self._quote_subscribed_at_ns[instrument_id] = subscribed_at_ns
         self.subscribe_quote_ticks(quote_instrument_id)
         self.log.info(f"Subscribed to {quote_instrument_id}")
         return True
@@ -2664,6 +2691,127 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
     ) -> InstrumentId:
         return self._source_ids_by_betting_instrument_id.get(str(instrument.id), instrument.id)
 
+    def _rebalance_quote_subscriptions(self) -> int:
+        """
+        Release stale unquoted quote streams on venues pinned at their quote ceiling.
+
+        The subscription passes only ever add quote streams, so a venue at its ceiling
+        can strand slots on instruments that never quote while higher-value fixtures
+        wait for a subscription. This pass frees only the quote stream -- the
+        instrument stays in ``_subscribed_instruments`` and the opportunity graph --
+        for instruments that had a full unquoted grace window, excluding cross-venue
+        edge legs. Released instruments may be re-added by the next refresh's passes;
+        the grace window from (re)subscribe prevents tight release/re-add loops.
+
+        """
+        if not self._config.quote_rebalance_enabled:
+            return 0
+        limits = self._config.semantic_quote_subscription_limit_by_venue
+        if not limits:
+            return 0
+        now_ns = self._safe_clock_timestamp_ns()
+        if now_ns is None:
+            return 0
+        subscribed_by_venue = self._quote_subscription_counts_by_venue()
+        pressured_venues = {
+            venue for venue, limit in limits.items() if subscribed_by_venue.get(venue, 0) >= limit
+        }
+        if not pressured_venues:
+            return 0
+
+        subscribed_snapshot = tuple(self._subscribed_instruments)
+        candidates = self._stale_unquoted_quote_release_candidates(
+            subscribed_snapshot,
+            pressured_venues=pressured_venues,
+            now_ns=now_ns,
+        )
+        if not candidates:
+            return 0
+
+        candidate_instruments = list(subscribed_snapshot)
+        alias_keys_by_instrument_id, alias_venues_by_key = (
+            self._semantic_unmatched_quote_probe_alias_index(candidate_instruments)
+        )
+        alias_venue_depth = self._cross_venue_alias_venue_depth(
+            candidate_instruments,
+            alias_keys_by_instrument_id=alias_keys_by_instrument_id,
+        )
+        candidates.sort(
+            key=lambda instrument: self._cross_venue_common_fixture_quote_priority(
+                instrument,
+                alias_keys_by_instrument_id=alias_keys_by_instrument_id,
+                alias_venues_by_key=alias_venues_by_key,
+                alias_venue_depth=alias_venue_depth,
+            ),
+            reverse=True,
+        )
+        max_releases = self._config.quote_rebalance_max_unsubscribes_per_refresh
+        released_by_venue: Counter[str] = Counter()
+        released = 0
+        for instrument in candidates:
+            if released >= max_releases:
+                break
+            if self._release_quote_subscription(instrument):
+                released_by_venue[instrument.id.venue.value.upper()] += 1
+                released += 1
+        if released:
+            self.log.info(
+                "Released stale unquoted quote streams: "
+                f"released={released} "
+                f"total={len(self._quote_subscribed_instrument_ids)} "
+                f"by_venue={dict(sorted(released_by_venue.items()))}",
+            )
+        return released
+
+    def _stale_unquoted_quote_release_candidates(
+        self,
+        subscribed_snapshot: tuple[BettingInstrument, ...],
+        *,
+        pressured_venues: set[str],
+        now_ns: int,
+    ) -> list[BettingInstrument]:
+        grace_ns = int(self._config.quote_rebalance_unquoted_grace_secs * 1e9)
+        edge_leg_ids = {
+            str(instrument.id) for instrument in self._cross_venue_edge_leg_instruments()
+        }
+        candidates: list[BettingInstrument] = []
+        for instrument in subscribed_snapshot:
+            if instrument.id.venue.value.upper() not in pressured_venues:
+                continue
+            quote_key = str(self._quote_subscription_instrument_id(instrument))
+            if quote_key not in self._quote_subscribed_instrument_ids:
+                continue
+            if str(instrument.id) in edge_leg_ids:
+                continue
+            subscribed_at_ns = self._quote_subscribed_at_ns.get(quote_key)
+            # An unknown subscribe time cannot prove a full unquoted grace window
+            # elapsed; skip rather than churn a stream that may have just been added.
+            if subscribed_at_ns is None or now_ns - subscribed_at_ns < grace_ns:
+                continue
+            last_quote_ns = self._last_quote_received_ns.get(quote_key)
+            if last_quote_ns is not None and now_ns - last_quote_ns < grace_ns:
+                continue
+            candidates.append(instrument)
+        return candidates
+
+    def _release_quote_subscription(self, instrument: BettingInstrument) -> bool:
+        quote_instrument_id = self._quote_subscription_instrument_id(instrument)
+        quote_key = str(quote_instrument_id)
+        if quote_key not in self._quote_subscribed_instrument_ids:
+            return False
+        self._quote_subscribed_instrument_ids.discard(quote_key)
+        self._quote_subscribed_at_ns.pop(quote_key, None)
+        self._quote_rebalance_released_total += 1
+        self._quote_rebalance_released_by_venue[instrument.id.venue.value.upper()] += 1
+        try:
+            self.unsubscribe_quote_ticks(quote_instrument_id)
+        except Exception as exc:
+            self.log.warning(
+                "Unable to unsubscribe stale betting quote stream: "
+                f"instrument_id={quote_instrument_id} error={exc}",
+            )
+        return True
+
     def _log_graph_topology_summary(self) -> None:
         if not self._config.opportunity_graph_enabled:
             return
@@ -2839,6 +2987,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         # Store latest quote
         self._record_quote_receive_latency(tick, strategy_received_ns)
         self._latest_quotes[str(tick.instrument_id)] = tick
+        self._last_quote_received_ns[str(tick.instrument_id)] = strategy_received_ns
 
         instrument = self._coerce_betting_instrument(self.cache.instrument(tick.instrument_id))
         if instrument is None:
@@ -7539,6 +7688,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             "offloop_graph_build_failures": self._offloop_graph_build_failures,
             "instrument_refresh_stale_triggers": self._instrument_refresh_stale_triggers,
             "quote_unsubscribe_requests": self._quote_unsubscribe_requests,
+            "quote_rebalance_released_total": self._quote_rebalance_released_total,
             "instrument_cache_miss": self._instrument_cache_miss,
             "quote_odds_rejected": self._quote_odds_rejected,
             "instrument_cache_miss_by_venue": dict(
@@ -7694,6 +7844,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 *self._instrument_refresh_graph_rebuilds_by_venue.keys(),
                 *self._instrument_refresh_stale_triggers_by_venue.keys(),
                 *self._quote_unsubscribe_requests_by_venue.keys(),
+                *self._quote_rebalance_released_by_venue.keys(),
             },
         )
         return {
@@ -7713,6 +7864,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                     venue,
                     0,
                 ),
+                "quote_rebalance_released": self._quote_rebalance_released_by_venue.get(venue, 0),
             }
             for venue in venues
         }

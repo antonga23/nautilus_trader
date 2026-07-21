@@ -2887,6 +2887,154 @@ class TestBettingArbitrageStrategy:  # skipcq
                 cross_venue_common_fixture_quote_reserve_limit_per_venue=-1,
             )
 
+    _REBALANCE_NOW_NS = 1_000_000 * 1_000_000_000
+    _REBALANCE_STALE_NS = _REBALANCE_NOW_NS - 1_000 * 1_000_000_000
+    _REBALANCE_FRESH_NS = _REBALANCE_NOW_NS - 10 * 1_000_000_000
+
+    def _rebalance_strategy(
+        self,
+        *,
+        enabled: bool = True,
+        venue_limit: int = 2,
+        max_unsubscribes: int = 25,
+    ) -> BettingArbitrageStrategy:
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["CLOUDBET", "SXBET"]),
+                semantic_quote_subscription_limit_by_venue={"CLOUDBET": venue_limit},
+                quote_rebalance_enabled=enabled,
+                quote_rebalance_max_unsubscribes_per_refresh=max_unsubscribes,
+            ),
+        )
+        strategy.subscribe_quote_ticks = Mock()
+        strategy.unsubscribe_quote_ticks = Mock()
+        strategy._safe_clock_timestamp_ns = Mock(  # type: ignore[method-assign]
+            return_value=self._REBALANCE_NOW_NS,
+        )
+        return strategy
+
+    def _rebalance_subscribe(
+        self,
+        strategy: BettingArbitrageStrategy,
+        instrument: CryptoBettingInstrument,
+        *,
+        subscribed_at_ns: int = _REBALANCE_STALE_NS,
+        last_quote_ns: int | None = None,
+    ) -> None:
+        strategy._subscribed_instruments.add(instrument)
+        strategy._quote_subscribed_instrument_ids.add(str(instrument.id))
+        strategy._quote_subscribed_at_ns[str(instrument.id)] = subscribed_at_ns
+        if last_quote_ns is not None:
+            strategy._last_quote_received_ns[str(instrument.id)] = last_quote_ns
+
+    def test_quote_rebalance_disabled_by_default(self) -> None:  # skipcq
+        ensure(BettingArbitrageConfig().quote_rebalance_enabled is False)
+        strategy = self._rebalance_strategy(enabled=False, venue_limit=1)
+        stale = self._sxbet_instrument(event_id="cb-stale", venue="CLOUDBET", outcome="over")
+        self._rebalance_subscribe(strategy, stale)
+
+        released = strategy._rebalance_quote_subscriptions()
+
+        ensure(released == 0)
+        ensure(strategy.unsubscribe_quote_ticks.call_args_list == [])
+        ensure(str(stale.id) in strategy._quote_subscribed_instrument_ids)
+
+    def test_quote_rebalance_releases_stale_unquoted_but_keeps_edge_legs(self) -> None:  # skipcq
+        strategy = self._rebalance_strategy(venue_limit=2)
+        stale = self._sxbet_instrument(event_id="cb-stale", venue="CLOUDBET", outcome="over")
+        edge_leg = self._sxbet_instrument(
+            event_id="cb-edge",
+            venue="CLOUDBET",
+            outcome="home",
+            market_name="match_odds",
+        )
+        sxbet_leg = self._sxbet_instrument(
+            event_id="sx-edge",
+            venue="SXBET",
+            outcome="away",
+            market_name="match_odds",
+        )
+        for instrument in (stale, edge_leg):
+            self._rebalance_subscribe(strategy, instrument)
+        graph = cast(Any, strategy._opportunity_graph)
+        graph.nodes_by_id = {
+            "cb-edge": SimpleNamespace(instrument=edge_leg),
+            "sx-edge": SimpleNamespace(instrument=sxbet_leg),
+        }
+        graph.edges_by_id = {
+            "cross-edge": SimpleNamespace(
+                source_node_id="cb-edge",
+                target_node_id="sx-edge",
+            ),
+        }
+
+        released = strategy._rebalance_quote_subscriptions()
+        unsubscribed = [call.args[0] for call in strategy.unsubscribe_quote_ticks.call_args_list]
+
+        ensure(released == 1)
+        ensure(unsubscribed == [stale.id])
+        ensure(str(stale.id) not in strategy._quote_subscribed_instrument_ids)
+        ensure(str(edge_leg.id) in strategy._quote_subscribed_instrument_ids)
+        ensure(stale in strategy._subscribed_instruments)
+        ensure(strategy.get_stats()["quote_rebalance_released_total"] == 1)
+        ensure(strategy._quote_rebalance_released_by_venue["CLOUDBET"] == 1)
+
+    def test_quote_rebalance_skips_venue_under_ceiling(self) -> None:  # skipcq
+        strategy = self._rebalance_strategy(venue_limit=5)
+        stale = self._sxbet_instrument(event_id="cb-stale", venue="CLOUDBET", outcome="over")
+        self._rebalance_subscribe(strategy, stale)
+
+        released = strategy._rebalance_quote_subscriptions()
+
+        ensure(released == 0)
+        ensure(strategy.unsubscribe_quote_ticks.call_args_list == [])
+        ensure(str(stale.id) in strategy._quote_subscribed_instrument_ids)
+
+    def test_quote_rebalance_respects_max_unsubscribes_per_refresh(self) -> None:  # skipcq
+        strategy = self._rebalance_strategy(venue_limit=3, max_unsubscribes=2)
+        for index in range(3):
+            instrument = self._sxbet_instrument(
+                event_id=f"cb-stale-{index}",
+                venue="CLOUDBET",
+                outcome="over",
+            )
+            self._rebalance_subscribe(strategy, instrument)
+
+        released = strategy._rebalance_quote_subscriptions()
+
+        ensure(released == 2)
+        ensure(strategy.unsubscribe_quote_ticks.call_count == 2)
+        ensure(len(strategy._quote_subscribed_instrument_ids) == 1)
+
+    def test_quote_rebalance_keeps_fresh_subscriptions_and_recent_quotes(self) -> None:  # skipcq
+        strategy = self._rebalance_strategy(venue_limit=2)
+        fresh_subscribe = self._sxbet_instrument(
+            event_id="cb-fresh",
+            venue="CLOUDBET",
+            outcome="over",
+        )
+        recently_quoted = self._sxbet_instrument(
+            event_id="cb-quoted",
+            venue="CLOUDBET",
+            outcome="under",
+        )
+        self._rebalance_subscribe(
+            strategy,
+            fresh_subscribe,
+            subscribed_at_ns=self._REBALANCE_FRESH_NS,
+        )
+        self._rebalance_subscribe(
+            strategy,
+            recently_quoted,
+            last_quote_ns=self._REBALANCE_FRESH_NS,
+        )
+
+        released = strategy._rebalance_quote_subscriptions()
+
+        ensure(released == 0)
+        ensure(strategy.unsubscribe_quote_ticks.call_args_list == [])
+        ensure(len(strategy._quote_subscribed_instrument_ids) == 2)
+
     def test_resolution_horizon_priority_demotes_stale_past_fixtures(self) -> None:  # skipcq
         strategy = BettingArbitrageStrategy(
             config=BettingArbitrageConfig(max_resolution_horizon_hours=48.0),
