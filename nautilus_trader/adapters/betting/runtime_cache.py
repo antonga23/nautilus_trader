@@ -52,6 +52,9 @@ class VenueQuotePollStats:
     delisted_count: int = 0
     backoff_secs: float = 0.0
     last_error: str | None = None
+    tombstoned_market_count: int = 0
+    tombstone_skipped_count: int = 0
+    revalidation_probe_count: int = 0
 
 
 def active_venue_instrument_index_key(venue: str) -> str:
@@ -128,6 +131,9 @@ def encode_venue_quote_poll_stats(
     delisted_count: int = 0,
     backoff_secs: float = 0.0,
     last_error: str | None = None,
+    tombstoned_market_count: int = 0,
+    tombstone_skipped_count: int = 0,
+    revalidation_probe_count: int = 0,
 ) -> bytes:
     payload = {
         "venue": venue.strip().upper(),
@@ -166,6 +172,9 @@ def encode_venue_quote_poll_stats(
         "delisted_count": max(0, int(delisted_count)),
         "backoff_secs": max(0.0, float(backoff_secs)),
         "last_error": str(last_error)[:240] if last_error else None,
+        "tombstoned_market_count": max(0, int(tombstoned_market_count)),
+        "tombstone_skipped_count": max(0, int(tombstone_skipped_count)),
+        "revalidation_probe_count": max(0, int(revalidation_probe_count)),
     }
     return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
@@ -246,6 +255,9 @@ def decode_venue_quote_poll_stats(raw: bytes | None) -> VenueQuotePollStats | No
             delisted_count=int(payload.get("delisted_count") or 0),
             backoff_secs=float(payload.get("backoff_secs") or 0.0),
             last_error=str(payload.get("last_error") or "") or None,
+            tombstoned_market_count=int(payload.get("tombstoned_market_count") or 0),
+            tombstone_skipped_count=int(payload.get("tombstone_skipped_count") or 0),
+            revalidation_probe_count=int(payload.get("revalidation_probe_count") or 0),
         )
     except (TypeError, ValueError):
         return None

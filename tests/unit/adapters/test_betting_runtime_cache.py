@@ -1,3 +1,5 @@
+import json
+
 from nautilus_trader.adapters.betting.runtime_cache import ActiveVenueInstrumentIndex
 from nautilus_trader.adapters.betting.runtime_cache import VenueQuotePollStats
 from nautilus_trader.adapters.betting.runtime_cache import active_venue_instrument_index_key
@@ -74,6 +76,9 @@ def test_venue_quote_poll_stats_round_trip() -> None:
         delisted_count=3,
         backoff_secs=1.0,
         last_error="rate limit",
+        tombstoned_market_count=4,
+        tombstone_skipped_count=6,
+        revalidation_probe_count=2,
     )
 
     payload = decode_venue_quote_poll_stats(raw)
@@ -116,7 +121,37 @@ def test_venue_quote_poll_stats_round_trip() -> None:
         delisted_count=3,
         backoff_secs=1.0,
         last_error="rate limit",
+        tombstoned_market_count=4,
+        tombstone_skipped_count=6,
+        revalidation_probe_count=2,
     )
+
+
+def test_venue_quote_poll_stats_decode_defaults_missing_tombstone_fields() -> None:
+    raw = encode_venue_quote_poll_stats(
+        venue="cloudbet",
+        updated_at_ns=1,
+        cycle_id=1,
+        source="rest_event_poll",
+        subscribed_instrument_count=1,
+        market_count=1,
+        quote_count=1,
+    )
+    payload_dict = json.loads(raw)
+    for key in (
+        "tombstoned_market_count",
+        "tombstone_skipped_count",
+        "revalidation_probe_count",
+    ):
+        payload_dict.pop(key)
+    old_raw = json.dumps(payload_dict).encode("utf-8")
+
+    payload = decode_venue_quote_poll_stats(old_raw)
+
+    assert payload is not None
+    assert payload.tombstoned_market_count == 0
+    assert payload.tombstone_skipped_count == 0
+    assert payload.revalidation_probe_count == 0
 
 
 def test_latency_percentiles_normalize_empty_and_negative_values() -> None:
