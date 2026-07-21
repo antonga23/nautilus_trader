@@ -5,7 +5,10 @@ CLI: dry-run the shard allocation or emit deployable manifests.
 over-capacity warnings, the diff against the current fleet manifests (by
 sport-set), and the exact deploy commands. ``emit`` additionally writes the
 manifests and validates each one through the repo manifest loader, the
-trading-node config builder, and the live-pilot lint script.
+trading-node config builder, and the live-pilot lint script. ``budget``
+re-plans per-venue ``quote_subscription_limit`` values from live status
+signals (dry-run table by default, ``--apply`` to rewrite and revalidate the
+manifests).
 """
 
 from __future__ import annotations
@@ -15,6 +18,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from tools.shardplan import budget
 from tools.shardplan import collect
 from tools.shardplan import emit
 from tools.shardplan.pack import Bin
@@ -190,6 +194,33 @@ def _report(args: argparse.Namespace, manifest_dir: Path) -> tuple[PackResult, l
     return result, unmatched
 
 
+def _budget(args: argparse.Namespace) -> int:
+    proposals = budget.plan_budgets(
+        args.nodes_root,
+        args.manifests,
+        headroom=args.headroom,
+        min_floor_ratio=args.min_floor_ratio,
+    )
+    if not proposals:
+        raise SystemExit("No budget proposals; pass a --nodes-root with status payloads")
+    print(f"== Quote subscription budgets (headroom={args.headroom}) ==")
+    print(budget.format_proposals(proposals))
+    if not args.apply:
+        print()
+        print("Dry-run only; pass --apply to rewrite the manifests.")
+        return 0
+    try:
+        rewritten = budget.apply_proposals(proposals, args.manifests, template_path=args.template)
+    except emit.ManifestValidationError as error:
+        print(f"Manifest validation failed: {error}")
+        return 1
+    print()
+    print("== Rewritten manifests (validated: load + build + lint) ==")
+    for path in rewritten:
+        print(f"  {path}")
+    return 0
+
+
 def _add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--nodes-root", type=Path, help="Fleet nodes root with status payloads")
     parser.add_argument(
@@ -213,11 +244,34 @@ def main(argv: list[str] | None = None) -> int:
     _add_common_args(emit_cmd)
     emit_cmd.add_argument("--out", type=Path, required=True, help="Output manifest directory")
 
+    budget_cmd = subparsers.add_parser(
+        "budget",
+        help="Re-plan per-venue quote subscription budgets from live status signals",
+    )
+    budget_cmd.add_argument(
+        "--nodes-root",
+        type=Path,
+        required=True,
+        help="Fleet nodes root with status payloads",
+    )
+    budget_cmd.add_argument("--manifests", type=Path, default=DEFAULT_DEPLOY_DIR)
+    budget_cmd.add_argument("--apply", action="store_true", help="Rewrite the manifests")
+    budget_cmd.add_argument("--headroom", type=float, default=budget.DEFAULT_HEADROOM)
+    budget_cmd.add_argument(
+        "--min-floor-ratio",
+        type=float,
+        default=budget.DEFAULT_MIN_FLOOR_RATIO,
+    )
+    budget_cmd.add_argument("--template", type=Path, default=emit.TEMPLATE_PATH)
+
     args = parser.parse_args(argv)
 
     if args.command == "dry-run":
         _report(args, args.deploy_dir)
         return 0
+
+    if args.command == "budget":
+        return _budget(args)
 
     result, _ = _report(args, args.out)
     paths = emit.emit_manifests(result.bins, args.out, template_path=args.template)
