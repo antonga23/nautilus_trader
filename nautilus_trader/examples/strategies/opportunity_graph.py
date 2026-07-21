@@ -211,7 +211,17 @@ class OpportunityGraph:
         self._semantic_template_payloads_cache_store: RuleStore | None = None
         self._semantic_template_payloads_cache_generation: int | None = None
         self._semantic_template_payloads_cache_counts: tuple[int, int] = (0, 0)
+        self._semantic_coverage_payloads_cache: (
+            tuple[list[dict[str, object]], list[dict[str, object]]] | None
+        ) = None
+        self._semantic_coverage_payloads_cache_store: RuleStore | None = None
+        self._semantic_coverage_payloads_cache_generation: int | None = None
+        self._semantic_coverage_payloads_cache_summary: dict[str, object] = (
+            self._empty_coverage_summary()
+        )
         self._rust_semantic_templates_loaded = False
+        self._rust_semantic_coverage_store: RuleStore | None = None
+        self._rust_semantic_coverage_generation: int | None = None
         self.nodes_by_id: dict[str, OpportunityNode] = {}
         self.edges_by_id: dict[str, OpportunityEdge] = {}
         self.edge_ids_by_node_id: dict[str, set[str]] = {}
@@ -252,6 +262,10 @@ class OpportunityGraph:
         """
         if self._rust_core is not None:
             self._rust_core.clear()
+        # Rust clear() wipes its coverage store, so the next coverage load must not
+        # be skipped by the generation guard.
+        self._rust_semantic_coverage_store = None
+        self._rust_semantic_coverage_generation = None
         self.nodes_by_id.clear()
         self.edges_by_id.clear()
         self.edge_ids_by_node_id.clear()
@@ -303,7 +317,6 @@ class OpportunityGraph:
         if node.node_id in self.nodes_by_id:
             return False
 
-        existing = [existing_node.instrument for existing_node in list(self.nodes_by_id.values())]
         self.nodes_by_id[node.node_id] = node
         self.edge_ids_by_node_id.setdefault(node.node_id, set())
         self._mirrored_nodes_by_id[node.node_id] = node
@@ -332,6 +345,11 @@ class OpportunityGraph:
             self._sync_edges_for_node(node.node_id)
             return added
 
+        existing = [
+            existing_node.instrument
+            for existing_node in list(self.nodes_by_id.values())
+            if existing_node.node_id != node.node_id
+        ]
         candidates = [*existing, instrument]
         semantic_templates = self._semantic_template_payloads()
         self._rust_semantic_templates_loaded = False
@@ -1350,7 +1368,27 @@ class OpportunityGraph:
             self._coverage_proof_count = 0
             self._coverage_hyperedge_count = 0
             self._coverage_summary_payload = self._empty_coverage_summary()
+            self._semantic_coverage_payloads_cache = None
+            self._semantic_coverage_payloads_cache_store = None
+            self._semantic_coverage_payloads_cache_generation = None
             return [], []
+
+        # Same disk-read hazard as _semantic_template_payloads: every call re-loads
+        # and gunzips each coverage proof and hyperedge, and the incremental
+        # add_instrument path calls this per added instrument. Serve a cached view
+        # keyed on the same store generation so both caches invalidate together.
+        generation = getattr(rule_store, "generation", None)
+        if (
+            generation is not None
+            and self._semantic_coverage_payloads_cache is not None
+            and self._semantic_coverage_payloads_cache_store is rule_store
+            and self._semantic_coverage_payloads_cache_generation == generation
+        ):
+            cached_proofs, cached_hyperedges = self._semantic_coverage_payloads_cache
+            self._coverage_proof_count = len(cached_proofs)
+            self._coverage_hyperedge_count = len(cached_hyperedges)
+            self._coverage_summary_payload = self._semantic_coverage_payloads_cache_summary
+            return cached_proofs, cached_hyperedges
 
         proof_payloads: list[dict[str, object]] = []
         proofs_by_id: dict[str, Any] = {}
@@ -1423,6 +1461,10 @@ class OpportunityGraph:
             proof_payloads,
             hyperedge_payloads,
         )
+        self._semantic_coverage_payloads_cache = (proof_payloads, hyperedge_payloads)
+        self._semantic_coverage_payloads_cache_store = rule_store
+        self._semantic_coverage_payloads_cache_generation = generation
+        self._semantic_coverage_payloads_cache_summary = self._coverage_summary_payload
         return proof_payloads, hyperedge_payloads
 
     @staticmethod
@@ -1658,7 +1700,22 @@ class OpportunityGraph:
         loader = getattr(self._rust_core, "load_semantic_coverage", None)
         if not callable(loader):
             return
+        # Re-marshalling every proof and hyperedge into Rust dominates the cost of an
+        # incremental add, and the payloads only change when the store does. Skip the
+        # reload while the generation last loaded is current; clear() resets the marker
+        # so full builds (and the semantic cache reload path, which also swaps in a
+        # fresh RuleStore) always load.
+        rule_store = self._semantic_rule_store()
+        generation = getattr(rule_store, "generation", None) if rule_store is not None else None
+        if (
+            generation is not None
+            and self._rust_semantic_coverage_store is rule_store
+            and self._rust_semantic_coverage_generation == generation
+        ):
+            return
         loader(coverage_proofs, coverage_hyperedges)
+        self._rust_semantic_coverage_store = rule_store
+        self._rust_semantic_coverage_generation = generation
 
     @classmethod
     def _semantic_pattern_payload(cls, pattern: SelectionPattern) -> dict[str, object]:
