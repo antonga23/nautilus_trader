@@ -1140,3 +1140,31 @@ class TestCloudbetDataClient:
         stats = data_client._cache.get("betting:venue_quote_poll_stats:CLOUDBET")
         assert b'"tombstone_skipped_count":1' in stats
         assert b'"tombstoned_market_count":1' in stats
+
+    def test_inject_pollability_registry_into_provider(self, data_client):
+        assert data_client.instrument_provider._pollability_registry is None
+
+        data_client._inject_pollability_registry()
+
+        assert (
+            data_client.instrument_provider._pollability_registry
+            is data_client._market_pollability
+        )
+
+        data_client._inject_pollability_registry()
+
+        assert (
+            data_client.instrument_provider._pollability_registry
+            is data_client._market_pollability
+        )
+
+    def test_inject_pollability_registry_disabled_by_config(self, data_client):
+        from nautilus_trader.adapters.cloudbet.config import CloudbetDataClientConfig
+
+        data_client._config = CloudbetDataClientConfig(
+            quote_poll_unpollable_discovery_exclusion=False,
+        )
+
+        data_client._inject_pollability_registry()
+
+        assert data_client.instrument_provider._pollability_registry is None

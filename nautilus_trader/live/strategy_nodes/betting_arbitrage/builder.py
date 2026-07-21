@@ -438,6 +438,13 @@ def _build_cloudbet_data_importable(
         "quote_poll_adaptive_concurrency": venue.order_book_adaptive_concurrency,
         "quote_poll_event_batching": venue.order_book_event_batching,
         "quote_poll_missing_prune_threshold": venue.order_book_missing_prune_threshold,
+        "quote_poll_unpollable_revalidate_secs": venue.order_book_unpollable_revalidate_secs,
+        "quote_poll_unpollable_market_key_event_threshold": (
+            venue.order_book_unpollable_market_key_event_threshold
+        ),
+        "quote_poll_unpollable_discovery_exclusion": (
+            venue.order_book_unpollable_discovery_exclusion
+        ),
         "routing": {"venues": [venue.venue]},
     }
     return ImportableConfig(

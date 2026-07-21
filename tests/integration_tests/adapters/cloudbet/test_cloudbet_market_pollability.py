@@ -97,6 +97,75 @@ class TestMarketPollabilityRegistry:
         assert snapshot["tombstoned_market_count"] == 1
         assert snapshot["unpollable_market_key_count"] == 0
 
+    def test_exclude_from_discovery_while_tombstoned(self):
+        registry = MarketPollabilityRegistry(miss_threshold=1, revalidate_secs=600.0)
+        registry.record_miss(1, "m", reason="line_404", now_ns=0)
+
+        assert registry.exclude_from_discovery(1, "m", now_ns=1) is True
+        # Tombstones stay excluded from discovery even past the revalidation window:
+        # poll-side probes (or the 24h record TTL) are the way back in.
+        assert registry.exclude_from_discovery(1, "m", now_ns=601 * SECOND_NS) is True
+
+    def test_exclude_from_discovery_not_tombstoned_included(self):
+        registry = MarketPollabilityRegistry(miss_threshold=3, revalidate_secs=600.0)
+        registry.record_miss(1, "m", reason="line_404", now_ns=0)
+        registry.record_miss(1, "m", reason="line_404", now_ns=1)
+
+        assert registry.exclude_from_discovery(1, "m", now_ns=2) is False
+        assert registry.exclude_from_discovery(2, "m", now_ns=2) is False
+        assert registry.exclude_from_discovery(1, "other", now_ns=2) is False
+
+    def test_exclude_from_discovery_cleared_by_success(self):
+        registry = MarketPollabilityRegistry(miss_threshold=1, revalidate_secs=600.0)
+        registry.record_miss(1, "m", reason="line_404", now_ns=0)
+        registry.record_success(1, "m")
+
+        assert registry.exclude_from_discovery(1, "m", now_ns=1) is False
+
+    def test_exclude_from_discovery_escalated_key_excludes_new_events(self):
+        registry = MarketPollabilityRegistry(
+            miss_threshold=1,
+            revalidate_secs=600.0,
+            market_key_event_threshold=3,
+        )
+        for event_id in (1, 2, 3):
+            registry.record_miss(event_id, "m", reason="line_404", now_ns=0)
+
+        # A never-tombstoned event on an escalated key is excluded too.
+        assert registry.exclude_from_discovery(99, "m", now_ns=1) is True
+        assert registry.exclude_from_discovery(99, "other", now_ns=1) is False
+
+    def test_exclude_from_discovery_admits_canary_when_revalidation_due(self):
+        registry = MarketPollabilityRegistry(
+            miss_threshold=1,
+            revalidate_secs=600.0,
+            market_key_event_threshold=3,
+        )
+        for event_id in (1, 2, 3):
+            registry.record_miss(event_id, "m", reason="line_404", now_ns=0)
+        due_ns = 601 * SECOND_NS
+
+        assert registry.exclude_from_discovery(1, "m", now_ns=599 * SECOND_NS) is True
+        # Only the smallest tombstoned event_id is admitted, and only once due.
+        assert registry.exclude_from_discovery(1, "m", now_ns=due_ns) is False
+        assert registry.exclude_from_discovery(2, "m", now_ns=due_ns) is True
+        assert registry.exclude_from_discovery(3, "m", now_ns=due_ns) is True
+
+    def test_exclude_from_discovery_does_not_consume_probe(self):
+        registry = MarketPollabilityRegistry(
+            miss_threshold=1,
+            revalidate_secs=600.0,
+            market_key_event_threshold=3,
+        )
+        for event_id in (1, 2, 3):
+            registry.record_miss(event_id, "m", reason="line_404", now_ns=0)
+        due_ns = 601 * SECOND_NS
+
+        assert registry.exclude_from_discovery(1, "m", now_ns=due_ns) is False
+        assert registry.exclude_from_discovery(1, "m", now_ns=due_ns) is False
+        # The poll-side revalidation probe is still available to claim.
+        assert registry.claim_revalidation_probe(1, "m", now_ns=due_ns) is True
+
     def test_clear_resets_state(self):
         registry = MarketPollabilityRegistry(miss_threshold=1, revalidate_secs=600.0)
         registry.record_miss(1, "m", reason="malformed_request", now_ns=0)

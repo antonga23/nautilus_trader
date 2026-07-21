@@ -211,6 +211,7 @@ class CloudbetDataClient(LiveMarketDataClient):
     async def _connect(self):
         self._log.info("Initialising instruments...")
         await self._client.connect()
+        self._inject_pollability_registry()
         # load all instruments asynchronously or load instruments based on config and filters (Default: None)
         await self._instrument_provider.initialize()
         # publish instruments to data engine => Data engine will handle propagating to relevant actors/strategies
@@ -831,6 +832,13 @@ class CloudbetDataClient(LiveMarketDataClient):
 
     def _is_structurally_unpollable_error(self, error: str) -> bool:
         return self._is_delisted_quote_error(error) or self._is_malformed_request_error(error)
+
+    def _inject_pollability_registry(self) -> None:
+        if not bool(
+            getattr(self._config, "quote_poll_unpollable_discovery_exclusion", True),
+        ):
+            return
+        self._instrument_provider.set_pollability_registry(self._market_pollability)
 
     def _pollability_key(self, instrument_id: InstrumentId) -> tuple[int, str] | None:
         instrument = self._instrument_provider.find(instrument_id)
