@@ -4421,6 +4421,10 @@ class TestBettingArbitrageNodeRunner:
             quotes={"sxbet-node": object()},
             matched_node_ids={"sxbet-node", "cloudbet-node"},
             candidate_venue_pairs={"SXBET->SXBET": {"positive": 1}},
+            provider_quote_poll_stats={
+                "CLOUDBET": {"subscribed_instrument_count": 3},
+                "SXBET": {"subscribed_instrument_count": 1},
+            },
         )
 
         assert coverage["enabledVenues"] == ["CLOUDBET", "POLYMARKET", "SXBET"]
@@ -4438,6 +4442,8 @@ class TestBettingArbitrageNodeRunner:
         }
         assert coverage["quoteSubscriptionLimits"] == {"CLOUDBET": 80, "SXBET": 120}
         assert coverage["quoteSubscriptionLimitExceededCounts"] == {}
+        assert coverage["providerSubscribedCounts"] == {"CLOUDBET": 3, "SXBET": 1}
+        assert coverage["providerVsStrategySubscriptionDrift"] == {"CLOUDBET": 2, "SXBET": 0}
         assert coverage["quoteSubscriptionGapCounts"] == {
             "CLOUDBET": 1,
             "POLYMARKET": 0,
