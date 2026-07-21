@@ -561,11 +561,19 @@ jobs:
       - name: Download validated wheel
         run: bash scripts/ci/ci_transient_artifacts.sh get-prefix strategy-node-wheel dist
 
+      # GHCR is the registry tier of the auto transport (and the release push on push events).
+      # For auto it is best-effort: a login/push failure degrades to the local same-box daemon
+      # hand-off or the R2 archive backup rather than failing the build. registry transport keeps
+      # it mandatory; local/archive skip GHCR entirely.
       - name: Log in to GHCR
         if: >-
           github.event_name != 'workflow_dispatch' ||
           (github.event.inputs.deploy_enabled == 'true' &&
-          github.event.inputs.image_transport != 'archive')
+          (github.event.inputs.image_transport == 'auto' ||
+          github.event.inputs.image_transport == 'registry'))
+        continue-on-error: >-
+          ${{ github.event_name == 'workflow_dispatch' &&
+          github.event.inputs.image_transport == 'auto' }}
         uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
         with:
           registry: ghcr.io
@@ -630,7 +638,11 @@ jobs:
           ${{ steps.image-archive-cache.outputs.archive_exists != 'true' &&
           (github.event_name != 'workflow_dispatch' ||
           (github.event.inputs.deploy_enabled == 'true' &&
-          github.event.inputs.image_transport != 'archive')) }}
+          (github.event.inputs.image_transport == 'auto' ||
+          github.event.inputs.image_transport == 'registry'))) }}
+        continue-on-error: >-
+          ${{ github.event_name == 'workflow_dispatch' &&
+          github.event.inputs.image_transport == 'auto' }}
         env:
           IMAGE_REF: ${{ steps.meta.outputs.image_ref }}
         run: |
