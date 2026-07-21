@@ -93,7 +93,7 @@ bounds pathological catalogs. The `shardplan budget` planner relaxes to guardrai
 ## Failure modes
 
 - **Tier blob stale/missing** → all-hot (today's behavior); no dark markets.
-- **Mis-tiered valuable market** → it quotes slowly (cold ≈ 30–60 s) until the next
+- **Valuable market tiered too low** → it quotes slowly (cold ≈ 30–60 s) until the next
   refresh promotes it — degraded, recoverable, observable (tier counts in poll stats).
   Contrast with the budget model's failure mode: the market is fully dark, invisibly.
 - **Hot set grows beyond poll capacity** → the adaptive concurrency ramp is the
