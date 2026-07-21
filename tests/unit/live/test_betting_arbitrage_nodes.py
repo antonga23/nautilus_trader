@@ -6930,11 +6930,24 @@ class TestBettingArbitrageNodeRunner:
         assert "CLOUDBET_API_KEY: ${{ secrets.CLOUDBET_API_KEY }}" in workflow
         assert "POLYMARKET_API_SECRET: ${{ secrets.POLYMARKET_API_SECRET }}" in workflow
         assert "MANIFEST: ${{ github.event.inputs.manifest_path }}" in workflow
-        assert "INPUT_MANIFEST_PATH: ${{ github.event.inputs.manifest_path }}" in workflow
         assert "append_env_secret CLOUDBET_API_KEY" in workflow
         assert "runs-on: [self-hosted, linux, x64, ec2, deploy, trading]" in workflow
         assert "Prepare local deploy assets" in workflow
-        assert "Load strategy-node image archive" in workflow
+        # Batch/matrix fleet deploy: the deploy job fans out over the resolved node list,
+        # so per-node values come from the matrix rather than the single dispatch inputs.
+        assert "node: ${{ fromJSON(needs.validate-manifests.outputs.nodes) }}" in workflow
+        assert "max-parallel: 1" in workflow
+        assert "fail-fast: false" in workflow
+        assert "STRATEGY_NODE_CONTAINER_NAME: ${{ matrix.node.container }}" in workflow
+        assert "INPUT_MANIFEST_PATH: ${{ matrix.node.manifest }}" in workflow
+        assert "MANIFEST_PATH: ${{ matrix.node.manifest }}" in workflow
+        assert "FLEET: ${{ github.event.inputs.fleet }}" in workflow
+        assert "NODES: ${{ github.event.inputs.nodes }}" in workflow
+        # Image-transport preference chain (auto: local same-box -> GHCR pull -> R2 archive).
+        assert "Ensure strategy-node image present" in workflow
+        assert 'docker image inspect "$IMAGE_REF"' in workflow
+        assert 'docker pull "$IMAGE_REF"' in workflow
+        assert "auto|local|registry|archive" in workflow
         assert '--env-file "$LOCAL_DEPLOY_ENV_FILE"' in workflow
         assert "current-session.json" in workflow
         assert "manifest.runtime release current-session" in workflow
