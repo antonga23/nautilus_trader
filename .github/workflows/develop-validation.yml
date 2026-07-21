@@ -256,7 +256,7 @@ jobs:
       # OS) so a runaway compile is cgroup-OOM-killed instead of taking the host
       # down. Mirrors pr-validation; paired with CARGO_BUILD_JOBS below.
       options: >-
-        --memory=20g
+        --memory=12g
         --memory-swap=20g
         --cpus=6
     permissions:
@@ -397,11 +397,19 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
+      # Cap the test container's RAM (with swap headroom) so a parallel pytest run
+      # cannot exhaust the shared trading box. This job was previously uncapped -
+      # only the build job carried a cgroup limit - which is how an xdist run could
+      # OOM the swapless host. --cpus leaves cores for the co-located trading fleet.
+      options: >-
+        --memory=12g
+        --memory-swap=20g
+        --cpus=6
     env:
       REDIS_HOST: redis
       PGHOST: postgres
       UV_PYTHON: "3.12"
-      PYTEST_XDIST_WORKERS: "6"
+      PYTEST_XDIST_WORKERS: "4"
       FULL_SUITE_PYTEST_XDIST_WORKERS: "4"
       CARGO_HOME: ${{ github.workspace }}/.cache/cargo-home
       PGPASSWORD: pass

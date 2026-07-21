@@ -517,7 +517,6 @@ def test_cloudbet_team_to_win_a_set_normalizes_as_winner_binary_market():
         ("Tennis", "tennis.any_set_to_nil", "period=default|set1|set2|set3|set4|set5|wo"),
         ("Basketball", "basketball.team_to_lead_by_points", "period=ot&team=away&points=12"),
         ("Basketball", "basketball.any_team_to_lead_by_points", "period=ot&points=12"),
-        ("Baseball", "baseball.with_extra_inning", "period=ft|ot"),
     ],
 )
 def test_additional_deterministic_yes_no_families_normalize_as_winner_markets(
@@ -541,6 +540,54 @@ def test_additional_deterministic_yes_no_families_normalize_as_winner_markets(
 
     assert normalized.market_type == CanonicalMarketType.WINNER.value
     assert normalized.selection == "YES"
+
+
+def test_cloudbet_with_extra_inning_prop_normalizes_as_other_not_winner():
+    # "Will there be an extra inning" is a fixture proposition, not a winner market:
+    # classified as WINNER its YES/NO selections shadowed the true moneyline and could
+    # never pair with SXBET match_odds HOME/AWAY, keeping the baseball venue pair dead.
+    normalized = MarketNormalizer.normalize(
+        {
+            "provider": "CLOUDBET",
+            "sport_name": "Baseball",
+            "event_name": "Team A vs Team B",
+            "home_name": "Team A",
+            "away_name": "Team B",
+            "market_name": "baseball.with_extra_inning",
+            "market_type": "baseball.with_extra_inning",
+            "outcome": "yes",
+            "params": "period=ft|ot",
+        },
+    )
+
+    assert normalized.market_type == CanonicalMarketType.OTHER.value
+    assert normalized.market_family == CanonicalMarketType.OTHER.value
+    assert normalized.selection == "YES"
+
+
+def test_cloudbet_baseball_moneyline_normalizes_as_winner_home_away():
+    normalized = {
+        outcome: MarketNormalizer.normalize(
+            {
+                "provider": "CLOUDBET",
+                "sport_name": "Baseball",
+                "event_name": "Team A vs Team B",
+                "home_name": "Team A",
+                "away_name": "Team B",
+                "market_name": "baseball.moneyline",
+                "market_type": "baseball.moneyline",
+                "outcome": outcome,
+                "params": "period=ot&period=ft",
+            },
+        )
+        for outcome in ("home", "away")
+    }
+
+    assert {item.market_type for item in normalized.values()} == {
+        CanonicalMarketType.WINNER.value,
+    }
+    assert normalized["home"].selection == "HOME"
+    assert normalized["away"].selection == "AWAY"
 
 
 def test_team_scoped_binary_winner_payoffs_preserve_team_axis():

@@ -2549,6 +2549,9 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 continue
             if not self._instrument_resolution_horizon_quote_allowed(instrument):
                 continue
+            venue_limit = self._config.semantic_quote_subscription_limit_by_venue.get(venue)
+            if venue_limit is not None and subscribed_by_venue[venue] >= venue_limit:
+                continue
             if unmatched_probe_subscribed_by_venue[venue] >= per_venue_limit:
                 continue
             if self._subscribe_quote_ticks_for_instrument(instrument):
