@@ -1,0 +1,21 @@
+{
+  "_comment": "Named strategy-node fleet sets consumed by strategy-node-release.yml (the `fleet` dispatch input). Each entry maps a fleet name to the list of {manifest, container} nodes deployed together in one run. All nodes stay validation-mode / execution-disabled / structurally unarmed; arming is a separate deliberate step.",
+  "cross-venue-shards": [
+    {
+      "manifest": "deploy/strategy_nodes/betting_arbitrage/cloudbet-sxbet-baseball.json",
+      "container": "betting-arbitrage-node-baseball"
+    },
+    {
+      "manifest": "deploy/strategy_nodes/betting_arbitrage/cloudbet-sxbet-polymarket-basketball.json",
+      "container": "betting-arbitrage-node-basketball"
+    },
+    {
+      "manifest": "deploy/strategy_nodes/betting_arbitrage/cloudbet-sxbet-polymarket-soccer.json",
+      "container": "betting-arbitrage-node-soccer"
+    },
+    {
+      "manifest": "deploy/strategy_nodes/betting_arbitrage/cloudbet-sxbet-polymarket-tennis.json",
+      "container": "betting-arbitrage-node-tennis"
+    }
+  ]
+}

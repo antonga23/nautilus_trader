@@ -6889,12 +6889,19 @@ class TestBettingArbitrageNodeRunner:
 
     def test_release_workflow_validates_sxbet_manifest_with_semantic_env(self):
         workflow = Path(".github/workflows/strategy-node-release.yml").read_text()
-        assert "Validate SX.bet manifest" in workflow
+        # Full multi-venue manifest battery + SX.bet live probe are a push/CI-only
+        # regression guard (gated off workflow_dispatch); a deploy dispatch validates
+        # only the resolved node manifests and probes them opt-in.
+        assert "Validate venue manifest battery (push/CI regression guard)" in workflow
         assert "Probe SX.bet runtime semantic coverage" in workflow
-        assert "Validate Cloudbet manifest" in workflow
-        assert "Probe Cloudbet runtime semantic coverage" in workflow
-        assert "Probe selected multi-venue runtime semantic coverage" in workflow
-        assert "cloudbet-single-venue.json" in workflow
+        assert "sxbet-single-venue" in workflow
+        assert "cloudbet-single-venue" in workflow
+        assert "polymarket-single-venue" in workflow
+        assert "Resolve deploy node list" in workflow
+        assert "resolve_deploy_nodes.py" in workflow
+        assert "Validate resolved deploy manifests" in workflow
+        assert "Probe resolved deploy manifests runtime (opt-in)" in workflow
+        assert "github.event.inputs.probe_runtime == 'true'" in workflow
         assert "probe-runtime" in workflow
         assert "--min-quoted-match-instruments 2" in workflow
         assert "--min-positive-margin-candidates 0" in workflow
@@ -6902,7 +6909,6 @@ class TestBettingArbitrageNodeRunner:
         assert "--min-quoted-node-count CLOUDBET:2" in workflow
         assert "--min-quoted-node-count POLYMARKET:2" in workflow
         assert "--min-quoted-node-count SXBET:2" in workflow
-        assert "--allow-subscription-fallback" in workflow
         assert "min_positive_margin_candidates=0" in workflow
         assert (
             '[ "$manifest_path" = "deploy/strategy_nodes/betting_arbitrage/multi-venue-validation.json" ]'
@@ -6923,7 +6929,7 @@ class TestBettingArbitrageNodeRunner:
         assert "SXBET_API_KEY: ${{ secrets.SXBET_API_KEY }}" in workflow
         assert "CLOUDBET_API_KEY: ${{ secrets.CLOUDBET_API_KEY }}" in workflow
         assert "POLYMARKET_API_SECRET: ${{ secrets.POLYMARKET_API_SECRET }}" in workflow
-        assert "Validate selected dispatch manifest" in workflow
+        assert "MANIFEST: ${{ github.event.inputs.manifest_path }}" in workflow
         assert "INPUT_MANIFEST_PATH: ${{ github.event.inputs.manifest_path }}" in workflow
         assert "append_env_secret CLOUDBET_API_KEY" in workflow
         assert "runs-on: [self-hosted, linux, x64, ec2, deploy, trading]" in workflow
