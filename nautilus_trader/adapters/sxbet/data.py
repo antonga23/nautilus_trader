@@ -70,6 +70,10 @@ SUPPORTED_SXBET_ORDER_BOOK_TRANSPORTS = frozenset(
 # SX.bet realtime order status values (delta ``status`` / REST ``orderStatus``).
 _SXBET_ORDER_STATUS_ACTIVE = "ACTIVE"
 
+# Stream book seeding: bounded retry for the per-market REST snapshot.
+_SXBET_SEED_MAX_ATTEMPTS = 2
+_SXBET_SEED_RETRY_BACKOFF_SECS = 0.5
+
 
 class SXBetDataClient(LiveMarketDataClient):
     """
@@ -167,6 +171,15 @@ class SXBetDataClient(LiveMarketDataClient):
         # market_hash -> {orderHash: order_dict}. Local delta-applied book state.
         self._stream_books: dict[str, dict[str, dict]] = {}
         self._stream_subscribed_markets: set[str] = set()
+        self._stream_connect_count = 0
+        self._stream_connected_since_ns = 0
+        self._stream_fallback_activation_count = 0
+        self._stream_publication_count = 0
+        self._stream_seed_failure_count = 0
+        self._stream_quotes_since_stats = 0
+        self._stream_last_disconnect_reason: str | None = None
+        self._seed_semaphore = asyncio.Semaphore(max(1, self._order_book_concurrency))
+        self._seed_tasks: set[asyncio.Task] = set()
 
     async def _connect(self) -> None:
         """
@@ -220,6 +233,9 @@ class SXBetDataClient(LiveMarketDataClient):
             await self._realtime_client.stop()
             self._realtime_client = None
             self._stream_healthy = False
+
+        for task in list(self._seed_tasks):
+            task.cancel()
 
         if self._polling_task and not self._polling_task.done():
             self._polling_task.cancel()
@@ -280,8 +296,10 @@ class SXBetDataClient(LiveMarketDataClient):
     async def _poll_order_books_once(self) -> None:
         # In stream mode the poll loop is the fallback: it stays idle while the
         # realtime feed is healthy so the two paths never double-emit, and
-        # automatically takes over the moment the stream is unhealthy.
+        # automatically takes over the moment the stream is unhealthy. The idle
+        # pass still ticks, so piggyback it to keep the stream stats fresh.
         if self._order_book_transport == SXBET_TRANSPORT_STREAM and self._stream_healthy:
+            self._record_stream_stats()
             return
 
         market_hashes = self._subscribed_market_hashes()
@@ -711,7 +729,38 @@ class SXBetDataClient(LiveMarketDataClient):
                 rate_limit_count=rate_limit_count,
                 backoff_secs=backoff_secs,
                 last_error=last_error,
+                stream_connected=self._stream_healthy,
+                stream_connected_since_ns=self._stream_connected_since_ns,
+                stream_reconnect_count=max(0, self._stream_connect_count - 1),
+                stream_fallback_activation_count=self._stream_fallback_activation_count,
+                stream_publication_count=self._stream_publication_count,
+                stream_subscribed_channel_count=len(self._stream_subscribed_markets),
+                stream_subscribe_error_count=(
+                    self._realtime_client.subscribe_error_count
+                    if self._realtime_client is not None
+                    else 0
+                ),
+                stream_seed_failure_count=self._stream_seed_failure_count,
+                stream_last_disconnect_reason=self._stream_last_disconnect_reason,
             ),
+        )
+
+    def _record_stream_stats(self) -> None:
+        quote_count = self._stream_quotes_since_stats
+        self._stream_quotes_since_stats = 0
+        self._record_quote_poll_stats(
+            market_count=len(self._stream_subscribed_markets),
+            order_count=sum(len(book) for book in self._stream_books.values()),
+            quote_count=quote_count,
+            empty_count=0,
+            one_sided_count=0,
+            two_sided_count=0,
+            max_latency=0.0,
+            fetch_latency_percentiles=(0.0, 0.0, 0.0),
+            cycle_elapsed=0.0,
+            request_count=0,
+            source="realtime_stream",
+            quote_event_timestamp_source="stream_publication",
         )
 
     async def _fetch_and_publish_best_odds_batch_stats(
@@ -1075,6 +1124,7 @@ class SXBetDataClient(LiveMarketDataClient):
             max_reconnect_attempts=(None if self._config.reconnect_on_disconnect else 0),
             on_connected=self._on_stream_connected,
             on_disconnected=self._on_stream_disconnected,
+            on_subscribed=self._on_stream_subscribed,
         )
         await self._realtime_client.start()
         for instrument_id in list(self._subscribed_instruments):
@@ -1090,19 +1140,47 @@ class SXBetDataClient(LiveMarketDataClient):
         if market_hash in self._stream_subscribed_markets:
             return
         self._stream_subscribed_markets.add(market_hash)
+        # Seeding happens when the server acks the subscription (see
+        # ``_on_stream_subscribed``), so recovered channels can skip the snapshot.
         await self._realtime_client.subscribe(order_book_channel(market_hash))
-        if self._stream_healthy:
+
+    async def _on_stream_subscribed(self, channel: str, recovered: bool) -> None:
+        market_hash = market_hash_from_channel(channel)
+        if market_hash is None:
+            return
+        if recovered:
+            # Offset recovery already replayed the missed deltas on resubscribe,
+            # so the local book is current; reseeding every channel here is what
+            # produced the REST storm on each reconnect.
+            self._log.debug(f"SX.bet stream recovered {market_hash}; skipping REST reseed")
+            return
+        task = asyncio.create_task(self._seed_market_book_bounded(market_hash))
+        self._seed_tasks.add(task)
+        task.add_done_callback(self._seed_tasks.discard)
+
+    async def _seed_market_book_bounded(self, market_hash: str) -> None:
+        async with self._seed_semaphore:
             await self._seed_market_book(market_hash)
 
-    async def _seed_market_book(self, market_hash: str) -> None:
+    async def _seed_market_book(self, market_hash: str) -> bool:
         # REST snapshot + WS deltas: seed the local book from the order-book REST
-        # endpoint so the delta stream applies on top of a known state. Re-run on
-        # every (re)connect so a failed recovery window cannot leave a stale book.
-        try:
-            order_book = await self._http_client.get_order_book(market_hash)
-        except (ValueError, TypeError, KeyError, SXBetHttpClientError) as e:
-            self._log.warning(f"Failed to seed SX.bet stream book for {market_hash}: {e}")
-            return
+        # endpoint so the delta stream applies on top of a known state. Re-run for
+        # unrecovered channels on (re)connect so a failed recovery window cannot
+        # leave a stale book.
+        last_error: Exception | None = None
+        order_book: dict | None = None
+        for attempt in range(_SXBET_SEED_MAX_ATTEMPTS):
+            try:
+                order_book = await self._http_client.get_order_book(market_hash)
+                break
+            except (ValueError, TypeError, KeyError, SXBetHttpClientError) as e:
+                last_error = e
+                if attempt + 1 < _SXBET_SEED_MAX_ATTEMPTS:
+                    await asyncio.sleep(_SXBET_SEED_RETRY_BACKOFF_SECS)
+        if order_book is None:
+            self._stream_seed_failure_count += 1
+            self._log.warning(f"Failed to seed SX.bet stream book for {market_hash}: {last_error}")
+            return False
         orders = order_book.get("data", {}).get("orders", [])
         book: dict[str, dict] = {}
         for order in orders:
@@ -1113,8 +1191,10 @@ class SXBetDataClient(LiveMarketDataClient):
                 book[str(order_hash)] = order
         self._stream_books[market_hash] = book
         self._emit_stream_quotes(market_hash)
+        return True
 
     async def _on_stream_publication(self, channel: str, data: object) -> None:
+        self._stream_publication_count += 1
         market_hash = market_hash_from_channel(channel)
         if market_hash is None or not isinstance(data, list):
             return
@@ -1152,21 +1232,28 @@ class SXBetDataClient(LiveMarketDataClient):
                 continue
             self._handle_data(quote)
             published += 1
+        self._stream_quotes_since_stats += published
         return published
 
     async def _on_stream_connected(self) -> None:
         self._stream_healthy = True
+        self._stream_connect_count += 1
+        self._stream_connected_since_ns = self._clock.timestamp_ns()
         self._log.info(
             "SX.bet realtime stream healthy; REST poll loop on standby as fallback",
         )
-        for market_hash in sorted(self._stream_subscribed_markets):
-            await self._seed_market_book(market_hash)
+        self._record_stream_stats()
 
-    async def _on_stream_disconnected(self) -> None:
+    async def _on_stream_disconnected(self, reason: str | None = None) -> None:
         self._stream_healthy = False
+        self._stream_fallback_activation_count += 1
+        if reason:
+            self._stream_last_disconnect_reason = reason
+        detail = f" ({reason})" if reason else ""
         self._log.warning(
-            "SX.bet realtime stream unhealthy; REST poll fallback taking over",
+            f"SX.bet realtime stream unhealthy{detail}; REST poll fallback taking over",
         )
+        self._record_stream_stats()
 
     async def _subscribe_instrument(self, instrument_id: InstrumentId) -> None:
         """

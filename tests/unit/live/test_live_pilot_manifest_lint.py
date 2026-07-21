@@ -205,6 +205,12 @@ def test_per_sport_shard_is_scoped_all_venue_and_unarmed(sport: str) -> None:
     # the 10s REST poll fallback cannot.
     assert venues_by_name["SXBET"].order_book_transport == "stream"
 
+    # The REST fallback must be able to burst through the reseed/poll backlog when the
+    # stream drops: adaptive concurrency from the base 4 up to 16.
+    assert venues_by_name["SXBET"].order_book_concurrency == 4
+    assert venues_by_name["SXBET"].order_book_max_concurrency == 16
+    assert venues_by_name["SXBET"].order_book_adaptive_concurrency is True
+
     # Void-compatible middles STAGE for manual approval, with the middle floor strictly
     # above the ordinary arb floor. Staging only: the armed flags asserted false above are
     # untouched by the flag.
@@ -240,8 +246,12 @@ def test_baseball_shard_raises_cloudbet_budget_streams_sxbet_and_stages_middles(
     assert venues_by_name["CLOUDBET"].quote_subscription_limit == 380
     assert venues_by_name["CLOUDBET"].order_book_poll_interval_secs == 1.0
 
-    # SXBET streams so subscribed legs clear the 5s live age gate.
+    # SXBET streams so subscribed legs clear the 5s live age gate; the REST fallback
+    # bursts adaptively from the base 4 up to 16 when the stream drops.
     assert venues_by_name["SXBET"].order_book_transport == "stream"
+    assert venues_by_name["SXBET"].order_book_concurrency == 4
+    assert venues_by_name["SXBET"].order_book_max_concurrency == 16
+    assert venues_by_name["SXBET"].order_book_adaptive_concurrency is True
 
     # Middles STAGE (unarmed): flag on, middle floor above arb floor, every armed flag false
     # and no execution client built.

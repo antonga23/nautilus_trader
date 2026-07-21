@@ -1,3 +1,5 @@
+import json
+
 from nautilus_trader.adapters.betting.runtime_cache import ActiveVenueInstrumentIndex
 from nautilus_trader.adapters.betting.runtime_cache import VenueQuotePollStats
 from nautilus_trader.adapters.betting.runtime_cache import active_venue_instrument_index_key
@@ -74,6 +76,15 @@ def test_venue_quote_poll_stats_round_trip() -> None:
         delisted_count=3,
         backoff_secs=1.0,
         last_error="rate limit",
+        stream_connected=True,
+        stream_connected_since_ns=789,
+        stream_reconnect_count=5,
+        stream_fallback_activation_count=6,
+        stream_publication_count=1000,
+        stream_subscribed_channel_count=450,
+        stream_subscribe_error_count=78,
+        stream_seed_failure_count=2,
+        stream_last_disconnect_reason="realtime connection stale",
     )
 
     payload = decode_venue_quote_poll_stats(raw)
@@ -116,7 +127,39 @@ def test_venue_quote_poll_stats_round_trip() -> None:
         delisted_count=3,
         backoff_secs=1.0,
         last_error="rate limit",
+        stream_connected=True,
+        stream_connected_since_ns=789,
+        stream_reconnect_count=5,
+        stream_fallback_activation_count=6,
+        stream_publication_count=1000,
+        stream_subscribed_channel_count=450,
+        stream_subscribe_error_count=78,
+        stream_seed_failure_count=2,
+        stream_last_disconnect_reason="realtime connection stale",
     )
+
+
+def test_venue_quote_poll_stats_decode_defaults_stream_fields_for_old_payloads() -> None:
+    raw = encode_venue_quote_poll_stats(
+        venue="sxbet",
+        updated_at_ns=1,
+        cycle_id=1,
+        source="rest_order_book_poll",
+        subscribed_instrument_count=1,
+        market_count=1,
+        quote_count=1,
+    )
+    payload = json.loads(raw.decode("utf-8"))
+    for key in list(payload):
+        if key.startswith("stream_"):
+            payload.pop(key)
+
+    stats = decode_venue_quote_poll_stats(json.dumps(payload).encode("utf-8"))
+
+    assert stats is not None
+    assert stats.stream_connected is False
+    assert stats.stream_reconnect_count == 0
+    assert stats.stream_last_disconnect_reason is None
 
 
 def test_latency_percentiles_normalize_empty_and_negative_values() -> None:

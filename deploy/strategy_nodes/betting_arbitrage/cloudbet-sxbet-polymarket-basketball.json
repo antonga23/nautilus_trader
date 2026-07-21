@@ -92,6 +92,8 @@
       "order_book_poll_interval_secs": 10.0,
       "order_book_poll_summary_interval_secs": 30.0,
       "order_book_concurrency": 4,
+      "order_book_max_concurrency": 16,
+      "order_book_adaptive_concurrency": true,
       "order_book_transport": "stream",
       "live_only": false
     },
