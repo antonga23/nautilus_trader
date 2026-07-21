@@ -2051,6 +2051,73 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(subscribed_count == 1)
         ensure(quoted_ids == {candidate.id})
 
+    def test_semantic_unmatched_probe_respects_venue_quote_limit(
+        self,
+        tmp_path: Path,
+    ) -> None:  # skipcq
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset(["POLYMARKET"]),
+                opportunity_graph_engine="python",
+                semantic_unmatched_quote_probe_venues=frozenset({"POLYMARKET"}),
+                semantic_unmatched_quote_probe_limit_per_venue=5,
+                semantic_quote_subscription_limit_by_venue={"POLYMARKET": 2},
+            ),
+        )
+        strategy._matcher.set_rule_store(RuleStore(FileRuleCache(tmp_path / "rules")))
+        strategy.subscribe_quote_ticks = Mock()
+        already_quoted = self._polymarket_sports_binary_option(
+            symbol_value="aaa-already-quoted",
+            event_name="Team A vs Team B",
+            home_name="Team A",
+            away_name="Team B",
+        )
+        first_candidate = self._polymarket_sports_binary_option(
+            symbol_value="bbb-first",
+            event_name="Team C vs Team D",
+            home_name="Team C",
+            away_name="Team D",
+        )
+        second_candidate = self._polymarket_sports_binary_option(
+            symbol_value="ccc-second",
+            event_name="Team E vs Team F",
+            home_name="Team E",
+            away_name="Team F",
+        )
+        transformed_already = strategy._coerce_betting_instrument(already_quoted)
+        transformed_first = strategy._coerce_betting_instrument(first_candidate)
+        transformed_second = strategy._coerce_betting_instrument(second_candidate)
+        assert transformed_already is not None
+        assert transformed_first is not None
+        assert transformed_second is not None
+        strategy._subscribed_instruments.update(
+            {transformed_already, transformed_first, transformed_second},
+        )
+        strategy._opportunity_graph.build(
+            [transformed_already, transformed_first, transformed_second],
+        )
+        strategy._opportunity_graph.edge_ids_by_node_id = {
+            node_id: set() for node_id in strategy._opportunity_graph.nodes_by_id
+        }
+        strategy._quote_subscribed_instrument_ids.add(str(already_quoted.id))
+
+        # One venue slot left under the ceiling: the probe may fill only that slot
+        # even though its own probe limit would allow more.
+        subscribed_count = strategy._subscribe_semantic_unmatched_quote_probe_ticks()
+
+        quoted_ids = {call.args[0] for call in strategy.subscribe_quote_ticks.call_args_list}
+        ensure(subscribed_count == 1)
+        ensure(len(quoted_ids) == 1)
+        ensure(quoted_ids <= {first_candidate.id, second_candidate.id})
+        ensure(strategy.get_stats()["quote_subscribed_instruments"] == 2)
+
+        # At the ceiling: a further pass subscribes nothing.
+        resubscribed_count = strategy._subscribe_semantic_unmatched_quote_probe_ticks()
+
+        ensure(resubscribed_count == 0)
+        ensure(strategy.subscribe_quote_ticks.call_count == 1)
+        ensure(strategy.get_stats()["quote_subscribed_instruments"] == 2)
+
     def test_on_quote_tick_remaps_polymarket_binary_option_to_betting_instrument(self):
         strategy = BettingArbitrageStrategy(
             config=BettingArbitrageConfig(enabled_venues=frozenset(["POLYMARKET"])),
