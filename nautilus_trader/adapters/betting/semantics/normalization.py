@@ -714,7 +714,6 @@ class MarketNormalizer:
                 "team_to_lead_by_points",
                 "team_win_to_nil",
                 "team_to_win_a_set",
-                "with_extra_inning",
             )
         ):
             return CanonicalMarketType.WINNER
