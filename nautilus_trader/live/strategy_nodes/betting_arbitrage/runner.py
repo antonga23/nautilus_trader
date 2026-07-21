@@ -1270,6 +1270,7 @@ def _collect_probe_heavy_sections(
             quotes={},
             matched_node_ids=set(),
             candidate_venue_pairs={},
+            provider_quote_poll_stats=stats.get("provider_quote_poll_stats", {}),
         )
         return {
             "profitability": _empty_candidate_quality_payload(),
@@ -1333,6 +1334,7 @@ def _collect_probe_heavy_sections(
         quotes=quotes,
         matched_node_ids=matched_node_ids,
         candidate_venue_pairs=profitability["venue_pairs"],
+        provider_quote_poll_stats=stats.get("provider_quote_poll_stats", {}),
     )
 
     sections = {
@@ -2100,6 +2102,7 @@ def _venue_pair_coverage(
     quotes: dict[Any, object],
     matched_node_ids: set[Any],
     candidate_venue_pairs: Any,
+    provider_quote_poll_stats: object = None,
 ) -> dict[str, object]:
     venues = _enabled_probe_venues(strategy, nodes)
     node_counts: Counter[str] = Counter()
@@ -2201,6 +2204,13 @@ def _venue_pair_coverage(
         and int(quote_subscription_counts.get(venue, 0) or 0)
         > int(quote_subscription_limits.get(venue, 0) or 0)
     }
+    provider_subscribed_counts = {
+        str(venue).upper(): int(poll_stats.get("subscribed_instrument_count") or 0)
+        for venue, poll_stats in (
+            provider_quote_poll_stats if isinstance(provider_quote_poll_stats, dict) else {}
+        ).items()
+        if isinstance(poll_stats, dict)
+    }
     unquoted_semantic_match_counts = {
         venue: max(
             int(matched_node_counts.get(venue, 0) or 0)
@@ -2238,6 +2248,17 @@ def _venue_pair_coverage(
             if quote_subscription_limits.get(venue) is not None
         },
         "quoteSubscriptionLimitExceededCounts": quote_subscription_limit_exceeded_counts,
+        "providerSubscribedCounts": {
+            venue: provider_subscribed_counts[venue]
+            for venue in venues
+            if venue in provider_subscribed_counts
+        },
+        "providerVsStrategySubscriptionDrift": {
+            venue: provider_subscribed_counts[venue]
+            - int(quote_subscription_counts.get(venue, 0) or 0)
+            for venue in venues
+            if venue in provider_subscribed_counts
+        },
         "quoteSubscriptionGapCounts": quote_subscription_gap_counts,
         "venuesWithSubscriptionQuoteGap": [
             venue for venue in venues if quote_subscription_gap_counts.get(venue, 0) > 0
