@@ -423,10 +423,18 @@ class MarketNormalizer:
         )
 
         if normalized_home and normalized_away:
+            # Providers disagree on home/away designation for the same fixture
+            # (Cloudbet uses the sportsbook home team, Polymarket the event-title
+            # order), and the miner joins cross-provider records on this exact
+            # string - so the key must be participant-order independent, mirroring
+            # the runtime's sorted canonical fixture keys.
+            first_participant, second_participant = sorted(
+                (normalized_home, normalized_away),
+            )
             parts = [
                 normalized_sport,
-                normalized_home,
-                normalized_away,
+                first_participant,
+                second_participant,
                 normalized_time,
             ]
             return "|".join(part for part in parts if part)
@@ -714,7 +722,6 @@ class MarketNormalizer:
                 "team_to_lead_by_points",
                 "team_win_to_nil",
                 "team_to_win_a_set",
-                "with_extra_inning",
             )
         ):
             return CanonicalMarketType.WINNER
