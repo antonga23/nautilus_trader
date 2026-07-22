@@ -23,13 +23,18 @@ from dataclasses import replace
 
 from nautilus_trader.adapters.betting.semantics.store import RuleStore
 from nautilus_trader.adapters.betting.semantics.types import MinedRule
+from nautilus_trader.adapters.betting.semantics.types import PayoffVector
 from nautilus_trader.adapters.betting.semantics.types import PromotionStatus
 from nautilus_trader.adapters.betting.semantics.types import RelationshipType
 from nautilus_trader.adapters.betting.semantics.types import RuleValidationStats
 from nautilus_trader.adapters.betting.semantics.types import SafetyTier
 from nautilus_trader.adapters.betting.semantics.types import SemanticRuleTemplate
 from nautilus_trader.adapters.betting.semantics.types import SettlementState
+from nautilus_trader.adapters.betting.semantics.types import is_partial_compatible_lock
 from nautilus_trader.adapters.betting.semantics.types import is_void_compatible_middle
+from nautilus_trader.adapters.betting.semantics.types import (
+    venue_scope_supports_half_grade_settlement,
+)
 
 
 def _deterministic_complementary_partition(template: SemanticRuleTemplate) -> bool:
@@ -49,6 +54,37 @@ def _deterministic_complementary_partition(template: SemanticRuleTemplate) -> bo
     ):
         return False
     return template.support.deterministic and template.support.mismatch_rate <= 0.01
+
+
+def _payoff_vector(result_states: tuple[str, ...], settlement: tuple[str, ...]) -> PayoffVector:
+    # The partial-lock proof only reads ``settlement`` (and the ``has_partial`` derived
+    # from it), so a minimal vector carrying the mined per-state settlement is sufficient.
+    return PayoffVector(
+        sport="",
+        market_type="",
+        selection="",
+        params=(),
+        result_states=result_states,
+        settlement=settlement,
+    )
+
+
+def _rule_is_partial_compatible_lock(rule: MinedRule) -> bool:
+    return is_partial_compatible_lock(
+        rule.relationship_type,
+        _payoff_vector(rule.result_states, rule.settlement_a),
+        _payoff_vector(rule.result_states, rule.settlement_b),
+        rule.caveats,
+    )
+
+
+def _template_is_partial_compatible_lock(template: SemanticRuleTemplate) -> bool:
+    return is_partial_compatible_lock(
+        template.relationship_type,
+        _payoff_vector(template.result_states, template.settlement_a),
+        _payoff_vector(template.result_states, template.settlement_b),
+        template.caveats,
+    )
 
 
 class RulePromotionPolicy:
@@ -88,6 +124,35 @@ class RulePromotionPolicy:
             and template.support.provider_count >= 2
         )
 
+    @staticmethod
+    def _partial_compatible_lock_executable(
+        rule: MinedRule,
+        *,
+        tier: SafetyTier,
+    ) -> bool:
+        # A proven partial lock is executable only where every leg's venue half-grades the
+        # settlement (see ``HALF_GRADE_SETTLEMENT_VENUES``); with SX.bet grading half-lines
+        # as full WON/LOST this restricts partial locks to Cloudbet-legged pairs.
+        return (
+            tier == SafetyTier.VENUE_SAFE
+            and _rule_is_partial_compatible_lock(rule)
+            and venue_scope_supports_half_grade_settlement(rule.venue_scope)
+        )
+
+    @staticmethod
+    def _partial_compatible_lock_template_executable(
+        template: SemanticRuleTemplate,
+        *,
+        tier: SafetyTier,
+    ) -> bool:
+        return (
+            tier == SafetyTier.VENUE_SAFE
+            and _template_is_partial_compatible_lock(template)
+            and venue_scope_supports_half_grade_settlement(
+                template.provider_scope or template.support.providers,
+            )
+        )
+
     def classify_rule_tier(
         self,
         rule: MinedRule,
@@ -96,6 +161,7 @@ class RulePromotionPolicy:
         allowlisted: bool = False,
         venue_agnostic: bool = False,
         allow_void_compatible_middles: bool = False,
+        allow_partial_compatible_locks: bool = False,
     ) -> tuple[SafetyTier, tuple[str, ...]]:
         reasons: list[str] = []
         if rule.relationship_type == RelationshipType.DANGEROUS_NON_EQUIVALENT.value:
@@ -131,6 +197,7 @@ class RulePromotionPolicy:
             venue_agnostic=venue_agnostic,
             execution_scope_ok=execution_scope_ok,
             allow_void_compatible_middles=allow_void_compatible_middles,
+            allow_partial_compatible_locks=allow_partial_compatible_locks,
         )
         reasons.extend(extra_reasons)
         return tier, tuple(sorted(set(reasons)))
@@ -144,6 +211,7 @@ class RulePromotionPolicy:
         venue_agnostic: bool,
         execution_scope_ok: bool,
         allow_void_compatible_middles: bool,
+        allow_partial_compatible_locks: bool,
     ) -> tuple[SafetyTier, tuple[str, ...]]:
         if (
             tier != SafetyTier.AUDIT_ONLY
@@ -165,6 +233,13 @@ class RulePromotionPolicy:
             # executable across venues under the opt-in. A single-venue void middle stays
             # same-venue-eligible via the final branch, unchanged when the flag is off.
             return SafetyTier.EXECUTION_SAFE, ("execution_safe_void_compatible_middle",)
+        if allow_partial_compatible_locks and self._partial_compatible_lock_executable(
+            rule,
+            tier=tier,
+        ):
+            # Proven partial lock (per-state combined payoff >= 0 through HALF/VOID grading)
+            # on half-grade venues: elevated instead of being demoted for partial handling.
+            return SafetyTier.EXECUTION_SAFE, ("execution_safe_partial_compatible_lock",)
         if (
             tier == SafetyTier.VENUE_SAFE
             and rule.relationship_type == RelationshipType.COMPLEMENTARY_COVERAGE.value
@@ -262,6 +337,7 @@ class RulePromotionPolicy:
         allowlisted: bool = False,
         venue_agnostic: bool = False,
         allow_void_compatible_middles: bool = False,
+        allow_partial_compatible_locks: bool = False,
     ) -> tuple[SafetyTier, tuple[str, ...]]:
         reasons: list[str] = []
         if template.relationship_type == RelationshipType.DANGEROUS_NON_EQUIVALENT.value:
@@ -288,6 +364,7 @@ class RulePromotionPolicy:
             allowlisted=allowlisted,
             venue_agnostic=venue_agnostic,
             allow_void_compatible_middles=allow_void_compatible_middles,
+            allow_partial_compatible_locks=allow_partial_compatible_locks,
         )
         reasons.extend(extra_reasons)
         return tier, tuple(sorted(set(reasons)))
@@ -300,6 +377,7 @@ class RulePromotionPolicy:
         allowlisted: bool,
         venue_agnostic: bool,
         allow_void_compatible_middles: bool,
+        allow_partial_compatible_locks: bool,
     ) -> tuple[SafetyTier, tuple[str, ...]]:
         execution_reasons = self._template_execution_safe_reasons(
             template,
@@ -313,6 +391,11 @@ class RulePromotionPolicy:
             tier=tier,
         ):
             return SafetyTier.EXECUTION_SAFE, ("execution_safe_void_compatible_middle",)
+        if allow_partial_compatible_locks and self._partial_compatible_lock_template_executable(
+            template,
+            tier=tier,
+        ):
+            return SafetyTier.EXECUTION_SAFE, ("execution_safe_partial_compatible_lock",)
         if (
             tier == SafetyTier.VENUE_SAFE
             and template.relationship_type == RelationshipType.COMPLEMENTARY_COVERAGE.value

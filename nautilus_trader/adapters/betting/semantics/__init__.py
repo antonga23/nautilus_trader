@@ -58,10 +58,19 @@ from nautilus_trader.adapters.betting.semantics.types import MinedRule
 from nautilus_trader.adapters.betting.semantics.types import NormalizedSelection
 from nautilus_trader.adapters.betting.semantics.types import NormalizedSelectionRecord
 from nautilus_trader.adapters.betting.semantics.types import ARB_MARGIN_RELATIONSHIP_TYPES
+from nautilus_trader.adapters.betting.semantics.types import HALF_GRADE_SETTLEMENT_VENUES
+from nautilus_trader.adapters.betting.semantics.types import NON_PARTIAL_SETTLEMENT_RISK_CAVEATS
 from nautilus_trader.adapters.betting.semantics.types import NON_VOID_SETTLEMENT_RISK_CAVEATS
+from nautilus_trader.adapters.betting.semantics.types import PARTIAL_LOCK_RELATIONSHIP_TYPES
+from nautilus_trader.adapters.betting.semantics.types import PARTIAL_SETTLEMENT_CAVEATS
 from nautilus_trader.adapters.betting.semantics.types import VOID_PUSH_SETTLEMENT_CAVEATS
+from nautilus_trader.adapters.betting.semantics.types import has_only_partial_settlement_risk
 from nautilus_trader.adapters.betting.semantics.types import has_only_void_push_settlement_risk
+from nautilus_trader.adapters.betting.semantics.types import is_partial_compatible_lock
 from nautilus_trader.adapters.betting.semantics.types import is_void_compatible_middle
+from nautilus_trader.adapters.betting.semantics.types import (
+    venue_scope_supports_half_grade_settlement,
+)
 from nautilus_trader.adapters.betting.semantics.types import OutcomeState
 from nautilus_trader.adapters.betting.semantics.types import OutcomeUniverse
 from nautilus_trader.adapters.betting.semantics.types import PayoffVector
@@ -84,7 +93,11 @@ __all__ = [
     "DEFAULT_REQUIRED_PROVIDERS",
     "DEFAULT_TARGET_CANDIDATES",
     "DEFAULT_TARGET_SPORTS",
+    "HALF_GRADE_SETTLEMENT_VENUES",
+    "NON_PARTIAL_SETTLEMENT_RISK_CAVEATS",
     "NON_VOID_SETTLEMENT_RISK_CAVEATS",
+    "PARTIAL_LOCK_RELATIONSHIP_TYPES",
+    "PARTIAL_SETTLEMENT_CAVEATS",
     "SEMANTIC_TARGET_SPORTS",
     "VOID_PUSH_SETTLEMENT_CAVEATS",
     "CanonicalMarketType",
@@ -133,8 +146,11 @@ __all__ = [
     "SportCompletion",
     "TemplateSupportStats",
     "build_completion_report",
+    "has_only_partial_settlement_risk",
     "has_only_void_push_settlement_risk",
+    "is_partial_compatible_lock",
     "is_void_compatible_middle",
     "load_aws_secret_payload",
     "restore_gcp_service_account",
+    "venue_scope_supports_half_grade_settlement",
 ]

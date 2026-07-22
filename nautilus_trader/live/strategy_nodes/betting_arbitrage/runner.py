@@ -4598,6 +4598,12 @@ def _semantic_non_execution_bucket(edge: object) -> str:
     caveats = {str(caveat) for caveat in tuple(getattr(edge, "caveats", ()) or ()) if str(caveat)}
     if bool(getattr(edge, "same_venue_execution_eligible", False)):
         return CoverageBlockerReason.SAME_VENUE_POLICY.value
+    if bool(getattr(edge, "execution_safe", False)):
+        # An execution-safe edge (a promoted void middle or partial-compatible lock) is no
+        # longer a settlement-risk reject: do not force it into the void/partial bucket by
+        # relationship type. It belongs in the margin buckets, so surface it as positive
+        # rather than mislabeling the settlement shape it was proven safe against.
+        return CoverageBlockerReason.POSITIVE.value
     relationship_bucket = {
         "EQUIVALENT_SELECTION": CoverageBlockerReason.EQUIVALENT_SELECTION.value,
         "VOID_COMPATIBLE_HEDGE": CoverageBlockerReason.VOID_SETTLEMENT.value,

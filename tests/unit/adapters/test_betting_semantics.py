@@ -13,14 +13,20 @@ from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.betting.market_matcher import MarketMatcher
 from nautilus_trader.adapters.betting.semantics import CanonicalMarketType
 from nautilus_trader.adapters.betting.semantics import MarketNormalizer
+from nautilus_trader.adapters.betting.semantics import MinedRule
+from nautilus_trader.adapters.betting.semantics import PayoffVector
 from nautilus_trader.adapters.betting.semantics import RelationshipType
 from nautilus_trader.adapters.betting.semantics import RuleClassifier
 from nautilus_trader.adapters.betting.semantics import RulePromotionPolicy
 from nautilus_trader.adapters.betting.semantics import RuleStore
 from nautilus_trader.adapters.betting.semantics import SafetyTier
+from nautilus_trader.adapters.betting.semantics import SelectionPattern
 from nautilus_trader.adapters.betting.semantics import SemanticRuleTemplate
 from nautilus_trader.adapters.betting.semantics import TemplateSupportStats
 from nautilus_trader.adapters.betting.semantics import RuleValidationStats
+from nautilus_trader.adapters.betting.semantics import has_only_partial_settlement_risk
+from nautilus_trader.adapters.betting.semantics import is_partial_compatible_lock
+from nautilus_trader.adapters.betting.semantics import venue_scope_supports_half_grade_settlement
 from nautilus_trader.examples.strategies.opportunity_graph import OpportunityGraph
 from nautilus_trader.model.identifiers import Venue
 from nautilus_trader.model.objects import Currency
@@ -1344,6 +1350,288 @@ def test_same_venue_void_middle_unchanged_under_flag():
     )
 
     assert tier == SafetyTier.EXECUTION_SAFE_SAME_VENUE_ELIGIBLE
+
+
+_QUARTER_RESULT_STATES = ("HOME_WIN", "DRAW", "AWAY_WIN")
+
+
+def _payoff(settlement: tuple[str, ...]) -> PayoffVector:
+    return PayoffVector(
+        sport="soccer",
+        market_type="ASIAN_HANDICAP",
+        selection="HOME",
+        params=(),
+        result_states=_QUARTER_RESULT_STATES,
+        settlement=settlement,
+    )
+
+
+def _partial_lock_rule(
+    *,
+    venue_scope: tuple[str, ...] = ("CLOUDBET",),
+    settlement_a: tuple[str, ...] = ("WIN", "HALF_WIN", "LOSE"),
+    settlement_b: tuple[str, ...] = ("LOSE", "HALF_WIN", "WIN"),
+    relationship_type: str = RelationshipType.PARTIAL_SETTLEMENT_HEDGE.value,
+) -> MinedRule:
+    return MinedRule(
+        rule_id="partial-lock-1",
+        relationship_type=relationship_type,
+        sport="soccer",
+        market_a="ASIAN_HANDICAP",
+        selection_a="HOME",
+        params_a=(("line", "0.25"),),
+        market_b="ASIAN_HANDICAP",
+        selection_b="AWAY",
+        params_b=(("line", "0.25"),),
+        result_states=_QUARTER_RESULT_STATES,
+        settlement_a=settlement_a,
+        settlement_b=settlement_b,
+        confidence=0.8,
+        caveats=("partial_settlement_present", "validate_venue_rules"),
+        venue_scope=venue_scope,
+    )
+
+
+def _partial_lock_template(
+    *,
+    venue_scope: tuple[str, ...] = ("CLOUDBET",),
+    settlement_a: tuple[str, ...] = ("WIN", "HALF_WIN", "LOSE"),
+    settlement_b: tuple[str, ...] = ("LOSE", "HALF_WIN", "WIN"),
+) -> SemanticRuleTemplate:
+    support = TemplateSupportStats(
+        template_id="partial-lock-template-1",
+        observed_count=5,
+        event_count=3,
+        provider_count=len(set(venue_scope)),
+        providers=tuple(sorted(venue_scope)),
+        sports=("soccer",),
+        deterministic=True,
+        unknown_settlement_count=0,
+        mismatch_count=0,
+        confidence=0.99,
+    )
+    pattern_a = SelectionPattern.from_rule_side(
+        sport="soccer",
+        scope="full_time",
+        market_type="ASIAN_HANDICAP",
+        selection="HOME",
+        params=(("line", "0.25"),),
+        result_states=_QUARTER_RESULT_STATES,
+        settlement=settlement_a,
+    )
+    pattern_b = SelectionPattern.from_rule_side(
+        sport="soccer",
+        scope="full_time",
+        market_type="ASIAN_HANDICAP",
+        selection="AWAY",
+        params=(("line", "0.25"),),
+        result_states=_QUARTER_RESULT_STATES,
+        settlement=settlement_b,
+    )
+    return SemanticRuleTemplate(
+        template_id="partial-lock-template-1",
+        relationship_type=RelationshipType.PARTIAL_SETTLEMENT_HEDGE.value,
+        sport="soccer",
+        scope="full_time",
+        pattern_a=pattern_a,
+        pattern_b=pattern_b,
+        result_states=_QUARTER_RESULT_STATES,
+        settlement_a=settlement_a,
+        settlement_b=settlement_b,
+        confidence=0.8,
+        caveats=("partial_settlement_present",),
+        support=support,
+        provider_scope=tuple(sorted(venue_scope)),
+    )
+
+
+def test_is_partial_compatible_lock_predicate_grid():
+    partial = RelationshipType.PARTIAL_SETTLEMENT_HEDGE.value
+    complementary = RelationshipType.COMPLEMENTARY_COVERAGE.value
+
+    # Quarter-line middle: back both +0.25 sides, both half-win the draw -> (0, +1, 0) lock.
+    assert is_partial_compatible_lock(
+        partial,
+        _payoff(("WIN", "HALF_WIN", "LOSE")),
+        _payoff(("LOSE", "HALF_WIN", "WIN")),
+    )
+    # Quarter-line that is NOT a lock: both -0.25 sides half-lose the draw -> (0, -1, 0).
+    assert not is_partial_compatible_lock(
+        partial,
+        _payoff(("WIN", "HALF_LOSE", "LOSE")),
+        _payoff(("LOSE", "HALF_LOSE", "WIN")),
+    )
+    # Partial + whole-line VOID push mix: HALF_WIN vs VOID on the draw -> (0, +0.5, 0) lock.
+    assert is_partial_compatible_lock(
+        partial,
+        _payoff(("WIN", "HALF_WIN", "LOSE")),
+        _payoff(("LOSE", "VOID", "WIN")),
+    )
+    # Same mix but HALF_LOSE vs VOID -> (0, -0.5, 0): a real half-stake loss, not a lock.
+    assert not is_partial_compatible_lock(
+        partial,
+        _payoff(("WIN", "HALF_LOSE", "LOSE")),
+        _payoff(("LOSE", "VOID", "WIN")),
+    )
+    # Half-line pure WIN/LOSE partition has no partial state -> routes via the complementary
+    # path, not the partial lock (False even though it is a clean break-even hedge).
+    assert not is_partial_compatible_lock(
+        complementary,
+        _payoff(("WIN", "LOSE", "LOSE")),
+        _payoff(("LOSE", "WIN", "WIN")),
+    )
+    # Both-lose disqualifier: AWAY_WIN state loses on both legs.
+    assert not is_partial_compatible_lock(
+        partial,
+        _payoff(("WIN", "HALF_WIN", "LOSE")),
+        _payoff(("LOSE", "HALF_LOSE", "LOSE")),
+    )
+    # An UNKNOWN state is not enumerable and disqualifies the lock.
+    assert not is_partial_compatible_lock(
+        partial,
+        _payoff(("WIN", "HALF_WIN", "UNKNOWN")),
+        _payoff(("LOSE", "HALF_WIN", "WIN")),
+    )
+    # A VOID_COMPATIBLE_HEDGE is out of scope regardless of the settlement shape.
+    assert not is_partial_compatible_lock(
+        RelationshipType.VOID_COMPATIBLE_HEDGE.value,
+        _payoff(("WIN", "VOID", "LOSE")),
+        _payoff(("LOSE", "VOID", "WIN")),
+    )
+    # An UNKNOWN / AMBIGUOUS caveat disqualifies; a partial caveat is the expected shape.
+    assert not is_partial_compatible_lock(
+        partial,
+        _payoff(("WIN", "HALF_WIN", "LOSE")),
+        _payoff(("LOSE", "HALF_WIN", "WIN")),
+        ("unknown_settlement_present",),
+    )
+    assert is_partial_compatible_lock(
+        partial,
+        _payoff(("WIN", "HALF_WIN", "LOSE")),
+        _payoff(("LOSE", "HALF_WIN", "WIN")),
+        ("partial_settlement_present", "validate_venue_rules"),
+    )
+    # A bounded floor rejects a break-even (net-zero) state.
+    assert not is_partial_compatible_lock(
+        partial,
+        _payoff(("WIN", "HALF_WIN", "LOSE")),
+        _payoff(("LOSE", "HALF_WIN", "WIN")),
+        floor=Decimal("0.5"),
+    )
+
+
+def test_partial_lock_venue_and_risk_shape_helpers():
+    assert venue_scope_supports_half_grade_settlement(("CLOUDBET",))
+    assert venue_scope_supports_half_grade_settlement(("cloudbet",))
+    # SX.bet grades half-lines as full WON/LOST, so a pair touching it is not half-grade.
+    assert not venue_scope_supports_half_grade_settlement(("CLOUDBET", "SXBET"))
+    assert not venue_scope_supports_half_grade_settlement(())
+
+    assert has_only_partial_settlement_risk(("partial_settlement",))
+    # VOID/PUSH alongside partial is allowed (refunds to zero in the payoff proof).
+    assert has_only_partial_settlement_risk(("partial_settlement_present", "void_settlement"))
+    assert not has_only_partial_settlement_risk(("partial_settlement", "unknown_settlement"))
+    assert not has_only_partial_settlement_risk(("void_settlement",))
+
+
+def test_cloudbet_quarter_line_pair_is_partial_compatible_lock():
+    # Real classifier path: home +0.25 vs away +0.25 (the away leg's home-relative
+    # handicap=-0.25 negates to +0.25) is a PARTIAL_SETTLEMENT_HEDGE that proves as a lock.
+    classifier = RuleClassifier()
+    home = MarketNormalizer.normalize(_cloudbet_soccer_ah("home", "0.25", price=2.0))
+    away = MarketNormalizer.normalize(_cloudbet_soccer_ah("away", "-0.25", price=2.0))
+
+    rule = classifier.classify(home, away)
+    assert rule is not None
+    assert rule.relationship_type == RelationshipType.PARTIAL_SETTLEMENT_HEDGE.value
+    assert rule.venue_scope == ("CLOUDBET",)
+
+    assert is_partial_compatible_lock(
+        rule.relationship_type,
+        classifier.build_payoff_vector(home),
+        classifier.build_payoff_vector(away),
+        rule.caveats,
+    )
+
+
+def test_partial_compatible_lock_stays_same_venue_eligible_without_flag():
+    rule = _partial_lock_rule()
+
+    tier, reasons = RulePromotionPolicy().classify_rule_tier(
+        rule,
+        _venue_safe_stats(rule.rule_id),
+    )
+
+    assert tier == SafetyTier.EXECUTION_SAFE_SAME_VENUE_ELIGIBLE
+    assert "execution_safe_partial_compatible_lock" not in reasons
+
+
+def test_partial_compatible_lock_is_execution_safe_under_flag():
+    rule = _partial_lock_rule()
+
+    tier, reasons = RulePromotionPolicy().classify_rule_tier(
+        rule,
+        _venue_safe_stats(rule.rule_id),
+        allow_partial_compatible_locks=True,
+    )
+
+    assert tier == SafetyTier.EXECUTION_SAFE
+    assert "execution_safe_partial_compatible_lock" in reasons
+
+
+def test_partial_lock_cross_venue_not_promoted_without_half_grade():
+    # SX.bet cannot half-grade, so a CLOUDBET+SXBET partial lock fails the venue guard and
+    # stays same-venue-eligible even with the opt-in on.
+    rule = _partial_lock_rule(venue_scope=("CLOUDBET", "SXBET"))
+
+    tier, reasons = RulePromotionPolicy().classify_rule_tier(
+        rule,
+        _venue_safe_stats(rule.rule_id),
+        allow_partial_compatible_locks=True,
+    )
+
+    assert tier == SafetyTier.EXECUTION_SAFE_SAME_VENUE_ELIGIBLE
+    assert "execution_safe_partial_compatible_lock" not in reasons
+
+
+def test_partial_lock_that_is_not_a_lock_is_not_promoted_under_flag():
+    # Both legs half-lose the draw -> combined -1 on that state -> not a lock.
+    rule = _partial_lock_rule(
+        settlement_a=("WIN", "HALF_LOSE", "LOSE"),
+        settlement_b=("LOSE", "HALF_LOSE", "WIN"),
+    )
+
+    tier, reasons = RulePromotionPolicy().classify_rule_tier(
+        rule,
+        _venue_safe_stats(rule.rule_id),
+        allow_partial_compatible_locks=True,
+    )
+
+    assert tier == SafetyTier.EXECUTION_SAFE_SAME_VENUE_ELIGIBLE
+    assert "execution_safe_partial_compatible_lock" not in reasons
+
+
+def test_partial_compatible_lock_template_is_execution_safe_under_flag():
+    template = _partial_lock_template()
+
+    tier_off, _ = RulePromotionPolicy().classify_template_tier(template)
+    assert tier_off == SafetyTier.EXECUTION_SAFE_SAME_VENUE_ELIGIBLE
+
+    tier_on, reasons = RulePromotionPolicy().classify_template_tier(
+        template,
+        allow_partial_compatible_locks=True,
+    )
+    assert tier_on == SafetyTier.EXECUTION_SAFE
+    assert "execution_safe_partial_compatible_lock" in reasons
+
+    # Cross-venue template fails the half-grade venue guard.
+    cross = _partial_lock_template(venue_scope=("CLOUDBET", "SXBET"))
+    tier_cross, cross_reasons = RulePromotionPolicy().classify_template_tier(
+        cross,
+        allow_partial_compatible_locks=True,
+    )
+    assert tier_cross != SafetyTier.EXECUTION_SAFE
+    assert "execution_safe_partial_compatible_lock" not in cross_reasons
 
 
 def _cloudbet_soccer_ah(outcome: str, handicap: str, *, price: float) -> CryptoBettingInstrument:

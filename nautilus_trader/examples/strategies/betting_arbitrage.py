@@ -66,10 +66,13 @@ from nautilus_trader.adapters.betting.runtime_cache import active_venue_instrume
 from nautilus_trader.adapters.betting.runtime_cache import decode_active_venue_instrument_index
 from nautilus_trader.adapters.betting.runtime_cache import decode_venue_quote_poll_stats
 from nautilus_trader.adapters.betting.runtime_cache import venue_quote_poll_stats_key
+from nautilus_trader.adapters.betting.semantics import NON_PARTIAL_SETTLEMENT_RISK_CAVEATS
+from nautilus_trader.adapters.betting.semantics import PARTIAL_LOCK_RELATIONSHIP_TYPES
 from nautilus_trader.adapters.betting.semantics import FileRuleCache
 from nautilus_trader.adapters.betting.semantics import PolymarketSportsTransformer
 from nautilus_trader.adapters.betting.semantics import RuleStore
 from nautilus_trader.adapters.betting.semantics import is_void_compatible_middle
+from nautilus_trader.adapters.betting.semantics import venue_scope_supports_half_grade_settlement
 from nautilus_trader.config import PositiveFloat
 from nautilus_trader.config import PositiveInt
 from nautilus_trader.config import StrategyConfig
@@ -618,6 +621,9 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
     require_same_stablecoin_settlement: bool = False
     execute_void_compatible_middles: bool = False
     min_middle_profit_margin: Decimal = Decimal("0.02")
+    allow_partial_compatible_locks: bool = False
+    execute_partial_compatible_locks: bool = False
+    min_partial_lock_profit_margin: Decimal = Decimal("0.02")
     arb_pairs_stats_cap: int = 200
     arb_leg_fills_cap: int = 50
 
@@ -888,6 +894,15 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
         ):
             msg = "min_middle_profit_margin must be greater than min_profit_margin"
             raise ValueError(msg)
+        # A partial lock only breaks even on its partial (HALF) state, so — like the middle
+        # floor — its executable floor must sit strictly above the ordinary arb floor. Only
+        # enforced when the opt-in is on, so existing configs are unaffected.
+        if (
+            self.execute_partial_compatible_locks
+            and self.min_partial_lock_profit_margin <= self.min_profit_margin
+        ):
+            msg = "min_partial_lock_profit_margin must be greater than min_profit_margin"
+            raise ValueError(msg)
         self._validate_portfolio_currency_config(stablecoin_currencies)
 
     def _validate_execution_approval_config(self, execution_approval_mode: str) -> None:
@@ -1041,6 +1056,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         # Market matcher for finding arbitrage
         self._matcher = MarketMatcher(
             execute_void_compatible_middles=config.execute_void_compatible_middles,
+            allow_partial_compatible_locks=config.allow_partial_compatible_locks,
         )
         self._opportunity_graph = OpportunityGraph(
             self._matcher,
@@ -5777,8 +5793,9 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         """
         Derive ``(relationship_type, bet_type)`` for a staged approval from its edge.
 
-        A middle-eligible void-compatible hedge is labeled ``MIDDLE`` so the operator
-        approves a break-even-on-push bet knowingly; everything else stays ``ARB``.
+        A middle-eligible void-compatible hedge is labeled ``MIDDLE`` and a partial-lock-
+        eligible hedge ``PARTIAL_LOCK`` so the operator approves the break-even-on-partial
+        bet knowingly; everything else stays ``ARB``.
 
         """
         edge = self._opportunity_edge_for(
@@ -5788,9 +5805,12 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         relationship_type = (
             str(getattr(edge, "relationship_type", "") or "") or None if edge is not None else None
         )
-        bet_type = (
-            "MIDDLE" if (edge is not None and self._middle_eligible(opportunity, edge)) else "ARB"
-        )
+        if edge is not None and self._middle_eligible(opportunity, edge):
+            bet_type = "MIDDLE"
+        elif edge is not None and self._partial_lock_eligible(opportunity, edge):
+            bet_type = "PARTIAL_LOCK"
+        else:
+            bet_type = "ARB"
         return relationship_type, bet_type
 
     def handle_execution_approval_command(self, command: dict[str, Any]) -> dict[str, object]:
@@ -6542,6 +6562,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         # cross-venue pair) instead of the opaque generic block.
         if self._is_void_compatible_middle_edge(edge):
             return self._middle_execution_block_reasons(opportunity, edge)
+        if self._is_partial_compatible_lock_edge(edge):
+            return self._partial_lock_execution_block_reasons(opportunity, edge)
         if not self._live_execution_semantic_policy_allows(opportunity, edge):
             return ["semantic_execution_policy_blocked"]
         return []
@@ -6601,6 +6623,71 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             self._middle_execution_block_reasons(opportunity, edge)
         )
 
+    def _is_partial_compatible_lock_edge(self, edge: object) -> bool:
+        """
+        Whether the opt-in is on and this edge is a promoted partial-compatible lock.
+
+        Unlike a void middle — whose ``VOID_COMPATIBLE_HEDGE`` relationship already carries
+        the no-both-lose proof — a ``PARTIAL_SETTLEMENT_HEDGE`` relationship does not prove
+        the finer per-state lock, so the edge must additionally be ``execution_safe`` (the
+        promotion tier ran ``is_partial_compatible_lock`` and elevated it) and actually carry
+        a partial state. The PM-leg exclusion, half-grade venue guard and margin floor are
+        eligibility conditions surfaced as block reasons, not part of the routing test.
+
+        """
+        if not self._config.execute_partial_compatible_locks:
+            return False
+        if not bool(getattr(edge, "execution_safe", False)):
+            return False
+        if not bool(getattr(edge, "partial_settlement", False)):
+            return False
+        if getattr(edge, "relationship_type", None) not in PARTIAL_LOCK_RELATIONSHIP_TYPES:
+            return False
+        caveats = {str(caveat) for caveat in getattr(edge, "caveats", ())}
+        return not caveats.intersection(NON_PARTIAL_SETTLEMENT_RISK_CAVEATS)
+
+    def _partial_lock_execution_block_reasons(
+        self,
+        opportunity: ArbitrageOpportunity,
+        edge: object,
+    ) -> list[str]:
+        """
+        Block reasons for a partial-compatible lock under the opt-in.
+
+        Mirrors ``_middle_execution_block_reasons`` with a partial margin floor and, on top
+        of the shared ``MIDDLE_EXECUTION_VENUES`` whitelist, the stricter half-grade venue
+        guard: both legs must settle a half-line at half stake (Cloudbet), so an SX.bet or
+        Polymarket leg is rejected even though it clears the middle whitelist.
+
+        """
+        reasons: list[str] = []
+        venue_a = str(opportunity.instrument_a.id.venue).upper()
+        venue_b = str(opportunity.instrument_b.id.venue).upper()
+        venues = {venue_a, venue_b}
+        if venue_a == "POLYMARKET" or venue_b == "POLYMARKET":
+            reasons.append("partial_lock_polymarket_push_fee")
+        if opportunity.profit_margin < self._config.min_partial_lock_profit_margin:
+            reasons.append("below_min_partial_lock_profit_margin")
+        if not venues <= MIDDLE_EXECUTION_VENUES:
+            reasons.append("partial_lock_venue_unsupported")
+        elif not venue_scope_supports_half_grade_settlement(venues):
+            reasons.append("partial_lock_requires_half_grade_venue")
+        if opportunity.is_same_venue:
+            if not self._config.allow_same_venue_live_execution:
+                reasons.append("same_venue_execution_disabled")
+            elif not self._same_venue_runtime_identity_allows(opportunity):
+                reasons.append("same_venue_identity_unverified")
+        return reasons
+
+    def _partial_lock_eligible(self, opportunity: ArbitrageOpportunity, edge: object) -> bool:
+        """
+        Whether the edge is a fully eligible partial lock: partial-lock-shaped under the
+        opt-in with no residual block reason.
+        """
+        return self._is_partial_compatible_lock_edge(edge) and not (
+            self._partial_lock_execution_block_reasons(opportunity, edge)
+        )
+
     @staticmethod
     def _live_execution_diagnostic_block_reasons(
         diagnostics: ArbitrageDiagnostics | None,
@@ -6630,6 +6717,8 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
     ) -> bool:
         if self._is_void_compatible_middle_edge(edge):
             return self._middle_eligible(opportunity, edge)
+        if self._is_partial_compatible_lock_edge(edge):
+            return self._partial_lock_eligible(opportunity, edge)
         if bool(getattr(edge, "execution_safe", False)) and not opportunity.is_same_venue:
             return True
         if not opportunity.is_same_venue:

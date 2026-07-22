@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from dataclasses import dataclass
+from decimal import Decimal
 from enum import Enum
 import hashlib
 import json
@@ -108,6 +109,65 @@ NON_VOID_SETTLEMENT_RISK_CAVEATS: frozenset[str] = frozenset(
     },
 )
 
+# Settlement-risk tokens marking a partial (HALF) outcome, emitted across the coverage
+# (``partial_settlement``) and classifier (``partial_settlement_present`` /
+# ``partial_states_present``) vocabularies. A partial lock's legs settle a half at odds on
+# these states, so — like the void middle's VOID/PUSH tokens — they are the *expected* shape
+# of the pair, not a danger.
+PARTIAL_SETTLEMENT_CAVEATS: frozenset[str] = frozenset(
+    {
+        "partial_settlement",
+        "partial_settlement_present",
+        "partial_states_present",
+    },
+)
+
+# Settlement risks that DISQUALIFY a partial-compatible lock. The mirror of
+# ``NON_VOID_SETTLEMENT_RISK_CAVEATS`` for the partial path: a HALF/PARTIAL settlement is
+# the *expected* shape of a partial lock (not a danger), so the partial tokens are dropped;
+# only UNKNOWN / AMBIGUOUS / unresolved provider rules — which the per-state payoff proof
+# cannot enumerate — remain disqualifying.
+NON_PARTIAL_SETTLEMENT_RISK_CAVEATS: frozenset[str] = frozenset(
+    {
+        "unknown_settlement",
+        "unknown_settlement_present",
+        "ambiguous_resolution",
+        "unresolved_provider_rule",
+    },
+)
+
+# Relationships eligible to be a partial-compatible lock. ``PARTIAL_SETTLEMENT_HEDGE`` is the
+# native shape; a ``COMPLEMENTARY_COVERAGE`` book qualifies only when it actually carries a
+# partial (HALF) state (a pure WIN/LOSE partition routes via the complementary path instead).
+PARTIAL_LOCK_RELATIONSHIP_TYPES: frozenset[str] = frozenset(
+    {
+        RelationshipType.PARTIAL_SETTLEMENT_HEDGE.value,
+        RelationshipType.COMPLEMENTARY_COVERAGE.value,
+    },
+)
+
+# Venues with a confirmed HALF-grade settlement mapping (a quarter-ball / half-line bet
+# settles half the stake at odds and refunds the other half end-to-end). Cloudbet maps
+# ``BetStatus.HALF_WIN``/``HALF_LOSS``/``PUSH`` onto ``SettlementResult.HALF_WON``/
+# ``HALF_LOST``/``PUSH``; SX.bet grades only WON/LOST/VOID, so a half-line placed there
+# would realize a full WON/LOST instead of the half payoff the lock proof assumes.
+# Partial-lock promotion/routing is therefore restricted to pairs whose every leg lives on
+# a venue in this set (Polymarket is excluded regardless — its taker fee is not refunded on
+# a push). See ``adapters/cloudbet/execution.py`` and ``adapters/sxbet/execution.py``.
+HALF_GRADE_SETTLEMENT_VENUES: frozenset[str] = frozenset({"CLOUDBET"})
+
+# Signed per-state settlement weight, in units of a normalized unit stake at even reference
+# odds: a WIN protects +1 stake unit, a LOSE forfeits -1, VOID/PUSH refunds to 0, and a
+# HALF settles half the stake (±0.5). PARTIAL_WIN/PARTIAL_LOSE and UNKNOWN are absent on
+# purpose — a state that grades to one of them is not enumerable and disqualifies the lock.
+_PARTIAL_LOCK_SETTLEMENT_WEIGHTS: dict[str, Decimal] = {
+    SettlementState.WIN.value: Decimal(1),
+    SettlementState.LOSE.value: Decimal(-1),
+    SettlementState.VOID.value: Decimal(0),
+    SettlementState.HALF_WIN.value: Decimal("0.5"),
+    SettlementState.HALF_LOSE.value: Decimal("-0.5"),
+}
+
 
 def is_void_compatible_middle(
     relationship_type: str | None,
@@ -140,6 +200,85 @@ def has_only_void_push_settlement_risk(caveats: Any) -> bool:
     return bool(reasons & VOID_PUSH_SETTLEMENT_CAVEATS) and not (
         reasons & NON_VOID_SETTLEMENT_RISK_CAVEATS
     )
+
+
+def is_partial_compatible_lock(
+    relationship_type: str | None,
+    vector_a: PayoffVector,
+    vector_b: PayoffVector,
+    caveats: Any = (),
+    *,
+    floor: Decimal = Decimal(0),
+) -> bool:
+    """
+    Whether two legs form a partial-compatible lock: a hedge whose combined per-state net
+    payoff is provably ``>= floor`` in every result state, once HALF settlements are graded
+    at half stake and VOID/PUSH refund the stake.
+
+    This is the partial analog of ``is_void_compatible_middle``. Where the void middle proves
+    a lock structurally by "no state where both legs lose", a HALF settlement forfeits *part*
+    of the stake, so a coarse no-both-lose test is not enough — a state where one leg
+    HALF_LOSEs while the other LOSEs (or VOIDs) is a real net loss the coarse test misses.
+    The proof therefore enumerates ``PayoffVector.settlement`` per state and sums the signed
+    settlement weights of both legs: a break-even complementary partition nets to 0 in every
+    state, a genuine partial middle nets strictly positive on its middle state, and any state
+    that nets below ``floor`` fails the lock. As with the void middle this is the structural
+    (necessary) half of the guarantee; the runtime margin floor supplies the profit cushion
+    at real odds.
+
+    The relationship must be ``PARTIAL_SETTLEMENT_HEDGE`` or a ``COMPLEMENTARY_COVERAGE`` book
+    that actually carries a partial state, and any UNKNOWN / AMBIGUOUS / unresolved settlement
+    risk disqualifies it regardless of the opt-in.
+    """
+    if relationship_type not in PARTIAL_LOCK_RELATIONSHIP_TYPES:
+        return False
+    if not (vector_a.has_partial or vector_b.has_partial):
+        return False
+    if set(caveats) & NON_PARTIAL_SETTLEMENT_RISK_CAVEATS:
+        return False
+    settlement_a = tuple(vector_a.settlement)
+    settlement_b = tuple(vector_b.settlement)
+    if not settlement_a or len(settlement_a) != len(settlement_b):
+        return False
+    for state_a, state_b in zip(settlement_a, settlement_b, strict=True):
+        weight_a = _PARTIAL_LOCK_SETTLEMENT_WEIGHTS.get(state_a)
+        weight_b = _PARTIAL_LOCK_SETTLEMENT_WEIGHTS.get(state_b)
+        if weight_a is None or weight_b is None:
+            return False
+        if weight_a + weight_b < floor:
+            return False
+    return True
+
+
+def has_only_partial_settlement_risk(caveats: Any) -> bool:
+    """
+    Whether a settlement-risk set is partial-compatible — at least one PARTIAL (HALF)
+    risk and no UNKNOWN / AMBIGUOUS / unresolved risk (VOID/PUSH is allowed alongside,
+    since it refunds to zero in the payoff proof).
+
+    The coverage-tier analog of ``has_only_void_push_settlement_risk``: it is the risk-shape
+    signal a two-leg book keyed on ``COMPLEMENTARY_COVERAGE`` uses, while the authoritative
+    per-state lock proof is ``is_partial_compatible_lock`` on the pairwise path.
+
+    """
+    reasons = set(caveats)
+    return bool(reasons & PARTIAL_SETTLEMENT_CAVEATS) and not (
+        reasons & NON_PARTIAL_SETTLEMENT_RISK_CAVEATS
+    )
+
+
+def venue_scope_supports_half_grade_settlement(venue_scope: Any) -> bool:
+    """
+    Whether every venue in ``venue_scope`` has a confirmed HALF-grade settlement
+    mapping.
+
+    A partial lock's HALF payoffs are only realized if each leg's venue settles a half-line
+    at half stake; venues outside ``HALF_GRADE_SETTLEMENT_VENUES`` would grade it as a full
+    WON/LOST and break the lock. An empty scope is not a proof and returns ``False``.
+
+    """
+    venues = {str(venue).strip().upper() for venue in venue_scope if str(venue).strip()}
+    return bool(venues) and venues <= HALF_GRADE_SETTLEMENT_VENUES
 
 
 class PromotionStatus(str, Enum):

@@ -154,6 +154,7 @@ class MarketMatcher:
         fixture_identity_resolver: FixtureIdentityResolver | None = None,
         allow_unpromoted_topology: bool = True,
         execute_void_compatible_middles: bool = False,
+        allow_partial_compatible_locks: bool = False,
     ) -> None:
         """
         Initialize the MarketMatcher.
@@ -175,6 +176,10 @@ class MarketMatcher:
             When True, a positive-EV ``VOID_COMPATIBLE_HEDGE`` with only void/push
             settlement risk is elevated by the promotion tier instead of being demoted for
             void handling. Off by default so tier resolution is unchanged.
+        allow_partial_compatible_locks : bool, default False
+            When True, a ``PARTIAL_SETTLEMENT_HEDGE`` (or complementary book with partial
+            states) that is a proven partial lock on half-grade venues is elevated by the
+            promotion tier instead of being demoted for partial handling. Off by default.
 
         """
         self.min_confidence = min_confidence
@@ -185,6 +190,7 @@ class MarketMatcher:
         )
         self._allow_unpromoted_topology = allow_unpromoted_topology
         self._execute_void_compatible_middles = execute_void_compatible_middles
+        self._allow_partial_compatible_locks = allow_partial_compatible_locks
         self._promotion_policy = RulePromotionPolicy()
 
     def set_rule_store(self, rule_store: RuleStore | None) -> None:
@@ -300,6 +306,7 @@ class MarketMatcher:
             rule,
             None,
             allow_void_compatible_middles=self._execute_void_compatible_middles,
+            allow_partial_compatible_locks=self._allow_partial_compatible_locks,
         )
         rule = replace(rule, safety_tier=tier.value, eligibility_reasons=reasons)
         if self._rule_store is None:

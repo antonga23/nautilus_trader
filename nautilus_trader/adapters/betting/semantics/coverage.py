@@ -51,7 +51,11 @@ from nautilus_trader.adapters.betting.semantics.types import RelationshipType
 from nautilus_trader.adapters.betting.semantics.types import SafetyTier
 from nautilus_trader.adapters.betting.semantics.types import SelectionPredicate
 from nautilus_trader.adapters.betting.semantics.types import SettlementState
+from nautilus_trader.adapters.betting.semantics.types import has_only_partial_settlement_risk
 from nautilus_trader.adapters.betting.semantics.types import has_only_void_push_settlement_risk
+from nautilus_trader.adapters.betting.semantics.types import (
+    venue_scope_supports_half_grade_settlement,
+)
 
 
 WIN = SettlementState.WIN.value
@@ -319,6 +323,7 @@ class CoverageEngine:
         universe: OutcomeUniverse | None = None,
         relationship_type: str = RelationshipType.COMPLEMENTARY_COVERAGE.value,
         allow_void_compatible_middles: bool = False,
+        allow_partial_compatible_locks: bool = False,
     ) -> CoverageProof:
         predicate_list = tuple(predicates)
         if not predicate_list:
@@ -410,6 +415,7 @@ class CoverageEngine:
             risks=tuple(risks),
             relationship_type=relationship_type,
             allow_void_compatible_middles=allow_void_compatible_middles,
+            allow_partial_compatible_locks=allow_partial_compatible_locks,
         )
 
     def discover_event_coverage(
@@ -586,6 +592,7 @@ def _coverage_safety_tier(
     provider_scope: tuple[str, ...],
     blocker_reasons: tuple[str, ...],
     allow_void_compatible_middles: bool = False,
+    allow_partial_compatible_locks: bool = False,
 ) -> SafetyTier:
     if not complete:
         return SafetyTier.AUDIT_ONLY
@@ -604,7 +611,16 @@ def _coverage_safety_tier(
     void_middle = allow_void_compatible_middles and has_only_void_push_settlement_risk(
         blocker_reasons,
     )
-    if risks and not void_middle:
+    # A partial (HALF) book on half-grade venues is the partial-lock analog. The risk-shape
+    # signal only bypasses the demotion here; a single-venue (Cloudbet-only) book still falls
+    # through to SAME_VENUE_ELIGIBLE below, and cross-venue partials fail the venue guard —
+    # the authoritative per-state proof is ``is_partial_compatible_lock`` on the pairwise path.
+    partial_lock = (
+        allow_partial_compatible_locks
+        and has_only_partial_settlement_risk(blocker_reasons)
+        and venue_scope_supports_half_grade_settlement(provider_scope)
+    )
+    if risks and not (void_middle or partial_lock):
         return SafetyTier.COVERAGE_SAFE
     if len(provider_scope) == 1:
         return SafetyTier.EXECUTION_SAFE_SAME_VENUE_ELIGIBLE
@@ -623,6 +639,7 @@ def _coverage_proof(
     risks: tuple[CoverageRisk, ...],
     relationship_type: str,
     allow_void_compatible_middles: bool = False,
+    allow_partial_compatible_locks: bool = False,
 ) -> CoverageProof:
     blocker_reasons = _blocker_reasons(gaps, risks)
     safety_tier = _coverage_safety_tier(
@@ -631,6 +648,7 @@ def _coverage_proof(
         provider_scope=coverage_set.provider_scope,
         blocker_reasons=blocker_reasons,
         allow_void_compatible_middles=allow_void_compatible_middles,
+        allow_partial_compatible_locks=allow_partial_compatible_locks,
     )
     proof_payload = {
         "universe_id": universe.universe_id,
