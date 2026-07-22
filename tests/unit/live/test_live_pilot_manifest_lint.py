@@ -262,3 +262,28 @@ def test_baseball_shard_raises_cloudbet_budget_streams_sxbet_and_stages_middles(
     assert manifest.strategy.value_execution_enabled is False
     assert len(config.exec_clients) == 0
     assert all(not venue.execution_enabled for venue in manifest.venues)
+
+
+def test_soccer_shard_is_partial_lock_canary_and_stays_unarmed() -> None:
+    from nautilus_trader.live.strategy_nodes.betting_arbitrage.builder import (
+        build_trading_node_config,
+    )
+    from nautilus_trader.live.strategy_nodes.betting_arbitrage.builder import load_manifest
+
+    path = Path("deploy/strategy_nodes/betting_arbitrage/cloudbet-sxbet-polymarket-soccer.json")
+    manifest = load_manifest(path)
+    config = build_trading_node_config(manifest)
+
+    # Soccer is the partial-compatible-lock canary: both opt-ins on, partial-lock floor
+    # strictly above the arb floor.
+    assert manifest.strategy.allow_partial_compatible_locks is True
+    assert manifest.strategy.execute_partial_compatible_locks is True
+    assert manifest.strategy.min_partial_lock_profit_margin > manifest.strategy.min_profit_margin
+
+    # Staging only: every armed flag stays false and no execution client is built.
+    assert manifest.validation_mode is True
+    assert manifest.strategy.live_execution_armed is False
+    assert manifest.strategy.auto_execute is False
+    assert manifest.strategy.value_execution_enabled is False
+    assert len(config.exec_clients) == 0
+    assert all(not venue.execution_enabled for venue in manifest.venues)
