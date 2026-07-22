@@ -7,3 +7,5 @@ self-hosted-runner:
     - ec2
     - deploy
     - trading
+    - runner-skinfunctional-ci-2
+    - runner-skinfunctional-deploy-1
