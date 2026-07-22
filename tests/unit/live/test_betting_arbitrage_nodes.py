@@ -6533,6 +6533,118 @@ class TestBettingArbitrageNodeRunner:
         assert counters.positive_execution == 1
         assert counters.threshold_execution == 1
 
+    def test_probe_skewed_positive_kept_out_of_headline_counters(self):
+        # A pair_skew-flagged positive (SXBET stale-sibling underround) must not inflate
+        # the headline positive/threshold counters or the top positive stream; it belongs
+        # in the parallel skewed counters and skewed sample stream instead.
+        counters = node_runner.ProbeProfitabilityCounters()
+        node_runner._record_probe_opportunity(
+            counters,
+            opportunity=SimpleNamespace(profit_margin=Decimal("0.05")),
+            edge=SimpleNamespace(relationship_type="COMPLEMENTARY_COVERAGE"),
+            source_node=None,
+            target_node=None,
+            allow_same_venue=True,
+            min_profit_margin=Decimal("0.02"),
+            timing_clean=False,
+        )
+        quality = {
+            "profitMargin": "0.05",
+            "marginBand": "positive",
+            "rejectionBucket": "positive",
+            "venuePair": "SXBET->SXBET",
+            "marketFamily": "TOTALS",
+            "relationshipType": "COMPLEMENTARY_COVERAGE",
+            "timingFlags": ["pair_skew"],
+            "devig": {"enabled": False},
+        }
+        node_runner._record_probe_quality(counters, quality)
+
+        payload = counters.to_payload()
+        assert payload["positive_same_venue"] == 0
+        assert payload["threshold_same_venue"] == 0
+        assert payload["positive_same_venue_skewed"] == 1
+        assert payload["threshold_same_venue_skewed"] == 1
+        assert payload["sample_candidates"] == []
+        assert [c["venuePair"] for c in payload["skewed_sample_candidates"]] == ["SXBET->SXBET"]
+
+    def test_probe_fresh_positive_counts_in_headline_buckets(self):
+        # A timing-clean positive still counts in the headline buckets and top positive
+        # stream, exactly as before the skew split.
+        counters = node_runner.ProbeProfitabilityCounters()
+        node_runner._record_probe_opportunity(
+            counters,
+            opportunity=SimpleNamespace(profit_margin=Decimal("0.05")),
+            edge=SimpleNamespace(relationship_type="COMPLEMENTARY_COVERAGE"),
+            source_node=None,
+            target_node=None,
+            allow_same_venue=True,
+            min_profit_margin=Decimal("0.02"),
+            timing_clean=True,
+        )
+        quality = {
+            "profitMargin": "0.05",
+            "marginBand": "positive",
+            "rejectionBucket": "positive",
+            "venuePair": "SXBET->SXBET",
+            "marketFamily": "TOTALS",
+            "relationshipType": "COMPLEMENTARY_COVERAGE",
+            "timingFlags": ["fresh"],
+            "devig": {"enabled": False},
+        }
+        node_runner._record_probe_quality(counters, quality)
+
+        payload = counters.to_payload()
+        assert payload["positive_same_venue"] == 1
+        assert payload["threshold_same_venue"] == 1
+        assert payload["positive_same_venue_skewed"] == 0
+        assert payload["threshold_same_venue_skewed"] == 0
+        assert [c["venuePair"] for c in payload["sample_candidates"]] == ["SXBET->SXBET"]
+        assert payload["skewed_sample_candidates"] == []
+
+    def test_probe_skewed_threshold_counters_track_execution_side(self):
+        # Positive but below the profit threshold, on the execution (cross-venue) side and
+        # not timing-clean: the skewed positive counter ticks while the skewed threshold
+        # counter stays flat, mirroring the headline positive-vs-threshold distinction.
+        counters = node_runner.ProbeProfitabilityCounters()
+        node_runner._record_probe_opportunity(
+            counters,
+            opportunity=SimpleNamespace(profit_margin=Decimal("0.01")),
+            edge=SimpleNamespace(relationship_type="COMPLEMENTARY_COVERAGE"),
+            source_node=None,
+            target_node=None,
+            allow_same_venue=False,
+            min_profit_margin=Decimal("0.02"),
+            timing_clean=False,
+        )
+
+        payload = counters.to_payload()
+        assert payload["positive_execution"] == 0
+        assert payload["threshold_execution"] == 0
+        assert payload["positive_execution_skewed"] == 1
+        assert payload["threshold_execution_skewed"] == 0
+
+    def test_runtime_probe_payload_exposes_skewed_positive_sections(self):
+        # The runtime probe payload surfaces the skewed positive counters and top skewed
+        # candidates alongside the timing-clean headline ones, so a shrunk headline count
+        # is never silently hidden.
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(enabled_venues=frozenset(["SXBET"])),
+        )
+
+        payload = node_runner._collect_runtime_probe_payload(
+            strategy,
+            min_profit_margin=Decimal("0.02"),
+            elapsed_seconds=1.0,
+        )
+
+        expected_keys = {"executionSafe", "sameVenueExecutionEligible", "total"}
+        assert set(payload["positiveMarginCandidates"]) == expected_keys
+        assert set(payload["skewedPositiveMarginCandidates"]) == expected_keys
+        candidate_quality = payload["candidateQuality"]
+        assert "topPositiveCandidates" in candidate_quality
+        assert "topSkewedPositiveCandidates" in candidate_quality
+
     def test_runtime_probe_coverage_book_devig_uses_quoted_hyperedges(self):
         # Cross-venue: two independent books whose implied probabilities sum below 1 is
         # a genuine arbitrage, so the underround guard must leave this bucket locked.
