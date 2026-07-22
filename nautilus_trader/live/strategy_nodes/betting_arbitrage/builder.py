@@ -251,6 +251,13 @@ def _build_strategy_importable_config(
     if requested_engine in {"auto", "rust"}:
         strategy_config["opportunity_graph_engine"] = "semantic_rust"
     strategy_config["enabled_venues"] = sorted({venue.venue for venue in enabled_venues})
+    if any(
+        getattr(venue, "order_book_quote_tier_scheduling_enabled", False)
+        for venue in enabled_venues
+    ):
+        # The strategy owns tier assignment; enable it whenever any venue's poller reads
+        # the tier blob so the two stay coherent without a separate strategy-level toggle.
+        strategy_config["quote_tier_scheduling_enabled"] = True
     semantic_quote_limits = {
         venue.venue: int(venue.quote_subscription_limit)
         for venue in enabled_venues
@@ -445,6 +452,7 @@ def _build_cloudbet_data_importable(
         "quote_poll_unpollable_discovery_exclusion": (
             venue.order_book_unpollable_discovery_exclusion
         ),
+        "quote_tier_scheduling_enabled": venue.order_book_quote_tier_scheduling_enabled,
         "routing": {"venues": [venue.venue]},
     }
     return ImportableConfig(

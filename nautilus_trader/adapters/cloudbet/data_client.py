@@ -15,14 +15,19 @@
 
 import asyncio
 import contextlib
+import hashlib
 import time
 from collections import defaultdict
 from typing import Any
+from nautilus_trader.adapters.betting.runtime_cache import QUOTE_TIER_INTERVALS_DEFAULT
+from nautilus_trader.adapters.betting.runtime_cache import QUOTE_TIER_RANK
 from nautilus_trader.adapters.betting.runtime_cache import active_venue_instrument_index_key
+from nautilus_trader.adapters.betting.runtime_cache import decode_venue_quote_tiers
 from nautilus_trader.adapters.betting.runtime_cache import encode_active_venue_instrument_index
 from nautilus_trader.adapters.betting.runtime_cache import encode_venue_quote_poll_stats
 from nautilus_trader.adapters.betting.runtime_cache import latency_percentiles
 from nautilus_trader.adapters.betting.runtime_cache import venue_quote_poll_stats_key
+from nautilus_trader.adapters.betting.runtime_cache import venue_quote_tiers_key
 from nautilus_trader.cache.cache import Cache
 from nautilus_trader.common.clock import LiveClock
 from nautilus_trader.common.enums import LogColor
@@ -156,6 +161,9 @@ class CloudbetDataClient(LiveMarketDataClient):
         )
         self._quote_poll_event_batching = bool(
             getattr(self._config, "quote_poll_event_batching", True),
+        )
+        self._quote_tier_scheduling_enabled = bool(
+            getattr(self._config, "quote_tier_scheduling_enabled", False),
         )
         self._quote_poll_missing_prune_threshold = max(
             1,
@@ -536,12 +544,16 @@ class CloudbetDataClient(LiveMarketDataClient):
         if not subscribed_ids:
             return (0, 0)
 
+        # Bump the cycle id at the top of the cycle so a stable value is available at
+        # tier-selection time (the tier-due stagger keys off it); stats reuse it below.
+        self._quote_poll_cycle_id += 1
         now_ns = self._clock.timestamp_ns()
         self._market_pollability.prune_expired(now_ns)
         (
             instrument_ids,
             tombstone_skipped_count,
             revalidation_probe_count,
+            tier_counts,
         ) = self._select_pollable_quote_instruments(subscribed_ids, now_ns)
 
         started_at = time.perf_counter()
@@ -632,6 +644,10 @@ class CloudbetDataClient(LiveMarketDataClient):
             last_error=last_error,
             tombstone_skipped_count=tombstone_skipped_count,
             revalidation_probe_count=revalidation_probe_count,
+            hot_instrument_count=tier_counts["hot"],
+            warm_instrument_count=tier_counts["warm"],
+            cold_instrument_count=tier_counts["cold"],
+            tier_due_count=tier_counts["due"],
         )
         self._log_quote_poll_summary(
             instrument_count=len(instrument_ids),
@@ -869,25 +885,105 @@ class CloudbetDataClient(LiveMarketDataClient):
         self,
         instrument_ids: list[InstrumentId],
         now_ns: int,
-    ) -> tuple[list[InstrumentId], int, int]:
+    ) -> tuple[list[InstrumentId], int, int, dict[str, int]]:
+        tier_by_id, tier_intervals = self._load_quote_tier_map()
+        # An event rides its hottest member's cadence so a warm/cold sibling quotes for
+        # free on the hot event's batch request; per-line instruments use their own tier.
+        event_tier: dict[int, str] = {}
+        if tier_by_id is not None:
+            for instrument_id in instrument_ids:
+                key = self._pollability_key(instrument_id)
+                if key is None:
+                    continue
+                event_id = key[0]
+                tier = tier_by_id.get(str(instrument_id), "hot")
+                current = event_tier.get(event_id)
+                if current is None or self._quote_tier_rank(tier) < self._quote_tier_rank(current):
+                    event_tier[event_id] = tier
         selected: list[InstrumentId] = []
         skipped = 0
         probes = 0
+        tier_due_count = 0
+        hot_count = 0
+        warm_count = 0
+        cold_count = 0
         for instrument_id in instrument_ids:
+            if tier_by_id is not None:
+                own_tier = tier_by_id.get(str(instrument_id), "hot")
+                if own_tier == "warm":
+                    warm_count += 1
+                elif own_tier == "cold":
+                    cold_count += 1
+                else:
+                    hot_count += 1
             key = self._pollability_key(instrument_id)
             if key is None:
+                if tier_by_id is not None:
+                    if not self._quote_tier_due(own_tier, tier_intervals, str(instrument_id)):
+                        continue
+                    tier_due_count += 1
                 selected.append(instrument_id)
                 continue
             event_id, market_key = key
+            # Suppression beats tier: a tombstoned market stays skipped regardless of tier.
             if self._market_pollability.is_poll_suppressed(event_id, market_key, now_ns):
                 skipped += 1
                 continue
+            if tier_by_id is not None:
+                effective_tier = event_tier.get(event_id, own_tier)
+                if not self._quote_tier_due(effective_tier, tier_intervals, event_id):
+                    continue
+                tier_due_count += 1
             # Claiming bumps the revalidation window, so sibling selections of the
             # same tombstoned market are suppressed and share this single probe.
             if self._market_pollability.claim_revalidation_probe(event_id, market_key, now_ns):
                 probes += 1
             selected.append(instrument_id)
-        return selected, skipped, probes
+        tier_counts = {
+            "due": tier_due_count,
+            "hot": hot_count,
+            "warm": warm_count,
+            "cold": cold_count,
+        }
+        return selected, skipped, probes, tier_counts
+
+    def _load_quote_tier_map(
+        self,
+    ) -> tuple[dict[str, str] | None, dict[str, int] | None]:
+        # None => tier scheduling is off; caller treats every instrument as hot (today's
+        # behavior). An empty map with default intervals is the fail-open all-hot path for
+        # a missing/unreadable blob while the flag is on.
+        if not self._quote_tier_scheduling_enabled:
+            return None, None
+        raw = self._cache.get(venue_quote_tiers_key(CLOUDBET_VENUE.value))
+        decoded = decode_venue_quote_tiers(raw)
+        if decoded is None:
+            return {}, dict(QUOTE_TIER_INTERVALS_DEFAULT)
+        return dict(decoded.tier_by_instrument_id), dict(decoded.tier_intervals)
+
+    def _quote_tier_due(
+        self,
+        tier: str,
+        tier_intervals: dict[str, int],
+        hash_seed: object,
+    ) -> bool:
+        interval = max(1, int(tier_intervals.get(tier, 1)))
+        if interval <= 1:
+            return True
+        return (self._quote_poll_cycle_id + self._stable_event_hash(hash_seed)) % interval == 0
+
+    @staticmethod
+    def _quote_tier_rank(tier: str) -> int:
+        return QUOTE_TIER_RANK.get(tier, 0)
+
+    @staticmethod
+    def _stable_event_hash(seed: object) -> int:
+        # blake2b (not python hash(), which is salted per-process) so the per-event
+        # stagger phase is deterministic across restarts and worker replicas.
+        return int.from_bytes(
+            hashlib.blake2b(str(seed).encode("utf-8"), digest_size=8).digest(),
+            "big",
+        )
 
     def _record_market_miss(
         self,
@@ -1197,8 +1293,11 @@ class CloudbetDataClient(LiveMarketDataClient):
         last_error: str | None = None,
         tombstone_skipped_count: int = 0,
         revalidation_probe_count: int = 0,
+        hot_instrument_count: int = 0,
+        warm_instrument_count: int = 0,
+        cold_instrument_count: int = 0,
+        tier_due_count: int = 0,
     ) -> None:
-        self._quote_poll_cycle_id += 1
         backlog_count = max(0, instrument_count - max(1, self._quote_poll_concurrency))
         pollability_snapshot = self._market_pollability.snapshot()
         self._cache.add(
@@ -1239,6 +1338,10 @@ class CloudbetDataClient(LiveMarketDataClient):
                 tombstoned_market_count=pollability_snapshot["tombstoned_market_count"],
                 tombstone_skipped_count=tombstone_skipped_count,
                 revalidation_probe_count=revalidation_probe_count,
+                hot_instrument_count=hot_instrument_count,
+                warm_instrument_count=warm_instrument_count,
+                cold_instrument_count=cold_instrument_count,
+                tier_due_count=tier_due_count,
             ),
         )
 

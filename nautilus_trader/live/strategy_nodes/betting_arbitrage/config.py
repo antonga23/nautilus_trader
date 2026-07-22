@@ -64,6 +64,7 @@ class BettingVenueManifest(NautilusConfig, frozen=True):
     order_book_unpollable_revalidate_secs: PositiveFloat = 600.0
     order_book_unpollable_market_key_event_threshold: PositiveInt = 3
     order_book_unpollable_discovery_exclusion: bool = True
+    order_book_quote_tier_scheduling_enabled: bool = False
     order_book_transport: str = "poll"
     api_url: str | None = None
     ws_url: str | None = None

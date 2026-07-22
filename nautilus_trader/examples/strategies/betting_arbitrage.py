@@ -62,10 +62,14 @@ from nautilus_trader.adapters.betting.fx_feeds import fetch_fx_rate
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.betting.market_matcher import ArbitrageOpportunity
 from nautilus_trader.adapters.betting.market_matcher import MarketMatcher
+from nautilus_trader.adapters.betting.runtime_cache import QUOTE_TIER_INTERVALS_DEFAULT
+from nautilus_trader.adapters.betting.runtime_cache import QUOTE_TIER_RANK
 from nautilus_trader.adapters.betting.runtime_cache import active_venue_instrument_index_key
 from nautilus_trader.adapters.betting.runtime_cache import decode_active_venue_instrument_index
 from nautilus_trader.adapters.betting.runtime_cache import decode_venue_quote_poll_stats
+from nautilus_trader.adapters.betting.runtime_cache import encode_venue_quote_tiers
 from nautilus_trader.adapters.betting.runtime_cache import venue_quote_poll_stats_key
+from nautilus_trader.adapters.betting.runtime_cache import venue_quote_tiers_key
 from nautilus_trader.adapters.betting.semantics import NON_PARTIAL_SETTLEMENT_RISK_CAVEATS
 from nautilus_trader.adapters.betting.semantics import PARTIAL_LOCK_RELATIONSHIP_TYPES
 from nautilus_trader.adapters.betting.semantics import FileRuleCache
@@ -142,6 +146,9 @@ INSTRUMENT_RECONCILE_DELAY_SECS = 5.0
 APPROVAL_COMMAND_TIMER_NAME = "betting-arbitrage-approval-commands"
 APPROVAL_COMMAND_POLL_INTERVAL_SECS = 2.0
 APPROVAL_DECISION_HISTORY_LIMIT = 20
+# Consecutive tier refreshes an instrument must sit below its current tier before it is
+# demoted; promotion is immediate. Guards tier membership against transient graph churn.
+QUOTE_TIER_DEMOTE_AFTER_REFRESHES = 3
 APPROVE_ARB_ACTIONS = frozenset({"approve_arb", "reject_arb"})
 RELOAD_SEMANTIC_CACHE_ACTION = "reload_semantic_cache"
 SEMANTIC_CACHE_RELOAD_RETAINED_GENERATIONS = 2
@@ -579,6 +586,7 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
     cross_venue_anchor_venue: str | None = None
     min_quote_depth_by_venue: dict[str, float] = {}
     quote_rebalance_enabled: bool = False
+    quote_tier_scheduling_enabled: bool = False
     quote_rebalance_unquoted_grace_secs: PositiveFloat = 900.0
     quote_rebalance_max_unsubscribes_per_refresh: PositiveInt = 25
     quote_freshness_profile: str = "pre_match"
@@ -1113,6 +1121,10 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._live_execution_submissions_by_venue: Counter[str] = Counter()
         self._pending_approvals: dict[str, PendingArbitrageApproval] = {}
         self._pending_cross_venue_sequences: dict[str, PendingCrossVenueSequence] = {}
+        # Effective (published) quote tier per quote-subscription id, plus the run of
+        # consecutive refreshes each id has been computed below it (anti-flap hysteresis).
+        self._quote_tier_by_id: dict[str, str] = {}
+        self._quote_tier_below_count: dict[str, int] = {}
         self._cross_venue_sequences_opened = 0
         self._cross_venue_sequences_completed = 0
         self._cross_venue_sequences_aborted = 0
@@ -1892,6 +1904,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             self._subscribe_semantic_connected_quote_ticks()
             self._subscribe_semantic_unmatched_quote_probe_ticks()
             self._rebalance_quote_subscriptions()
+            self._publish_quote_tiers()
             return
         for instrument in resubscribe_instruments:
             self._subscribe_quote_ticks_for_instrument(instrument)
@@ -1999,6 +2012,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             self._subscribe_cross_venue_common_fixture_quote_ticks()
             self._subscribe_semantic_connected_quote_ticks()
             self._subscribe_semantic_unmatched_quote_probe_ticks()
+            self._publish_quote_tiers()
         else:
             self._subscribe_quote_ticks_for_instrument(betting_instrument)
         return True
@@ -2071,6 +2085,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
         self._subscribe_semantic_connected_quote_ticks()
         self._subscribe_semantic_unmatched_quote_probe_ticks()
         self._log_graph_topology_summary()
+        self._publish_quote_tiers()
 
     def _subscribe_quote_ticks_for_instrument(self, instrument: BettingInstrument) -> bool:
         quote_instrument_id = self._quote_subscription_instrument_id(instrument)
@@ -2691,6 +2706,119 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             if node is not None:
                 connected.add(str(node.instrument.id))
         return connected
+
+    def _publish_quote_tiers(self) -> None:
+        """
+        Publish per-venue quote poll tiers for the cloudbet poller to schedule against.
+
+        Reuses the existing subscription-pass signals: hot = cross-venue edge legs plus
+        approval-pending legs; warm = semantic-connected nodes plus common-fixture alias
+        members; cold = every other subscribed instrument. Assignment keys off the
+        quote-subscription id (what the poller subscribes) so the adapter can look tiers
+        up directly. Runs only behind ``quote_tier_scheduling_enabled``.
+
+        """
+        if not self._config.quote_tier_scheduling_enabled:
+            return
+        updated_at_ns = self._safe_clock_timestamp_ns()
+        if updated_at_ns is None:
+            return
+
+        subscribed_snapshot = tuple(self._subscribed_instruments)
+        hot_ids = {str(instrument.id) for instrument in self._cross_venue_edge_leg_instruments()}
+        hot_ids |= self._approval_pending_instrument_ids()
+        warm_ids = set(self._semantic_connected_instrument_ids())
+        warm_ids |= self._common_fixture_alias_instrument_ids(subscribed_snapshot)
+
+        computed = self._compute_quote_tier_assignments(subscribed_snapshot, hot_ids, warm_ids)
+        effective = self._apply_quote_tier_hysteresis(computed)
+        self._write_quote_tier_blobs(effective, updated_at_ns)
+
+    def _compute_quote_tier_assignments(
+        self,
+        subscribed_snapshot: tuple[BettingInstrument, ...],
+        hot_ids: set[str],
+        warm_ids: set[str],
+    ) -> dict[str, str]:
+        computed: dict[str, str] = {}
+        for instrument in subscribed_snapshot:
+            quote_id = str(self._quote_subscription_instrument_id(instrument))
+            if quote_id not in self._quote_subscribed_instrument_ids:
+                continue
+            instrument_key = str(instrument.id)
+            if instrument_key in hot_ids:
+                tier = "hot"
+            elif instrument_key in warm_ids:
+                tier = "warm"
+            else:
+                tier = "cold"
+            current = computed.get(quote_id)
+            if current is None or QUOTE_TIER_RANK[tier] < QUOTE_TIER_RANK[current]:
+                computed[quote_id] = tier
+        return computed
+
+    def _write_quote_tier_blobs(self, effective: dict[str, str], updated_at_ns: int) -> None:
+        tiers_by_venue: dict[str, dict[str, str]] = {}
+        for quote_id, tier in effective.items():
+            venue = self._venue_from_instrument_id_text(quote_id)
+            if not venue:
+                continue
+            tiers_by_venue.setdefault(venue, {})[quote_id] = tier
+
+        for venue, tier_by_instrument_id in tiers_by_venue.items():
+            self.cache.add(
+                venue_quote_tiers_key(venue),
+                encode_venue_quote_tiers(
+                    venue=venue,
+                    updated_at_ns=updated_at_ns,
+                    tier_by_instrument_id=tier_by_instrument_id,
+                    tier_intervals=QUOTE_TIER_INTERVALS_DEFAULT,
+                ),
+            )
+
+    def _approval_pending_instrument_ids(self) -> set[str]:
+        ids: set[str] = set()
+        for approval in self._pending_approvals.values():
+            opportunity = approval.opportunity
+            for instrument in (opportunity.instrument_a, opportunity.instrument_b):
+                instrument_id = getattr(instrument, "id", None)
+                if instrument_id is not None:
+                    ids.add(str(instrument_id))
+        return ids
+
+    def _common_fixture_alias_instrument_ids(
+        self,
+        subscribed_snapshot: tuple[BettingInstrument, ...],
+    ) -> set[str]:
+        alias_keys_by_instrument_id, alias_venues_by_key = (
+            self._semantic_unmatched_quote_probe_alias_index(list(subscribed_snapshot))
+        )
+        common: set[str] = set()
+        for instrument_id, aliases in alias_keys_by_instrument_id.items():
+            if any(len(alias_venues_by_key.get(alias, set())) >= 2 for alias in aliases):
+                common.add(instrument_id)
+        return common
+
+    def _apply_quote_tier_hysteresis(self, computed: dict[str, str]) -> dict[str, str]:
+        effective: dict[str, str] = {}
+        below_count: dict[str, int] = {}
+        for quote_id, tier in computed.items():
+            previous = self._quote_tier_by_id.get(quote_id)
+            if previous is None or QUOTE_TIER_RANK[tier] <= QUOTE_TIER_RANK[previous]:
+                # New id, promotion, or steady tier: apply now and clear the below run.
+                effective[quote_id] = tier
+                below_count[quote_id] = 0
+                continue
+            pending = self._quote_tier_below_count.get(quote_id, 0) + 1
+            if pending >= QUOTE_TIER_DEMOTE_AFTER_REFRESHES:
+                effective[quote_id] = tier
+                below_count[quote_id] = 0
+            else:
+                effective[quote_id] = previous
+                below_count[quote_id] = pending
+        self._quote_tier_by_id = effective
+        self._quote_tier_below_count = below_count
+        return effective
 
     def _quote_subscription_counts_by_venue(self) -> Counter[str]:
         counts: Counter[str] = Counter()
@@ -7934,6 +8062,10 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 "stream_subscribe_error_count": payload.stream_subscribe_error_count,
                 "stream_seed_failure_count": payload.stream_seed_failure_count,
                 "stream_last_disconnect_reason": payload.stream_last_disconnect_reason,
+                "hot_instrument_count": payload.hot_instrument_count,
+                "warm_instrument_count": payload.warm_instrument_count,
+                "cold_instrument_count": payload.cold_instrument_count,
+                "tier_due_count": payload.tier_due_count,
             }
         return stats
 
