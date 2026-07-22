@@ -322,3 +322,72 @@ class TestCloudbetInstrumentLoadCap:
 
         assert loaded == 6
         assert provider.count == 6
+
+
+class TestCloudbetDiscoveryExclusion:
+    """
+    WS-B2: load_all_async drops selections whose (event_id, market_key) the injected
+    MarketPollabilityRegistry marks unpollable, before the depth-sort/load-limit cap.
+    """
+
+    def _provider(self, filters: dict | None = None) -> CloudbetInstrumentProvider:
+        from nautilus_trader.config import InstrumentProviderConfig
+
+        return CloudbetInstrumentProvider(
+            client=MagicMock(),
+            logger=TestComponentStubs.logger(),
+            config=InstrumentProviderConfig(filters=filters) if filters else None,
+        )
+
+    @staticmethod
+    def _tombstoned_registry(event_ids: list[int], market_key: str):
+        from nautilus_trader.adapters.cloudbet.market_pollability import (
+            MarketPollabilityRegistry,
+        )
+
+        registry = MarketPollabilityRegistry(miss_threshold=1, revalidate_secs=600.0)
+        for event_id in event_ids:
+            registry.record_miss(event_id, market_key, reason="line_404", now_ns=0)
+        return registry
+
+    @pytest.mark.asyncio()
+    async def test_registry_excludes_tombstoned_selections(self):
+        selections = [_cap_selection(i, max_stake=(i + 1) * 10) for i in range(4)]
+        provider = self._provider()
+        provider._client.load_selection = AsyncMock(return_value=[selections])
+        provider.set_pollability_registry(
+            self._tombstoned_registry([1001, 1002], "soccer.match_odds"),
+        )
+
+        loaded = await provider.load_all_async()
+
+        assert loaded == 2
+        kept_event_ids = {int(str(inst.event_id)) for inst in provider.list_all()}
+        assert kept_event_ids == {1000, 1003}
+
+    @pytest.mark.asyncio()
+    async def test_exclusion_runs_before_load_limit_cap(self):
+        # The deepest selection is tombstoned: the freed slot goes to a pollable one.
+        selections = [_cap_selection(i, max_stake=(i + 1) * 10) for i in range(5)]
+        provider = self._provider({"instrument_load_limit": 2, "sport_key": ["soccer"]})
+        provider._client.load_selection = AsyncMock(return_value=[selections])
+        provider.set_pollability_registry(
+            self._tombstoned_registry([1004], "soccer.match_odds"),
+        )
+
+        loaded = await provider.load_all_async()
+
+        assert loaded == 2
+        kept_depths = sorted(int(inst.max_size) for inst in provider.list_all())
+        assert kept_depths == [30, 40]
+
+    @pytest.mark.asyncio()
+    async def test_without_registry_behavior_is_unchanged(self):
+        selections = [_cap_selection(i, max_stake=(i + 1) * 10) for i in range(4)]
+        provider = self._provider()
+        provider._client.load_selection = AsyncMock(return_value=[selections])
+
+        loaded = await provider.load_all_async()
+
+        assert loaded == 4
+        assert provider.count == 4

@@ -98,6 +98,22 @@ class MarketPollabilityRegistry:
         events = self._events_by_market_key.get(market_key)
         return events is not None and len(events) >= self._market_key_event_threshold
 
+    def exclude_from_discovery(self, event_id: int, market_key: str, now_ns: int) -> bool:
+        record = self._records.get((event_id, market_key))
+        tombstoned = record is not None and record.miss_count >= self._miss_threshold
+        if not self.is_market_key_unpollable(market_key):
+            return tombstoned
+        if not tombstoned:
+            return True
+        # Escalated market key: admit a single canary event — the lexicographically
+        # smallest currently-tombstoned event_id — once its own revalidation is due,
+        # so a venue-wide market that comes back is eventually rediscovered. Read-only:
+        # the poll-side probe claim stays the only prober.
+        events = self._events_by_market_key[market_key]
+        if event_id != min(events, key=str):
+            return True
+        return now_ns < record.next_revalidate_at_ns
+
     def prune_expired(self, now_ns: int) -> int:
         cutoff = now_ns - RECORD_TTL_NS
         expired = [

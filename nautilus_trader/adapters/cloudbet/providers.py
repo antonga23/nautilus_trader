@@ -30,6 +30,7 @@ from nautilus_trader.adapters.cloudbet.client.schema import (
     GetEventResponse,
 )
 from nautilus_trader.adapters.cloudbet.common import VENUE
+from nautilus_trader.adapters.cloudbet.market_pollability import MarketPollabilityRegistry
 from nautilus_trader.common.clock import LiveClock
 from nautilus_trader.common.logging import Logger
 from nautilus_trader.common.providers import InstrumentProvider
@@ -82,6 +83,10 @@ class CloudbetInstrumentProvider(InstrumentProvider):
         self._cache: dict[InstrumentId, CryptoBettingInstrument] = {}
         self._account_currency = EUR
         self._missing_instruments: set[CryptoBettingInstrument] = set()
+        self._pollability_registry: MarketPollabilityRegistry | None = None
+
+    def set_pollability_registry(self, registry: MarketPollabilityRegistry | None) -> None:
+        self._pollability_registry = registry
 
     async def load_ids_async(
         self,
@@ -325,6 +330,8 @@ class CloudbetInstrumentProvider(InstrumentProvider):
         selections: list[list[Selection]] = await self._client.load_selection(selection_filter)
         self._log.info("Creating instruments..")
         flattened = [selection for events in selections for selection in events]
+        if self._pollability_registry is not None:
+            flattened = self._filter_unpollable_selections(flattened)
         if load_limit is not None and load_limit > 0 and len(flattened) > load_limit:
             # Keep the deepest markets: Cloudbet exposes a real per-selection max stake as
             # its native depth signal, so ordering by it before the cap drops the shallowest
@@ -341,6 +348,28 @@ class CloudbetInstrumentProvider(InstrumentProvider):
             f"(instrument_load_limit={load_limit})",
         )
         return instrument_count
+
+    def _filter_unpollable_selections(self, selections: List[Selection]) -> List[Selection]:
+        registry = self._pollability_registry
+        if registry is None:
+            return selections
+        now_ns = time.time_ns()
+        kept: List[Selection] = []
+        excluded_count = 0
+        for selection in selections:
+            try:
+                event_id = int(selection.event_id)
+            except (TypeError, ValueError):
+                kept.append(selection)
+                continue
+            if registry.exclude_from_discovery(event_id, str(selection.market_name), now_ns):
+                excluded_count += 1
+                continue
+            kept.append(selection)
+        self._log.debug(
+            f"Excluded {excluded_count} known-unpollable selections from discovery",
+        )
+        return kept
 
     def selection_to_instrument(self, selection: Selection) -> CryptoBettingInstrument:
         """
