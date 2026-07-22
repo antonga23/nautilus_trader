@@ -944,11 +944,16 @@ jobs:
             exit 0
           fi
 
-          # tier 2 — GHCR registry pull (only changed layers cross the wire)
+          # tier 2 — GHCR registry pull (only changed layers cross the wire).
+          # The login is best-effort: GHCR auth is denied in the dispatch context, and
+          # under the step's -e shell an unguarded failure aborted the chain before the
+          # R2 fallback could run (every deploy leg died once builds moved to a second
+          # runner and the same-box local tier stopped hitting).
           if [ "$transport" = "auto" ] || [ "$transport" = "registry" ]; then
             if [ -n "$STRATEGY_NODE_GHCR_TOKEN" ]; then
               printf '%s' "$STRATEGY_NODE_GHCR_TOKEN" \
-                | docker login ghcr.io -u "$STRATEGY_NODE_GHCR_USERNAME" --password-stdin > /dev/null
+                | docker login ghcr.io -u "$STRATEGY_NODE_GHCR_USERNAME" --password-stdin > /dev/null \
+                || echo "GHCR login failed; attempting unauthenticated pull"
             fi
             if docker pull "$IMAGE_REF"; then
               echo "pulled image from GHCR: $IMAGE_REF"
