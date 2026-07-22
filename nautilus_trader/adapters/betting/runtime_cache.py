@@ -52,6 +52,15 @@ class VenueQuotePollStats:
     delisted_count: int = 0
     backoff_secs: float = 0.0
     last_error: str | None = None
+    stream_connected: bool = False
+    stream_connected_since_ns: int = 0
+    stream_reconnect_count: int = 0
+    stream_fallback_activation_count: int = 0
+    stream_publication_count: int = 0
+    stream_subscribed_channel_count: int = 0
+    stream_subscribe_error_count: int = 0
+    stream_seed_failure_count: int = 0
+    stream_last_disconnect_reason: str | None = None
     tombstoned_market_count: int = 0
     tombstone_skipped_count: int = 0
     revalidation_probe_count: int = 0
@@ -131,6 +140,15 @@ def encode_venue_quote_poll_stats(
     delisted_count: int = 0,
     backoff_secs: float = 0.0,
     last_error: str | None = None,
+    stream_connected: bool = False,
+    stream_connected_since_ns: int = 0,
+    stream_reconnect_count: int = 0,
+    stream_fallback_activation_count: int = 0,
+    stream_publication_count: int = 0,
+    stream_subscribed_channel_count: int = 0,
+    stream_subscribe_error_count: int = 0,
+    stream_seed_failure_count: int = 0,
+    stream_last_disconnect_reason: str | None = None,
     tombstoned_market_count: int = 0,
     tombstone_skipped_count: int = 0,
     revalidation_probe_count: int = 0,
@@ -172,6 +190,17 @@ def encode_venue_quote_poll_stats(
         "delisted_count": max(0, int(delisted_count)),
         "backoff_secs": max(0.0, float(backoff_secs)),
         "last_error": str(last_error)[:240] if last_error else None,
+        "stream_connected": bool(stream_connected),
+        "stream_connected_since_ns": max(0, int(stream_connected_since_ns)),
+        "stream_reconnect_count": max(0, int(stream_reconnect_count)),
+        "stream_fallback_activation_count": max(0, int(stream_fallback_activation_count)),
+        "stream_publication_count": max(0, int(stream_publication_count)),
+        "stream_subscribed_channel_count": max(0, int(stream_subscribed_channel_count)),
+        "stream_subscribe_error_count": max(0, int(stream_subscribe_error_count)),
+        "stream_seed_failure_count": max(0, int(stream_seed_failure_count)),
+        "stream_last_disconnect_reason": (
+            str(stream_last_disconnect_reason)[:240] if stream_last_disconnect_reason else None
+        ),
         "tombstoned_market_count": max(0, int(tombstoned_market_count)),
         "tombstone_skipped_count": max(0, int(tombstone_skipped_count)),
         "revalidation_probe_count": max(0, int(revalidation_probe_count)),
@@ -255,6 +284,21 @@ def decode_venue_quote_poll_stats(raw: bytes | None) -> VenueQuotePollStats | No
             delisted_count=int(payload.get("delisted_count") or 0),
             backoff_secs=float(payload.get("backoff_secs") or 0.0),
             last_error=str(payload.get("last_error") or "") or None,
+            stream_connected=bool(payload.get("stream_connected")),
+            stream_connected_since_ns=int(payload.get("stream_connected_since_ns") or 0),
+            stream_reconnect_count=int(payload.get("stream_reconnect_count") or 0),
+            stream_fallback_activation_count=int(
+                payload.get("stream_fallback_activation_count") or 0,
+            ),
+            stream_publication_count=int(payload.get("stream_publication_count") or 0),
+            stream_subscribed_channel_count=int(
+                payload.get("stream_subscribed_channel_count") or 0,
+            ),
+            stream_subscribe_error_count=int(payload.get("stream_subscribe_error_count") or 0),
+            stream_seed_failure_count=int(payload.get("stream_seed_failure_count") or 0),
+            stream_last_disconnect_reason=(
+                str(payload.get("stream_last_disconnect_reason") or "") or None
+            ),
             tombstoned_market_count=int(payload.get("tombstoned_market_count") or 0),
             tombstone_skipped_count=int(payload.get("tombstone_skipped_count") or 0),
             revalidation_probe_count=int(payload.get("revalidation_probe_count") or 0),

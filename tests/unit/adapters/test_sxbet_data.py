@@ -1260,7 +1260,9 @@ def test_apply_order_book_delta_accepts_rest_orderstatus_field():
 
 
 @pytest.mark.asyncio
-async def test_poll_loop_idle_while_stream_healthy():
+async def test_poll_loop_idle_while_stream_healthy_records_stream_stats():
+    # The idle pass must not hit REST, but it piggybacks a fresh stream stats
+    # snapshot so a long-lived healthy stream stays visible in status.
     instrument = _make_instrument()
     provider = _make_provider()
     provider.find = Mock(return_value=instrument)
@@ -1269,12 +1271,24 @@ async def test_poll_loop_idle_while_stream_healthy():
     client._subscribed_instruments = {instrument.id}
     client._http_client.get_order_book = AsyncMock()
     client._stream_healthy = True
+    client._stream_subscribed_markets = {"market-1"}
+    client._stream_books["market-1"] = {
+        "0x1": _stream_order(outcome_one=True, implied=0.5, size=100_000000, order_hash="0x1"),
+    }
 
     await client._poll_order_books_once()
 
     client._http_client.get_order_book.assert_not_awaited()
     client._handle_data.assert_not_called()
-    assert client._cache.get(venue_quote_poll_stats_key("SXBET")) is None
+    stats = decode_venue_quote_poll_stats(
+        client._cache.get(venue_quote_poll_stats_key("SXBET")),
+    )
+    assert stats is not None
+    assert stats.source == "realtime_stream"
+    assert stats.stream_connected is True
+    assert stats.stream_subscribed_channel_count == 1
+    assert stats.market_count == 1
+    assert stats.order_count == 1
 
 
 @pytest.mark.asyncio
@@ -1358,3 +1372,111 @@ async def test_start_stream_creates_client_and_subscribes_market_channels(monkey
     assert created[0].started is True
     assert order_book_channel("market-1") in created[0].subscribed
     assert client._realtime_client is created[0]
+
+
+@pytest.mark.asyncio
+async def test_stream_subscribe_ack_seeds_unrecovered_and_skips_recovered():
+    instrument = _make_instrument(outcome="away", outcome_one=False)
+    provider = _make_provider()
+    provider.find_by_market_hash = Mock(return_value=[instrument])
+    client = _stream_client(provider)
+    client._subscribed_instruments = {instrument.id}
+    client._http_client.get_order_book = AsyncMock(
+        return_value={
+            "data": {
+                "orders": [
+                    _stream_order(outcome_one=True, implied=0.5, size=120_000000, order_hash="0x1"),
+                ],
+            },
+        },
+    )
+
+    # Recovered channel: offset recovery replayed the deltas, so no REST reseed.
+    await client._on_stream_subscribed(order_book_channel("market-1"), True)
+    await asyncio.gather(*list(client._seed_tasks))
+    client._http_client.get_order_book.assert_not_awaited()
+
+    # Unrecovered channel: seeded from the REST snapshot.
+    await client._on_stream_subscribed(order_book_channel("market-1"), False)
+    await asyncio.gather(*list(client._seed_tasks))
+    client._http_client.get_order_book.assert_awaited_once_with("market-1")
+    assert set(client._stream_books["market-1"]) == {"0x1"}
+
+
+@pytest.mark.asyncio
+async def test_seed_market_book_retries_then_counts_failure(monkeypatch):
+    monkeypatch.setattr(
+        "nautilus_trader.adapters.sxbet.data._SXBET_SEED_RETRY_BACKOFF_SECS",
+        0.0,
+    )
+    provider = _make_provider()
+    provider.find_by_market_hash = Mock(return_value=[])
+    client = _stream_client(provider)
+    client._http_client.get_order_book = AsyncMock(side_effect=SXBetHttpClientError("boom"))
+
+    seeded = await client._seed_market_book("market-1")
+
+    assert seeded is False
+    assert client._http_client.get_order_book.await_count == 2
+    assert client._stream_seed_failure_count == 1
+
+
+@pytest.mark.asyncio
+async def test_seed_market_book_recovers_on_retry(monkeypatch):
+    monkeypatch.setattr(
+        "nautilus_trader.adapters.sxbet.data._SXBET_SEED_RETRY_BACKOFF_SECS",
+        0.0,
+    )
+    provider = _make_provider()
+    provider.find_by_market_hash = Mock(return_value=[])
+    client = _stream_client(provider)
+    order = _stream_order(outcome_one=True, implied=0.5, size=100_000000, order_hash="0x1")
+    client._http_client.get_order_book = AsyncMock(
+        side_effect=[SXBetHttpClientError("boom"), {"data": {"orders": [order]}}],
+    )
+
+    seeded = await client._seed_market_book("market-1")
+
+    assert seeded is True
+    assert client._stream_seed_failure_count == 0
+    assert set(client._stream_books["market-1"]) == {"0x1"}
+
+
+@pytest.mark.asyncio
+async def test_stream_stats_track_connect_publication_and_fallback_counters():
+    instrument = _make_instrument(outcome="away", outcome_one=False)
+    provider = _make_provider()
+    provider.find_by_market_hash = Mock(return_value=[instrument])
+    client = _stream_client(provider)
+    client._subscribed_instruments = {instrument.id}
+    client._stream_subscribed_markets = {"market-1"}
+
+    await client._on_stream_connected()
+    await client._on_stream_publication(
+        order_book_channel("market-1"),
+        [_stream_order(outcome_one=True, implied=0.5, size=100_000000, order_hash="0x1")],
+    )
+    await client._on_stream_disconnected("realtime connection stale (no server ping)")
+
+    stats = decode_venue_quote_poll_stats(
+        client._cache.get(venue_quote_poll_stats_key("SXBET")),
+    )
+    assert stats is not None
+    assert stats.source == "realtime_stream"
+    assert stats.stream_connected is False
+    assert stats.stream_reconnect_count == 0
+    assert stats.stream_fallback_activation_count == 1
+    assert stats.stream_publication_count == 1
+    assert stats.stream_subscribed_channel_count == 1
+    assert stats.stream_last_disconnect_reason == "realtime connection stale (no server ping)"
+    assert stats.quote_count == 1
+
+    await client._on_stream_connected()
+    stats = decode_venue_quote_poll_stats(
+        client._cache.get(venue_quote_poll_stats_key("SXBET")),
+    )
+    assert stats is not None
+    assert stats.stream_connected is True
+    assert stats.stream_reconnect_count == 1
+    assert stats.stream_connected_since_ns > 0
+    assert stats.stream_fallback_activation_count == 1

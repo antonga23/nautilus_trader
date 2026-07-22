@@ -5,7 +5,9 @@
 # -------------------------------------------------------------------------------------------------
 
 import asyncio
+import base64
 import json
+import time
 from typing import Any
 from typing import NamedTuple
 from unittest.mock import AsyncMock
@@ -80,6 +82,24 @@ class _BlockingWS:
 
     async def close(self) -> None:
         self.closed = True
+
+
+class _ScriptedThenBlockingWS(_ScriptedWS):
+    """
+    A fake WebSocket that emits scripted frames then parks the read loop open.
+    """
+
+    async def receive(self) -> _Msg:
+        if self._incoming and not self.closed:
+            return _Msg(aiohttp.WSMsgType.TEXT, self._incoming.pop(0))
+        while not self.closed:
+            await asyncio.sleep(0.01)
+        return _Msg(aiohttp.WSMsgType.CLOSED, None)
+
+
+def _jwt_with_exp(exp: float) -> str:
+    payload = base64.urlsafe_b64encode(json.dumps({"exp": exp}).encode()).decode().rstrip("=")
+    return f"header.{payload}.signature"
 
 
 def _http_client_with_tokens(counter: dict) -> Mock:
@@ -276,6 +296,170 @@ async def test_reconnect_refreshes_token_and_resubscribes():
     assert any(
         json.loads(cmd).get("subscribe", {}).get("channel") == _CHANNEL for cmd in second.sent
     )
+
+
+# -- token expiry + proactive refresh --------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("token", "expected"),
+    [
+        (_jwt_with_exp(1_800_000_000), 1_800_000_000.0),
+        ("not-a-jwt", None),
+        ("header.!!!not-base64!!!.sig", None),
+        (f"header.{base64.urlsafe_b64encode(b'{}').decode()}.sig", None),
+    ],
+)
+def test_decode_jwt_exp_reads_payload_without_signature_verification(token, expected):
+    assert SXBetRealtimeClient._decode_jwt_exp(token) == expected
+
+
+def test_token_refresh_delay_leaves_margin_and_halves_short_ttl():
+    client = SXBetRealtimeClient(Mock(), on_publication=Mock())
+
+    assert client._token_refresh_delay_secs(300.0) == pytest.approx(270.0)
+    assert client._token_refresh_delay_secs(20.0) == pytest.approx(10.0)
+    assert client._token_refresh_delay_secs(None) is None
+
+    client._token_exp_epoch = time.time() + 300.0
+    assert client._token_refresh_delay_secs(None) == pytest.approx(270.0, abs=1.0)
+
+
+@pytest.mark.asyncio
+async def test_connect_sends_proactive_refresh_frame_before_token_expiry():
+    # The realtime JWT expires (~5 min TTL live); the client must refresh the
+    # session token before ``exp`` instead of dying on the staleness watchdog.
+    tokens = [_jwt_with_exp(time.time() + 0.4), _jwt_with_exp(time.time() + 600.0)]
+    http_client = Mock()
+    http_client.get_realtime_token = AsyncMock(side_effect=[{"token": token} for token in tokens])
+    ws = _ScriptedThenBlockingWS([_connect_reply()])
+
+    async def connector(url: str) -> object:
+        return ws
+
+    client = SXBetRealtimeClient(http_client, on_publication=Mock(), ws_connector=connector)
+    await client.start()
+
+    async def _refresh_sent() -> None:
+        while not any('"refresh"' in frame for frame in ws.sent):
+            await asyncio.sleep(0.01)
+
+    await asyncio.wait_for(_refresh_sent(), timeout=2.0)
+    await client.stop()
+
+    refresh_frames = [json.loads(frame) for frame in ws.sent if '"refresh"' in frame]
+    assert refresh_frames[0]["refresh"]["token"] == tokens[1]
+    assert refresh_frames[0]["id"] > 0
+
+
+@pytest.mark.asyncio
+async def test_refresh_reply_error_closes_socket_for_clean_reconnect():
+    client = SXBetRealtimeClient(Mock(), on_publication=Mock())
+    ws = _BlockingWS()
+    client._ws = ws
+    client._pending_refresh_id = 5
+
+    await client._dispatch_reply({"id": 5, "error": {"code": 109, "message": "expired"}})
+
+    assert ws.closed is True
+    assert client._ws is None
+    assert "token refresh rejected" in client._disconnect_reason
+
+
+# -- subscribe replies: recovery + rejections -------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_subscribe_error_reply_counts_rejection():
+    subscribed: list[tuple[str, bool]] = []
+
+    async def on_subscribed(channel: str, recovered: bool) -> None:
+        subscribed.append((channel, recovered))
+
+    client = SXBetRealtimeClient(Mock(), on_publication=Mock(), on_subscribed=on_subscribed)
+    client._pending_subscribes[7] = _CHANNEL
+
+    await client._dispatch_reply({"id": 7, "error": {"code": 108, "message": "limit exceeded"}})
+
+    assert client.subscribe_error_count == 1
+    assert subscribed == []
+    assert client._pending_subscribes == {}
+
+
+@pytest.mark.asyncio
+async def test_subscribe_reply_replays_recovered_publications_and_reports_recovery():
+    received: list[tuple[str, object]] = []
+    subscribed: list[tuple[str, bool]] = []
+
+    async def on_pub(channel: str, data: object) -> None:
+        received.append((channel, data))
+
+    async def on_subscribed(channel: str, recovered: bool) -> None:
+        subscribed.append((channel, recovered))
+
+    client = SXBetRealtimeClient(Mock(), on_publication=on_pub, on_subscribed=on_subscribed)
+    client._pending_subscribes[3] = _CHANNEL
+    orders = [{"orderHash": "0x1", "status": "ACTIVE"}]
+
+    await client._dispatch_reply(
+        {
+            "id": 3,
+            "subscribe": {
+                "recovered": True,
+                "epoch": "e1",
+                "publications": [{"data": orders, "offset": 9}],
+                "offset": 9,
+            },
+        },
+    )
+
+    assert received == [(_CHANNEL, orders)]
+    assert subscribed == [(_CHANNEL, True)]
+    assert client._channel_offsets[_CHANNEL] == 9
+    assert client._channel_epochs[_CHANNEL] == "e1"
+
+
+@pytest.mark.asyncio
+async def test_resubscribe_with_offset_requests_recovery_with_epoch():
+    client = SXBetRealtimeClient(Mock(), on_publication=Mock())
+    client._ws = _BlockingWS()
+    client._channel_offsets[_CHANNEL] = 12
+    client._channel_epochs[_CHANNEL] = "e1"
+
+    await client._send_subscribe(_CHANNEL)
+
+    subscribe_cmd = json.loads(client._ws.sent[0])["subscribe"]
+    assert subscribe_cmd["recover"] is True
+    assert subscribe_cmd["offset"] == 12
+    assert subscribe_cmd["epoch"] == "e1"
+
+
+# -- disconnect reasons -----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_mark_disconnected_passes_reason_to_callback():
+    reasons: list[str | None] = []
+
+    async def on_disconnected(reason: str | None) -> None:
+        reasons.append(reason)
+
+    client = SXBetRealtimeClient(Mock(), on_publication=Mock(), on_disconnected=on_disconnected)
+    client._connected = True
+    client._disconnect_reason = "SXBetRealtimeError: realtime connection stale (no server ping)"
+
+    await client._mark_disconnected()
+
+    assert reasons == ["SXBetRealtimeError: realtime connection stale (no server ping)"]
+    assert client._disconnect_reason is None
+
+
+@pytest.mark.asyncio
+async def test_server_disconnect_push_raises_with_code_and_reason():
+    client = SXBetRealtimeClient(Mock(), on_publication=Mock())
+
+    with pytest.raises(SXBetRealtimeError, match="code=3005 reason=token expired"):
+        await client._handle_push({"disconnect": {"code": 3005, "reason": "token expired"}})
 
 
 @pytest.mark.asyncio

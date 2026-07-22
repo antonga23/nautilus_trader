@@ -41,9 +41,11 @@ streaming and polling paths share one pricing implementation.
 """
 
 import asyncio
+import base64
 import contextlib
 import json
 import secrets
+import time
 from collections.abc import Awaitable
 from collections.abc import Callable
 from typing import Any
@@ -58,6 +60,13 @@ from nautilus_trader.common.component import Logger
 
 PublicationCallback = Callable[[str, Any], Awaitable[None] | None]
 HealthCallback = Callable[[], Awaitable[None] | None]
+DisconnectCallback = Callable[[str | None], Awaitable[None] | None]
+SubscribedCallback = Callable[[str, bool], Awaitable[None] | None]
+
+# The realtime JWT expires (observed TTL ~5 min); without a proactive refresh the
+# server drops the connection on expiry and the staleness watchdog flaps the
+# stream. Refresh this margin before ``exp`` (or at half the TTL when shorter).
+TOKEN_REFRESH_MARGIN_SECS = 30.0
 
 
 def order_book_channel(market_hash: str) -> str:
@@ -115,8 +124,13 @@ class SXBetRealtimeClient:
         treated as stale and force-reconnected.
     on_connected : HealthCallback, optional
         Invoked after a successful connect handshake (streaming is healthy).
-    on_disconnected : HealthCallback, optional
-        Invoked when the connection drops (fallback should take over).
+    on_disconnected : DisconnectCallback, optional
+        Invoked as ``(reason)`` when the connection drops (fallback should take
+        over); ``reason`` carries the disconnect cause when known.
+    on_subscribed : SubscribedCallback, optional
+        Invoked as ``(channel, recovered)`` when the server acknowledges a
+        subscription. ``recovered`` is ``True`` when offset recovery replayed the
+        missed publications, so the consumer's local state is already current.
 
     """
 
@@ -134,7 +148,8 @@ class SXBetRealtimeClient:
         connect_timeout_secs: float = 10.0,
         staleness_margin_secs: float = 10.0,
         on_connected: HealthCallback | None = None,
-        on_disconnected: HealthCallback | None = None,
+        on_disconnected: DisconnectCallback | None = None,
+        on_subscribed: SubscribedCallback | None = None,
     ) -> None:
         self._http_client = http_client
         self._on_publication = on_publication
@@ -148,16 +163,24 @@ class SXBetRealtimeClient:
         self._staleness_margin_secs = staleness_margin_secs
         self._on_connected = on_connected
         self._on_disconnected = on_disconnected
+        self._on_subscribed = on_subscribed
 
         self._ws: Any = None
         self._run_task: asyncio.Task | None = None
+        self._refresh_task: asyncio.Task | None = None
         self._running = False
         self._connected = False
         self._command_id = 0
         self._send_pong = True
         self._ping_interval_secs = 0.0
+        self._token_exp_epoch: float | None = None
+        self._disconnect_reason: str | None = None
+        self._pending_subscribes: dict[int, str] = {}
+        self._pending_refresh_id: int | None = None
+        self._subscribe_error_count = 0
         self._desired_channels: set[str] = set()
         self._channel_offsets: dict[str, int] = {}
+        self._channel_epochs: dict[str, str] = {}
         self._session: aiohttp.ClientSession | None = None
 
     @property
@@ -166,6 +189,13 @@ class SXBetRealtimeClient:
         Return whether the Centrifugo session is currently established.
         """
         return self._connected
+
+    @property
+    def subscribe_error_count(self) -> int:
+        """
+        Return the number of per-channel subscribe rejections since start.
+        """
+        return self._subscribe_error_count
 
     async def start(self) -> None:
         """
@@ -181,6 +211,7 @@ class SXBetRealtimeClient:
         Stop the realtime client and close the connection.
         """
         self._running = False
+        self._cancel_token_refresh()
         if self._run_task and not self._run_task.done():
             self._run_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -206,6 +237,7 @@ class SXBetRealtimeClient:
         """
         self._desired_channels.discard(channel)
         self._channel_offsets.pop(channel, None)
+        self._channel_epochs.pop(channel, None)
         if self._connected:
             await self._send_command({"unsubscribe": {"channel": channel}})
 
@@ -223,6 +255,8 @@ class SXBetRealtimeClient:
             except asyncio.CancelledError:
                 break
             except Exception as e:
+                if self._disconnect_reason is None:
+                    self._disconnect_reason = f"{type(e).__name__}: {e}"
                 if self._log:
                     self._log.warning(f"SX.bet realtime connection error: {type(e).__name__}: {e}")
             finally:
@@ -250,11 +284,15 @@ class SXBetRealtimeClient:
 
     async def _connect_once(self) -> None:
         token = await self._fetch_token()
+        self._token_exp_epoch = self._decode_jwt_exp(token)
         self._ws = await asyncio.wait_for(
             self._ws_connector(self._ws_url),
             timeout=self._connect_timeout_secs,
         )
         self._command_id = 0
+        self._disconnect_reason = None
+        self._pending_subscribes.clear()
+        self._pending_refresh_id = None
         connect_reply = await self._request({"connect": {"token": token, "name": "nautilus"}})
         connect_result = connect_reply.get("connect", {}) if isinstance(connect_reply, dict) else {}
         self._send_pong = bool(connect_result.get("pong", False))
@@ -265,6 +303,10 @@ class SXBetRealtimeClient:
                 "SX.bet realtime connected "
                 f"(ping={self._ping_interval_secs}s pong={self._send_pong})",
             )
+        server_ttl_secs = float(connect_result.get("ttl", 0) or 0)
+        self._schedule_token_refresh(
+            server_ttl_secs if connect_result.get("expires") and server_ttl_secs > 0 else None,
+        )
         for channel in sorted(self._desired_channels):
             await self._send_subscribe(channel)
         if self._on_connected is not None:
@@ -294,14 +336,62 @@ class SXBetRealtimeClient:
             if self._send_pong:
                 await self._send_command({})
             return
+        reply_id = reply.get("id")
+        if reply_id:
+            channel = self._pending_subscribes.pop(reply_id, None)
+            if channel is not None:
+                await self._handle_subscribe_reply(channel, reply)
+            elif reply_id == self._pending_refresh_id:
+                self._pending_refresh_id = None
+                await self._handle_refresh_reply(reply)
+            return
         push = reply.get("push")
         if push:
             await self._handle_push(push)
 
+    async def _handle_subscribe_reply(self, channel: str, reply: dict[str, Any]) -> None:
+        error = reply.get("error")
+        if error:
+            self._subscribe_error_count += 1
+            if self._log:
+                self._log.warning(f"SX.bet realtime subscribe rejected for {channel}: {error}")
+            return
+        result = reply.get("subscribe")
+        result = result if isinstance(result, dict) else {}
+        epoch = result.get("epoch")
+        if isinstance(epoch, str) and epoch:
+            self._channel_epochs[channel] = epoch
+        recovered = bool(result.get("recovered"))
+        for publication in result.get("publications") or []:
+            if isinstance(publication, dict):
+                await self._handle_push({"channel": channel, "pub": publication})
+        offset = int(result.get("offset", 0) or 0)
+        if offset > self._channel_offsets.get(channel, 0):
+            self._channel_offsets[channel] = offset
+        if self._on_subscribed is not None:
+            await self._maybe_await(self._on_subscribed(channel, recovered))
+
+    async def _handle_refresh_reply(self, reply: dict[str, Any]) -> None:
+        error = reply.get("error")
+        if not error:
+            return
+        # A rejected refresh means the session dies at token expiry anyway;
+        # reconnect cleanly now instead of waiting for the staleness watchdog.
+        if self._log:
+            self._log.warning(f"SX.bet realtime token refresh rejected: {error}")
+        self._disconnect_reason = f"token refresh rejected: {error}"
+        await self._close_ws()
+
     async def _handle_push(self, push: dict[str, Any]) -> None:
+        disconnect = push.get("disconnect")
+        if isinstance(disconnect, dict):
+            raise SXBetRealtimeError(
+                "server disconnect "
+                f"code={disconnect.get('code')} reason={disconnect.get('reason')}",
+            )
         pub = push.get("pub")
         if pub is None:
-            # join / leave / unsubscribe / disconnect pushes are not needed here.
+            # join / leave / unsubscribe pushes are not needed here.
             return
         channel = push.get("channel", "")
         offset = int(pub.get("offset", 0) or 0)
@@ -319,7 +409,71 @@ class SXBetRealtimeClient:
         if last_offset:
             subscribe["recover"] = True
             subscribe["offset"] = last_offset
-        await self._send_command({"subscribe": subscribe})
+            epoch = self._channel_epochs.get(channel)
+            if epoch:
+                subscribe["epoch"] = epoch
+        command_id = await self._send_command({"subscribe": subscribe})
+        if command_id is not None:
+            self._pending_subscribes[command_id] = channel
+
+    # -- token refresh -----------------------------------------------------------------------
+
+    @staticmethod
+    def _decode_jwt_exp(token: str) -> float | None:
+        parts = token.split(".")
+        if len(parts) < 2:
+            return None
+        payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
+        try:
+            payload = json.loads(base64.urlsafe_b64decode(payload_b64))
+        except (ValueError, TypeError):
+            return None
+        exp = payload.get("exp") if isinstance(payload, dict) else None
+        if isinstance(exp, (int, float)) and exp > 0:
+            return float(exp)
+        return None
+
+    def _token_refresh_delay_secs(self, server_ttl_secs: float | None) -> float | None:
+        ttl = server_ttl_secs
+        if ttl is None and self._token_exp_epoch is not None:
+            ttl = self._token_exp_epoch - time.time()
+        if ttl is None or ttl <= 0:
+            return None
+        if ttl > 2 * TOKEN_REFRESH_MARGIN_SECS:
+            return ttl - TOKEN_REFRESH_MARGIN_SECS
+        return ttl / 2
+
+    def _schedule_token_refresh(self, server_ttl_secs: float | None) -> None:
+        self._cancel_token_refresh()
+        delay = self._token_refresh_delay_secs(server_ttl_secs)
+        if delay is None:
+            return
+        if self._log:
+            self._log.info(f"SX.bet realtime token refresh scheduled in {delay:.0f}s")
+        self._refresh_task = asyncio.create_task(self._refresh_loop(delay))
+
+    async def _refresh_loop(self, initial_delay: float) -> None:
+        delay: float | None = initial_delay
+        while self._running and delay is not None:
+            await asyncio.sleep(delay)
+            try:
+                token = await self._fetch_token()
+                self._token_exp_epoch = self._decode_jwt_exp(token)
+                self._pending_refresh_id = await self._send_command({"refresh": {"token": token}})
+            except Exception as e:
+                if self._log:
+                    self._log.warning(f"SX.bet realtime token refresh failed: {e}")
+                self._disconnect_reason = f"token refresh failed: {e}"
+                await self._close_ws()
+                return
+            if self._log:
+                self._log.info("SX.bet realtime token refresh sent before expiry")
+            delay = self._token_refresh_delay_secs(None)
+
+    def _cancel_token_refresh(self) -> None:
+        if self._refresh_task is not None and not self._refresh_task.done():
+            self._refresh_task.cancel()
+        self._refresh_task = None
 
     # -- framing helpers ---------------------------------------------------------------------
 
@@ -343,10 +497,11 @@ class SXBetRealtimeClient:
                     return reply
                 await self._dispatch_reply(reply)
 
-    async def _send_command(self, command: dict[str, Any]) -> None:
+    async def _send_command(self, command: dict[str, Any]) -> int | None:
         if "id" not in command and command != {}:
             command = {"id": self._next_id(), **command}
         await self._raw_send(self._encode_commands([command]))
+        return command.get("id")
 
     @staticmethod
     def _encode_commands(commands: list[dict[str, Any]]) -> str:
@@ -404,11 +559,16 @@ class SXBetRealtimeClient:
             self._ws = None
 
     async def _mark_disconnected(self) -> None:
+        self._cancel_token_refresh()
         was_connected = self._connected
         self._connected = False
+        reason = self._disconnect_reason
+        self._disconnect_reason = None
+        self._pending_subscribes.clear()
+        self._pending_refresh_id = None
         await self._close_ws()
         if was_connected and self._on_disconnected is not None:
-            await self._maybe_await(self._on_disconnected())
+            await self._maybe_await(self._on_disconnected(reason))
 
     @staticmethod
     async def _maybe_await(result: Any) -> None:
