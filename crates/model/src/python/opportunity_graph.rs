@@ -1230,8 +1230,53 @@ impl OpportunityGraphCore {
             (Some(source_start), Some(target_start)) => {
                 (source_start - target_start).abs() <= EVENT_START_TOLERANCE_NS
             }
-            _ => self.start_time_cluster_count_for_pair(source, target) == 1,
+            _ => {
+                let clusters = self.start_time_cluster_count_for_pair(source, target);
+                // A single time-cluster is an unambiguous kickoff (one leg may omit its
+                // time). clusters == 0 means neither pair venue supplied any usable time:
+                // one venue omits start_time, the other sends a date-only placeholder that
+                // _start_time_ns nulls (e.g. CLOUDBET has none, POLYMARKET sends
+                // "YYYY-MM-DD"). Bind the unique alias-matched fixture instead of dropping
+                // the whole cross-venue pair — but only when neither venue carries a second
+                // timeless event under the shared alias, so a same-participant doubleheader
+                // stays ambiguous and is never force-bound into a phantom lock.
+                clusters == 1
+                    || (clusters == 0
+                        && source.start_time_ns.is_none()
+                        && target.start_time_ns.is_none()
+                        && self.timeless_pair_is_unambiguous(source, target))
+            }
         }
+    }
+
+    /// True when neither pair venue contributes more than one distinct timeless event
+    /// under the shared alias — i.e. the alias resolves to a single cross-venue fixture
+    /// even though no kickoff time is available. Used only from the `clusters == 0`
+    /// branch of `is_event_match`, where the time-cluster count cannot disambiguate.
+    fn timeless_pair_is_unambiguous(&self, source: &NodeSnapshot, target: &NodeSnapshot) -> bool {
+        let Some(shared_event_key) = shared_event_alias_key(source, target) else {
+            return false;
+        };
+        // The pair legs always count; other timeless bucket members can only add
+        // distinct events, never remove them.
+        let mut source_events: HashSet<&str> = HashSet::from([source.event_id.as_str()]);
+        let mut target_events: HashSet<&str> = HashSet::from([target.event_id.as_str()]);
+        if let Some(bucket) = self.event_buckets.get(shared_event_key) {
+            for node_id in bucket {
+                let Some(node) = self.nodes_by_id.get(node_id) else {
+                    continue;
+                };
+                if node.start_time_ns.is_some() {
+                    continue;
+                }
+                if node.venue == source.venue {
+                    source_events.insert(node.event_id.as_str());
+                } else if node.venue == target.venue {
+                    target_events.insert(node.event_id.as_str());
+                }
+            }
+        }
+        source_events.len() == 1 && target_events.len() == 1
     }
 
     fn start_time_cluster_count_for_pair(
@@ -2818,7 +2863,7 @@ mod tests {
     }
 
     #[rstest]
-    fn event_matching_rejects_distinct_keys_and_empty_start_clusters() {
+    fn event_matching_rejects_distinct_keys_and_binds_unambiguous_timeless_pair() {
         let mut core = OpportunityGraphCore::new(true, 0.5);
         let source = node("a", "over");
         let mut target = node_with(
@@ -2859,7 +2904,43 @@ mod tests {
             core.start_time_cluster_count_for_pair(&missing_source, &target),
             0
         );
-        assert!(!core.is_event_match(&missing_source, &target));
+        // Empty time-cluster (both legs timeless), but the shared alias resolves to a
+        // single fixture per venue: bind it instead of dropping the cross-venue pair.
+        assert!(core.is_event_match(&missing_source, &target));
+    }
+
+    #[rstest]
+    fn timeless_cross_venue_pair_binds_unless_doubleheader() {
+        // Neither venue supplies a usable kickoff time (CLOUDBET omits start_time,
+        // POLYMARKET sends a date-only placeholder that _start_time_ns nulls). The unique
+        // alias-matched fixture must still bind cross-venue and form an edge.
+        let mut cb =
+            node_with("cb", "CLOUDBET", "cb-1", "Total Goals", "total_goals", "over");
+        cb.start_time_ns = None;
+        let mut pm =
+            node_with("pm", "POLYMARKET", "pm-1", "Total Goals", "total_goals", "under");
+        pm.start_time_ns = None;
+
+        let mut unique = OpportunityGraphCore::new(true, 0.5);
+        unique.insert_node(cb.clone());
+        unique.insert_node(pm.clone());
+        unique.rebuild_edges();
+        assert!(unique.is_event_match(&cb, &pm));
+        assert_eq!(unique.edge_count(), 1);
+
+        // A same-participant doubleheader: a second timeless CLOUDBET event under the same
+        // alias makes the pairing ambiguous, so no cross-venue edge may be force-bound.
+        let mut cb2 =
+            node_with("cb2", "CLOUDBET", "cb-2", "Total Goals", "total_goals", "over");
+        cb2.start_time_ns = None;
+
+        let mut doubleheader = OpportunityGraphCore::new(true, 0.5);
+        doubleheader.insert_node(cb.clone());
+        doubleheader.insert_node(cb2);
+        doubleheader.insert_node(pm.clone());
+        doubleheader.rebuild_edges();
+        assert!(!doubleheader.is_event_match(&cb, &pm));
+        assert_eq!(doubleheader.edge_count(), 0);
     }
 
     #[rstest]
