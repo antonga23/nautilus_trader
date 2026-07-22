@@ -85,6 +85,9 @@ def test_venue_quote_poll_stats_round_trip() -> None:
         stream_subscribe_error_count=78,
         stream_seed_failure_count=2,
         stream_last_disconnect_reason="realtime connection stale",
+        tombstoned_market_count=4,
+        tombstone_skipped_count=6,
+        revalidation_probe_count=2,
     )
 
     payload = decode_venue_quote_poll_stats(raw)
@@ -136,6 +139,9 @@ def test_venue_quote_poll_stats_round_trip() -> None:
         stream_subscribe_error_count=78,
         stream_seed_failure_count=2,
         stream_last_disconnect_reason="realtime connection stale",
+        tombstoned_market_count=4,
+        tombstone_skipped_count=6,
+        revalidation_probe_count=2,
     )
 
 
@@ -160,6 +166,33 @@ def test_venue_quote_poll_stats_decode_defaults_stream_fields_for_old_payloads()
     assert stats.stream_connected is False
     assert stats.stream_reconnect_count == 0
     assert stats.stream_last_disconnect_reason is None
+
+
+def test_venue_quote_poll_stats_decode_defaults_missing_tombstone_fields() -> None:
+    raw = encode_venue_quote_poll_stats(
+        venue="cloudbet",
+        updated_at_ns=1,
+        cycle_id=1,
+        source="rest_event_poll",
+        subscribed_instrument_count=1,
+        market_count=1,
+        quote_count=1,
+    )
+    payload_dict = json.loads(raw)
+    for key in (
+        "tombstoned_market_count",
+        "tombstone_skipped_count",
+        "revalidation_probe_count",
+    ):
+        payload_dict.pop(key)
+    old_raw = json.dumps(payload_dict).encode("utf-8")
+
+    payload = decode_venue_quote_poll_stats(old_raw)
+
+    assert payload is not None
+    assert payload.tombstoned_market_count == 0
+    assert payload.tombstone_skipped_count == 0
+    assert payload.revalidation_probe_count == 0
 
 
 def test_latency_percentiles_normalize_empty_and_negative_values() -> None:

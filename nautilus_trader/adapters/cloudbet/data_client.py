@@ -50,6 +50,7 @@ from nautilus_trader.adapters.cloudbet.client.schema import (
     SelectionStatus,
 )
 from nautilus_trader.adapters.cloudbet.config import CloudbetDataClientConfig
+from nautilus_trader.adapters.cloudbet.market_pollability import MarketPollabilityRegistry
 from nautilus_trader.adapters.cloudbet.providers import CloudbetInstrumentProvider
 
 from nautilus_trader.adapters.cloudbet.sockets import CloudbetStreamClient
@@ -57,8 +58,6 @@ from nautilus_trader.live.data_client import LiveMarketDataClient
 from nautilus_trader.model.instruments import Instrument
 from nautilus_trader.model.instruments.crypto_betting import CryptoBettingInstrument
 from nautilus_trader.model.orderbook import OrderBook
-
-REVALIDATE_EVERY_N_CYCLES = 20
 
 
 class CloudbetDataClient(LiveMarketDataClient):
@@ -163,7 +162,18 @@ class CloudbetDataClient(LiveMarketDataClient):
             int(getattr(self._config, "quote_poll_missing_prune_threshold", 3)),
         )
         self._quote_poll_missing_counts: dict[InstrumentId, int] = defaultdict(int)
-        self._quote_poll_absent_market_cycles: dict[InstrumentId, int] = {}
+        self._quote_poll_unpollable_revalidate_secs = max(
+            1.0,
+            float(getattr(self._config, "quote_poll_unpollable_revalidate_secs", 600.0)),
+        )
+        self._market_pollability = MarketPollabilityRegistry(
+            miss_threshold=self._quote_poll_missing_prune_threshold,
+            revalidate_secs=self._quote_poll_unpollable_revalidate_secs,
+            market_key_event_threshold=int(
+                getattr(self._config, "quote_poll_unpollable_market_key_event_threshold", 3),
+            ),
+        )
+        self._warned_unpollable_market_keys: set[str] = set()
         self._quote_poll_concurrency = min(
             max(self._quote_poll_min_concurrency, self._quote_poll_concurrency),
             self._quote_poll_max_concurrency,
@@ -235,6 +245,8 @@ class CloudbetDataClient(LiveMarketDataClient):
         self._subscribed_quote_instruments.clear()
         self._requested_quote_instruments.clear()
         self._quote_poll_missing_counts.clear()
+        self._market_pollability.clear()
+        self._warned_unpollable_market_keys.clear()
         if self._quote_polling_task is not None:
             self._quote_polling_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -519,9 +531,17 @@ class CloudbetDataClient(LiveMarketDataClient):
         self._log.info("Stopped Cloudbet quote polling loop")
 
     async def _poll_quote_ticks_once(self) -> tuple[int, int]:
-        instrument_ids = sorted(self._subscribed_quote_instruments, key=str)
-        if not instrument_ids:
+        subscribed_ids = sorted(self._subscribed_quote_instruments, key=str)
+        if not subscribed_ids:
             return (0, 0)
+
+        now_ns = self._clock.timestamp_ns()
+        self._market_pollability.prune_expired(now_ns)
+        (
+            instrument_ids,
+            tombstone_skipped_count,
+            revalidation_probe_count,
+        ) = self._select_pollable_quote_instruments(subscribed_ids, now_ns)
 
         started_at = time.perf_counter()
         if self._quote_poll_event_batching:
@@ -546,6 +566,8 @@ class CloudbetDataClient(LiveMarketDataClient):
         pruned_instrument_ids: set[InstrumentId] = set()
         for instrument_id, quote, error in results:
             if error is not None:
+                if self._is_structurally_unpollable_error(error):
+                    self._record_unpollable_quote_market(instrument_id, error, now_ns)
                 if self._is_delisted_quote_error(error):
                     # A 404 means the event is settled/delisted on the venue, not a
                     # transient failure: count it like a missing quote so the
@@ -569,6 +591,7 @@ class CloudbetDataClient(LiveMarketDataClient):
                     pruned_instrument_ids.add(instrument_id)
                 continue
             self._quote_poll_missing_counts.pop(instrument_id, None)
+            self._mark_quote_market_pollable(instrument_id)
             self._handle_data(quote)
             published += 1
             max_fetch_latency_secs = max(
@@ -606,6 +629,8 @@ class CloudbetDataClient(LiveMarketDataClient):
             delisted_count=delisted_count,
             backoff_secs=float(rate_limit_count),
             last_error=last_error,
+            tombstone_skipped_count=tombstone_skipped_count,
+            revalidation_probe_count=revalidation_probe_count,
         )
         self._log_quote_poll_summary(
             instrument_count=len(instrument_ids),
@@ -629,12 +654,14 @@ class CloudbetDataClient(LiveMarketDataClient):
             max_added = min(max_added, slots_available)
         if max_added <= 0:
             return 0
+        now_ns = self._clock.timestamp_ns()
         candidates = [
             instrument
             for instrument in self._instrument_provider.list_all()
             if isinstance(instrument, CryptoBettingInstrument)
             and instrument.id not in self._subscribed_quote_instruments
             and instrument.id not in exclude
+            and not self._is_instrument_poll_suppressed(instrument, now_ns)
         ]
         candidates.sort(key=self._quote_subscription_priority_key)
         added = 0
@@ -665,7 +692,7 @@ class CloudbetDataClient(LiveMarketDataClient):
                 try:
                     return instrument_id, await self._fetch_quote_tick(instrument_id), None
                 except CloudbetAPIError as exc:
-                    self._log.warning(f"Cloudbet quote poll failed for {instrument_id}: {exc}")
+                    self._log_quote_poll_fetch_failure(instrument_id, exc)
                     return instrument_id, None, str(exc)
                 except (ValueError, TypeError, KeyError) as exc:
                     self._log.warning(f"Cloudbet quote poll failed for {instrument_id}: {exc}")
@@ -758,20 +785,13 @@ class CloudbetDataClient(LiveMarketDataClient):
                 response_received_ns=response_received_ns,
             )
             if quote is not None:
-                self._quote_poll_absent_market_cycles.pop(instrument_id, None)
                 group_results.append((instrument_id, quote, None))
                 continue
             if event.markets.get(str(instrument.market_name)) is not None:
-                self._quote_poll_absent_market_cycles.pop(instrument_id, None)
-                unresolved_ids.append(instrument_id)
-                continue
-            confirmed_at = self._quote_poll_absent_market_cycles.get(instrument_id)
-            if (
-                confirmed_at is not None
-                and self._quote_poll_cycle_id - confirmed_at < REVALIDATE_EVERY_N_CYCLES
-            ):
-                group_results.append((instrument_id, None, None))
-                continue
+                self._market_pollability.record_success(
+                    event_id,
+                    str(instrument.market_name),
+                )
             unresolved_ids.append(instrument_id)
 
         fallback_count = 0
@@ -780,9 +800,11 @@ class CloudbetDataClient(LiveMarketDataClient):
                 unresolved_ids,
             )
             group_results.extend(fallback_results)
-            for instrument_id, quote, _ in fallback_results:
-                if quote is not None:
-                    self._quote_poll_absent_market_cycles.pop(instrument_id, None)
+            now_ns = self._clock.timestamp_ns()
+            for instrument_id, quote, error in fallback_results:
+                # Per-line errors (e.g. 404s) are recorded with their own reason in
+                # the main poll loop; only record the confirmed-absent case here.
+                if quote is not None or error is not None:
                     continue
                 instrument = self._instrument_provider.find(instrument_id)
                 if (
@@ -790,16 +812,143 @@ class CloudbetDataClient(LiveMarketDataClient):
                     and event.markets.get(str(instrument.market_name)) is None
                 ):
                     # The market key is structurally absent from the event payload
-                    # AND the per-line endpoint (same market path) found nothing:
-                    # skip the redundant per-line request on subsequent cycles.
-                    self._quote_poll_absent_market_cycles[instrument_id] = (
-                        self._quote_poll_cycle_id
+                    # AND the per-line endpoint (same market path) found nothing.
+                    self._record_market_miss(
+                        event_id,
+                        str(instrument.market_name),
+                        reason="market_absent",
+                        now_ns=now_ns,
                     )
         return group_results, fallback_count
 
     @staticmethod
     def _is_delisted_quote_error(error: str) -> bool:
         return "code='404'" in error or "code=404" in error
+
+    @staticmethod
+    def _is_malformed_request_error(error: str) -> bool:
+        return "code='400'" in error and "MALFORMED_REQUEST" in error
+
+    def _is_structurally_unpollable_error(self, error: str) -> bool:
+        return self._is_delisted_quote_error(error) or self._is_malformed_request_error(error)
+
+    def _pollability_key(self, instrument_id: InstrumentId) -> tuple[int, str] | None:
+        instrument = self._instrument_provider.find(instrument_id)
+        if not isinstance(instrument, CryptoBettingInstrument):
+            return None
+        return self._instrument_pollability_key(instrument)
+
+    @staticmethod
+    def _instrument_pollability_key(
+        instrument: CryptoBettingInstrument,
+    ) -> tuple[int, str] | None:
+        try:
+            return int(str(instrument.event_id)), str(instrument.market_name)
+        except (TypeError, ValueError):
+            return None
+
+    def _is_instrument_poll_suppressed(
+        self,
+        instrument: CryptoBettingInstrument,
+        now_ns: int,
+    ) -> bool:
+        key = self._instrument_pollability_key(instrument)
+        if key is None:
+            return False
+        return self._market_pollability.is_poll_suppressed(key[0], key[1], now_ns)
+
+    def _select_pollable_quote_instruments(
+        self,
+        instrument_ids: list[InstrumentId],
+        now_ns: int,
+    ) -> tuple[list[InstrumentId], int, int]:
+        selected: list[InstrumentId] = []
+        skipped = 0
+        probes = 0
+        for instrument_id in instrument_ids:
+            key = self._pollability_key(instrument_id)
+            if key is None:
+                selected.append(instrument_id)
+                continue
+            event_id, market_key = key
+            if self._market_pollability.is_poll_suppressed(event_id, market_key, now_ns):
+                skipped += 1
+                continue
+            # Claiming bumps the revalidation window, so sibling selections of the
+            # same tombstoned market are suppressed and share this single probe.
+            if self._market_pollability.claim_revalidation_probe(event_id, market_key, now_ns):
+                probes += 1
+            selected.append(instrument_id)
+        return selected, skipped, probes
+
+    def _record_market_miss(
+        self,
+        event_id: int,
+        market_key: str,
+        *,
+        reason: str,
+        now_ns: int,
+    ) -> None:
+        if not self._market_pollability.record_miss(
+            event_id,
+            market_key,
+            reason=reason,
+            now_ns=now_ns,
+        ):
+            return
+        self._log.info(
+            "Suppressed polling for unpollable Cloudbet market: "
+            f"event_id={event_id} market_key={market_key} reason={reason} "
+            f"revalidate_secs={self._quote_poll_unpollable_revalidate_secs:.0f}",
+        )
+        if (
+            self._market_pollability.is_market_key_unpollable(market_key)
+            and market_key not in self._warned_unpollable_market_keys
+        ):
+            self._warned_unpollable_market_keys.add(market_key)
+            self._log.warning(
+                f"Cloudbet market key unpollable across multiple events: market_key={market_key}",
+            )
+
+    def _record_unpollable_quote_market(
+        self,
+        instrument_id: InstrumentId,
+        error: str,
+        now_ns: int,
+    ) -> None:
+        key = self._pollability_key(instrument_id)
+        if key is None:
+            return
+        reason = "malformed_request" if self._is_malformed_request_error(error) else "line_404"
+        self._record_market_miss(key[0], key[1], reason=reason, now_ns=now_ns)
+
+    def _log_quote_poll_fetch_failure(
+        self,
+        instrument_id: InstrumentId,
+        exc: CloudbetAPIError,
+    ) -> None:
+        key = self._pollability_key(instrument_id)
+        if key is not None and self._market_pollability.is_poll_suppressed(
+            key[0],
+            key[1],
+            self._clock.timestamp_ns(),
+        ):
+            # Tombstoned market (revalidation probes included): keep the noise at DEBUG.
+            self._log.debug(f"Cloudbet quote poll failed for {instrument_id}: {exc}")
+            return
+        self._log.warning(f"Cloudbet quote poll failed for {instrument_id}: {exc}")
+
+    def _mark_quote_market_pollable(self, instrument_id: InstrumentId) -> None:
+        key = self._pollability_key(instrument_id)
+        if key is None:
+            return
+        event_id, market_key = key
+        if self._market_pollability.record_success(event_id, market_key):
+            self._warned_unpollable_market_keys.discard(market_key)
+            self._log.info(
+                "Cloudbet market recovered after poll suppression: "
+                f"event_id={event_id} market_key={market_key}",
+            )
 
     def _record_missing_quote_subscription(
         self,
@@ -1038,9 +1187,12 @@ class CloudbetDataClient(LiveMarketDataClient):
         delisted_count: int = 0,
         backoff_secs: float = 0.0,
         last_error: str | None = None,
+        tombstone_skipped_count: int = 0,
+        revalidation_probe_count: int = 0,
     ) -> None:
         self._quote_poll_cycle_id += 1
         backlog_count = max(0, instrument_count - max(1, self._quote_poll_concurrency))
+        pollability_snapshot = self._market_pollability.snapshot()
         self._cache.add(
             venue_quote_poll_stats_key(CLOUDBET_VENUE.value),
             encode_venue_quote_poll_stats(
@@ -1076,6 +1228,9 @@ class CloudbetDataClient(LiveMarketDataClient):
                 delisted_count=delisted_count,
                 backoff_secs=backoff_secs,
                 last_error=last_error,
+                tombstoned_market_count=pollability_snapshot["tombstoned_market_count"],
+                tombstone_skipped_count=tombstone_skipped_count,
+                revalidation_probe_count=revalidation_probe_count,
             ),
         )
 

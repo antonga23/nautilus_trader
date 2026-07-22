@@ -61,6 +61,9 @@ class VenueQuotePollStats:
     stream_subscribe_error_count: int = 0
     stream_seed_failure_count: int = 0
     stream_last_disconnect_reason: str | None = None
+    tombstoned_market_count: int = 0
+    tombstone_skipped_count: int = 0
+    revalidation_probe_count: int = 0
 
 
 def active_venue_instrument_index_key(venue: str) -> str:
@@ -146,6 +149,9 @@ def encode_venue_quote_poll_stats(
     stream_subscribe_error_count: int = 0,
     stream_seed_failure_count: int = 0,
     stream_last_disconnect_reason: str | None = None,
+    tombstoned_market_count: int = 0,
+    tombstone_skipped_count: int = 0,
+    revalidation_probe_count: int = 0,
 ) -> bytes:
     payload = {
         "venue": venue.strip().upper(),
@@ -195,6 +201,9 @@ def encode_venue_quote_poll_stats(
         "stream_last_disconnect_reason": (
             str(stream_last_disconnect_reason)[:240] if stream_last_disconnect_reason else None
         ),
+        "tombstoned_market_count": max(0, int(tombstoned_market_count)),
+        "tombstone_skipped_count": max(0, int(tombstone_skipped_count)),
+        "revalidation_probe_count": max(0, int(revalidation_probe_count)),
     }
     return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
@@ -290,6 +299,9 @@ def decode_venue_quote_poll_stats(raw: bytes | None) -> VenueQuotePollStats | No
             stream_last_disconnect_reason=(
                 str(payload.get("stream_last_disconnect_reason") or "") or None
             ),
+            tombstoned_market_count=int(payload.get("tombstoned_market_count") or 0),
+            tombstone_skipped_count=int(payload.get("tombstone_skipped_count") or 0),
+            revalidation_probe_count=int(payload.get("revalidation_probe_count") or 0),
         )
     except (TypeError, ValueError):
         return None

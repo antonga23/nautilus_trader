@@ -19,6 +19,10 @@ from typing import Any
 import pytest
 
 from tools.shardplan import plan
+from tools.shardplan.budget import capacity_bound
+from tools.shardplan.budget import extract_signals
+from tools.shardplan.budget import plan_budgets
+from tools.shardplan.budget import propose
 from tools.shardplan.collect import apportion
 from tools.shardplan.collect import collect_weights
 from tools.shardplan.collect import load_static_weights
@@ -62,6 +66,44 @@ def _status_payload(
             },
         },
     }
+
+
+def _budget_status_payload(
+    node_id: str,
+    counts: dict[str, int],
+    limits: dict[str, int],
+    exceeded: dict[str, int] | None = None,
+    gaps: dict[str, int] | None = None,
+    readiness: list[dict[str, Any]] | None = None,
+    poll_stats: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    return {
+        "nodeId": node_id,
+        "status": "running",
+        "runtimeProbe": {
+            "venueCoverage": {
+                "enabledVenues": sorted(limits),
+                "quoteSubscriptionCounts": counts,
+                "quoteSubscriptionLimits": limits,
+                "quoteSubscriptionLimitExceededCounts": exceeded or {},
+                "quoteSubscriptionGapCounts": gaps or {},
+                "crossVenueQuoteReadiness": readiness or [],
+            },
+            "providerQuotePollStats": poll_stats or {},
+        },
+    }
+
+
+# Generous CLOUDBET poll cycle: 1200 requests in 20s at a 30s target serving
+# 600 instruments -> capacity bound 900.
+GENEROUS_POLL_STATS = {
+    "CLOUDBET": {
+        "request_count": 1200,
+        "cycle_elapsed_secs": 20.0,
+        "poll_target_cycle_secs": 30.0,
+        "subscribed_instrument_count": 600,
+    },
+}
 
 
 class TestPack:
@@ -312,6 +354,281 @@ class TestEmit:
 
         with pytest.raises(ManifestValidationError, match="auto_execute_armed"):
             validate_manifest_file(path)
+
+
+class TestBudget:
+    def test_starved_low_gap_grows_by_headroom_above_demand(self) -> None:
+        payload = _budget_status_payload(
+            "shard-basketball",
+            counts={"CLOUDBET": 600},
+            limits={"CLOUDBET": 600},
+            exceeded={"CLOUDBET": 16},
+            gaps={"CLOUDBET": 2},
+            poll_stats=GENEROUS_POLL_STATS,
+        )
+        signals = extract_signals(payload)["CLOUDBET"]
+
+        proposed, reason = propose(signals, current=600)
+
+        # effective demand 600 + 16 - 2 = 614; * 1.10 = 675.4 -> 680.
+        assert proposed == 680
+        assert reason == "starved(+16) low-gap"
+
+    def test_gap_heavy_shrinks_toward_effective_demand(self) -> None:
+        payload = _budget_status_payload(
+            "shard-basketball",
+            counts={"CLOUDBET": 616},
+            limits={"CLOUDBET": 600},
+            exceeded={"CLOUDBET": 16},
+            gaps={"CLOUDBET": 466},
+            poll_stats=GENEROUS_POLL_STATS,
+        )
+        signals = extract_signals(payload)["CLOUDBET"]
+
+        proposed, reason = propose(signals, current=600)
+
+        # effective demand 616 + 16 - 466 = 166; * 1.10 = 182.6 -> 190.
+        assert proposed == 190
+        assert proposed < 600
+        assert reason == "gap-heavy(466)"
+
+    def test_no_common_fixture_everywhere_drops_to_floor(self) -> None:
+        payload = _budget_status_payload(
+            "shard-soccer",
+            counts={"POLYMARKET": 479},
+            limits={"POLYMARKET": 300},
+            readiness=[
+                {"venuePair": "CLOUDBET->POLYMARKET", "status": "no_common_fixture"},
+                {"venuePair": "POLYMARKET->SXBET", "status": "no_common_fixture"},
+                {"venuePair": "CLOUDBET->SXBET", "status": "cross_venue_candidates_observed"},
+            ],
+        )
+        signals = extract_signals(payload)["POLYMARKET"]
+
+        assert signals.no_common_fixture_everywhere
+        proposed, reason = propose(signals, current=300)
+
+        assert proposed == 75  # max(1, int(300 * 0.25))
+        assert reason == "wasted: no_common_fixture"
+
+    def test_one_healthy_pair_disables_the_no_common_fixture_floor(self) -> None:
+        payload = _budget_status_payload(
+            "shard-soccer",
+            counts={"POLYMARKET": 290},
+            limits={"POLYMARKET": 300},
+            readiness=[
+                {"venuePair": "CLOUDBET->POLYMARKET", "status": "no_common_fixture"},
+                {"venuePair": "POLYMARKET->SXBET", "status": "cross_venue_candidates_observed"},
+            ],
+        )
+        signals = extract_signals(payload)["POLYMARKET"]
+
+        assert not signals.no_common_fixture_everywhere
+        proposed, reason = propose(signals, current=300)
+
+        assert proposed == 320  # 290 * 1.10 = 319 -> 320
+        assert reason == "steady"
+
+    def test_at_cap_clean_venue_grows_modestly(self) -> None:
+        payload = _budget_status_payload(
+            "shard-tennis",
+            counts={"SXBET": 450},
+            limits={"SXBET": 450},
+        )
+        signals = extract_signals(payload)["SXBET"]
+
+        # Stream venue: no poll-capacity bound.
+        assert signals.capacity_bound is None
+        proposed, reason = propose(signals, current=450)
+
+        assert proposed == 500  # 450 * 1.10 = 495 -> 500
+        assert reason == "at-cap"
+
+    def test_capacity_bound_caps_polled_venue_growth(self) -> None:
+        payload = _budget_status_payload(
+            "shard-tennis",
+            counts={"CLOUDBET": 600},
+            limits={"CLOUDBET": 600},
+            exceeded={"CLOUDBET": 200},
+            poll_stats={
+                "CLOUDBET": {
+                    "request_count": 1000,
+                    "cycle_elapsed_secs": 25.0,
+                    "poll_target_cycle_secs": 15.0,
+                    "subscribed_instrument_count": 625,
+                },
+            },
+        )
+        signals = extract_signals(payload)["CLOUDBET"]
+
+        # 40 req/s * 15s target * 625/1000 instruments-per-request = 375.
+        assert signals.capacity_bound == 375
+        proposed, reason = propose(signals, current=600)
+
+        assert proposed == 375  # 880 wanted, capped at poll capacity
+        assert reason == "starved(+200) low-gap capped(375)"
+
+    def test_capacity_bound_requires_complete_poll_stats(self) -> None:
+        assert capacity_bound({}) is None
+        assert capacity_bound({"request_count": 100, "cycle_elapsed_secs": 0.0}) is None
+        assert (
+            capacity_bound(
+                {
+                    "request_count": 1200,
+                    "cycle_elapsed_secs": 20.0,
+                    "poll_target_cycle_secs": 30.0,
+                    "subscribed_instrument_count": 600,
+                },
+            )
+            == 900
+        )
+
+
+class TestBudgetCli:
+    NODE_ID = "cloudbet-sxbet-polymarket-tennis"
+
+    def _setup(self, tmp_path: Path) -> tuple[Path, Path, Path]:
+        manifests_dir = tmp_path / "manifests"
+        manifests_dir.mkdir()
+        manifest_path = manifests_dir / f"{self.NODE_ID}.json"
+        manifest_path.write_text(TEMPLATE_PATH.read_text(encoding="utf-8"))
+        nodes_root = tmp_path / "nodes"
+        node_dir = nodes_root / self.NODE_ID
+        node_dir.mkdir(parents=True)
+        # One node reproducing the live cases: CLOUDBET starved (low gap),
+        # SXBET pinned at cap, POLYMARKET sharing zero fixtures with anyone.
+        (node_dir / "status.json").write_text(
+            json.dumps(
+                _budget_status_payload(
+                    self.NODE_ID,
+                    counts={"CLOUDBET": 600, "SXBET": 450, "POLYMARKET": 479},
+                    limits={"CLOUDBET": 600, "SXBET": 450, "POLYMARKET": 300},
+                    exceeded={"CLOUDBET": 16},
+                    gaps={"CLOUDBET": 2},
+                    readiness=[
+                        {"venuePair": "CLOUDBET->POLYMARKET", "status": "no_common_fixture"},
+                        {"venuePair": "POLYMARKET->SXBET", "status": "no_common_fixture"},
+                        {
+                            "venuePair": "CLOUDBET->SXBET",
+                            "status": "cross_venue_candidates_observed",
+                        },
+                    ],
+                    poll_stats=GENEROUS_POLL_STATS,
+                ),
+            ),
+            encoding="utf-8",
+        )
+        return nodes_root, manifests_dir, manifest_path
+
+    def test_plan_budgets_orders_deterministically(self, tmp_path: Path) -> None:
+        nodes_root, manifests_dir, _ = self._setup(tmp_path)
+
+        first = plan_budgets(nodes_root, manifests_dir)
+        second = plan_budgets(nodes_root, manifests_dir)
+
+        assert first == second
+        assert [(p.node, p.venue) for p in first] == [
+            (self.NODE_ID, "CLOUDBET"),
+            (self.NODE_ID, "POLYMARKET"),
+            (self.NODE_ID, "SXBET"),
+        ]
+        assert [(p.current, p.proposed) for p in first] == [(600, 680), (300, 75), (450, 500)]
+
+    def test_dry_run_prints_table_and_leaves_manifests_untouched(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        nodes_root, manifests_dir, manifest_path = self._setup(tmp_path)
+        before = manifest_path.read_bytes()
+
+        exit_code = plan.main(
+            [
+                "budget",
+                "--nodes-root",
+                str(nodes_root),
+                "--manifests",
+                str(manifests_dir),
+            ],
+        )
+        out = capsys.readouterr().out
+
+        assert exit_code == 0
+        assert "starved(+16) low-gap" in out
+        assert "wasted: no_common_fixture" in out
+        assert "at-cap" in out
+        assert "Dry-run only" in out
+        assert manifest_path.read_bytes() == before
+
+    def test_apply_rewrites_manifest_and_revalidates(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        nodes_root, manifests_dir, manifest_path = self._setup(tmp_path)
+
+        exit_code = plan.main(
+            [
+                "budget",
+                "--nodes-root",
+                str(nodes_root),
+                "--manifests",
+                str(manifests_dir),
+                "--apply",
+            ],
+        )
+        out = capsys.readouterr().out
+
+        assert exit_code == 0
+        assert "Rewritten manifests (validated: load + build + lint)" in out
+        rewritten = json.loads(manifest_path.read_text(encoding="utf-8"))
+        limits = {
+            venue["venue"]: venue["quote_subscription_limit"] for venue in rewritten["venues"]
+        }
+        assert limits == {"CLOUDBET": 680, "SXBET": 500, "POLYMARKET": 75}
+        # Only the subscription budget is re-planned in this iteration.
+        template = json.loads(TEMPLATE_PATH.read_text(encoding="utf-8"))
+        for emitted, original in zip(rewritten["venues"], template["venues"], strict=True):
+            assert emitted["instrument_load_limit"] == original["instrument_load_limit"]
+            assert emitted["market_discovery_limit"] == original["market_discovery_limit"]
+        summary = validate_manifest_file(manifest_path)
+        assert summary["exec_clients"] == 0
+
+    def test_apply_fails_nonzero_when_validation_rejects_manifest(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        nodes_root, manifests_dir, manifest_path = self._setup(tmp_path)
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        payload["strategy"]["auto_execute"] = True
+        manifest_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+        exit_code = plan.main(
+            [
+                "budget",
+                "--nodes-root",
+                str(nodes_root),
+                "--manifests",
+                str(manifests_dir),
+                "--apply",
+            ],
+        )
+        out = capsys.readouterr().out
+
+        assert exit_code == 1
+        assert "Manifest validation failed" in out
+
+    def test_no_matching_manifests_exits_with_error(self, tmp_path: Path) -> None:
+        nodes_root = tmp_path / "nodes"
+        nodes_root.mkdir()
+        manifests_dir = tmp_path / "manifests"
+        manifests_dir.mkdir()
+
+        with pytest.raises(SystemExit, match="No budget proposals"):
+            plan.main(
+                ["budget", "--nodes-root", str(nodes_root), "--manifests", str(manifests_dir)],
+            )
 
 
 class TestPlanCli:
