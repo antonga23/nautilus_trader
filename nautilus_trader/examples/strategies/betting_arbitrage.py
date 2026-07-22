@@ -6734,6 +6734,7 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
             return False
         dangerous_caveats = {
             "unknown_settlement",
+            "unknown_settlement_present",
             "void_states_present",
             "partial_states_present",
             "push_states_present",
