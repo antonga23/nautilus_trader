@@ -42,7 +42,10 @@
     "cross_venue_sequential_execution": true,
     "cross_venue_anchor_venue": "CLOUDBET",
     "execute_void_compatible_middles": true,
-    "min_middle_profit_margin": "0.025"
+    "min_middle_profit_margin": "0.025",
+    "allow_partial_compatible_locks": true,
+    "execute_partial_compatible_locks": true,
+    "min_partial_lock_profit_margin": "0.025"
   },
   "venues": [
     {
@@ -117,6 +120,6 @@
   "metadata": {
     "phase": "cross-venue-soccer-shard-validation",
     "track": "cross-venue-soccer",
-    "note": "Validation-mode only, data-only. Per-sport shard scoped to soccer with CLOUDBET + SXBET + POLYMARKET co-located so cross-venue edges still form. Per-venue instrument_load_limit / market_discovery_limit / quote_subscription_limit / top_markets_by_depth keep the live corpus near baseball scale (~1k-2k instruments). Execution is disabled and structurally unarmed."
+    "note": "Validation-mode only, data-only. Per-sport shard scoped to soccer with CLOUDBET + SXBET + POLYMARKET co-located so cross-venue edges still form. Per-venue instrument_load_limit / market_discovery_limit / quote_subscription_limit / top_markets_by_depth keep the live corpus near baseball scale (~1k-2k instruments). Soccer is the partial-compatible-lock canary: allow_partial_compatible_locks/execute_partial_compatible_locks are on with the partial-lock floor above the arb floor, but the node stays validation-mode with every armed flag false. Partial locks route only on half-grade venues (Cloudbet), so no SXBET/POLYMARKET partial leg is eligible. Execution is disabled and structurally unarmed."
   }
 }
