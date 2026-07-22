@@ -34,9 +34,11 @@ from nautilus_trader.adapters.betting.instruments import make_crypto_betting_ins
 from nautilus_trader.adapters.betting.market_matcher import ArbitrageOpportunity
 from nautilus_trader.adapters.betting.market_matcher import MarketMatcher
 from nautilus_trader.adapters.betting.runtime_cache import active_venue_instrument_index_key
+from nautilus_trader.adapters.betting.runtime_cache import decode_venue_quote_tiers
 from nautilus_trader.adapters.betting.runtime_cache import encode_active_venue_instrument_index
 from nautilus_trader.adapters.betting.runtime_cache import encode_venue_quote_poll_stats
 from nautilus_trader.adapters.betting.runtime_cache import venue_quote_poll_stats_key
+from nautilus_trader.adapters.betting.runtime_cache import venue_quote_tiers_key
 from nautilus_trader.adapters.betting.semantics import FileRuleCache
 from nautilus_trader.adapters.betting.semantics import PromotionStatus
 from nautilus_trader.adapters.betting.semantics import RuleClassifier
@@ -827,6 +829,10 @@ class TestBettingArbitrageStrategy:  # skipcq
                 rate_limit_count=1,
                 backoff_secs=1.5,
                 last_error="429 rate limit",
+                hot_instrument_count=3,
+                warm_instrument_count=4,
+                cold_instrument_count=5,
+                tier_due_count=7,
             ),
         )
         strategy = BettingArbitrageStrategy(
@@ -867,6 +873,10 @@ class TestBettingArbitrageStrategy:  # skipcq
         ensure(stats["SXBET"]["rate_limit_count"] == 1)
         ensure(stats["SXBET"]["backoff_secs"] == 1.5)
         ensure(stats["SXBET"]["last_error"] == "429 rate limit")
+        ensure(stats["SXBET"]["hot_instrument_count"] == 3)
+        ensure(stats["SXBET"]["warm_instrument_count"] == 4)
+        ensure(stats["SXBET"]["cold_instrument_count"] == 5)
+        ensure(stats["SXBET"]["tier_due_count"] == 7)
 
     def test_get_stats_reports_quote_latency_by_venue(self):  # skipcq
         strategy = BettingArbitrageStrategy(
@@ -6679,3 +6689,95 @@ class TestIncrementalGraphRefresh:  # skipcq
 # Note: Full integration tests with actual instrument subscriptions and quote ticks
 # would require more complex mocking of NautilusTrader components (cache, msgbus, etc.)
 # These tests focus on configuration and core logic validation.
+
+
+class TestQuoteTierPublishing:  # skipcq
+    @staticmethod
+    def _instrument(event_id: str, *, outcome: str = "home"):
+        return TestBettingArbitrageStrategy._sxbet_instrument(
+            event_id=event_id,
+            outcome=outcome,
+            venue="CLOUDBET",
+        )
+
+    def _strategy(self, cache, *, tiering: bool):
+        strategy = BettingArbitrageStrategy(
+            config=BettingArbitrageConfig(
+                enabled_venues=frozenset({"CLOUDBET"}),
+                quote_tier_scheduling_enabled=tiering,
+            ),
+        )
+        strategy.register(
+            trader_id=TraderId("TESTER-TIERS"),
+            portfolio=TestComponentStubs.portfolio(),
+            msgbus=TestComponentStubs.msgbus(),
+            cache=cache,
+            clock=TestComponentStubs.clock(),
+        )
+        return strategy
+
+    def test_publish_quote_tiers_writes_decodable_blob(self):  # skipcq
+        cache = TestComponentStubs.cache()
+        hot = self._instrument("hot-evt")
+        warm = self._instrument("warm-evt")
+        cold = self._instrument("cold-evt")
+        strategy = self._strategy(cache, tiering=True)
+        strategy._subscribed_instruments = {hot, warm, cold}
+        strategy._quote_subscribed_instrument_ids = {
+            str(instrument.id) for instrument in (hot, warm, cold)
+        }
+        strategy._cross_venue_edge_leg_instruments = lambda: [hot]
+        strategy._semantic_connected_instrument_ids = lambda: {str(warm.id)}
+
+        strategy._publish_quote_tiers()
+
+        payload = decode_venue_quote_tiers(cache.get(venue_quote_tiers_key("CLOUDBET")))
+        ensure(payload is not None)
+        ensure(payload.tier_by_instrument_id[str(hot.id)] == "hot")
+        ensure(payload.tier_by_instrument_id[str(warm.id)] == "warm")
+        ensure(payload.tier_by_instrument_id[str(cold.id)] == "cold")
+        ensure(payload.tier_intervals == {"hot": 1, "warm": 5, "cold": 30})
+
+    def test_publish_quote_tiers_noop_when_flag_off(self):  # skipcq
+        cache = TestComponentStubs.cache()
+        instrument = self._instrument("evt-off")
+        strategy = self._strategy(cache, tiering=False)
+        strategy._subscribed_instruments = {instrument}
+        strategy._quote_subscribed_instrument_ids = {str(instrument.id)}
+        strategy._cross_venue_edge_leg_instruments = lambda: [instrument]
+
+        strategy._publish_quote_tiers()
+
+        ensure(cache.get(venue_quote_tiers_key("CLOUDBET")) is None)
+
+    def test_publish_quote_tiers_demotes_after_k_refreshes(self):  # skipcq
+        cache = TestComponentStubs.cache()
+        instrument = self._instrument("evt-flap")
+        instrument_id = str(instrument.id)
+        strategy = self._strategy(cache, tiering=True)
+        strategy._subscribed_instruments = {instrument}
+        strategy._quote_subscribed_instrument_ids = {instrument_id}
+
+        # Starts hot as a cross-venue edge leg.
+        strategy._cross_venue_edge_leg_instruments = lambda: [instrument]
+        strategy._semantic_connected_instrument_ids = lambda: set()
+        strategy._publish_quote_tiers()
+        ensure(strategy._quote_tier_by_id[instrument_id] == "hot")
+
+        # No longer an edge leg; computed warm. Demotion holds for K-1 refreshes.
+        strategy._cross_venue_edge_leg_instruments = list
+        strategy._semantic_connected_instrument_ids = lambda: {instrument_id}
+        strategy._publish_quote_tiers()
+        ensure(strategy._quote_tier_by_id[instrument_id] == "hot")
+        strategy._publish_quote_tiers()
+        ensure(strategy._quote_tier_by_id[instrument_id] == "hot")
+        # Third consecutive below refresh applies the demotion.
+        strategy._publish_quote_tiers()
+        ensure(strategy._quote_tier_by_id[instrument_id] == "warm")
+        payload = decode_venue_quote_tiers(cache.get(venue_quote_tiers_key("CLOUDBET")))
+        ensure(payload.tier_by_instrument_id[instrument_id] == "warm")
+
+        # Promotion back to hot is immediate.
+        strategy._cross_venue_edge_leg_instruments = lambda: [instrument]
+        strategy._publish_quote_tiers()
+        ensure(strategy._quote_tier_by_id[instrument_id] == "hot")
