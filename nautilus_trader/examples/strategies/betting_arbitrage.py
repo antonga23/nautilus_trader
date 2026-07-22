@@ -7832,6 +7832,18 @@ class BettingArbitrageStrategy(Strategy):  # skipcq
                 "rate_limit_count": payload.rate_limit_count,
                 "backoff_secs": round(payload.backoff_secs, 6),
                 "last_error": payload.last_error,
+                "tombstoned_market_count": payload.tombstoned_market_count,
+                "tombstone_skipped_count": payload.tombstone_skipped_count,
+                "revalidation_probe_count": payload.revalidation_probe_count,
+                "stream_connected": payload.stream_connected,
+                "stream_connected_since_ns": payload.stream_connected_since_ns,
+                "stream_reconnect_count": payload.stream_reconnect_count,
+                "stream_fallback_activation_count": payload.stream_fallback_activation_count,
+                "stream_publication_count": payload.stream_publication_count,
+                "stream_subscribed_channel_count": payload.stream_subscribed_channel_count,
+                "stream_subscribe_error_count": payload.stream_subscribe_error_count,
+                "stream_seed_failure_count": payload.stream_seed_failure_count,
+                "stream_last_disconnect_reason": payload.stream_last_disconnect_reason,
             }
         return stats
 
