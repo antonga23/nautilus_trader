@@ -79,6 +79,10 @@ class ProbeProfitabilityCounters:
     positive_same_venue: int = 0
     threshold_execution: int = 0
     threshold_same_venue: int = 0
+    positive_execution_skewed: int = 0
+    positive_same_venue_skewed: int = 0
+    threshold_execution_skewed: int = 0
+    threshold_same_venue_skewed: int = 0
     margin_bands: Counter[str] = field(default_factory=Counter)
     rag_bands: Counter[str] = field(default_factory=Counter)
     rejection_buckets: Counter[str] = field(default_factory=Counter)
@@ -126,12 +130,14 @@ class ProbeProfitabilityCounters:
     fee_adjusted_value_edge_samples: list[float] = field(default_factory=list)
     candidate_decision_latency_ns: list[int] = field(default_factory=list)
     samples: list[tuple[Decimal, dict[str, object]]] = field(default_factory=list)
+    skewed_samples: list[tuple[Decimal, dict[str, object]]] = field(default_factory=list)
     negative_samples: list[tuple[Decimal, dict[str, object]]] = field(default_factory=list)
     value_samples: list[tuple[Decimal, dict[str, object]]] = field(default_factory=list)
     vig_erased_samples: list[tuple[Decimal, dict[str, object]]] = field(default_factory=list)
 
     def to_payload(self) -> dict[str, object]:
         self.samples.sort(key=lambda item: item[0], reverse=True)
+        self.skewed_samples.sort(key=lambda item: item[0], reverse=True)
         self.negative_samples.sort(key=lambda item: item[0], reverse=True)
         self.value_samples.sort(key=lambda item: item[0], reverse=True)
         self.vig_erased_samples.sort(key=lambda item: item[0], reverse=True)
@@ -141,6 +147,10 @@ class ProbeProfitabilityCounters:
             "positive_same_venue": self.positive_same_venue,
             "threshold_execution": self.threshold_execution,
             "threshold_same_venue": self.threshold_same_venue,
+            "positive_execution_skewed": self.positive_execution_skewed,
+            "positive_same_venue_skewed": self.positive_same_venue_skewed,
+            "threshold_execution_skewed": self.threshold_execution_skewed,
+            "threshold_same_venue_skewed": self.threshold_same_venue_skewed,
             "margin_bands": dict(self.margin_bands),
             "rag_bands": dict(self.rag_bands),
             "rejection_buckets": dict(self.rejection_buckets),
@@ -246,6 +256,7 @@ class ProbeProfitabilityCounters:
                 for key, samples in sorted(self.blocker_samples.items(), key=lambda item: item[0])
             },
             "sample_candidates": [payload for _, payload in self.samples[:10]],
+            "skewed_sample_candidates": [payload for _, payload in self.skewed_samples[:5]],
             "negative_near_misses": [payload for _, payload in self.negative_samples[:10]],
             "value_edge_candidates": [payload for _, payload in self.value_samples[:10]],
             "vig_erased_candidates": [payload for _, payload in self.vig_erased_samples[:10]],
@@ -1291,6 +1302,11 @@ def _collect_probe_heavy_sections(
                     "sameVenueExecutionEligible": 0,
                     "total": 0,
                 },
+                "skewedPositiveMarginCandidates": {
+                    "executionSafe": 0,
+                    "sameVenueExecutionEligible": 0,
+                    "total": 0,
+                },
                 "candidateQuality": _empty_candidate_quality_payload(),
                 "semanticDiagnostics": semantic_diagnostics,
                 "venueCoverage": venue_coverage,
@@ -1354,6 +1370,14 @@ def _collect_probe_heavy_sections(
             "executionSafe": profitability["threshold_execution"],
             "sameVenueExecutionEligible": profitability["threshold_same_venue"],
             "total": profitability["threshold_execution"] + profitability["threshold_same_venue"],
+        },
+        "skewedPositiveMarginCandidates": {
+            "executionSafe": profitability["positive_execution_skewed"],
+            "sameVenueExecutionEligible": profitability["positive_same_venue_skewed"],
+            "total": (
+                profitability["positive_execution_skewed"]
+                + profitability["positive_same_venue_skewed"]
+            ),
         },
         "candidateQuality": {
             "quotedEdges": profitability["quoted_edges"],
@@ -1448,6 +1472,7 @@ def _collect_probe_heavy_sections(
                 "zeroCandidateFixtureProofBlockerCounts"
             ],
             "topPositiveCandidates": profitability["sample_candidates"],
+            "topSkewedPositiveCandidates": profitability["skewed_sample_candidates"],
             "topNegativeNearMisses": profitability["negative_near_misses"],
             "topValueEdgeCandidates": profitability["value_edge_candidates"],
             "topVigErasedCandidates": profitability["vig_erased_candidates"],
@@ -2059,6 +2084,7 @@ def _empty_candidate_quality_payload() -> dict[str, object]:
         "zeroCandidateBlockerCounts": {},
         "zeroCandidateFixtureProofBlockerCounts": {},
         "topPositiveCandidates": [],
+        "topSkewedPositiveCandidates": [],
         "topNegativeNearMisses": [],
         "topValueEdgeCandidates": [],
         "topVigErasedCandidates": [],
@@ -3817,6 +3843,7 @@ def _probe_edge_profitability(
                 target_node=target_node,
                 allow_same_venue=allow_same_venue,
                 min_profit_margin=min_profit_margin,
+                timing_clean=_probe_timing_clean(quality.get("timingFlags")),
             )
         finally:
             counters.candidate_decision_latency_ns.append(
@@ -4384,6 +4411,16 @@ def _probe_timing_flags(
     return flags or ["fresh"]
 
 
+def _probe_timing_clean(timing_flags: object) -> bool:
+    # A pair is timing-clean only when it carries no staleness flag (pair_skew /
+    # quote_age / fetch_latency / stale), i.e. its flags are a subset of {"fresh"}.
+    # ``_probe_timing_flags`` always yields at least ["fresh"], so a missing signal is
+    # treated as clean rather than penalised.
+    if not isinstance(timing_flags, (list, tuple)):
+        return True
+    return {str(flag) for flag in timing_flags} <= {"fresh"}
+
+
 def _record_probe_quality(
     counters: ProbeProfitabilityCounters,
     quality: dict[str, object],
@@ -4465,7 +4502,10 @@ def _record_probe_quality(
         str(quality.get("relationshipType") or "") in ARB_MARGIN_RELATIONSHIP_TYPES
     )
     if is_arbitrage_relationship and margin > 0:
-        counters.samples.append((margin, quality))
+        if _probe_timing_clean(quality.get("timingFlags")):
+            counters.samples.append((margin, quality))
+        else:
+            counters.skewed_samples.append((margin, quality))
     elif margin > Decimal("-0.05"):
         counters.negative_samples.append((margin, quality))
 
@@ -4753,18 +4793,29 @@ def _record_probe_opportunity(
     target_node,
     allow_same_venue: bool,
     min_profit_margin: Decimal,
+    timing_clean: bool = True,
 ) -> None:
     is_arbitrage_relationship = (
         str(getattr(edge, "relationship_type", "")) in ARB_MARGIN_RELATIONSHIP_TYPES
     )
     is_positive = is_arbitrage_relationship and opportunity.profit_margin > 0
     meets_threshold = is_arbitrage_relationship and opportunity.profit_margin >= min_profit_margin
+    # A stale-sibling pair skew (SXBET streams per-market) can flash a transient
+    # underround that looks positive; keep those out of the headline positive/threshold
+    # counters so a genuine fresh candidate crossing the threshold is not masked.
     if allow_same_venue:
-        counters.positive_same_venue += int(is_positive)
-        counters.threshold_same_venue += int(meets_threshold)
-    else:
+        if timing_clean:
+            counters.positive_same_venue += int(is_positive)
+            counters.threshold_same_venue += int(meets_threshold)
+        else:
+            counters.positive_same_venue_skewed += int(is_positive)
+            counters.threshold_same_venue_skewed += int(meets_threshold)
+    elif timing_clean:
         counters.positive_execution += int(is_positive)
         counters.threshold_execution += int(meets_threshold)
+    else:
+        counters.positive_execution_skewed += int(is_positive)
+        counters.threshold_execution_skewed += int(meets_threshold)
 
     _ = opportunity, edge, source_node, target_node
 
