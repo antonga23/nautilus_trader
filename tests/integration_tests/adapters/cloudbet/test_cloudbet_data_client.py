@@ -1186,7 +1186,9 @@ class TestCloudbetQuoteTierScheduling:
         from nautilus_trader.model.instruments.crypto_betting import CryptoBettingInstrument
 
         data = dict(CryptoBettingInstrument.to_dict(base))
-        data["event_id"] = str(event_id)
+        # cloudbet_instrument_id enforces PyCondition.type(event_id, int); the symbol
+        # is built from it, so the fixture must construct with an int like production.
+        data["event_id"] = int(event_id)
         data["market_name"] = market_name
         data["outcome"] = outcome
         return CryptoBettingInstrument.from_dict(data)
