@@ -24,11 +24,17 @@ import pytest
 from nautilus_trader.adapters.betting.common.enums import SelectionSide
 from nautilus_trader.adapters.betting.instruments import CryptoBettingInstrument
 from nautilus_trader.adapters.betting.market_matcher import MarketMatcher
+from nautilus_trader.adapters.betting.semantics import CanonicalMarketType
+from nautilus_trader.adapters.betting.semantics import CoverageEngine
+from nautilus_trader.adapters.betting.semantics import CoverageHyperedge
+from nautilus_trader.adapters.betting.semantics import CoverageProof
 from nautilus_trader.adapters.betting.semantics import FileRuleCache
+from nautilus_trader.adapters.betting.semantics import NormalizedSelection
 from nautilus_trader.adapters.betting.semantics import PromotionStatus
 from nautilus_trader.adapters.betting.semantics import RuleClassifier
 from nautilus_trader.adapters.betting.semantics import RuleStore
 from nautilus_trader.adapters.betting.semantics import SafetyTier
+from nautilus_trader.adapters.betting.semantics import SelectionPredicateBuilder
 from nautilus_trader.adapters.betting.semantics import SemanticRuleTemplate
 from nautilus_trader.adapters.betting.semantics import TemplateSupportStats
 from nautilus_trader.examples.strategies.opportunity_graph import OpportunityGraph
@@ -1120,6 +1126,157 @@ def test_semantic_template_payloads_cache_avoids_disk_reread(tmp_path: Path) -> 
     third = graph._semantic_template_payloads()
     ensure(load_calls["count"] > reads_after_first)
     ensure(third is not first)
+
+
+class _RecordingSemanticRustCore:  # skipcq
+    def __init__(self) -> None:
+        self.coverage_loads = 0
+
+    def clear(self) -> None:
+        pass
+
+    def build_semantic(self, nodes, templates) -> None:
+        pass
+
+    def load_semantic_templates(self, templates):
+        return len(list(templates))
+
+    def load_semantic_coverage(self, proofs, hyperedges):
+        self.coverage_loads += 1
+        return (len(list(proofs)), len(list(hyperedges)))
+
+    def add_instrument_semantic(self, node) -> bool:
+        return True
+
+    def edge_snapshots(self):
+        return []
+
+    def edge_snapshots_for_node(self, node_id):
+        return []
+
+
+def _coverage_selection(instrument_id: str, selection: str) -> NormalizedSelection:  # skipcq
+    return NormalizedSelection(
+        venue="SXBET",
+        instrument_id=instrument_id,
+        sport="soccer",
+        event_key="team-a-team-b-2026-03-13",
+        period="full_time",
+        scope="full_time",
+        market_type=CanonicalMarketType.TOTALS.value,
+        market_family=CanonicalMarketType.TOTALS.value,
+        selection=selection,
+        params=(("line", "2.5"),),
+        raw_market_name="total_goals",
+        raw_market_type="total_goals",
+        raw_outcome=selection.lower(),
+        outcome_key=selection.lower(),
+    )
+
+
+def _seed_coverage_proof(store: RuleStore) -> CoverageProof:  # skipcq
+    over = SelectionPredicateBuilder.from_selection(
+        _coverage_selection("over-25", "OVER"),
+        provider="SXBET",
+    )
+    under = SelectionPredicateBuilder.from_selection(
+        _coverage_selection("under-25", "UNDER"),
+        provider="SXBET",
+    )
+    proof = CoverageEngine().evaluate((over, under))
+    store.save_coverage_proof(proof)
+    store.save_coverage_hyperedge(CoverageHyperedge.from_proof(proof))
+    return proof
+
+
+def _semantic_graph_with_recording_core(  # skipcq
+    store: RuleStore,
+) -> tuple[OpportunityGraph, _RecordingSemanticRustCore]:
+    matcher = MarketMatcher(rule_store=store, allow_unpromoted_topology=False)
+    graph = OpportunityGraph(matcher, engine="auto")
+    core = _RecordingSemanticRustCore()
+    graph._rust_core = cast(Any, core)
+    return graph, core
+
+
+def _event_instrument(event_idx: int, outcome: str) -> CryptoBettingInstrument:  # skipcq
+    return _instrument(
+        event_id=f"event-{event_idx}",
+        event_name=f"Team {event_idx}A vs Team {event_idx}B",
+        home_name=f"Team {event_idx}A",
+        away_name=f"Team {event_idx}B",
+        outcome=outcome,
+    )
+
+
+def test_semantic_coverage_cache_serves_adds_without_store_reread(tmp_path: Path) -> None:  # skipcq
+    instruments = [_instrument(outcome="over"), _instrument(outcome="under")]
+    store = _semantic_rule_store(tmp_path / "rules", instruments[0], instruments[1])
+    proof = _seed_coverage_proof(store)
+    graph, core = _semantic_graph_with_recording_core(store)
+
+    calls = {"list_proofs": 0, "load_proofs": 0}
+    real_list = store.list_coverage_proof_ids
+    real_load = store.load_coverage_proof
+
+    def _counting_list() -> list[str]:
+        calls["list_proofs"] += 1
+        return real_list()
+
+    def _counting_load(proof_id: str) -> Any:
+        calls["load_proofs"] += 1
+        return real_load(proof_id)
+
+    store.list_coverage_proof_ids = _counting_list  # type: ignore[method-assign]
+    store.load_coverage_proof = _counting_load  # type: ignore[method-assign]
+
+    graph.build(instruments)
+    ensure(graph.topology_source == "rust_semantic")
+    ensure(core.coverage_loads == 1)
+    ensure(calls["load_proofs"] == 1)
+    listed_after_build = calls["list_proofs"]
+
+    ensure(graph.add_instrument(_event_instrument(2, "over")) is True)
+    ensure(graph.add_instrument(_event_instrument(2, "under")) is True)
+
+    # Unchanged store generation: proofs were listed/loaded once at build and the
+    # incremental adds neither re-read the store nor re-marshal into Rust.
+    ensure(calls["list_proofs"] == listed_after_build)
+    ensure(calls["load_proofs"] == 1)
+    ensure(core.coverage_loads == 1)
+
+    # A store write bumps the shared generation and forces a fresh read + Rust reload.
+    store.save_coverage_proof(proof)
+    ensure(graph.add_instrument(_event_instrument(3, "over")) is True)
+    ensure(calls["load_proofs"] == 2)
+    ensure(core.coverage_loads == 2)
+
+
+def test_full_rebuild_and_store_swap_force_rust_coverage_reload(tmp_path: Path) -> None:  # skipcq
+    instruments = [_instrument(outcome="over"), _instrument(outcome="under")]
+    cache_dir = tmp_path / "rules"
+    store = _semantic_rule_store(cache_dir, instruments[0], instruments[1])
+    _seed_coverage_proof(store)
+    graph, core = _semantic_graph_with_recording_core(store)
+
+    graph.build(instruments)
+    ensure(core.coverage_loads == 1)
+
+    # A rebuild clears the Rust core, so coverage must reload even though the store
+    # generation is unchanged.
+    graph.build(instruments)
+    ensure(core.coverage_loads == 2)
+
+    # The semantic cache reload path points the matcher at a fresh RuleStore over the
+    # published cache dir; the new store identity defeats the generation guard.
+    graph._matcher.set_rule_store(RuleStore(FileRuleCache(cache_dir)))
+    graph.build(instruments)
+    ensure(graph.topology_source == "rust_semantic")
+    ensure(core.coverage_loads == 3)
+
+    # Incremental adds against the reloaded store go back to skipping.
+    ensure(graph.add_instrument(_event_instrument(2, "over")) is True)
+    ensure(core.coverage_loads == 3)
 
 
 def _edge_equivalence_key(edge: Any) -> tuple:  # skipcq

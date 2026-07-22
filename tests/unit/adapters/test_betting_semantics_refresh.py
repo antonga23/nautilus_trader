@@ -1110,7 +1110,31 @@ def test_polymarket_transform_strips_tournament_prefix_and_maps_token_outcomes()
 
     normalized = MarketNormalizer().normalize(transformed)
     assert normalized.selection == "HOME"
-    assert normalized.event_key == "tennis|jannik_sinner|alexei_popyrin|2026-05-11T15:00:00Z"
+    assert normalized.event_key == "tennis|alexei_popyrin|jannik_sinner|2026-05-11T15:00:00Z"
+
+
+def test_event_key_is_participant_order_independent():
+    # Providers disagree on home/away designation for the same fixture (Cloudbet
+    # uses the sportsbook home team, Polymarket the event-title order); the miner
+    # joins cross-provider corpus records on this exact string, so swapped
+    # participants must produce an identical key or CLOUDBET<->POLYMARKET rules
+    # can never be mined.
+    key_home_first = MarketNormalizer._event_key_from_fields(
+        event_id="evt-1",
+        home_name="Jannik Sinner",
+        away_name="Alexei Popyrin",
+        cutoff_time="2026-05-11T15:00:00Z",
+        sport="tennis",
+    )
+    key_away_first = MarketNormalizer._event_key_from_fields(
+        event_id="evt-2",
+        home_name="Alexei Popyrin",
+        away_name="Jannik Sinner",
+        cutoff_time="2026-05-11T15:00:00Z",
+        sport="tennis",
+    )
+    assert key_home_first == key_away_first
+    assert key_home_first == "tennis|alexei_popyrin|jannik_sinner|2026-05-11T15:00:00Z"
 
 
 def test_polymarket_transform_strips_market_suffix_from_fixture_name():
@@ -1663,7 +1687,7 @@ def test_polymarket_corpus_persists_gamma_fixture_markets_through_real_parser():
     assert len(records) == 2
     assert sports == {"basketball"}
     assert event_keys == {
-        "basketball|los_angeles_lakers|denver_nuggets|2027-01-03T01:00:00Z",
+        "basketball|denver_nuggets|los_angeles_lakers|2027-01-03T01:00:00Z",
     }
     assert market_names == {"basketball.winner"}
     assert {record.selection.selection for record in records} == {"HOME", "AWAY"}
