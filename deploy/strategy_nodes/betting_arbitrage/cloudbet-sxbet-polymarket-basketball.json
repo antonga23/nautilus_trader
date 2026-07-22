@@ -61,7 +61,7 @@
       "prefer_liquid_markets": true,
       "top_markets_by_depth": 220,
       "auto_subscribe_quote_ticks": true,
-      "quote_subscription_limit": 600,
+      "quote_subscription_limit": 150,
       "order_book_poll_interval_secs": 1.0,
       "order_book_poll_summary_interval_secs": 30.0,
       "order_book_concurrency": 24,
@@ -89,7 +89,7 @@
       "liquidity_probe_limit": 250,
       "min_two_sided_markets": 1,
       "auto_subscribe_quote_ticks": true,
-      "quote_subscription_limit": 450,
+      "quote_subscription_limit": 140,
       "order_book_poll_interval_secs": 10.0,
       "order_book_poll_summary_interval_secs": 30.0,
       "order_book_concurrency": 4,
@@ -112,7 +112,7 @@
       "market_discovery_limit": 450,
       "prefer_liquid_markets": true,
       "top_markets_by_depth": 150,
-      "quote_subscription_limit": 300
+      "quote_subscription_limit": 75
     }
   ],
   "metadata": {

@@ -152,6 +152,22 @@ PER_SPORT_SHARDS = {
     "basketball": 1,
 }
 
+# CLOUDBET quote-subscription budget per shard. shardplan `budget --apply` cut the
+# over-provisioned caps on baseball/basketball/soccer (gap-heavy: most subscriptions had no
+# cross-venue common fixture). Tennis keeps its 600 budget and instead enables tiered
+# quote-poll scheduling (below) as the canary for cutting CLOUDBET REST poll latency without
+# shrinking the budget.
+EXPECTED_CLOUDBET_QUOTE_LIMIT = {
+    "soccer": 250,
+    "tennis": 600,
+    "basketball": 150,
+}
+EXPECTED_CLOUDBET_TIER_SCHEDULING = {
+    "soccer": False,
+    "tennis": True,
+    "basketball": False,
+}
+
 
 @pytest.mark.parametrize("sport", sorted(PER_SPORT_SHARDS))
 def test_per_sport_shard_is_scoped_all_venue_and_unarmed(sport: str) -> None:
@@ -194,12 +210,19 @@ def test_per_sport_shard_is_scoped_all_venue_and_unarmed(sport: str) -> None:
         assert venue.quote_subscription_limit is not None
         assert venue.top_markets_by_depth is not None
 
-    # CLOUDBET quoted-edge budget raised to 600 (post SCALE-2/3 the per-refresh rebuild
-    # cost is gone, so the cap is no longer the lever); the arb-relevant legs stay in-cap
-    # (the selection spends the cap on cross-venue edge legs first) and refresh under the
-    # 1.0s poll, well inside the 3s CLOUDBET live quote-age gate.
-    assert venues_by_name["CLOUDBET"].quote_subscription_limit == 600
+    # CLOUDBET quote budget is per-shard after the shardplan gap-heavy re-tune: baseball/
+    # basketball/soccer shrink the over-provisioned cap (most CLOUDBET subscriptions had no
+    # cross-venue common fixture); tennis keeps 600 and enables tiered quote-poll scheduling
+    # so hot cross-venue legs poll every 1.0s cycle while warm/cold instruments poll less,
+    # cutting effective REST latency without dropping the budget.
+    assert (
+        venues_by_name["CLOUDBET"].quote_subscription_limit == EXPECTED_CLOUDBET_QUOTE_LIMIT[sport]
+    )
     assert venues_by_name["CLOUDBET"].order_book_poll_interval_secs == 1.0
+    assert (
+        venues_by_name["CLOUDBET"].order_book_quote_tier_scheduling_enabled
+        is EXPECTED_CLOUDBET_TIER_SCHEDULING[sport]
+    )
 
     # SXBET quotes stream (Centrifugo) so subscribed legs clear the 5s live age gate that
     # the 10s REST poll fallback cannot.
@@ -240,10 +263,10 @@ def test_baseball_shard_raises_cloudbet_budget_streams_sxbet_and_stages_middles(
     venues_by_name = {venue.venue: venue for venue in manifest.venues}
     assert set(venues_by_name) == {"CLOUDBET", "SXBET"}
 
-    # CLOUDBET quoted-edge budget raised to 380 (post SCALE-2/3); the arb-relevant legs
-    # stay in-cap and refresh under the 1.0s poll (inside the 3s CLOUDBET live quote-age
-    # gate).
-    assert venues_by_name["CLOUDBET"].quote_subscription_limit == 380
+    # CLOUDBET quote budget cut to 180 by the shardplan gap-heavy re-tune (most CLOUDBET
+    # subscriptions had no cross-venue common fixture); arb-relevant legs stay in-cap and
+    # refresh under the 1.0s poll (inside the 3s CLOUDBET live quote-age gate).
+    assert venues_by_name["CLOUDBET"].quote_subscription_limit == 180
     assert venues_by_name["CLOUDBET"].order_book_poll_interval_secs == 1.0
 
     # SXBET streams so subscribed legs clear the 5s live age gate; the REST fallback
