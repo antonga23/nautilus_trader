@@ -55,18 +55,18 @@ present-but-selection-missing / suspended, which IS worth re-checking every
 cycle since it can flip back to trading). This is deliberately conservative:
 we do not skip anything for merely-suspended markets (only for markets whose
 key is not present in `event.markets` at all), and we revalidate a
-"confirmed absent" instrument every REVALIDATE_EVERY_N_CYCLES cycles in case
-the market later gets added to the event schema (e.g. a prop market opening
-closer to kickoff).
+"confirmed absent" market on the pollability registry's time-based schedule
+(quote_poll_unpollable_revalidate_secs) in case the market later gets added
+to the event schema (e.g. a prop market opening closer to kickoff).
 
 HARD RULES
 ----------
-* Self-contained: variant = the real `CloudbetDataClient`, which now carries
-  the known-absent cache in `_fetch_quote_ticks_for_event_group`. Baseline =
-  a subclass that clears `_quote_poll_absent_market_cycles` before every
-  event-group fetch, reproducing the pre-cache behaviour (every unresolved
-  instrument pays a real per-line fallback request, every cycle). No
-  installed source is edited.
+* Self-contained: variant = the real `CloudbetDataClient`, which now tracks
+  known-absent markets in its `MarketPollabilityRegistry`. Baseline = a
+  subclass that clears `_market_pollability` before every event-group fetch,
+  reproducing the pre-cache behaviour (every unresolved instrument pays a
+  real per-line fallback request, every cycle). No installed source is
+  edited.
 * No live network calls -- `CloudbetClient.get_event` / `get_latest_odds` are
   in-process AsyncMocks with an injected 100ms latency per request.
 * >=5 repeats, median + variance reported for wall-clock; request/quote
@@ -113,7 +113,6 @@ from nautilus_trader.adapters.cloudbet.client.schema import (
 )
 from nautilus_trader.adapters.cloudbet.common import CLOUDBET_VENUE
 from nautilus_trader.adapters.cloudbet.config import CloudbetDataClientConfig
-from nautilus_trader.adapters.cloudbet.data_client import REVALIDATE_EVERY_N_CYCLES
 from nautilus_trader.adapters.cloudbet.data_client import CloudbetDataClient
 from nautilus_trader.adapters.betting.runtime_cache import decode_venue_quote_poll_stats
 from nautilus_trader.adapters.betting.runtime_cache import venue_quote_poll_stats_key
@@ -310,7 +309,7 @@ class NoCacheCloudbetDataClient(CloudbetDataClient):
     """
 
     async def _fetch_quote_ticks_for_event_group(self, event_id, group_instrument_ids, semaphore):
-        self._quote_poll_absent_market_cycles.clear()
+        self._market_pollability.clear()
         return await super()._fetch_quote_ticks_for_event_group(
             event_id,
             group_instrument_ids,
@@ -506,7 +505,7 @@ async def main() -> None:
             "absent_per_event": ABSENT_PER_EVENT,
             "request_latency_secs": REQUEST_LATENCY_SECS,
             "num_cycles": NUM_CYCLES,
-            "revalidate_every_n_cycles": REVALIDATE_EVERY_N_CYCLES,
+            "unpollable_revalidate_secs": 600.0,
             "repeats": REPEATS,
         },
         "correctness": {

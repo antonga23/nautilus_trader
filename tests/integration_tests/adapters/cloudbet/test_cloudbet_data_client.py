@@ -1,4 +1,5 @@
 import asyncio
+from collections import defaultdict
 from types import SimpleNamespace
 from unittest.mock import patch, AsyncMock, MagicMock
 
@@ -23,9 +24,12 @@ from nautilus_trader.adapters.cloudbet.client.schema import (
     TeamIdentifier,
 )
 from nautilus_trader.adapters.cloudbet.common import CLOUDBET_VENUE
-from nautilus_trader.adapters.cloudbet.data_client import REVALIDATE_EVERY_N_CYCLES
+from nautilus_trader.adapters.cloudbet.market_pollability import MarketPollabilityRegistry
 from nautilus_trader.adapters.cloudbet.providers import CloudbetInstrumentProvider
 from nautilus_trader.model.identifiers import ClientId
+
+REVALIDATE_SECS = 600.0
+REVALIDATE_DUE_NS = int((REVALIDATE_SECS + 1) * 1_000_000_000)
 
 
 def build_event_response(instrument, markets) -> GetEventResponse:
@@ -805,21 +809,35 @@ class TestCloudbetDataClient:
         data_client.instrument_provider.add(instrument)
         data_client._subscribed_quote_instruments.add(instrument.id)
         data_client._requested_quote_instruments.add(instrument.id)
+        data_client._market_pollability = MarketPollabilityRegistry(
+            miss_threshold=1,
+            revalidate_secs=REVALIDATE_SECS,
+        )
         mock_get_event.return_value = build_event_response(instrument, markets={})
         mock_get_latest_odds.side_effect = CloudbetAPIError("market not found", code="404")
 
         await data_client._poll_quote_ticks_once()
 
         assert mock_get_latest_odds.call_count == 1
-        assert instrument.id in data_client._quote_poll_absent_market_cycles
+        event_id = int(str(instrument.event_id))
+        market_key = str(instrument.market_name)
+        assert data_client._market_pollability.is_poll_suppressed(
+            event_id,
+            market_key,
+            data_client._clock.timestamp_ns(),
+        )
 
         await data_client._poll_quote_ticks_once()
 
         assert mock_get_latest_odds.call_count == 1
-        assert mock_get_event.call_count == 2
+        assert mock_get_event.call_count == 1
+        assert instrument.id in data_client._subscribed_quote_instruments
+        assert instrument.id in data_client._requested_quote_instruments
         stats = data_client._cache.get("betting:venue_quote_poll_stats:CLOUDBET")
-        assert b'"event_request_count":1' in stats
+        assert b'"event_request_count":0' in stats
         assert b'"line_request_count":0' in stats
+        assert b'"tombstone_skipped_count":1' in stats
+        assert b'"tombstoned_market_count":1' in stats
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 1)], indirect=["instruments"])
@@ -836,18 +854,31 @@ class TestCloudbetDataClient:
         data_client.instrument_provider.add(instrument)
         data_client._subscribed_quote_instruments.add(instrument.id)
         data_client._requested_quote_instruments.add(instrument.id)
+        data_client._market_pollability = MarketPollabilityRegistry(
+            miss_threshold=1,
+            revalidate_secs=REVALIDATE_SECS,
+        )
         mock_get_event.return_value = build_event_response(instrument, markets={})
         mock_get_latest_odds.side_effect = CloudbetAPIError("market not found", code="404")
 
-        for _ in range(REVALIDATE_EVERY_N_CYCLES):
+        for _ in range(3):
             await data_client._poll_quote_ticks_once()
 
         assert mock_get_latest_odds.call_count == 1
 
+        data_client._clock.set_time(REVALIDATE_DUE_NS)
         await data_client._poll_quote_ticks_once()
 
         assert mock_get_latest_odds.call_count == 2
-        assert instrument.id in data_client._quote_poll_absent_market_cycles
+
+        await data_client._poll_quote_ticks_once()
+
+        assert mock_get_latest_odds.call_count == 2
+        assert data_client._market_pollability.is_poll_suppressed(
+            int(str(instrument.event_id)),
+            str(instrument.market_name),
+            data_client._clock.timestamp_ns(),
+        )
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 1)], indirect=["instruments"])
@@ -865,6 +896,12 @@ class TestCloudbetDataClient:
         data_client.instrument_provider.add(instrument)
         data_client._subscribed_quote_instruments.add(instrument.id)
         data_client._requested_quote_instruments.add(instrument.id)
+        data_client._market_pollability = MarketPollabilityRegistry(
+            miss_threshold=1,
+            revalidate_secs=REVALIDATE_SECS,
+        )
+        event_id = int(str(instrument.event_id))
+        market_key = str(instrument.market_name)
         handled = []
         monkeypatch.setattr(data_client, "_handle_data", handled.append)
         mock_get_event.return_value = build_event_response(instrument, markets={})
@@ -872,7 +909,11 @@ class TestCloudbetDataClient:
 
         await data_client._poll_quote_ticks_once()
 
-        assert instrument.id in data_client._quote_poll_absent_market_cycles
+        assert data_client._market_pollability.is_poll_suppressed(
+            event_id,
+            market_key,
+            data_client._clock.timestamp_ns(),
+        )
 
         mock_get_event.return_value = build_event_response(
             instrument,
@@ -881,9 +922,18 @@ class TestCloudbetDataClient:
 
         published, _ = await data_client._poll_quote_ticks_once()
 
+        assert published == 0
+
+        data_client._clock.set_time(REVALIDATE_DUE_NS)
+        published, _ = await data_client._poll_quote_ticks_once()
+
         assert published == 1
         assert handled[0].instrument_id == instrument.id
-        assert instrument.id not in data_client._quote_poll_absent_market_cycles
+        assert not data_client._market_pollability.is_poll_suppressed(
+            event_id,
+            market_key,
+            data_client._clock.timestamp_ns(),
+        )
 
         mock_get_event.return_value = build_event_response(instrument, markets={})
 
@@ -930,7 +980,7 @@ class TestCloudbetDataClient:
 
         no_cache_published = []
         for _ in range(3):
-            data_client._quote_poll_absent_market_cycles.clear()
+            data_client._market_pollability.clear()
             handled.clear()
             await data_client._poll_quote_ticks_once()
             no_cache_published.append(
@@ -940,3 +990,153 @@ class TestCloudbetDataClient:
         assert cached_published == no_cache_published
         assert all(published == cached_published[0] for published in cached_published)
         assert [instrument_id for instrument_id, _ in cached_published[0]] == [str(present.id)]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 1)], indirect=["instruments"])
+    @patch.object(CloudbetClient, "get_latest_odds", new_callable=AsyncMock)
+    async def test_poll_quote_ticks_tombstones_requested_instrument_without_pruning(
+        self,
+        mock_get_latest_odds,
+        data_client,
+        instruments,
+    ):
+        instrument = instruments[0]
+        data_client.instrument_provider.add(instrument)
+        data_client._subscribed_quote_instruments.add(instrument.id)
+        data_client._requested_quote_instruments.add(instrument.id)
+        data_client._quote_poll_event_batching = False
+        mock_get_latest_odds.side_effect = CloudbetAPIError(
+            message="Failed to retrieve latests odds from the Cloudbet API.",
+            code=404,
+        )
+
+        for _ in range(3):
+            await data_client._poll_quote_ticks_once()
+
+        assert mock_get_latest_odds.await_count == 3
+        assert instrument.id in data_client._subscribed_quote_instruments
+        assert instrument.id in data_client._requested_quote_instruments
+
+        mock_get_latest_odds.reset_mock()
+        await data_client._poll_quote_ticks_once()
+
+        assert mock_get_latest_odds.await_count == 0
+        assert instrument.id in data_client._subscribed_quote_instruments
+        assert instrument.id in data_client._requested_quote_instruments
+        stats = data_client._cache.get("betting:venue_quote_poll_stats:CLOUDBET")
+        assert b'"line_request_count":0' in stats
+        assert b'"tombstone_skipped_count":1' in stats
+        assert b'"tombstoned_market_count":1' in stats
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 552)], indirect=["instruments"])
+    @patch.object(CloudbetClient, "get_latest_odds", new_callable=AsyncMock)
+    async def test_poll_quote_ticks_shares_revalidation_probe_across_sibling_selections(
+        self,
+        mock_get_latest_odds,
+        data_client,
+        instruments,
+        monkeypatch,
+    ):
+        by_market = defaultdict(list)
+        for instrument in instruments:
+            by_market[(int(str(instrument.event_id)), str(instrument.market_name))].append(
+                instrument,
+            )
+        siblings = next(group for group in by_market.values() if len(group) >= 2)[:2]
+        for instrument in siblings:
+            data_client.instrument_provider.add(instrument)
+            data_client._subscribed_quote_instruments.add(instrument.id)
+            data_client._requested_quote_instruments.add(instrument.id)
+        data_client._quote_poll_event_batching = False
+        data_client._market_pollability = MarketPollabilityRegistry(
+            miss_threshold=1,
+            revalidate_secs=REVALIDATE_SECS,
+        )
+        handled = []
+        monkeypatch.setattr(data_client, "_handle_data", handled.append)
+        mock_get_latest_odds.side_effect = CloudbetAPIError("market not found", code="404")
+
+        await data_client._poll_quote_ticks_once()
+
+        assert mock_get_latest_odds.await_count == 2
+
+        await data_client._poll_quote_ticks_once()
+
+        assert mock_get_latest_odds.await_count == 2
+        stats = data_client._cache.get("betting:venue_quote_poll_stats:CLOUDBET")
+        assert b'"tombstone_skipped_count":2' in stats
+        assert b'"tombstoned_market_count":1' in stats
+
+        data_client._clock.set_time(REVALIDATE_DUE_NS)
+        await data_client._poll_quote_ticks_once()
+
+        assert mock_get_latest_odds.await_count == 3
+        stats = data_client._cache.get("betting:venue_quote_poll_stats:CLOUDBET")
+        assert b'"revalidation_probe_count":1' in stats
+        assert b'"tombstone_skipped_count":1' in stats
+
+        await data_client._poll_quote_ticks_once()
+
+        assert mock_get_latest_odds.await_count == 3
+
+        data_client._clock.set_time(2 * REVALIDATE_DUE_NS)
+        mock_get_latest_odds.side_effect = None
+        mock_get_latest_odds.return_value = GetLatestOddsResponse(
+            max_stake=123,
+            min_stake=1,
+            price=2.34,
+            status=SelectionStatus.ENABLED,
+            outcome=siblings[0].outcome,
+            params=siblings[0].params,
+            probability=0.3,
+            side=siblings[0].side,
+        )
+
+        published, _ = await data_client._poll_quote_ticks_once()
+
+        assert mock_get_latest_odds.await_count == 4
+        assert published == 1
+
+        published, _ = await data_client._poll_quote_ticks_once()
+
+        assert mock_get_latest_odds.await_count == 6
+        assert published == 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 1)], indirect=["instruments"])
+    @patch.object(CloudbetClient, "get_latest_odds", new_callable=AsyncMock)
+    async def test_poll_quote_ticks_treats_malformed_request_as_structurally_unpollable(
+        self,
+        mock_get_latest_odds,
+        data_client,
+        instruments,
+    ):
+        instrument = instruments[0]
+        data_client.instrument_provider.add(instrument)
+        data_client._subscribed_quote_instruments.add(instrument.id)
+        data_client._requested_quote_instruments.add(instrument.id)
+        data_client._quote_poll_event_batching = False
+        data_client._market_pollability = MarketPollabilityRegistry(
+            miss_threshold=1,
+            revalidate_secs=REVALIDATE_SECS,
+        )
+        mock_get_latest_odds.side_effect = CloudbetAPIError(
+            message=(
+                "Failed to retrieve latests odds from the Cloudbet API: "
+                '{"code":"MALFORMED_REQUEST"}'
+            ),
+            code=400,
+        )
+
+        await data_client._poll_quote_ticks_once()
+
+        assert mock_get_latest_odds.await_count == 1
+
+        await data_client._poll_quote_ticks_once()
+
+        assert mock_get_latest_odds.await_count == 1
+        assert instrument.id in data_client._subscribed_quote_instruments
+        stats = data_client._cache.get("betting:venue_quote_poll_stats:CLOUDBET")
+        assert b'"tombstone_skipped_count":1' in stats
+        assert b'"tombstoned_market_count":1' in stats
