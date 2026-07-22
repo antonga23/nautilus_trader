@@ -1,10 +1,15 @@
 import json
 from collections.abc import Iterable
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 
 ACTIVE_VENUE_INSTRUMENT_INDEX_PREFIX = "betting:active_venue_instruments"
 VENUE_QUOTE_POLL_STATS_PREFIX = "betting:venue_quote_poll_stats"
+VENUE_QUOTE_TIERS_PREFIX = "betting:venue_quote_tiers"
+
+QUOTE_TIER_INTERVALS_DEFAULT = {"hot": 1, "warm": 5, "cold": 30}
+QUOTE_TIER_RANK = {"hot": 0, "warm": 1, "cold": 2}
 
 
 @dataclass(frozen=True)
@@ -64,6 +69,18 @@ class VenueQuotePollStats:
     tombstoned_market_count: int = 0
     tombstone_skipped_count: int = 0
     revalidation_probe_count: int = 0
+    hot_instrument_count: int = 0
+    warm_instrument_count: int = 0
+    cold_instrument_count: int = 0
+    tier_due_count: int = 0
+
+
+@dataclass(frozen=True)
+class VenueQuoteTiers:
+    venue: str
+    updated_at_ns: int
+    tier_by_instrument_id: dict[str, str]
+    tier_intervals: dict[str, int]
 
 
 def active_venue_instrument_index_key(venue: str) -> str:
@@ -72,6 +89,10 @@ def active_venue_instrument_index_key(venue: str) -> str:
 
 def venue_quote_poll_stats_key(venue: str) -> str:
     return f"{VENUE_QUOTE_POLL_STATS_PREFIX}:{venue.strip().upper()}"
+
+
+def venue_quote_tiers_key(venue: str) -> str:
+    return f"{VENUE_QUOTE_TIERS_PREFIX}:{venue.strip().upper()}"
 
 
 def latency_percentiles(values: Iterable[float]) -> tuple[float, float, float]:
@@ -152,6 +173,10 @@ def encode_venue_quote_poll_stats(
     tombstoned_market_count: int = 0,
     tombstone_skipped_count: int = 0,
     revalidation_probe_count: int = 0,
+    hot_instrument_count: int = 0,
+    warm_instrument_count: int = 0,
+    cold_instrument_count: int = 0,
+    tier_due_count: int = 0,
 ) -> bytes:
     payload = {
         "venue": venue.strip().upper(),
@@ -204,6 +229,30 @@ def encode_venue_quote_poll_stats(
         "tombstoned_market_count": max(0, int(tombstoned_market_count)),
         "tombstone_skipped_count": max(0, int(tombstone_skipped_count)),
         "revalidation_probe_count": max(0, int(revalidation_probe_count)),
+        "hot_instrument_count": max(0, int(hot_instrument_count)),
+        "warm_instrument_count": max(0, int(warm_instrument_count)),
+        "cold_instrument_count": max(0, int(cold_instrument_count)),
+        "tier_due_count": max(0, int(tier_due_count)),
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def encode_venue_quote_tiers(
+    *,
+    venue: str,
+    updated_at_ns: int,
+    tier_by_instrument_id: Mapping[str, str],
+    tier_intervals: Mapping[str, int],
+) -> bytes:
+    payload = {
+        "venue": venue.strip().upper(),
+        "updated_at_ns": int(updated_at_ns),
+        "tier_by_instrument_id": {
+            str(instrument_id): str(tier)
+            for instrument_id, tier in tier_by_instrument_id.items()
+            if instrument_id
+        },
+        "tier_intervals": {str(tier): int(interval) for tier, interval in tier_intervals.items()},
     }
     return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
@@ -302,6 +351,46 @@ def decode_venue_quote_poll_stats(raw: bytes | None) -> VenueQuotePollStats | No
             tombstoned_market_count=int(payload.get("tombstoned_market_count") or 0),
             tombstone_skipped_count=int(payload.get("tombstone_skipped_count") or 0),
             revalidation_probe_count=int(payload.get("revalidation_probe_count") or 0),
+            hot_instrument_count=int(payload.get("hot_instrument_count") or 0),
+            warm_instrument_count=int(payload.get("warm_instrument_count") or 0),
+            cold_instrument_count=int(payload.get("cold_instrument_count") or 0),
+            tier_due_count=int(payload.get("tier_due_count") or 0),
         )
     except (TypeError, ValueError):
         return None
+
+
+def decode_venue_quote_tiers(raw: bytes | None) -> VenueQuoteTiers | None:
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    venue = str(payload.get("venue") or "").strip().upper()
+    if not venue:
+        return None
+    tier_by_instrument_id_raw = payload.get("tier_by_instrument_id")
+    if not isinstance(tier_by_instrument_id_raw, dict):
+        return None
+    tier_by_instrument_id = {
+        str(instrument_id): str(tier)
+        for instrument_id, tier in tier_by_instrument_id_raw.items()
+        if instrument_id
+    }
+    tier_intervals = dict(QUOTE_TIER_INTERVALS_DEFAULT)
+    tier_intervals_raw = payload.get("tier_intervals")
+    if isinstance(tier_intervals_raw, dict):
+        for tier, interval in tier_intervals_raw.items():
+            try:
+                tier_intervals[str(tier)] = int(interval)
+            except (TypeError, ValueError):
+                continue
+    return VenueQuoteTiers(
+        venue=venue,
+        updated_at_ns=int(payload.get("updated_at_ns") or 0),
+        tier_by_instrument_id=tier_by_instrument_id,
+        tier_intervals=tier_intervals,
+    )
