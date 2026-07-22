@@ -1,0 +1,93 @@
+name: runner-disk-hygiene
+
+# Reclaims regenerable CI build scratch (Rust target dirs, sccache, dangling docker
+# images/build cache/unused volumes) on the self-hosted runners when the root fs is high.
+# The trading box shares hardware with the live nodes, so a full disk breaks deploys and
+# the miner; this keeps the runners from filling. Runs twice daily plus on demand.
+# NOTE: reclaim is confined to each runner's own `_work` tree; /opt/cloudbet (live node
+# data) is never touched, and running-container images are preserved (dangling prune only).
+
+permissions:
+  contents: read
+
+on:
+  schedule:
+    # 04:30 and 16:30 UTC — a safety net; +100 GB headroom does the heavy lifting.
+    - cron: "30 4,16 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Reclaim even when the disk is below the 80% threshold
+        required: false
+        default: "false"
+
+concurrency:
+  group: runner-disk-hygiene
+  cancel-in-progress: true
+
+jobs:
+  hygiene:
+    name: hygiene
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # One row per live self-hosted runner. When registering a new runner, add a
+        # `runner-<name>` label to it (gh api .../actions/runners/{id}/labels) and a row here.
+        runner_label:
+          - runner-skinfunctional-ci-2
+          - runner-skinfunctional-deploy-1
+    runs-on: [self-hosted, linux, x64, "${{ matrix.runner_label }}"]
+    steps:
+      # Deliberately no actions/checkout: a full disk can break checkout, and the guard
+      # must run regardless. Everything below is inline.
+      - name: Reclaim CI scratch when disk is high
+        shell: bash
+        env:
+          FORCE_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.force || 'false' }}
+        run: |
+          set -uo pipefail
+
+          run_maybe_sudo() {
+            if [[ "${EUID}" -eq 0 ]]; then "$@"; return; fi
+            if "$@"; then return; fi
+            local status=$?
+            if command -v sudo > /dev/null 2>&1; then
+              sudo -n "$@" && return
+            fi
+            return "${status}"
+          }
+
+          echo "== host $(hostname) =="
+          df -h / || true
+          free -m | awk '/^Mem:|^Swap:/{print}' || true
+          docker system df 2> /dev/null || true
+
+          use="$(df --output=pcent / | tail -1 | tr -dc '0-9')"
+          echo "root use=${use:-?}% force=${FORCE_RUN}"
+          if [[ "${use:-0}" -lt 80 && "${FORCE_RUN}" != "true" ]]; then
+            echo "Below 80% threshold and not forced; nothing to reclaim."
+            exit 0
+          fi
+
+          # GITHUB_WORKSPACE = <_work>/<repo>/<repo>, so the runner _work root is two up.
+          work_root="$(dirname "$(dirname "${GITHUB_WORKSPACE}")")"
+          if [[ "${work_root}" != *_work ]]; then
+            echo "Refusing: derived work_root '${work_root}' is not a runner _work dir"
+            exit 1
+          fi
+          echo "work_root=${work_root}"
+
+          # Reclaim regenerable scratch ONLY under _work; never /opt/cloudbet.
+          run_maybe_sudo find "${work_root}" -maxdepth 4 -type d -name target \
+            -exec rm -rf {} + 2> /dev/null || true
+          run_maybe_sudo bash -c "rm -rf ${work_root}/*/*/.cache/sccache/* 2>/dev/null" || true
+          run_maybe_sudo docker builder prune -f 2> /dev/null || true
+          run_maybe_sudo docker image prune -f 2> /dev/null || true
+          run_maybe_sudo docker volume prune -f 2> /dev/null || true
+
+          # Retire the stop-gap host cron (one-time; no-op where absent).
+          run_maybe_sudo rm -f /etc/cron.daily/cloudbet-ci-disk-hygiene 2> /dev/null || true
+
+          echo "== after =="
+          df -h / || true
