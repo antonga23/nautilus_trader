@@ -717,6 +717,46 @@ class TestBettingArbitrageNodeBuilder:
         assert data_client.config["quote_poll_unpollable_market_key_event_threshold"] == 4
         assert data_client.config["quote_poll_unpollable_discovery_exclusion"] is False
 
+    def test_quote_tier_scheduling_flows_to_adapter_and_strategy(self):
+        manifest = BettingArbitrageNodeManifest(
+            node_id="cloudbet-tiering",
+            trader_id="BETARB-TEST-CB",
+            validation_mode=True,
+            allow_dummy_credentials=True,
+            venues=[
+                BettingVenueManifest(
+                    venue="CLOUDBET",
+                    client_key="CLOUDBET_PRIMARY",
+                    order_book_quote_tier_scheduling_enabled=True,
+                ),
+            ],
+        )
+
+        config = build_trading_node_config(manifest)
+
+        assert (
+            config.data_clients["CLOUDBET_PRIMARY"].config["quote_tier_scheduling_enabled"] is True
+        )
+        assert config.strategies[0].config["quote_tier_scheduling_enabled"] is True
+
+    def test_quote_tier_scheduling_defaults_off(self):
+        manifest = BettingArbitrageNodeManifest(
+            node_id="cloudbet-no-tiering",
+            trader_id="BETARB-TEST-CB",
+            validation_mode=True,
+            allow_dummy_credentials=True,
+            venues=[
+                BettingVenueManifest(venue="CLOUDBET", client_key="CLOUDBET_PRIMARY"),
+            ],
+        )
+
+        config = build_trading_node_config(manifest)
+
+        assert (
+            config.data_clients["CLOUDBET_PRIMARY"].config["quote_tier_scheduling_enabled"] is False
+        )
+        assert config.strategies[0].config.get("quote_tier_scheduling_enabled", False) is False
+
     def test_cloudbet_data_client_keeps_auto_subscribe_without_semantic_cache(self):
         manifest = BettingArbitrageNodeManifest(
             node_id="cloudbet-no-semantic-cache",

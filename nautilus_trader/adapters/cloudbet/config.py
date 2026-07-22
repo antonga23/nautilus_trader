@@ -56,6 +56,7 @@ class CloudbetDataClientConfig(LiveDataClientConfig, frozen=True):
     quote_poll_unpollable_revalidate_secs: PositiveFloat = 600.0
     quote_poll_unpollable_market_key_event_threshold: PositiveInt = 3
     quote_poll_unpollable_discovery_exclusion: bool = True
+    quote_tier_scheduling_enabled: bool = False
 
 
 class CloudbetInstrumentProviderConfig(InstrumentProviderConfig, frozen=True):

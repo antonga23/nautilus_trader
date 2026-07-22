@@ -2,13 +2,17 @@ import json
 
 from nautilus_trader.adapters.betting.runtime_cache import ActiveVenueInstrumentIndex
 from nautilus_trader.adapters.betting.runtime_cache import VenueQuotePollStats
+from nautilus_trader.adapters.betting.runtime_cache import VenueQuoteTiers
 from nautilus_trader.adapters.betting.runtime_cache import active_venue_instrument_index_key
 from nautilus_trader.adapters.betting.runtime_cache import decode_active_venue_instrument_index
 from nautilus_trader.adapters.betting.runtime_cache import decode_venue_quote_poll_stats
+from nautilus_trader.adapters.betting.runtime_cache import decode_venue_quote_tiers
 from nautilus_trader.adapters.betting.runtime_cache import encode_active_venue_instrument_index
 from nautilus_trader.adapters.betting.runtime_cache import encode_venue_quote_poll_stats
+from nautilus_trader.adapters.betting.runtime_cache import encode_venue_quote_tiers
 from nautilus_trader.adapters.betting.runtime_cache import latency_percentiles
 from nautilus_trader.adapters.betting.runtime_cache import venue_quote_poll_stats_key
+from nautilus_trader.adapters.betting.runtime_cache import venue_quote_tiers_key
 
 
 def test_active_venue_instrument_index_key_normalizes_venue() -> None:
@@ -88,6 +92,10 @@ def test_venue_quote_poll_stats_round_trip() -> None:
         tombstoned_market_count=4,
         tombstone_skipped_count=6,
         revalidation_probe_count=2,
+        hot_instrument_count=7,
+        warm_instrument_count=8,
+        cold_instrument_count=9,
+        tier_due_count=11,
     )
 
     payload = decode_venue_quote_poll_stats(raw)
@@ -142,7 +150,81 @@ def test_venue_quote_poll_stats_round_trip() -> None:
         tombstoned_market_count=4,
         tombstone_skipped_count=6,
         revalidation_probe_count=2,
+        hot_instrument_count=7,
+        warm_instrument_count=8,
+        cold_instrument_count=9,
+        tier_due_count=11,
     )
+
+
+def test_venue_quote_poll_stats_decode_defaults_missing_tier_fields() -> None:
+    raw = encode_venue_quote_poll_stats(
+        venue="cloudbet",
+        updated_at_ns=1,
+        cycle_id=1,
+        source="rest_event_poll",
+        subscribed_instrument_count=1,
+        market_count=1,
+        quote_count=1,
+    )
+    payload_dict = json.loads(raw)
+    for key in (
+        "hot_instrument_count",
+        "warm_instrument_count",
+        "cold_instrument_count",
+        "tier_due_count",
+    ):
+        payload_dict.pop(key)
+    old_raw = json.dumps(payload_dict).encode("utf-8")
+
+    payload = decode_venue_quote_poll_stats(old_raw)
+
+    assert payload is not None
+    assert payload.hot_instrument_count == 0
+    assert payload.warm_instrument_count == 0
+    assert payload.cold_instrument_count == 0
+    assert payload.tier_due_count == 0
+
+
+def test_venue_quote_tiers_key_normalizes_venue() -> None:
+    assert venue_quote_tiers_key(" cloudbet ") == "betting:venue_quote_tiers:CLOUDBET"
+
+
+def test_venue_quote_tiers_round_trip() -> None:
+    raw = encode_venue_quote_tiers(
+        venue="cloudbet",
+        updated_at_ns=456,
+        tier_by_instrument_id={"B.CLOUDBET": "warm", "A.CLOUDBET": "hot", "": "cold"},
+        tier_intervals={"hot": 1, "warm": 5, "cold": 30},
+    )
+
+    payload = decode_venue_quote_tiers(raw)
+
+    assert payload == VenueQuoteTiers(
+        venue="CLOUDBET",
+        updated_at_ns=456,
+        tier_by_instrument_id={"A.CLOUDBET": "hot", "B.CLOUDBET": "warm"},
+        tier_intervals={"hot": 1, "warm": 5, "cold": 30},
+    )
+
+
+def test_venue_quote_tiers_decode_defaults_missing_intervals() -> None:
+    raw = json.dumps(
+        {"venue": "CLOUDBET", "tier_by_instrument_id": {"A.CLOUDBET": "cold"}},
+    ).encode("utf-8")
+
+    payload = decode_venue_quote_tiers(raw)
+
+    assert payload is not None
+    assert payload.tier_intervals == {"hot": 1, "warm": 5, "cold": 30}
+
+
+def test_venue_quote_tiers_decode_rejects_invalid_payload() -> None:
+    assert decode_venue_quote_tiers(None) is None
+    assert decode_venue_quote_tiers(b"not-json") is None
+    assert decode_venue_quote_tiers(b"[]") is None
+    assert decode_venue_quote_tiers(json.dumps({"venue": ""}).encode("utf-8")) is None
+    assert decode_venue_quote_tiers(json.dumps({"venue": "CLOUDBET"}).encode("utf-8")) is None
 
 
 def test_venue_quote_poll_stats_decode_defaults_stream_fields_for_old_payloads() -> None:

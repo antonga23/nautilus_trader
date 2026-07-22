@@ -1,9 +1,12 @@
 import asyncio
+import hashlib
 from collections import defaultdict
 from types import SimpleNamespace
 from unittest.mock import patch, AsyncMock, MagicMock
 
 import pytest
+from nautilus_trader.adapters.betting.runtime_cache import encode_venue_quote_tiers
+from nautilus_trader.adapters.betting.runtime_cache import venue_quote_tiers_key
 from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.data.messages import RequestInstrument
 from nautilus_trader.data.messages import SubscribeInstruments
@@ -1168,3 +1171,187 @@ class TestCloudbetDataClient:
         data_client._inject_pollability_registry()
 
         assert data_client.instrument_provider._pollability_registry is None
+
+
+def _tier_event_hash(seed: object) -> int:
+    return int.from_bytes(
+        hashlib.blake2b(str(seed).encode("utf-8"), digest_size=8).digest(),
+        "big",
+    )
+
+
+class TestCloudbetQuoteTierScheduling:
+    @staticmethod
+    def _make_instrument(base, *, event_id, market_name, outcome):
+        from nautilus_trader.model.instruments.crypto_betting import CryptoBettingInstrument
+
+        data = dict(CryptoBettingInstrument.to_dict(base))
+        data["event_id"] = str(event_id)
+        data["market_name"] = market_name
+        data["outcome"] = outcome
+        return CryptoBettingInstrument.from_dict(data)
+
+    def _register(self, data_client, instruments):
+        for instrument in instruments:
+            data_client.instrument_provider.add(instrument)
+            data_client._subscribed_quote_instruments.add(instrument.id)
+        return sorted(data_client._subscribed_quote_instruments, key=str)
+
+    @staticmethod
+    def _publish_tiers(data_client, tier_by_instrument_id):
+        data_client._cache.add(
+            venue_quote_tiers_key("CLOUDBET"),
+            encode_venue_quote_tiers(
+                venue="CLOUDBET",
+                updated_at_ns=1,
+                tier_by_instrument_id=tier_by_instrument_id,
+                tier_intervals={"hot": 1, "warm": 5, "cold": 30},
+            ),
+        )
+
+    @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 1)], indirect=["instruments"])
+    def test_hot_tier_is_due_every_cycle(self, data_client, instruments):
+        hot = self._make_instrument(
+            instruments[0],
+            event_id=910001,
+            market_name="soccer.match_odds",
+            outcome="home",
+        )
+        subscribed = self._register(data_client, [hot])
+        data_client._quote_tier_scheduling_enabled = True
+        self._publish_tiers(data_client, {str(hot.id): "hot"})
+
+        for cycle in range(6):
+            data_client._quote_poll_cycle_id = cycle
+            selected, _skipped, _probes, tier_counts = (
+                data_client._select_pollable_quote_instruments(subscribed, now_ns=1)
+            )
+            assert selected == subscribed
+            assert tier_counts == {"due": 1, "hot": 1, "warm": 0, "cold": 0}
+
+    @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 1)], indirect=["instruments"])
+    def test_warm_tier_skips_between_due_cycles(self, data_client, instruments):
+        event_id = 920002
+        warm = self._make_instrument(
+            instruments[0],
+            event_id=event_id,
+            market_name="soccer.totals",
+            outcome="over",
+        )
+        subscribed = self._register(data_client, [warm])
+        data_client._quote_tier_scheduling_enabled = True
+        self._publish_tiers(data_client, {str(warm.id): "warm"})
+
+        event_hash = _tier_event_hash(event_id)
+        due_cycle = (5 - event_hash % 5) % 5  # (due_cycle + event_hash) % 5 == 0
+        skip_cycle = due_cycle + 1
+
+        data_client._quote_poll_cycle_id = due_cycle
+        selected_due, _s, _p, counts_due = data_client._select_pollable_quote_instruments(
+            subscribed,
+            now_ns=1,
+        )
+        assert selected_due == subscribed
+        assert counts_due == {"due": 1, "hot": 0, "warm": 1, "cold": 0}
+
+        data_client._quote_poll_cycle_id = skip_cycle
+        selected_skip, _s2, _p2, counts_skip = data_client._select_pollable_quote_instruments(
+            subscribed,
+            now_ns=1,
+        )
+        assert selected_skip == []
+        # The instrument is still tier-counted even on a skipped cycle.
+        assert counts_skip == {"due": 0, "hot": 0, "warm": 1, "cold": 0}
+
+    def test_stable_event_hash_and_due_formula_are_deterministic(self, data_client):
+        assert data_client._stable_event_hash("42") == _tier_event_hash("42")
+        assert data_client._stable_event_hash("42") == data_client._stable_event_hash("42")
+        # Distinct events stagger onto distinct phases (not simultaneously due).
+        assert _tier_event_hash(111) % 5 != _tier_event_hash(112) % 5
+
+        intervals = {"hot": 1, "warm": 5, "cold": 30}
+        for cycle in range(40):
+            data_client._quote_poll_cycle_id = cycle
+            expected = (cycle + _tier_event_hash(777)) % 30 == 0
+            assert data_client._quote_tier_due("cold", intervals, 777) is expected
+            assert data_client._quote_tier_due("hot", intervals, 777) is True
+
+    @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 1)], indirect=["instruments"])
+    def test_event_min_tier_rides_hot_sibling(self, data_client, instruments):
+        event_id = 930003
+        hot = self._make_instrument(
+            instruments[0],
+            event_id=event_id,
+            market_name="soccer.match_odds",
+            outcome="home",
+        )
+        cold = self._make_instrument(
+            instruments[0],
+            event_id=event_id,
+            market_name="soccer.correct_score",
+            outcome="2_1",
+        )
+        subscribed = self._register(data_client, [hot, cold])
+        data_client._quote_tier_scheduling_enabled = True
+        self._publish_tiers(data_client, {str(hot.id): "hot", str(cold.id): "cold"})
+
+        # A cycle where the cold instrument on its own (interval 30) would be skipped.
+        event_hash = _tier_event_hash(event_id)
+        due_cycle = (30 - event_hash % 30) % 30
+        data_client._quote_poll_cycle_id = (due_cycle + 1) % 30
+        assert (data_client._quote_poll_cycle_id + event_hash) % 30 != 0
+
+        selected, _skipped, _probes, tier_counts = (
+            data_client._select_pollable_quote_instruments(subscribed, now_ns=1)
+        )
+
+        assert set(selected) == set(subscribed)
+        assert tier_counts == {"due": 2, "hot": 1, "warm": 0, "cold": 1}
+
+    @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 1)], indirect=["instruments"])
+    def test_fail_open_all_hot_when_blob_missing(self, data_client, instruments):
+        one = self._make_instrument(
+            instruments[0],
+            event_id=940004,
+            market_name="soccer.match_odds",
+            outcome="home",
+        )
+        two = self._make_instrument(
+            instruments[0],
+            event_id=940005,
+            market_name="soccer.totals",
+            outcome="over",
+        )
+        subscribed = self._register(data_client, [one, two])
+        data_client._quote_tier_scheduling_enabled = True
+        # No blob published -> fail open, everything treated as hot every cycle.
+
+        for cycle in (0, 3, 29):
+            data_client._quote_poll_cycle_id = cycle
+            selected, _skipped, _probes, tier_counts = (
+                data_client._select_pollable_quote_instruments(subscribed, now_ns=1)
+            )
+            assert set(selected) == set(subscribed)
+            assert tier_counts == {"due": 2, "hot": 2, "warm": 0, "cold": 0}
+
+    @pytest.mark.parametrize("instruments", [(CLOUDBET_VENUE, 1)], indirect=["instruments"])
+    def test_flag_off_ignores_blob_and_polls_all(self, data_client, instruments):
+        event_id = 950006
+        cold = self._make_instrument(
+            instruments[0],
+            event_id=event_id,
+            market_name="soccer.correct_score",
+            outcome="1_0",
+        )
+        subscribed = self._register(data_client, [cold])
+        # Flag stays off (default); a blob that would defer the instrument is ignored.
+        assert data_client._quote_tier_scheduling_enabled is False
+        self._publish_tiers(data_client, {str(cold.id): "cold"})
+        data_client._quote_poll_cycle_id = 7
+
+        selected, _skipped, _probes, tier_counts = (
+            data_client._select_pollable_quote_instruments(subscribed, now_ns=1)
+        )
+
+        assert selected == subscribed
+        assert tier_counts == {"due": 0, "hot": 0, "warm": 0, "cold": 0}

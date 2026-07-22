@@ -576,6 +576,7 @@ class BettingArbitrageConfig(StrategyConfig, frozen=True):
     cross_venue_anchor_venue: str | None = None
     min_quote_depth_by_venue: dict[str, float] = {}
     quote_rebalance_enabled: bool = False
+    quote_tier_scheduling_enabled: bool = False
     quote_rebalance_unquoted_grace_secs: PositiveFloat = 900.0
     quote_rebalance_max_unsubscribes_per_refresh: PositiveInt = 25
     quote_freshness_profile: str = "pre_match"
