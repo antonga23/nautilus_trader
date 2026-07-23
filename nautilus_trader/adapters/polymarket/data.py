@@ -143,6 +143,15 @@ class PolymarketDataClient(LiveMarketDataClient):
         # Synchronization
         self._subscribe_lock = asyncio.Lock()
 
+        # Subscriptions
+        # Polymarket's market WebSocket streams book/price_change events at the market
+        # (condition) level, so a single asset subscription also delivers ticks for the
+        # complement token and for instruments this shard has since rebalanced away from
+        # (Polymarket has no WS-level unsubscribe). This set is the authoritative view of
+        # the instruments this client currently wants quotes for, used to drop unwanted
+        # ticks at the ingest boundary instead of processing and logging them per-tick.
+        self._subscribed_quote_instruments: set[InstrumentId] = set()
+
         # Hot caches
         self._last_quotes: dict[InstrumentId, QuoteTick] = {}
         self._local_books: dict[InstrumentId, OrderBook] = {}
@@ -333,6 +342,8 @@ class PolymarketDataClient(LiveMarketDataClient):
         await self._subscribe_asset_book(command.instrument_id)
 
     async def _subscribe_quote_ticks(self, command: SubscribeQuoteTicks) -> None:
+        self._subscribed_quote_instruments.add(command.instrument_id)
+
         if command.instrument_id not in self._local_books:
             self._create_local_book(command.instrument_id)
 
@@ -373,8 +384,13 @@ class PolymarketDataClient(LiveMarketDataClient):
         )
 
     async def _unsubscribe_quote_ticks(self, command: UnsubscribeQuoteTicks) -> None:
-        self._log.error(
-            f"Cannot unsubscribe from {command.instrument_id} quotes: unsubscribing not supported by Polymarket",
+        # Polymarket has no WS-level unsubscribe, so the stream keeps delivering this
+        # asset. Drop it from the subscribed set so its ticks are filtered silently at
+        # ingest rather than processed and logged for an instrument we no longer want.
+        self._subscribed_quote_instruments.discard(command.instrument_id)
+        self._log.debug(
+            f"Unsubscribed {command.instrument_id} quotes locally; "
+            "Polymarket has no WS-level unsubscribe so its ticks will be dropped at ingest",
         )
 
     async def _unsubscribe_trade_ticks(self, command: UnsubscribeTradeTicks) -> None:
@@ -385,6 +401,19 @@ class PolymarketDataClient(LiveMarketDataClient):
     async def _unsubscribe_bars(self, command: UnsubscribeBars) -> None:
         self._log.error(
             f"Cannot unsubscribe from {command.bar_type} bars: not implemented for Polymarket",
+        )
+
+    def subscribed_quote_ticks(self) -> list[InstrumentId]:
+        subscriptions = set(super().subscribed_quote_ticks())
+        subscriptions.update(self._subscribed_quote_instruments)
+        return sorted(subscriptions, key=str)
+
+    def _is_instrument_subscribed(self, instrument_id: InstrumentId) -> bool:
+        return (
+            instrument_id in self.subscribed_quote_ticks()
+            or instrument_id in self.subscribed_order_book_deltas()
+            or instrument_id in self.subscribed_order_book_snapshots()
+            or instrument_id in self.subscribed_trade_ticks()
         )
 
     async def _request_instrument(self, request: RequestInstrument) -> None:
@@ -494,6 +523,9 @@ class PolymarketDataClient(LiveMarketDataClient):
         instrument: BinaryOption,
         ws_message: PolymarketBookSnapshot,
     ) -> None:
+        if not self._is_instrument_subscribed(instrument.id):
+            return  # Drop silently: stream carries instruments this shard is not subscribed to
+
         now_ns = self._clock.timestamp_ns()
         deltas = ws_message.parse_to_snapshot(instrument=instrument, ts_init=now_ns)
 
@@ -510,7 +542,10 @@ class PolymarketDataClient(LiveMarketDataClient):
                 drop_quotes_missing_side=self._config.drop_quotes_missing_side,
             )
             if quote is None:
-                self._log.warning(
+                # One-sided books are an expected, high-frequency condition for thin
+                # Polymarket markets (not an error); DEBUG avoids flooding the node logs.
+                # Cross-venue quote readiness is surfaced via crossVenueQuoteReadiness.
+                self._log.debug(
                     f"Dropping QuoteTick for {instrument.id}: missing bid or ask prices in snapshot",
                 )
                 return
@@ -561,6 +596,11 @@ class PolymarketDataClient(LiveMarketDataClient):
         ws_message: PolymarketQuotes,
         price_change: PolymarketQuote,
     ) -> None:
+        if not self._is_instrument_subscribed(instrument.id):
+            # Drop silently: the market stream also carries the complement token and
+            # instruments this shard has rebalanced away from (no WS-level unsubscribe).
+            return
+
         now_ns = self._clock.timestamp_ns()
 
         order = BookOrder(
@@ -580,14 +620,7 @@ class PolymarketDataClient(LiveMarketDataClient):
         )
         deltas = OrderBookDeltas(instrument.id, [delta])
 
-        # Check if local book exists, create if needed
         if instrument.id not in self._local_books:
-            # Skip this quote if we're not subscribed to anything for this instrument
-            if (
-                instrument.id not in self.subscribed_quote_ticks()
-                and instrument.id not in self.subscribed_order_book_deltas()
-            ):
-                return
             self._create_local_book(instrument.id)
 
         local_book = self._local_books[instrument.id]
@@ -604,7 +637,9 @@ class PolymarketDataClient(LiveMarketDataClient):
             # Handle missing bid/ask prices (can occur near market resolution)
             if bid_price is None or ask_price is None:
                 if self._config.drop_quotes_missing_side:
-                    self._log.warning(
+                    # Expected high-frequency condition for thin one-sided PM books; DEBUG
+                    # keeps it out of the node log flood (readiness tracked elsewhere).
+                    self._log.debug(
                         f"Dropping QuoteTick for {instrument.id}: "
                         f"bid_price={bid_price}, ask_price={ask_price}",
                     )
@@ -647,6 +682,9 @@ class PolymarketDataClient(LiveMarketDataClient):
         instrument: BinaryOption,
         ws_message: PolymarketTrade,
     ) -> None:
+        if not self._is_instrument_subscribed(instrument.id):
+            return  # Drop silently: stream carries instruments this shard is not subscribed to
+
         now_ns = self._clock.timestamp_ns()
         trade = ws_message.parse_to_trade_tick(instrument=instrument, ts_init=now_ns)
         self._handle_data(trade)
