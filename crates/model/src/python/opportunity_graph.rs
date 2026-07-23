@@ -434,13 +434,6 @@ pub struct OpportunityGraphCore {
     semantic_templates: Vec<SemanticTemplateSnapshot>,
     coverage_proofs: Vec<CoverageProofSnapshot>,
     coverage_hyperedges: Vec<CoverageHyperedgeSnapshot>,
-    // Set only while a full rebuild (`rebuild_edges`/`rebuild_semantic_edges`, reached via
-    // `build`/`build_semantic`) holds the complete node set. The timeless cross-venue bind in
-    // `is_event_match` needs that global view to rule out a same-participant doubleheader, so it
-    // is gated on this flag and never fires on the incremental `add_instrument`/`connect_node`
-    // path, which sees only the new node and could otherwise bind a pair before an ambiguating
-    // sibling arrives (and never revisits a formed edge).
-    bulk_connect: bool,
 }
 
 #[pymethods]
@@ -460,7 +453,6 @@ impl OpportunityGraphCore {
             semantic_templates: Vec::default(),
             coverage_proofs: Vec::default(),
             coverage_hyperedges: Vec::default(),
-            bulk_connect: false,
         }
     }
 
@@ -812,8 +804,6 @@ impl OpportunityGraphCore {
     }
 
     fn rebuild_edges(&mut self) {
-        // Full rebuild holds the complete node set, so the timeless cross-venue bind may fire.
-        self.bulk_connect = true;
         self.edges_by_id.clear();
         for edge_ids in self.edge_ids_by_node_id.values_mut() {
             edge_ids.clear();
@@ -829,12 +819,9 @@ impl OpportunityGraphCore {
         for bucket in venue_event_buckets {
             self.connect_bucket(&bucket, &mut visited_pairs);
         }
-        self.bulk_connect = false;
     }
 
     fn rebuild_semantic_edges(&mut self) {
-        // Full rebuild holds the complete node set, so the timeless cross-venue bind may fire.
-        self.bulk_connect = true;
         self.edges_by_id.clear();
         for edge_ids in self.edge_ids_by_node_id.values_mut() {
             edge_ids.clear();
@@ -850,7 +837,6 @@ impl OpportunityGraphCore {
         for bucket in venue_event_buckets {
             self.connect_semantic_bucket(&bucket, &mut visited_pairs);
         }
-        self.bulk_connect = false;
     }
 
     fn connect_node(&mut self, node_id: &str) {
@@ -868,6 +854,7 @@ impl OpportunityGraphCore {
         if let Some(bucket) = self.venue_event_buckets.get(&venue_event_key).cloned() {
             self.connect_node_to_bucket(node_id, &bucket, &mut visited_pairs);
         }
+        self.invalidate_stale_timeless_edges(node_id);
     }
 
     fn connect_node_semantic(&mut self, node_id: &str) {
@@ -885,6 +872,7 @@ impl OpportunityGraphCore {
         if let Some(bucket) = self.venue_event_buckets.get(&venue_event_key).cloned() {
             self.connect_node_to_semantic_bucket(node_id, &bucket, &mut visited_pairs);
         }
+        self.invalidate_stale_timeless_edges(node_id);
     }
 
     fn connect_bucket(&mut self, bucket: &[String], visited_pairs: &mut HashSet<String>) {
@@ -1251,15 +1239,15 @@ impl OpportunityGraphCore {
                 // one venue omits start_time, the other sends a date-only placeholder that
                 // _start_time_ns nulls (e.g. CLOUDBET has none, POLYMARKET sends
                 // "YYYY-MM-DD"). Bind the unique alias-matched fixture instead of dropping
-                // the whole cross-venue pair — but only during a full rebuild (self.bulk_connect),
-                // which holds the complete node set, and only when neither venue carries a second
-                // timeless event under the shared alias, so a same-participant doubleheader stays
-                // ambiguous and is never force-bound into a phantom lock. The incremental path
-                // (bulk_connect == false) never binds a timeless pair, because a later sibling
-                // could make it ambiguous and no formed edge is ever revisited there.
+                // the whole cross-venue pair, but only when neither venue carries a second
+                // timeless event under the shared alias, so a same-participant doubleheader
+                // stays ambiguous and is never force-bound into a phantom lock. On the
+                // incremental connect path a sibling that arrives later can make an
+                // already-bound pair ambiguous; `invalidate_stale_timeless_edges` (called from
+                // `connect_node`/`connect_node_semantic`) drops such an edge when that sibling
+                // lands, so binding here is safe in both the bulk and incremental paths.
                 clusters == 1
                     || (clusters == 0
-                        && self.bulk_connect
                         && source.start_time_ns.is_none()
                         && target.start_time_ns.is_none()
                         && self.timeless_pair_is_unambiguous(source, target))
@@ -1301,6 +1289,79 @@ impl OpportunityGraphCore {
             }
         }
         source_events.len() == 1 && target_events.len() == 1
+    }
+
+    /// Drop cross-venue timeless-bound edges that a just-inserted timeless node has made
+    /// ambiguous. A `clusters == 0` bind is only sound while each venue has exactly one
+    /// timeless event under the shared alias; when this node adds a second (e.g. a
+    /// doubleheader leg arriving after its sibling was already bound on the incremental
+    /// connect path), the earlier bind can no longer be proven unique and is removed. It
+    /// re-forms only on a later full rebuild once the alias is unambiguous again. No-op for a
+    /// node that carries a start time, and it never touches an edge that holds via a timed
+    /// sibling (`start_time_cluster_count_for_pair > 0`) — those are genuine kickoff clusters,
+    /// not timeless binds.
+    fn invalidate_stale_timeless_edges(&mut self, node_id: &str) {
+        let alias_keys = match self.nodes_by_id.get(node_id) {
+            Some(node) if node.start_time_ns.is_none() => event_bucket_keys_for_node(node),
+            _ => return,
+        };
+        let mut stale: Vec<String> = Vec::new();
+        for key in &alias_keys {
+            let Some(bucket) = self.event_buckets.get(key) else {
+                continue;
+            };
+            for member_id in bucket {
+                let Some(member) = self.nodes_by_id.get(member_id) else {
+                    continue;
+                };
+                if member.start_time_ns.is_some() {
+                    continue;
+                }
+                let Some(edge_ids) = self.edge_ids_by_node_id.get(member_id) else {
+                    continue;
+                };
+                for edge_id in edge_ids {
+                    let Some(edge) = self.edges_by_id.get(edge_id) else {
+                        continue;
+                    };
+                    let other_id = if edge.source_node_id == *member_id {
+                        &edge.target_node_id
+                    } else {
+                        &edge.source_node_id
+                    };
+                    let Some(other) = self.nodes_by_id.get(other_id) else {
+                        continue;
+                    };
+                    if other.venue == member.venue || other.start_time_ns.is_some() {
+                        continue;
+                    }
+                    // Cross-venue edge between two timeless legs. It is a timeless bind (not a
+                    // timed-sibling cluster) iff the cluster count is 0, and stale iff the pair
+                    // is no longer unambiguous.
+                    if self.start_time_cluster_count_for_pair(member, other) == 0
+                        && !self.timeless_pair_is_unambiguous(member, other)
+                    {
+                        stale.push(edge_id.clone());
+                    }
+                }
+            }
+        }
+        stale.sort_unstable();
+        stale.dedup();
+        for edge_id in &stale {
+            self.remove_edge(edge_id);
+        }
+    }
+
+    fn remove_edge(&mut self, edge_id: &str) {
+        let Some(edge) = self.edges_by_id.remove(edge_id) else {
+            return;
+        };
+        for endpoint in [&edge.source_node_id, &edge.target_node_id] {
+            if let Some(edge_ids) = self.edge_ids_by_node_id.get_mut(endpoint) {
+                edge_ids.retain(|id| id != edge_id);
+            }
+        }
     }
 
     fn start_time_cluster_count_for_pair(
@@ -2887,7 +2948,7 @@ mod tests {
     }
 
     #[rstest]
-    fn event_matching_rejects_distinct_keys_and_empty_start_clusters() {
+    fn event_matching_rejects_distinct_keys_and_binds_unambiguous_timeless() {
         let mut core = OpportunityGraphCore::new(true, 0.5);
         let source = node("a", "over");
         let mut target = node_with(
@@ -2928,48 +2989,104 @@ mod tests {
             core.start_time_cluster_count_for_pair(&missing_source, &target),
             0
         );
-        // Default (non-bulk) state: the incremental path never binds an empty-start-cluster
-        // timeless pair. The bulk-rebuild bind is covered by the next test.
-        assert!(!core.is_event_match(&missing_source, &target));
+        // An unambiguous empty-start-cluster timeless pair binds on any path now (guarded by
+        // invalidate_stale_timeless_edges against a later doubleheader sibling). `unrelated` is
+        // on a third venue, so it does not disambiguate the SXBET/BLACKBET pair venues here.
+        assert!(core.is_event_match(&missing_source, &target));
     }
 
     #[rstest]
-    fn timeless_cross_venue_pair_binds_only_on_full_rebuild() {
+    fn timeless_cross_venue_pair_binds_on_bulk_and_incremental() {
         // Neither venue supplies a usable kickoff time (CLOUDBET omits start_time, POLYMARKET
-        // sends a date-only placeholder that _start_time_ns nulls).
-        let mut cb =
-            node_with("cb", "CLOUDBET", "cb-1", "Total Goals", "total_goals", "over");
+        // sends a date-only placeholder that _start_time_ns nulls). The unique alias-matched
+        // fixture binds on BOTH the full-rebuild and the incremental connect path.
+        let mut cb = node_with("cb", "CLOUDBET", "cb-1", "Total Goals", "total_goals", "over");
         cb.start_time_ns = None;
-        let mut pm =
-            node_with("pm", "POLYMARKET", "pm-1", "Total Goals", "total_goals", "under");
+        let mut pm = node_with("pm", "POLYMARKET", "pm-1", "Total Goals", "total_goals", "under");
         pm.start_time_ns = None;
 
-        // Full rebuild holds the whole node set: the unique timeless fixture binds.
         let mut bulk = OpportunityGraphCore::new(true, 0.5);
         bulk.insert_node(cb.clone());
         bulk.insert_node(pm.clone());
         bulk.rebuild_edges();
         assert_eq!(bulk.edge_count(), 1);
 
-        // Incremental connect never binds a timeless pair: a later sibling could make it
-        // ambiguous and no formed edge is revisited on that path.
         let mut incremental = OpportunityGraphCore::new(true, 0.5);
         incremental.insert_node(cb.clone());
         incremental.insert_node(pm.clone());
         incremental.connect_node("pm");
-        assert_eq!(incremental.edge_count(), 0);
+        assert_eq!(incremental.edge_count(), 1);
+    }
 
-        // Same-participant doubleheader: a second timeless CLOUDBET event under the same alias
-        // is ambiguous, so even a full rebuild must not force-bind it.
-        let mut cb2 =
-            node_with("cb2", "CLOUDBET", "cb-2", "Total Goals", "total_goals", "over");
+    #[rstest]
+    fn incremental_doubleheader_invalidates_earlier_timeless_bind() {
+        // The second leg of a same-participant doubleheader arrives AFTER the first was already
+        // bound on the incremental path: the first bind is no longer unique and must be dropped.
+        let mut cb1 = node_with("cb1", "CLOUDBET", "cb-1", "Total Goals", "total_goals", "over");
+        cb1.start_time_ns = None;
+        let mut cb2 = node_with("cb2", "CLOUDBET", "cb-2", "Total Goals", "total_goals", "over");
         cb2.start_time_ns = None;
-        let mut doubleheader = OpportunityGraphCore::new(true, 0.5);
-        doubleheader.insert_node(cb);
-        doubleheader.insert_node(cb2);
-        doubleheader.insert_node(pm);
-        doubleheader.rebuild_edges();
-        assert_eq!(doubleheader.edge_count(), 0);
+        let mut pm = node_with("pm", "POLYMARKET", "pm-1", "Total Goals", "total_goals", "under");
+        pm.start_time_ns = None;
+
+        let mut core = OpportunityGraphCore::new(true, 0.5);
+        core.insert_node(pm);
+        core.connect_node("pm");
+        core.insert_node(cb1);
+        core.connect_node("cb1");
+        assert_eq!(core.edge_count(), 1); // cb1 <-> pm: unique so far
+
+        core.insert_node(cb2);
+        core.connect_node("cb2");
+        // cb2 <-> pm is ambiguous (not bound); the now-stale cb1 <-> pm bind is invalidated.
+        assert_eq!(core.edge_count(), 0);
+    }
+
+    #[rstest]
+    fn bulk_doubleheader_never_binds_timeless() {
+        let mut cb1 = node_with("cb1", "CLOUDBET", "cb-1", "Total Goals", "total_goals", "over");
+        cb1.start_time_ns = None;
+        let mut cb2 = node_with("cb2", "CLOUDBET", "cb-2", "Total Goals", "total_goals", "over");
+        cb2.start_time_ns = None;
+        let mut pm = node_with("pm", "POLYMARKET", "pm-1", "Total Goals", "total_goals", "under");
+        pm.start_time_ns = None;
+
+        let mut core = OpportunityGraphCore::new(true, 0.5);
+        core.insert_node(cb1);
+        core.insert_node(cb2);
+        core.insert_node(pm);
+        core.rebuild_edges();
+        assert_eq!(core.edge_count(), 0);
+    }
+
+    #[rstest]
+    fn invalidation_preserves_timed_sibling_cluster_bind() {
+        // A CLOUDBET sibling carries a real kickoff time, so the timeless CB/PM legs bind via the
+        // single time-cluster (clusters == 1), NOT the timeless path. Adding another timeless
+        // node must not invalidate those genuine cluster binds (cluster count stays > 0).
+        let mut cb_timed =
+            node_with("cbt", "CLOUDBET", "cb-a", "Total Goals", "total_goals", "over");
+        cb_timed.start_time_ns = Some(1_000);
+        let mut pm = node_with("pm", "POLYMARKET", "pm-1", "Total Goals", "total_goals", "under");
+        pm.start_time_ns = None;
+        let mut cb1 = node_with("cb1", "CLOUDBET", "cb-b", "Total Goals", "total_goals", "over");
+        cb1.start_time_ns = None;
+
+        let mut core = OpportunityGraphCore::new(true, 0.5);
+        core.insert_node(pm);
+        core.connect_node("pm");
+        core.insert_node(cb_timed);
+        core.connect_node("cbt");
+        core.insert_node(cb1);
+        core.connect_node("cb1");
+        assert!(!core.edge_snapshots_for_node("cb1").is_empty()); // cb1 <-> pm via clusters == 1
+
+        let mut cb2 = node_with("cb2", "CLOUDBET", "cb-c", "Total Goals", "total_goals", "over");
+        cb2.start_time_ns = None;
+        core.insert_node(cb2);
+        core.connect_node("cb2");
+        // The timed sibling keeps cluster count > 0, so the cb1 <-> pm bind is preserved.
+        assert!(!core.edge_snapshots_for_node("cb1").is_empty());
     }
 
     #[rstest]
