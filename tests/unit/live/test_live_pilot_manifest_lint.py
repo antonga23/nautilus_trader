@@ -163,9 +163,9 @@ EXPECTED_CLOUDBET_QUOTE_LIMIT = {
     "basketball": 150,
 }
 EXPECTED_CLOUDBET_TIER_SCHEDULING = {
-    "soccer": False,
+    "soccer": True,
     "tennis": True,
-    "basketball": False,
+    "basketball": True,
 }
 
 
@@ -268,6 +268,11 @@ def test_baseball_shard_raises_cloudbet_budget_streams_sxbet_and_stages_middles(
     # refresh under the 1.0s poll (inside the 3s CLOUDBET live quote-age gate).
     assert venues_by_name["CLOUDBET"].quote_subscription_limit == 180
     assert venues_by_name["CLOUDBET"].order_book_poll_interval_secs == 1.0
+
+    # Tiered quote-poll scheduling is enabled fleet-wide (rolled out after the tennis canary
+    # cut quote->strategy p99 from ~8.1s to ~2.6s): hot legs poll every cycle, warm/cold
+    # sibling markets poll on a staggered slower cadence.
+    assert venues_by_name["CLOUDBET"].order_book_quote_tier_scheduling_enabled is True
 
     # SXBET streams so subscribed legs clear the 5s live age gate; the REST fallback
     # bursts adaptively from the base 4 up to 16 when the stream drops.

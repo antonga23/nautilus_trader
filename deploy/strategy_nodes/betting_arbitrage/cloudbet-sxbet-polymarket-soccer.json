@@ -67,6 +67,7 @@
       "quote_subscription_limit": 250,
       "order_book_poll_interval_secs": 1.0,
       "order_book_poll_summary_interval_secs": 30.0,
+      "order_book_quote_tier_scheduling_enabled": true,
       "order_book_concurrency": 24,
       "order_book_min_concurrency": 4,
       "order_book_max_concurrency": 48,
