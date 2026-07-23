@@ -61,6 +61,15 @@ ZERO_PAIR_SAMPLE_NODE_LIMIT = 160
 # noise around a fair (overround == 1) book.
 SAME_VENUE_UNDERROUND_TOLERANCE = Decimal("0.01")
 
+# Probe-only book-quality sanity bounds. A leg quoted beyond 200 decimal odds is a
+# price below 0.005 -- on Polymarket that is the 0.001 min-tick region where resting
+# dust orders sit on dead books, and no venue we trade quotes a real outcome there.
+# The size floor is in `quote_available_size` units (USDC notional for Polymarket,
+# top-level lay size elsewhere): a top level worth under ~5 USDC cannot fill a
+# minimum stake, so the "counterparty" is dust rather than a market.
+DUST_MAX_DECIMAL_ODDS = Decimal(200)
+DUST_MIN_AVAILABLE_SIZE = Decimal(5)
+
 
 @dataclass(frozen=True)
 class RunnerContext:
@@ -83,6 +92,10 @@ class ProbeProfitabilityCounters:
     positive_same_venue_skewed: int = 0
     threshold_execution_skewed: int = 0
     threshold_same_venue_skewed: int = 0
+    positive_execution_book_filtered: int = 0
+    positive_same_venue_book_filtered: int = 0
+    threshold_execution_book_filtered: int = 0
+    threshold_same_venue_book_filtered: int = 0
     margin_bands: Counter[str] = field(default_factory=Counter)
     rag_bands: Counter[str] = field(default_factory=Counter)
     rejection_buckets: Counter[str] = field(default_factory=Counter)
@@ -137,6 +150,7 @@ class ProbeProfitabilityCounters:
     candidate_decision_latency_ns: list[int] = field(default_factory=list)
     samples: list[tuple[Decimal, dict[str, object]]] = field(default_factory=list)
     skewed_samples: list[tuple[Decimal, dict[str, object]]] = field(default_factory=list)
+    book_filtered_samples: list[tuple[Decimal, dict[str, object]]] = field(default_factory=list)
     negative_samples: list[tuple[Decimal, dict[str, object]]] = field(default_factory=list)
     value_samples: list[tuple[Decimal, dict[str, object]]] = field(default_factory=list)
     vig_erased_samples: list[tuple[Decimal, dict[str, object]]] = field(default_factory=list)
@@ -144,6 +158,7 @@ class ProbeProfitabilityCounters:
     def to_payload(self) -> dict[str, object]:
         self.samples.sort(key=lambda item: item[0], reverse=True)
         self.skewed_samples.sort(key=lambda item: item[0], reverse=True)
+        self.book_filtered_samples.sort(key=lambda item: item[0], reverse=True)
         self.negative_samples.sort(key=lambda item: item[0], reverse=True)
         self.value_samples.sort(key=lambda item: item[0], reverse=True)
         self.vig_erased_samples.sort(key=lambda item: item[0], reverse=True)
@@ -157,6 +172,10 @@ class ProbeProfitabilityCounters:
             "positive_same_venue_skewed": self.positive_same_venue_skewed,
             "threshold_execution_skewed": self.threshold_execution_skewed,
             "threshold_same_venue_skewed": self.threshold_same_venue_skewed,
+            "positive_execution_book_filtered": self.positive_execution_book_filtered,
+            "positive_same_venue_book_filtered": self.positive_same_venue_book_filtered,
+            "threshold_execution_book_filtered": self.threshold_execution_book_filtered,
+            "threshold_same_venue_book_filtered": self.threshold_same_venue_book_filtered,
             "margin_bands": dict(self.margin_bands),
             "rag_bands": dict(self.rag_bands),
             "rejection_buckets": dict(self.rejection_buckets),
@@ -266,8 +285,9 @@ class ProbeProfitabilityCounters:
                 key: samples[:5]
                 for key, samples in sorted(self.blocker_samples.items(), key=lambda item: item[0])
             },
-            "sample_candidates": [payload for _, payload in self.samples[:10]],
+            "sample_candidates": _dedupe_line_fan(self.samples)[:10],
             "skewed_sample_candidates": [payload for _, payload in self.skewed_samples[:5]],
+            "book_filtered_sample_candidates": _dedupe_line_fan(self.book_filtered_samples)[:5],
             "negative_near_misses": [payload for _, payload in self.negative_samples[:10]],
             "value_edge_candidates": [payload for _, payload in self.value_samples[:10]],
             "vig_erased_candidates": [payload for _, payload in self.vig_erased_samples[:10]],
@@ -282,6 +302,33 @@ def _venue_quote_age_payload(samples: list[float]) -> dict[str, float | int]:
         "p95": payload["p95"],
         "max": payload["max"],
     }
+
+
+def _dedupe_line_fan(
+    samples: list[tuple[Decimal, dict[str, object]]],
+) -> list[dict[str, object]]:
+    # One degenerate book fans across every line of a fixture's market family (e.g. six
+    # TOTALS lines all quoted against the same 0.001 dust order), so the top lists would
+    # show one root cause six times. Keep the best-margin row per (fixture, market
+    # family, book quality); the counters still count every row.
+    seen: set[tuple[str, str, str]] = set()
+    deduped: list[dict[str, object]] = []
+    for _, payload in samples:
+        key = (
+            str(
+                payload.get("eventKeyA")
+                or payload.get("eventNameA")
+                or payload.get("instrumentIdA")
+                or "",
+            ),
+            str(payload.get("marketFamily") or ""),
+            str(payload.get("bookQuality") or ""),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(payload)
+    return deduped
 
 
 def _percentile_payload(samples: list[float]) -> dict[str, float | int]:
@@ -1351,6 +1398,11 @@ def _collect_probe_heavy_sections(
                     "sameVenueExecutionEligible": 0,
                     "total": 0,
                 },
+                "bookQualityFilteredPositiveCandidates": {
+                    "executionSafe": 0,
+                    "sameVenueExecutionEligible": 0,
+                    "total": 0,
+                },
                 "candidateQuality": _empty_candidate_quality_payload(),
                 "semanticDiagnostics": semantic_diagnostics,
                 "venueCoverage": venue_coverage,
@@ -1422,6 +1474,14 @@ def _collect_probe_heavy_sections(
             "total": (
                 profitability["positive_execution_skewed"]
                 + profitability["positive_same_venue_skewed"]
+            ),
+        },
+        "bookQualityFilteredPositiveCandidates": {
+            "executionSafe": profitability["positive_execution_book_filtered"],
+            "sameVenueExecutionEligible": profitability["positive_same_venue_book_filtered"],
+            "total": (
+                profitability["positive_execution_book_filtered"]
+                + profitability["positive_same_venue_book_filtered"]
             ),
         },
         "candidateQuality": {
@@ -1518,6 +1578,7 @@ def _collect_probe_heavy_sections(
             ],
             "topPositiveCandidates": profitability["sample_candidates"],
             "topSkewedPositiveCandidates": profitability["skewed_sample_candidates"],
+            "topBookQualityFilteredCandidates": profitability["book_filtered_sample_candidates"],
             "topNegativeNearMisses": profitability["negative_near_misses"],
             "topValueEdgeCandidates": profitability["value_edge_candidates"],
             "topVigErasedCandidates": profitability["vig_erased_candidates"],
@@ -2137,6 +2198,7 @@ def _empty_candidate_quality_payload() -> dict[str, object]:
         "zeroCandidateFixtureProofBlockerCounts": {},
         "topPositiveCandidates": [],
         "topSkewedPositiveCandidates": [],
+        "topBookQualityFilteredCandidates": [],
         "topNegativeNearMisses": [],
         "topValueEdgeCandidates": [],
         "topVigErasedCandidates": [],
@@ -3898,6 +3960,7 @@ def _probe_edge_profitability(
                 allow_same_venue=allow_same_venue,
                 min_profit_margin=min_profit_margin,
                 timing_clean=_probe_timing_clean(quality.get("timingFlags")),
+                book_clean=_probe_book_clean(quality),
             )
         finally:
             counters.candidate_decision_latency_ns.append(
@@ -4058,7 +4121,7 @@ def _probe_candidate_quality(
     )
     normalized_a = _normalized_probe_payload(source_node)
     normalized_b = _normalized_probe_payload(target_node)
-    return {
+    quality = {
         "instrumentIdA": str(source_node.instrument.id),
         "instrumentIdB": str(target_node.instrument.id),
         "venueA": str(source_node.instrument.id.venue),
@@ -4083,6 +4146,8 @@ def _probe_candidate_quality(
         "eventKeyB": _probe_event_key_no_time(target_node) or None,
         "marketLabelA": _probe_market_label(normalized_a),
         "marketLabelB": _probe_market_label(normalized_b),
+        "oddsA": str(odds_a),
+        "oddsB": str(odds_b),
         "profitMargin": str(profit_margin),
         "totalProbability": str(total_probability),
         "rawProfitMargin": str(raw_profit_margin),
@@ -4147,6 +4212,8 @@ def _probe_candidate_quality(
         "sameVenueRiskPolicy": same_venue_policy,
         "wouldExecuteSameVenueDryRun": would_execute_same_venue,
     }
+    quality["bookQuality"] = _probe_book_quality(quality)
+    return quality
 
 
 def _strategy_fee_adjusted_opportunity(strategy, opportunity: ArbitrageOpportunity):
@@ -4531,6 +4598,43 @@ def _record_timing_samples(
         )
 
 
+def _probe_decimal_or_none(value: object) -> Decimal | None:
+    if value is None:
+        return None
+    try:
+        return Decimal(str(value))
+    except (ArithmeticError, TypeError, ValueError):
+        return None
+
+
+def _probe_book_quality(quality: dict[str, object]) -> str:
+    devig = quality.get("devig")
+    devig = devig if isinstance(devig, dict) else {}
+    classification = str(
+        quality.get("candidateValueClassification") or devig.get("valueClassification") or "",
+    )
+    for odds_key in ("oddsA", "oddsB"):
+        odds = _probe_decimal_or_none(quality.get(odds_key))
+        if odds is not None and odds > DUST_MAX_DECIMAL_ODDS:
+            return "dust_book"
+    for size_key in ("availableSizeA", "availableSizeB"):
+        size = _probe_decimal_or_none(quality.get(size_key))
+        if size is not None and size < DUST_MIN_AVAILABLE_SIZE:
+            return "dust_book"
+    if classification == "suspect_same_venue_underround":
+        return "underround_suspect"
+    if (
+        classification == "reference_book_incomplete"
+        or str(devig.get("bookStatus") or "") == "incomplete_book_no_devig"
+    ):
+        return "incomplete_reference"
+    return "complete"
+
+
+def _probe_book_clean(quality: dict[str, object]) -> bool:
+    return str(quality.get("bookQuality") or _probe_book_quality(quality)) == "complete"
+
+
 def _record_probe_quality(
     counters: ProbeProfitabilityCounters,
     quality: dict[str, object],
@@ -4596,8 +4700,25 @@ def _record_probe_quality(
     is_arbitrage_relationship = (
         str(quality.get("relationshipType") or "") in ARB_MARGIN_RELATIONSHIP_TYPES
     )
+    _route_probe_quality_sample(
+        counters,
+        margin=margin,
+        quality=quality,
+        is_arbitrage_relationship=is_arbitrage_relationship,
+    )
+
+
+def _route_probe_quality_sample(
+    counters: ProbeProfitabilityCounters,
+    *,
+    margin: Decimal,
+    quality: dict[str, object],
+    is_arbitrage_relationship: bool,
+) -> None:
     if is_arbitrage_relationship and margin > 0:
-        if _probe_timing_clean(quality.get("timingFlags")):
+        if not _probe_book_clean(quality):
+            counters.book_filtered_samples.append((margin, quality))
+        elif _probe_timing_clean(quality.get("timingFlags")):
             counters.samples.append((margin, quality))
         else:
             counters.skewed_samples.append((margin, quality))
@@ -4895,6 +5016,7 @@ def _record_probe_opportunity(
     allow_same_venue: bool,
     min_profit_margin: Decimal,
     timing_clean: bool = True,
+    book_clean: bool = True,
 ) -> None:
     is_arbitrage_relationship = (
         str(getattr(edge, "relationship_type", "")) in ARB_MARGIN_RELATIONSHIP_TYPES
@@ -4903,14 +5025,23 @@ def _record_probe_opportunity(
     meets_threshold = is_arbitrage_relationship and opportunity.profit_margin >= min_profit_margin
     # A stale-sibling pair skew (SXBET streams per-market) can flash a transient
     # underround that looks positive; keep those out of the headline positive/threshold
-    # counters so a genuine fresh candidate crossing the threshold is not masked.
+    # counters so a genuine fresh candidate crossing the threshold is not masked. The
+    # same applies to a degenerate book (dust order, incomplete reference, same-venue
+    # underround): its margin is an artifact of the counterparty, not an opportunity,
+    # so it routes to the book-quality-filtered counters regardless of timing.
     if allow_same_venue:
-        if timing_clean:
+        if not book_clean:
+            counters.positive_same_venue_book_filtered += int(is_positive)
+            counters.threshold_same_venue_book_filtered += int(meets_threshold)
+        elif timing_clean:
             counters.positive_same_venue += int(is_positive)
             counters.threshold_same_venue += int(meets_threshold)
         else:
             counters.positive_same_venue_skewed += int(is_positive)
             counters.threshold_same_venue_skewed += int(meets_threshold)
+    elif not book_clean:
+        counters.positive_execution_book_filtered += int(is_positive)
+        counters.threshold_execution_book_filtered += int(meets_threshold)
     elif timing_clean:
         counters.positive_execution += int(is_positive)
         counters.threshold_execution += int(meets_threshold)

@@ -6813,6 +6813,216 @@ class TestBettingArbitrageNodeRunner:
         candidate_quality = payload["candidateQuality"]
         assert "topPositiveCandidates" in candidate_quality
         assert "topSkewedPositiveCandidates" in candidate_quality
+        assert set(payload["bookQualityFilteredPositiveCandidates"]) == expected_keys
+        assert "topBookQualityFilteredCandidates" in candidate_quality
+
+    @staticmethod
+    def _book_quality_positive(**overrides):
+        quality = {
+            "profitMargin": "0.009",
+            "marginBand": "positive",
+            "rejectionBucket": "positive",
+            "venuePair": "POLYMARKET->POLYMARKET",
+            "marketFamily": "TOTALS + TOTALS",
+            "relationshipType": "COMPLEMENTARY_COVERAGE",
+            "timingFlags": ["fresh"],
+            "devig": {"enabled": False},
+        }
+        quality.update(overrides)
+        return quality
+
+    def test_probe_incomplete_reference_positive_routed_to_book_filtered(self):
+        # A positive whose devig layer already classified the reference book as
+        # incomplete is an artifact of a one-sided book, not an opportunity; it must
+        # leave the headline stream and land in the book-quality-filtered stream.
+        counters = node_runner.ProbeProfitabilityCounters()
+        quality = self._book_quality_positive(
+            candidateValueClassification="reference_book_incomplete",
+        )
+        node_runner._record_probe_quality(counters, quality)
+        node_runner._record_probe_opportunity(
+            counters,
+            opportunity=SimpleNamespace(profit_margin=Decimal("0.009")),
+            edge=SimpleNamespace(relationship_type="COMPLEMENTARY_COVERAGE"),
+            source_node=None,
+            target_node=None,
+            allow_same_venue=False,
+            min_profit_margin=Decimal("0.02"),
+            timing_clean=True,
+            book_clean=node_runner._probe_book_clean(quality),
+        )
+
+        payload = counters.to_payload()
+        assert payload["positive_execution"] == 0
+        assert payload["positive_execution_book_filtered"] == 1
+        assert payload["sample_candidates"] == []
+        assert payload["skewed_sample_candidates"] == []
+        assert [c["venuePair"] for c in payload["book_filtered_sample_candidates"]] == [
+            "POLYMARKET->POLYMARKET",
+        ]
+
+    def test_probe_underround_suspect_positive_routed_to_book_filtered(self):
+        # A same-venue underround suspect is already blocked from staging; it must not
+        # keep inflating the headline positive count either.
+        counters = node_runner.ProbeProfitabilityCounters()
+        quality = self._book_quality_positive(
+            venuePair="SXBET->SXBET",
+            marketFamily="ASIAN_HANDICAP + ASIAN_HANDICAP",
+            candidateValueClassification="suspect_same_venue_underround",
+        )
+        node_runner._record_probe_quality(counters, quality)
+        node_runner._record_probe_opportunity(
+            counters,
+            opportunity=SimpleNamespace(profit_margin=Decimal("0.08")),
+            edge=SimpleNamespace(relationship_type="COMPLEMENTARY_COVERAGE"),
+            source_node=None,
+            target_node=None,
+            allow_same_venue=True,
+            min_profit_margin=Decimal("0.02"),
+            timing_clean=True,
+            book_clean=node_runner._probe_book_clean(quality),
+        )
+
+        payload = counters.to_payload()
+        assert payload["positive_same_venue"] == 0
+        assert payload["threshold_same_venue"] == 0
+        assert payload["positive_same_venue_book_filtered"] == 1
+        assert payload["threshold_same_venue_book_filtered"] == 1
+        assert payload["sample_candidates"] == []
+        assert quality["candidateValueClassification"] == "suspect_same_venue_underround"
+        assert node_runner._probe_book_quality(quality) == "underround_suspect"
+
+    def test_probe_dust_odds_leg_classified_dust_book(self):
+        # Decimal odds 1000 is price 0.001 -- the Polymarket min tick where resting dust
+        # orders sit on dead books. Such a leg marks the candidate dust_book and routes
+        # it to the filtered bucket even when no devig classification fires.
+        dust_odds = node_runner._probe_book_quality(
+            self._book_quality_positive(oddsA="1.0101", oddsB="1000"),
+        )
+        assert dust_odds == "dust_book"
+
+        dust_size = node_runner._probe_book_quality(
+            self._book_quality_positive(availableSizeA="100", availableSizeB="0.5"),
+        )
+        assert dust_size == "dust_book"
+
+        counters = node_runner.ProbeProfitabilityCounters()
+        quality = self._book_quality_positive(oddsA="1.0101", oddsB="1000")
+        node_runner._record_probe_quality(counters, quality)
+        payload = counters.to_payload()
+        assert payload["sample_candidates"] == []
+        assert [c["oddsB"] for c in payload["book_filtered_sample_candidates"]] == ["1000"]
+
+    def test_probe_clean_positive_unaffected_by_book_quality_axis(self):
+        # A genuine two-sided book keeps flowing to the headline counters and top list
+        # exactly as before the book-quality split.
+        counters = node_runner.ProbeProfitabilityCounters()
+        quality = self._book_quality_positive(
+            oddsA="2.10",
+            oddsB="2.05",
+            availableSizeA="100",
+            availableSizeB="100",
+            candidateValueClassification="locked_execution_safe_arbitrage",
+        )
+        assert node_runner._probe_book_quality(quality) == "complete"
+        node_runner._record_probe_quality(counters, quality)
+        node_runner._record_probe_opportunity(
+            counters,
+            opportunity=SimpleNamespace(profit_margin=Decimal("0.03")),
+            edge=SimpleNamespace(relationship_type="COMPLEMENTARY_COVERAGE"),
+            source_node=None,
+            target_node=None,
+            allow_same_venue=False,
+            min_profit_margin=Decimal("0.02"),
+            timing_clean=True,
+            book_clean=node_runner._probe_book_clean(quality),
+        )
+
+        payload = counters.to_payload()
+        assert payload["positive_execution"] == 1
+        assert payload["threshold_execution"] == 1
+        assert payload["positive_execution_book_filtered"] == 0
+        assert len(payload["sample_candidates"]) == 1
+        assert payload["book_filtered_sample_candidates"] == []
+
+    def test_probe_book_filtered_top_list_collapses_line_fan(self):
+        # One degenerate book fans across every TOTALS line of a fixture; the top list
+        # shows the best-margin row once while the counters still count every row.
+        counters = node_runner.ProbeProfitabilityCounters()
+        margins = ["0.0090", "0.0091", "0.0089"]
+        for index, margin in enumerate(margins):
+            quality = self._book_quality_positive(
+                profitMargin=margin,
+                candidateValueClassification="reference_book_incomplete",
+                eventKeyA="itf-vacaria-bonardi-capurro",
+                marketLabelA=f"TOTALS {8.5 + index} (OVER)",
+            )
+            node_runner._record_probe_quality(counters, quality)
+            node_runner._record_probe_opportunity(
+                counters,
+                opportunity=SimpleNamespace(profit_margin=Decimal(margin)),
+                edge=SimpleNamespace(relationship_type="COMPLEMENTARY_COVERAGE"),
+                source_node=None,
+                target_node=None,
+                allow_same_venue=False,
+                min_profit_margin=Decimal("0.02"),
+                timing_clean=True,
+                book_clean=node_runner._probe_book_clean(quality),
+            )
+
+        payload = counters.to_payload()
+        assert payload["positive_execution_book_filtered"] == 3
+        top = payload["book_filtered_sample_candidates"]
+        assert len(top) == 1
+        assert top[0]["profitMargin"] == "0.0091"
+
+    def test_probe_headline_top_list_collapses_line_fan(self):
+        # The same dedupe applies to the clean headline top list: two lines of the same
+        # fixture and market family collapse to the best-margin row, while a different
+        # fixture keeps its own row.
+        counters = node_runner.ProbeProfitabilityCounters()
+        for margin, event_key in (
+            ("0.030", "fixture-1"),
+            ("0.040", "fixture-1"),
+            ("0.020", "fixture-2"),
+        ):
+            node_runner._record_probe_quality(
+                counters,
+                self._book_quality_positive(profitMargin=margin, eventKeyA=event_key),
+            )
+
+        top = counters.to_payload()["sample_candidates"]
+        assert [(c["eventKeyA"], c["profitMargin"]) for c in top] == [
+            ("fixture-1", "0.040"),
+            ("fixture-2", "0.020"),
+        ]
+
+    def test_probe_headline_skewed_and_book_filtered_partition_total(self):
+        # Every positive lands in exactly one of headline / skewed / book-filtered, so
+        # the three sections still sum to the pre-split headline total.
+        counters = node_runner.ProbeProfitabilityCounters()
+        for timing_clean, book_clean in ((True, True), (False, True), (True, False)):
+            node_runner._record_probe_opportunity(
+                counters,
+                opportunity=SimpleNamespace(profit_margin=Decimal("0.05")),
+                edge=SimpleNamespace(relationship_type="COMPLEMENTARY_COVERAGE"),
+                source_node=None,
+                target_node=None,
+                allow_same_venue=False,
+                min_profit_margin=Decimal("0.02"),
+                timing_clean=timing_clean,
+                book_clean=book_clean,
+            )
+
+        payload = counters.to_payload()
+        assert payload["positive_execution"] == 1
+        assert payload["positive_execution_skewed"] == 1
+        assert payload["positive_execution_book_filtered"] == 1
+        assert (
+            payload["positive_execution"]
+            + payload["positive_execution_skewed"]
+            + payload["positive_execution_book_filtered"]
+        ) == 3
 
     def test_runtime_probe_coverage_book_devig_uses_quoted_hyperedges(self):
         # Cross-venue: two independent books whose implied probabilities sum below 1 is
