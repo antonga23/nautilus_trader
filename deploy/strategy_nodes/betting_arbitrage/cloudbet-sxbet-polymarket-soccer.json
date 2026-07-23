@@ -116,7 +116,7 @@
       "market_discovery_limit": 450,
       "prefer_liquid_markets": true,
       "top_markets_by_depth": 150,
-      "quote_subscription_limit": 75
+      "quote_subscription_limit": 300
     }
   ],
   "metadata": {
