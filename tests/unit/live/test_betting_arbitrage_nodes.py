@@ -5680,6 +5680,135 @@ class TestBettingArbitrageNodeRunner:
         assert payload["live_timing_slo"]["pair_skew"]["min_threshold_secs"] == 0.1
         assert payload["live_timing_slo"]["pair_skew"]["max_threshold_secs"] == 0.1
 
+    @staticmethod
+    def _stream_dormant_quality(**overrides):
+        quality = {
+            "profitMargin": "-0.02",
+            "marginBand": "-1% to -2%",
+            "rejectionBucket": "stale",
+            "venuePair": "SXBET->POLYMARKET",
+            "marketFamily": "MATCH_ODDS",
+            "venueA": "SXBET",
+            "venueB": "POLYMARKET",
+            "freshnessProfile": "live",
+            "timingFlags": ["quote_age", "pair_skew"],
+            "quoteAgeASeconds": 200.0,
+            "quoteAgeBSeconds": 0.5,
+            "quoteDeltaSeconds": 199.5,
+            "fetchLatencyASeconds": 0.05,
+            "fetchLatencyBSeconds": 0.1,
+            "maxQuoteAgeSeconds": 5.0,
+            "maxPairSkewSeconds": 5.0,
+            "maxFetchLatencySeconds": 1.0,
+        }
+        quality.update(overrides)
+        return quality
+
+    def test_runtime_probe_stream_dormant_leg_excluded_from_quote_age_slo(self):
+        counters = node_runner.ProbeProfitabilityCounters()
+        counters.stream_healthy_venues = {"SXBET": True}
+
+        node_runner._record_probe_quality(counters, self._stream_dormant_quality())
+
+        payload = counters.to_payload()
+        assert payload["stream_dormant_leg_count"] == 1
+        assert payload["latency_histograms"]["quote_age_secs"]["count"] == 1
+        assert payload["latency_histograms"]["quote_age_secs"]["max"] == 0.5
+        assert payload["latency_histograms"]["pair_skew_secs"]["count"] == 0
+        assert payload["live_timing_slo"]["quote_age"]["observations"] == 1
+        assert payload["live_timing_slo"]["quote_age"]["violations"] == 0
+        assert payload["live_timing_slo"]["pair_skew"]["observations"] == 0
+        assert payload["live_timing_slo"]["pair_skew"]["violations"] == 0
+        assert payload["live_timing_slo"]["fetch_latency"]["observations"] == 2
+        assert payload["quote_age_by_venue"]["SXBET"] == {
+            "observations": 1,
+            "p50": 200.0,
+            "p95": 200.0,
+            "max": 200.0,
+        }
+        assert payload["quote_age_by_venue"]["POLYMARKET"]["max"] == 0.5
+        # Per-candidate gating output is untouched: the leg still carries its
+        # timing flags, rejection bucket, and venue health wall-clock age.
+        assert payload["timing_flags"] == {"quote_age": 1, "pair_skew": 1}
+        assert payload["rejection_buckets"] == {"stale": 1}
+        assert payload["venue_quote_health"]["SXBET"]["max_quote_age_secs"] == 200.0
+        assert payload["pair_skew_by_venue_pair"]["SXBET->POLYMARKET"]["max"] == 199.5
+
+    def test_runtime_probe_rest_stale_leg_still_violates_quote_age_slo(self):
+        counters = node_runner.ProbeProfitabilityCounters()
+        counters.stream_healthy_venues = {}
+
+        node_runner._record_probe_quality(counters, self._stream_dormant_quality())
+
+        payload = counters.to_payload()
+        assert payload["stream_dormant_leg_count"] == 0
+        assert payload["latency_histograms"]["quote_age_secs"]["count"] == 2
+        assert payload["latency_histograms"]["quote_age_secs"]["max"] == 200.0
+        assert payload["latency_histograms"]["pair_skew_secs"]["count"] == 1
+        assert payload["live_timing_slo"]["quote_age"]["observations"] == 2
+        assert payload["live_timing_slo"]["quote_age"]["violations"] == 1
+        assert payload["live_timing_slo"]["pair_skew"]["observations"] == 1
+        assert payload["live_timing_slo"]["pair_skew"]["violations"] == 1
+
+    def test_runtime_probe_disconnected_stream_leg_still_violates_quote_age_slo(self):
+        counters = node_runner.ProbeProfitabilityCounters()
+        counters.stream_healthy_venues = {"SXBET": False}
+
+        node_runner._record_probe_quality(counters, self._stream_dormant_quality())
+
+        payload = counters.to_payload()
+        assert payload["stream_dormant_leg_count"] == 0
+        assert payload["latency_histograms"]["quote_age_secs"]["count"] == 2
+        assert payload["live_timing_slo"]["quote_age"]["observations"] == 2
+        assert payload["live_timing_slo"]["quote_age"]["violations"] == 1
+
+    def test_runtime_probe_fresh_stream_leg_keeps_normal_accounting(self):
+        counters = node_runner.ProbeProfitabilityCounters()
+        counters.stream_healthy_venues = {"SXBET": True}
+
+        node_runner._record_probe_quality(
+            counters,
+            self._stream_dormant_quality(
+                rejectionBucket="negative_margin",
+                timingFlags=["fresh"],
+                quoteAgeASeconds=0.25,
+                quoteDeltaSeconds=0.25,
+            ),
+        )
+
+        payload = counters.to_payload()
+        assert payload["stream_dormant_leg_count"] == 0
+        assert payload["latency_histograms"]["quote_age_secs"]["count"] == 2
+        assert payload["latency_histograms"]["pair_skew_secs"]["count"] == 1
+        assert payload["live_timing_slo"]["quote_age"]["observations"] == 2
+        assert payload["live_timing_slo"]["quote_age"]["violations"] == 0
+
+    def test_stream_healthy_venues_extracted_from_provider_quote_poll_stats(self):
+        assert node_runner._stream_healthy_venues(
+            {
+                "SXBET": {"source": "realtime_stream", "stream_connected": True},
+                "POLYMARKET": {"source": "rest_order_book_poll", "stream_connected": False},
+                "CLOUDBET": {"source": "realtime_stream", "stream_connected": False},
+                "BROKEN": "not-a-dict",
+            },
+        ) == {"SXBET": True, "CLOUDBET": False}
+        assert node_runner._stream_healthy_venues(None) == {}
+
+    def test_runtime_latency_diagnostics_surfaces_quote_age_by_venue(self):
+        counters = node_runner.ProbeProfitabilityCounters()
+        counters.stream_healthy_venues = {"SXBET": True}
+        node_runner._record_probe_quality(counters, self._stream_dormant_quality())
+
+        diagnostics = node_runner._runtime_latency_diagnostics(
+            {"latency_diagnostics": {}},
+            counters.to_payload(),
+        )
+
+        assert diagnostics["streamDormantLegCount"] == 1
+        assert diagnostics["quoteAgeByVenue"]["SXBET"]["p95"] == 200.0
+        assert diagnostics["quoteAgeByVenue"]["POLYMARKET"]["observations"] == 1
+        assert diagnostics["sloStatus"]["quoteAge"]["violations"] == 0
+
     def test_run_success_and_failure_paths_record_status_transitions(self, tmp_path, monkeypatch):
         def semantic_status(_manifest):
             return SemanticCacheStatus(
