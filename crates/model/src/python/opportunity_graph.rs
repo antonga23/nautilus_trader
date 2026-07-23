@@ -1256,24 +1256,33 @@ impl OpportunityGraphCore {
     }
 
     /// True when neither pair venue contributes more than one distinct timeless event
-    /// under the shared alias — i.e. the alias resolves to a single cross-venue fixture
-    /// even though no kickoff time is available. Used only from the `clusters == 0`
-    /// branch of `is_event_match`, where the time-cluster count cannot disambiguate.
+    /// under any alias either leg carries — i.e. the aliases resolve to a single
+    /// cross-venue fixture even though no kickoff time is available. Used only from the
+    /// `clusters == 0` branch of `is_event_match`, where the time-cluster count cannot
+    /// disambiguate.
     ///
-    /// Scans the single bucket keyed by the pair's shared alias. Same-participant
-    /// doubleheaders share `event_key_no_time` and therefore land in that one bucket, so
-    /// the realistic ambiguity is caught; a doubleheader whose legs match only via
-    /// *different* secondary aliases would not be, but that is not how same-fixture aliases
-    /// are formed here.
+    /// Scans every alias bucket either leg belongs to, not just the first shared one:
+    /// a doubleheader whose legs match only via *different* secondary aliases (e.g. one
+    /// venue's event carrying two aliases that each match a distinct timeless event on
+    /// the other venue) would otherwise look unambiguous in each bucket individually and
+    /// double-bind. Extra buckets can only add distinct events, never remove them, so
+    /// this is strictly more conservative than the single-bucket scan it replaces.
     fn timeless_pair_is_unambiguous(&self, source: &NodeSnapshot, target: &NodeSnapshot) -> bool {
-        let Some(shared_event_key) = shared_event_alias_key(source, target) else {
+        if shared_event_alias_key(source, target).is_none() {
             return false;
-        };
+        }
         // The pair legs always count; other timeless bucket members can only add
         // distinct events, never remove them.
         let mut source_events: HashSet<&str> = HashSet::from([source.event_id.as_str()]);
         let mut target_events: HashSet<&str> = HashSet::from([target.event_id.as_str()]);
-        if let Some(bucket) = self.event_buckets.get(shared_event_key) {
+        let mut bucket_keys = event_bucket_keys_for_node(source);
+        bucket_keys.extend(event_bucket_keys_for_node(target));
+        bucket_keys.sort_unstable();
+        bucket_keys.dedup();
+        for bucket_key in &bucket_keys {
+            let Some(bucket) = self.event_buckets.get(bucket_key) else {
+                continue;
+            };
             for node_id in bucket {
                 let Some(node) = self.nodes_by_id.get(node_id) else {
                     continue;
@@ -3087,6 +3096,170 @@ mod tests {
         core.connect_node("cb2");
         // The timed sibling keeps cluster count > 0, so the cb1 <-> pm bind is preserved.
         assert!(!core.edge_snapshots_for_node("cb1").is_empty());
+    }
+
+    #[rstest]
+    fn split_secondary_alias_doubleheader_never_binds() {
+        // A doubleheader whose legs match the other venue only via DIFFERENT secondary
+        // aliases: pm carries [alias-a, alias-b]; cb1 matches via alias-a, cb2 via alias-b.
+        // Each pair looks unambiguous inside its own bucket, so a single-bucket scan would
+        // double-bind pm to two distinct CLOUDBET events. The all-bucket scan must see both.
+        let mut pm = node_with("pm", "POLYMARKET", "pm-1", "Total Goals", "total_goals", "under");
+        pm.start_time_ns = None;
+        pm.event_key_no_time = "tennis:pm canonical".to_string();
+        pm.event_alias_keys = vec!["tennis:alias a".to_string(), "tennis:alias b".to_string()];
+        let mut cb1 = node_with("cb1", "CLOUDBET", "cb-1", "Total Goals", "total_goals", "over");
+        cb1.start_time_ns = None;
+        cb1.event_key_no_time = "tennis:cb one".to_string();
+        cb1.event_alias_keys = vec!["tennis:alias a".to_string()];
+        let mut cb2 = node_with("cb2", "CLOUDBET", "cb-2", "Total Goals", "total_goals", "over");
+        cb2.start_time_ns = None;
+        cb2.event_key_no_time = "tennis:cb two".to_string();
+        cb2.event_alias_keys = vec!["tennis:alias b".to_string()];
+
+        // Bulk: the full node set is visible; neither pair may bind.
+        let mut bulk = OpportunityGraphCore::new(true, 0.5);
+        bulk.insert_node(pm.clone());
+        bulk.insert_node(cb1.clone());
+        bulk.insert_node(cb2.clone());
+        bulk.rebuild_edges();
+        assert_eq!(bulk.edge_count(), 0);
+
+        // Incremental: cb1 <-> pm binds while unique; cb2's arrival exposes the split-alias
+        // ambiguity, refuses its own bind, and invalidates the earlier one.
+        let mut core = OpportunityGraphCore::new(true, 0.5);
+        core.insert_node(pm);
+        core.connect_node("pm");
+        core.insert_node(cb1);
+        core.connect_node("cb1");
+        assert_eq!(core.edge_count(), 1);
+        core.insert_node(cb2);
+        core.connect_node("cb2");
+        assert_eq!(core.edge_count(), 0);
+    }
+
+    #[rstest]
+    fn semantic_incremental_doubleheader_invalidates_timeless_bind() {
+        // The semantic engine (production path) must apply the same timeless bind +
+        // doubleheader invalidation through add_instrument_semantic / connect_node_semantic.
+        pyo3::Python::initialize();
+
+        Python::attach(|py| {
+            let mut pm =
+                node_with("pm", "POLYMARKET", "pm-1", "Total Goals", "total_goals", "under");
+            pm.start_time_ns = None;
+            let mut cb1 =
+                node_with("cb1", "CLOUDBET", "cb-1", "Total Goals", "total_goals", "over");
+            cb1.start_time_ns = None;
+            let mut cb2 =
+                node_with("cb2", "CLOUDBET", "cb-2", "Total Goals", "total_goals", "over");
+            cb2.start_time_ns = None;
+
+            let nodes = PyList::empty(py);
+            nodes.append(py_payload(py, &pm)).unwrap();
+            let templates = PyList::empty(py);
+            templates
+                .append(py_semantic_template(
+                    py,
+                    vec!["CLOUDBET", "POLYMARKET"],
+                    false,
+                ))
+                .unwrap();
+
+            let mut core = OpportunityGraphCore::new(true, 0.5);
+            core.build_semantic(py, nodes.as_any(), templates.as_any())
+                .unwrap();
+            assert_eq!(core.edge_count(), 0);
+
+            let cb1_payload = py_payload(py, &cb1);
+            assert!(core.add_instrument_semantic(cb1_payload.as_any()).unwrap());
+            assert_eq!(core.edge_count(), 1); // timeless cb1 <-> pm binds via the template
+
+            let cb2_payload = py_payload(py, &cb2);
+            assert!(core.add_instrument_semantic(cb2_payload.as_any()).unwrap());
+            // The doubleheader sibling refuses its own bind AND invalidates cb1 <-> pm.
+            assert_eq!(core.edge_count(), 0);
+        });
+    }
+
+    #[rstest]
+    fn other_venue_timeless_doubleheader_invalidates_bind() {
+        // The ambiguating sibling arrives on the OTHER venue: a second timeless POLYMARKET
+        // event under the same alias must invalidate the earlier cb <-> pm1 bind.
+        let mut cb = node_with("cb", "CLOUDBET", "cb-1", "Total Goals", "total_goals", "over");
+        cb.start_time_ns = None;
+        let mut pm1 = node_with("pm1", "POLYMARKET", "pm-1", "Total Goals", "total_goals", "under");
+        pm1.start_time_ns = None;
+        let mut pm2 = node_with("pm2", "POLYMARKET", "pm-2", "Total Goals", "total_goals", "under");
+        pm2.start_time_ns = None;
+
+        let mut core = OpportunityGraphCore::new(true, 0.5);
+        core.insert_node(cb);
+        core.connect_node("cb");
+        core.insert_node(pm1);
+        core.connect_node("pm1");
+        assert_eq!(core.edge_count(), 1);
+
+        core.insert_node(pm2);
+        core.connect_node("pm2");
+        assert_eq!(core.edge_count(), 0);
+    }
+
+    #[rstest]
+    fn both_venue_timeless_doubleheaders_stay_unbound() {
+        // Two timeless events per venue under one alias: every pairing is ambiguous, on
+        // both the bulk and the incremental path, regardless of arrival order.
+        let mut nodes = Vec::new();
+        for (id, venue, event, outcome) in [
+            ("cb1", "CLOUDBET", "cb-1", "over"),
+            ("cb2", "CLOUDBET", "cb-2", "over"),
+            ("pm1", "POLYMARKET", "pm-1", "under"),
+            ("pm2", "POLYMARKET", "pm-2", "under"),
+        ] {
+            let mut node = node_with(id, venue, event, "Total Goals", "total_goals", outcome);
+            node.start_time_ns = None;
+            nodes.push(node);
+        }
+
+        let mut bulk = OpportunityGraphCore::new(true, 0.5);
+        for node in &nodes {
+            bulk.insert_node(node.clone());
+        }
+        bulk.rebuild_edges();
+        assert_eq!(bulk.edge_count(), 0);
+
+        let mut incremental = OpportunityGraphCore::new(true, 0.5);
+        for node in &nodes {
+            let node_id = node.node_id.clone();
+            incremental.insert_node(node.clone());
+            incremental.connect_node(&node_id);
+        }
+        assert_eq!(incremental.edge_count(), 0);
+    }
+
+    #[rstest]
+    fn remove_instrument_after_timeless_bind_detaches_cleanly() {
+        // Removing a timeless-bound leg drops the edge and its bucket entries; re-adding
+        // the leg re-binds through the same timeless path.
+        let mut cb = node_with("cb", "CLOUDBET", "cb-1", "Total Goals", "total_goals", "over");
+        cb.start_time_ns = None;
+        let mut pm = node_with("pm", "POLYMARKET", "pm-1", "Total Goals", "total_goals", "under");
+        pm.start_time_ns = None;
+
+        let mut core = OpportunityGraphCore::new(true, 0.5);
+        core.insert_node(cb.clone());
+        core.connect_node("cb");
+        core.insert_node(pm);
+        core.connect_node("pm");
+        assert_eq!(core.edge_count(), 1);
+
+        assert_eq!(core.remove_instrument("cb").len(), 1);
+        assert_eq!(core.edge_count(), 0);
+        assert!(core.edge_snapshots_for_node("pm").is_empty());
+
+        core.insert_node(cb);
+        core.connect_node("cb");
+        assert_eq!(core.edge_count(), 1);
     }
 
     #[rstest]
