@@ -110,9 +110,15 @@ class ProbeProfitabilityCounters:
     venue_max_quote_age_secs: dict[str, float] = field(default_factory=dict)
     venue_max_fetch_latency_secs: dict[str, float] = field(default_factory=dict)
     quote_age_samples_secs: list[float] = field(default_factory=list)
+    quote_age_samples_by_venue_secs: dict[str, list[float]] = field(default_factory=dict)
     fetch_latency_samples_secs: list[float] = field(default_factory=list)
     pair_skew_samples_secs: list[float] = field(default_factory=list)
     pair_skew_samples_by_venue_pair: dict[str, list[float]] = field(default_factory=dict)
+    # Venues whose quotes arrive via a change-driven realtime stream (value = stream
+    # currently healthy). A quiet market's last quote on such a venue is legitimately
+    # old but still current, so wall-clock quote age is not a staleness signal there.
+    stream_healthy_venues: dict[str, bool] = field(default_factory=dict)
+    stream_dormant_leg_count: int = 0
     live_quote_age_slo_secs: float = 5.0
     live_quote_age_observations: int = 0
     live_quote_age_violations: int = 0
@@ -196,6 +202,11 @@ class ProbeProfitabilityCounters:
                 "fetch_latency_secs": _percentile_payload(self.fetch_latency_samples_secs),
                 "pair_skew_secs": _percentile_payload(self.pair_skew_samples_secs),
             },
+            "quote_age_by_venue": {
+                venue: _venue_quote_age_payload(samples)
+                for venue, samples in sorted(self.quote_age_samples_by_venue_secs.items())
+            },
+            "stream_dormant_leg_count": self.stream_dormant_leg_count,
             "pair_skew_by_venue_pair": {
                 venue_pair: _percentile_payload(samples)
                 for venue_pair, samples in sorted(self.pair_skew_samples_by_venue_pair.items())
@@ -283,6 +294,16 @@ class ProbeProfitabilityCounters:
         }
 
 
+def _venue_quote_age_payload(samples: list[float]) -> dict[str, float | int]:
+    payload = _percentile_payload(samples)
+    return {
+        "observations": payload["count"],
+        "p50": payload["p50"],
+        "p95": payload["p95"],
+        "max": payload["max"],
+    }
+
+
 def _dedupe_line_fan(
     samples: list[tuple[Decimal, dict[str, object]]],
 ) -> list[dict[str, object]]:
@@ -361,6 +382,19 @@ def _max_threshold(current: float | None, candidate: float) -> float | None:
     return max(current, candidate)
 
 
+def _stream_healthy_venues(provider_quote_poll_stats: object) -> dict[str, bool]:
+    if not isinstance(provider_quote_poll_stats, dict):
+        return {}
+    venues: dict[str, bool] = {}
+    for venue, payload in provider_quote_poll_stats.items():
+        if not isinstance(payload, dict):
+            continue
+        if str(payload.get("source") or "") != "realtime_stream":
+            continue
+        venues[str(venue).strip().upper()] = bool(payload.get("stream_connected"))
+    return venues
+
+
 def _record_live_timing_slo(
     counters: ProbeProfitabilityCounters,
     *,
@@ -371,20 +405,30 @@ def _record_live_timing_slo(
     quote_delta_secs: float,
     max_fetch_latency_secs: float,
     max_pair_skew_secs: float,
+    stream_dormant_leg_a: bool = False,
+    stream_dormant_leg_b: bool = False,
 ) -> None:
-    counters.live_quote_age_observations += 2
-    if quote_age_a_secs > counters.live_quote_age_slo_secs:
-        counters.live_quote_age_violations += 1
-    if quote_age_b_secs > counters.live_quote_age_slo_secs:
-        counters.live_quote_age_violations += 1
+    # Dormant healthy-stream legs are excluded from the wall-clock quote-age and
+    # pair-skew SLO accounting: their last quote is old only because the stream pushes
+    # on book change. Fetch latency stays fully counted — it measures the transport,
+    # not quote recency.
+    if not stream_dormant_leg_a:
+        counters.live_quote_age_observations += 1
+        if quote_age_a_secs > counters.live_quote_age_slo_secs:
+            counters.live_quote_age_violations += 1
+    if not stream_dormant_leg_b:
+        counters.live_quote_age_observations += 1
+        if quote_age_b_secs > counters.live_quote_age_slo_secs:
+            counters.live_quote_age_violations += 1
     counters.live_fetch_latency_observations += 2
     if max_fetch_latency_secs > 0 and fetch_latency_a_secs > max_fetch_latency_secs:
         counters.live_fetch_latency_violations += 1
     if max_fetch_latency_secs > 0 and fetch_latency_b_secs > max_fetch_latency_secs:
         counters.live_fetch_latency_violations += 1
-    counters.live_pair_skew_observations += 1
-    if max_pair_skew_secs > 0 and quote_delta_secs > max_pair_skew_secs:
-        counters.live_pair_skew_violations += 1
+    if not (stream_dormant_leg_a or stream_dormant_leg_b):
+        counters.live_pair_skew_observations += 1
+        if max_pair_skew_secs > 0 and quote_delta_secs > max_pair_skew_secs:
+            counters.live_pair_skew_violations += 1
     counters.live_fetch_latency_threshold_min_secs = _min_threshold(
         counters.live_fetch_latency_threshold_min_secs,
         max_fetch_latency_secs,
@@ -1387,6 +1431,7 @@ def _collect_probe_heavy_sections(
         nodes=nodes,
         quotes=quotes,
         min_profit_margin=min_profit_margin,
+        provider_quote_poll_stats=stats.get("provider_quote_poll_stats", {}),
     )
     coverage_book_devig = _probe_coverage_book_devig_diagnostics(
         strategy,
@@ -1717,6 +1762,13 @@ def _runtime_latency_diagnostics(
         diagnostics["candidate_decision_source"] = "runtime_probe"
     diagnostics["runtime_probe_candidate_decision"] = (
         probe_candidate_decision if isinstance(probe_candidate_decision, dict) else {}
+    )
+    quote_age_by_venue = profitability.get("quote_age_by_venue")
+    diagnostics["quoteAgeByVenue"] = (
+        quote_age_by_venue if isinstance(quote_age_by_venue, dict) else {}
+    )
+    diagnostics["streamDormantLegCount"] = int(
+        profitability.get("stream_dormant_leg_count") or 0,
     )
     diagnostics["sloStatus"] = _runtime_latency_slo_status(diagnostics, profitability)
     diagnostics["diagnosticWarnings"] = _runtime_latency_diagnostic_warnings(
@@ -3850,10 +3902,12 @@ def _probe_edge_profitability(
     nodes,
     quotes,
     min_profit_margin: Decimal,
+    provider_quote_poll_stats: object = None,
 ) -> dict[str, object]:
     matcher = strategy.market_matcher
     counters = ProbeProfitabilityCounters()
     counters.live_quote_age_slo_secs = float(getattr(strategy, "live_quote_age_slo_secs", 5.0))
+    counters.stream_healthy_venues = _stream_healthy_venues(provider_quote_poll_stats)
 
     for edge in edges:
         quoted_edge = _quoted_probe_edge(edge, nodes, quotes)
@@ -4488,6 +4542,62 @@ def _probe_timing_clean(timing_flags: object) -> bool:
     return {str(flag) for flag in timing_flags} <= {"fresh"}
 
 
+def _record_timing_samples(
+    counters: ProbeProfitabilityCounters,
+    quality: dict[str, object],
+) -> None:
+    quote_age_a_secs = float(quality.get("quoteAgeASeconds") or 0.0)
+    quote_age_b_secs = float(quality.get("quoteAgeBSeconds") or 0.0)
+    fetch_latency_a_secs = float(quality.get("fetchLatencyASeconds") or 0.0)
+    fetch_latency_b_secs = float(quality.get("fetchLatencyBSeconds") or 0.0)
+    quote_delta_secs = float(quality.get("quoteDeltaSeconds") or 0.0)
+    venue_a = str(quality.get("venueA") or "")
+    venue_b = str(quality.get("venueB") or "")
+    # A dormant stream leg carries a quote older than the SLO threshold on a venue
+    # whose realtime stream is healthy: the stream pushes only on book change, so the
+    # quote is current and its wall-clock age is not a staleness violation. The
+    # adapter exposes stream health (connected flag) but no per-leg last-message
+    # timestamp, so there is no substitute staleness measure — these legs are
+    # excluded from the quote-age/pair-skew SLO surfaces and counted separately.
+    # Per-candidate freshness gates (maxQuoteAgeSeconds etc.) are unaffected. An
+    # unhealthy stream disables the exclusion: its quote ages are genuinely stale.
+    stream_dormant_leg_a = (
+        counters.stream_healthy_venues.get(venue_a.upper(), False)
+        and quote_age_a_secs > counters.live_quote_age_slo_secs
+    )
+    stream_dormant_leg_b = (
+        counters.stream_healthy_venues.get(venue_b.upper(), False)
+        and quote_age_b_secs > counters.live_quote_age_slo_secs
+    )
+    counters.stream_dormant_leg_count += int(stream_dormant_leg_a) + int(stream_dormant_leg_b)
+    if not stream_dormant_leg_a:
+        counters.quote_age_samples_secs.append(quote_age_a_secs)
+    if not stream_dormant_leg_b:
+        counters.quote_age_samples_secs.append(quote_age_b_secs)
+    if venue_a:
+        counters.quote_age_samples_by_venue_secs.setdefault(venue_a, []).append(quote_age_a_secs)
+    if venue_b:
+        counters.quote_age_samples_by_venue_secs.setdefault(venue_b, []).append(quote_age_b_secs)
+    counters.fetch_latency_samples_secs.extend([fetch_latency_a_secs, fetch_latency_b_secs])
+    if not (stream_dormant_leg_a or stream_dormant_leg_b):
+        counters.pair_skew_samples_secs.append(quote_delta_secs)
+    venue_pair = str(quality["venuePair"])
+    counters.pair_skew_samples_by_venue_pair.setdefault(venue_pair, []).append(quote_delta_secs)
+    if str(quality.get("freshnessProfile") or "") == "live":
+        _record_live_timing_slo(
+            counters,
+            quote_age_a_secs=quote_age_a_secs,
+            quote_age_b_secs=quote_age_b_secs,
+            fetch_latency_a_secs=fetch_latency_a_secs,
+            fetch_latency_b_secs=fetch_latency_b_secs,
+            quote_delta_secs=quote_delta_secs,
+            max_fetch_latency_secs=float(quality.get("maxFetchLatencySeconds") or 0.0),
+            max_pair_skew_secs=float(quality.get("maxPairSkewSeconds") or 0.0),
+            stream_dormant_leg_a=stream_dormant_leg_a,
+            stream_dormant_leg_b=stream_dormant_leg_b,
+        )
+
+
 def _probe_decimal_or_none(value: object) -> Decimal | None:
     if value is None:
         return None
@@ -4547,24 +4657,9 @@ def _record_probe_quality(
     quote_age_b_secs = float(quality.get("quoteAgeBSeconds") or 0.0)
     fetch_latency_a_secs = float(quality.get("fetchLatencyASeconds") or 0.0)
     fetch_latency_b_secs = float(quality.get("fetchLatencyBSeconds") or 0.0)
-    quote_delta_secs = float(quality.get("quoteDeltaSeconds") or 0.0)
-    max_fetch_latency_secs = float(quality.get("maxFetchLatencySeconds") or 0.0)
-    max_pair_skew_secs = float(quality.get("maxPairSkewSeconds") or 0.0)
-    counters.quote_age_samples_secs.extend([quote_age_a_secs, quote_age_b_secs])
-    counters.fetch_latency_samples_secs.extend([fetch_latency_a_secs, fetch_latency_b_secs])
-    counters.pair_skew_samples_secs.append(quote_delta_secs)
-    counters.pair_skew_samples_by_venue_pair.setdefault(venue_pair, []).append(quote_delta_secs)
-    if str(quality.get("freshnessProfile") or "") == "live":
-        _record_live_timing_slo(
-            counters,
-            quote_age_a_secs=quote_age_a_secs,
-            quote_age_b_secs=quote_age_b_secs,
-            fetch_latency_a_secs=fetch_latency_a_secs,
-            fetch_latency_b_secs=fetch_latency_b_secs,
-            quote_delta_secs=quote_delta_secs,
-            max_fetch_latency_secs=max_fetch_latency_secs,
-            max_pair_skew_secs=max_pair_skew_secs,
-        )
+    venue_a = str(quality.get("venueA") or "")
+    venue_b = str(quality.get("venueB") or "")
+    _record_timing_samples(counters, quality)
     _record_same_venue_dry_run_quality(counters, quality)
     if rejection_bucket in _SEMANTIC_NON_EXECUTION_BUCKETS:
         counters.semantic_blocked_reasons[_semantic_blocked_reason(quality)] += 1
@@ -4592,13 +4687,13 @@ def _record_probe_quality(
     counters.market_families.setdefault(market_family, Counter())[rejection_bucket] += 1
     _record_venue_quote_health(
         counters,
-        venue=str(quality.get("venueA") or ""),
+        venue=venue_a,
         quote_age_secs=quote_age_a_secs,
         fetch_latency_secs=fetch_latency_a_secs,
     )
     _record_venue_quote_health(
         counters,
-        venue=str(quality.get("venueB") or ""),
+        venue=venue_b,
         quote_age_secs=quote_age_b_secs,
         fetch_latency_secs=fetch_latency_b_secs,
     )
